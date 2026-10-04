@@ -562,7 +562,7 @@ and `image prune` leaves it.
   a request that names no command, 404, and 409 when no command can run in the sandbox. A command
   that is not there or cannot run answers 422 `command_not_started`, and the daemon keeps no record
   of it. A launch that 20 s (`DefaultExecStartBudget`) does not prove answers 504
-  `substrate_timeout`, and the daemon ends the command.
+  `timeout`, and the daemon ends the command.
 - `GET /v0/sandboxes/{id}/exec` answers `{"execs": [...], "next"}` with every exec the sandbox holds.
 - `GET /v0/sandboxes/{id}/exec/{exec-id}` answers the exec record. With `?wait=true` it holds the
   answer until the command ends, then answers the ended record. With the WebSocket handshake it
@@ -753,12 +753,14 @@ else that a refusal carries lives inside `error`, and the root never holds anyth
 | `sandbox_live` | 409 | grant, ungrant, attach or detach while the sandbox runs or is paused |
 | `no_checkpoint` | 409 | resume on a paused sandbox whose record names no checkpoint |
 | `unsupported` | 409 | the provider does not claim the verb |
+| `exec_exited` | 409 | a kill of an exec whose command already ended |
+| `exec_running` | 409 | a delete of an exec whose command still runs |
 | `in_use` | 409 | delete a policy, secret or image that sandboxes hold, delete an image that snapshots hold, or move the placeholder of a secret sandboxes hold. `error` then adds `"holders": [ids]`. Also a second attach of an exec, without holders |
 | `command_not_started` | 422 | an exec, or a create's app, whose command never started: it is not there, it cannot run, or its interpreter is not there. The message names the command and the kernel's reason, never a host path. `error` then adds `"exit_code"`, 127 for a command that is not there and 126 for one that cannot run, as a shell answers |
 | `name_taken` | 409 | a create whose `name` another sandbox already holds, or a snapshot create whose `name` another snapshot holds |
 | `unauthorized` | 401 | the TCP front, when the request carries no valid bearer token, and then the front dials nothing |
 | `forbidden` | 403 | the TCP front, when the token is valid but its scopes do not reach the route, and then the front dials nothing. Also the daemon, on a create that names a secret without `secret:*` or a policy without `policy:*` |
-| `substrate_timeout` | 504 | a stop, remove or restart whose substrate status call did not answer within the budget, or an exec whose launch the substrate did not prove within 20 s. Retry it once the runtime frees. On gVisor, rm --force reclaims through the wedge instead. It SIGKILLs the sandbox's own runsc processes, which it finds by the sandbox's cgroup and by the sandbox id on their command line, then finishes the teardown. It answers this code only when that kill fails too |
+| `timeout` | 504 | a stop, remove or restart whose substrate status call did not answer within the budget, or an exec whose launch the substrate did not prove within 20 s. Retry it once the runtime frees. On gVisor, rm --force reclaims through the wedge instead. It SIGKILLs the sandbox's own runsc processes, which it finds by the sandbox's cgroup and by the sandbox id on their command line, then finishes the teardown. It answers this code only when that kill fails too |
 | `internal` | 500 | anything else. A local route answers what the daemon got back. A public route answers only `the daemon could not complete the request; its log has the cause`, and the daemon log keeps the cause |
 
 `services/client` decodes only that object into `*client.APIError`, with `Status`, `Code`,
@@ -926,7 +928,7 @@ in `SHARD_API_KEY`: `export SHARD_API_KEY=$(shard tokens mint --name ci | jq -r 
 operator replaces the signing key, every token it signed stops verifying at once.
 
 The front reads the signing key once, at start, so a new key needs a `shard serve` restart. That
-restart ends no connection that is already spliced.
+restart ends its active proxy connections.
 
 ### Tokens
 
@@ -951,8 +953,15 @@ ledger holds no such token. `revoke` marks one token by its id, or every token o
 `mint`, and they never reach the daemon.
 
 The front reloads the ledger when its size or its modification time changes, so a `revoke` takes
-effect on the next request without a restart. If the front cannot read the ledger at start, it does
-not start. If the ledger vanishes while the front runs, every request gets a `401`.
+effect on the next request without a restart. The ledger must be a regular file.
+The front also checks the ledger once per second for every active proxy connection, including
+WebSocket streams and plain HTTP follows. A revoked token,
+an absent token id, or a ledger read error closes both sides of that connection. A token with an
+`exp` ends the connection at its expiry, independently of the ledger check. A token without an
+`exp` still has the one-second ledger check. These closes detach the client; they do not stop an exec
+or a sandbox. If the front cannot read the ledger at start, it does not start. If the ledger
+vanishes while the front runs, every new request gets a `401`, and the next check ends active
+connections.
 
 `mint` and `revoke` take an advisory lock on the ledger, at `serve.tokens.lock` beside it, so
 parallel revokes and a mint that races a revoke never lose a record. The front only reads, so it

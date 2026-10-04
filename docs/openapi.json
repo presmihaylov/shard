@@ -149,6 +149,12 @@
         "additionalProperties": false,
         "properties": {
           "kind": {
+            "enum": [
+              "cidr",
+              "domain",
+              "domain-suffix",
+              "group"
+            ],
             "type": "string"
           },
           "value": {
@@ -167,9 +173,6 @@
           "missing": {
             "type": "boolean"
           },
-          "policy": {
-            "type": "string"
-          },
           "rules": {
             "items": {
               "$ref": "#/components/schemas/EffectiveRule"
@@ -178,7 +181,6 @@
           }
         },
         "required": [
-          "policy",
           "rules"
         ],
         "type": "object"
@@ -187,6 +189,10 @@
         "additionalProperties": false,
         "properties": {
           "action": {
+            "enum": [
+              "allow",
+              "deny"
+            ],
             "type": "string"
           },
           "destination": {
@@ -196,6 +202,11 @@
             "type": "string"
           },
           "implied": {
+            "description": "Set on a rule the policy did not write: dns when a name rule opened DNS, dns-rule when a dns rule did.",
+            "enum": [
+              "dns",
+              "dns-rule"
+            ],
             "type": "string"
           },
           "ports": {
@@ -206,6 +217,11 @@
             "type": "array"
           },
           "protocol": {
+            "description": "Absent for a rule over every protocol.",
+            "enum": [
+              "tcp",
+              "udp"
+            ],
             "type": "string"
           }
         },
@@ -213,6 +229,72 @@
           "id",
           "action",
           "destination"
+        ],
+        "type": "object"
+      },
+      "EgressDecision": {
+        "additionalProperties": false,
+        "properties": {
+          "address": {
+            "type": "string"
+          },
+          "host": {
+            "type": "string"
+          },
+          "port": {
+            "format": "int64",
+            "type": "integer"
+          },
+          "reason": {
+            "type": "string"
+          },
+          "rule": {
+            "type": "string"
+          },
+          "rule_text": {
+            "type": "string"
+          },
+          "source": {
+            "enum": [
+              "proxy",
+              "host",
+              "dns"
+            ],
+            "type": "string"
+          },
+          "time": {
+            "format": "date-time",
+            "type": "string"
+          },
+          "verdict": {
+            "enum": [
+              "allow",
+              "deny"
+            ],
+            "type": "string"
+          }
+        },
+        "required": [
+          "time",
+          "source",
+          "verdict",
+          "rule"
+        ],
+        "type": "object"
+      },
+      "EndMessage": {
+        "additionalProperties": false,
+        "properties": {
+          "reason": {
+            "enum": [
+              "stopped",
+              "removed"
+            ],
+            "type": "string"
+          }
+        },
+        "required": [
+          "reason"
         ],
         "type": "object"
       },
@@ -247,6 +329,7 @@
         "additionalProperties": false,
         "properties": {
           "code": {
+            "description": "What a program matches on: invalid_request, body_too_large, not_found, sandbox_not_running, sandbox_not_stopped, sandbox_not_paused, sandbox_live, sandbox_failed, no_checkpoint, unsupported, in_use, name_taken, exec_exited, exec_running, no_app, app_ended, unauthorized, forbidden, timeout, command_not_started or internal. A later daemon may add a code, so a client must take one it does not know.",
             "type": "string"
           },
           "exit_code": {
@@ -294,6 +377,16 @@
             "type": "string"
           },
           "status": {
+            "description": "cached and pulled carry reference and digest; pulling adds layers and bytes, the whole download; layer carries one layer's digest, bytes and present; unpacking carries reference, digest and layers; unpacked carries one layer's digest, layer and layers; building carries nothing more.",
+            "enum": [
+              "cached",
+              "pulling",
+              "layer",
+              "unpacking",
+              "unpacked",
+              "building",
+              "pulled"
+            ],
             "type": "string"
           }
         },
@@ -343,6 +436,10 @@
             "type": "string"
           },
           "state": {
+            "enum": [
+              "running",
+              "exited"
+            ],
             "type": "string"
           },
           "truncated": {
@@ -423,6 +520,35 @@
         ],
         "type": "object"
       },
+      "ExitMessage": {
+        "additionalProperties": false,
+        "properties": {
+          "code": {
+            "description": "The exit code, or the code a command that never started ends with.",
+            "format": "int64",
+            "type": "integer"
+          },
+          "error": {
+            "description": "Why the command never started; absent when it started.",
+            "type": "string"
+          },
+          "lost_bytes": {
+            "description": "The output bytes the buffer dropped before this client read them; absent when it dropped none.",
+            "format": "int64",
+            "type": "integer"
+          },
+          "signal": {
+            "description": "The signal that ended the command, or 0.",
+            "format": "int64",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "code",
+          "signal"
+        ],
+        "type": "object"
+      },
       "ExitStatus": {
         "additionalProperties": false,
         "properties": {
@@ -441,6 +567,35 @@
         ],
         "type": "object"
       },
+      "FailureError": {
+        "additionalProperties": false,
+        "properties": {
+          "code": {
+            "description": "One of the codes of ErrorObject.code.",
+            "type": "string"
+          },
+          "message": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "code",
+          "message"
+        ],
+        "type": "object"
+      },
+      "FailureMessage": {
+        "additionalProperties": false,
+        "properties": {
+          "error": {
+            "$ref": "#/components/schemas/FailureError"
+          }
+        },
+        "required": [
+          "error"
+        ],
+        "type": "object"
+      },
       "FileEntry": {
         "additionalProperties": false,
         "properties": {
@@ -450,6 +605,7 @@
             "type": "integer"
           },
           "mode": {
+            "description": "The permission bits with setuid, setgid and sticky as a number, at most 0o7777 (4095); the type is in type.",
             "format": "int32",
             "minimum": 0,
             "type": "integer"
@@ -462,10 +618,17 @@
             "type": "string"
           },
           "size": {
+            "description": "The logical size in bytes.",
             "format": "int64",
             "type": "integer"
           },
           "type": {
+            "enum": [
+              "file",
+              "dir",
+              "symlink",
+              "other"
+            ],
             "type": "string"
           },
           "uid": {
@@ -548,6 +711,15 @@
             "type": "string"
           },
           "state": {
+            "enum": [
+              "pending",
+              "created",
+              "running",
+              "paused",
+              "unresponsive",
+              "stopped",
+              "failed"
+            ],
             "type": "string"
           },
           "stopped_reason": {
@@ -568,6 +740,7 @@
         "additionalProperties": false,
         "properties": {
           "signal": {
+            "description": "TERM or KILL, in capitals; absent or empty is TERM.",
             "type": "string"
           }
         },
@@ -577,6 +750,7 @@
         "additionalProperties": false,
         "properties": {
           "mode": {
+            "description": "The permission bits as an octal string, as chmod takes them; none is 0755.",
             "type": "string"
           },
           "parents": {
@@ -663,6 +837,10 @@
         "additionalProperties": false,
         "properties": {
           "dns": {
+            "enum": [
+              "open",
+              "closed"
+            ],
             "type": "string"
           },
           "holders": {
@@ -685,47 +863,6 @@
           "dns",
           "name",
           "rules"
-        ],
-        "type": "object"
-      },
-      "Record": {
-        "additionalProperties": false,
-        "properties": {
-          "address": {
-            "type": "string"
-          },
-          "host": {
-            "type": "string"
-          },
-          "port": {
-            "format": "int64",
-            "type": "integer"
-          },
-          "reason": {
-            "type": "string"
-          },
-          "rule": {
-            "type": "string"
-          },
-          "rule_text": {
-            "type": "string"
-          },
-          "source": {
-            "type": "string"
-          },
-          "time": {
-            "format": "date-time",
-            "type": "string"
-          },
-          "verdict": {
-            "type": "string"
-          }
-        },
-        "required": [
-          "time",
-          "source",
-          "verdict",
-          "rule"
         ],
         "type": "object"
       },
@@ -774,6 +911,7 @@
         "additionalProperties": false,
         "properties": {
           "backoff": {
+            "description": "The first wait before a start again, in seconds; 0 or absent is 1. It doubles after each start again, up to 60.",
             "format": "int64",
             "type": "integer"
           },
@@ -800,6 +938,7 @@
             "type": "string"
           },
           "retries": {
+            "description": "The starts again in a row before the policy gives up; 0 or absent is unlimited, and always takes none.",
             "format": "int64",
             "type": "integer"
           }
@@ -816,6 +955,7 @@
         "additionalProperties": false,
         "properties": {
           "backoff": {
+            "description": "The first wait before a start again, in seconds; 0 or absent is 1. It doubles after each start again, up to 60.",
             "format": "int64",
             "type": "integer"
           },
@@ -828,6 +968,7 @@
             "type": "string"
           },
           "retries": {
+            "description": "The starts again in a row before the policy gives up; 0 or absent is unlimited, and always takes none.",
             "format": "int64",
             "type": "integer"
           }
@@ -841,6 +982,10 @@
         "additionalProperties": false,
         "properties": {
           "action": {
+            "enum": [
+              "allow",
+              "deny"
+            ],
             "type": "string"
           },
           "destination": {
@@ -854,6 +999,11 @@
             "type": "array"
           },
           "protocol": {
+            "description": "Absent for a rule over every protocol.",
+            "enum": [
+              "tcp",
+              "udp"
+            ],
             "type": "string"
           }
         },
@@ -943,6 +1093,15 @@
             "type": "string"
           },
           "state": {
+            "enum": [
+              "pending",
+              "created",
+              "running",
+              "paused",
+              "unresponsive",
+              "stopped",
+              "failed"
+            ],
             "type": "string"
           },
           "stopped_reason": {
@@ -1126,6 +1285,7 @@
             "type": "string"
           },
           "size": {
+            "description": "The storage bytes the copy takes on the host, which is neither disk_mib nor the logical size of its files.",
             "format": "int64",
             "type": "integer"
           },
@@ -1751,7 +1911,7 @@
             "description": "A tar of the path; a body cut short is a failed read.",
             "headers": {
               "X-Shard-Stat": {
-                "description": "The guest path's stat as JSON: type, size, mode, uid, gid and mtime.",
+                "description": "The guest path's stat as JSON: type is file, dir, symlink or other; size is the logical size in bytes; mode is the permission bits as a number, at most 0o7777; then uid, gid and mtime.",
                 "schema": {
                   "type": "string"
                 }
@@ -1860,7 +2020,15 @@
         ],
         "responses": {
           "101": {
-            "description": "A WebSocket attach. Each binary message leads with its stream byte: 1 the output from the start of the log, 3 the AppExit, 5 a FailureMessage."
+            "description": "A WebSocket attach. Each binary message leads with its stream byte: 1 the output from the start of the log, 3 the AppExit, 5 a FailureMessage.",
+            "x-shard-messages": {
+              "3": {
+                "$ref": "#/components/schemas/AppExit"
+              },
+              "5": {
+                "$ref": "#/components/schemas/FailureMessage"
+              }
+            }
           },
           "200": {
             "content": {
@@ -1917,28 +2085,28 @@
         ],
         "responses": {
           "101": {
-            "description": "A WebSocket follow: one egress record per text message, until the sandbox stops."
+            "description": "A WebSocket follow: one egress decision per text message, until the sandbox stops."
           },
           "200": {
             "content": {
               "application/json": {
                 "schema": {
                   "items": {
-                    "$ref": "#/components/schemas/Record"
+                    "$ref": "#/components/schemas/EgressDecision"
                   },
                   "type": "array"
                 }
               },
               "application/x-ndjson": {
                 "schema": {
-                  "$ref": "#/components/schemas/Record"
+                  "$ref": "#/components/schemas/EgressDecision"
                 }
               }
             },
-            "description": "The egress decisions, oldest first; with follow one record per line until the sandbox stops.",
+            "description": "The egress decisions, oldest first; with follow one decision per line until the sandbox stops.",
             "headers": {
               "Shard-Egress-Cut": {
-                "description": "The older records the read left out; absent when it left out none.",
+                "description": "The older decisions the read left out; absent when it left out none.",
                 "schema": {
                   "type": "integer"
                 }
@@ -2162,7 +2330,15 @@
         ],
         "responses": {
           "101": {
-            "description": "A WebSocket attach. Each binary message leads with its stream byte: 0 stdin and 4 stdin closed from the client; 1 stdout, 2 stderr, 3 the ExitMessage and 5 a FailureMessage from the daemon."
+            "description": "A WebSocket attach. Each binary message leads with its stream byte: 0 stdin and 4 stdin closed from the client; 1 stdout, 2 stderr, 3 the ExitMessage and 5 a FailureMessage from the daemon.",
+            "x-shard-messages": {
+              "3": {
+                "$ref": "#/components/schemas/ExitMessage"
+              },
+              "5": {
+                "$ref": "#/components/schemas/FailureMessage"
+              }
+            }
           },
           "200": {
             "content": {
@@ -2398,7 +2574,7 @@
             "description": "The file's bytes, chunked to the end; a body cut short is a failed read.",
             "headers": {
               "X-Shard-Stat": {
-                "description": "The guest path's stat as JSON: type, size, mode, uid, gid and mtime.",
+                "description": "The guest path's stat as JSON: type is file, dir, symlink or other; size is the logical size in bytes; mode is the permission bits as a number, at most 0o7777; then uid, gid and mtime.",
                 "schema": {
                   "type": "string"
                 }
@@ -2451,7 +2627,7 @@
             "description": "The path's stat, in a header and no body.",
             "headers": {
               "X-Shard-Stat": {
-                "description": "The guest path's stat as JSON: type, size, mode, uid, gid and mtime.",
+                "description": "The guest path's stat as JSON: type is file, dir, symlink or other; size is the logical size in bytes; mode is the permission bits as a number, at most 0o7777; then uid, gid and mtime.",
                 "schema": {
                   "type": "string"
                 }
@@ -2643,7 +2819,15 @@
         ],
         "responses": {
           "101": {
-            "description": "A WebSocket follow. Each binary message leads with its stream byte: 1 the output, 3 an EndMessage naming why the follow ended, 5 a FailureMessage."
+            "description": "A WebSocket follow. Each binary message leads with its stream byte: 1 the output, 3 an EndMessage naming why the follow ended, 5 a FailureMessage.",
+            "x-shard-messages": {
+              "3": {
+                "$ref": "#/components/schemas/EndMessage"
+              },
+              "5": {
+                "$ref": "#/components/schemas/FailureMessage"
+              }
+            }
           },
           "200": {
             "content": {

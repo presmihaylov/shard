@@ -179,7 +179,7 @@ class AsyncPolicies:
         self._transport = transport
 
     async def set(self, name: str, rules: Sequence[PolicyRule]) -> Policy:
-        """Make the policy, or replace every rule of it; a sandbox it is assigned to enforces the new rules."""
+        """Make the policy, or replace every rule of it; a sandbox it is attached to enforces the new rules."""
         body = models.PolicyRequest(
             rules=[models.RuleText(action=models.RuleTextAction(rule.action), rule=rule.rule) for rule in rules]
         )
@@ -206,7 +206,7 @@ class AsyncPolicies:
     async def remove(self, name: str) -> None:
         await self._transport.send(lambda: remove_policy.asyncio_detailed(name, client=self._transport.api))
 
-    async def assign(self, sandbox: SandboxRef, name: str) -> SandboxInfo:
+    async def attach(self, sandbox: SandboxRef, name: str) -> SandboxInfo:
         body = models.PolicyAttachRequest(policy=name)
         return await _changed(
             self._transport,
@@ -214,7 +214,7 @@ class AsyncPolicies:
             lambda: attach_policy.asyncio_detailed(_id(sandbox), client=self._transport.api, body=body),
         )
 
-    async def clear(self, sandbox: SandboxRef) -> SandboxInfo:
+    async def detach(self, sandbox: SandboxRef) -> SandboxInfo:
         return await _changed(
             self._transport, sandbox, lambda: detach_policy.asyncio_detailed(_id(sandbox), client=self._transport.api)
         )
@@ -254,7 +254,7 @@ class AsyncSecrets:
         return [_types.secret_info(record) for record in records]
 
     async def remove(self, name: str, *, force: bool = False) -> None:
-        """Remove a secret no sandbox is granted; force revokes it from each first."""
+        """Remove a secret no sandbox is granted; force ungrants it from each first."""
         await self._transport.send(
             lambda: remove_secret.asyncio_detailed(name, client=self._transport.api, force=force or UNSET)
         )
@@ -266,7 +266,7 @@ class AsyncSecrets:
             lambda: grant_secret.asyncio_detailed(_id(sandbox), name, client=self._transport.api),
         )
 
-    async def revoke(self, sandbox: SandboxRef, name: str) -> SandboxInfo:
+    async def ungrant(self, sandbox: SandboxRef, name: str) -> SandboxInfo:
         return await _changed(
             self._transport,
             sandbox,

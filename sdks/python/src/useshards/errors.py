@@ -133,7 +133,7 @@ _CODE_STATUS: Mapping[str, int] = {
     "no_app": 409,
     "app_ended": 409,
     "command_not_started": 422,
-    "substrate_timeout": 504,
+    "timeout": 504,
     "internal": 500,
 }
 

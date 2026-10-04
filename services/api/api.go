@@ -311,7 +311,7 @@ type sandboxesResponse struct {
 
 // ErrorObject is a code for a program, a line for a human, the holders an in_use names, and the shell code a command_not_started carries.
 type ErrorObject struct {
-	Code     models.Code `json:"code"`
+	Code     models.Code `json:"code" doc:"What a program matches on: invalid_request, body_too_large, not_found, sandbox_not_running, sandbox_not_stopped, sandbox_not_paused, sandbox_live, sandbox_failed, no_checkpoint, unsupported, in_use, name_taken, exec_exited, exec_running, no_app, app_ended, unauthorized, forbidden, timeout, command_not_started or internal. A later daemon may add a code, so a client must take one it does not know."`
 	Message  string      `json:"message"`
 	Holders  []string    `json:"holders,omitempty"`
 	ExitCode int         `json:"exit_code,omitempty"`
@@ -449,17 +449,17 @@ func (h *Handler) sandboxEgressLog(w http.ResponseWriter, r *http.Request) {
 	h.writeJSON(w, http.StatusOK, listOf(records))
 }
 
-// describeEgressLog names the three answers of sandboxEgressLog: the records, a line each with follow, or a message each over a WebSocket.
+// describeEgressLog names the three answers of sandboxEgressLog: the decisions, a line each with follow, or a message each over a WebSocket.
 func describeEgressLog(registry huma.Registry, op *huma.Operation) {
 	op.Responses["200"] = &huma.Response{
-		Description: "The egress decisions, oldest first; with follow one record per line until the sandbox stops.",
-		Headers:     map[string]*huma.Header{EgressCutHeader: {Description: "The older records the read left out; absent when it left out none.", Schema: &huma.Schema{Type: huma.TypeInteger}}},
+		Description: "The egress decisions, oldest first; with follow one decision per line until the sandbox stops.",
+		Headers:     map[string]*huma.Header{EgressCutHeader: {Description: "The older decisions the read left out; absent when it left out none.", Schema: &huma.Schema{Type: huma.TypeInteger}}},
 		Content: map[string]*huma.MediaType{
 			"application/json":     {Schema: schemaOf[[]egress.Record](registry)},
 			"application/x-ndjson": {Schema: schemaOf[egress.Record](registry)},
 		},
 	}
-	op.Responses["101"] = upgrade("A WebSocket follow: one egress record per text message, until the sandbox stops.")
+	op.Responses["101"] = upgrade("A WebSocket follow: one egress decision per text message, until the sandbox stops.", nil)
 }
 
 type grantInput struct {
@@ -696,7 +696,7 @@ func classify(err error) (int, models.Code) {
 	case errors.Is(err, models.ErrUnsupported):
 		return http.StatusConflict, models.CodeUnsupported
 	case errors.As(err, &substrateTimeout):
-		return http.StatusGatewayTimeout, models.CodeSubstrateTimeout
+		return http.StatusGatewayTimeout, models.CodeTimeout
 	case errors.As(err, &notStarted):
 		return http.StatusUnprocessableEntity, models.CodeCommandNotStarted
 	default:

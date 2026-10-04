@@ -4,7 +4,7 @@ import * as https from "node:https";
 import { Readable, type Duplex, pipeline } from "node:stream";
 import createClient, { type Client } from "openapi-fetch";
 import type { Settings } from "./config.js";
-import { ConnectionError, ProtocolError, apiError, statusError } from "./errors.js";
+import { ProtocolError, ShardConnectionError, apiError, statusError } from "./errors.js";
 import type { paths } from "./generated/schema.js";
 import { version } from "./version.js";
 
@@ -196,7 +196,7 @@ export class Transport {
     const req = this.base.protocol === "https:" ? https.request(url, settings) : http.request(url, settings);
     // Set even at 0, so a pooled socket keeps no bound an earlier call left on it.
     req.setTimeout(options.timeoutMs ?? this.timeoutMs, () => {
-      req.destroy(new ConnectionError(`${method} ${path}: the daemon did not answer in time`));
+      req.destroy(new ShardConnectionError(`${method} ${path}: the daemon did not answer in time`));
     });
 
     return req;
@@ -246,23 +246,23 @@ function failed(what: string, err: Error, signal: AbortSignal | undefined): unkn
   if (signal?.aborted) {
     return signal.reason;
   }
-  if (err instanceof ConnectionError) {
+  if (err instanceof ShardConnectionError) {
     return err;
   }
 
-  return new ConnectionError(`${what}: ${err.message || err.name}`, { cause: err });
+  return new ShardConnectionError(`${what}: ${err.message || err.name}`, { cause: err });
 }
 
 function cut(what: string, err: unknown, signal: AbortSignal | undefined): unknown {
   if (signal?.aborted) {
     return signal.reason;
   }
-  if (err instanceof ConnectionError) {
+  if (err instanceof ShardConnectionError) {
     return err;
   }
   const detail = err instanceof Error ? `: ${err.message}` : "";
 
-  return new ConnectionError(`${what}: the answer was cut short${detail}`, { cause: err });
+  return new ShardConnectionError(`${what}: the answer was cut short${detail}`, { cause: err });
 }
 
 /** stream yields a body as it arrives, and fails on one that ends before its last byte. */
