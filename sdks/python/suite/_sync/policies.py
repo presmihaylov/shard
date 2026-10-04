@@ -30,21 +30,21 @@ def set_get_list_remove(ctx: Context) -> None:
     rejects(NotFoundError, lambda: ctx.shard.policies.get(name))
 
 
-def assign_clear(ctx: Context) -> None:
+def attach_detach(ctx: Context) -> None:
     name = ctx.name("policy")
     ctx.policy(name, RULES)
     sandbox = ctx.create()
     equal(sandbox.info.policy, None)
-    rejects(ConflictError, lambda: ctx.shard.policies.assign(sandbox, name))
+    rejects(ConflictError, lambda: ctx.shard.policies.attach(sandbox, name))
     sandbox.stop()
-    ctx.shard.policies.assign(sandbox, name)
+    ctx.shard.policies.attach(sandbox, name)
     equal((sandbox.inspect()).policy, name)
     rejects(ConflictError, lambda: ctx.shard.policies.remove(name))
-    ctx.shard.policies.clear(sandbox)
+    ctx.shard.policies.detach(sandbox)
     equal((sandbox.inspect()).policy, None)
 
 
 CHECKS = [
     Check("policies.set_get_list_remove", set_get_list_remove),
-    Check("policies.assign_clear", assign_clear),
+    Check("policies.attach_detach", attach_detach),
 ]

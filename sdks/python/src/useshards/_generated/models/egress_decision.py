@@ -7,17 +7,19 @@ from typing import TYPE_CHECKING, Any, BinaryIO, Generator, TextIO, TypeVar, cas
 from attrs import define as _attrs_define
 from attrs import field as _attrs_field
 
+from ..models.egress_decision_source import EgressDecisionSource
+from ..models.egress_decision_verdict import EgressDecisionVerdict
 from ..types import UNSET, Unset
 
-T = TypeVar("T", bound="Record")
+T = TypeVar("T", bound="EgressDecision")
 
 
 @_attrs_define
-class Record:
+class EgressDecision:
     rule: str
-    source: str
+    source: EgressDecisionSource
     time: datetime.datetime
-    verdict: str
+    verdict: EgressDecisionVerdict
     address: str | Unset = UNSET
     host: str | Unset = UNSET
     port: int | Unset = UNSET
@@ -27,11 +29,11 @@ class Record:
     def to_dict(self) -> dict[str, Any]:
         rule = self.rule
 
-        source = self.source
+        source = self.source.value
 
         time = self.time.isoformat()
 
-        verdict = self.verdict
+        verdict = self.verdict.value
 
         address = self.address
 
@@ -71,11 +73,11 @@ class Record:
         d = dict(src_dict)
         rule = d.pop("rule")
 
-        source = d.pop("source")
+        source = EgressDecisionSource(d.pop("source"))
 
         time = datetime.datetime.fromisoformat(d.pop("time"))
 
-        verdict = d.pop("verdict")
+        verdict = EgressDecisionVerdict(d.pop("verdict"))
 
         address = d.pop("address", UNSET)
 
@@ -87,7 +89,7 @@ class Record:
 
         rule_text = d.pop("rule_text", UNSET)
 
-        record = cls(
+        egress_decision = cls(
             rule=rule,
             source=source,
             time=time,
@@ -99,4 +101,4 @@ class Record:
             rule_text=rule_text,
         )
 
-        return record
+        return egress_decision
