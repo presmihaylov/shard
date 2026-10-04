@@ -165,6 +165,19 @@ holds() {
 	grep -q -- "${want}" <<<"${out}"
 }
 
+# has_line holds when one line of stdin matches every pattern.
+has_line() {
+	if [ "$#" -eq 1 ]; then
+		grep -qE "$1"
+		return
+	fi
+	if [ "$#" -eq 2 ]; then
+		grep -E "$1" | grep -qE "$2"
+		return
+	fi
+	grep -E "$1" | grep -E "$2" | grep -qE "$3"
+}
+
 # nap_alive reports the guest process of the background exec. The bracket keeps the probe off its own args.
 nap_alive() { shard exec "${ID}" /bin/sh -c 'pgrep -f "[s]leep 313" >/dev/null' >/dev/null 2>&1; }
 
@@ -989,7 +1002,7 @@ ADDRESS=$(grep -o '"address": *"[^"]*"' "${RECORD}" | cut -d'"' -f4)
 LINK=$(grep -o '"host_interface": *"[^"]*"' "${RECORD}" | cut -d'"' -f4)
 say "the record holds the address ${ADDRESS} on the link ${LINK}"
 
-ip netns list | grep -q "^${ID}" || fail "there is no namespace named ${ID}"
+ip netns list | has_line "^${ID}" || fail "there is no namespace named ${ID}"
 ip link show "${LINK}" >/dev/null || fail "there is no link named ${LINK}"
 say "the namespace and the link are up"
 
@@ -1398,21 +1411,21 @@ step "read the egress decision log"
 EGRESS=""
 for _ in $(seq 1 20); do
 	EGRESS=$(shard logs --egress "${ID}")
-	echo "${EGRESS}" | grep '"source":"host"' | grep -q '"rule":"ipv6"' && break
+	has_line '"source":"host"' '"rule":"ipv6"' <<<"${EGRESS}" && break
 	sleep 0.1
 done
 
 named_rule() {
-	echo "${EGRESS}" | grep "$1" | grep "$2" | grep -qE '"rule":"[^"]+"' || fail "the egress log holds no $3 with the rule that decided it"
+	has_line "$1" "$2" '"rule":"[^"]+"' <<<"${EGRESS}" || fail "the egress log holds no $3 with the rule that decided it"
 	say "the egress log holds $3 with the rule that decided it"
 }
 
 named_rule "\"host\":\"${ECHO_HOST}\"" '"verdict":"allow"' "the proxy's allow"
 named_rule "\"host\":\"${DENIED_HOST}\"" '"verdict":"deny"' "the resolver's deny"
 named_rule '"source":"host"' '"verdict":"deny"' "the host's drop"
-echo "${EGRESS}" | grep '"source":"host"' | grep -q '"rule":"local"' || fail "the egress log holds no drop of a packet aimed at the host's own address"
+has_line '"source":"host"' '"rule":"local"' <<<"${EGRESS}" || fail "the egress log holds no drop of a packet aimed at the host's own address"
 say "the egress log holds the drop of a packet aimed at the host's own address, on rule local"
-echo "${EGRESS}" | grep '"source":"host"' | grep -q '"rule":"ipv6"' || fail "the egress log holds no drop of an IPv6 packet"
+has_line '"source":"host"' '"rule":"ipv6"' <<<"${EGRESS}" || fail "the egress log holds no drop of an IPv6 packet"
 say "the egress log holds the drop of an IPv6 packet, on rule ipv6"
 
 # The ring is shared and short, so a drop only ever read from it is gone within minutes. It is in the
@@ -2075,7 +2088,7 @@ say "curl -N on logs?follow=true streams text/plain and ends on the stop"
 
 # This is the boundary the ticket names: a stop keeps everything a later start needs.
 grep -q "\"address\": *\"${ADDRESS}\"" "${RECORD}" || fail "the stop dropped the address"
-ip netns list | grep -q "^${ID}" || fail "the stop dropped the namespace"
+ip netns list | has_line "^${ID}" || fail "the stop dropped the namespace"
 ip link show "${LINK}" >/dev/null || fail "the stop dropped the link"
 # The lease is a file named by the address, and it holds the id of the sandbox that took it.
 LEASE="${SHARD_ROOT}/network/leases/${ADDRESS%%/*}"
