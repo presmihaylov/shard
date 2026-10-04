@@ -14,7 +14,7 @@ import (
 func TestTheFrontReadsTheRequestLineAsTheDaemonDoes(t *testing.T) {
 	caps, err := newCapMux()
 	if err != nil {
-		t.Fatalf("build the capability mux: %v", err)
+		t.Fatalf("build the scope mux: %v", err)
 	}
 
 	for _, line := range []string{
@@ -49,8 +49,8 @@ func TestTheFrontReadsTheRequestLineAsTheDaemonDoes(t *testing.T) {
 				t.Fatalf("the front refused a line the daemon reads as %s %s", daemon.Method, daemon.URL)
 			}
 
-			front, frontKnown := caps.capability(method, target)
-			want, wantKnown := caps.capability(daemon.Method, daemon.URL)
+			front, frontKnown := caps.scope(method, target)
+			want, wantKnown := caps.scope(daemon.Method, daemon.URL)
 			if method != daemon.Method || target.String() != daemon.URL.String() || front != want || frontKnown != wantKnown {
 				t.Errorf("the front read %s %s as %q, and the daemon reads %s %s as %q", method, target, front, daemon.Method, daemon.URL, want)
 			}

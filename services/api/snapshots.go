@@ -1,7 +1,7 @@
 package api
 
 import (
-	"net/http"
+	"context"
 
 	"github.com/presmihaylov/shard/models"
 	"github.com/presmihaylov/shard/services/sandbox"
@@ -13,61 +13,30 @@ type snapshotsResponse struct {
 	Next      *string           `json:"next"`
 }
 
-func (h *Handler) createSnapshot(w http.ResponseWriter, r *http.Request) {
-	var req sandbox.SnapshotRequest
-	if err := decode(w, r, &req); err != nil {
-		h.writeError(w, err)
-
-		return
-	}
-
-	snap, err := h.lifecycle.CreateSnapshot(r.Context(), req)
-	if err != nil {
-		h.writeError(w, err)
-
-		return
-	}
-
-	h.writeJSON(w, http.StatusCreated, snap)
+func (h *Handler) createSnapshot(ctx context.Context, in *bodyInput[sandbox.SnapshotRequest]) (*reply[models.Snapshot], error) {
+	return answer(h.lifecycle.CreateSnapshot(ctx, value(in.Body)))
 }
 
-func (h *Handler) listSnapshots(w http.ResponseWriter, r *http.Request) {
-	q, err := pageOf(r, sandboxstate.ValidSnapshotID)
+func (h *Handler) listSnapshots(ctx context.Context, in *pageInput) (*reply[snapshotsResponse], error) {
+	q, err := paged(in.Limit, in.Cursor, sandboxstate.ValidSnapshotID)
 	if err != nil {
-		h.writeError(w, err)
-
-		return
+		return nil, fail(err)
 	}
 
-	snapshots, err := h.lifecycle.ListSnapshots(r.Context())
+	snapshots, err := h.lifecycle.ListSnapshots(ctx)
 	if err != nil {
-		h.writeError(w, err)
-
-		return
+		return nil, fail(err)
 	}
 
 	snapshots, next := page(snapshots, q, func(snap models.Snapshot) string { return snap.ID })
 
-	h.writeJSON(w, http.StatusOK, snapshotsResponse{Snapshots: snapshots, Next: next})
+	return answer(snapshotsResponse{Snapshots: snapshots, Next: next}, nil)
 }
 
-func (h *Handler) getSnapshot(w http.ResponseWriter, r *http.Request) {
-	snap, err := h.lifecycle.InspectSnapshot(r.Context(), r.PathValue("ref"))
-	if err != nil {
-		h.writeError(w, err)
-
-		return
-	}
-
-	h.writeJSON(w, http.StatusOK, snap)
+func (h *Handler) getSnapshot(ctx context.Context, in *refPath) (*reply[models.Snapshot], error) {
+	return answer(h.lifecycle.InspectSnapshot(ctx, in.Ref))
 }
 
-func (h *Handler) removeSnapshot(w http.ResponseWriter, r *http.Request) {
-	if err := h.lifecycle.RemoveSnapshot(r.Context(), r.PathValue("ref")); err != nil {
-		h.writeError(w, err)
-
-		return
-	}
-
-	w.WriteHeader(http.StatusNoContent)
+func (h *Handler) removeSnapshot(ctx context.Context, in *refPath) (*struct{}, error) {
+	return done(h.lifecycle.RemoveSnapshot(ctx, in.Ref))
 }
