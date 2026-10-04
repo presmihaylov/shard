@@ -473,7 +473,17 @@ func (c *Client) wrap(caller context.Context, method, path string, bound time.Du
 		return fmt.Errorf("%s %s on %s: no answer within %s", method, path, c.target, bound)
 	}
 
-	return fmt.Errorf("%s %s on %s: %w", method, path, c.target, err)
+	return fmt.Errorf("%s %s on %s: %w", method, path, c.target, unquoted(err))
+}
+
+// unquoted drops the url net/http puts on a failed call: it says http:// for a connection the dialer made over tls (SHARD-472).
+func unquoted(err error) error {
+	var quoted *url.Error
+	if errors.As(err, &quoted) {
+		return quoted.Err
+	}
+
+	return err
 }
 
 // decodeError reads the daemon's error object; a body that is not one is quoted as it came, under internal.

@@ -7,6 +7,7 @@ import (
 	"encoding/pem"
 	"errors"
 	"io"
+	"log"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -250,6 +251,39 @@ func TestARemoteNamesItsOwnHostOnEveryRequest(t *testing.T) {
 			}
 		default:
 			t.Errorf("%s never reached the proxy", step)
+		}
+	}
+}
+
+// A certificate the client does not trust fails over tls, so no route's error may quote an http:// url. (SHARD-472)
+func TestAnUntrustedRemoteNamesOnlyItsHTTPSURL(t *testing.T) {
+	server := httptest.NewUnstartedServer(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {}))
+	server.Config.ErrorLog = log.New(io.Discard, "", 0)
+	server.StartTLS()
+	t.Cleanup(server.Close)
+
+	c, err := client.NewRemote(server.URL, "front-token-value", nil)
+	if err != nil {
+		t.Fatalf("NewRemote: %v", err)
+	}
+
+	calls := map[string]func() error{
+		"a plain call": func() error { _, err := c.Version(t.Context()); return err },
+		"a file call":  func() error { _, err := c.StatFile(t.Context(), "sandbox1", "/etc/hostname"); return err },
+		"a create":     func() error { _, err := c.CreateSandboxAndWait(t.Context(), sandbox.CreateRequest{}, nil); return err },
+		"the logs":     func() error { return c.Logs(t.Context(), "sandbox1", false, io.Discard) },
+		"an attach": func() error {
+			_, err := c.AttachExec(t.Context(), "sandbox1", "1a2b3c4d5e6f7a8b", client.ExecStreams{})
+			return err
+		},
+	}
+	for name, call := range calls {
+		err := call()
+		if err == nil || !strings.Contains(err.Error(), "the tls certificate of "+server.URL+" is not trusted") {
+			t.Errorf("%s gave %v, want the untrusted certificate of %s", name, err, server.URL)
+		}
+		if err != nil && strings.Contains(err.Error(), "http://") {
+			t.Errorf("%s quotes an http:// url over tls: %v", name, err)
 		}
 	}
 }
