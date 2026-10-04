@@ -10,7 +10,6 @@ import (
 	"github.com/presmihaylov/shard/models"
 	"github.com/presmihaylov/shard/services/client"
 	"github.com/presmihaylov/shard/services/egress"
-	"github.com/presmihaylov/shard/services/sandbox"
 	"github.com/presmihaylov/shard/services/serve"
 )
 
@@ -111,12 +110,12 @@ func TestPolicyShowTableIsTheFieldsThenTheRules(t *testing.T) {
 // inspect as a table is the record read down a page, then the rules the host enforces, with who implied each one.
 func TestInspectTableIsTheRecordThenTheRules(t *testing.T) {
 	rule := models.Rule{Action: models.ActionDeny, Destination: models.Destination{Kind: models.DestinationCIDR, Value: "10.0.0.0/8"}}
-	insp := sandbox.Inspection{
-		Sandbox: models.Sandbox{ID: "s-1", Image: "python:3.12", State: models.StateRunning, Resources: models.Resources{MemoryMiB: 512}},
+	insp := client.Inspection{
+		Sandbox: client.Sandbox{ID: "s-1", Image: "python:3.12", State: models.StateRunning, Resources: models.Resources{MemoryMiB: 512}},
 		Egress:  &egress.Effective{Policy: "web", Rules: []egress.EffectiveRule{{Rule: rule, ID: "r1", Implied: "private ranges"}}},
 	}
 
-	sections, err := inspectSections(insp.Sandbox, insp)
+	sections, err := inspectSections(insp)
 	if err != nil {
 		t.Fatalf("inspectSections: %v", err)
 	}
@@ -136,7 +135,7 @@ func TestInspectTableIsTheRecordThenTheRules(t *testing.T) {
 }
 
 func TestInspectTableOfASandboxWithNoPolicyHasNoRuleSection(t *testing.T) {
-	sections, err := inspectSections(models.Sandbox{ID: "s-1"}, sandbox.Inspection{Sandbox: models.Sandbox{ID: "s-1"}})
+	sections, err := inspectSections(client.Inspection{Sandbox: client.Sandbox{ID: "s-1"}})
 	if err != nil {
 		t.Fatalf("inspectSections: %v", err)
 	}

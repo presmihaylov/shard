@@ -45,8 +45,8 @@ func TestDaemonListsTheSandboxTheCLICreated(t *testing.T) {
 	defer resp.Body.Close()
 
 	var list struct {
-		Sandboxes []models.Sandbox `json:"sandboxes"`
-		Warnings  []string         `json:"warnings"`
+		Sandboxes []api.Sandbox `json:"sandboxes"`
+		Warnings  []string      `json:"warnings"`
 	}
 	if err := json.NewDecoder(resp.Body).Decode(&list); err != nil {
 		t.Fatalf("decode the list: %v", err)
@@ -64,11 +64,11 @@ func TestDaemonListsTheSandboxTheCLICreated(t *testing.T) {
 	}
 	defer one.Body.Close()
 
-	var sb models.Sandbox
+	var sb api.Sandbox
 	if err := json.NewDecoder(one.Body).Decode(&sb); err != nil {
 		t.Fatalf("decode the record: %v", err)
 	}
-	if one.StatusCode != http.StatusOK || sb.ID != id || sb.PID == 0 {
+	if one.StatusCode != http.StatusOK || sb.ID != id || sb.State != models.StateRunning {
 		t.Errorf("GET /v0/sandboxes/%s answered %d %+v, want the live record", id, one.StatusCode, sb)
 	}
 }

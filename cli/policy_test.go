@@ -9,6 +9,7 @@ import (
 	"testing"
 
 	"github.com/presmihaylov/shard/models"
+	"github.com/presmihaylov/shard/services/client"
 	"github.com/presmihaylov/shard/services/sandbox"
 )
 
@@ -158,7 +159,7 @@ func TestInspectPrintsWhatTheHostEnforces(t *testing.T) {
 		t.Fatalf("inspect: %v", err)
 	}
 
-	var got sandbox.Inspection
+	var got client.Inspection
 	if err := json.Unmarshal(out.Bytes(), &got); err != nil {
 		t.Fatalf("inspect printed something that is not JSON: %v\n%s", err, out.String())
 	}

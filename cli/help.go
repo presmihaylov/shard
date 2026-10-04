@@ -163,7 +163,7 @@ var helps = map[string]verbHelp{
 		usage:   []string{"list [--all] [--format <format>]"},
 		summary: "list the sandboxes; --all adds the stopped ones",
 		flags:   []flagHelp{{"--all", "list the stopped sandboxes too", ""}, formatTableHelp},
-		notes:   []string{"The columns are ID, NAME, IMAGE, STATE, UPTIME, IP, RESTART and POLICY."},
+		notes:   []string{"The columns are ID, NAME, IMAGE, STATE, UPTIME, RESTART and POLICY."},
 		example: "shard list --all",
 	},
 	"logs": {

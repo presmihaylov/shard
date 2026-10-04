@@ -33,8 +33,6 @@ func TestEveryRouteIsPublicOrLocalAndTheLocalOnesAreTheHostOnes(t *testing.T) {
 		"POST /v0/images/pull",
 		"POST /v0/images/prune",
 		"DELETE /v0/images/{ref...}",
-		"GET /v0/local/sandboxes",
-		"GET /v0/local/sandboxes/{id}",
 	}
 	slices.Sort(local)
 	slices.Sort(want)
@@ -67,7 +65,7 @@ func hostSide(t *testing.T, s seeded) models.Sandbox {
 	return sb
 }
 
-func TestThePublicRecordLeavesOutTheHostSideAndTheLocalOneKeepsIt(t *testing.T) {
+func TestThePublicRecordLeavesOutTheHostSide(t *testing.T) {
 	s := seed(t)
 	sb := hostSide(t, s)
 
@@ -79,12 +77,6 @@ func TestThePublicRecordLeavesOutTheHostSideAndTheLocalOneKeepsIt(t *testing.T) 
 		}
 		checkNoHostKeys(t, "GET "+path, record)
 	}
-
-	_, localList := get(t, s.server, "/v0/local/sandboxes")
-	_, localOne := get(t, s.server, "/v0/local/sandboxes/"+sb.ID)
-	for path, record := range map[string]map[string]any{"/v0/local/sandboxes": rowOf(t, localList, sb.ID), "/v0/local/sandboxes/{id}": localOne} {
-		checkHostKeys(t, "GET "+path, record)
-	}
 }
 
 // checkNoHostKeys fails for each host field the record carries.
@@ -94,17 +86,6 @@ func checkNoHostKeys(t *testing.T, label string, record map[string]any) {
 	for _, key := range hostKeys {
 		if _, ok := record[key]; ok {
 			t.Errorf("%s answered %s, a host field", label, key)
-		}
-	}
-}
-
-// checkHostKeys fails for each host field the record leaves out.
-func checkHostKeys(t *testing.T, label string, record map[string]any) {
-	t.Helper()
-
-	for _, key := range hostKeys {
-		if _, ok := record[key]; !ok {
-			t.Errorf("%s left out %s, which the socket answers", label, key)
 		}
 	}
 }
@@ -149,13 +130,9 @@ func TestThePublicEgressNamesTheImpliedRulesAsTheDNSGroup(t *testing.T) {
 		t.Fatalf("Create: %v", err)
 	}
 
-	for path, want := range map[string]string{
-		"/v0/sandboxes/" + sb.ID:       egress.GroupDNS,
-		"/v0/local/sandboxes/" + sb.ID: "10.87.0.1",
-	} {
-		_, body := get(t, s.server, path)
-		checkImpliedRules(t, path, body, want)
-	}
+	path := "/v0/sandboxes/" + sb.ID
+	_, body := get(t, s.server, path)
+	checkImpliedRules(t, path, body, egress.GroupDNS)
 }
 
 // checkImpliedRules fails unless the record's egress leads with the two implied dns rules, ids 1 and 2, each naming want.

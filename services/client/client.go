@@ -53,26 +53,16 @@ type Version struct {
 	APIVersion string `json:"api_version"`
 }
 
-// Sandbox is the public record a write verb answers, and all a remote front ever answers: the host side stays on the daemon host.
+// Sandbox is the public record every sandbox route answers: the host side stays in the daemon's state.
 type Sandbox = api.Sandbox
 
 // Inspection is the public record beside the egress rules the host enforces for it.
 type Inspection = api.Inspection
 
-// Public is the record a remote front would answer for sb.
-func Public(sb models.Sandbox) Sandbox {
-	return api.PublicSandbox(sb)
-}
-
-// PublicInspection is the inspection a remote front would answer for insp.
-func PublicInspection(insp sandbox.Inspection) Inspection {
-	return api.PublicInspection(insp)
-}
-
 // ListResult is what ls prints: the sandboxes the daemon read, beside the records it could not.
 type ListResult struct {
-	Sandboxes []models.Sandbox `json:"sandboxes"`
-	Warnings  []string         `json:"warnings,omitempty"`
+	Sandboxes []Sandbox `json:"sandboxes"`
+	Warnings  []string  `json:"warnings,omitempty"`
 }
 
 // ConnectError is a socket nothing answers on. Its text is the one line the operator needs.
@@ -242,18 +232,9 @@ func (c *Client) Daemon(ctx context.Context) (api.Daemon, error) {
 	return out, nil
 }
 
-// sandboxes is where the records are read: the whole record over the socket, the public one through a front, which refuses the local route.
-func (c *Client) sandboxes() string {
-	if c.token != "" {
-		return "/v0/sandboxes"
-	}
-
-	return "/v0/local/sandboxes"
-}
-
-// ListSandboxes answers whole records over the socket; through a front the host fields are zero.
+// ListSandboxes answers the public records, and names the ones the daemon could not read.
 func (c *Client) ListSandboxes(ctx context.Context, all bool) (ListResult, error) {
-	path := c.sandboxes()
+	path := "/v0/sandboxes"
 	if all {
 		path += "?all=true"
 	}
@@ -266,11 +247,11 @@ func (c *Client) ListSandboxes(ctx context.Context, all bool) (ListResult, error
 	return out, nil
 }
 
-// GetSandbox answers for an id or a name, with the egress rules the host enforces when the record names a policy; through a front the host fields are zero.
-func (c *Client) GetSandbox(ctx context.Context, ref string) (sandbox.Inspection, error) {
-	var out sandbox.Inspection
-	if err := c.call(ctx, http.MethodGet, c.sandboxes()+"/"+url.PathEscape(ref), nil, &out, c.Timeout); err != nil {
-		return sandbox.Inspection{}, missing(ref, err)
+// GetSandbox answers for an id or a name, with the egress rules the host enforces when the record names a policy.
+func (c *Client) GetSandbox(ctx context.Context, ref string) (Inspection, error) {
+	var out Inspection
+	if err := c.call(ctx, http.MethodGet, "/v0/sandboxes/"+url.PathEscape(ref), nil, &out, c.Timeout); err != nil {
+		return Inspection{}, missing(ref, err)
 	}
 
 	return out, nil
@@ -287,10 +268,10 @@ func (c *Client) CreateSandbox(ctx context.Context, req sandbox.CreateRequest) (
 }
 
 // WaitSandbox blocks until the sandbox leaves pending, then answers its record. The pull runs in the daemon, so it has no bound of its own.
-func (c *Client) WaitSandbox(ctx context.Context, ref string) (sandbox.Inspection, error) {
-	var out sandbox.Inspection
-	if err := c.call(ctx, http.MethodGet, c.sandboxes()+"/"+url.PathEscape(ref)+"?wait=true", nil, &out, 0); err != nil {
-		return sandbox.Inspection{}, missing(ref, err)
+func (c *Client) WaitSandbox(ctx context.Context, ref string) (Inspection, error) {
+	var out Inspection
+	if err := c.call(ctx, http.MethodGet, "/v0/sandboxes/"+url.PathEscape(ref)+"?wait=true", nil, &out, 0); err != nil {
+		return Inspection{}, missing(ref, err)
 	}
 
 	return out, nil

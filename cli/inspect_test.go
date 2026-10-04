@@ -7,6 +7,7 @@ import (
 	"testing"
 
 	"github.com/presmihaylov/shard/models"
+	"github.com/presmihaylov/shard/services/client"
 )
 
 func TestInspectPrintsTheRecordAsJSON(t *testing.T) {
@@ -18,7 +19,7 @@ func TestInspectPrintsTheRecordAsJSON(t *testing.T) {
 		t.Fatalf("inspect: %v", err)
 	}
 
-	var got models.Sandbox
+	var got client.Inspection
 	if err := json.Unmarshal(out.Bytes(), &got); err != nil {
 		t.Fatalf("inspect printed something that is not JSON: %v\n%s", err, out.String())
 	}
