@@ -150,11 +150,29 @@ const (
 	Local  Class = "local"
 )
 
-// Route is one method and pattern the daemon serves. The front maps each public one to the capability it enforces.
+// Scope is the one coarse right a token needs for a public route; the front enforces it and the spec names it.
+type Scope string
+
+const (
+	// AnyToken is a route every valid token reaches whatever its scopes, so a client can learn what it speaks to before it acts.
+	AnyToken      Scope = "any"
+	SandboxRead   Scope = "sandbox:read"
+	SandboxWrite  Scope = "sandbox:write"
+	SandboxDelete Scope = "sandbox:delete"
+	Exec          Scope = "exec"
+	Secret        Scope = "secret:*"
+	Policy        Scope = "policy:*"
+)
+
+// Scopes are the six a token can carry besides "*", in the order docs/daemon.md lists them.
+var Scopes = []Scope{SandboxRead, SandboxWrite, SandboxDelete, Exec, Secret, Policy}
+
+// Route is one method and pattern the daemon serves, and the scope a public one needs; a local one needs none.
 type Route struct {
 	Method  string
 	Pattern string
 	Class   Class
+	Scope   Scope
 }
 
 // routeEntry binds a route to its handler; routeTable is the one list NewHandler registers and Routes reports.
@@ -166,64 +184,64 @@ type routeEntry struct {
 // routeTable is the single source of the daemon's routes, less the catch-all that answers an unknown path.
 func (h *Handler) routeTable() []routeEntry {
 	return []routeEntry{
-		{Route{"GET", "/v0/version", Public}, h.getVersion},
-		{Route{"GET", "/v0/capabilities", Public}, h.getCapabilities},
-		{Route{"GET", "/v0/daemon", Local}, h.getDaemon},
-		{Route{"GET", "/v0/sandboxes", Public}, listSandboxes(h, PublicSandbox)},
-		{Route{"GET", "/v0/sandboxes/{id}", Public}, getSandbox(h, PublicInspection)},
+		{Route{"GET", "/v0/version", Public, AnyToken}, h.getVersion},
+		{Route{"GET", "/v0/capabilities", Public, AnyToken}, h.getCapabilities},
+		{Route{"GET", "/v0/daemon", Local, ""}, h.getDaemon},
+		{Route{"GET", "/v0/sandboxes", Public, SandboxRead}, listSandboxes(h, PublicSandbox)},
+		{Route{"GET", "/v0/sandboxes/{id}", Public, SandboxRead}, getSandbox(h, PublicInspection)},
 		// The CLI on the daemon host reads the whole record, the host side included, which no public route answers.
-		{Route{"GET", "/v0/local/sandboxes", Local}, listSandboxes(h, same[models.Sandbox])},
-		{Route{"GET", "/v0/local/sandboxes/{id}", Local}, getSandbox(h, same[sandbox.Inspection])},
-		{Route{"POST", "/v0/sandboxes", Public}, h.createSandbox},
-		{Route{"POST", "/v0/sandboxes/{id}/start", Public}, h.startSandbox},
-		{Route{"POST", "/v0/sandboxes/{id}/stop", Public}, h.stopSandbox},
-		{Route{"DELETE", "/v0/sandboxes/{id}", Public}, h.removeSandbox},
-		{Route{"POST", "/v0/sandboxes/{id}/pause", Public}, h.pauseSandbox},
-		{Route{"POST", "/v0/sandboxes/{id}/resume", Public}, h.resumeSandbox},
-		{Route{"POST", "/v0/sandboxes/{id}/fork", Public}, h.forkSandbox},
-		{Route{"POST", "/v0/sandboxes/{id}/exec", Public}, h.createExec},
-		{Route{"GET", "/v0/sandboxes/{id}/exec", Public}, h.listExecs},
-		{Route{"GET", "/v0/sandboxes/{id}/exec/{exec}", Public}, h.getExec},
-		{Route{"POST", "/v0/sandboxes/{id}/exec/{exec}/kill", Public}, h.killExec},
-		{Route{"DELETE", "/v0/sandboxes/{id}/exec/{exec}", Public}, h.deleteExec},
-		{Route{"POST", "/v0/sandboxes/{id}/exec/{exec}/resize", Public}, h.resizeExec},
-		{Route{"PUT", "/v0/sandboxes/{id}/files", Public}, h.putFile},
-		{Route{"GET", "/v0/sandboxes/{id}/files", Public}, h.getFile},
+		{Route{"GET", "/v0/local/sandboxes", Local, ""}, listSandboxes(h, same[models.Sandbox])},
+		{Route{"GET", "/v0/local/sandboxes/{id}", Local, ""}, getSandbox(h, same[sandbox.Inspection])},
+		{Route{"POST", "/v0/sandboxes", Public, SandboxWrite}, h.createSandbox},
+		{Route{"POST", "/v0/sandboxes/{id}/start", Public, SandboxWrite}, h.startSandbox},
+		{Route{"POST", "/v0/sandboxes/{id}/stop", Public, SandboxWrite}, h.stopSandbox},
+		{Route{"DELETE", "/v0/sandboxes/{id}", Public, SandboxDelete}, h.removeSandbox},
+		{Route{"POST", "/v0/sandboxes/{id}/pause", Public, SandboxWrite}, h.pauseSandbox},
+		{Route{"POST", "/v0/sandboxes/{id}/resume", Public, SandboxWrite}, h.resumeSandbox},
+		{Route{"POST", "/v0/sandboxes/{id}/fork", Public, SandboxWrite}, h.forkSandbox},
+		{Route{"POST", "/v0/sandboxes/{id}/exec", Public, Exec}, h.createExec},
+		{Route{"GET", "/v0/sandboxes/{id}/exec", Public, Exec}, h.listExecs},
+		{Route{"GET", "/v0/sandboxes/{id}/exec/{exec}", Public, Exec}, h.getExec},
+		{Route{"POST", "/v0/sandboxes/{id}/exec/{exec}/kill", Public, Exec}, h.killExec},
+		{Route{"DELETE", "/v0/sandboxes/{id}/exec/{exec}", Public, Exec}, h.deleteExec},
+		{Route{"POST", "/v0/sandboxes/{id}/exec/{exec}/resize", Public, Exec}, h.resizeExec},
+		{Route{"PUT", "/v0/sandboxes/{id}/files", Public, Exec}, h.putFile},
+		{Route{"GET", "/v0/sandboxes/{id}/files", Public, Exec}, h.getFile},
 		// A GET pattern also serves HEAD, so the stat needs its own, more specific one.
-		{Route{"HEAD", "/v0/sandboxes/{id}/files", Public}, h.statFile},
-		{Route{"DELETE", "/v0/sandboxes/{id}/files", Public}, h.deleteFile},
-		{Route{"GET", "/v0/sandboxes/{id}/ls", Public}, h.listDir},
-		{Route{"POST", "/v0/sandboxes/{id}/mkdir", Public}, h.makeDir},
-		{Route{"PUT", "/v0/sandboxes/{id}/archive", Public}, h.putArchive},
-		{Route{"GET", "/v0/sandboxes/{id}/archive", Public}, h.getArchive},
-		{Route{"GET", "/v0/sandboxes/{id}/logs", Public}, h.sandboxLogs},
-		{Route{"GET", "/v0/sandboxes/{id}/attach", Public}, h.attachApp},
-		{Route{"POST", "/v0/sandboxes/{id}/app/stop", Public}, h.stopApp},
-		{Route{"GET", "/v0/sandboxes/{id}/egress-log", Public}, h.sandboxEgressLog},
-		{Route{"POST", "/v0/sandboxes/{id}/secrets/{name}", Public}, h.grantSecret},
-		{Route{"DELETE", "/v0/sandboxes/{id}/secrets/{name}", Public}, h.ungrantSecret},
-		{Route{"PUT", "/v0/sandboxes/{id}/policy", Public}, h.attachPolicy},
-		{Route{"DELETE", "/v0/sandboxes/{id}/policy", Public}, h.detachPolicy},
-		{Route{"POST", "/v0/snapshots", Public}, h.createSnapshot},
-		{Route{"GET", "/v0/snapshots", Public}, h.listSnapshots},
-		{Route{"GET", "/v0/snapshots/{ref}", Public}, h.getSnapshot},
-		{Route{"DELETE", "/v0/snapshots/{ref}", Public}, h.removeSnapshot},
-		{Route{"GET", "/v0/policies", Public}, h.listPolicies},
-		{Route{"GET", "/v0/policies/{name}", Public}, h.getPolicy},
-		{Route{"PUT", "/v0/policies/{name}", Public}, h.putPolicy},
-		{Route{"DELETE", "/v0/policies/{name}", Public}, h.removePolicy},
-		{Route{"GET", "/v0/secrets", Public}, h.listSecrets},
-		{Route{"PUT", "/v0/secrets/{name}", Public}, h.putSecret},
-		{Route{"DELETE", "/v0/secrets/{name}", Public}, h.removeSecret},
-		{Route{"GET", "/v0/images", Local}, h.listImages},
-		{Route{"POST", "/v0/images/pull", Local}, h.pullImage},
-		{Route{"POST", "/v0/images/prune", Local}, h.pruneImages},
+		{Route{"HEAD", "/v0/sandboxes/{id}/files", Public, Exec}, h.statFile},
+		{Route{"DELETE", "/v0/sandboxes/{id}/files", Public, Exec}, h.deleteFile},
+		{Route{"GET", "/v0/sandboxes/{id}/ls", Public, Exec}, h.listDir},
+		{Route{"POST", "/v0/sandboxes/{id}/mkdir", Public, Exec}, h.makeDir},
+		{Route{"PUT", "/v0/sandboxes/{id}/archive", Public, Exec}, h.putArchive},
+		{Route{"GET", "/v0/sandboxes/{id}/archive", Public, Exec}, h.getArchive},
+		{Route{"GET", "/v0/sandboxes/{id}/logs", Public, SandboxRead}, h.sandboxLogs},
+		{Route{"GET", "/v0/sandboxes/{id}/attach", Public, SandboxRead}, h.attachApp},
+		{Route{"POST", "/v0/sandboxes/{id}/app/stop", Public, SandboxWrite}, h.stopApp},
+		{Route{"GET", "/v0/sandboxes/{id}/egress-log", Public, SandboxRead}, h.sandboxEgressLog},
+		{Route{"POST", "/v0/sandboxes/{id}/secrets/{name}", Public, Secret}, h.grantSecret},
+		{Route{"DELETE", "/v0/sandboxes/{id}/secrets/{name}", Public, Secret}, h.ungrantSecret},
+		{Route{"PUT", "/v0/sandboxes/{id}/policy", Public, Policy}, h.attachPolicy},
+		{Route{"DELETE", "/v0/sandboxes/{id}/policy", Public, Policy}, h.detachPolicy},
+		{Route{"POST", "/v0/snapshots", Public, SandboxWrite}, h.createSnapshot},
+		{Route{"GET", "/v0/snapshots", Public, SandboxRead}, h.listSnapshots},
+		{Route{"GET", "/v0/snapshots/{ref}", Public, SandboxRead}, h.getSnapshot},
+		{Route{"DELETE", "/v0/snapshots/{ref}", Public, SandboxDelete}, h.removeSnapshot},
+		{Route{"GET", "/v0/policies", Public, Policy}, h.listPolicies},
+		{Route{"GET", "/v0/policies/{name}", Public, Policy}, h.getPolicy},
+		{Route{"PUT", "/v0/policies/{name}", Public, Policy}, h.putPolicy},
+		{Route{"DELETE", "/v0/policies/{name}", Public, Policy}, h.removePolicy},
+		{Route{"GET", "/v0/secrets", Public, Secret}, h.listSecrets},
+		{Route{"PUT", "/v0/secrets/{name}", Public, Secret}, h.putSecret},
+		{Route{"DELETE", "/v0/secrets/{name}", Public, Secret}, h.removeSecret},
+		{Route{"GET", "/v0/images", Local, ""}, h.listImages},
+		{Route{"POST", "/v0/images/pull", Local, ""}, h.pullImage},
+		{Route{"POST", "/v0/images/prune", Local, ""}, h.pruneImages},
 		// An image reference carries slashes, so it is the rest of the path and not one segment of it.
-		{Route{"DELETE", "/v0/images/{ref...}", Local}, h.removeImage},
+		{Route{"DELETE", "/v0/images/{ref...}", Local, ""}, h.removeImage},
 	}
 }
 
-// Routes lists every route the daemon serves. The front covers each public one with a capability.
+// Routes lists every route the daemon serves, which the front and the spec both read.
 func Routes() []Route {
 	// The zero Handler is enough: Routes reads only each method and pattern, never a handler.
 	var h Handler
@@ -553,7 +571,7 @@ const ScopesHeader = "X-Shard-Scopes"
 
 // scopeError is a create that names a secret or a policy the token's scopes do not reach; classify maps it to 403.
 type scopeError struct {
-	scope string
+	scope Scope
 	named string
 }
 
@@ -568,11 +586,11 @@ func checkCreateScopes(header http.Header, req sandbox.CreateRequest) error {
 		return nil
 	}
 
-	if len(req.Secrets) > 0 && !scopesCover(scopes, "secret:*") {
-		return &scopeError{scope: "secret:*", named: "secret"}
+	if len(req.Secrets) > 0 && !scopesCover(scopes, Secret) {
+		return &scopeError{scope: Secret, named: "secret"}
 	}
-	if req.Policy != "" && !scopesCover(scopes, "policy:*") {
-		return &scopeError{scope: "policy:*", named: "policy"}
+	if req.Policy != "" && !scopesCover(scopes, Policy) {
+		return &scopeError{scope: Policy, named: "policy"}
 	}
 
 	return nil
@@ -598,13 +616,13 @@ func stampedScopes(header http.Header) ([]string, bool) {
 }
 
 // scopesCover reports whether the stamped scopes reach need; no scopes, or a "*" scope, reaches every one, as the front's covers() does.
-func scopesCover(scopes []string, need string) bool {
+func scopesCover(scopes []string, need Scope) bool {
 	if len(scopes) == 0 {
 		return true
 	}
 
 	for _, s := range scopes {
-		if s == "*" || s == need {
+		if s == "*" || s == string(need) {
 			return true
 		}
 	}

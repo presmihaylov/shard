@@ -321,5 +321,5 @@ func TestTokensMintRefusesTheRetiredScopes(t *testing.T) {
 	}
 }
 
-// everyScope is "*" and the six capabilities docs/daemon.md names.
+// everyScope is "*" and the six scopes docs/daemon.md names.
 var everyScope = []string{"*", "sandbox:read", "sandbox:write", "sandbox:delete", "exec", "secret:*", "policy:*"}

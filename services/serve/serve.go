@@ -382,7 +382,7 @@ func (s *Server) authorize(head []byte, method string, target *url.URL) (string,
 		return sub, nil, false, false, "the token is revoked"
 	}
 
-	need, known := s.caps.capability(method, target)
+	need, known := s.caps.scope(method, target)
 	if !known || !covers(scopes, need) {
 		return sub, nil, false, true, ""
 	}
