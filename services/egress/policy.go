@@ -388,6 +388,7 @@ func parsePorts(text string) ([]int, error) {
 	}
 
 	var ports []int
+	named := 0
 	for part := range strings.SplitSeq(text, ",") {
 		first, last, isRange := strings.Cut(part, "-")
 
@@ -406,6 +407,11 @@ func parsePorts(text string) ([]int, error) {
 		}
 		if to-from+1 > maxPorts {
 			return nil, fmt.Errorf("the port range %q is wider than %d ports", part, maxPorts)
+		}
+		// Counted as typed and before the append, so a body of repeated ranges never expands past the bound (SHARD-627).
+		named += to - from + 1
+		if named > maxPorts {
+			return nil, fmt.Errorf("the rule names more than %d ports, and a port named twice counts twice", maxPorts)
 		}
 
 		for port := from; port <= to; port++ {
