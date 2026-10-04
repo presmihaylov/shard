@@ -255,6 +255,104 @@ func TestARemoteNamesItsOwnHostOnEveryRequest(t *testing.T) {
 	}
 }
 
+// remoteOver serves handler as a front over http or https, and answers a remote client of it with its bearer token.
+func remoteOver(t *testing.T, secure bool, handler http.Handler) *client.Client {
+	t.Helper()
+
+	server := httptest.NewUnstartedServer(handler)
+	var ca []byte
+	if secure {
+		server.StartTLS()
+		ca = pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: server.Certificate().Raw})
+	}
+	if !secure {
+		server.Start()
+	}
+	t.Cleanup(server.Close)
+
+	c, err := client.NewRemote(server.URL, "front-token-value", ca)
+	if err != nil {
+		t.Fatalf("NewRemote: %v", err)
+	}
+	if c.Plain() == secure {
+		t.Errorf("Plain answered %v for %s", c.Plain(), server.URL)
+	}
+
+	return c
+}
+
+// http and https carry the bearer on a request, a file each way, and the websocket of an exec and of logs -f. (SHARD-503)
+func TestEveryKindOfCallRidesAnHTTPOrHTTPSRemote(t *testing.T) {
+	for name, secure := range map[string]bool{"http": false, "https": true} {
+		t.Run(name, func(t *testing.T) {
+			exec := &execDaemon{t: t, execID: "1a2b3c4d5e6f7a8b", out: "ran\n", exit: &api.ExitMessage{}, skipInput: true}
+			follow := &followDaemon{t: t, messages: []message{
+				{stream: api.StreamStdout, payload: "followed\n"},
+				{stream: api.StreamExit, payload: `{"reason":"stopped"}`},
+			}, code: websocket.StatusNormalClosure}
+			stored := make(chan []byte, 1)
+			seen := make(chan string, 16)
+
+			c := remoteOver(t, secure, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				seen <- r.Method + " " + r.URL.Path + ": " + r.Header.Get("Authorization")
+				switch {
+				case r.URL.Path == "/v0/version":
+					answer(http.StatusOK, `{"version":"v-test"}`)(w, r)
+				case strings.HasSuffix(r.URL.Path, "/logs"):
+					follow.ServeHTTP(w, r)
+				case strings.HasSuffix(r.URL.Path, "/files") && r.Method == http.MethodPut:
+					body, err := io.ReadAll(r.Body)
+					if err != nil {
+						t.Errorf("read the put: %v", err)
+					}
+					stored <- body
+					w.WriteHeader(http.StatusNoContent)
+				case strings.HasSuffix(r.URL.Path, "/files"):
+					w.Header().Set(api.StatHeader, statJSON)
+					_, _ = w.Write(<-stored)
+				default:
+					exec.ServeHTTP(w, r)
+				}
+			}))
+
+			if _, err := c.Version(t.Context()); err != nil {
+				t.Errorf("Version: %v", err)
+			}
+			var ran, followed bytes.Buffer
+			if _, err := c.Exec(t.Context(), "sandbox1", sandbox.ExecRequest{Command: []string{"true"}}, client.ExecStreams{Stdout: &ran}); err != nil || ran.String() != "ran\n" {
+				t.Errorf("Exec wrote %q, %v, want ran", ran.String(), err)
+			}
+			if err := c.Logs(t.Context(), "sandbox1", true, &followed); err != nil || followed.String() != "followed\n" {
+				t.Errorf("Logs -f wrote %q, %v, want followed", followed.String(), err)
+			}
+			if err := c.PutFile(t.Context(), "sandbox1", sandbox.FileWrite{Path: "/srv/app.conf", Size: 5}, strings.NewReader("hello")); err != nil {
+				t.Errorf("PutFile: %v", err)
+			}
+			_, body, err := c.GetFile(t.Context(), "sandbox1", "/srv/app.conf")
+			if err != nil {
+				t.Fatalf("GetFile: %v", err)
+			}
+			got, err := io.ReadAll(body)
+			if closeErr := body.Close(); closeErr != nil {
+				t.Errorf("close the file: %v", closeErr)
+			}
+			if err != nil || string(got) != "hello" {
+				t.Errorf("GetFile read %q, %v, want hello", got, err)
+			}
+
+			// The version, the exec create and attach, the follow, the put and the get.
+			if len(seen) != 6 {
+				t.Errorf("the front saw %d requests, want 6", len(seen))
+			}
+			for len(seen) > 0 {
+				if got := <-seen; !strings.HasSuffix(got, ": Bearer front-token-value") {
+					t.Errorf("%s, want the bearer token", got)
+				}
+			}
+		})
+	}
+}
+
 // A certificate the client does not trust fails over tls, so no route's error may quote an http:// url. (SHARD-472)
 func TestAnUntrustedRemoteNamesOnlyItsHTTPSURL(t *testing.T) {
 	server := httptest.NewUnstartedServer(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {}))

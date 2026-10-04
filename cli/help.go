@@ -28,6 +28,8 @@ type verbHelp struct {
 	about string
 	args  []row
 	flags []flagHelp
+	// env is the variables it reads, which only the top level lists.
+	env   []row
 	notes []note
 	// examples print as written, one call per line, so each pastes whole however wide it is.
 	examples []string
@@ -137,14 +139,16 @@ var helps = map[string]verbHelp{
 		about: "A runtime for isolated sandboxes on your own infrastructure. (pre-alpha)",
 		flags: []flagHelp{
 			{"--root <dir>", "directory for local Shard data", DefaultRoot},
-			{"--remote <url>", "the https URL of the proxy in front of shard serve; verbs go there instead of the socket", ""},
-			{"--token-file <path>", "a token file for --remote, which beats " + client.APIKeyEnv, ""},
-			{"--ca-file <pem>", "the CA certificate that signed the certificate of the proxy in front of serve", ""},
+			{"--remote <url>", "URL of the Shard API server; HTTP/HTTPS supported,\nHTTPS recommended", ""},
 			{"--version", "show the client version", ""},
 		},
+		env: []row{
+			{client.RemoteEnv, "API server URL; --remote overrides it"},
+			{client.APIKeyEnv, "API token from shard tokens mint"},
+			{client.CAFileEnv, "custom CA certificate file; HTTPS only"},
+		},
 		notes: []note{
-			para(fmt.Sprintf("Scripts and CI export %s and %s, the token field of a shard tokens mint record, and every verb goes to shard serve.", client.RemoteEnv, client.APIKeyEnv)),
-			para(fmt.Sprintf("The token comes from --token-file, then %s, then %s; an empty variable is unset. --remote and --ca-file can also come from %s and %s.", client.APIKeyEnv, client.TokenFileEnv, client.RemoteEnv, client.CAFileEnv)),
+			para(fmt.Sprintf("Set %s and %s for remote access.", client.RemoteEnv, client.APIKeyEnv), "Without a remote URL, Shard connects to the local daemon."),
 		},
 	},
 	"create": {
@@ -669,6 +673,9 @@ func helpText(key string) string {
 		}
 		sections = append(sections, heading+columns(flagRows(h.flags)))
 	}
+	if len(h.env) > 0 {
+		sections = append(sections, "Environment variables:\n"+columns(h.env))
+	}
 	for _, n := range h.notes {
 		sections = append(sections, n.render())
 	}
@@ -780,8 +787,21 @@ func widest(rows []row) int {
 	return width
 }
 
-// wrap appends text to lead a word at a time, and starts a line indented by indent wherever the next word would pass the width.
+// wrap wraps each line of text on its own, so a newline in it starts a line indented by indent.
 func wrap(lead string, indent int, text string) string {
+	var lines []string
+	for i, part := range strings.Split(text, "\n") {
+		if i > 0 {
+			lead = strings.Repeat(" ", indent)
+		}
+		lines = append(lines, wrapLine(lead, indent, part))
+	}
+
+	return strings.Join(lines, "\n")
+}
+
+// wrapLine appends text to lead a word at a time, and starts a line indented by indent wherever the next word would pass the width.
+func wrapLine(lead string, indent int, text string) string {
 	var lines []string
 	line, empty := lead, true
 	for word := range strings.FieldsSeq(text) {
