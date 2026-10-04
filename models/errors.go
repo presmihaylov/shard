@@ -34,6 +34,22 @@ func (e *CommandNotStartedError) Error() string {
 	return fmt.Sprintf("sandbox %s could not run the command: %s", e.Sandbox, e.Reason)
 }
 
+// EntrypointNotStartedError is a sandbox whose entrypoint never ran; Err quotes the sandbox log, which can name a host path.
+type EntrypointNotStartedError struct {
+	Sandbox string
+	Err     error
+}
+
+func (e *EntrypointNotStartedError) Error() string {
+	return fmt.Sprintf("the entrypoint of sandbox %s did not start: %v", e.Sandbox, e.Err)
+}
+
+func (e *EntrypointNotStartedError) Unwrap() error { return e.Err }
+
+func (e *EntrypointNotStartedError) Public() string {
+	return fmt.Sprintf("the entrypoint of sandbox %s did not start; the daemon log has the cause", e.Sandbox)
+}
+
 // The optional verbs, spelled once here so a refusal and the conformance suite cannot drift apart.
 const (
 	VerbPause  = "pause"
