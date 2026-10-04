@@ -36,13 +36,13 @@ func (a App) create(ctx context.Context, args []string) error {
 }
 
 // createAndWait blocks while the daemon creates in the background, so an operator sees the pull, then a ready sandbox or the reason it failed.
-func (a App) createAndWait(ctx context.Context, c *client.Client, req sandbox.CreateRequest) (models.Sandbox, error) {
+func (a App) createAndWait(ctx context.Context, c *client.Client, req sandbox.CreateRequest) (client.Sandbox, error) {
 	sb, err := c.CreateSandboxAndWait(ctx, req, a.pullProgress())
 	if err != nil {
-		return models.Sandbox{}, err
+		return client.Sandbox{}, err
 	}
 	if sb.State == models.StateFailed {
-		return models.Sandbox{}, fmt.Errorf("sandbox %s failed to start: %s", sb.ID, sb.FailedReason)
+		return client.Sandbox{}, fmt.Errorf("sandbox %s failed to start: %s", sb.ID, sb.FailedReason)
 	}
 
 	return sb, nil

@@ -20,7 +20,7 @@ func (a App) pull(ctx context.Context, args []string) error {
 		return fmt.Errorf("pull takes one image reference, got %d", len(rest))
 	}
 
-	c, err := a.client()
+	c, err := a.localClient("pull")
 	if err != nil {
 		return err
 	}
@@ -47,7 +47,7 @@ func (a App) pullProgress() func(client.PullEvent) {
 func pullLine(e client.PullEvent) string {
 	switch e.Status {
 	case client.PullCached:
-		return fmt.Sprintf("%s %s is already on disk at %s", e.Reference, e.Digest, e.Path)
+		return fmt.Sprintf("%s %s is already on disk%s", e.Reference, e.Digest, at("at", e.Path))
 	case client.PullPulling:
 		return fmt.Sprintf("pulling %s %s, %s, %s", e.Reference, e.Digest, layerCount(e.Layers), humanSize(e.Bytes))
 	case client.PullLayer:
@@ -61,12 +61,25 @@ func pullLine(e client.PullEvent) string {
 	case client.PullUnpacked:
 		return fmt.Sprintf("  %s  unpacked, %d of %d", shortDigest(e.Digest), e.Layer, e.Layers)
 	case client.PullBuilding:
+		if e.Path == "" {
+			return "  building the image file"
+		}
+
 		return "  building " + e.Path
 	case client.PullPulled:
-		return fmt.Sprintf("pulled %s into %s", e.Reference, e.Path)
+		return fmt.Sprintf("pulled %s%s", e.Reference, at("into", e.Path))
 	}
 
 	return "pull: " + e.Status
+}
+
+// at names the host path an event carries; a create streams none, so its line ends at the image.
+func at(preposition, path string) string {
+	if path == "" {
+		return ""
+	}
+
+	return " " + preposition + " " + path
 }
 
 func layerCount(n int) string {
@@ -85,7 +98,7 @@ func (a App) imageList(ctx context.Context, args []string) error {
 	if len(rest) != 0 {
 		return fmt.Errorf("image list takes no arguments, got %d", len(rest))
 	}
-	c, err := a.client()
+	c, err := a.localClient("image list")
 	if err != nil {
 		return err
 	}
@@ -130,7 +143,7 @@ func (a App) imageRemove(ctx context.Context, args []string) error {
 		return err
 	}
 
-	c, err := a.client()
+	c, err := a.localClient("image remove")
 	if err != nil {
 		return err
 	}
@@ -156,7 +169,7 @@ func (a App) imagePrune(ctx context.Context, args []string) error {
 		return fmt.Errorf("image prune takes no arguments, got %d", len(rest))
 	}
 
-	c, err := a.client()
+	c, err := a.localClient("image prune")
 	if err != nil {
 		return err
 	}

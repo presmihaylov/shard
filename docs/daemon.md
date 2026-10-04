@@ -338,7 +338,10 @@ The routes:
 
 ```
 curl --unix-socket /var/lib/shard/shard.sock http://localhost/v0/version
+curl --unix-socket /var/lib/shard/shard.sock http://localhost/v0/capabilities
 curl --unix-socket /var/lib/shard/shard.sock http://localhost/v0/daemon
+curl --unix-socket /var/lib/shard/shard.sock http://localhost/v0/local/sandboxes
+curl --unix-socket /var/lib/shard/shard.sock http://localhost/v0/local/sandboxes/<id or name>
 curl --unix-socket /var/lib/shard/shard.sock http://localhost/v0/sandboxes
 curl --unix-socket /var/lib/shard/shard.sock 'http://localhost/v0/sandboxes?all=true'
 curl --unix-socket /var/lib/shard/shard.sock 'http://localhost/v0/sandboxes?limit=20&cursor=<id>'
@@ -385,9 +388,22 @@ curl --unix-socket /var/lib/shard/shard.sock -X DELETE 'http://localhost/v0/imag
 curl --unix-socket /var/lib/shard/shard.sock -X POST http://localhost/v0/images/prune
 ```
 
-- `GET /v0/version` answers `{"version": "..."}`. `shard version` prints it as its `daemon` line,
-  under the `client` line of the binary that asked. `shard --version` prints only the `client` line,
-  touches no socket, and never fails, like `docker --version`.
+- Every route is public or local. A local route answers on the socket only, and `shard serve`
+  refuses it with the same `403` as an unknown route. The local routes are `GET /v0/daemon`, the
+  four `images` routes, `GET /v0/local/sandboxes` and `GET /v0/local/sandboxes/{id}`. The CLI on the
+  daemon host reads its sandboxes through the two local ones.
+- A public route answers the sandbox record without its host side: `pid`, `netns_path`,
+  `host_interface`, `address`, `checkpoint`, `pausing`, `exit_channel` and `unresponsive_reason`.
+  `GET /v0/local/sandboxes` and `GET /v0/local/sandboxes/{id}` take the same query as the public
+  routes and answer the whole record. In the public `egress` of a record, an implied DNS rule names
+  the group `dns` in place of the bridge gateway, and keeps its `id`.
+- `GET /v0/version` answers `{"version": "...", "api_version": "v0"}`. `shard version` prints the
+  `version` as its `daemon` line, under the `client` line of the binary that asked. `shard
+  --version` prints only the `client` line, touches no socket, and never fails, like `docker
+  --version`.
+- `GET /v0/capabilities` answers `{"provider": "...", "unsupported": [...]}`, where `unsupported`
+  lists each optional verb the provider refuses (`pause`, `resume`, `fork`) and is `[]` when it
+  refuses none.
 - `GET /v0/daemon` answers what the daemon knows about itself: `version`, `pid`, `started_at`,
   `socket`, `provider`, `capabilities` as the provider's three booleans (`pause`, `resume`, `fork`),
   and `proxy` with `plain_port` and `tls_port`. `shard daemon status` prints it, one field per line.
@@ -437,7 +453,8 @@ curl --unix-socket /var/lib/shard/shard.sock -X POST http://localhost/v0/images/
   `pending`, then answers the `running` or `failed` record it reached, so a caller reads the settled
   record without a poll. The plain create answers at once. A wait that sends `Accept:
   application/x-ndjson` streams the pull instead: one `{"event"}` line per step as it lands, then
-  `{"sandbox"}` with the settled record. The create answers 400 when the body does not decode, when
+  `{"sandbox"}` with the settled record. The create is a public route, so an `{"event"}` line
+  carries no `path`. The create answers 400 when the body does not decode, when
   a field does not validate, or when the body names a secret or a policy the host does not hold. It
   answers 409 `name_taken` when another sandbox already holds the name.
 - `POST /v0/sandboxes/{id}/start` takes no body and answers 200 with the record of the sandbox it
@@ -809,17 +826,16 @@ lets the request through only when a scope covers it. A token with no scopes, or
 `*`, holds every verb. A token that names scopes reaches only the routes those scopes cover. Every
 other route gets a `403` with the code `forbidden`, written before anything is dialed. The front
 maps the request line to the capability over the daemon's own route patterns, so the front and the
-daemon agree on what each request is. An unknown route gets a `403` too. These are the eight
-capabilities:
+daemon agree on what each request is. An unknown route gets a `403` too, and so does every local
+route, with the same body, for every token. `GET /v0/version` and `GET /v0/capabilities` answer any
+valid token. These are the six capabilities:
 
 | capability | routes |
 | --- | --- |
-| `daemon:read` | `GET /v0/version`, `GET /v0/daemon` |
 | `sandbox:read` | list, get, `logs`, `egress-log`, `attach`, `GET /v0/snapshots` and `GET /v0/snapshots/{ref}` |
 | `sandbox:write` | create, start, stop, pause, resume, fork, `app/stop` and `POST /v0/snapshots` |
 | `sandbox:delete` | `remove` and `DELETE /v0/snapshots/{ref}` |
 | `exec` | every `exec` route, and every `files`, `ls`, `mkdir` and `archive` route |
-| `image:*` | every `images` route |
 | `secret:*` | every `secrets` route, and the grant and ungrant on a sandbox |
 | `policy:*` | every `policies` route, and the policy of a sandbox |
 

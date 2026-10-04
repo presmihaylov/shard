@@ -29,6 +29,10 @@ They go before the verb.
 | `--ca-file <pem>` | the CA that signed the proxy's certificate; also `SHARD_CA_FILE` |
 | `--version` | print the client version; it never fails |
 
+`pull`, `image list`, `image remove`, `image prune` and `daemon status` run on the daemon host only,
+because `shard serve` refuses their routes. With `--remote` or `SHARD_REMOTE` set, each one fails
+before it dials, and its error names the verb.
+
 ## Names and aliases
 
 A verb has one name. `list` and `remove` take `ls` and `rm` as aliases, at the top level and under
@@ -125,7 +129,10 @@ nothing and fails.
 The values are synthetic.
 
 `list` prints an array of sandbox records. `id`, `image`, `provider`, `state`, `pid`, `netns_path`,
-`address`, `host_interface`, `resources` and `created_at` are always present:
+`address`, `host_interface`, `resources` and `created_at` are always present on the daemon host. With
+`--remote`, the record leaves out `pid`, `netns_path`, `address`, `host_interface`, `checkpoint`,
+`pausing`, `exit_channel` and `unresponsive_reason`, and an implied DNS rule in `egress` names the
+group `dns`:
 
 ```json
 [
