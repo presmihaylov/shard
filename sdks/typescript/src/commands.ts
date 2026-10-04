@@ -102,8 +102,7 @@ export class Commands {
   async run(command: string | string[], options: ExecOptions = {}): Promise<ExecResult> {
     const { session, capture, input } = await this.open(command, options);
     const fed = input === undefined ? Promise.resolve() : feed(session, input);
-    const exit = await session.wait(options.signal);
-    await fed;
+    const [exit] = await Promise.all([session.wait(options.signal), fed]);
 
     return result(exit, capture);
   }
@@ -163,9 +162,17 @@ function handlers(options: OutputOptions): Handlers {
   return { onStdout: options.onStdout, onStderr: options.onStderr };
 }
 
-// A command may end before it reads all its input, as head does; wait then answers its exit or the cut, as in a shell pipe.
 async function feed(session: Session, input: string | Uint8Array): Promise<void> {
-  await session.writeStdin(input).then(() => session.closeStdin()).then(undefined, () => undefined);
+  try {
+    await session.writeStdin(input);
+    await session.closeStdin();
+  } catch (err) {
+    if (await session.endedWithExit()) {
+      // @shard 2026-10-04: stdin closed by the command; wait() reports the exit
+      return;
+    }
+    throw err;
+  }
 }
 
 function result(exit: wire.Exit, capture: OutputCapture): ExecResult {

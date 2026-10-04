@@ -251,6 +251,18 @@ test("an abort lets go of the stream, leaves the command, and rejects with the c
   assert.ok(!daemon.requests.some((r) => r.url.pathname.endsWith("/kill")), "nothing killed the command");
 });
 
+test("an abort of a later wait lets go of a stream another signal opened", async () => {
+  const session = await start();
+  const peer = await daemon.peer(0);
+  const controller = new AbortController();
+  const waited = session.wait(controller.signal);
+  const reason = new Error("caller gave up");
+  controller.abort(reason);
+  await assert.rejects(waited, (err: unknown) => err === reason);
+  assert.equal((await peer.next())?.opcode, opClose, "the client says goodbye");
+  assert.ok(!daemon.requests.some((r) => r.url.pathname.endsWith("/kill")), "nothing killed the command");
+});
+
 test("a command record the SDK cannot read is a protocol error", async () => {
   for (const json of [{ exec: 7 }, record({ state: "paused" }), record({ started_at: "yesterday" }), record({ exit_status: { code: 1 } })]) {
     routes.set(`POST /v0/sandboxes/sb_1/exec`, () => ({ status: 201, json }));

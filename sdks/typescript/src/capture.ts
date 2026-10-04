@@ -9,8 +9,8 @@ interface Chunk {
 }
 
 export class OutputCapture {
-  private chunks: Chunk[] = [];
-  // The index of the oldest chunk still held, so dropping one from the front costs nothing.
+  // A dropped chunk leaves an empty slot, so its bytes go at once and dropping from the front costs nothing.
+  private chunks: Array<Chunk | undefined> = [];
   private head = 0;
   private size = 0;
 
@@ -40,6 +40,7 @@ export class OutputCapture {
       }
       const over = this.size - this.limit;
       if (oldest.bytes.length <= over) {
+        this.chunks[this.head] = undefined;
         this.head++;
         this.size -= oldest.bytes.length;
         continue;
@@ -47,7 +48,7 @@ export class OutputCapture {
       oldest.bytes = oldest.bytes.subarray(over);
       this.size -= over;
     }
-    // The array still holds every dropped chunk until this, so a long command would keep all its output.
+    // The empty slots of a long command would otherwise grow the array without end.
     if (this.head > 1024 && this.head * 2 > this.chunks.length) {
       this.chunks = this.chunks.slice(this.head);
       this.head = 0;
@@ -62,7 +63,7 @@ export class OutputCapture {
   }
 
   output(): { stdout: Buffer; stderr: Buffer } {
-    const held = this.chunks.slice(this.head);
+    const held = this.chunks.slice(this.head).filter((chunk) => chunk !== undefined);
 
     return {
       stdout: Buffer.concat(held.filter((chunk) => chunk.stream === stdout).map((chunk) => chunk.bytes)),

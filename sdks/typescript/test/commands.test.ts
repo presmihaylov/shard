@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { afterEach, beforeEach, test } from "node:test";
 import { Commands } from "../src/commands.js";
-import { NotFoundError, ProtocolError } from "../src/errors.js";
+import { ConnectionError, NotFoundError, ProtocolError } from "../src/errors.js";
 import { opBinary } from "../src/frames.js";
 import { Transport } from "../src/transport.js";
 import { FakeDaemon, type Answer, type Peer, type Request } from "./helpers/daemon.js";
@@ -105,6 +105,14 @@ test("a command that ends before it reads its input answers its exit", async () 
   assert.deepEqual(await running, { exitCode: 0, signal: null, lostBytes: 0, stdout: "", stderr: "" });
 });
 
+test("a stdin write that fails on a stream cut before the exit rejects run", async () => {
+  const running = commands.run("cat", { stdin: "x".repeat(4 * 1024 * 1024) });
+  const peer = await daemon.peer(0);
+  peer.socket.pause();
+  peer.socket.destroy();
+  await assert.rejects(running, ConnectionError);
+});
+
 test("the output limit keeps the newest bytes, while the callbacks get every chunk", async () => {
   const chunks: string[] = [];
   const running = commands.run("x", { outputLimitBytes: 4, onStdout: (c) => chunks.push(`o${Buffer.from(c)}`), onStderr: (c) => chunks.push(`e${Buffer.from(c)}`) });
@@ -177,6 +185,14 @@ test("start answers the handle of a command that ended before it read its input"
   peer.socket.end();
   const command = await starting;
   assert.deepEqual(await command.wait(), { exitCode: 0, signal: null, lostBytes: 0, stdout: "", stderr: "" });
+});
+
+test("a stdin write that fails on a stream cut before the exit rejects start", async () => {
+  const starting = commands.start("cat", { stdin: "x".repeat(4 * 1024 * 1024) });
+  const peer = await daemon.peer(0);
+  peer.socket.pause();
+  peer.socket.destroy();
+  await assert.rejects(starting, (err: unknown) => err instanceof ConnectionError && /dropped$/.test(err.message));
 });
 
 test("list follows the daemon's pages", async () => {

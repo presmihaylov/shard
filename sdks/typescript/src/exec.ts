@@ -103,11 +103,11 @@ export class Session {
     if (this.exited) {
       return this.exited;
     }
-    let exit = this.reading ? await this.reading : undefined;
+    let exit = await this.until(this.reading, signal);
     signal?.throwIfAborted();
     if (!exit) {
       await this.attach(signal);
-      exit = await this.reading;
+      exit = await this.until(this.reading, signal);
       signal?.throwIfAborted();
     }
     if (!exit) {
@@ -116,6 +116,34 @@ export class Session {
     this.exited = exit;
 
     return exit;
+  }
+
+  /** until answers how a stream ended, and lets go of it if the caller's signal aborts first, whichever signal opened it. */
+  private async until(reading: Promise<wire.Exit | undefined> | undefined, signal?: AbortSignal): Promise<wire.Exit | undefined> {
+    if (!reading || !signal) {
+      return reading;
+    }
+    const abort = (): void => {
+      if (this.reading === reading) {
+        this.disconnect();
+      }
+    };
+    signal.addEventListener("abort", abort, { once: true });
+    try {
+      return await reading;
+    } finally {
+      signal.removeEventListener("abort", abort);
+    }
+  }
+
+  /** endedWithExit answers, once the open stream ends, whether it carried the command's exit; wait() reports any other end. */
+  async endedWithExit(): Promise<boolean> {
+    if (this.exited) {
+      return true;
+    }
+    const exit = await this.reading?.then(undefined, () => undefined);
+
+    return exit !== undefined;
   }
 
   async inspect(): Promise<CommandInfo> {

@@ -1,5 +1,7 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
+import { setFlagsFromString } from "node:v8";
+import { runInNewContext } from "node:vm";
 import { OutputCapture, defaultOutputLimit } from "../src/capture.js";
 import { stderr, stdout } from "../src/wire.js";
 
@@ -68,6 +70,22 @@ test("many small chunks hold exactly the newest bytes", () => {
     expected.out += kept[i];
   }
   assert.deepEqual(text(capture), expected);
+});
+
+test("a dropped chunk is released at once, long before the array is trimmed", async () => {
+  setFlagsFromString("--expose-gc");
+  const gc: unknown = runInNewContext("gc");
+  assert.ok(typeof gc === "function", "this node exposes no gc");
+  const capture = new OutputCapture(8);
+  const dropped = new WeakRef(new Uint8Array(4));
+  capture.add(stdout, dropped.deref() ?? new Uint8Array(0));
+  capture.add(stdout, new Uint8Array(4));
+  capture.add(stdout, new Uint8Array(4));
+  // A WeakRef holds its target until the current job ends.
+  await new Promise((resolve) => setImmediate(resolve));
+  gc();
+  assert.equal(dropped.deref(), undefined);
+  assert.equal(capture.output().stdout.length, 8);
 });
 
 test("a limit that is not a whole number of 0 or more is refused", () => {
