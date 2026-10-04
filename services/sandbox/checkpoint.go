@@ -22,8 +22,7 @@ type CopyRequest struct {
 	Name string `json:"name,omitempty"`
 }
 
-// Pause writes a running sandbox into its checkpoint directory and frees its memory. The record keeps
-// the address, the writable layer stays on disk, and resume brings the whole thing back from those.
+// Pause frees a running sandbox's memory into its checkpoint; the record and the writable layer stay for resume.
 func (s *Service) Pause(ctx context.Context, ref string) (models.Sandbox, error) {
 	if err := requireVerb(s.cfg.Provider, models.VerbPause); err != nil {
 		return models.Sandbox{}, err
@@ -123,8 +122,7 @@ func (s *Service) recordPaused(id, dir string) error {
 	return nil
 }
 
-// reconcileGone is for a pause that failed: the sandbox still runs and the record is right, or the
-// checkpoint is complete and only the host cleanup failed, or the substrate lost it on the way.
+// reconcileGone settles a failed pause: still running, checkpointed with only the host cleanup failed, or lost by the substrate.
 func (s *Service) reconcileGone(ctx context.Context, id, dir string) error {
 	status, err := s.status(ctx, id, "pause")
 	if err != nil {
@@ -202,8 +200,7 @@ func (s *Service) settleLivePause(ctx context.Context, id string, status models.
 	return nil
 }
 
-// Resume runs a paused sandbox again from its checkpoint. It is the run the pause froze, so the record
-// keeps the exit its entrypoint may already have had, and the checkpoint stays for the next resume.
+// Resume continues the run the pause froze, so the record keeps any exit its entrypoint had and the checkpoint stays.
 func (s *Service) Resume(ctx context.Context, ref string) (models.Sandbox, error) {
 	if err := requireVerb(s.cfg.Provider, models.VerbResume); err != nil {
 		return models.Sandbox{}, err

@@ -2,8 +2,7 @@ package models
 
 import "context"
 
-// NoCheckpoints is the checkpoint half of a Provider for a substrate that has none. A provider embeds
-// it and sets Provider to its own Name, so every refusal names the right substrate.
+// NoCheckpoints refuses every checkpoint verb in the name of the provider that embeds it and sets Provider.
 type NoCheckpoints struct {
 	Provider string
 }

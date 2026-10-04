@@ -1,6 +1,4 @@
-// Package runc runs sandboxes on bare runc, the OCI runtime under Docker. It is the no-isolation
-// tier: the guest shares the host kernel with only namespaces and cgroups between them, and root in
-// the guest is root on the host. It has no checkpoint at all: every optional verb refuses by name.
+// Package runc runs sandboxes on bare runc: the no-isolation tier, where guest root is host root and every checkpoint verb refuses by name.
 package runc
 
 import (
@@ -47,8 +45,7 @@ type StateDirs func(id string) (string, error)
 
 var _ models.Provider = (*Provider)(nil)
 
-// Provider implements models.Provider on bare runc. The checkpoint verbs are NoCheckpoints' refusals. It
-// claims no user namespace, so the daemon owns every sandbox's netns from the host.
+// Provider claims no user namespace, so the daemon owns every sandbox's netns from the host.
 type Provider struct {
 	models.NoCheckpoints
 

@@ -1,6 +1,4 @@
-// Package sysbox runs sandboxes on Sysbox by driving bare sysbox-runc. Sysbox is the substrate that
-// runs Docker and systemd inside the sandbox, and it has no checkpoint at all: Capabilities is all
-// false and the three optional verbs refuse by name.
+// Package sysbox runs sandboxes on bare sysbox-runc, for Docker and systemd inside them; every checkpoint verb refuses by name.
 package sysbox
 
 import (

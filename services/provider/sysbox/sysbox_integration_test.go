@@ -34,8 +34,7 @@ const testImage = "alpine:3.20"
 // stopGrace is generous: these entrypoints are already gone, so nothing here waits it out.
 const stopGrace = 10 * time.Second
 
-// TestConformance is the SHARD-93 checkpoint: the same suite gVisor passes, over sysbox-runc. Every
-// checkpoint verb is refused here, so the suite proves the refuse path and skips the rest.
+// TestConformance runs the suite over sysbox-runc, where it proves the refuse path of every checkpoint verb (SHARD-93).
 func TestConformance(t *testing.T) {
 	h := newHarness(t)
 

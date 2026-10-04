@@ -254,8 +254,7 @@ func (s *Service) failDropped(ctx context.Context, sb models.Sandbox, status mod
 	return nil
 }
 
-// reconciled is the state the record should hold: what the substrate says, and for a paused one what
-// the checkpoint on disk says, because a checkpoint holds no process and resume still brings it back.
+// reconciled trusts the checkpoint over the substrate for a paused sandbox, since a checkpoint holds no process yet still resumes.
 func reconciled(sb models.Sandbox, status models.Status) (models.State, error) {
 	// No verb rests in created, so it is a fork that never answered: its caller holds an error, not the id.
 	if sb.State == models.StateCreated {

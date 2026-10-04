@@ -343,8 +343,7 @@ func restoreFiles(dir, stateDir string) error {
 	return nil
 }
 
-// restore brings the checkpoint in dir up in a fresh vmm in a jail of the sandbox's own, over the overlay restoreFiles put in its directory.
-// foreign marks a fork, whose guest wakes on the source's address, so a cut before the readdress must not resume it (SHARD-321).
+// restore boots the checkpoint in dir in a fresh jail; foreign marks a fork, which a cut before its readdress must not resume (SHARD-321).
 func (p *Provider) restore(ctx context.Context, id, stateDir string, r record, dir string, foreign bool) (*machine, error) {
 	if err := p.bound(id, r.Resources); err != nil {
 		return nil, fmt.Errorf("restore sandbox %s: %w", id, err)

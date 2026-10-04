@@ -294,8 +294,7 @@ func (p *Provider) killRestores(ctx context.Context, id string) error {
 	return nil
 }
 
-// lastRestore reads the restore recorded for the sandbox. With no record it is the restore a daemon from
-// before restore.json ran: on this sandbox's bundle, from any checkpoint and any runsc.
+// lastRestore reads the recorded restore; with no restore.json it is an older daemon's, from any checkpoint and any runsc.
 func (p *Provider) lastRestore(id string) (launch, error) {
 	dir, err := p.dirs(id)
 	if err != nil {

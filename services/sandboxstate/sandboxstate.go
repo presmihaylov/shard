@@ -297,8 +297,7 @@ func (r *Repository) SweepCheckpointTmp(report func(string)) error {
 	return nil
 }
 
-// recordedTmp reports whether a checkpoint .tmp still has a record, so the start sweep keeps it (SHARD-368).
-// A record that will not read may still name the staging, so it is kept too, with a note that names it.
+// recordedTmp keeps a checkpoint .tmp whose record exists, or will not read and so may still name it (SHARD-368).
 func (r *Repository) recordedTmp(id string) (bool, string) {
 	if ValidID(id) != nil {
 		return false, ""
