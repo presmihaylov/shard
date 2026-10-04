@@ -608,24 +608,36 @@ func (m *machine) readdress(ctx context.Context, r record) error {
 func (p *Provider) follow(m *machine) {
 	defer close(m.events)
 	for {
-		control := m.control.Load()
-		event, err := control.Next()
-		if err != nil {
-			// A refused stream waits before the redial, so a guest that floods every stream cannot keep the daemon dialing (SHARD-408).
-			time.Sleep(m.refusals.Note(err))
-			again, err := p.reconnect(m, control)
-			p.keep(m, err)
-			if again {
-				continue
-			}
-			p.mu.Lock()
-			m.gone = true
-			p.mu.Unlock()
+		event, err := m.control.Load().Next()
+		if err == nil {
+			p.keep(m, p.record(m, event))
 
+			continue
+		}
+		if !p.reconnected(m, err) {
 			return
 		}
-		p.keep(m, p.record(m, event))
 	}
+}
+
+// reconnected waits out a refused stream, reconnects the dropped control, and reports whether the follow loop should go on.
+func (p *Provider) reconnected(m *machine, cause error) bool {
+	dropped := m.control.Load()
+	// A refused stream waits before the redial, so a guest that floods every stream cannot keep the daemon dialing (SHARD-408).
+	time.Sleep(m.refusals.Note(cause))
+	again, err := p.reconnect(m, dropped)
+	p.keep(m, err)
+	if again {
+		return true
+	}
+	// Only a confirmed stop sets gone; a reconnect that could not read the VM state kept the error, so a failed read never reads as stopped (SHARD-618).
+	if err == nil {
+		p.mu.Lock()
+		m.gone = true
+		p.mu.Unlock()
+	}
+
+	return false
 }
 
 // keep holds the first error the event loop met, which is what a later verb reports.
@@ -708,6 +720,8 @@ func (p *Provider) reconnect(m *machine, dropped *supervisor.Control) (bool, err
 			return true, err
 		case reconnectGone:
 			return false, nil
+		case reconnectLost:
+			return false, err
 		case reconnectSaving:
 			// The VM is paused for the save, so the grace runs from its end.
 			deadline = time.Now().Add(startGrace)
@@ -727,6 +741,7 @@ const (
 	reconnectGone
 	reconnectSaving
 	reconnectRetry
+	reconnectLost
 )
 
 // reconnectOnce is one try of reconnect under freezing, before deadline.
@@ -737,7 +752,15 @@ func (p *Provider) reconnectOnce(m *machine, dropped *supervisor.Control, deadli
 	if m.control.Load() != dropped {
 		return reconnectAdopted, nil
 	}
-	state := m.vmState()
+	state, err := m.vmState()
+	// A failed state read is unknown, never stopped: keep dialing within grace, then surface the error instead of declaring the VM gone (SHARD-618).
+	if err != nil {
+		if time.Now().Before(deadline) {
+			return reconnectRetry, err
+		}
+
+		return reconnectLost, fmt.Errorf("sandbox %s: read the VM state: %w", m.id, err)
+	}
 	// A pause still in flight leaves the root frozen on the stream this puts in, since adopt thaws none under it.
 	if state == vz.StateRunning && time.Now().Before(deadline) {
 		adopted, err := p.dialAgain(m, time.Until(deadline))
@@ -851,20 +874,27 @@ func (p *Provider) reconcile(m *machine, state supervisor.Message) error {
 
 // alive says the shim still answers with a running VM and this process has not let it go.
 func (m *machine) alive() bool {
-	return m.vmState() == vz.StateRunning
+	state, err := m.vmState()
+
+	return err == nil && state == vz.StateRunning
 }
 
-// vmState is the state the shim answers with, or "" once it does not answer or this process let it go.
-func (m *machine) vmState() vz.State {
+// vmState is the state the shim answers with, "" once this process let the shim go, and an error once the shim does not answer.
+func (m *machine) vmState() (vz.State, error) {
 	if m.closed.Load() {
-		return ""
+		return "", nil
 	}
 	info, err := m.client.State(context.Background())
 	if err != nil {
-		return ""
+		// A read that fails because the shim process is gone is a stopped VM; only a read that fails while the shim lives is unknown (SHARD-618).
+		if alive, aerr := m.shim.Alive(); aerr == nil && !alive {
+			return vz.StateStopped, nil
+		}
+
+		return "", err
 	}
 
-	return info.State
+	return info.State, nil
 }
 
 // followLogs appends what the logs connection carries to the log file, in the protocol the guest's state named, and opens it again after a drop while the VM runs.

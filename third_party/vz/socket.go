@@ -125,15 +125,26 @@ func (v *VirtioSocketDevice) Listen(port uint32) (*VirtioSocketListener, error) 
 //export connectionHandler
 func connectionHandler(connPtr, errPtr unsafe.Pointer, cgoHandleUintptr C.uintptr_t) {
 	cgoHandle := cgo.Handle(cgoHandleUintptr)
-	handler := cgoHandle.Value().(func(*VirtioSocketConnection, error))
-	defer cgoHandle.Delete()
-	// see: startHandler
-	if err := newNSError(errPtr); err != nil {
-		handler(nil, err)
-	} else {
-		conn, err := newVirtioSocketConnection(connPtr)
-		handler(conn, err)
+	switch handler := cgoHandle.Value().(type) {
+	case *managedConnect:
+		// Route the delete through the shared Once so the caller's timeout cancel can also free the handle, without a double free (SHARD-619).
+		handler.delete.Do(func() { cgoHandle.Delete() })
+		deliver(handler.fn, connPtr, errPtr)
+	case func(*VirtioSocketConnection, error):
+		defer cgoHandle.Delete()
+		deliver(handler, connPtr, errPtr)
 	}
+}
+
+// deliver turns the framework's raw pointers into a conn or an error and hands them to fn.
+func deliver(fn func(*VirtioSocketConnection, error), connPtr, errPtr unsafe.Pointer) {
+	if err := newNSError(errPtr); err != nil {
+		fn(nil, err)
+
+		return
+	}
+	conn, err := newVirtioSocketConnection(connPtr)
+	fn(conn, err)
 }
 
 // Connect Initiates a connection to the specified port of the guest operating system.
@@ -158,6 +169,27 @@ func (v *VirtioSocketDevice) Connect(port uint32) (*VirtioSocketConnection, erro
 	result := <-ch
 	runtime.KeepAlive(v)
 	return result.conn, result.err
+}
+
+// managedConnect carries a connect's callback and the single deletion of its cgo handle, shared between the framework callback and the caller's cancel (SHARD-619).
+type managedConnect struct {
+	fn     func(*VirtioSocketConnection, error)
+	delete sync.Once
+}
+
+// ConnectHandler starts a connect and runs fn once from the framework's callback, on the VM queue; a port nobody listens on never calls back, so the returned cancel frees the handle that callback would have freed (SHARD-619).
+func (v *VirtioSocketDevice) ConnectHandler(port uint32, fn func(*VirtioSocketConnection, error)) (cancel func()) {
+	managed := &managedConnect{fn: fn}
+	cgoHandle := cgo.NewHandle(managed)
+	C.VZVirtioSocketDevice_connectToPort(
+		objc.Ptr(v),
+		v.dispatchQueue,
+		C.uint32_t(port),
+		C.uintptr_t(cgoHandle),
+	)
+	runtime.KeepAlive(v)
+
+	return func() { managed.delete.Do(func() { cgoHandle.Delete() }) }
 }
 
 type connResults struct {
