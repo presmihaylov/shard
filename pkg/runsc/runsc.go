@@ -230,9 +230,7 @@ type ExecOptions struct {
 	Report func(pid int)
 }
 
-// Exec runs a command in a running sandbox and returns the code it exited with, which is no failure
-// of this driver. runsc writes its own startup failures to the same stderr the guest gets, so an
-// exit code alone cannot tell the two apart; the caller checks the sandbox is running first.
+// Exec returns a command's exit code; a tty shares runsc's stderr with the guest, so there the caller checks the sandbox runs first.
 func (r *Runner) Exec(ctx context.Context, id string, opts ExecOptions) (code int, err error) {
 	if len(opts.Argv) == 0 {
 		return 0, errors.New("no command: runsc exec has nothing to run")
@@ -250,6 +248,18 @@ func (r *Runner) Exec(ctx context.Context, id string, opts ExecOptions) (code in
 	// --log is global, and r.command puts what it is given after its own globals and before the subcommand.
 	cmd := r.command(ctx, append([]string{"--log", logFile, "--log-format=json"}, execArgs(id, pidFile, opts)...)...)
 	cmd.Stdin, cmd.Stdout, cmd.Stderr = opts.Stdin, opts.Stdout, opts.Stderr
+
+	// runsc writes its own refusals to its stderr, so the guest gets its stderr as fd 3 and never reads them.
+	var ownFile string
+	if passesStderr(opts) {
+		ownFile = filepath.Join(dir, "stderr")
+		own, cerr := os.Create(ownFile)
+		if cerr != nil {
+			return 0, fmt.Errorf("create the stderr of runsc exec %s: %w", id, cerr)
+		}
+		defer func() { err = errors.Join(err, own.Close()) }()
+		cmd.Stderr, cmd.ExtraFiles = own, []*os.File{opts.Stderr}
+	}
 
 	// The driver dies with the daemon, so a restart orphans no runsc exec; the guest process lives in the sentry and outlives both.
 	cmd.SysProcAttr = execAttr(opts.TTY)
@@ -274,28 +284,43 @@ func (r *Runner) Exec(ctx context.Context, id string, opts ExecOptions) (code in
 			return 0, fmt.Errorf("runsc exec %s: %w", id, ctx.Err())
 		}
 
-		var exit *exec.ExitError
-		if errors.As(err, &exit) {
-			// A driver something else killed says nothing about the guest process, so it is not an exit code.
-			if !exit.Exited() {
-				return 0, fmt.Errorf("runsc exec %s was ended by a signal: %w", id, err)
-			}
-
-			// An exit code is the command's unless both say it never ran: the pid file, which lands
-			// as soon as the guest process forks, and a refusal runsc logged.
-			_, perr := readPID(pidFile)
-			reason, rerr := logReason(logFile)
-			if perr != nil && rerr == nil {
-				return 0, fmt.Errorf("runsc exec %s: %w", id, startFailure(reason))
-			}
-
-			return exit.ExitCode(), nil
+		if exit, ok := errors.AsType[*exec.ExitError](err); ok {
+			return classifyExit(id, exit, pidFile, logFile, ownFile)
 		}
 
 		return 0, fmt.Errorf("runsc exec %s: %w", id, err)
 	}
 
 	return 0, nil
+}
+
+// classifyExit is the command's exit code, unless runsc refused it, lost its wait on it, or died first.
+func classifyExit(id string, exit *exec.ExitError, pidFile, logFile, ownFile string) (int, error) {
+	// A driver something else killed says nothing about the guest process, so it is not an exit code.
+	if !exit.Exited() {
+		return 0, fmt.Errorf("runsc exec %s was ended by a signal: %w", id, exit)
+	}
+
+	// The pid file separates a refused start from a lost wait because runsc writes it when the guest forks.
+	_, perr := readPID(pidFile)
+	reason, rerr := logReason(logFile)
+	if perr != nil && rerr == nil {
+		return 0, fmt.Errorf("runsc exec %s: %w", id, startFailure(reason))
+	}
+	if rerr == nil {
+		return 0, fmt.Errorf("runsc exec %s: %w", id, &ExecLostError{Reason: reason})
+	}
+
+	said, err := ownWords(ownFile)
+	if err != nil {
+		return 0, fmt.Errorf("runsc exec %s exited %d: %w", id, exit.ExitCode(), err)
+	}
+	// runsc keeps its stderr for the guest's, so words there with none logged are a runsc that died first.
+	if said != "" {
+		return 0, fmt.Errorf("runsc exec %s exited %d: %s", id, exit.ExitCode(), said)
+	}
+
+	return exit.ExitCode(), nil
 }
 
 // ExecStartError is an exec whose command never ran, which runsc reports as its own exit code 128.
@@ -308,6 +333,14 @@ type ExecStartError struct {
 
 func (e *ExecStartError) Error() string { return e.Reason }
 
+// ExecLostError is a command that ran while runsc lost its wait on it, which runsc also reports as its own 128.
+type ExecLostError struct {
+	// Reason is runsc's own words, taken from the log this one call wrote.
+	Reason string
+}
+
+func (e *ExecLostError) Error() string { return "runsc lost the command it ran: " + e.Reason }
+
 // startFailure names the refusal the kernel gave runsc, which is all a shell needs to tell a command
 // it cannot find from one it may not run.
 func startFailure(reason string) error {
@@ -318,8 +351,7 @@ func startFailure(reason string) error {
 	return &ExecStartError{Reason: reason, NotExecutable: strings.Contains(reason, notExecutableMessage)}
 }
 
-// logReason keeps the last error runsc logged, which is the refusal that ended the call. runsc writes
-// the same words to the guest's stderr, so this log is the only copy shard can read back on its own.
+// logReason keeps the last error runsc logged, a copy of the refusal that a tty mixes into the guest's stderr.
 func logReason(path string) (string, error) {
 	blob, err := os.ReadFile(path)
 	if err != nil {
@@ -351,6 +383,10 @@ func logReason(path string) (string, error) {
 func execArgs(id, pidFile string, opts ExecOptions) []string {
 	args := []string{"exec", "--internal-pid-file", pidFile}
 
+	if passesStderr(opts) {
+		args = append(args, "--pass-fd", "3:2")
+	}
+
 	if opts.WorkDir != "" {
 		args = append(args, "--cwd", opts.WorkDir)
 	}
@@ -365,6 +401,25 @@ func execArgs(id, pidFile string, opts ExecOptions) []string {
 	}
 
 	return append(append(args, id), opts.Argv...)
+}
+
+// passesStderr says the guest's stderr goes to runsc as fd 3, which a tty cannot: runsc needs all three of its own to be one.
+func passesStderr(opts ExecOptions) bool {
+	return !opts.TTY && opts.Stderr != nil
+}
+
+// ownWords is the tail of what runsc wrote to its own stderr, and empty when it kept the guest's.
+func ownWords(path string) (string, error) {
+	if path == "" {
+		return "", nil
+	}
+
+	blob, err := readTail(path, 0)
+	if err != nil {
+		return "", err
+	}
+
+	return strings.TrimSpace(string(blob)), nil
 }
 
 // interrupt ends the guest process a cancelled exec started. It is SIGKILL because nothing above this

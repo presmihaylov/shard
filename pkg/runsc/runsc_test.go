@@ -11,6 +11,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/presmihaylov/shard/pkg/pty"
 	"github.com/presmihaylov/shard/pkg/runsc"
 )
 
@@ -632,9 +633,9 @@ func TestExecReportsWhyACommandNeverStarted(t *testing.T) {
 	}
 }
 
-// A command that ran owns its exit code, whatever runsc logged on the way: 128 is a code like any other.
+// A command that ran owns its exit code when runsc logged nothing: 128 is a code like any other.
 func TestExecReturnsTheExitCodeOfACommandThatRan(t *testing.T) {
-	r, _ := fakeBinary(t, writingPID(4242)+logging("failed to load /bin/nope: no such file or directory")+"exit 128\n")
+	r, _ := fakeBinary(t, writingPID(4242)+"exit 128\n")
 
 	code, err := r.Exec(t.Context(), "amber-otter-1a2b", runsc.ExecOptions{Argv: []string{"/bin/sh"}})
 	if err != nil {
@@ -644,6 +645,107 @@ func TestExecReturnsTheExitCodeOfACommandThatRan(t *testing.T) {
 	if code != 128 {
 		t.Errorf("Exec returned %d, want the command's own 128", code)
 	}
+}
+
+// A refusal logged after the pid file is runsc losing its wait on a command that ran, and 128 is then its code, not the command's (SHARD-486).
+func TestExecReportsAWaitRunscLost(t *testing.T) {
+	r, _ := fakeBinary(t, writingPID(4242)+logging("waiting on pid 4242: EOF")+"exit 128\n")
+
+	_, err := r.Exec(t.Context(), "amber-otter-1a2b", runsc.ExecOptions{Argv: []string{"/bin/sh"}})
+
+	lost, ok := errors.AsType[*runsc.ExecLostError](err)
+	if !ok {
+		t.Fatalf("Exec returned %v, want an ExecLostError", err)
+	}
+	if lost.Reason != "waiting on pid 4242: EOF" {
+		t.Errorf("the reason is %q, want runsc's own words", lost.Reason)
+	}
+	if _, ok := errors.AsType[*runsc.ExecStartError](err); ok {
+		t.Errorf("Exec returned %v, want no ExecStartError for a command that ran", err)
+	}
+}
+
+// runsc writes its refusals to its own stderr, so the guest's stderr reaches the command as fd 3 and holds the command's words alone (SHARD-486).
+func TestExecKeepsRunscsOwnWordsOutOfTheGuestStderr(t *testing.T) {
+	r, argvFile := fakeBinary(t, "printf guest >&3\nprintf 'waiting on pid 7: EOF' >&2\n")
+	guest := tempFile(t)
+
+	if _, err := r.Exec(t.Context(), "amber-otter-1a2b", runsc.ExecOptions{Argv: []string{"/bin/sh"}, Stderr: guest}); err != nil {
+		t.Fatalf("Exec: %v", err)
+	}
+
+	if got := readAll(t, guest); got != "guest" {
+		t.Errorf("the guest stderr holds %q, want the command's own words alone", got)
+	}
+	got := argv(t, argvFile)
+	if id := slices.Index(got, "amber-otter-1a2b"); id < 0 || !slices.Contains(pairs(got[:id]), "--pass-fd 3:2") {
+		t.Errorf("the argv is %q, want --pass-fd 3:2 before the id", got)
+	}
+}
+
+// runsc needs its own stdio to be the terminal to give the guest one, so a tty exec keeps the replica as runsc's stderr.
+func TestExecPassesNoFdToATerminal(t *testing.T) {
+	r, argvFile := fake(t, "", "", 0)
+	terminal, err := pty.Open()
+	if err != nil {
+		t.Fatalf("open a pty: %v", err)
+	}
+	t.Cleanup(func() {
+		if err := terminal.Close(); err != nil {
+			t.Errorf("close the pty: %v", err)
+		}
+	})
+
+	replica := terminal.Replica
+	if _, err := r.Exec(t.Context(), "amber-otter-1a2b", runsc.ExecOptions{Argv: []string{"/bin/sh"}, TTY: true, Stdin: replica, Stdout: replica, Stderr: replica}); err != nil {
+		t.Fatalf("Exec: %v", err)
+	}
+
+	if got := argv(t, argvFile); slices.Contains(got, "--pass-fd") {
+		t.Errorf("the argv is %q, want no --pass-fd for a terminal", got)
+	}
+}
+
+// A runsc that dies before it logs anything leaves its words on its own stderr only, so the error carries them.
+func TestExecQuotesWhatRunscSaidWhenItLoggedNothing(t *testing.T) {
+	r, _ := fakeBinary(t, "printf 'panic: runtime error' >&2\nexit 2\n")
+	guest := tempFile(t)
+
+	_, err := r.Exec(t.Context(), "amber-otter-1a2b", runsc.ExecOptions{Argv: []string{"/bin/sh"}, Stderr: guest})
+	if err == nil || !strings.Contains(err.Error(), "panic: runtime error") {
+		t.Fatalf("Exec returned %v, want runsc's own words in the error", err)
+	}
+	if got := readAll(t, guest); got != "" {
+		t.Errorf("the guest stderr holds %q, want nothing of runsc's", got)
+	}
+}
+
+// tempFile is a file the fake runsc can write as a guest stream, which a test reads back once Exec returns.
+func tempFile(t *testing.T) *os.File {
+	t.Helper()
+
+	f, err := os.CreateTemp(t.TempDir(), "stream")
+	if err != nil {
+		t.Fatalf("create a stream file: %v", err)
+	}
+	t.Cleanup(func() {
+		if err := f.Close(); err != nil {
+			t.Errorf("close %s: %v", f.Name(), err)
+		}
+	})
+
+	return f
+}
+
+func readAll(t *testing.T, f *os.File) string {
+	t.Helper()
+
+	blob, err := os.ReadFile(f.Name())
+	if err != nil {
+		t.Fatalf("read %s: %v", f.Name(), err)
+	}
+
+	return string(blob)
 }
 
 // logging is a fake runsc that writes one error line where the real one logs its refusals.

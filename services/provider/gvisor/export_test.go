@@ -106,6 +106,11 @@ func ZombieStat(stat string) bool {
 	return zombieStat(stat)
 }
 
+// ExecFailure is the name Exec gives what runsc reports as its own 128, reachable with a driver error.
+func ExecFailure(id string, err error) error {
+	return execFailure(id, err)
+}
+
 // Vanished is the classification stale runs on a read of /proc that failed, reachable with an error.
 func Vanished(err error) bool {
 	return vanished(err)

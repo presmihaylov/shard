@@ -3,6 +3,7 @@ package gvisor_test
 import (
 	"context"
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -561,5 +562,17 @@ func TestStopKillsAnEntrypointThatIgnoresTermOnceTheGraceRunsOut(t *testing.T) {
 	}
 	if _, err := os.Stat(filepath.Join(work, "killed")); err != nil {
 		t.Errorf("Stop never sent KILL to an entrypoint that ignored TERM: %v", err)
+	}
+}
+
+// A wait runsc lost is the one sentinel a pause can claim, and it keeps runsc's words beside it (SHARD-486).
+func TestALostWaitIsTheExecLostSentinel(t *testing.T) {
+	err := gvisor.ExecFailure("amber-otter-1a2b", fmt.Errorf("runsc exec amber-otter-1a2b: %w", &runsc.ExecLostError{Reason: "waiting on pid 7: EOF"}))
+
+	if !errors.Is(err, models.ErrExecLost) || !strings.Contains(err.Error(), "waiting on pid 7: EOF") {
+		t.Errorf("ExecFailure returned %v, want models.ErrExecLost with runsc's words", err)
+	}
+	if _, ok := errors.AsType[*models.CommandNotStartedError](err); ok {
+		t.Errorf("ExecFailure returned %v, want no command that never started", err)
 	}
 }
