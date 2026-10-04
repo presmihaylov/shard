@@ -51,12 +51,8 @@ type TokenInfo struct {
 	Status    TokenStatus
 }
 
-// TokensPath is the ledger beside the signing key file, or override when it is not empty.
-func TokensPath(signingKeyFile, override string) string {
-	if override != "" {
-		return override
-	}
-
+// TokensPath is the ledger beside the signing key file, the one place mint, list, revoke and the front all read.
+func TokensPath(signingKeyFile string) string {
 	return filepath.Join(filepath.Dir(signingKeyFile), TokensFileName)
 }
 

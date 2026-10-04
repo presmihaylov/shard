@@ -8,6 +8,7 @@ import (
 	"io/fs"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 
@@ -52,6 +53,19 @@ func TestTokensMintPrintsARecordTheFrontAccepts(t *testing.T) {
 	}
 	if !strings.Contains(out.String(), "up-1") {
 		t.Errorf("list with the minted record printed %q, want the sandbox the daemon holds", out.String())
+	}
+}
+
+// A custom registry can make mint and revoke disagree with the front.
+func TestTokensFileIsGone(t *testing.T) {
+	for _, verb := range [][]string{{"serve"}, {"tokens", "mint", "--name", "ci"}, {"tokens", "list"}, {"tokens", "revoke", "--name", "ci"}} {
+		var out bytes.Buffer
+
+		args := append(slices.Clone(verb), "--tokens-file", filepath.Join(t.TempDir(), "serve.tokens"))
+		err := newApp(t, &out).Run(t.Context(), args)
+		if err == nil || !strings.HasPrefix(err.Error(), "unknown flag --tokens-file") {
+			t.Errorf("%v returned %v, want unknown flag --tokens-file", args, err)
+		}
 	}
 }
 
@@ -260,7 +274,7 @@ func TestTokensMintRefusesAScopeTheFrontDoesNotKnow(t *testing.T) {
 			t.Errorf("the refusal is %q, and it must name %s", err, want)
 		}
 	}
-	if _, err := os.Stat(serve.TokensPath(secret, "")); !errors.Is(err, fs.ErrNotExist) {
+	if _, err := os.Stat(serve.TokensPath(secret)); !errors.Is(err, fs.ErrNotExist) {
 		t.Errorf("mint left a ledger for a token it refused: %v", err)
 	}
 }

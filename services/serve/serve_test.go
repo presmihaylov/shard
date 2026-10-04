@@ -1225,7 +1225,7 @@ func newTokenEnv(t *testing.T) tokenEnv {
 
 	secret := secretFile(t, testSecret)
 
-	return tokenEnv{secret: secret, tokens: TokensPath(secret, "")}
+	return tokenEnv{secret: secret, tokens: TokensPath(secret)}
 }
 
 // mint issues a valid token for sub over the test secret, records it in env's ledger, and answers it.

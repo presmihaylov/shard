@@ -107,10 +107,8 @@ var (
 	formatTableHelp = flagHelp{"--format <format>", "output format: json or table", string(formatTable)}
 	formatJSONHelp  = flagHelp{"--format <format>", "output format: json or table", string(formatJSON)}
 	signingKeyHelp  = flagHelp{"--signing-key-file <path>", "token signing key", signingKeyDefault}
-	tokensFileHelp  = flagHelp{"--tokens-file <path>", "token registry file; defaults beside the signing key", ""}
 	// The read-only tokens verbs find the registry through the key and never create one.
-	registryKeyHelp  = flagHelp{"--signing-key-file <path>", "locate the token registry beside this key", signingKeyDefault}
-	registryFileHelp = flagHelp{"--tokens-file <path>", "token registry file; overrides the default location", ""}
+	registryKeyHelp = flagHelp{"--signing-key-file <path>", "locate the token registry beside this key", signingKeyDefault}
 )
 
 // The notes more than one verb prints.
@@ -588,7 +586,6 @@ var helps = map[string]verbHelp{
 		flags: []flagHelp{
 			{"--listen <address>", "listen address", serve.DefaultListen},
 			signingKeyHelp,
-			tokensFileHelp,
 		},
 		notes: []note{
 			para("The local daemon must be active.", "Use 'shard tokens mint' to create API tokens."),
@@ -610,7 +607,6 @@ var helps = map[string]verbHelp{
 			{"--duration <duration>", "token lifetime; default no expiry", ""},
 			{"--scopes <list>", "permissions, separated by commas; default all permissions", ""},
 			signingKeyHelp,
-			tokensFileHelp,
 			formatJSONHelp,
 		},
 		notes: []note{
@@ -625,7 +621,7 @@ var helps = map[string]verbHelp{
 	"tokens list": {
 		usage:   []string{"tokens list [OPTIONS]"},
 		summary: "list API tokens and their status",
-		flags:   []flagHelp{registryKeyHelp, registryFileHelp, formatTableHelp},
+		flags:   []flagHelp{registryKeyHelp, formatTableHelp},
 		notes: []note{para(
 			"Table columns: ID, NAME, ISSUED, EXPIRES, SCOPES and STATUS.",
 			"Does not create a signing key.",
@@ -639,7 +635,6 @@ var helps = map[string]verbHelp{
 		flags: []flagHelp{
 			{"--name <name>", "revoke all tokens with this name", ""},
 			registryKeyHelp,
-			registryFileHelp,
 		},
 		notes:    []note{para("Revoked tokens are rejected on subsequent requests.")},
 		examples: []string{"shard tokens revoke 0123456789abcdef", "shard tokens revoke --name build-agent"},

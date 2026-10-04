@@ -898,8 +898,8 @@ restart ends no connection that is already spliced.
 Every minted token carries a random 128-bit `jti`, and `mint` appends one record for it to a ledger.
 The record holds the id, the subject, when the token was issued, when it expires, its scopes, and
 whether it is revoked. The ledger sits beside the signing key file, at `serve.tokens` in the same
-directory, so the ledger of the default key is `<root>/auth/serve.tokens`. `--tokens-file` overrides
-that path on `tokens mint`, `tokens list`, `tokens revoke` and `serve`. `mint` creates the ledger
+directory, so the ledger of the default key is `<root>/auth/serve.tokens`. `tokens mint`, `tokens
+list`, `tokens revoke` and `serve` all use that path, and no flag moves it. `mint` creates the ledger
 `0640` when it is absent, and refuses a ledger that everyone can read. It prints no token when it
 cannot write the record.
 

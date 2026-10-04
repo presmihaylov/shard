@@ -249,7 +249,7 @@ func TestTokensMintHelpStatesItsDefaultsAndFlags(t *testing.T) {
 	if strings.Contains(got, "(default 24h)") {
 		t.Errorf("the tokens mint usage still claims a 24h default:\n%s", got)
 	}
-	for _, want := range []string{"--scopes <list>", "--tokens-file <path>", "default no expiry"} {
+	for _, want := range []string{"--scopes <list>", "default no expiry"} {
 		if !strings.Contains(got, want) {
 			t.Errorf("the tokens mint usage omits %q:\n%s", want, got)
 		}

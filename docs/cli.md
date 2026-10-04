@@ -119,10 +119,10 @@ shard: sandbox <id> is paused: resume it with shard resume <id>
 | `daemon` | `--provider --timeout --insecure-registry --log` | - | its log; `--log` on a Mac sends stdout and stderr to that file |
 | `daemon status` | `--format` | table | the daemon's state and its tasks |
 | `info` | `--format` | table | the provider a daemon would pick, and why |
-| `serve` | `--listen --signing-key-file --tokens-file` | - | its log |
-| `tokens mint` | `--name --signing-key-file --duration --scopes --tokens-file --format` | json | the token record |
-| `tokens list` | `--signing-key-file --tokens-file --format` | table | the ledger |
-| `tokens revoke <id>` | `--name --signing-key-file --tokens-file` | - | `revoked token <id>`, or `revoked <n> tokens of <sub>` with `--name` |
+| `serve` | `--listen --signing-key-file` | - | its log |
+| `tokens mint` | `--name --signing-key-file --duration --scopes --format` | json | the token record |
+| `tokens list` | `--signing-key-file --format` | table | the ledger |
+| `tokens revoke <id>` | `--name --signing-key-file` | - | `revoked token <id>`, or `revoked <n> tokens of <sub>` with `--name` |
 | `version` | `--format` | table | the client and daemon versions |
 
 ## Output formats
