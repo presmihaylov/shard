@@ -221,7 +221,6 @@ func findEntry(rootfs, rel string, minFields int, match func(fields []string) bo
 	return found, nil
 }
 
-// scanDatabase reads one colon-separated database and stops when visit says it has read enough.
 // os.OpenRoot confines every part of rel to the guest's own tree, so no symlink on a middle part leads the read onto the host (SHARD-357).
 func scanDatabase(rootfs, rel string, minFields int, visit func(fields []string) (bool, error)) error {
 	full := filepath.Join(rootfs, rel)
