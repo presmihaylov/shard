@@ -15,6 +15,8 @@ import (
 	"syscall"
 	"testing"
 	"time"
+
+	"github.com/presmihaylov/shard/pkg/pidpin/pidpintest"
 )
 
 func TestSaveRestoreFailsClosedOnEveryRowOfTheMatrix(t *testing.T) {
@@ -242,6 +244,7 @@ func dialed(t *testing.T, socket string) bool {
 
 // SHARD-349: a frozen shim takes the dial and never the call, so the kill names it by the kernel's peer pid and never waits for an answer.
 func TestKillEndsAShimTooFrozenToAnswer(t *testing.T) {
+	pidpintest.Require(t)
 	socket, cmd, exited := listening(t)
 	if err := syscall.Kill(cmd.Process.Pid, syscall.SIGSTOP); err != nil {
 		t.Fatal(err)
@@ -267,6 +270,7 @@ func TestKillEndsAShimTooFrozenToAnswer(t *testing.T) {
 
 // A pin on a pid the shim socket does not name again after the pin sends no signal, and says so, so the caller kills by its own record instead.
 func TestKillThroughAPinTheSocketDoesNotProveSignalsNobody(t *testing.T) {
+	pidpintest.Require(t)
 	socket, _, exited := listening(t)
 	innocent := exec.Command("sleep", "60")
 	if err := innocent.Start(); err != nil {

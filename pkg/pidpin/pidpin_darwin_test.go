@@ -30,6 +30,7 @@ func TestOpenOfAZombieSaysESRCH(t *testing.T) {
 
 // A token whose pid version is not the live process's stands for one that held the pid before, which no signal may reach.
 func TestASignalThroughAnEarlierHoldersTokenReachesNobody(t *testing.T) {
+	requirePin(t)
 	pid, _ := child(t)
 	p := pinned(t, pid)
 	p.handle.token[7]--

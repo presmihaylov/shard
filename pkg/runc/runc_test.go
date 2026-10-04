@@ -2,6 +2,7 @@ package runc_test
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"os"
 	"path/filepath"
@@ -11,6 +12,9 @@ import (
 	"testing"
 	"time"
 
+	"github.com/opencontainers/runtime-spec/specs-go"
+
+	"github.com/presmihaylov/shard/pkg/pty"
 	"github.com/presmihaylov/shard/pkg/runc"
 )
 
@@ -254,7 +258,7 @@ func TestExecKeepsItsScratchUnderTheExecDirAndRemovesIt(t *testing.T) {
 	execDir := filepath.Join(t.TempDir(), "exec")
 	r, argvFile := fakeBinary(t, "", runc.WithExecDir(execDir))
 
-	if _, err := r.Exec(t.Context(), "amber-otter-1a2b", runc.ExecOptions{Argv: []string{"/bin/true"}}); err != nil {
+	if _, err := r.Exec(t.Context(), "amber-otter-1a2b", runc.ExecOptions{Argv: []string{"/bin/true"}, Bundle: bundle(t)}); err != nil {
 		t.Fatalf("Exec: %v", err)
 	}
 
@@ -276,63 +280,145 @@ func TestExecKeepsItsScratchUnderTheExecDirAndRemovesIt(t *testing.T) {
 	}
 }
 
-func TestExecPutsTheFlagsBeforeTheIDAndTheCommandAfter(t *testing.T) {
-	r, argvFile := fake(t, "", "", 0)
+// runc reads the whole process from the file and merges nothing, so the file is what runc's flags would have made.
+func TestExecHandsRuncTheBundleProcessWithTheExecOverrides(t *testing.T) {
+	r, argvFile := fakeBinary(t, savingProcess())
 
 	if _, err := r.Exec(t.Context(), "amber-otter-1a2b", runc.ExecOptions{
+		Bundle:  bundle(t),
 		Argv:    []string{"/bin/sh", "-c", "echo hi"},
 		Env:     []string{"A=1", "B=2"},
 		WorkDir: "/srv",
-		User:    "65534:65534",
+		User:    "65534:65533",
 		Groups:  []uint32{65534, 10},
 	}); err != nil {
 		t.Fatalf("Exec: %v", err)
 	}
 
 	got := argv(t, argvFile)
-
-	id := slices.Index(got, "amber-otter-1a2b")
-	if id < 0 {
-		t.Fatalf("the argv %q names no container", got)
+	at := slices.Index(got, "exec")
+	if at < 0 || len(got) != at+6 || got[at+1] != "--pid-file" || got[at+3] != "--process" || got[at+5] != "amber-otter-1a2b" {
+		t.Fatalf("the argv is %q, want exec --pid-file P --process F and the id last", got)
 	}
 
-	// Everything after the id is the guest's own command, and runc reads no flag past it.
-	if command := got[id+1:]; !slices.Equal(command, []string{"/bin/sh", "-c", "echo hi"}) {
-		t.Errorf("the command is %q, want the argv Exec was given", command)
+	process := savedProcess(t, argvFile)
+	if !slices.Equal(process.Args, []string{"/bin/sh", "-c", "echo hi"}) {
+		t.Errorf("the args are %q, want the argv Exec was given", process.Args)
 	}
-
-	before := got[:id]
-	if !slices.Contains(before, "--pid-file") {
-		t.Errorf("the flags before the id are %q, want --pid-file among them", before)
+	if !slices.Equal(process.Env, []string{"PATH=/bin", "A=1", "B=2"}) {
+		t.Errorf("the env is %q, want the bundle's with the exec's appended", process.Env)
 	}
-
-	flags := pairs(before)
-	wanted := []string{
-		"--cwd /srv", "--user 65534:65534", "--env A=1", "--env B=2",
-		"--additional-gids 65534", "--additional-gids 10",
+	if process.Cwd != "/srv" {
+		t.Errorf("the cwd is %q, want /srv", process.Cwd)
 	}
-	for _, want := range wanted {
-		if !slices.Contains(flags, want) {
-			t.Errorf("the flags before the id are %q, want %q in them", before, want)
-		}
+	if process.User.UID != 65534 || process.User.GID != 65533 || !slices.Equal(process.User.AdditionalGids, []uint32{4, 65534, 10}) {
+		t.Errorf("the user is %+v, want 65534:65533 with the groups appended to the bundle's", process.User)
+	}
+	if process.Terminal || process.ConsoleSize != nil {
+		t.Errorf("a pipe exec asked for a terminal: terminal %t, window %+v", process.Terminal, process.ConsoleSize)
+	}
+	if process.Capabilities == nil || !slices.Equal(process.Capabilities.Bounding, []string{"CAP_KILL"}) || !process.NoNewPrivileges {
+		t.Errorf("the process lost what the bundle confines it with: %+v", process)
 	}
 }
 
-// pairs reads a flag list as the flag-value pairs it is, so a repeated flag is matched by its value.
-func pairs(args []string) []string {
-	var out []string
-	for i := 0; i+1 < len(args); i++ {
-		out = append(out, args[i]+" "+args[i+1])
+// SHARD-514: --tty alone sizes the pty after the command starts, so a quick stty size read 0x0.
+func TestATerminalExecHandsRuncTheWindowBeforeTheCommandStarts(t *testing.T) {
+	terminal, err := pty.Open()
+	if err != nil {
+		t.Fatalf("open a pty: %v", err)
+	}
+	t.Cleanup(func() {
+		if err := terminal.Close(); err != nil {
+			t.Errorf("close the pty: %v", err)
+		}
+	})
+	if err := terminal.Resize(pty.Size{Rows: 24, Cols: 80}); err != nil {
+		t.Fatalf("resize the pty: %v", err)
 	}
 
-	return out
+	r, argvFile := fakeBinary(t, savingProcess())
+	if _, err := r.Exec(t.Context(), "amber-otter-1a2b", runc.ExecOptions{
+		Bundle: bundle(t),
+		Argv:   []string{"/bin/sh"},
+		TTY:    true,
+		Stdin:  terminal.Replica, Stdout: terminal.Replica, Stderr: terminal.Replica,
+	}); err != nil {
+		t.Fatalf("Exec: %v", err)
+	}
+
+	process := savedProcess(t, argvFile)
+	if !process.Terminal || process.ConsoleSize == nil || *process.ConsoleSize != (specs.Box{Height: 24, Width: 80}) {
+		t.Errorf("terminal %t, window %+v, want a terminal of 24x80", process.Terminal, process.ConsoleSize)
+	}
+}
+
+func TestExecRefusesWithNoBundle(t *testing.T) {
+	r, recorded := fake(t, "", "", 0)
+
+	if _, err := r.Exec(t.Context(), "amber-otter-1a2b", runc.ExecOptions{Argv: []string{"/bin/true"}}); err == nil {
+		t.Fatal("Exec ran with no bundle to take the process from")
+	}
+
+	if _, err := os.Stat(recorded); err == nil {
+		t.Error("a refusal still ran runc")
+	}
+}
+
+// bundle is a directory whose config.json holds what create would have started PID 1 with.
+func bundle(t *testing.T) string {
+	t.Helper()
+
+	dir := t.TempDir()
+	blob, err := json.Marshal(specs.Spec{Process: &specs.Process{
+		Args:            []string{"/sbin/shard-init"},
+		Env:             []string{"PATH=/bin"},
+		Cwd:             "/",
+		User:            specs.User{AdditionalGids: []uint32{4}},
+		Capabilities:    &specs.LinuxCapabilities{Bounding: []string{"CAP_KILL"}},
+		NoNewPrivileges: true,
+	}})
+	if err != nil {
+		t.Fatalf("encode the bundle config: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "config.json"), blob, 0o600); err != nil {
+		t.Fatalf("write the bundle config: %v", err)
+	}
+
+	return dir
+}
+
+// savingProcess keeps a copy of the process file, because Exec removes the original when runc returns.
+func savingProcess() string {
+	return `prev=
+for arg in "$@"; do
+	if [ "$prev" = "--process" ]; then cp "$arg" "$argv.process"; fi
+	prev=$arg
+done
+`
+}
+
+func savedProcess(t *testing.T, argvFile string) specs.Process {
+	t.Helper()
+
+	blob, err := os.ReadFile(argvFile + ".process")
+	if err != nil {
+		t.Fatalf("the fake runc saved no process file: %v", err)
+	}
+
+	var process specs.Process
+	if err := json.Unmarshal(blob, &process); err != nil {
+		t.Fatalf("decode the process file: %v", err)
+	}
+
+	return process
 }
 
 // The point of exec: a command that exits 7 is an answer, not a failure of the driver.
 func TestExecReturnsTheCommandExitCode(t *testing.T) {
 	r, _ := fake(t, "", "", 7)
 
-	code, err := r.Exec(t.Context(), "amber-otter-1a2b", runc.ExecOptions{Argv: []string{"/bin/false"}})
+	code, err := r.Exec(t.Context(), "amber-otter-1a2b", runc.ExecOptions{Argv: []string{"/bin/false"}, Bundle: bundle(t)})
 	if err != nil {
 		t.Fatalf("Exec: %v", err)
 	}
@@ -358,7 +444,7 @@ func TestExecRefusesACommandThatIsEmpty(t *testing.T) {
 func TestExecRefusesADriverThatWasSignalled(t *testing.T) {
 	r, _ := fakeBinary(t, "kill -9 $$\n")
 
-	code, err := r.Exec(t.Context(), "amber-otter-1a2b", runc.ExecOptions{Argv: []string{"/bin/true"}})
+	code, err := r.Exec(t.Context(), "amber-otter-1a2b", runc.ExecOptions{Argv: []string{"/bin/true"}, Bundle: bundle(t)})
 	if err == nil {
 		t.Fatalf("Exec reported code %d and no error for a driver a signal ended", code)
 	}
@@ -386,7 +472,7 @@ echo survived > "$argv.survived"
 		waitFor(argvFile + ".ready")
 	}()
 
-	_, err := r.Exec(ctx, "amber-otter-1a2b", runc.ExecOptions{Argv: []string{"/bin/sleep", "30"}})
+	_, err := r.Exec(ctx, "amber-otter-1a2b", runc.ExecOptions{Argv: []string{"/bin/sleep", "30"}, Bundle: bundle(t)})
 	if !errors.Is(err, context.Canceled) {
 		t.Fatalf("a cancelled Exec returned %v, want it to name the cancellation", err)
 	}
@@ -405,7 +491,7 @@ func TestExecLooksTheCommandUpBeforeItRuns(t *testing.T) {
 	writeExecutable(t, filepath.Join(rootfs, "bin", "true"))
 
 	_, err := r.Exec(t.Context(), "amber-otter-1a2b", runc.ExecOptions{
-		Argv: []string{"nosuch"}, Env: []string{"PATH=/bin"}, RootFS: rootfs,
+		Argv: []string{"nosuch"}, Env: []string{"PATH=/bin"}, RootFS: rootfs, Bundle: bundle(t),
 	})
 
 	var lookup *runc.LookupError
@@ -420,14 +506,14 @@ func TestExecLooksTheCommandUpBeforeItRuns(t *testing.T) {
 	}
 
 	if _, err := r.Exec(t.Context(), "amber-otter-1a2b", runc.ExecOptions{
-		Argv: []string{"true"}, Env: []string{"PATH=/bin"}, RootFS: rootfs,
+		Argv: []string{"true"}, Env: []string{"PATH=/bin"}, RootFS: rootfs, Bundle: bundle(t),
 	}); err != nil {
 		t.Fatalf("Exec refused a command that is on the guest's PATH: %v", err)
 	}
 
 	// No PATH in the env means the OCI default, which is what runc would resolve against.
 	if _, err := r.Exec(t.Context(), "amber-otter-1a2b", runc.ExecOptions{
-		Argv: []string{"true"}, RootFS: rootfs,
+		Argv: []string{"true"}, RootFS: rootfs, Bundle: bundle(t),
 	}); err != nil {
 		t.Fatalf("Exec refused a command on the default PATH when the env named none: %v", err)
 	}
