@@ -73,8 +73,12 @@ func Serve(listener net.Listener, machine Machine, logger *log.Logger) error {
 }
 
 // settled runs once the request frame is in, and again on exit, so a failed handshake leaves nothing behind for shutdown to close.
-func serveOne(conn net.Conn, machine Machine, settled func()) error {
-	defer conn.Close()
+func serveOne(conn net.Conn, machine Machine, settled func()) (err error) {
+	defer func() {
+		if closeErr := conn.Close(); !quiet(closeErr) {
+			err = errors.Join(err, fmt.Errorf("close the shim socket: %w", closeErr))
+		}
+	}()
 	defer settled()
 
 	var req request
@@ -90,6 +94,13 @@ func serveOne(conn net.Conn, machine Machine, settled func()) error {
 	}
 
 	guest, frames, err := handle(req, machine)
+	if guest != nil {
+		defer func() {
+			if closeErr := guest.Close(); !quiet(closeErr) {
+				err = errors.Join(err, fmt.Errorf("close the guest stream: %w", closeErr))
+			}
+		}()
+	}
 	reply := response{State: machine.State(), PID: os.Getpid(), MachineID: machine.MachineID()}
 	if err != nil {
 		reply = response{Error: err.Error()}
@@ -103,8 +114,6 @@ func serveOne(conn net.Conn, machine Machine, settled func()) error {
 	if guest == nil {
 		return nil
 	}
-
-	defer guest.Close()
 
 	return splice(conn, guest)
 }
@@ -153,17 +162,21 @@ func writeFrameWithFile(conn net.Conn, reply response, file *os.File) error {
 	return nil
 }
 
-// splice copies both ways until one side ends, then ends the other copier's read.
+// Either peer can leave while the other waits in a read or a write.
 func splice(a, b net.Conn) error {
-	sent := make(chan error, 1)
-	go func() { sent <- forward(b, a) }()
+	ended := make(chan error, 2)
+	go func() { ended <- forward(b, a) }()
+	go func() { ended <- forward(a, b) }()
 
-	received := forward(a, b)
-	if err := a.SetReadDeadline(time.Now()); err != nil {
-		return errors.Join(received, fmt.Errorf("end the read of the shim socket: %w", err))
+	err := <-ended
+	if closeErr := a.Close(); !quiet(closeErr) {
+		err = errors.Join(err, fmt.Errorf("close the shim socket: %w", closeErr))
+	}
+	if closeErr := b.Close(); !quiet(closeErr) {
+		err = errors.Join(err, fmt.Errorf("close the guest stream: %w", closeErr))
 	}
 
-	return errors.Join(received, <-sent)
+	return errors.Join(err, <-ended)
 }
 
 func forward(dst, src net.Conn) error {
@@ -177,6 +190,6 @@ func forward(dst, src net.Conn) error {
 
 // quiet reports the ends that are how a spliced connection stops, rather than a failure to report.
 func quiet(err error) bool {
-	return err == nil || errors.Is(err, io.EOF) || errors.Is(err, net.ErrClosed) ||
+	return err == nil || errors.Is(err, io.EOF) || errors.Is(err, io.ErrClosedPipe) || errors.Is(err, net.ErrClosed) ||
 		errors.Is(err, os.ErrDeadlineExceeded) || errors.Is(err, syscall.EPIPE) || errors.Is(err, syscall.ECONNRESET)
 }
