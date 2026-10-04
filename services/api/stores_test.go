@@ -471,3 +471,19 @@ func TestPruneAnswersWhatItRemovedAndWhatItLeft(t *testing.T) {
 		t.Errorf("the warnings are %v", body["warnings"])
 	}
 }
+
+// A prune that removed nothing still answers an array, so a client never reads null as a list.
+func TestPruneThatRemovesNothingAnswersAnEmptyArray(t *testing.T) {
+	s := seed(t)
+
+	status, body := send(t, s.server, http.MethodPost, "/v0/images/prune", "")
+	if status != http.StatusOK {
+		t.Fatalf("POST /v0/images/prune answered %d %v", status, body)
+	}
+	if removed, ok := body["removed"].([]any); !ok || len(removed) != 0 {
+		t.Errorf("the removed images are %#v, want []", body["removed"])
+	}
+	if _, ok := body["warnings"]; ok {
+		t.Errorf("the warnings are %v, want the key absent", body["warnings"])
+	}
+}
