@@ -70,6 +70,7 @@ func (s *Service) CreateSnapshot(ctx context.Context, req SnapshotRequest) (mode
 		Digest:     img.Digest,
 		Provider:   s.cfg.Provider.Name(),
 		DiskMiB:    sb.Resources.DiskMiB,
+		MemoryMiB:  sb.Resources.MemoryMiB,
 		CreatedAt:  time.Now().UTC(),
 	}, func(files string) error { return s.cfg.Provider.Snapshot(ctx, id, files) })
 }
@@ -163,6 +164,9 @@ func (s *Service) readSeed(id string, req CreateRequest) (seeded, error) {
 
 	if req.Resources.DiskMiB == 0 {
 		req.Resources.DiskMiB = snap.DiskMiB
+	}
+	if req.Resources.MemoryMiB == 0 {
+		req.Resources.MemoryMiB = snap.MemoryMiB
 	}
 	// A microVM substrate copies the disk file as it is, so it cannot give the copy another size.
 	if _, keeps := s.cfg.Provider.(diskAdmitter); keeps && req.Resources.DiskMiB != snap.DiskMiB {

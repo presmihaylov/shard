@@ -478,6 +478,7 @@ takes `{ref}` takes an id or a name. A snapshot record reads like this, with the
   "digest": "sha256:<digest>",
   "provider": "gvisor",
   "disk_mib": 10240,
+  "memory_mib": 512,
   "size": 1048576,
   "created_at": "2026-10-04T09:00:00Z"
 }
@@ -502,9 +503,10 @@ its own. The create never pulls, so it builds and starts the sandbox before it a
 record says `running` and names the snapshot's id in its `snapshot` key. It answers 400 when the
 snapshot was made on another provider, or when the host no longer holds its image at the digest the
 snapshot recorded. Firecracker and `vz` copy the disk as it is, so on them it also answers 400 for a
-`disk_mib` that differs from the snapshot's. A body with no `disk_mib` takes the snapshot's. A
-snapshot reference that nothing has is 404. An image that a snapshot names stays held:
-`DELETE /v0/images/{ref}` refuses it with 409 `in_use`, and `image prune` leaves it.
+`disk_mib` that differs from the snapshot's. A body with no `disk_mib` or no `memory_mib` takes the
+snapshot's, which is the bound the source ran under. A snapshot reference that nothing has is 404.
+An image that a snapshot names stays held: `DELETE /v0/images/{ref}` refuses it with 409 `in_use`,
+and `image prune` leaves it.
 
 - `POST /v0/sandboxes/{id}/exec` takes `{"command", "env", "workdir", "user", "stdin", "tty",
   "size": {"rows", "cols"}, "attach"}`, where `attach` holds the output for the first attach under the

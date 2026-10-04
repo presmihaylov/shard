@@ -204,9 +204,9 @@ func commands() []command {
 		{name: "cp", run: App.cp},
 		{name: "snapshot", subs: []command{
 			{name: "create", run: App.snapshotCreate},
-			{name: "list", run: App.snapshotList},
+			{name: "list", aliases: []string{"ls"}, run: App.snapshotList},
 			{name: "inspect", run: App.snapshotInspect},
-			{name: "remove", run: App.snapshotRemove},
+			{name: "remove", aliases: []string{"rm"}, run: App.snapshotRemove},
 		}},
 		{name: "pull", run: App.pull},
 		{name: "image", subs: []command{

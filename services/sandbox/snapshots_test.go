@@ -20,7 +20,7 @@ const canonicalAlpine = "index.docker.io/library/alpine:3.20"
 func snapshotSource() models.Sandbox {
 	sb := stopped()
 	sb.Image = canonicalAlpine
-	sb.Resources = models.Resources{DiskMiB: 2048}
+	sb.Resources = models.Resources{MemoryMiB: 512, DiskMiB: 2048}
 
 	return sb
 }
@@ -40,7 +40,7 @@ func storedSnapshot(t *testing.T, l layers, snap models.Snapshot) models.Snapsho
 }
 
 func baseSnapshot() models.Snapshot {
-	return models.Snapshot{Name: "base", Source: "sandbox9", Image: canonicalAlpine, Digest: fakeDigest, Provider: "fake", DiskMiB: 2048}
+	return models.Snapshot{Name: "base", Source: "sandbox9", Image: canonicalAlpine, Digest: fakeDigest, Provider: "fake", DiskMiB: 2048, MemoryMiB: 512}
 }
 
 func TestCreateSnapshotCopiesAStoppedSandbox(t *testing.T) {
@@ -52,7 +52,7 @@ func TestCreateSnapshotCopiesAStoppedSandbox(t *testing.T) {
 		t.Fatalf("snapshot: %v", err)
 	}
 
-	want := models.Snapshot{ID: snap.ID, Name: "base", Source: "sandbox1", SourceName: "web", Image: canonicalAlpine, Digest: fakeDigest, Provider: "fake", DiskMiB: 2048}
+	want := models.Snapshot{ID: snap.ID, Name: "base", Source: "sandbox1", SourceName: "web", Image: canonicalAlpine, Digest: fakeDigest, Provider: "fake", DiskMiB: 2048, MemoryMiB: 512}
 	if snap.ID == "" || snap.CreatedAt.IsZero() || snap.Size == 0 {
 		t.Errorf("the snapshot is %+v, want an id, a time and the size of what it holds", snap)
 	}
@@ -135,8 +135,8 @@ func TestCreateFromASnapshotSeedsTheLayerAndNeverPulls(t *testing.T) {
 		t.Fatalf("create: %v", err)
 	}
 
-	if sb.Snapshot != snap.ID || sb.Image != canonicalAlpine || sb.Resources.DiskMiB != 2048 {
-		t.Errorf("the record holds snapshot %q, image %q and disk %d, want %s, %s and the snapshot's 2048", sb.Snapshot, sb.Image, sb.Resources.DiskMiB, snap.ID, canonicalAlpine)
+	if sb.Snapshot != snap.ID || sb.Image != canonicalAlpine || sb.Resources.DiskMiB != 2048 || sb.Resources.MemoryMiB != 512 {
+		t.Errorf("the record holds snapshot %q, image %q, disk %d and memory %d, want %s, %s and the snapshot's 2048 and 512", sb.Snapshot, sb.Image, sb.Resources.DiskMiB, sb.Resources.MemoryMiB, snap.ID, canonicalAlpine)
 	}
 	files, err := l.snapshots.Files(snap.ID)
 	if err != nil {
@@ -207,6 +207,21 @@ func TestCreateFromASnapshotRefusesWhatTheSnapshotCannotStartOn(t *testing.T) {
 		if slices.Contains(r.calls, "repo.Create") || slices.Contains(r.calls, "images.Pull") {
 			t.Errorf("%s: a refused create reached the store: %v", c.name, r.calls)
 		}
+	}
+}
+
+// Memory is not on the disk, so an explicit --memory replaces the snapshot's bound.
+func TestCreateFromASnapshotTakesAnExplicitMemory(t *testing.T) {
+	r := &recorder{}
+	svc, l := newService(t, r, models.Sandbox{})
+	storedSnapshot(t, l, baseSnapshot())
+
+	sb, err := svc.Create(t.Context(), sandbox.CreateRequest{Snapshot: "base", Resources: models.Resources{MemoryMiB: 1024}})
+	if err != nil {
+		t.Fatalf("create: %v", err)
+	}
+	if sb.Resources.MemoryMiB != 1024 {
+		t.Errorf("the record holds memory %d, want the request's 1024 over the snapshot's 512", sb.Resources.MemoryMiB)
 	}
 }
 
