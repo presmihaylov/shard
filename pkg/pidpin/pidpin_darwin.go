@@ -33,7 +33,7 @@ import (
 // zombie is SZOMB in sys/proc.h, which x/sys does not name.
 const zombie = 5
 
-// inExit is P_WEXIT in sys/proc.h: the process began its exit, and task_name_for_pid no longer finds it.
+// inExit is P_WEXIT in sys/proc.h: the process began its exit, which no signal stops.
 const inExit = 0x2000
 
 // handle is the audit token: the kernel signals through it only while its pid version matches the process on the pid.
