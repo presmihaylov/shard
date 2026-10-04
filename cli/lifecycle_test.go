@@ -261,6 +261,8 @@ type fakeLifecycleProvider struct {
 	// stopApps is the force of every StopApp, in order; endOnStop is the exit a stop leaves, nil to leave the app running.
 	stopApps  []bool
 	endOnStop *models.ExitStatus
+	// startGate holds Start until it closes and ignores the caller, as the daemon's background create does.
+	startGate chan struct{}
 }
 
 func (f *fakeLifecycleProvider) Restarts(context.Context, string) (models.RestartCount, error) {
@@ -379,6 +381,9 @@ func (f *fakeLifecycleProvider) Create(_ context.Context, spec models.SandboxSpe
 func (f *fakeLifecycleProvider) Start(context.Context, string) error {
 	if err := f.r.record("provider.Start"); err != nil {
 		return err
+	}
+	if f.startGate != nil {
+		<-f.startGate
 	}
 	f.started = true
 	f.status = models.Status{Exists: true, State: models.StateRunning, PID: 7}

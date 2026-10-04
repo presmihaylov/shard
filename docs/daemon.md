@@ -290,6 +290,11 @@ every start again and sends TERM to the app, or KILL with `force`, and the sandb
 with `shard-init` alone. A process in the sandbox does the same with `kill -USR1 1` for TERM and
 `kill -USR2 1` for KILL. A stop during the wait ends the app at once.
 
+The app leads its own process group, and every end of a run signals that group whole: `app/stop`,
+the Ctrl+C of `shard run`, a start again and an OOM kill. So what the app forked ends with it, while
+`shard-init` and every exec session run on. A process that leaves the group, with `setsid`, runs
+until `stop`.
+
 The policy is fixed at create. `shard-init` gets it as flags in the bundle and has no control
 channel, so nothing can change it on a running sandbox. `shard-init` counts every start again in a
 file. Every second, the `restart-policy` task reads that file for every running sandbox that has a

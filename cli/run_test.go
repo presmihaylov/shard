@@ -8,6 +8,7 @@ import (
 	"path/filepath"
 	"slices"
 	"strings"
+	"sync"
 	"syscall"
 	"testing"
 	"time"
@@ -93,8 +94,17 @@ func TestRunExitsWith125WhenShardFails(t *testing.T) {
 	}
 }
 
-// startRun runs shard run with interrupts main would route, and answers once the attach took them.
+// startRun runs shard run with interrupts main would route, and answers once the run took them.
 func startRun(t *testing.T, app App, args ...string) (chan<- os.Signal, <-chan error) {
+	t.Helper()
+
+	signals, done := goRun(t, &app, args...)
+	waitFor(t, "the run to take the interrupts", func() bool { return app.Interrupts.receiver() != nil })
+
+	return signals, done
+}
+
+func goRun(t *testing.T, app *App, args ...string) (chan<- os.Signal, <-chan error) {
 	t.Helper()
 
 	signals := make(chan os.Signal, 3)
@@ -105,8 +115,6 @@ func startRun(t *testing.T, app App, args ...string) (chan<- os.Signal, <-chan e
 
 	done := make(chan error, 1)
 	go func() { done <- app.Run(ctx, append([]string{"run"}, args...)) }()
-
-	waitFor(t, "the run to take the interrupts", func() bool { return app.Interrupts.receiver() != nil })
 
 	return signals, done
 }
@@ -173,5 +181,72 @@ func TestRunKillsOnTheSecondInterruptAndLeavesOnTheThird(t *testing.T) {
 	}
 	if !strings.Contains(out.String(), "shard: killing the app; Ctrl+C again to leave") {
 		t.Errorf("run printed %q, want the note on the kill", out.String())
+	}
+}
+
+// The daemon starts the app of a create its caller left, so a Ctrl+C before the sandbox is up stops the app once it is, and the run never leaves before.
+func TestRunStopsTheAppOfACreateItInterrupted(t *testing.T) {
+	for _, tc := range []struct {
+		name     string
+		uncached bool
+		detach   bool
+		presses  int
+		note     string
+		stops    []bool
+	}{
+		{name: "cached", presses: 1, note: "stopping the app once the sandbox is up; Ctrl+C again to kill it", stops: []bool{false}},
+		{name: "cached detached", detach: true, presses: 1, note: "stopping the app once the sandbox is up; Ctrl+C again to kill it", stops: []bool{false}},
+		{name: "cached pressed three times", presses: 3, note: "killing the app once the sandbox is up", stops: []bool{true}},
+		{name: "uncached", uncached: true, presses: 1, note: "stopping the app once the sandbox is up; Ctrl+C again to kill it", stops: []bool{false}},
+		{name: "uncached detached", uncached: true, detach: true, presses: 1, note: "stopping the app once the sandbox is up; Ctrl+C again to kill it", stops: []bool{false}},
+		{name: "uncached pressed three times", uncached: true, presses: 3, note: "killing the app once the sandbox is up", stops: []bool{true}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			var out bytes.Buffer
+
+			app, d, r := newRunApp(t, &out, "app output\n")
+			if tc.uncached {
+				d.creates = newBackgroundCreates(t)
+			}
+			provider := d.providerSvc.(*fakeLifecycleProvider)
+			provider.endOnStop = &models.ExitStatus{Code: 143, Signal: 15}
+			provider.startGate = make(chan struct{})
+			release := sync.OnceFunc(func() { close(provider.startGate) })
+			t.Cleanup(release)
+			notes := &syncBuffer{}
+			app.Err = notes
+
+			args := []string{"alpine:3.20", "sleep", "60"}
+			if tc.detach {
+				args = append([]string{"-d"}, args...)
+			}
+			signals, done := goRun(t, &app, args...)
+			waitFor(t, "the start", func() bool { return slices.Contains(r.seen(), "provider.Start") })
+			for range tc.presses {
+				signals <- syscall.SIGINT
+			}
+			waitFor(t, "the note on every press, or the run to end", func() bool {
+				return strings.Count(notes.String(), "shard: ") == tc.presses || len(done) > 0
+			})
+			if len(done) > 0 {
+				t.Fatalf("run returned %v before the sandbox was up", <-done)
+			}
+			if !strings.Contains(notes.String(), "shard: "+tc.note+"\n") {
+				t.Errorf("run noted %q, want %q last", notes.String(), tc.note)
+			}
+			release()
+
+			err := <-done
+			var exit *ExitError
+			if !errors.As(err, &exit) || exit.Code != InterruptedExitCode || exit.Message != "interrupted; the app of sandbox sandbox2 ended, and the sandbox stays running" {
+				t.Fatalf("run returned %v, want 130 once the app ended", err)
+			}
+			if got := provider.stops(); !slices.Equal(got, tc.stops) {
+				t.Errorf("run asked for stops %v, want %v", got, tc.stops)
+			}
+			if tc.detach == strings.Contains(out.String(), "app output") {
+				t.Errorf("run with detach %v printed %q", tc.detach, out.String())
+			}
+		})
 	}
 }

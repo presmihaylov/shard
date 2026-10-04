@@ -4,6 +4,8 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io"
+	"os"
 
 	"github.com/presmihaylov/shard/models"
 	"github.com/presmihaylov/shard/services/client"
@@ -46,15 +48,77 @@ func (a App) runApp(ctx context.Context, args []string) error {
 		return err
 	}
 
-	sb, err := a.createAndWait(ctx, c, opts.req)
+	interrupts := a.Interrupts.take()
+	// An interrupt that raced the take cancelled the work before the create began.
+	if ctx.Err() != nil {
+		return ctx.Err()
+	}
+
+	sb, asked, err := a.createCaught(ctx, c, opts.req, interrupts)
 	if err != nil {
 		return err
+	}
+	if asked > 0 {
+		return a.cancelApp(ctx, c, sb.ID, interrupts, asked, opts.detach)
 	}
 	if opts.detach {
 		return a.print(sb.ID)
 	}
 
-	return a.attachApp(ctx, c, sb.ID)
+	return a.attachApp(ctx, c, sb.ID, interrupts, 0, a.Out)
+}
+
+// createCaught counts the interrupts that land during the create and never leaves it, as the daemon starts the app of a create its caller left.
+func (a App) createCaught(ctx context.Context, c *client.Client, req sandbox.CreateRequest, interrupts <-chan os.Signal) (models.Sandbox, int, error) {
+	type created struct {
+		sb  models.Sandbox
+		err error
+	}
+	result := make(chan created, 1)
+	go func() {
+		sb, err := a.createAndWait(ctx, c, req)
+		result <- created{sb: sb, err: err}
+	}()
+
+	asked := 0
+	for {
+		select {
+		case r := <-result:
+			return r.sb, asked, r.err
+		case <-interrupts:
+			asked = min(asked+1, 2)
+			a.note(createNote(asked == 2))
+		}
+	}
+}
+
+func createNote(force bool) string {
+	if force {
+		return "killing the app once the sandbox is up"
+	}
+
+	return "stopping the app once the sandbox is up; Ctrl+C again to kill it"
+}
+
+// cancelApp stops an app the operator interrupted before it began and waits for its end, so the run leaves no app behind.
+func (a App) cancelApp(ctx context.Context, c *client.Client, id string, interrupts <-chan os.Signal, asked int, detach bool) error {
+	// The stop lands before any leave, so a run that leaves on a later interrupt strands no app.
+	if err := stopApp(ctx, c, id, asked == 2); err != nil {
+		return err
+	}
+
+	out := a.Out
+	if detach {
+		out = io.Discard
+	}
+
+	err := a.attachApp(ctx, c, id, interrupts, asked, out)
+	var exit *ExitError
+	if err != nil && (!errors.As(err, &exit) || exit.Message != "") {
+		return err
+	}
+
+	return &ExitError{Code: InterruptedExitCode, Message: fmt.Sprintf("interrupted; the app of sandbox %s ended, and the sandbox stays running", id)}
 }
 
 // attachedApp is how the attach ended: the app's last exit, or why the attach failed.
@@ -64,21 +128,15 @@ type attachedApp struct {
 }
 
 // attachApp prints the app's output until its policy ends; interrupts stop, then kill, then leave, and the sandbox runs on.
-func (a App) attachApp(ctx context.Context, c *client.Client, id string) error {
-	interrupts := a.Interrupts.take()
-	// An interrupt that raced the take cancelled the work, and the operator meant it for the app.
-	if ctx.Err() != nil {
-		return fmt.Errorf("sandbox %s runs on; shard logs %s shows its app: %w", id, id, ctx.Err())
-	}
-
+// asked counts the stops already sent.
+func (a App) attachApp(ctx context.Context, c *client.Client, id string, interrupts <-chan os.Signal, asked int, out io.Writer) error {
 	attached := make(chan attachedApp, 1)
 	go func() {
-		exit, err := c.AttachApp(ctx, id, a.Out)
+		exit, err := c.AttachApp(ctx, id, out)
 		attached <- attachedApp{exit: exit, err: err}
 	}()
 
 	stopped := make(chan error, 2)
-	asked := 0
 	for {
 		select {
 		case result := <-attached:

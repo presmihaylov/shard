@@ -127,7 +127,7 @@ var helps = map[string]verbHelp{
 		notes: []string{
 			"The flags go before the image. The command follows the image; an optional -- may precede it.",
 			"run prints what the app writes, stdout and stderr interleaved, until the restart policy ends, then exits with the app's last code, or 128 plus the signal that ended it. It exits 125 when shard itself fails.",
-			"Ctrl+C stops the app and cancels its restarts, a second Ctrl+C kills it, and a third leaves with 130. The sandbox stays running until shard stop.",
+			"Ctrl+C stops the app and cancels its restarts, a second Ctrl+C kills it, and a third leaves with 130. Before the sandbox is up, run waits for it, then stops the app, or kills it after a second Ctrl+C, and exits 130. The sandbox stays running until shard stop.",
 			"A process in the sandbox ends its own restarts with kill -USR1 1, which also terms the app, or kill -USR2 1, which kills it.",
 			sizeNote,
 		},

@@ -303,6 +303,7 @@ func (g *guest) collect() bool {
 		}
 		if done {
 			g.entrypointPID = 0
+			killGroup(d.pid)
 
 			continue
 		}
@@ -330,7 +331,11 @@ func (g *guest) collect() bool {
 		g.startAgain = g.restart.schedule(d.exit, &g.count)
 		if g.startAgain == nil {
 			g.end()
+
+			continue
 		}
+		// The next run never starts beside what the last one left behind.
+		killGroup(d.pid)
 	}
 	if !done {
 		return false
@@ -471,19 +476,26 @@ func (g *guest) kill(pid int) {
 	})
 }
 
-// PID 1 in a namespace has no default disposition, so a stop only works if we pass it on ourselves.
+// PID 1 in a namespace has no default disposition, so a stop is passed on, to the group the entrypoint leads with what it forked.
 func forwardToEntrypoint(entrypointPID int, received os.Signal) error {
 	unixSignal, ok := received.(syscall.Signal)
 	if !ok {
 		return fmt.Errorf("cannot forward signal %v to the entrypoint", received)
 	}
 
-	err := syscall.Kill(entrypointPID, unixSignal)
+	err := syscall.Kill(-entrypointPID, unixSignal)
 	if err == nil || errors.Is(err, syscall.ESRCH) {
 		return nil
 	}
 
 	return fmt.Errorf("forward %s to the entrypoint: %w", unixSignal, err)
+}
+
+// killGroup ends what a run of the app left in its group; PID 1 survives a failed kill, so it is reported and never fatal (AGENTS.md).
+func killGroup(entrypointPID int) {
+	if err := syscall.Kill(-entrypointPID, syscall.SIGKILL); err != nil && !errors.Is(err, syscall.ESRCH) {
+		fmt.Fprintf(os.Stderr, "shard-init: kill the group of entrypoint %d: %v\n", entrypointPID, err)
+	}
 }
 
 // It collects every dead child, not only the entrypoint: orphaned grandchildren land on PID 1.

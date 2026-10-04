@@ -56,7 +56,8 @@ ENTRYPOINT and CMD never run. Run prints what the app writes, stdout and stderr 
 the restart policy ends, and then exits with the app's last code, or 128 plus the signal that ended
 it. It exits 125 when shard itself fails. `-d` prints the id once the app starts and returns.
 Ctrl+C stops the app and cancels its restarts, a second Ctrl+C kills it, and a third leaves with 130.
-The sandbox stays `running` through all of it, until `shard stop`.
+Before the sandbox is up, run waits for it, then stops the app, or kills it after a second Ctrl+C,
+and exits 130. The sandbox stays `running` through all of it, until `shard stop`.
 
 `shard create` takes no command. Only `shard-init` runs, and the sandbox stays up for `shard exec`.
 

@@ -68,7 +68,7 @@ func (s *Service) waitApp(ctx context.Context, id string, copyOut func() error) 
 				return models.AppExit{}, err
 			}
 
-			return appEnd(ctx, id, last, count, copyOut)
+			return appEnd(id, last, count)
 		}
 		if !status.Alive() {
 			return models.AppExit{}, &StateError{ID: id, State: status.State, Fix: "its app had not ended; shard start " + id + " runs it again", Code: models.CodeSandboxNotRunning}
@@ -82,19 +82,10 @@ func (s *Service) waitApp(ctx context.Context, id string, copyOut func() error) 
 	}
 }
 
-// appEnd copies once more after a wait, because a VM's output crosses its own vsock stream and can land after the end.
-func appEnd(ctx context.Context, id string, last *models.ExitStatus, count models.RestartCount, copyOut func() error) (models.AppExit, error) {
+// appEnd needs no copy of its own: shard-init reports the end only once the host log holds the app's last byte.
+func appEnd(id string, last *models.ExitStatus, count models.RestartCount) (models.AppExit, error) {
 	if last == nil {
 		return models.AppExit{}, fmt.Errorf("sandbox %s: the app ended and left no exit status", id)
-	}
-
-	select {
-	case <-ctx.Done():
-		return models.AppExit{}, ctx.Err()
-	case <-time.After(followInterval):
-	}
-	if err := copyOut(); err != nil {
-		return models.AppExit{}, err
 	}
 
 	return models.AppExit{Code: last.Code, Signal: last.Signal, Restarts: count.Count}, nil
