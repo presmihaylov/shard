@@ -107,8 +107,8 @@ type PolicyRequest struct {
 
 // SecretRequest is the body of a secret PUT. The value crosses the socket here and nowhere else.
 type SecretRequest struct {
-	Value        string   `json:"value"`
-	Destinations []string `json:"destinations,omitempty"`
+	Value        string   `json:"value" minLength:"1"`
+	Destinations []string `json:"destinations,omitempty" doc:"The hosts the secret goes to. The first put of a name needs one; a rotation with none keeps the old ones."`
 	// Placeholder overrides the default; empty on a rotation keeps the one the secret already has.
 	Placeholder string `json:"placeholder,omitempty"`
 }

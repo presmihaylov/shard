@@ -117,8 +117,8 @@ func (h *Handler) listSecrets(_ context.Context, in *pageInput) (*reply[secretsR
 	return answer(secretsResponse{Secrets: secrets, Next: next, Warnings: warnings}, nil)
 }
 
-func (h *Handler) putSecret(_ context.Context, in *nameBody[sandbox.SecretRequest]) (*reply[secret.Secret], error) {
-	sec, err := h.stores.SetSecret(in.Name, value(in.Body))
+func (h *Handler) putSecret(_ context.Context, in *nameRequest[sandbox.SecretRequest]) (*reply[secret.Secret], error) {
+	sec, err := h.stores.SetSecret(in.Name, in.Body)
 	sec.Destinations = listOf(sec.Destinations)
 
 	return answer(sec, err)
