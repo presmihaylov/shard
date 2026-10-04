@@ -120,6 +120,10 @@ type Config struct {
 	StartBudget time.Duration
 	// PauseBudget overrides DefaultPauseBudget, which only a test has a reason to do.
 	PauseBudget time.Duration
+	// ExecStartBudget overrides DefaultExecStartBudget, which only a test has a reason to do.
+	ExecStartBudget time.Duration
+	// ExecCleanupGrace overrides DefaultExecCleanupGrace, which only a test has a reason to do.
+	ExecCleanupGrace time.Duration
 	// Report takes a transition a verb records on its own, as the background loops report theirs; only a test leaves it nil.
 	Report func(string)
 	// PutCleanupGrace overrides DefaultPutCleanupGrace, which only a test has a reason to do.

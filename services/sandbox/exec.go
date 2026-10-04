@@ -28,6 +28,12 @@ const execBufferCap = 8 << 20
 // ExecStallBound is how long a write waits on an attached client that takes no output before the daemon detaches it.
 const ExecStallBound = 30 * time.Second
 
+// DefaultExecStartBudget bounds the wait for a command's launch, well under the client's 30 s call timeout.
+const DefaultExecStartBudget = 20 * time.Second
+
+// DefaultExecCleanupGrace is how long a launch past its budget gets to end once cancelled, so the 504 lands by 22 s.
+const DefaultExecCleanupGrace = 2 * time.Second
+
 // execIDLen is how many hex characters name an exec, so a list cursor that is not one is refused.
 const execIDLen = 16
 
@@ -439,7 +445,7 @@ func (w bufWriter) Write(p []byte) (int, error) {
 }
 
 // execSession is one exec from its create to its end. The command runs on execCtx, so a client that
-// drops never ends it: only stop and a delete-after-exit cancel that context.
+// drops never ends it: only stop, a delete-after-exit and a launch past its budget cancel that context.
 type execSession struct {
 	id        string
 	sandboxID string
@@ -450,6 +456,8 @@ type execSession struct {
 
 	cancel context.CancelFunc
 	done   chan struct{}
+	// shown says the create answered this exec, so get, list and the cap see it; guarded by the service's execMu.
+	shown bool
 
 	buf *execBuffer
 
@@ -648,8 +656,8 @@ func (e *execSession) closeStdin() error {
 	return err
 }
 
-// CreateExec starts one command in a sandbox that is up and answers the exec record at once. The command
-// runs whether or not a client attaches, and only stop or a delete after it ends forgets it.
+// CreateExec starts one command in a sandbox that is up and answers the exec record once the command launched.
+// The command runs whether or not a client attaches, and only stop or a delete after it ends forgets it.
 func (s *Service) CreateExec(ctx context.Context, ref string, req ExecRequest) (models.Exec, error) {
 	if len(req.Command) == 0 {
 		return models.Exec{}, &RequestError{Err: errors.New("the request names no command to run")}
@@ -670,13 +678,87 @@ func (s *Service) CreateExec(ctx context.Context, ref string, req ExecRequest) (
 		return models.Exec{}, err
 	}
 
+	// Held before the wait so a stop cancels it, and shown only once it launched, so a refused command never lists.
 	s.holdExec(execID, session)
+	if err := s.awaitStart(ctx, session); err != nil {
+		return models.Exec{}, err
+	}
+	s.showExec(session)
 	s.capExitedExecs(id)
 
 	return session.record(), nil
 }
 
-// startExec opens the command's stdio and runs it in the background, so the create returns straight away.
+// awaitStart returns once the provider reports the pid, which every provider does only after the command's execve took.
+func (s *Service) awaitStart(ctx context.Context, session *execSession) error {
+	budget := s.execStartBudget()
+	timer := time.NewTimer(budget)
+	defer timer.Stop()
+
+	select {
+	case <-session.pidSet:
+		return nil
+	case <-session.done:
+		return s.startOutcome(session)
+	case <-ctx.Done():
+		// A client that goes never ends the remote command, so it runs on as a listed exec.
+		s.showExec(session)
+		return ctx.Err()
+	case <-timer.C:
+	}
+	if session.reported() {
+		return nil
+	}
+
+	session.cancel()
+	grace := time.NewTimer(s.execCleanupGrace())
+	defer grace.Stop()
+
+	select {
+	case <-session.done:
+		s.dropExec(session.id)
+	case <-grace.C:
+		// A provider that ignores the cancel keeps the hidden session until it ends, so a stop still finds it.
+		go func() {
+			<-session.done
+			s.dropExec(session.id)
+		}()
+	}
+
+	return &SubstrateTimeoutError{ID: session.sandboxID, Op: "exec", Budget: budget}
+}
+
+// startOutcome answers an exec that ended before its create did: a fast command that launched, or why none did.
+func (s *Service) startOutcome(session *execSession) error {
+	if session.reported() {
+		return nil
+	}
+
+	s.dropExec(session.id)
+	if _, err := session.result(); err != nil {
+		return err
+	}
+
+	return fmt.Errorf("the exec in sandbox %s ended with no report that its command launched", session.sandboxID)
+}
+
+func (s *Service) execStartBudget() time.Duration {
+	if s.cfg.ExecStartBudget != 0 {
+		return s.cfg.ExecStartBudget
+	}
+
+	return DefaultExecStartBudget
+}
+
+func (s *Service) execCleanupGrace() time.Duration {
+	if s.cfg.ExecCleanupGrace != 0 {
+		return s.cfg.ExecCleanupGrace
+	}
+
+	return DefaultExecCleanupGrace
+}
+
+// startExec opens the command's stdio and runs it in the background, so the create waits on its launch with a bound.
 func (s *Service) startExec(id, execID string, req ExecRequest) (*execSession, error) {
 	ctx, cancel := context.WithCancel(context.Background())
 
@@ -1069,7 +1151,7 @@ func (s *Service) execOf(id, execID string) (*execSession, error) {
 	defer s.execMu.Unlock()
 
 	session := s.execs[execID]
-	if session == nil || session.sandboxID != id {
+	if session == nil || session.sandboxID != id || !session.shown {
 		return nil, fmt.Errorf("exec %s of sandbox %s: %w", execID, id, sandboxstate.ErrNotFound)
 	}
 
@@ -1082,7 +1164,7 @@ func (s *Service) execsOf(id string) []models.Exec {
 
 	var out []models.Exec
 	for _, session := range s.execs {
-		if session.sandboxID == id {
+		if session.sandboxID == id && session.shown {
 			out = append(out, session.record())
 		}
 	}
@@ -1097,6 +1179,13 @@ func (s *Service) holdExec(execID string, session *execSession) {
 	defer s.execMu.Unlock()
 
 	s.execs[execID] = session
+}
+
+func (s *Service) showExec(session *execSession) {
+	s.execMu.Lock()
+	defer s.execMu.Unlock()
+
+	session.shown = true
 }
 
 func (s *Service) dropExec(execID string) {
@@ -1123,7 +1212,7 @@ func (s *Service) capExitedExecs(sandboxID string) {
 
 	var exited []aged
 	for _, session := range s.execs {
-		if session.sandboxID != sandboxID {
+		if session.sandboxID != sandboxID || !session.shown {
 			continue
 		}
 		if done, at := session.exited(); done {
