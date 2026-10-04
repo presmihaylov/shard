@@ -82,7 +82,7 @@ def sync_detailed(
     user: str | Unset = UNSET,
     parents: bool | Unset = UNSET,
 ) -> Response[Any | Error]:
-    """Write a file"""
+    """copy a file into a running sandbox"""
 
     kwargs = _get_kwargs(
         id=id,
@@ -110,7 +110,7 @@ def sync(
     user: str | Unset = UNSET,
     parents: bool | Unset = UNSET,
 ) -> Any | Error | None:
-    """Write a file"""
+    """copy a file into a running sandbox"""
 
     return sync_detailed(
         id=id,
@@ -133,7 +133,7 @@ async def asyncio_detailed(
     user: str | Unset = UNSET,
     parents: bool | Unset = UNSET,
 ) -> Response[Any | Error]:
-    """Write a file"""
+    """copy a file into a running sandbox"""
 
     kwargs = _get_kwargs(
         id=id,
@@ -159,7 +159,7 @@ async def asyncio(
     user: str | Unset = UNSET,
     parents: bool | Unset = UNSET,
 ) -> Any | Error | None:
-    """Write a file"""
+    """copy a file into a running sandbox"""
 
     return (
         await asyncio_detailed(

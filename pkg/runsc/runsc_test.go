@@ -2,14 +2,18 @@ package runsc_test
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"os"
 	"path/filepath"
+	"reflect"
 	"slices"
 	"strconv"
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/opencontainers/runtime-spec/specs-go"
 
 	"github.com/presmihaylov/shard/pkg/pty"
 	"github.com/presmihaylov/shard/pkg/runsc"
@@ -458,41 +462,154 @@ func assertKept(t *testing.T, verb, state string, calls []string) {
 	}
 }
 
-func TestExecPutsTheFlagsBeforeTheIDAndTheCommandAfter(t *testing.T) {
-	r, argvFile := fake(t, "", "", 0)
+// runsc merges nothing into a process file, so the file is the whole exec and no flag after --process repeats it.
+func TestExecHandsRunscTheBundleProcessWithTheExecOverrides(t *testing.T) {
+	r, argvFile := fakeBinary(t, savingProcess())
 
 	if _, err := r.Exec(t.Context(), "amber-otter-1a2b", runsc.ExecOptions{
+		Bundle:  bundle(t),
 		Argv:    []string{"/bin/sh", "-c", "echo hi"},
-		Env:     []string{"A=1", "B=2"},
+		Env:     []string{"PATH=/bin", "A=1"},
 		WorkDir: "/srv",
-		User:    "65534:65534",
+		User:    "65534:65533",
 		Groups:  []uint32{65534, 10},
 	}); err != nil {
 		t.Fatalf("Exec: %v", err)
 	}
 
 	got := argv(t, argvFile)
-
-	id := slices.Index(got, "amber-otter-1a2b")
-	if id < 0 {
-		t.Fatalf("the argv %q names no sandbox", got)
+	at := slices.Index(got, "exec")
+	if at < 0 || len(got) != at+6 || got[at+1] != "--internal-pid-file" || got[at+3] != "--process" || got[at+5] != "amber-otter-1a2b" {
+		t.Fatalf("the argv is %q, want exec --internal-pid-file P --process F and the id last", got)
 	}
 
-	// Everything after the id is the guest's own command, and runsc reads no flag past it.
-	if command := got[id+1:]; !slices.Equal(command, []string{"/bin/sh", "-c", "echo hi"}) {
-		t.Errorf("the command is %q, want the argv Exec was given", command)
+	process := savedProcess(t, argvFile)
+	if !slices.Equal(process.Args, []string{"/bin/sh", "-c", "echo hi"}) {
+		t.Errorf("the args are %q, want the argv Exec was given", process.Args)
+	}
+	if !slices.Equal(process.Env, []string{"PATH=/bin", "A=1"}) {
+		t.Errorf("the env is %q, want the exec's alone", process.Env)
+	}
+	if process.Cwd != "/srv" {
+		t.Errorf("the cwd is %q, want /srv", process.Cwd)
+	}
+	if process.User.UID != 65534 || process.User.GID != 65533 || !slices.Equal(process.User.AdditionalGids, []uint32{4, 65534, 10}) {
+		t.Errorf("the user is %+v, want 65534:65533 with the groups after the bundle's", process.User)
+	}
+	if process.Terminal || !process.NoNewPrivileges {
+		t.Errorf("terminal %t, no new privileges %t, want a pipe exec the bundle confines", process.Terminal, process.NoNewPrivileges)
+	}
+}
+
+// SHARD-498: runsc's flags gave a nobody exec config.json's capabilities, so it ran a root 0700 file.
+func TestExecHandsANonRootUserTheBoundingSetAlone(t *testing.T) {
+	cases := map[string]struct {
+		user string
+		want specs.LinuxCapabilities
+	}{
+		"nobody":                {user: "65534:65534", want: specs.LinuxCapabilities{Bounding: []string{"CAP_KILL", "CAP_CHOWN"}}},
+		"a uid alone":           {user: "1000", want: specs.LinuxCapabilities{Bounding: []string{"CAP_KILL", "CAP_CHOWN"}}},
+		"root":                  {user: "0:0", want: specs.LinuxCapabilities{Bounding: []string{"CAP_KILL", "CAP_CHOWN"}, Effective: []string{"CAP_KILL"}, Permitted: []string{"CAP_KILL"}}},
+		"the bundle's own user": {want: specs.LinuxCapabilities{Bounding: []string{"CAP_KILL", "CAP_CHOWN"}, Effective: []string{"CAP_KILL"}, Permitted: []string{"CAP_KILL"}}},
 	}
 
-	flags := pairs(got[:id])
-	wanted := []string{
-		"--cwd /srv", "--user 65534:65534", "--env A=1", "--env B=2",
-		"--additional-gids 65534", "--additional-gids 10",
+	for name, c := range cases {
+		t.Run(name, func(t *testing.T) {
+			r, argvFile := fakeBinary(t, savingProcess())
+
+			if _, err := r.Exec(t.Context(), "amber-otter-1a2b", runsc.ExecOptions{Bundle: bundle(t), Argv: []string{"/bin/true"}, User: c.user}); err != nil {
+				t.Fatalf("Exec: %v", err)
+			}
+
+			got := savedProcess(t, argvFile).Capabilities
+			if got == nil {
+				t.Fatal("the process file names no capabilities, so runsc hands the exec config.json's")
+			}
+			if !reflect.DeepEqual(*got, c.want) {
+				t.Errorf("the capabilities are %+v, want %+v and nothing inherited", *got, c.want)
+			}
+		})
 	}
-	for _, want := range wanted {
-		if !slices.Contains(flags, want) {
-			t.Errorf("the flags before the id are %q, want %q in them", got[:id], want)
+}
+
+func TestExecRefusesWithNoBundle(t *testing.T) {
+	r, argvFile := fake(t, "", "", 0)
+
+	if _, err := r.Exec(t.Context(), "amber-otter-1a2b", runsc.ExecOptions{Argv: []string{"/bin/true"}}); err == nil {
+		t.Fatal("Exec ran with no bundle to take the process from")
+	}
+
+	if _, err := os.Stat(argvFile); err == nil {
+		t.Error("a refusal still ran runsc")
+	}
+}
+
+func TestExecRefusesAUserItCannotRead(t *testing.T) {
+	for _, user := range []string{"nobody", "65534:nogroup"} {
+		r, argvFile := fake(t, "", "", 0)
+
+		if _, err := r.Exec(t.Context(), "amber-otter-1a2b", runsc.ExecOptions{Bundle: bundle(t), Argv: []string{"/bin/true"}, User: user}); err == nil {
+			t.Errorf("Exec took the user %q, which only the guest's passwd can resolve", user)
+		}
+		if _, err := os.Stat(argvFile); err == nil {
+			t.Errorf("a refusal of %q still ran runsc", user)
 		}
 	}
+}
+
+// bundle is a directory whose config.json holds what create started PID 1 with, an inheritable set included.
+func bundle(t *testing.T) string {
+	t.Helper()
+
+	dir := t.TempDir()
+	blob, err := json.Marshal(specs.Spec{Process: &specs.Process{
+		Args: []string{"/sbin/shard-init"},
+		Env:  []string{"PATH=/sbin", "SHARD=1"},
+		Cwd:  "/",
+		User: specs.User{AdditionalGids: []uint32{4}},
+		Capabilities: &specs.LinuxCapabilities{
+			Bounding:    []string{"CAP_KILL", "CAP_CHOWN"},
+			Effective:   []string{"CAP_KILL"},
+			Permitted:   []string{"CAP_KILL"},
+			Inheritable: []string{"CAP_KILL"},
+			Ambient:     []string{"CAP_KILL"},
+		},
+		NoNewPrivileges: true,
+	}})
+	if err != nil {
+		t.Fatalf("encode the bundle config: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "config.json"), blob, 0o600); err != nil {
+		t.Fatalf("write the bundle config: %v", err)
+	}
+
+	return dir
+}
+
+// savingProcess keeps a copy of the process file, because Exec removes the original when runsc returns.
+func savingProcess() string {
+	return `prev=
+for arg in "$@"; do
+	if [ "$prev" = "--process" ]; then cp "$arg" "$argv.process"; fi
+	prev=$arg
+done
+`
+}
+
+func savedProcess(t *testing.T, argvFile string) specs.Process {
+	t.Helper()
+
+	blob, err := os.ReadFile(argvFile + ".process")
+	if err != nil {
+		t.Fatalf("the fake runsc saved no process file: %v", err)
+	}
+
+	var process specs.Process
+	if err := json.Unmarshal(blob, &process); err != nil {
+		t.Fatalf("decode the process file: %v", err)
+	}
+
+	return process
 }
 
 // pairs reads a flag list as the flag-value pairs it is, so a repeated flag is matched by its value.
@@ -509,7 +626,7 @@ func pairs(args []string) []string {
 func TestExecReturnsTheCommandExitCode(t *testing.T) {
 	r, _ := fake(t, "", "", 7)
 
-	code, err := r.Exec(t.Context(), "amber-otter-1a2b", runsc.ExecOptions{Argv: []string{"/bin/false"}})
+	code, err := r.Exec(t.Context(), "amber-otter-1a2b", runsc.ExecOptions{Bundle: bundle(t), Argv: []string{"/bin/false"}})
 	if err != nil {
 		t.Fatalf("Exec: %v", err)
 	}
@@ -524,7 +641,7 @@ func TestExecKeepsItsScratchUnderTheExecDirAndRemovesIt(t *testing.T) {
 	execDir := filepath.Join(t.TempDir(), "exec")
 	r, argvFile := fakeBinary(t, "", runsc.WithExecDir(execDir))
 
-	if _, err := r.Exec(t.Context(), "amber-otter-1a2b", runsc.ExecOptions{Argv: []string{"/bin/true"}}); err != nil {
+	if _, err := r.Exec(t.Context(), "amber-otter-1a2b", runsc.ExecOptions{Bundle: bundle(t), Argv: []string{"/bin/true"}}); err != nil {
 		t.Fatalf("Exec: %v", err)
 	}
 
@@ -549,7 +666,7 @@ func TestExecKeepsItsScratchUnderTheExecDirAndRemovesIt(t *testing.T) {
 func TestExecRefusesACommandThatIsEmpty(t *testing.T) {
 	r, _ := fake(t, "", "", 0)
 
-	if _, err := r.Exec(t.Context(), "amber-otter-1a2b", runsc.ExecOptions{}); err == nil {
+	if _, err := r.Exec(t.Context(), "amber-otter-1a2b", runsc.ExecOptions{Bundle: bundle(t)}); err == nil {
 		t.Fatal("Exec accepted a spec with no command")
 	}
 }
@@ -558,7 +675,7 @@ func TestExecRefusesACommandThatIsEmpty(t *testing.T) {
 func TestExecRefusesADriverThatWasSignalled(t *testing.T) {
 	r, _ := fakeBinary(t, "kill -9 $$\n")
 
-	code, err := r.Exec(t.Context(), "amber-otter-1a2b", runsc.ExecOptions{Argv: []string{"/bin/true"}})
+	code, err := r.Exec(t.Context(), "amber-otter-1a2b", runsc.ExecOptions{Bundle: bundle(t), Argv: []string{"/bin/true"}})
 	if err == nil {
 		t.Fatalf("Exec reported code %d and no error for a driver a signal ended", code)
 	}
@@ -584,7 +701,7 @@ func TestACancelledExecKillsTheGuestProcessAlone(t *testing.T) {
 		waitFor(argvFile + ".ready")
 	}()
 
-	if _, err := r.Exec(ctx, "amber-otter-1a2b", runsc.ExecOptions{Argv: []string{"/bin/sleep", "30"}}); err == nil {
+	if _, err := r.Exec(ctx, "amber-otter-1a2b", runsc.ExecOptions{Bundle: bundle(t), Argv: []string{"/bin/sleep", "30"}}); err == nil {
 		t.Fatal("a cancelled Exec reported success")
 	}
 
@@ -602,7 +719,7 @@ func TestExecReportsThePIDOfACommandThatEndsAtOnce(t *testing.T) {
 
 	var got []int
 	if _, err := r.Exec(t.Context(), "amber-otter-1a2b", runsc.ExecOptions{
-		Argv: []string{"/bin/true"}, Report: func(pid int) { got = append(got, pid) },
+		Bundle: bundle(t), Argv: []string{"/bin/true"}, Report: func(pid int) { got = append(got, pid) },
 	}); err != nil {
 		t.Fatalf("Exec: %v", err)
 	}
@@ -634,7 +751,7 @@ func TestExecReportsWhyACommandNeverStarted(t *testing.T) {
 	for _, c := range cases {
 		r, _ := fakeBinary(t, logging(c.logged)+"exit 128\n")
 
-		_, err := r.Exec(t.Context(), "amber-otter-1a2b", runsc.ExecOptions{Argv: []string{"/bin/nope"}})
+		_, err := r.Exec(t.Context(), "amber-otter-1a2b", runsc.ExecOptions{Bundle: bundle(t), Argv: []string{"/bin/nope"}})
 
 		var start *runsc.ExecStartError
 		if !errors.As(err, &start) {
@@ -653,7 +770,7 @@ func TestExecReportsWhyACommandNeverStarted(t *testing.T) {
 func TestExecReturnsTheExitCodeOfACommandThatRan(t *testing.T) {
 	r, _ := fakeBinary(t, writingPID(4242)+"exit 128\n")
 
-	code, err := r.Exec(t.Context(), "amber-otter-1a2b", runsc.ExecOptions{Argv: []string{"/bin/sh"}})
+	code, err := r.Exec(t.Context(), "amber-otter-1a2b", runsc.ExecOptions{Bundle: bundle(t), Argv: []string{"/bin/sh"}})
 	if err != nil {
 		t.Fatalf("Exec: %v", err)
 	}
@@ -667,7 +784,7 @@ func TestExecReturnsTheExitCodeOfACommandThatRan(t *testing.T) {
 func TestExecReportsAWaitRunscLost(t *testing.T) {
 	r, _ := fakeBinary(t, writingPID(4242)+logging("waiting on pid 4242: EOF")+"exit 128\n")
 
-	_, err := r.Exec(t.Context(), "amber-otter-1a2b", runsc.ExecOptions{Argv: []string{"/bin/sh"}})
+	_, err := r.Exec(t.Context(), "amber-otter-1a2b", runsc.ExecOptions{Bundle: bundle(t), Argv: []string{"/bin/sh"}})
 
 	lost, ok := errors.AsType[*runsc.ExecLostError](err)
 	if !ok {
@@ -686,7 +803,7 @@ func TestExecKeepsRunscsOwnWordsOutOfTheGuestStderr(t *testing.T) {
 	r, argvFile := fakeBinary(t, "printf guest >&3\nprintf 'waiting on pid 7: EOF' >&2\n")
 	guest := tempFile(t)
 
-	if _, err := r.Exec(t.Context(), "amber-otter-1a2b", runsc.ExecOptions{Argv: []string{"/bin/sh"}, Stderr: guest}); err != nil {
+	if _, err := r.Exec(t.Context(), "amber-otter-1a2b", runsc.ExecOptions{Bundle: bundle(t), Argv: []string{"/bin/sh"}, Stderr: guest}); err != nil {
 		t.Fatalf("Exec: %v", err)
 	}
 
@@ -713,7 +830,7 @@ func TestExecPassesNoFdToATerminal(t *testing.T) {
 	})
 
 	replica := terminal.Replica
-	if _, err := r.Exec(t.Context(), "amber-otter-1a2b", runsc.ExecOptions{Argv: []string{"/bin/sh"}, TTY: true, Stdin: replica, Stdout: replica, Stderr: replica}); err != nil {
+	if _, err := r.Exec(t.Context(), "amber-otter-1a2b", runsc.ExecOptions{Bundle: bundle(t), Argv: []string{"/bin/sh"}, TTY: true, Stdin: replica, Stdout: replica, Stderr: replica}); err != nil {
 		t.Fatalf("Exec: %v", err)
 	}
 
@@ -727,7 +844,7 @@ func TestExecQuotesWhatRunscSaidWhenItLoggedNothing(t *testing.T) {
 	r, _ := fakeBinary(t, "printf 'panic: runtime error' >&2\nexit 2\n")
 	guest := tempFile(t)
 
-	_, err := r.Exec(t.Context(), "amber-otter-1a2b", runsc.ExecOptions{Argv: []string{"/bin/sh"}, Stderr: guest})
+	_, err := r.Exec(t.Context(), "amber-otter-1a2b", runsc.ExecOptions{Bundle: bundle(t), Argv: []string{"/bin/sh"}, Stderr: guest})
 	if err == nil || !strings.Contains(err.Error(), "panic: runtime error") {
 		t.Fatalf("Exec returned %v, want runsc's own words in the error", err)
 	}

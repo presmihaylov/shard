@@ -2,8 +2,12 @@
 
 The TypeScript SDK for [shard](https://github.com/presmihaylov/shard), the sandbox manager.
 
-```
-npm install useshards
+`useshards` is not on npm yet, so build it from the repository:
+
+```sh
+git clone https://github.com/presmihaylov/shard.git
+cd shard/sdks/typescript
+npm install && npm run build
 ```
 
 Node 20.3 or later. The one runtime dependency is `openapi-fetch`.
@@ -41,7 +45,12 @@ try {
 ```
 
 `examples/quickstart.ts` has it in full, with a background command and an app. Set
-`SHARD_REMOTE` and `SHARD_API_KEY`, then run it with `npx tsx examples/quickstart.ts`.
+`SHARD_REMOTE` and `SHARD_API_KEY`, then run these commands from `sdks/typescript`:
+
+```sh
+npm install && npm run build
+npx tsx examples/quickstart.ts
+```
 
 ## What to know
 

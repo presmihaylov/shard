@@ -60,10 +60,10 @@ export interface paths {
             path?: never;
             cookie?: never;
         };
-        /** List sandboxes */
+        /** list active sandboxes */
         get: operations["list-sandboxes"];
         put?: never;
-        /** Create a sandbox */
+        /** create a sandbox */
         post: operations["create-sandbox"];
         delete?: never;
         options?: never;
@@ -82,7 +82,7 @@ export interface paths {
         get: operations["get-sandbox"];
         put?: never;
         post?: never;
-        /** Remove a sandbox */
+        /** delete a sandbox and its files */
         delete: operations["remove-sandbox"];
         options?: never;
         head?: never;
@@ -113,9 +113,9 @@ export interface paths {
             path?: never;
             cookie?: never;
         };
-        /** Read a path as a tar */
+        /** copy a directory out of a running sandbox */
         get: operations["read-archive"];
-        /** Unpack a tar under a directory */
+        /** copy a directory into a running sandbox */
         put: operations["write-archive"];
         post?: never;
         delete?: never;
@@ -168,7 +168,7 @@ export interface paths {
         /** List the execs of a sandbox */
         get: operations["list-execs"];
         put?: never;
-        /** Create an exec, which runs once a client attaches */
+        /** execute a command in a running sandbox */
         post: operations["create-exec"];
         delete?: never;
         options?: never;
@@ -235,9 +235,9 @@ export interface paths {
             path?: never;
             cookie?: never;
         };
-        /** Read a file */
+        /** copy a file out of a running sandbox */
         get: operations["read-file"];
-        /** Write a file */
+        /** copy a file into a running sandbox */
         put: operations["write-file"];
         post?: never;
         /** Delete a path */
@@ -257,7 +257,7 @@ export interface paths {
         };
         get?: never;
         put?: never;
-        /** Fork a sandbox into a new one */
+        /** create a sandbox from a running sandbox's memory and files */
         post: operations["fork-sandbox"];
         delete?: never;
         options?: never;
@@ -325,7 +325,7 @@ export interface paths {
         };
         get?: never;
         put?: never;
-        /** Pause a running sandbox */
+        /** save a sandbox's state and suspend it */
         post: operations["pause-sandbox"];
         delete?: never;
         options?: never;
@@ -360,7 +360,7 @@ export interface paths {
         };
         get?: never;
         put?: never;
-        /** Resume a paused sandbox */
+        /** resume a paused sandbox from its saved state */
         post: operations["resume-sandbox"];
         delete?: never;
         options?: never;
@@ -395,7 +395,7 @@ export interface paths {
         };
         get?: never;
         put?: never;
-        /** Start a stopped sandbox */
+        /** start a stopped sandbox with its saved files */
         post: operations["start-sandbox"];
         delete?: never;
         options?: never;
@@ -412,7 +412,7 @@ export interface paths {
         };
         get?: never;
         put?: never;
-        /** Stop a sandbox */
+        /** stop a sandbox and preserve its files */
         post: operations["stop-sandbox"];
         delete?: never;
         options?: never;

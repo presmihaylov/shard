@@ -51,25 +51,27 @@ export class Sandbox {
     return this.verb(this.transport.api.GET("/v0/sandboxes/{id}", { params: this.params }));
   }
 
-  /** stop ends every process in the sandbox, with TERM and then KILL after 30 seconds, and keeps its root. */
+  /** stop a sandbox and preserve its files */
   async stop(): Promise<void> {
     await this.verb(this.transport.api.POST("/v0/sandboxes/{id}/stop", { params: this.params, fetch: this.transport.waiting }));
   }
 
-  /** start boots a stopped sandbox again on the root its stop left; no app starts with it. */
+  /** start a stopped sandbox with its saved files */
   async start(): Promise<void> {
     await this.verb(this.transport.api.POST("/v0/sandboxes/{id}/start", { params: this.params, fetch: this.transport.waiting }));
   }
 
+  /** save a sandbox's state and suspend it */
   async pause(): Promise<void> {
     await this.verb(this.transport.api.POST("/v0/sandboxes/{id}/pause", { params: this.params, fetch: this.transport.waiting }));
   }
 
+  /** resume a paused sandbox from its saved state */
   async resume(): Promise<void> {
     await this.verb(this.transport.api.POST("/v0/sandboxes/{id}/resume", { params: this.params, fetch: this.transport.waiting }));
   }
 
-  /** fork answers a running copy of this sandbox, memory and all; this one runs on. */
+  /** create a sandbox from a running sandbox's memory and files */
   async fork(options: { name?: string } = {}): Promise<Sandbox> {
     const body = { name: options.name };
     const { data } = await this.transport.api.POST("/v0/sandboxes/{id}/fork", { params: this.params, body, fetch: this.transport.waiting });
@@ -77,13 +79,13 @@ export class Sandbox {
     return new Sandbox(this.transport, sandboxInfo(data));
   }
 
-  /** remove deletes a stopped sandbox; force stops a running one first. */
+  /** delete a sandbox and its files */
   async remove(options: { force?: boolean } = {}): Promise<void> {
     const params = { ...this.params, query: { force: options.force || undefined } };
     await this.transport.api.DELETE("/v0/sandboxes/{id}", { params, fetch: this.transport.waiting });
   }
 
-  /** exec runs a command and answers how it ended; with background it answers a handle once the command runs. */
+  /** execute a command in a running sandbox */
   exec(command: string | string[], options: ExecOptions & { background: true }): Promise<Command>;
   exec(command: string | string[], options?: ExecOptions & { background?: false }): Promise<ExecResult>;
   exec(command: string | string[], options: ExecOptions & { background?: boolean } = {}): Promise<Command | ExecResult> {

@@ -89,7 +89,7 @@ class AsyncShard:
         vcpus: int | None = None,
         disk_mib: int | None = None,
     ) -> AsyncSandbox:
-        """A running sandbox with no app, from an image or a snapshot; exec() runs in it."""
+        """create a sandbox"""
         body = create_body(
             image,
             None,
@@ -123,7 +123,7 @@ class AsyncShard:
         disk_mib: int | None = None,
         restart: Restart | None = None,
     ) -> AsyncApp:
-        """A sandbox whose app is command. The sandbox outlives the app; remove() it when done."""
+        """create a sandbox and start its command"""
         body = create_body(
             image,
             command,
@@ -149,7 +149,7 @@ class AsyncShard:
         return AsyncSandbox(self._transport, _types.sandbox_info(record))
 
     async def list(self, *, all: bool = False) -> SandboxList[AsyncSandbox]:
-        """The sandboxes and the warnings for entries the daemon could not read."""
+        """list active sandboxes"""
         sandboxes: builtins.list[AsyncSandbox] = []
         warnings: dict[str, None] = {}
         async for page in self._transport.pages(
