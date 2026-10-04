@@ -125,7 +125,8 @@ runtime refuses to signal a container that never started. The record then says `
 survives and `Status` only ever reports what the substrate says now. A paused sandbox is the second
 case. Its record says `paused` and `Status` reports `Exists: false`, because the pause deleted the
 sandbox from the substrate and only the checkpoint holds it. A `pause` also kills any `exec` in
-flight.
+flight. An `exec` that a pause keeps from starting, at any layer, is refused with `sandbox <id> is
+paused: resume it with shard resume <id>`, the text a paused record gives.
 
 **There is no `checkpointed` state.** `pause` writes a checkpoint to disk and frees the memory, so a
 paused sandbox holds no RAM. There is no in-memory pause to tell it apart from, so `paused` is the

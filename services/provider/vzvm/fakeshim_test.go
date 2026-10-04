@@ -231,6 +231,12 @@ const resetOnPauseFile = "reset-on-pause"
 // holdDialsFile in the state directory answers every dial with a stream that ends at once, until the test removes it.
 const holdDialsFile = "hold-dials"
 
+// holdSaveFile in the state directory holds the next save, with the VM paused, until the test removes it.
+const holdSaveFile = "hold-save"
+
+// savingFile lands in the state directory when a held save began, so a test acts inside the pause.
+const savingFile = "saving"
+
 // refuseResumeFile in the state directory fails every resume of the VM, until the test removes it.
 const refuseResumeFile = "refuse-resume"
 
@@ -500,6 +506,9 @@ func (m *fakeMachine) move(from, to vz.State, sig syscall.Signal) error {
 }
 
 func (m *fakeMachine) Save(path string) error {
+	if err := m.holdSave(); err != nil {
+		return err
+	}
 	m.mu.Lock()
 	state, frozen := m.state, m.frozen
 	m.mu.Unlock()
@@ -512,6 +521,29 @@ func (m *fakeMachine) Save(path string) error {
 	}
 
 	return os.WriteFile(path, []byte(saved), 0o600)
+}
+
+// holdSave says the save began and waits while the test leaves holdSaveFile in place.
+func (m *fakeMachine) holdSave() error {
+	held, err := m.has(holdSaveFile)
+	if err != nil || !held {
+		return err
+	}
+	if err := os.WriteFile(filepath.Join(filepath.Dir(m.dir), savingFile), nil, 0o600); err != nil {
+		return err
+	}
+	deadline := time.Now().Add(10 * time.Second)
+	for held {
+		if time.Now().After(deadline) {
+			return errors.New("the test did not release the held save")
+		}
+		time.Sleep(10 * time.Millisecond)
+		if held, err = m.has(holdSaveFile); err != nil {
+			return err
+		}
+	}
+
+	return nil
 }
 
 func (m *fakeMachine) Stop() error {
