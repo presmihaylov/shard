@@ -465,7 +465,7 @@ func (s *Service) Prepare(ctx context.Context, req CreateRequest) (models.Sandbo
 	}
 	// A quota past the host's CPUs never binds, and a large enough one overflows the quota to no bound at all.
 	if s.cfg.HostCPUs > 0 && res.VCPUs > s.cfg.HostCPUs {
-		return models.Sandbox{}, &RequestError{Err: fmt.Errorf("--cpus %d is more than the %d CPUs this host has", res.VCPUs, s.cfg.HostCPUs)}
+		return models.Sandbox{}, &RequestError{Err: fmt.Errorf("--vcpus %d is more than the %d CPUs this host has", res.VCPUs, s.cfg.HostCPUs)}
 	}
 	// Record the disk bound the sandbox will actually run under, so inspect shows the enforced value, not a bare 0.
 	res.DiskMiB = bundle.DiskBound(res)
@@ -924,7 +924,7 @@ func (s *Service) grantSecrets(req CreateRequest) ([]string, error) {
 	for _, name := range req.Secrets {
 		sec, err := s.cfg.Secrets.Get(name)
 		if errors.Is(err, secret.ErrNotFound) {
-			return nil, &RequestError{Err: fmt.Errorf("secret %s does not exist: run shard secret set --to <host> %s first", name, name)}
+			return nil, &RequestError{Err: fmt.Errorf("secret %s does not exist: run shard secret set --destination <host> %s first", name, name)}
 		}
 		if err != nil {
 			return nil, err

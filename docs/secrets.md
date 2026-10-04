@@ -9,7 +9,7 @@ the granted host never sends the value back. See the caution under the grant.
 ## The three parts
 
 ```
-printf '%s' "$OPENAI_API_KEY" | shard secret set --to api.openai.com OPENAI_API_KEY
+printf '%s' "$OPENAI_API_KEY" | shard secret set --destination api.openai.com OPENAI_API_KEY
 shard run --secret OPENAI_API_KEY python:3.12 python agent.py
 ```
 
@@ -19,8 +19,8 @@ names, destinations and placeholders, and never a value. `shard secret remove` r
 record names the secret, and `--force` overrides that. The name is the environment variable the guest
 reads, so it has the same form: uppercase letters, digits and `_`.
 
-**The grant.** A secret is granted to a destination and never to a sandbox alone. `--to` names the
-hosts the value may go to, and a request to any other host never carries it.
+**The grant.** A secret is granted to a destination and never to a sandbox alone. `--destination` names
+the hosts the value may go to, and a request to any other host never carries it.
 `shard create --secret NAME` hands the guest the placeholder as `$NAME` and records the grant in the
 sandbox record, which `shard inspect` prints as `secrets`. A fork carries the grant of its source,
 because the copied bundle already hands the guest the placeholder. A snapshot holds no grant, so a
@@ -87,7 +87,7 @@ decides whether the connection is allowed at all.
 `mock-NAME`. For such an SDK, `--placeholder` gives the guest a string of the right shape:
 
 ```
-shard secret set --to api.stripe.com --placeholder sk_test_placeholder01 STRIPE_KEY
+shard secret set --destination api.stripe.com --placeholder sk_test_placeholder01 STRIPE_KEY
 ```
 
 A chosen placeholder uses only letters, digits, `_`, `-` and `.`, so no URL, JSON or base64 encoder
@@ -139,7 +139,7 @@ the key at the provider, because shard only keeps the key from leaving.
 ## Rotation
 
 Running `shard secret set` again with the same name replaces the value. It keeps the grant and the
-placeholder unless `--to` or `--placeholder` say otherwise. Nothing caches the value. The proxy
+placeholder unless `--destination` or `--placeholder` say otherwise. Nothing caches the value. The proxy
 reads the store on every request, so a live sandbox uses the new value on its next request and never
 learns that anything changed.
 
@@ -150,7 +150,7 @@ nothing can tell whether the secret is free.
 
 ## A grant may name a wildcard
 
-`secret set --to '*.github.com' NAME` grants the value to every host under the apex. The `*` may only
+`secret set --destination '*.github.com' NAME` grants the value to every host under the apex. The `*` may only
 be the leftmost label, and it must stand over a registrable domain. So `*.github.com` and
 `*.openai.com` are accepted, but `*.*`, `*.com`, `api.github.*`, a bare `*` and a public suffix like
 `*.co.uk` or `*.github.io` are refused, because the value must bind to a domain the owner controls.
