@@ -34,16 +34,18 @@ stateDiagram-v2
 | `created` | `running` | a fork | yes |
 | `created` | `stopped` | `stop`, if any path left a sandbox in `created` | no |
 | `created` | `failed` | the daemon restarted before a fork reached `running` | yes |
-| `running` | `paused` | `pause` | yes: gVisor |
+| `running` | `paused` | `pause` | yes: gVisor, vz, Firecracker |
 | `running` | `stopped` | `stop` | yes |
 | `running` | `failed` | a `pause` that broke off after its checkpoint began | yes: gVisor |
 | `running` | `unresponsive` | the liveness tick, or an `exec` or `pause` whose probe the substrate process missed | yes: vz, Firecracker |
 | `unresponsive` | `running` | the liveness tick, when the process answers again | yes: vz, Firecracker |
 | `unresponsive` | `paused` | the liveness tick or a restart, when the process died after a marked pause wrote its checkpoint | yes: vz, Firecracker |
 | `unresponsive` | `stopped` | `stop` | yes: vz, Firecracker |
-| `paused` | `running` | `resume` | yes: gVisor |
+| `paused` | `running` | `resume` | yes: gVisor, vz, Firecracker |
 | `paused` | `stopped` | `stop` | yes |
 | `stopped` | `running` | `start` | yes |
+
+vz supports pause and resume on Apple silicon with macOS 14 or later.
 
 ## What the picture does not say
 
@@ -119,14 +121,14 @@ substrate cannot make that move, because `Provider.Start` refuses a stopped sand
 (SHARD-24) is a `Remove` followed by a second `Create` over the preserved writable layer.
 
 **`created --> stopped` is a legal move that nothing reaches, and it would leave nothing on the
-substrate.** On the substrate, stopping a sandbox whose entrypoint never ran is a delete, because a
-runtime refuses to signal a container that never started. The record then says `stopped` while
-`Provider.Status` reports `Exists: false`. This answer is intended, because the record is what
-survives and `Status` only ever reports what the substrate says now. A paused sandbox is the second
-case. Its record says `paused` and `Status` reports `Exists: false`, because the pause deleted the
-sandbox from the substrate and only the checkpoint holds it. A `pause` also kills any `exec` in
-flight. An `exec` that a pause keeps from starting, at any layer, is refused with `sandbox <id> is
-paused: resume it with shard resume <id>`, the text a paused record gives.
+substrate on gVisor.** On gVisor, stopping a sandbox whose entrypoint never ran is a delete,
+because the runtime refuses to signal a sandbox that never started. The record then says `stopped`
+while `Provider.Status` reports `Exists: false`. This answer is intended, because the record is
+what survives and `Status` reports what the substrate says now. After a pause, gVisor likewise
+reports `Exists: false`, because only the checkpoint holds the sandbox. vz retains `vm.json` and
+reports `Exists: true` with `State: stopped`, although the shard record says `paused`. A `pause`
+also kills any `exec` in flight. An `exec` that a pause keeps from starting, at any layer, is refused
+with `sandbox <id> is paused: resume it with shard resume <id>`, the text a paused record gives.
 
 **There is no `checkpointed` state.** `pause` writes a checkpoint to disk and frees the memory, so a
 paused sandbox holds no RAM. There is no in-memory pause to tell it apart from, so `paused` is the

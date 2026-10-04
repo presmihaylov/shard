@@ -24,7 +24,8 @@ that made them, and `shard info` prints the pick. The table is the short form of
 |---|---|---|---|---|
 | Isolation | user-space kernel | container with a user namespace | **none**: a container on the host kernel | a micro VM per sandbox |
 | Syscall cost | high on file-heavy work | near native | near native | native, inside the VM |
-| Docker or systemd inside | no | yes | no | no |
+| Docker inside | no | yes | no | yes |
+| systemd as PID 1 | no | no | no | no |
 | pause, resume | yes | **no, refused by name** | **no, refused by name** | Apple silicon on macOS 14 or later |
 | fork of a running sandbox | yes | **no, refused by name** | **no, refused by name** | Apple silicon on macOS 14 or later |
 | Tenancy | many tenants per host | **one tenant per host** | **one tenant per host**, code you trust | many tenants per host |

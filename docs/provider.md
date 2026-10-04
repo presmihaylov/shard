@@ -275,13 +275,13 @@ systemd ranges. A counter in `<root>/firecracker/next-uid` hands out each uid on
 resume keep the uid, and a create from a snapshot gets a new one. The jailer puts itself in the
 sandbox's cgroup and network namespace. It then starts the vmm in new pid and mount namespaces,
 chrooted into `<root>/jail/firecracker/<id>/root`, with no capability and under its seccomp filter.
-The jail holds the kernel, the initrd and the image. On a restore it also holds the checkpoint's
-state and memory. Each of these is a reflinked copy that only the uid can read. The overlay is a
-hard link that the uid can write, so the guest writes where `snapshot create` and `pause` read. The
-tap goes to the uid too, so the vmm can open it with no capability. Every spawn gets a fresh jail,
-and every end of a vmm removes it. The jailer makes `/dev/kvm` in the jail and runs the vmm from
-there, so at start the daemon refuses a root on a `nodev` or `noexec` mount. The jailer gets no
-`--resource-limit`. Its default of 2048 open files outlasts the vsock muxer's cap of 1023
+On a fresh boot, the jail holds the kernel, the initrd and the image. On a restore, the checkpoint's
+state and memory replace the kernel and the initrd. Each of these is a reflinked copy that only the
+uid can read. The overlay is a hard link that the uid can write, so the guest writes where
+`snapshot create` and `pause` read. The tap goes to the uid too, so the vmm can open it with no
+capability. Every spawn gets a fresh jail, and every end of a vmm removes it. The jailer makes
+`/dev/kvm` in the jail and runs the vmm from there, so at start the daemon refuses a root on a
+`nodev` or `noexec` mount. The jailer gets no `--resource-limit`. Its default of 2048 open files outlasts the vsock muxer's cap of 1023
 connections, and those connections are the one count of descriptors that a sandbox grows. A vmm that
 a daemon spawned before the jail existed is still adopted at its socket in the state directory, and
 its next start jails it. A vmm from before SHARD-431 keeps its host tap until its stop, and its next
@@ -546,8 +546,9 @@ record never answers for it. The two disagree on purpose in these cases:
 
 - A record that says `running` can outlive a `shard` restart, or a sandbox that someone killed by
   hand.
-- A sandbox stopped before its entrypoint ran leaves nothing at the substrate. The record says
-  `stopped`, and `Status` reports `Exists: false`.
+- On gVisor, a sandbox stopped before its entrypoint ran leaves nothing at the substrate. The
+  record says `stopped`, and `Status` reports `Exists: false`. vz retains its `vm.json` and reports
+  `Exists: true` with `State: stopped`.
 
 `Status.Alive()` is `Exists && State != stopped`. Only `Stop` and `Pause` take a sandbox out of that
 state. A gVisor `Pause` that breaks off after its checkpoint began loses the sandbox, because the
