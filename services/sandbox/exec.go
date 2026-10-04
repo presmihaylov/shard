@@ -1226,7 +1226,7 @@ func (s *Service) pausedMeanwhile(id string) (bool, error) {
 	if sb.State == models.StatePaused {
 		return true, nil
 	}
-	dir, err := s.markedSnapshot(sb)
+	dir, err := s.markedCheckpoint(sb)
 	if err != nil {
 		return false, err
 	}

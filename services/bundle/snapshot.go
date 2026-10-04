@@ -49,14 +49,14 @@ func (b Bundle) Export(ctx context.Context, dir string) error {
 }
 
 // Fork lays out a new bundle from what Export wrote, and keeps everything runsc checks a restore against.
-func (s *Service) Fork(snapshot string, spec models.SandboxSpec) (Bundle, error) {
+func (s *Service) Fork(checkpoint string, spec models.SandboxSpec) (Bundle, error) {
 	layers := map[string]string{}
 	for name := range (Bundle{}).layers() {
-		layers[name] = filepath.Join(snapshot, layersDir, name)
+		layers[name] = filepath.Join(checkpoint, layersDir, name)
 	}
 
 	// A fork carries the source exit record, so a fork of an exited sandbox answers Wait at once.
-	return s.copyBundle(filepath.Join(snapshot, "config.json"), layers, filepath.Join(snapshot, exitFileName), spec)
+	return s.copyBundle(filepath.Join(checkpoint, "config.json"), layers, filepath.Join(checkpoint, exitFileName), spec)
 }
 
 // Snapshot copies the writable layer and /tmp of a stopped bundle into dir, which a Build reads back as its Seed.
@@ -159,7 +159,7 @@ func (s *Service) copyBundle(configPath string, layers map[string]string, source
 	return b, nil
 }
 
-// copyExitFile carries shard-init's exit record between a bundle and a snapshot; a missing source is not an error.
+// copyExitFile carries shard-init's exit record between a bundle and a checkpoint; a missing source is not an error.
 func copyExitFile(src, dst string) error {
 	blob, err := readExitFile(src)
 	if errors.Is(err, fs.ErrNotExist) {
@@ -176,7 +176,7 @@ func copyExitFile(src, dst string) error {
 	return nil
 }
 
-// layers names what a snapshot carries. The overlay work directory is scratch and is never copied.
+// layers names what a checkpoint carries. The overlay work directory is scratch and is never copied.
 func (b Bundle) layers() map[string]string {
 	return map[string]string{"upper": b.Upper, "tmp": b.Tmp, "shard": b.ShardDir}
 }

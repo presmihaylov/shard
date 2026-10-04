@@ -25,8 +25,8 @@ type Subject struct {
 	// NewIgnoresTermSpec returns a spec whose entrypoint ignores SIGTERM, which is what proves grace.
 	// It must print ReadyMarker on stdout once the entrypoint refuses the signal, and not before.
 	NewIgnoresTermSpec func(t *testing.T) models.SandboxSpec
-	// SnapshotDir returns an empty directory the suite may write a snapshot into.
-	SnapshotDir func(t *testing.T) string
+	// EmptyDir returns an empty directory the suite may write a checkpoint or a snapshot into.
+	EmptyDir func(t *testing.T) string
 	// Shell turns a shell script into the argv that runs it in the sandboxes NewSpec builds.
 	Shell func(script string) []string
 	// Scratch is a directory the sandbox's shell can write, for the files the suite leaves in one; empty is /, and a set one is a fake guest's host directory every sandbox shares.
@@ -71,21 +71,21 @@ const forkCount = 3
 func Run(t *testing.T, s Subject) {
 	t.Helper()
 
-	if s.Provider == nil || s.NewSpec == nil || s.NewIgnoresTermSpec == nil || s.SnapshotDir == nil || s.Shell == nil || s.Reopen == nil {
-		t.Fatal("conformance: Subject needs Provider, NewSpec, NewIgnoresTermSpec, SnapshotDir, Shell and Reopen")
+	if s.Provider == nil || s.NewSpec == nil || s.NewIgnoresTermSpec == nil || s.EmptyDir == nil || s.Shell == nil || s.Reopen == nil {
+		t.Fatal("conformance: Subject needs Provider, NewSpec, NewIgnoresTermSpec, EmptyDir, Shell and Reopen")
 	}
 
 	caps := s.Provider.Capabilities()
 
 	t.Run("CapabilitiesAreCoherent", func(t *testing.T) {
-		// Resume needs a snapshot, and only Pause makes one; a fork captures its running source itself (SHARD-457).
+		// Resume needs a checkpoint, and only Pause makes one; a fork captures its running source itself (SHARD-457).
 		if caps.Resume && !caps.Pause {
-			t.Error("Resume: true with Pause: false; nothing can make the snapshot")
+			t.Error("Resume: true with Pause: false; nothing can make the checkpoint")
 		}
 
-		// A snapshot nothing can restore is not a capability.
+		// A checkpoint nothing can restore is not a capability.
 		if caps.Pause && !caps.Resume {
-			t.Error("Pause: true with Resume: false; nothing can restore the snapshot")
+			t.Error("Pause: true with Resume: false; nothing can restore the checkpoint")
 		}
 	})
 
@@ -442,7 +442,7 @@ func Run(t *testing.T, s Subject) {
 			t.Fatalf("Stop: %v", err)
 		}
 
-		dir := s.SnapshotDir(t)
+		dir := s.EmptyDir(t)
 		if err := s.Provider.Snapshot(t.Context(), source.ID, dir); err != nil {
 			t.Fatalf("Snapshot: %v", err)
 		}
@@ -489,7 +489,7 @@ func Run(t *testing.T, s Subject) {
 			t.Fatalf("Stop: %v", err)
 		}
 
-		dir := s.SnapshotDir(t)
+		dir := s.EmptyDir(t)
 		if err := s.Provider.Snapshot(t.Context(), source, dir); err != nil {
 			t.Fatalf("Snapshot: %v", err)
 		}
@@ -505,7 +505,7 @@ func Run(t *testing.T, s Subject) {
 
 	t.Run("SnapshotRefusesASourceThatIsRunning", func(t *testing.T) {
 		source := s.running(t)
-		err := s.Provider.Snapshot(t.Context(), source, s.SnapshotDir(t))
+		err := s.Provider.Snapshot(t.Context(), source, s.EmptyDir(t))
 		if err == nil {
 			t.Fatal("Snapshot copied a running sandbox")
 		}
@@ -571,11 +571,11 @@ func Run(t *testing.T, s Subject) {
 
 	t.Run("Pause", func(t *testing.T) {
 		id := s.running(t)
-		err := s.Provider.Pause(t.Context(), id, s.SnapshotDir(t))
+		err := s.Provider.Pause(t.Context(), id, s.EmptyDir(t))
 		s.check(t, models.VerbPause, caps.Pause, err)
 	})
 
-	// A snapshot is of a running sandbox on every substrate, so nothing else is a source for one.
+	// A checkpoint is of a running sandbox on every substrate, so nothing else is a source for one.
 	t.Run("PauseRefusesASandboxThatNeverStarted", func(t *testing.T) {
 		if !caps.Pause {
 			t.Skipf("%s does not support %s on this host", s.Provider.Name(), models.VerbPause)
@@ -585,7 +585,7 @@ func Run(t *testing.T, s Subject) {
 		if err := s.Provider.Create(t.Context(), spec); err != nil {
 			t.Fatalf("Create: %v", err)
 		}
-		if err := s.Provider.Pause(t.Context(), spec.ID, s.SnapshotDir(t)); err == nil {
+		if err := s.Provider.Pause(t.Context(), spec.ID, s.EmptyDir(t)); err == nil {
 			t.Error("Pause of a sandbox that never started = nil, want a refusal")
 		}
 		if state := s.status(t, spec.ID).State; state != models.StateCreated {
@@ -595,7 +595,7 @@ func Run(t *testing.T, s Subject) {
 
 	t.Run("Resume", func(t *testing.T) {
 		id := s.running(t)
-		dir := s.snapshotOf(t, id, caps.Pause)
+		dir := s.checkpointOf(t, id, caps.Pause)
 		err := s.Provider.Resume(t.Context(), id, dir)
 		s.check(t, models.VerbResume, caps.Resume, err)
 	})
@@ -972,10 +972,10 @@ func (s Subject) start(t *testing.T, spec models.SandboxSpec) string {
 }
 
 // Returns an empty dir when the provider cannot pause, so Resume and Fork still have to refuse.
-func (s Subject) snapshotOf(t *testing.T, id string, canPause bool) string {
+func (s Subject) checkpointOf(t *testing.T, id string, canPause bool) string {
 	t.Helper()
 
-	dir := s.SnapshotDir(t)
+	dir := s.EmptyDir(t)
 	if !canPause {
 		return dir
 	}

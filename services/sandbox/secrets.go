@@ -139,7 +139,7 @@ func (s *Service) UngrantSecret(ctx context.Context, ref, name string) (models.S
 }
 
 // held takes the sandbox lock and refuses the states whose environment is already live: a running guest
-// holds it in its processes, and a paused one holds it in the snapshot.
+// holds it in its processes, and a paused one holds it in the checkpoint.
 func (s *Service) held(ctx context.Context, ref, name, verb string) (string, models.Sandbox, func(), error) {
 	if err := secret.ValidName(name); err != nil {
 		return "", models.Sandbox{}, nil, &RequestError{Err: err}

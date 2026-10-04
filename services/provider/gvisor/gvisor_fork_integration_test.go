@@ -86,18 +86,18 @@ func TestALiveForkLeavesTheSourceRunningAndSharesNothing(t *testing.T) {
 }
 
 // A fork captures the source as it runs now, so a write made after an earlier pause and resume is in it (SHARD-457).
-func TestAForkCapturesTheSourceAsItRunsNotItsLastSnapshot(t *testing.T) {
+func TestAForkCapturesTheSourceAsItRunsNotItsLastCheckpoint(t *testing.T) {
 	h := newNetworkedHarness(t)
 	source := h.start(t, "/bin/sh", "-c", "while true; do sleep 1; done")
-	snapshot := filepath.Join(t.TempDir(), "snapshot")
+	checkpoint := filepath.Join(t.TempDir(), "checkpoint")
 
-	if err := h.provider.Pause(t.Context(), source.ID, snapshot); err != nil {
+	if err := h.provider.Pause(t.Context(), source.ID, checkpoint); err != nil {
 		t.Fatalf("Pause: %v", err)
 	}
 	if _, err := h.net.Allocate(t.Context(), source.ID); err != nil {
 		t.Fatalf("Allocate: %v", err)
 	}
-	if err := h.provider.Resume(t.Context(), source.ID, snapshot); err != nil {
+	if err := h.provider.Resume(t.Context(), source.ID, checkpoint); err != nil {
 		t.Fatalf("Resume: %v", err)
 	}
 	execIn(t, h, source.ID, "echo after-the-pause > /root/later")
@@ -108,7 +108,7 @@ func TestAForkCapturesTheSourceAsItRunsNotItsLastSnapshot(t *testing.T) {
 	}
 
 	if got := execIn(t, h, fork.ID, "cat /root/later"); !strings.Contains(got, "after-the-pause") {
-		t.Errorf("the fork has %q in /root/later, want the write the source made after its last snapshot", got)
+		t.Errorf("the fork has %q in /root/later, want the write the source made after its last checkpoint", got)
 	}
 	assertRunsUnmarked(t, h, source.ID)
 }

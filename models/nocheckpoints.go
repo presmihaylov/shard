@@ -1,0 +1,27 @@
+package models
+
+import "context"
+
+// NoCheckpoints is the checkpoint half of a Provider for a substrate that has none. A provider embeds
+// it and sets Provider to its own Name, so every refusal names the right substrate.
+type NoCheckpoints struct {
+	Provider string
+}
+
+// Capabilities reports no optional verb at all.
+func (NoCheckpoints) Capabilities() Capabilities { return Capabilities{} }
+
+func (n NoCheckpoints) Pause(context.Context, string, string) error {
+	return Unsupported(n.Provider, VerbPause)
+}
+
+func (n NoCheckpoints) Resume(context.Context, string, string) error {
+	return Unsupported(n.Provider, VerbResume)
+}
+
+func (n NoCheckpoints) Fork(context.Context, string, SandboxSpec) error {
+	return Unsupported(n.Provider, VerbFork)
+}
+
+// AdoptStaging settles nothing: a substrate with no pause stages no checkpoint, so there is never a leftover to drop.
+func (NoCheckpoints) AdoptStaging(string) error { return nil }

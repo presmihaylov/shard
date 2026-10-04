@@ -280,7 +280,7 @@ func TestLivenessPausesAMarkedRecordWhosePauseLeftACheckpoint(t *testing.T) {
 	sb := running()
 	sb.Pausing = true
 	lab := newLivenessLab(t, sb, gone())
-	lab.l.repo.snapshotDir = dir
+	lab.l.repo.checkpointDir = dir
 
 	if err := lab.tick(t, sb); err != nil {
 		t.Fatalf("Liveness: %v", err)
@@ -304,7 +304,7 @@ func TestLivenessPausesAMarkedRecordWhoseAdoptedShimWentSilentAndThenDied(t *tes
 	sb := running()
 	sb.Pausing = true
 	lab := newLivenessLab(t, sb, silentShim())
-	lab.l.repo.snapshotDir = dir
+	lab.l.repo.checkpointDir = dir
 
 	if err := lab.tick(t, sb); err != nil {
 		t.Fatalf("Liveness: %v", err)
@@ -337,7 +337,7 @@ func TestLivenessDropsTheMarkWhenASilentShimAnswersRunningAgain(t *testing.T) {
 	sb := unresponsive()
 	sb.Pausing = true
 	lab := newLivenessLab(t, sb, alive(sb.PID))
-	lab.l.repo.snapshotDir = dir
+	lab.l.repo.checkpointDir = dir
 
 	if err := lab.tick(t, sb); err != nil {
 		t.Fatalf("Liveness: %v", err)
@@ -370,7 +370,7 @@ func TestLivenessKeepsTheMarkWhenASilentShimAnswersFrozen(t *testing.T) {
 	}
 }
 
-// A daemon cut after the swap leaves the sentry frozen beside a complete snapshot, which the tick must release (SHARD-366).
+// A daemon cut after the swap leaves the sentry frozen beside a complete checkpoint, which the tick must release (SHARD-366).
 func TestLivenessReleasesAMarkedSandboxItsPauseLeftFrozen(t *testing.T) {
 	dir := t.TempDir()
 	if err := os.WriteFile(filepath.Join(dir, "checkpoint.img"), nil, 0o600); err != nil {
@@ -379,7 +379,7 @@ func TestLivenessReleasesAMarkedSandboxItsPauseLeftFrozen(t *testing.T) {
 	sb := running()
 	sb.Pausing = true
 	lab := newLivenessLab(t, sb, frozen())
-	lab.l.repo.snapshotDir = dir
+	lab.l.repo.checkpointDir = dir
 
 	if err := lab.tick(t, sb); err != nil {
 		t.Fatalf("Liveness: %v", err)
@@ -401,7 +401,7 @@ func TestLivenessLeavesAnUnmarkedFrozenSandboxAlone(t *testing.T) {
 		t.Fatal(err)
 	}
 	lab := newLivenessLab(t, running(), frozen())
-	lab.l.repo.snapshotDir = dir
+	lab.l.repo.checkpointDir = dir
 
 	if err := lab.tick(t, running()); err != nil {
 		t.Fatalf("Liveness: %v", err)
@@ -420,7 +420,7 @@ func TestLivenessReleasesNoMarkedSandboxWhosePauseLeftNoCompleteCheckpoint(t *te
 	sb := running()
 	sb.Pausing = true
 	lab := newLivenessLab(t, sb, frozen())
-	lab.l.repo.snapshotDir = t.TempDir()
+	lab.l.repo.checkpointDir = t.TempDir()
 
 	if err := lab.tick(t, sb); err != nil {
 		t.Fatalf("Liveness: %v", err)
@@ -434,8 +434,8 @@ func TestLivenessReleasesNoMarkedSandboxWhosePauseLeftNoCompleteCheckpoint(t *te
 	}
 }
 
-// A run the substrate carried on past its pause's snapshot holds no pause, so a later death of it is no pause either (SHARD-429).
-func TestLivenessDropsTheMarkOfASandboxTheSubstrateRunsPastItsSnapshot(t *testing.T) {
+// A run the substrate carried on past its pause's checkpoint holds no pause, so a later death of it is no pause either (SHARD-429).
+func TestLivenessDropsTheMarkOfASandboxTheSubstrateRunsPastItsCheckpoint(t *testing.T) {
 	dir := t.TempDir()
 	if err := os.WriteFile(filepath.Join(dir, "checkpoint.img"), nil, 0o600); err != nil {
 		t.Fatal(err)
@@ -443,7 +443,7 @@ func TestLivenessDropsTheMarkOfASandboxTheSubstrateRunsPastItsSnapshot(t *testin
 	sb := running()
 	sb.Pausing = true
 	lab := newLivenessLab(t, sb, alive(42))
-	lab.l.repo.snapshotDir = dir
+	lab.l.repo.checkpointDir = dir
 
 	if err := lab.tick(t, sb); err != nil {
 		t.Fatalf("Liveness: %v", err)
@@ -469,7 +469,7 @@ func TestLivenessKeepsTheMarkOfASandboxTheSubstrateDoesNotSayRuns(t *testing.T) 
 	sb := running()
 	sb.Pausing = true
 	lab := newLivenessLab(t, sb, unproven(42))
-	lab.l.repo.snapshotDir = dir
+	lab.l.repo.checkpointDir = dir
 
 	if err := lab.tick(t, sb); err != nil {
 		t.Fatalf("Liveness: %v", err)
@@ -496,8 +496,8 @@ func TestLivenessKeepsThePauseThatCommittedAfterItsProbe(t *testing.T) {
 	sb := running()
 	sb.Pausing = true
 	lab := newLivenessLab(t, sb, alive(42))
-	lab.l.repo.snapshotDir = dir
-	// The second Status finds the sandbox gone into the snapshot the first one predated.
+	lab.l.repo.checkpointDir = dir
+	// The second Status finds the sandbox gone into the checkpoint the first one predated.
 	lab.l.provider.exits = func() {}
 
 	if err := lab.tick(t, sb); err != nil {

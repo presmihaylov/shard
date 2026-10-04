@@ -221,11 +221,11 @@ const lastRestore = "restore.json"
 type launch struct {
 	Executable string   `json:"executable"`
 	Args       []string `json:"args"`
-	// unrecorded is a restore a daemon from before restore.json launched: nothing recorded its binary or its snapshot path.
+	// unrecorded is a restore a daemon from before restore.json launched: nothing recorded its binary or its checkpoint path.
 	unrecorded bool
 }
 
-// matches says whether a command line is this launch; without a record only the snapshot path may differ.
+// matches says whether a command line is this launch; without a record only the checkpoint path may differ.
 func (l launch) matches(args []string) bool {
 	want := l.Args
 	if i := slices.Index(want, imagePathFlag); l.unrecorded && i >= 0 && len(args) == len(want) {
@@ -295,7 +295,7 @@ func (p *Provider) killRestores(ctx context.Context, id string) error {
 }
 
 // lastRestore reads the restore recorded for the sandbox. With no record it is the restore a daemon from
-// before restore.json ran: on this sandbox's bundle, from any snapshot and any runsc.
+// before restore.json ran: on this sandbox's bundle, from any checkpoint and any runsc.
 func (p *Provider) lastRestore(id string) (launch, error) {
 	dir, err := p.dirs(id)
 	if err != nil {

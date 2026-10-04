@@ -341,7 +341,7 @@ func (s *Service) attach(ctx context.Context, id string, address netip.Addr, own
 	return s.configureGuest(ctx, id, address)
 }
 
-// bridgeTap names the tap after the host end, as older records and snapshots do, and bridges it to the veth with no address.
+// bridgeTap names the tap after the host end, as older records and checkpoints do, and bridges it to the veth with no address.
 func (s *Service) bridgeTap(ctx context.Context, id, tap string) error {
 	if err := s.manager.AddTapIn(ctx, id, tap); err != nil {
 		return err

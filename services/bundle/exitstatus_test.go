@@ -149,7 +149,7 @@ func TestReadExitStatusReadsAFileAtTheCap(t *testing.T) {
 	}
 }
 
-// A snapshot carries the exit file through the same bounded read, so a pause never copies what the guest grew.
+// A checkpoint carries the exit file through the same bounded read, so a pause never copies what the guest grew.
 func TestExportRefusesAnExitFileOverTheCap(t *testing.T) {
 	b, _ := build(t, newSpec(t), models.ImageConfig{})
 	write(t, b.ExitFile, strings.Repeat("x", 1<<20))

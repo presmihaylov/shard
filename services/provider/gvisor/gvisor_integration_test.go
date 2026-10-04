@@ -49,10 +49,10 @@ func TestConformance(t *testing.T) {
 
 			return h.newSpec(t, "/bin/sh", "-c", script)
 		},
-		SnapshotDir: func(t *testing.T) string { return t.TempDir() },
-		Shell:       func(script string) []string { return []string{"/bin/sh", "-c", script} },
-		Reopen:      h.reopen,
-		HostLayer:   true,
+		EmptyDir:  func(t *testing.T) string { return t.TempDir() },
+		Shell:     func(script string) []string { return []string{"/bin/sh", "-c", script} },
+		Reopen:    h.reopen,
+		HostLayer: true,
 	})
 }
 

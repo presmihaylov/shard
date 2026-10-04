@@ -1,5 +1,5 @@
 // Package sysbox runs sandboxes on Sysbox by driving bare sysbox-runc. Sysbox is the substrate that
-// runs Docker and systemd inside the sandbox, and it has no snapshot at all: Capabilities is all
+// runs Docker and systemd inside the sandbox, and it has no checkpoint at all: Capabilities is all
 // false and the three optional verbs refuse by name.
 package sysbox
 
@@ -53,9 +53,9 @@ type StateDirs func(id string) (string, error)
 
 var _ models.Provider = (*Provider)(nil)
 
-// Provider implements models.Provider on Sysbox. The snapshot verbs are NoSnapshots' refusals.
+// Provider implements models.Provider on Sysbox. The checkpoint verbs are NoCheckpoints' refusals.
 type Provider struct {
-	models.NoSnapshots
+	models.NoCheckpoints
 
 	runner  *runc.Runner
 	bundles *bundle.Service
@@ -72,7 +72,7 @@ func New(runner *runc.Runner, bundles *bundle.Service, dirs StateDirs) (*Provide
 		return nil, errors.New("the sysbox provider needs a sysbox-runc runner, a bundle service and a state directory lookup")
 	}
 
-	return &Provider{NoSnapshots: models.NoSnapshots{Provider: Name}, runner: runner, bundles: bundles, dirs: dirs, cgroupRoot: cgroup.Root, procRoot: "/proc"}, nil
+	return &Provider{NoCheckpoints: models.NoCheckpoints{Provider: Name}, runner: runner, bundles: bundles, dirs: dirs, cgroupRoot: cgroup.Root, procRoot: "/proc"}, nil
 }
 
 func (p *Provider) Name() string { return Name }

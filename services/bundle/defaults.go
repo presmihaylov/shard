@@ -20,7 +20,7 @@ const rootfsAnnotation = "dev.shard.rootfs"
 // cpuFeaturesAnnotation caps what CPUID shows the guest, and runsc reads the names /proc/cpuinfo uses.
 const cpuFeaturesAnnotation = "dev.gvisor.internal.cpufeatures"
 
-// cpuFeatures is the CPU bound every snapshot carries, and a change invalidates every snapshot that exists (SHARD-30).
+// cpuFeatures is the CPU bound every checkpoint carries, and a change invalidates every checkpoint that exists (SHARD-30).
 const cpuFeatures = "fpu,vme,de,pse,tsc,msr,pae,mce,cx8,apic,sep,mtrr,pge,mca,cmov,pat,pse36,clflush,mmx,fxsr," +
 	"sse,sse2,ht,syscall,nx,rdtscp,lm,pni,pclmulqdq,ssse3,fma,cx16,sse4_1,sse4_2,movbe,popcnt,aes," +
 	"xsave,osxsave,avx,f16c,rdrand,lahf_lm,abm,fsgsbase,bmi1,avx2,bmi2,rdseed,adx,xsaveopt,xsavec,xgetbv1,xsaves"

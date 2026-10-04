@@ -2503,8 +2503,8 @@ check_host_net_clear
 trap - EXIT
 echo
 case "${PROVIDER}" in
-gvisor) SNAPSHOT_STEPS="pause, fork, resume" ;;
-sysbox) SNAPSHOT_STEPS="refused pause, resume and fork, docker build inside" ;;
-runc) SNAPSHOT_STEPS="refused pause, resume and fork" ;;
+gvisor) CHECKPOINT_STEPS="pause, fork, resume" ;;
+sysbox) CHECKPOINT_STEPS="refused pause, resume and fork, docker build inside" ;;
+runc) CHECKPOINT_STEPS="refused pause, resume and fork" ;;
 esac
-echo "e2e PASSED on ${PROVIDER}: install, daemon up, version, what the host picks, create, daemon restart, proxy, exec, exec again, the tcp front, the disk bound, ${SNAPSHOT_STEPS}, stop, inspect, start, grant, ungrant, rm, attach, detach, prune, daemon down, and a clean host"
+echo "e2e PASSED on ${PROVIDER}: install, daemon up, version, what the host picks, create, daemon restart, proxy, exec, exec again, the tcp front, the disk bound, ${CHECKPOINT_STEPS}, stop, inspect, start, grant, ungrant, rm, attach, detach, prune, daemon down, and a clean host"

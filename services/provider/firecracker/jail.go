@@ -12,7 +12,7 @@ import (
 	"github.com/presmihaylov/shard/services/bundle"
 )
 
-// jail makes a fresh jail for the sandbox's next vmm and records it, with the vmm's uid; snap is the snapshot a restore loads, empty for a boot.
+// jail makes a fresh jail for the sandbox's next vmm and records it, with the vmm's uid; snap is the checkpoint a restore loads, empty for a boot.
 func (p *Provider) jail(id, dir string, r *record, snap string) (fcapi.Jail, error) {
 	if r.UID == 0 {
 		uid, err := p.nextUID()
@@ -52,8 +52,8 @@ func (p *Provider) jail(id, dir string, r *record, snap string) (fcapi.Jail, err
 func (p *Provider) fill(j fcapi.Jail, dir string, r record, snap string) error {
 	shared := [][2]string{{jailKernel, p.kernel}, {jailInitrd, p.initrd}, {jailBase, r.BaseDisk}}
 	if snap != "" {
-		// The memory holds the kernel and the initrd, so a restore takes the snapshot's two files in their place.
-		shared = [][2]string{{jailBase, r.BaseDisk}, {jailState, filepath.Join(snap, snapshotState)}, {jailMemory, filepath.Join(snap, memoryFile)}}
+		// The memory holds the kernel and the initrd, so a restore takes the checkpoint's two files in their place.
+		shared = [][2]string{{jailBase, r.BaseDisk}, {jailState, filepath.Join(snap, checkpointState)}, {jailMemory, filepath.Join(snap, memoryFile)}}
 	}
 	for _, file := range shared {
 		if err := bundle.Reflink(file[1], j.Host(file[0])); err != nil {

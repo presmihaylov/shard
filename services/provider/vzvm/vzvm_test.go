@@ -187,9 +187,9 @@ func TestConformance(t *testing.T) {
 
 			return h.newSpec(t, "/bin/sh", "-c", script)
 		},
-		SnapshotDir: func(t *testing.T) string { return t.TempDir() },
-		Shell:       func(script string) []string { return []string{"/bin/sh", "-c", script} },
-		// The fake guest is a host process, so the suite writes under the root; a snapshot here proves the verbs and not the disk.
+		EmptyDir: func(t *testing.T) string { return t.TempDir() },
+		Shell:    func(script string) []string { return []string{"/bin/sh", "-c", script} },
+		// The fake guest is a host process, so the suite writes under the root; a checkpoint here proves the verbs and not the disk.
 		Scratch: h.root,
 		Reopen:  h.reopen,
 	})
@@ -303,7 +303,7 @@ func TestAPauseFreezesTheGuestAndEveryPathThatRunsItAgainThawsIt(t *testing.T) {
 		t.Fatalf("the pause stopped a guest whose root still took writes: %v", err)
 	}
 	fork := h.newSpec(t)
-	if err := h.provider.ForkSnapshot(t.Context(), snap, fork); err != nil {
+	if err := h.provider.ForkCheckpoint(t.Context(), snap, fork); err != nil {
 		t.Fatal(err)
 	}
 	forkDir, err := h.stateDir(fork.ID)
@@ -316,7 +316,7 @@ func TestAPauseFreezesTheGuestAndEveryPathThatRunsItAgainThawsIt(t *testing.T) {
 	}
 	thawed(dir, "a resume")
 
-	// Without a disk to copy the snapshot cannot complete, and the pause gives the guest back able to write.
+	// Without a disk to copy the checkpoint cannot complete, and the pause gives the guest back able to write.
 	if err := os.Remove(filepath.Join(dir, "disk.img")); err != nil {
 		t.Fatal(err)
 	}
@@ -537,7 +537,7 @@ func waitsInFreeze() bool {
 	return false
 }
 
-// A pause keeps the save, the disk and the identifier together; a stop of a paused sandbox leaves it stopped and the snapshot whole.
+// A pause keeps the save, the disk and the identifier together; a stop of a paused sandbox leaves it stopped and the checkpoint whole.
 func TestPauseKeepsWhatAResumeAndAForkNeed(t *testing.T) {
 	h := newHarness(t)
 	spec := h.newSpec(t, "/bin/sh", "-c", "while true; do sleep 1; done")
@@ -552,15 +552,15 @@ func TestPauseKeepsWhatAResumeAndAForkNeed(t *testing.T) {
 	if err := h.provider.Pause(t.Context(), spec.ID, snap); err != nil {
 		t.Fatal(err)
 	}
-	for _, name := range []string{"snapshot.json", "vm.vzvmstate", "disk.img", "checkpoint.img"} {
+	for _, name := range []string{"checkpoint.json", "vm.vzvmstate", "disk.img", "checkpoint.img"} {
 		if _, err := os.Stat(filepath.Join(snap, name)); err != nil {
-			t.Errorf("the snapshot lacks %s: %v", name, err)
+			t.Errorf("the checkpoint lacks %s: %v", name, err)
 		}
 	}
 	if _, err := os.Stat(snap + ".tmp"); !errors.Is(err, os.ErrNotExist) {
 		t.Errorf("the pause left its staging directory: %v", err)
 	}
-	// The save ends the shim, so the substrate says stopped and the snapshot marker is what says paused.
+	// The save ends the shim, so the substrate says stopped and the checkpoint marker is what says paused.
 	status, err := h.provider.Status(t.Context(), spec.ID)
 	if err != nil || status.State != models.StateStopped {
 		t.Fatalf("Status after Pause = %+v, %v", status, err)
@@ -577,7 +577,7 @@ func TestPauseKeepsWhatAResumeAndAForkNeed(t *testing.T) {
 	}
 
 	fork := h.newSpec(t)
-	if err := h.provider.ForkSnapshot(t.Context(), snap, fork); err != nil {
+	if err := h.provider.ForkCheckpoint(t.Context(), snap, fork); err != nil {
 		t.Fatal(err)
 	}
 	status, err = h.provider.Status(t.Context(), fork.ID)
@@ -942,8 +942,8 @@ func TestAnAdoptFailsWhenTheLogCannotOpen(t *testing.T) {
 	}
 }
 
-// A pause that cannot complete its snapshot resumes the VM, keeps the last snapshot and leaves no staging directory.
-func TestAFailedPauseResumesTheSandboxAndKeepsTheLastSnapshot(t *testing.T) {
+// A pause that cannot complete its checkpoint resumes the VM, keeps the last checkpoint and leaves no staging directory.
+func TestAFailedPauseResumesTheSandboxAndKeepsTheLastCheckpoint(t *testing.T) {
 	h := newHarness(t)
 	spec := h.newSpec(t, "/bin/sh", "-c", "while true; do sleep 1; done")
 	if err := h.provider.Create(t.Context(), spec); err != nil {
@@ -964,7 +964,7 @@ func TestAFailedPauseResumesTheSandboxAndKeepsTheLastSnapshot(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	// Without a disk to copy the snapshot cannot complete, and the pause must give the VM back.
+	// Without a disk to copy the checkpoint cannot complete, and the pause must give the VM back.
 	dir, err := h.stateDir(spec.ID)
 	if err != nil {
 		t.Fatal(err)
@@ -984,14 +984,14 @@ func TestAFailedPauseResumesTheSandboxAndKeepsTheLastSnapshot(t *testing.T) {
 	}
 	after, err := os.ReadFile(filepath.Join(snap, "vm.vzvmstate"))
 	if err != nil || string(after) != string(before) {
-		t.Fatalf("the last snapshot changed under a failed pause: %v", err)
+		t.Fatalf("the last checkpoint changed under a failed pause: %v", err)
 	}
 	if err := h.provider.Pause(t.Context(), spec.ID, t.TempDir()); err == nil || !strings.Contains(err.Error(), "copy the disk") {
 		t.Fatalf("a second Pause = %v, want the copy failure again, not an already-paused refusal", err)
 	}
 }
 
-// A pause that crashed after its record leaves the staged snapshot beside the old one and a shim over a suspended guest; the daemon comes back, the service retries, and that pause is finished.
+// A pause that crashed after its record leaves the staged checkpoint beside the old one and a shim over a suspended guest; the daemon comes back, the service retries, and that pause is finished.
 func TestARetriedPauseAfterARestartFinishesTheOneACrashLeft(t *testing.T) {
 	h := newHarness(t)
 	spec := h.newSpec(t, "/bin/sh", "-c", "while true; do sleep 1; done")
@@ -1009,7 +1009,7 @@ func TestARetriedPauseAfterARestartFinishesTheOneACrashLeft(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	// The crash state by hand: a complete second snapshot staged, a record that says paused, and the shim still up over a suspended guest.
+	// The crash state by hand: a complete second checkpoint staged, a record that says paused, and the shim still up over a suspended guest.
 	dir, err := h.stateDir(spec.ID)
 	if err != nil {
 		t.Fatal(err)
@@ -1018,7 +1018,7 @@ func TestARetriedPauseAfterARestartFinishesTheOneACrashLeft(t *testing.T) {
 	if err := os.CopyFS(staged, os.DirFS(snap)); err != nil {
 		t.Fatal(err)
 	}
-	setJSON(t, filepath.Join(staged, "snapshot.json"), "pause", 2)
+	setJSON(t, filepath.Join(staged, "checkpoint.json"), "pause", 2)
 	setJSON(t, filepath.Join(dir, "vm.json"), "paused", true)
 	setJSON(t, filepath.Join(dir, "vm.json"), "pauses", 2)
 	shim, _, err := vz.Adopt(t.Context(), filepath.Join(dir, "shim.sock"))
@@ -1029,7 +1029,7 @@ func TestARetriedPauseAfterARestartFinishesTheOneACrashLeft(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	// The daemon comes back and the service retries the pause, which finishes the crashed one: the staged snapshot goes in and the shim goes.
+	// The daemon comes back and the service retries the pause, which finishes the crashed one: the staged checkpoint goes in and the shim goes.
 	again := h.open(t)
 	if err := again.Pause(t.Context(), spec.ID, snap); err != nil {
 		t.Fatal(err)
@@ -1037,8 +1037,8 @@ func TestARetriedPauseAfterARestartFinishesTheOneACrashLeft(t *testing.T) {
 	if _, err := shim.State(t.Context()); err == nil {
 		t.Fatal("the shim the crashed pause left still answers")
 	}
-	if got := readJSON(t, filepath.Join(snap, "snapshot.json"))["pause"]; got != 2.0 {
-		t.Fatalf("the snapshot in place is pause %v, want 2, the staged one", got)
+	if got := readJSON(t, filepath.Join(snap, "checkpoint.json"))["pause"]; got != 2.0 {
+		t.Fatalf("the checkpoint in place is pause %v, want 2, the staged one", got)
 	}
 	if _, err := os.Stat(staged); !errors.Is(err, os.ErrNotExist) {
 		t.Errorf("the staging directory is still there: %v", err)
@@ -1055,19 +1055,19 @@ func TestARetriedPauseAfterARestartFinishesTheOneACrashLeft(t *testing.T) {
 		t.Fatalf("Status after Resume = %+v, %v; want alive", status, err)
 	}
 
-	// An older staged snapshot, left by a swap whose cleanup failed, goes, and the one in place stays.
+	// An older staged checkpoint, left by a swap whose cleanup failed, goes, and the one in place stays.
 	if err := again.Pause(t.Context(), spec.ID, snap); err != nil {
 		t.Fatal(err)
 	}
 	if err := os.CopyFS(staged, os.DirFS(snap)); err != nil {
 		t.Fatal(err)
 	}
-	setJSON(t, filepath.Join(staged, "snapshot.json"), "pause", 1)
+	setJSON(t, filepath.Join(staged, "checkpoint.json"), "pause", 1)
 	if err := again.Resume(t.Context(), spec.ID, snap); err != nil {
 		t.Fatal(err)
 	}
-	if got := readJSON(t, filepath.Join(snap, "snapshot.json"))["pause"]; got != 3.0 {
-		t.Fatalf("the snapshot in place is pause %v, want 3", got)
+	if got := readJSON(t, filepath.Join(snap, "checkpoint.json"))["pause"]; got != 3.0 {
+		t.Fatalf("the checkpoint in place is pause %v, want 3", got)
 	}
 	if _, err := os.Stat(staged); !errors.Is(err, os.ErrNotExist) {
 		t.Errorf("the stale staging directory is still there: %v", err)
@@ -2083,9 +2083,9 @@ func TestARetriedPauseEndsALeftoverShimWhoseSocketQueueIsFull(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	// The crash state by hand: a complete snapshot, a record that says paused, and the shim still up.
+	// The crash state by hand: a complete checkpoint, a record that says paused, and the shim still up.
 	snap := t.TempDir()
-	if err := os.WriteFile(filepath.Join(snap, "snapshot.json"), []byte(`{"pause":1}`), 0o600); err != nil {
+	if err := os.WriteFile(filepath.Join(snap, "checkpoint.json"), []byte(`{"pause":1}`), 0o600); err != nil {
 		t.Fatal(err)
 	}
 	if err := os.WriteFile(filepath.Join(snap, "checkpoint.img"), nil, 0o600); err != nil {
@@ -2123,7 +2123,7 @@ func TestAResumeEndsAnUnrecordedLeftoverShimWhoseSocketQueueIsFull(t *testing.T)
 	}
 	// The crash state by hand: a complete save of this machine, a record that says paused, and the shim still up.
 	snap := t.TempDir()
-	files := map[string]string{"snapshot.json": `{"pause":1,"machine_id":"` + r.MachineID + `"}`, "vm.vzvmstate": r.MachineID, "checkpoint.img": ""}
+	files := map[string]string{"checkpoint.json": `{"pause":1,"machine_id":"` + r.MachineID + `"}`, "vm.vzvmstate": r.MachineID, "checkpoint.img": ""}
 	for name, content := range files {
 		if err := os.WriteFile(filepath.Join(snap, name), []byte(content), 0o600); err != nil {
 			t.Fatal(err)
@@ -2337,7 +2337,7 @@ func TestBoundOutputLogBoundsALegacyLogWithNoLaterOutput(t *testing.T) {
 
 // vz finishes a cut pause's stage on the next resume, so AdoptStaging keeps dir+".tmp" and never drops it (SHARD-404).
 func TestAdoptStagingKeepsACutPauseStage(t *testing.T) {
-	dir := filepath.Join(t.TempDir(), "snapshot")
+	dir := filepath.Join(t.TempDir(), "checkpoint")
 	tmp := dir + ".tmp"
 	if err := os.MkdirAll(tmp, 0o700); err != nil {
 		t.Fatalf("stage a cut pause: %v", err)

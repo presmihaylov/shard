@@ -31,8 +31,8 @@ func TestForkIsTheSourceUnderANewIdentity(t *testing.T) {
 	write(t, filepath.Join(b.Tmp, "scratch"), "tmp\n")
 	write(t, b.ReadyFile, "")
 
-	snapshot := t.TempDir()
-	if err := b.Export(t.Context(), snapshot); err != nil {
+	checkpoint := t.TempDir()
+	if err := b.Export(t.Context(), checkpoint); err != nil {
 		t.Fatalf("Export: %v", err)
 	}
 
@@ -47,7 +47,7 @@ func TestForkIsTheSourceUnderANewIdentity(t *testing.T) {
 			Nameservers: []netip.Addr{netip.MustParseAddr("1.1.1.1")},
 		},
 	}
-	c, err := newService(t).Fork(snapshot, fork)
+	c, err := newService(t).Fork(checkpoint, fork)
 	if err != nil {
 		t.Fatalf("Fork: %v", err)
 	}
@@ -113,10 +113,10 @@ func TestForkIsTheSourceUnderANewIdentity(t *testing.T) {
 	}
 }
 
-func TestForkRefusesASnapshotWithNoConfig(t *testing.T) {
+func TestForkRefusesACheckpointWithNoConfig(t *testing.T) {
 	spec := models.SandboxSpec{ID: "s-fork", StateDir: t.TempDir()}
 	if _, err := newService(t).Fork(t.TempDir(), spec); err == nil {
-		t.Error("Fork accepted an empty snapshot")
+		t.Error("Fork accepted an empty checkpoint")
 	}
 }
 
@@ -127,14 +127,14 @@ func TestForkCarriesTheExitRecord(t *testing.T) {
 
 	write(t, b.ExitFile, "{\"kind\":\"exit\",\"code\":7,\"signal\":0}\n")
 
-	snapshot := t.TempDir()
-	if err := b.Export(t.Context(), snapshot); err != nil {
+	checkpoint := t.TempDir()
+	if err := b.Export(t.Context(), checkpoint); err != nil {
 		t.Fatalf("Export: %v", err)
 	}
 
 	fork := models.SandboxSpec{ID: "s-fork", Name: "web-2", StateDir: t.TempDir(),
 		Network: models.NetworkSpec{NetnsPath: "/run/netns/s-fork"}}
-	c, err := newService(t).Fork(snapshot, fork)
+	c, err := newService(t).Fork(checkpoint, fork)
 	if err != nil {
 		t.Fatalf("Fork: %v", err)
 	}

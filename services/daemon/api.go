@@ -125,7 +125,7 @@ func (r reconciler) Reconcile(ctx context.Context, report func(string)) error {
 	}
 
 	// A pause the last daemon did not finish left a checkpoint .tmp that no record reaches anymore.
-	if err := repo.SweepSnapshotTmp(report); err != nil {
+	if err := repo.SweepCheckpointTmp(report); err != nil {
 		return err
 	}
 

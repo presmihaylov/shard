@@ -444,7 +444,7 @@ func (p *Provider) boot(ctx context.Context, id, dir string, r record, restore s
 	if restore == "" {
 		return m, nil
 	}
-	// Only a running sandbox is ever paused, so what a snapshot brings back is running and Status says so.
+	// Only a running sandbox is ever paused, so what a checkpoint brings back is running and Status says so.
 	p.mu.Lock()
 	m.started = true
 	p.mu.Unlock()

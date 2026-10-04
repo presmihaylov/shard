@@ -117,9 +117,9 @@ func TestReconcileSaysOnceWhatHappenedToTheStagingOfACutPause(t *testing.T) {
 			if err != nil {
 				t.Fatalf("Create: %v", err)
 			}
-			dir, err := repo.SnapshotDir(sb.ID)
+			dir, err := repo.CheckpointDir(sb.ID)
 			if err != nil {
-				t.Fatalf("SnapshotDir: %v", err)
+				t.Fatalf("CheckpointDir: %v", err)
 			}
 			staging := dir + ".tmp"
 			if err := os.MkdirAll(staging, 0o700); err != nil {

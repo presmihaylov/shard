@@ -135,7 +135,7 @@ func TestAttachPolicyRefusesAPausedSandbox(t *testing.T) {
 	svc, _, _ := attachable(t, &recorder{}, pausedSandbox())
 
 	if _, err := svc.AttachPolicy(context.Background(), "sandbox1", "locked"); err == nil {
-		t.Fatal("the attach took a paused sandbox, whose snapshot already holds the rules")
+		t.Fatal("the attach took a paused sandbox, whose checkpoint already holds the rules")
 	}
 }
 

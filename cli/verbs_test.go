@@ -171,7 +171,7 @@ func TestPauseAndResumeRunThroughTheDaemon(t *testing.T) {
 	if err := app.Run(t.Context(), []string{"pause", "sandbox1"}); err != nil {
 		t.Fatalf("pause: %v", err)
 	}
-	if got := d.providerSvc.(*fakeLifecycleProvider).snapshot; got != "/checkpoints/sandbox1" {
+	if got := d.providerSvc.(*fakeLifecycleProvider).checkpoint; got != "/checkpoints/sandbox1" {
 		t.Errorf("the provider was told to write %q, want the repository's checkpoint directory", got)
 	}
 

@@ -45,7 +45,7 @@ type Repository interface {
 	Update(id string, mutate func(*models.Sandbox) error) error
 	Delete(id string) error
 	Dir(id string) (string, error)
-	SnapshotDir(id string) (string, error)
+	CheckpointDir(id string) (string, error)
 }
 
 // Images is the part of image.Service a create drives.
@@ -1142,9 +1142,9 @@ type reclaimer interface {
 	Reclaim(ctx context.Context, id string) error
 }
 
-// endIfAlive refuses a sandbox that is still up or paused, because rm frees the writable layer and the snapshot a stop keeps; --force stops it first, and on a wedge kills it first.
+// endIfAlive refuses a sandbox that is still up or paused, because rm frees the writable layer and the checkpoint a stop keeps; --force stops it first, and on a wedge kills it first.
 func (s *Service) endIfAlive(ctx context.Context, id string, state models.State, force bool) error {
-	// A pause ends the process on gVisor, Firecracker and vz, so only the record says a resume still needs the snapshot, and no probe can wedge that answer.
+	// A pause ends the process on gVisor, Firecracker and vz, so only the record says a resume still needs the checkpoint, and no probe can wedge that answer.
 	if state == models.StatePaused {
 		return s.refuseOrStop(ctx, id, state, force)
 	}

@@ -113,7 +113,7 @@ func TestEveryCommandCarriesTheGlobalFlags(t *testing.T) {
 	}
 }
 
-func TestTheSnapshotVerbsSpellTheirFlags(t *testing.T) {
+func TestTheCheckpointVerbsSpellTheirFlags(t *testing.T) {
 	cases := []struct {
 		verb string
 		call func(r *runsc.Runner) error
@@ -173,7 +173,7 @@ func TestExecutableFollowsASymlink(t *testing.T) {
 	}
 }
 
-func TestTheSnapshotVerbsRefuseWithNoPath(t *testing.T) {
+func TestTheCheckpointVerbsRefuseWithNoPath(t *testing.T) {
 	r, recorded := fake(t, "", "", 0)
 
 	if err := r.Checkpoint(t.Context(), "amber-otter-1a2b", ""); err == nil {
@@ -343,7 +343,7 @@ var bringUps = map[string]func(ctx context.Context, r *runsc.Runner, id string) 
 		return r.Create(ctx, id, runsc.CreateOptions{Bundle: "/var/lib/shard/sandboxes/amber-otter-1a2b/bundle"})
 	},
 	"restore": func(ctx context.Context, r *runsc.Runner, id string) error {
-		return r.Restore(ctx, id, runsc.RestoreOptions{Bundle: "/var/lib/shard/sandboxes/amber-otter-1a2b/bundle", Image: "/var/lib/shard/snapshots/amber-otter-1a2b"})
+		return r.Restore(ctx, id, runsc.RestoreOptions{Bundle: "/var/lib/shard/sandboxes/amber-otter-1a2b/bundle", Image: "/var/lib/shard/checkpoints/amber-otter-1a2b"})
 	},
 }
 

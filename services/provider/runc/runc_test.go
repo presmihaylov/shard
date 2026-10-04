@@ -77,7 +77,7 @@ func TestNoUserNamespaceIsClaimed(t *testing.T) {
 	}
 }
 
-// The snapshot verbs refuse by name before runc runs, so the cli can say which provider lacks what.
+// The checkpoint verbs refuse by name before runc runs, so the cli can say which provider lacks what.
 func TestEveryOptionalVerbRefusesByName(t *testing.T) {
 	p := newProvider(t)
 	spec := models.SandboxSpec{ID: "amber-otter-2c3d", StateDir: t.TempDir()}

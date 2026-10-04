@@ -40,7 +40,7 @@ type machine struct {
 	swap sync.Mutex
 	// freezing, taken before swap, holds each freeze and thaw of the guest until the guest answers, so none lands inside another.
 	freezing sync.Mutex
-	// pausing, under freezing, is a pause that froze the guest and still means to snapshot it.
+	// pausing, under freezing, is a pause that froze the guest and still means to checkpoint it.
 	pausing bool
 	// resetBy is the verb whose snapshot create reset every vsock stream, so its runAgain dials the control stream again; only that verb's goroutine reads it.
 	resetBy string
@@ -155,7 +155,7 @@ func (p *Provider) lookup(ctx context.Context, id, dir string, r record) (*machi
 		if err != nil {
 			return nil, fmt.Errorf("sandbox %s: %w", id, err)
 		}
-		// A pause cut after its install left the guest frozen beside a complete snapshot, and a resume would run it past that; a capture's source runs on (SHARD-427, SHARD-462).
+		// A pause cut after its install left the guest frozen beside a complete checkpoint, and a resume would run it past that; a capture's source runs on (SHARD-427, SHARD-462).
 		if frozen && !capturing {
 			return nil, p.endJudged(id, client, info.PID, r.Jail)
 		}
@@ -169,7 +169,7 @@ func (p *Provider) lookup(ctx context.Context, id, dir string, r record) (*machi
 	if err != nil || m == nil {
 		return m, err
 	}
-	// A daemon cut between a restore's attach and its reseed left the guest on the snapshot's key, and no other step gives it one.
+	// A daemon cut between a restore's attach and its reseed left the guest on the checkpoint's key, and no other step gives it one.
 	if err := m.reseed(ctx); err != nil {
 		return nil, errors.Join(err, p.end(ctx, m))
 	}
@@ -181,7 +181,7 @@ func (p *Provider) lookup(ctx context.Context, id, dir string, r record) (*machi
 	return m, nil
 }
 
-// unfreeze reseeds a guest a snapshot left frozen, then thaws it.
+// unfreeze reseeds a guest a checkpoint left frozen, then thaws it.
 func (m *machine) unfreeze(ctx context.Context) error {
 	if err := m.reseed(ctx); err != nil {
 		return err
@@ -193,7 +193,7 @@ func (m *machine) unfreeze(ctx context.Context) error {
 	return nil
 }
 
-// reseed gives a restored guest a crng key of its own while its marker says it has none; every restore of one snapshot wakes with the same key, and the guest kernel has no vmgenid to rekey it (SHARD-266).
+// reseed gives a restored guest a crng key of its own while its marker says it has none; every restore of one checkpoint wakes with the same key, and the guest kernel has no vmgenid to rekey it (SHARD-266).
 func (m *machine) reseed(ctx context.Context) error {
 	marker := filepath.Join(m.dir, reseedFile)
 	pending, err := exists(marker)
@@ -371,9 +371,9 @@ func (p *Provider) spared(id string) bool {
 	return held || p.spawning[id]
 }
 
-// installed says a complete snapshot is where the sandbox's pause writes; the pause verb removes the old one first, so a VM frozen beside it is a pause past its install or a restore before its vCPUs ran.
+// installed says a complete checkpoint is where the sandbox's pause writes; the pause verb removes the old one first, so a VM frozen beside it is a pause past its install or a restore before its vCPUs ran.
 func (p *Provider) installed(id string) (bool, error) {
-	dir, err := p.cfg.Snapshots(id)
+	dir, err := p.cfg.Checkpoints(id)
 	if err != nil {
 		return false, fmt.Errorf("find the checkpoint directory: %w", err)
 	}
@@ -620,7 +620,7 @@ func (p *Provider) attach(ctx context.Context, id, dir, jail string, client *fca
 		// The guest kept a kill no host heard; the marker is on disk and it is going, so there is nothing to follow.
 		return nil, p.release(ctx, m)
 	}
-	// A snapshot holds the guest frozen, so it runs nothing on the saved crng key until the reseed is in and the thaw follows (SHARD-409).
+	// A checkpoint holds the guest frozen, so it runs nothing on the saved crng key until the reseed is in and the thaw follows (SHARD-409).
 	if state.Frozen {
 		if err := m.unfreeze(ctx); err != nil {
 			// A guest left frozen never runs again, and an adopter that kept its vmm would retry this on every verb.

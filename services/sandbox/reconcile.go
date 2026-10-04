@@ -11,7 +11,7 @@ import (
 	"github.com/presmihaylov/shard/models"
 )
 
-// LostReason is what a record says once the daemon found no process and no snapshot behind it.
+// LostReason is what a record says once the daemon found no process and no checkpoint behind it.
 const LostReason = "daemon restarted and found no process"
 
 // InterruptedReason is what a pending create's record says once the daemon restarted before it finished.
@@ -32,7 +32,7 @@ func (s *Service) ReconcileAll(ctx context.Context, sandboxes []models.Sandbox, 
 	running := 0
 	for i, sb := range sandboxes {
 		var state models.State
-		// A cut pause leaves a staged snapshot, settled once here so a retried record write never reports it twice (SHARD-428).
+		// A cut pause leaves a staged checkpoint, settled once here so a retried record write never reports it twice (SHARD-428).
 		err := s.adoptStaging(sb.ID, report)
 		if err == nil {
 			err = retry("the record of sandbox "+sb.ID, func() error {
@@ -113,7 +113,7 @@ func (s *Service) applyReconcile(ctx context.Context, sb models.Sandbox, status 
 		return models.StateStopped, nil
 	}
 
-	// The daemon stopped after a pause installed its snapshot and before the pause wrote the record (SHARD-366).
+	// The daemon stopped after a pause installed its checkpoint and before the pause wrote the record (SHARD-366).
 	cut, err := s.cutPause(ctx, sb, status)
 	if err != nil {
 		return "", err
@@ -135,7 +135,7 @@ func (s *Service) applyReconcile(ctx context.Context, sb models.Sandbox, status 
 
 	state, err := reconciled(sb, status)
 	if err != nil {
-		return "", fmt.Errorf("check the snapshot of sandbox %s: %w", sb.ID, err)
+		return "", fmt.Errorf("check the checkpoint of sandbox %s: %w", sb.ID, err)
 	}
 	if state == sb.State {
 		return state, nil
@@ -255,7 +255,7 @@ func (s *Service) failDropped(ctx context.Context, sb models.Sandbox, status mod
 }
 
 // reconciled is the state the record should hold: what the substrate says, and for a paused one what
-// the snapshot on disk says, because a checkpoint holds no process and resume still brings it back.
+// the checkpoint on disk says, because a checkpoint holds no process and resume still brings it back.
 func reconciled(sb models.Sandbox, status models.Status) (models.State, error) {
 	// No verb rests in created, so it is a fork that never answered: its caller holds an error, not the id.
 	if sb.State == models.StateCreated {
@@ -297,14 +297,14 @@ func reconciled(sb models.Sandbox, status models.Status) (models.State, error) {
 	return sb.State, nil
 }
 
-// releaser ends a sandbox a cut pause left frozen beside its snapshot, with no thaw that would run the guest past it.
+// releaser ends a sandbox a cut pause left frozen beside its checkpoint, with no thaw that would run the guest past it.
 type releaser interface {
 	Release(ctx context.Context, id, dir string) error
 }
 
-// cutPause is the snapshot a marked pause completed and never recorded, after it releases what that pause left behind; empty for none.
+// cutPause is the checkpoint a marked pause completed and never recorded, after it releases what that pause left behind; empty for none.
 func (s *Service) cutPause(ctx context.Context, sb models.Sandbox, status models.Status) (string, error) {
-	dir, err := s.markedSnapshot(sb)
+	dir, err := s.markedCheckpoint(sb)
 	if err != nil {
 		return "", err
 	}
@@ -321,26 +321,26 @@ func (s *Service) cutPause(ctx context.Context, sb models.Sandbox, status models
 	}
 	// A cut after the delete still leaves the merged view mounted, and only the release frees it (SHARD-366).
 	if err := r.Release(ctx, sb.ID, dir); err != nil {
-		return "", fmt.Errorf("release sandbox %s, which a cut pause left beside its snapshot: %w", sb.ID, err)
+		return "", fmt.Errorf("release sandbox %s, which a cut pause left beside its checkpoint: %w", sb.ID, err)
 	}
 
 	return dir, nil
 }
 
-// markedSnapshot is the complete snapshot a marked pause installed for a record still live, answering or not; empty for none.
-func (s *Service) markedSnapshot(sb models.Sandbox) (string, error) {
+// markedCheckpoint is the complete checkpoint a marked pause installed for a record still live, answering or not; empty for none.
+func (s *Service) markedCheckpoint(sb models.Sandbox) (string, error) {
 	// A daemon cut after the checkpoint can leave the mark over a silent shim, and its death must still find the pause (SHARD-442).
 	if !sb.State.Live() || !sb.Pausing {
 		return "", nil
 	}
 
-	dir, err := s.cfg.Repo.SnapshotDir(sb.ID)
+	dir, err := s.cfg.Repo.CheckpointDir(sb.ID)
 	if err != nil {
-		return "", fmt.Errorf("check the snapshot of sandbox %s: %w", sb.ID, err)
+		return "", fmt.Errorf("check the checkpoint of sandbox %s: %w", sb.ID, err)
 	}
 	held, err := hasCheckpoint(dir)
 	if err != nil {
-		return "", fmt.Errorf("check the snapshot of sandbox %s: %w", sb.ID, err)
+		return "", fmt.Errorf("check the checkpoint of sandbox %s: %w", sb.ID, err)
 	}
 	if !held {
 		return "", nil
@@ -374,24 +374,24 @@ func (s *Service) recordCutPause(id string, was models.State, dir string, report
 	if err := s.recordPaused(id, dir); err != nil {
 		return err
 	}
-	report(fmt.Sprintf("sandbox %s said %s and a pause the daemon never recorded left a complete snapshot: the record now says paused", id, was))
+	report(fmt.Sprintf("sandbox %s said %s and a pause the daemon never recorded left a complete checkpoint: the record now says paused", id, was))
 
 	return nil
 }
 
 // adoptStaging hands the provider the staging a cut pause left, which it finishes or drops, and says whether it kept or removed it (SHARD-428).
 func (s *Service) adoptStaging(id string, report func(string)) error {
-	dir, err := s.cfg.Repo.SnapshotDir(id)
+	dir, err := s.cfg.Repo.CheckpointDir(id)
 	if err != nil {
-		return fmt.Errorf("find the snapshot staging of sandbox %s: %w", id, err)
+		return fmt.Errorf("find the checkpoint staging of sandbox %s: %w", id, err)
 	}
 	staging := dir + ".tmp"
 	held, err := exists(staging)
 	if err != nil {
-		return fmt.Errorf("check the snapshot staging of sandbox %s: %w", id, err)
+		return fmt.Errorf("check the checkpoint staging of sandbox %s: %w", id, err)
 	}
 	if err := s.cfg.Provider.AdoptStaging(dir); err != nil {
-		return fmt.Errorf("adopt the snapshot staging of sandbox %s: %w", id, err)
+		return fmt.Errorf("adopt the checkpoint staging of sandbox %s: %w", id, err)
 	}
 	if !held {
 		return nil
@@ -399,14 +399,14 @@ func (s *Service) adoptStaging(id string, report func(string)) error {
 
 	kept, err := exists(staging)
 	if err != nil {
-		return fmt.Errorf("check the snapshot staging of sandbox %s: %w", id, err)
+		return fmt.Errorf("check the checkpoint staging of sandbox %s: %w", id, err)
 	}
 	if kept {
-		report(fmt.Sprintf("sandbox %s: %s kept the snapshot staging %s a cut pause left", id, s.cfg.Provider.Name(), staging))
+		report(fmt.Sprintf("sandbox %s: %s kept the checkpoint staging %s a cut pause left", id, s.cfg.Provider.Name(), staging))
 
 		return nil
 	}
-	report(fmt.Sprintf("sandbox %s: %s removed the snapshot staging %s a cut pause left", id, s.cfg.Provider.Name(), staging))
+	report(fmt.Sprintf("sandbox %s: %s removed the checkpoint staging %s a cut pause left", id, s.cfg.Provider.Name(), staging))
 
 	return nil
 }

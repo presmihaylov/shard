@@ -482,9 +482,9 @@ func TestKillRestoresEndsARestoreAnOlderDaemonLaunched(t *testing.T) {
 	if old == bin {
 		t.Fatalf("the old runsc %s must differ from the one this daemon resolves", old)
 	}
-	args := p.RestoreArgs(sandboxID, runsc.RestoreOptions{Bundle: bundle, Image: "/var/lib/shard/snapshots/source"})
+	args := p.RestoreArgs(sandboxID, runsc.RestoreOptions{Bundle: bundle, Image: "/var/lib/shard/checkpoints/source"})
 	h.restore(4401, old, args)
-	h.restore(4402, old+" (deleted)", p.RestoreArgs(sandboxID, runsc.RestoreOptions{Bundle: bundle, Image: "/var/lib/shard/snapshots/other"}))
+	h.restore(4402, old+" (deleted)", p.RestoreArgs(sandboxID, runsc.RestoreOptions{Bundle: bundle, Image: "/var/lib/shard/checkpoints/other"}))
 	h.restore(4403, bin, args)
 	h.restore(4404, old, p.RestoreArgs(sandboxID, runsc.RestoreOptions{Bundle: "/var/lib/shard/sandboxes/other/bundle", Image: "/i"}))
 	h.restore(4405, old, p.RestoreArgs(sandboxID+"-2", runsc.RestoreOptions{Bundle: bundle, Image: "/i"}))

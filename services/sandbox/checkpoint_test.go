@@ -31,8 +31,8 @@ func TestPauseWritesTheCheckpointAndRecordsIt(t *testing.T) {
 	if sb.ID != "sandbox1" || sb.State != models.StatePaused || sb.PID != 0 || sb.Checkpoint != "/checkpoints/sandbox1" {
 		t.Errorf("pause answered %+v, want sandbox1 paused with pid 0 and its checkpoint", sb)
 	}
-	if l.provider.snapshotDir != "/checkpoints/sandbox1" {
-		t.Errorf("the provider was told to write %q, want the repository's snapshot directory", l.provider.snapshotDir)
+	if l.provider.checkpointDir != "/checkpoints/sandbox1" {
+		t.Errorf("the provider was told to write %q, want the repository's checkpoint directory", l.provider.checkpointDir)
 	}
 	// The entrypoint's exit is part of the run the checkpoint froze.
 	if sb.ExitStatus == nil || sb.ExitStatus.Code != 3 {
@@ -127,7 +127,7 @@ func TestAFailedPauseNeverTakesTheCheckpointAnEarlierPauseLeft(t *testing.T) {
 	resumed := running()
 	resumed.Checkpoint = dir
 	svc, l := newService(t, &recorder{fail: []string{"provider.Pause"}}, resumed)
-	l.repo.snapshotDir = dir
+	l.repo.checkpointDir = dir
 	l.provider.status = models.Status{}
 
 	_, err := svc.Pause(t.Context(), "sandbox1")
@@ -153,7 +153,7 @@ func TestPauseRemovesTheOldCheckpointBeforeItMarksTheRecord(t *testing.T) {
 
 	r := &recorder{fail: []string{"repo.Update#1"}}
 	svc, l := newService(t, r, running())
-	l.repo.snapshotDir = dir
+	l.repo.checkpointDir = dir
 
 	_, err := svc.Pause(t.Context(), "sandbox1")
 	if err == nil || !strings.Contains(err.Error(), "mark the pause") {
@@ -211,7 +211,7 @@ func TestPauseThatLostTheGuestEndsTheRecordFailed(t *testing.T) {
 	}
 
 	svc, l := newService(t, &recorder{}, running())
-	l.repo.snapshotDir = dir
+	l.repo.checkpointDir = dir
 	l.provider.lose = true
 
 	_, err := svc.Pause(t.Context(), "sandbox1")
@@ -231,7 +231,7 @@ func TestPauseThatLostTheGuestEndsTheRecordFailed(t *testing.T) {
 func TestPauseThatSpentItsBudgetStillRecordsTheCheckpoint(t *testing.T) {
 	dir := t.TempDir()
 	svc, l := newService(t, &recorder{}, running(), func(cfg *sandbox.Config) { cfg.PauseBudget = 50 * time.Millisecond })
-	l.repo.snapshotDir = dir
+	l.repo.checkpointDir = dir
 	l.provider.spendBudget = true
 
 	_, err := svc.Pause(t.Context(), "sandbox1")
@@ -248,7 +248,7 @@ func TestPauseThatSpentItsBudgetStillRecordsTheCheckpoint(t *testing.T) {
 func TestPauseRecordsAPausedSandboxWhoseCleanupFailed(t *testing.T) {
 	dir := t.TempDir()
 	svc, l := newService(t, &recorder{}, running())
-	l.repo.snapshotDir = dir
+	l.repo.checkpointDir = dir
 	l.provider.cleanupFails = true
 
 	_, err := svc.Pause(t.Context(), "sandbox1")
@@ -266,7 +266,7 @@ func TestPauseReleasesASandboxItsCleanupLeftFrozen(t *testing.T) {
 	dir := t.TempDir()
 	r := &recorder{}
 	svc, l := newService(t, r, running())
-	l.repo.snapshotDir = dir
+	l.repo.checkpointDir = dir
 	l.provider.cleanupFreezes = true
 
 	_, err := svc.Pause(t.Context(), "sandbox1")
@@ -286,7 +286,7 @@ func TestPauseReleasesASandboxItsCleanupLeftFrozen(t *testing.T) {
 func TestPauseKeepsItsMarkWhenTheReleaseFails(t *testing.T) {
 	dir := t.TempDir()
 	svc, l := newService(t, &recorder{fail: []string{"provider.Release"}}, running())
-	l.repo.snapshotDir = dir
+	l.repo.checkpointDir = dir
 	l.provider.cleanupFreezes = true
 
 	_, err := svc.Pause(t.Context(), "sandbox1")
@@ -307,7 +307,7 @@ func TestPauseKeepsItsMarkOverAFrozenSandboxTheSubstrateCannotRelease(t *testing
 	dir := t.TempDir()
 	r := &recorder{}
 	svc, l := newService(t, r, running(), func(c *sandbox.Config) { c.Provider = unreleasing{c.Provider} })
-	l.repo.snapshotDir = dir
+	l.repo.checkpointDir = dir
 	l.provider.cleanupFreezes = true
 
 	_, err := svc.Pause(t.Context(), "sandbox1")
@@ -336,8 +336,8 @@ func TestResumeRunsAPausedSandboxAgain(t *testing.T) {
 	if sb.ID != "sandbox1" || sb.State != models.StateRunning || sb.PID != 7 {
 		t.Errorf("resume answered %+v, want sandbox1 running with pid 7", sb)
 	}
-	if l.provider.snapshotDir != "/checkpoints/sandbox1" {
-		t.Errorf("the provider was told to read %q, want the snapshot the record holds", l.provider.snapshotDir)
+	if l.provider.checkpointDir != "/checkpoints/sandbox1" {
+		t.Errorf("the provider was told to read %q, want the checkpoint the record holds", l.provider.checkpointDir)
 	}
 
 	// gVisor took the address into the guest at create, so the netns is built again before the restore.

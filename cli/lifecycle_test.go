@@ -93,10 +93,10 @@ type fakeLifecycleRepo struct {
 	unreadable error
 	missing    bool
 	deleted    bool
-	// snapshotDir and stateDir replace the fixed paths when a test needs the directory to exist on disk.
-	snapshotDir string
-	stateDir    string
-	deletedID   string
+	// checkpointDir and stateDir replace the fixed paths when a test needs the directory to exist on disk.
+	checkpointDir string
+	stateDir      string
+	deletedID     string
 	// created is the record Create was handed, which a fork fills in from the source.
 	created models.Sandbox
 }
@@ -165,9 +165,9 @@ func (f *fakeLifecycleRepo) Dir(id string) (string, error) {
 	return "/state/" + id, nil
 }
 
-func (f *fakeLifecycleRepo) SnapshotDir(id string) (string, error) {
-	if f.snapshotDir != "" {
-		return f.snapshotDir, nil
+func (f *fakeLifecycleRepo) CheckpointDir(id string) (string, error) {
+	if f.checkpointDir != "" {
+		return f.checkpointDir, nil
 	}
 
 	return "/checkpoints/" + id, nil
@@ -239,10 +239,10 @@ type fakeLifecycleProvider struct {
 	started bool
 	stopped bool
 	removed bool
-	// snapshot is the directory the pause was told to write, or the resume or fork was told to read.
-	snapshot string
-	forked   models.SandboxSpec
-	created  models.SandboxSpec
+	// checkpoint is the directory the pause was told to write, or the resume or fork was told to read.
+	checkpoint string
+	forked     models.SandboxSpec
+	created    models.SandboxSpec
 	// snapshotFrom is the source Snapshot copied.
 	snapshotFrom string
 	// noPause, noResume and noFork take a verb out of what the provider claims.
@@ -402,7 +402,7 @@ func (f *fakeLifecycleProvider) Pause(_ context.Context, _ string, dir string) e
 	if err := f.r.record("provider.Pause"); err != nil {
 		return err
 	}
-	f.snapshot = dir
+	f.checkpoint = dir
 	// runsc holds nothing of a paused sandbox, so its status reads as one that never existed.
 	f.status = models.Status{}
 
@@ -413,7 +413,7 @@ func (f *fakeLifecycleProvider) Resume(_ context.Context, _ string, dir string) 
 	if err := f.r.record("provider.Resume"); err != nil {
 		return err
 	}
-	f.snapshot = dir
+	f.checkpoint = dir
 	f.status = models.Status{Exists: true, State: models.StateRunning, PID: 7}
 
 	return nil
@@ -424,7 +424,7 @@ func (f *fakeLifecycleProvider) Fork(_ context.Context, dir string, spec models.
 	if err := f.r.record("provider.Fork"); err != nil {
 		return err
 	}
-	f.snapshot = dir
+	f.checkpoint = dir
 	f.forked = spec
 	f.status = models.Status{Exists: true, State: models.StateRunning, PID: 9}
 

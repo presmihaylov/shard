@@ -44,7 +44,7 @@ const (
 // diagnosticTail bounds what a failed start quotes back from the sandbox's own output.
 const diagnosticTail = 4 << 10
 
-// checkpointFile is the one file every runsc checkpoint writes, so its absence says there is no snapshot.
+// checkpointFile is the one file every runsc checkpoint writes, so its absence says there is no checkpoint.
 const checkpointFile = "checkpoint.img"
 
 // forkFrozenFile marks a source that a live fork froze, so a daemon cut before the thaw resumes it on its next read (SHARD-457).
@@ -901,7 +901,7 @@ func stateOf(status runsc.Status) models.State {
 	}
 }
 
-// Pause checkpoints the sandbox into dir, then safeDelete sweeps its cgroup and forgets runsc's state, so the snapshot plus the state directory is everything a resume needs.
+// Pause checkpoints the sandbox into dir, then safeDelete sweeps its cgroup and forgets runsc's state, so the checkpoint plus the state directory is everything a resume needs.
 func (p *Provider) Pause(ctx context.Context, id string, dir string) error {
 	status, err := p.Status(ctx, id)
 	if err != nil {
@@ -919,7 +919,7 @@ func (p *Provider) Pause(ctx context.Context, id string, dir string) error {
 		return err
 	}
 
-	// The snapshot is staged beside dir and swapped in whole, so dir never holds half of one.
+	// The checkpoint is staged beside dir and swapped in whole, so dir never holds half of one.
 	tmp := dir + ".tmp"
 	if err := os.RemoveAll(tmp); err != nil {
 		return fmt.Errorf("clear the checkpoint directory %s: %w", tmp, err)
@@ -961,11 +961,11 @@ func (p *Provider) release(ctx context.Context, id string, b bundle.Bundle, tmp 
 		return err
 	}
 
-	// The layer stays, which is what the resume mounts again, and only the merged view goes; tmp holds the snapshot this pause replaced.
+	// The layer stays, which is what the resume mounts again, and only the merged view goes; tmp holds the checkpoint this pause replaced.
 	return errors.Join(os.RemoveAll(tmp), b.Unmount())
 }
 
-// Release frees what a cut pause left past its checkpoint, a frozen sentry or a mounted view, beside the snapshot in dir (SHARD-366).
+// Release frees what a cut pause left past its checkpoint, a frozen sentry or a mounted view, beside the checkpoint in dir (SHARD-366).
 func (p *Provider) Release(ctx context.Context, id, dir string) error {
 	if _, err := os.Stat(filepath.Join(dir, checkpointFile)); err != nil {
 		return fmt.Errorf("sandbox %s has no checkpoint in %s to release it beside: %w", id, dir, err)
@@ -991,7 +991,7 @@ func (p *Provider) Release(ctx context.Context, id, dir string) error {
 	return p.release(ctx, id, b, dir+".tmp")
 }
 
-// Resume brings the sandbox back from the snapshot in dir over the writable layer the pause kept, as a new runsc container, the one the pause ended being gone for good.
+// Resume brings the sandbox back from the checkpoint in dir over the writable layer the pause kept, as a new runsc container, the one the pause ended being gone for good.
 func (p *Provider) Resume(ctx context.Context, id string, dir string) error {
 	if _, err := os.Stat(filepath.Join(dir, checkpointFile)); err != nil {
 		return fmt.Errorf("sandbox %s has no checkpoint in %s: %w", id, dir, err)
@@ -1030,7 +1030,7 @@ func (p *Provider) Resume(ctx context.Context, id string, dir string) error {
 	return nil
 }
 
-// AdoptStaging drops the snapshot staging a cut pause left: resume reads the committed dir, never dir+".tmp", so a leftover stage is dead weight (SHARD-404).
+// AdoptStaging drops the checkpoint staging a cut pause left: resume reads the committed dir, never dir+".tmp", so a leftover stage is dead weight (SHARD-404).
 func (p *Provider) AdoptStaging(dir string) error {
 	return os.RemoveAll(dir + ".tmp")
 }

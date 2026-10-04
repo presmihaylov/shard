@@ -315,7 +315,7 @@ func TestExecInsideAPauseNamesThePauseAndNeverAStop(t *testing.T) {
 			sb := running()
 			sb.Pausing = tc.marked
 			svc, l := newService(t, r, sb)
-			l.repo.snapshotDir = dir
+			l.repo.checkpointDir = dir
 			l.provider.status = models.Status{Exists: true, State: models.StateStopped}
 			if tc.land != nil {
 				l.provider.onStatus = func() { tc.land(&l.repo.sb) }
@@ -358,7 +358,7 @@ func TestEveryPauseRefusalReadsOneText(t *testing.T) {
 			sb := running()
 			sb.State, sb.Pausing = tc.state, tc.pausing
 			svc, l := newService(t, &recorder{}, sb)
-			l.repo.snapshotDir = dir
+			l.repo.checkpointDir = dir
 			l.provider.status = tc.status
 			l.provider.execNoPID, l.provider.execErr = true, tc.execErr
 
@@ -405,7 +405,7 @@ func TestExecInsideAPauseThatSavedNothingReportsTheStop(t *testing.T) {
 	sb := running()
 	sb.Pausing = true
 	svc, l := newService(t, r, sb)
-	l.repo.snapshotDir = t.TempDir()
+	l.repo.checkpointDir = t.TempDir()
 	l.provider.status = models.Status{Exists: true, State: models.StateStopped}
 
 	_, _, _, err := execOf(t, l, svc, "sandbox1", sandbox.ExecRequest{Command: []string{"true"}}, "")

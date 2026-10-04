@@ -74,7 +74,7 @@ func TestAPauseOfAForkMergesOntoTheSnapshotItLoaded(t *testing.T) {
 	}
 	fork := h.forkSpec(t)
 	watchSnapshots(t, fork)
-	if err := h.provider.ForkSnapshot(t.Context(), dir, fork); err != nil {
+	if err := h.provider.ForkCheckpoint(t.Context(), dir, fork); err != nil {
 		t.Fatalf("Fork: %v", err)
 	}
 	forkDir := t.TempDir()

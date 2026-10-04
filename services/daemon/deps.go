@@ -221,7 +221,7 @@ func (d *deps) providerLocked() (models.Provider, error) {
 	var provider models.Provider
 	err = d.reserve().retry("the provider build", func() error {
 		var err error
-		provider, err = d.newProvider(repo.Dir, repo.SnapshotDir)
+		provider, err = d.newProvider(repo.Dir, repo.CheckpointDir)
 
 		return err
 	})
@@ -340,7 +340,7 @@ func (f gatewayFront) ListenPacket(port uint16) (net.PacketConn, error) {
 }
 
 // newProvider picks the substrate --provider named. The daemon runs one; gVisor is the default on Linux and vz on a Mac.
-func (d *deps) newProvider(dirs, snapshots func(string) (string, error)) (models.Provider, error) {
+func (d *deps) newProvider(dirs, checkpoints func(string) (string, error)) (models.Provider, error) {
 	switch d.providerName() {
 	case gvisor.Name:
 		runner, err := d.runnerLocked()
@@ -371,7 +371,7 @@ func (d *deps) newProvider(dirs, snapshots func(string) (string, error)) (models
 	case vzvm.Name:
 		return d.newVZ(dirs)
 	case firecracker.Name:
-		return d.newFirecracker(dirs, snapshots)
+		return d.newFirecracker(dirs, checkpoints)
 	default:
 		return nil, unknownProvider(d.cfg.Provider)
 	}
@@ -394,7 +394,7 @@ func checkJailRoot(root, provider string) error {
 }
 
 // newFirecracker builds the microVM provider: the vmm on PATH, the guest kernel fetched once, and the static init the initrd carries.
-func (d *deps) newFirecracker(dirs, snapshots firecracker.StateDirs) (models.Provider, error) {
+func (d *deps) newFirecracker(dirs, checkpoints firecracker.StateDirs) (models.Provider, error) {
 	if runtime.GOOS != "linux" {
 		return nil, fmt.Errorf("provider %s runs on Linux only, not %s", firecracker.Name, runtime.GOOS)
 	}
@@ -413,15 +413,15 @@ func (d *deps) newFirecracker(dirs, snapshots firecracker.StateDirs) (models.Pro
 	}
 
 	return firecracker.New(firecracker.Config{
-		Binary:    binary,
-		Jailer:    jailer,
-		JailBase:  filepath.Join(d.cfg.Root, jailDir),
-		Kernel:    guest.Path,
-		Init:      d.cfg.InitPath,
-		Dir:       filepath.Join(d.cfg.Root, firecrackerDir),
-		Dirs:      dirs,
-		Snapshots: snapshots,
-		Log:       d.logger(),
+		Binary:      binary,
+		Jailer:      jailer,
+		JailBase:    filepath.Join(d.cfg.Root, jailDir),
+		Kernel:      guest.Path,
+		Init:        d.cfg.InitPath,
+		Dir:         filepath.Join(d.cfg.Root, firecrackerDir),
+		Dirs:        dirs,
+		Checkpoints: checkpoints,
+		Log:         d.logger(),
 	})
 }
 

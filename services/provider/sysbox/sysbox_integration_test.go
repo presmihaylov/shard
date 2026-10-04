@@ -35,7 +35,7 @@ const testImage = "alpine:3.20"
 const stopGrace = 10 * time.Second
 
 // TestConformance is the SHARD-93 checkpoint: the same suite gVisor passes, over sysbox-runc. Every
-// snapshot verb is refused here, so the suite proves the refuse path and skips the rest.
+// checkpoint verb is refused here, so the suite proves the refuse path and skips the rest.
 func TestConformance(t *testing.T) {
 	h := newHarness(t)
 
@@ -48,10 +48,10 @@ func TestConformance(t *testing.T) {
 
 			return h.newSpec(t, "/bin/sh", "-c", script)
 		},
-		SnapshotDir: func(t *testing.T) string { return t.TempDir() },
-		Shell:       func(script string) []string { return []string{"/bin/sh", "-c", script} },
-		Reopen:      h.reopen,
-		HostLayer:   true,
+		EmptyDir:  func(t *testing.T) string { return t.TempDir() },
+		Shell:     func(script string) []string { return []string{"/bin/sh", "-c", script} },
+		Reopen:    h.reopen,
+		HostLayer: true,
 	})
 }
 

@@ -70,13 +70,13 @@ func (r *Repository) Dir(id string) (string, error) {
 	return r.dir(id), nil
 }
 
-// SnapshotDir is where a pause writes and a resume reads. It is not created until one happens.
-func (r *Repository) SnapshotDir(id string) (string, error) {
+// CheckpointDir is where a pause writes and a resume reads. It is not created until one happens.
+func (r *Repository) CheckpointDir(id string) (string, error) {
 	if err := ValidID(id); err != nil {
 		return "", err
 	}
 
-	return r.snapshotDir(id), nil
+	return r.checkpointDir(id), nil
 }
 
 func (r *Repository) dir(id string) string {
@@ -88,7 +88,7 @@ func LongestDir(root string) string {
 	return filepath.Join(root, sandboxesDir, strings.Repeat("x", maxIDLength()))
 }
 
-func (r *Repository) snapshotDir(id string) string {
+func (r *Repository) checkpointDir(id string) string {
 	return filepath.Join(r.root, checkpointsDir, id)
 }
 
@@ -215,7 +215,7 @@ func (r *Repository) Update(id string, mutate func(*models.Sandbox) error) error
 	return r.write(sb)
 }
 
-// Delete removes the record, the provider's directory and any snapshot the sandbox left behind.
+// Delete removes the record, the provider's directory and any checkpoint the sandbox left behind.
 func (r *Repository) Delete(id string) error {
 	r.mu.Lock()
 	defer r.mu.Unlock()
@@ -233,8 +233,8 @@ func (r *Repository) Delete(id string) error {
 		return err
 	}
 
-	// The snapshot and its unfinished .tmp go next: nothing else reaches them once the record is gone (SHARD-368).
-	for _, path := range []string{r.snapshotDir(id), r.snapshotDir(id) + ".tmp", r.dir(id)} {
+	// The checkpoint and its unfinished .tmp go next: nothing else reaches them once the record is gone (SHARD-368).
+	for _, path := range []string{r.checkpointDir(id), r.checkpointDir(id) + ".tmp", r.dir(id)} {
 		if err := os.RemoveAll(path); err != nil {
 			return fmt.Errorf("remove %s: %w", path, err)
 		}
@@ -250,8 +250,8 @@ func (r *Repository) Delete(id string) error {
 	return nil
 }
 
-// SweepSnapshotTmp removes, once at daemon start, each snapshot .tmp no record reaches; one a record names is left to its provider and the reconcile (SHARD-368, SHARD-428).
-func (r *Repository) SweepSnapshotTmp(report func(string)) error {
+// SweepCheckpointTmp removes, once at daemon start, each checkpoint .tmp no record reaches; one a record names is left to its provider and the reconcile (SHARD-368, SHARD-428).
+func (r *Repository) SweepCheckpointTmp(report func(string)) error {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 
@@ -297,7 +297,7 @@ func (r *Repository) SweepSnapshotTmp(report func(string)) error {
 	return nil
 }
 
-// recordedTmp reports whether a snapshot .tmp still has a record, so the start sweep keeps it (SHARD-368).
+// recordedTmp reports whether a checkpoint .tmp still has a record, so the start sweep keeps it (SHARD-368).
 // A record that will not read may still name the staging, so it is kept too, with a note that names it.
 func (r *Repository) recordedTmp(id string) (bool, string) {
 	if ValidID(id) != nil {

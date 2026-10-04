@@ -68,7 +68,7 @@ type Provider interface {
 	Resume(ctx context.Context, id string, dir string) error
 	// Fork starts one more sandbox from a capture of the running sandbox sourceID, which runs on as it was; never from an older checkpoint (SHARD-457). Optional.
 	Fork(ctx context.Context, sourceID string, spec SandboxSpec) error
-	// AdoptStaging settles the snapshot staging a cut pause left beside dir at daemon start: a provider that never reads a staged snapshot drops it, and vz keeps the one it finishes on the next resume (SHARD-404).
+	// AdoptStaging settles the checkpoint staging a cut pause left beside dir at daemon start: a provider that never reads a staged checkpoint drops it, and vz keeps the one it finishes on the next resume (SHARD-404).
 	AdoptStaging(dir string) error
 }
 

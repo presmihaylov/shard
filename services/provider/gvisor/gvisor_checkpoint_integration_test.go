@@ -16,18 +16,18 @@ import (
 func TestAPausedSandboxResumesWhereItWas(t *testing.T) {
 	h := newHarness(t)
 	spec := h.start(t, "/bin/sh", "-c", "i=0; while true; do i=$((i+1)); echo tick $i; sleep 0.2; done")
-	snapshot := filepath.Join(t.TempDir(), "snapshot")
+	checkpoint := filepath.Join(t.TempDir(), "checkpoint")
 
 	// /root is on the writable layer, and the gofer must flush it to the host before the checkpoint.
 	execIn(t, h, spec.ID, "touch /root/marker")
 
 	started := time.Now()
-	if err := h.provider.Pause(t.Context(), spec.ID, snapshot); err != nil {
+	if err := h.provider.Pause(t.Context(), spec.ID, checkpoint); err != nil {
 		t.Fatalf("Pause: %v", err)
 	}
 	t.Logf("pause took %s", time.Since(started))
 
-	if _, err := os.Stat(filepath.Join(snapshot, "checkpoint.img")); err != nil {
+	if _, err := os.Stat(filepath.Join(checkpoint, "checkpoint.img")); err != nil {
 		t.Errorf("the pause wrote no checkpoint: %v", err)
 	}
 	assertAlive(t, h, spec.ID, false)
@@ -43,7 +43,7 @@ func TestAPausedSandboxResumesWhereItWas(t *testing.T) {
 	}
 
 	started = time.Now()
-	if err := h.provider.Resume(t.Context(), spec.ID, snapshot); err != nil {
+	if err := h.provider.Resume(t.Context(), spec.ID, checkpoint); err != nil {
 		t.Fatalf("Resume: %v", err)
 	}
 	t.Logf("resume took %s", time.Since(started))
@@ -66,18 +66,18 @@ func TestAPausedSandboxResumesWhereItWas(t *testing.T) {
 	}
 }
 
-// A resume does not consume the snapshot: the same one brings the sandbox back as often as asked.
-func TestASnapshotSurvivesItsResume(t *testing.T) {
+// A resume does not consume the checkpoint: the same one brings the sandbox back as often as asked.
+func TestACheckpointSurvivesItsResume(t *testing.T) {
 	h := newHarness(t)
 	spec := h.start(t, "/bin/sh", "-c", "sleep 300")
-	snapshot := filepath.Join(t.TempDir(), "snapshot")
+	checkpoint := filepath.Join(t.TempDir(), "checkpoint")
 
-	if err := h.provider.Pause(t.Context(), spec.ID, snapshot); err != nil {
+	if err := h.provider.Pause(t.Context(), spec.ID, checkpoint); err != nil {
 		t.Fatalf("Pause: %v", err)
 	}
 
 	for round := range 2 {
-		if err := h.provider.Resume(t.Context(), spec.ID, snapshot); err != nil {
+		if err := h.provider.Resume(t.Context(), spec.ID, checkpoint); err != nil {
 			t.Fatalf("Resume %d: %v", round, err)
 		}
 		assertAlive(t, h, spec.ID, true)
@@ -91,19 +91,19 @@ func TestASnapshotSurvivesItsResume(t *testing.T) {
 func TestPauseAndResumeRefuseTheWrongState(t *testing.T) {
 	h := newHarness(t)
 	spec := h.start(t, "/bin/sh", "-c", "sleep 300")
-	snapshot := filepath.Join(t.TempDir(), "snapshot")
+	checkpoint := filepath.Join(t.TempDir(), "checkpoint")
 
 	// A running sandbox is one no pause ended, so a restore over it is refused before runsc sees it.
-	if err := os.MkdirAll(snapshot, 0o700); err != nil {
+	if err := os.MkdirAll(checkpoint, 0o700); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.WriteFile(filepath.Join(snapshot, "checkpoint.img"), nil, 0o600); err != nil {
+	if err := os.WriteFile(filepath.Join(checkpoint, "checkpoint.img"), nil, 0o600); err != nil {
 		t.Fatal(err)
 	}
-	if err := h.provider.Resume(t.Context(), spec.ID, snapshot); err == nil || !strings.Contains(err.Error(), "running") {
+	if err := h.provider.Resume(t.Context(), spec.ID, checkpoint); err == nil || !strings.Contains(err.Error(), "running") {
 		t.Errorf("Resume of a running sandbox returned %v, want a refusal that names the state", err)
 	}
-	if err := os.RemoveAll(snapshot); err != nil {
+	if err := os.RemoveAll(checkpoint); err != nil {
 		t.Fatal(err)
 	}
 	assertAlive(t, h, spec.ID, true)
@@ -112,28 +112,28 @@ func TestPauseAndResumeRefuseTheWrongState(t *testing.T) {
 		t.Fatalf("Stop: %v", err)
 	}
 
-	if err := h.provider.Pause(t.Context(), spec.ID, snapshot); err == nil {
+	if err := h.provider.Pause(t.Context(), spec.ID, checkpoint); err == nil {
 		t.Error("Pause of a stopped sandbox went through")
 	}
-	if _, err := os.Stat(snapshot); err == nil {
+	if _, err := os.Stat(checkpoint); err == nil {
 		t.Error("the refused pause made the checkpoint directory")
 	}
 }
 
-// The snapshot holds the guest's memory, so it must go with the sandbox and never with a stop.
-func TestAStopAfterAPauseKeepsTheSnapshot(t *testing.T) {
+// The checkpoint holds the guest's memory, so it must go with the sandbox and never with a stop.
+func TestAStopAfterAPauseKeepsTheCheckpoint(t *testing.T) {
 	h := newHarness(t)
 	spec := h.start(t, "/bin/sh", "-c", "sleep 300")
-	snapshot := filepath.Join(t.TempDir(), "snapshot")
+	checkpoint := filepath.Join(t.TempDir(), "checkpoint")
 
-	if err := h.provider.Pause(t.Context(), spec.ID, snapshot); err != nil {
+	if err := h.provider.Pause(t.Context(), spec.ID, checkpoint); err != nil {
 		t.Fatalf("Pause: %v", err)
 	}
 	if err := h.provider.Stop(t.Context(), spec.ID, stopGrace); err != nil {
 		t.Fatalf("Stop of a paused sandbox: %v", err)
 	}
-	if _, err := os.Stat(filepath.Join(snapshot, "checkpoint.img")); err != nil {
-		t.Errorf("the stop took the snapshot: %v", err)
+	if _, err := os.Stat(filepath.Join(checkpoint, "checkpoint.img")); err != nil {
+		t.Errorf("the stop took the checkpoint: %v", err)
 	}
 
 	// The stop left the record's run over, and start is the verb that runs a stopped sandbox again.

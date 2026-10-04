@@ -85,8 +85,8 @@ func TestEveryOptionalVerbIsClaimed(t *testing.T) {
 	}
 }
 
-// The sentry exits after any checkpoint, so a failed one loses the sandbox: nothing to thaw, the old snapshot kept.
-func TestAFailedCheckpointLosesTheSandboxAndKeepsTheOldSnapshot(t *testing.T) {
+// The sentry exits after any checkpoint, so a failed one loses the sandbox: nothing to thaw, the old checkpoint kept.
+func TestAFailedCheckpointLosesTheSandboxAndKeepsTheOldCheckpoint(t *testing.T) {
 	work := t.TempDir()
 	calls := filepath.Join(work, "calls")
 	p := newProviderOver(t, `echo "$*" >> `+calls+`
@@ -113,7 +113,7 @@ echo '{"id":"amber-otter-1a2b","status":"running","pid":42}'`)
 		t.Errorf("the failed checkpoint ran %q, want no thaw and no runsc delete (SHARD-440)", got)
 	}
 	if got := unitFile(t, filepath.Join(dir, "checkpoint.img")); got != "old" {
-		t.Errorf("the old snapshot is %q after a failed pause, want it kept", got)
+		t.Errorf("the old checkpoint is %q after a failed pause, want it kept", got)
 	}
 	if _, err := os.Stat(dir + ".tmp"); err == nil {
 		t.Error("the failed checkpoint left its temporary directory behind")
@@ -220,7 +220,7 @@ echo '{"id":"amber-otter-1a2b","status":"paused","pid":42}'`)
 	}
 }
 
-// frozenSentry lays the proc and cgroup entries of a sentry a pause froze, and a snapshot beside it, and answers that snapshot.
+// frozenSentry lays the proc and cgroup entries of a sentry a pause froze, and a checkpoint beside it, and answers that checkpoint.
 func frozenSentry(t *testing.T, p *gvisor.Provider, cgroups string) string {
 	t.Helper()
 
@@ -378,7 +378,7 @@ func TestPauseTakesOnlyARunningSandbox(t *testing.T) {
 	}
 }
 
-func TestResumeTakesOnlyASnapshotOfAPausedSandbox(t *testing.T) {
+func TestResumeTakesOnlyACheckpointOfAPausedSandbox(t *testing.T) {
 	p := newProviderOver(t, `echo '{"id":"amber-otter-1a2b","status":"running","pid":42}'`)
 
 	err := p.Resume(t.Context(), "amber-otter-1a2b", t.TempDir())
@@ -481,7 +481,7 @@ func readDir(t *testing.T, dir string) []os.DirEntry {
 
 // A cut pause leaves dir+".tmp" that resume never reads, so AdoptStaging drops it at daemon start (SHARD-404).
 func TestAdoptStagingDropsACutPauseStage(t *testing.T) {
-	dir := filepath.Join(t.TempDir(), "snapshot")
+	dir := filepath.Join(t.TempDir(), "checkpoint")
 	tmp := dir + ".tmp"
 	if err := os.MkdirAll(tmp, 0o700); err != nil {
 		t.Fatalf("stage a cut pause: %v", err)

@@ -14,7 +14,7 @@ import (
 	"github.com/presmihaylov/shard/services/sandboxstate"
 )
 
-// checkpointFile is the one file every snapshot holds, and the provider writes it last before it deletes.
+// checkpointFile is the one file every checkpoint holds, and the provider writes it last before it deletes.
 const checkpointFile = "checkpoint.img"
 
 // CopyRequest names the sandbox a fork makes. It is the JSON body of the fork route.
@@ -22,7 +22,7 @@ type CopyRequest struct {
 	Name string `json:"name,omitempty"`
 }
 
-// Pause writes a running sandbox into its snapshot directory and frees its memory. The record keeps
+// Pause writes a running sandbox into its checkpoint directory and frees its memory. The record keeps
 // the address, the writable layer stays on disk, and resume brings the whole thing back from those.
 func (s *Service) Pause(ctx context.Context, ref string) (models.Sandbox, error) {
 	if err := requireVerb(s.cfg.Provider, models.VerbPause); err != nil {
@@ -34,7 +34,7 @@ func (s *Service) Pause(ctx context.Context, ref string) (models.Sandbox, error)
 		return models.Sandbox{}, err
 	}
 
-	// A stop or a second pause would end or delete the sandbox this one is about to snapshot.
+	// A stop or a second pause would end or delete the sandbox this one is about to checkpoint.
 	unlock, err := s.lock(ctx, id)
 	if err != nil {
 		return models.Sandbox{}, err
@@ -54,7 +54,7 @@ func (s *Service) Pause(ctx context.Context, ref string) (models.Sandbox, error)
 		return models.Sandbox{}, wrongState(id, sb, "pause takes a running sandbox", models.CodeSandboxNotRunning)
 	}
 
-	dir, err := s.cfg.Repo.SnapshotDir(id)
+	dir, err := s.cfg.Repo.CheckpointDir(id)
 	if err != nil {
 		return models.Sandbox{}, err
 	}
@@ -124,7 +124,7 @@ func (s *Service) recordPaused(id, dir string) error {
 }
 
 // reconcileGone is for a pause that failed: the sandbox still runs and the record is right, or the
-// snapshot is complete and only the host cleanup failed, or the substrate lost it on the way.
+// checkpoint is complete and only the host cleanup failed, or the substrate lost it on the way.
 func (s *Service) reconcileGone(ctx context.Context, id, dir string) error {
 	status, err := s.status(ctx, id, "pause")
 	if err != nil {
@@ -144,7 +144,7 @@ func (s *Service) reconcileGone(ctx context.Context, id, dir string) error {
 			return err
 		}
 
-		return fmt.Errorf("sandbox %s is paused, but the host cleanup after the snapshot failed", id)
+		return fmt.Errorf("sandbox %s is paused, but the host cleanup after the checkpoint failed", id)
 	}
 
 	err = s.cfg.Repo.Update(id, func(sb *models.Sandbox) error {
@@ -161,7 +161,7 @@ func (s *Service) reconcileGone(ctx context.Context, id, dir string) error {
 	return fmt.Errorf("sandbox %s is gone from %s and its record says stopped", id, s.cfg.Provider.Name())
 }
 
-// settleLivePause is for a failed pause the substrate still holds: running, or frozen beside the snapshot the pause installed.
+// settleLivePause is for a failed pause the substrate still holds: running, or frozen beside the checkpoint the pause installed.
 func (s *Service) settleLivePause(ctx context.Context, id string, status models.Status) error {
 	sb, err := s.cfg.Repo.Get(id)
 	if err != nil {
@@ -178,16 +178,16 @@ func (s *Service) settleLivePause(ctx context.Context, id string, status models.
 			return err
 		}
 
-		return fmt.Errorf("sandbox %s is paused, but the host cleanup after the snapshot had to be run again", id)
+		return fmt.Errorf("sandbox %s is paused, but the host cleanup after the checkpoint had to be run again", id)
 	}
 
-	held, err := s.markedSnapshot(sb)
+	held, err := s.markedCheckpoint(sb)
 	if err != nil {
 		return err
 	}
-	// A substrate that cannot release holds the guest frozen beside a complete snapshot, and only the mark still names that pause.
+	// A substrate that cannot release holds the guest frozen beside a complete checkpoint, and only the mark still names that pause.
 	if held != "" && status.State == models.StatePaused {
-		return fmt.Errorf("sandbox %s is frozen beside the snapshot its pause installed, and %s cannot release it: the record keeps the pause mark", id, s.cfg.Provider.Name())
+		return fmt.Errorf("sandbox %s is frozen beside the checkpoint its pause installed, and %s cannot release it: the record keeps the pause mark", id, s.cfg.Provider.Name())
 	}
 
 	err = s.cfg.Repo.Update(id, func(sb *models.Sandbox) error {
@@ -202,8 +202,8 @@ func (s *Service) settleLivePause(ctx context.Context, id string, status models.
 	return nil
 }
 
-// Resume runs a paused sandbox again from its snapshot. It is the run the pause froze, so the record
-// keeps the exit its entrypoint may already have had, and the snapshot stays for the next resume.
+// Resume runs a paused sandbox again from its checkpoint. It is the run the pause froze, so the record
+// keeps the exit its entrypoint may already have had, and the checkpoint stays for the next resume.
 func (s *Service) Resume(ctx context.Context, ref string) (models.Sandbox, error) {
 	if err := requireVerb(s.cfg.Provider, models.VerbResume); err != nil {
 		return models.Sandbox{}, err
@@ -272,7 +272,7 @@ func (s *Service) Fork(ctx context.Context, ref string, req CopyRequest) (sb mod
 	}
 	defer unlock()
 
-	// A fork captures the source as it runs now, never an older snapshot of it, so only a running source is forked (SHARD-457).
+	// A fork captures the source as it runs now, never an older checkpoint of it, so only a running source is forked (SHARD-457).
 	if src.State != models.StateRunning {
 		return models.Sandbox{}, wrongState(source, src, "fork takes a running sandbox", models.CodeSandboxNotRunning)
 	}

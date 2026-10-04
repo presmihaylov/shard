@@ -166,7 +166,7 @@ func acceptForever(listener net.Listener) {
 func TestTheHostRulesHoldAfterAResume(t *testing.T) {
 	h := newNetworkedHarness(t)
 	spec := h.start(t, "/bin/sh", "-c", "sleep 300")
-	snapshot := filepath.Join(t.TempDir(), "snapshot")
+	checkpoint := filepath.Join(t.TempDir(), "checkpoint")
 
 	gateway := h.net.Gateway().String()
 	listener, err := net.Listen("tcp", net.JoinHostPort(gateway, "0"))
@@ -182,7 +182,7 @@ func TestTheHostRulesHoldAfterAResume(t *testing.T) {
 		t.Fatalf("split %s: %v", listener.Addr(), err)
 	}
 
-	if err := h.provider.Pause(t.Context(), spec.ID, snapshot); err != nil {
+	if err := h.provider.Pause(t.Context(), spec.ID, checkpoint); err != nil {
 		t.Fatalf("Pause: %v", err)
 	}
 
@@ -196,7 +196,7 @@ func TestTheHostRulesHoldAfterAResume(t *testing.T) {
 	if out, err := exec.CommandContext(t.Context(), "nft", "delete", "table", "inet", "shard").CombinedOutput(); err != nil {
 		t.Fatalf("delete the shard table by hand: %v: %s", err, out)
 	}
-	if err := h.provider.Resume(t.Context(), spec.ID, snapshot); err != nil {
+	if err := h.provider.Resume(t.Context(), spec.ID, checkpoint); err != nil {
 		t.Fatalf("Resume: %v", err)
 	}
 

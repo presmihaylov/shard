@@ -133,9 +133,9 @@ type fakeRepo struct {
 	created models.Sandbox
 	// made is the record a fork created, which lives beside the source the test set up.
 	made *models.Sandbox
-	// snapshotDir and stateDir replace the fixed paths when a test needs the directory to exist on disk.
-	snapshotDir string
-	stateDir    string
+	// checkpointDir and stateDir replace the fixed paths when a test needs the directory to exist on disk.
+	checkpointDir string
+	stateDir      string
 }
 
 func (f *fakeRepo) Get(id string) (models.Sandbox, error) {
@@ -208,13 +208,13 @@ func (f *fakeRepo) Update(id string, mutate func(*models.Sandbox) error) error {
 	return mutate(&f.sb)
 }
 
-// SnapshotDir is where a pause writes and a fork reads. It is not created until one happens.
-func (f *fakeRepo) SnapshotDir(id string) (string, error) {
-	if err := f.r.record("repo.SnapshotDir"); err != nil {
+// CheckpointDir is where a pause writes and a fork reads. It is not created until one happens.
+func (f *fakeRepo) CheckpointDir(id string) (string, error) {
+	if err := f.r.record("repo.CheckpointDir"); err != nil {
 		return "", err
 	}
-	if f.snapshotDir != "" {
-		return f.snapshotDir, nil
+	if f.checkpointDir != "" {
+		return f.checkpointDir, nil
 	}
 
 	return "/checkpoints/" + id, nil
@@ -344,8 +344,8 @@ type fakeProvider struct {
 	noFork   bool
 	// pauseErr is what Pause refuses with, the way vz refuses a pause into a silent shim.
 	pauseErr error
-	// snapshotDir is the directory the pause was told to write into, and the one the resume read.
-	snapshotDir string
+	// checkpointDir is the directory the pause was told to write into, and the one the resume read.
+	checkpointDir string
 	// forkedFrom is the running source the fork was told to capture.
 	forkedFrom string
 	// source is the stopped sandbox the snapshot was told to copy.
@@ -527,7 +527,7 @@ func (f *fakeProvider) Pause(ctx context.Context, id string, dir string) error {
 
 		return fmt.Errorf("delete sandbox %s after its checkpoint: %w", id, ctx.Err())
 	}
-	f.paused, f.snapshotDir = true, dir
+	f.paused, f.checkpointDir = true, dir
 	f.status = models.Status{Exists: true, State: models.StatePaused}
 
 	return nil
@@ -537,7 +537,7 @@ func (f *fakeProvider) Resume(_ context.Context, _ string, dir string) error {
 	if err := f.r.record("provider.Resume"); err != nil {
 		return err
 	}
-	f.resumed, f.snapshotDir = true, dir
+	f.resumed, f.checkpointDir = true, dir
 	f.status = models.Status{Exists: true, State: models.StateRunning, PID: 7}
 
 	return nil
@@ -629,7 +629,7 @@ func (f *fakeProvider) Stop(ctx context.Context, _ string, grace time.Duration) 
 	return nil
 }
 
-// Release frees what a cut pause left beside its snapshot, the frozen sentry and the merged view alike.
+// Release frees what a cut pause left beside its checkpoint, the frozen sentry and the merged view alike.
 func (f *fakeProvider) Release(_ context.Context, _, _ string) error {
 	if err := f.r.record("provider.Release"); err != nil {
 		return err

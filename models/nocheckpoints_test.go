@@ -7,8 +7,8 @@ import (
 	"github.com/presmihaylov/shard/models"
 )
 
-func TestNoSnapshotsRefusesEveryOptionalVerbByName(t *testing.T) {
-	n := models.NoSnapshots{Provider: "sysbox"}
+func TestNoCheckpointsRefusesEveryOptionalVerbByName(t *testing.T) {
+	n := models.NoCheckpoints{Provider: "sysbox"}
 
 	if n.Capabilities() != (models.Capabilities{}) {
 		t.Errorf("got capabilities %+v, want none", n.Capabilities())

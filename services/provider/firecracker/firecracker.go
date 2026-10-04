@@ -57,13 +57,13 @@ const (
 	// supervisorFailedFile holds the reason shard-init gave for its own death, which the halt would otherwise take with the guest.
 	supervisorFailedFile = "supervisor-failed"
 	logFile              = "output.log"
-	// memoryFile is the guest memory in a snapshot, and a link to it in a state directory from before the jail.
+	// memoryFile is the guest memory in a checkpoint, and a link to it in a state directory from before the jail.
 	memoryFile = "memory"
 	// cursorFile places the guest's output in the log, so an attach after a daemon restart resumes it; a fresh boot drops it.
 	cursorFile = "output.cursor"
 	// restoringFile marks a fork's restore in flight, whose guest holds the source's address until the readdress (SHARD-321).
 	restoringFile = "restoring"
-	// reseedFile marks a restored guest still on the snapshot's crng key, so a daemon that adopts it reseeds it first (SHARD-266).
+	// reseedFile marks a restored guest still on the checkpoint's crng key, so a daemon that adopts it reseeds it first (SHARD-266).
 	reseedFile = "reseed"
 	// captureFile marks a source a fork has paused for its capture, so a daemon that adopts it runs it again (SHARD-462).
 	captureFile = "capturing"
@@ -71,14 +71,14 @@ const (
 	captureDir = "capture"
 )
 
-// The files under a snapshot directory, beside a copy of the overlay; the marker goes in last.
+// The files under a checkpoint directory, beside a copy of the overlay; the marker goes in last.
 const (
-	snapshotState = "vmstate"
-	snapshotFile  = "snapshot.json"
-	// checkpointFile is what the sandbox service takes as a complete snapshot after a restart of the daemon.
+	checkpointState = "vmstate"
+	checkpointMeta  = "checkpoint.json"
+	// checkpointFile is what the sandbox service takes as a complete checkpoint after a restart of the daemon.
 	checkpointFile = "checkpoint.img"
-	// snapshotFileMode is the one place the snapshot files get their mode, once they are root's again.
-	snapshotFileMode os.FileMode = 0o600
+	// checkpointFileMode is the one place the checkpoint files get their mode, once they are root's again.
+	checkpointFileMode os.FileMode = 0o600
 )
 
 // The files under Config.Dir, the provider's own.
@@ -96,7 +96,7 @@ const (
 	jailInitrd  = "/initrd"
 	jailBase    = "/base.erofs"
 	jailOverlay = "/" + bundle.OverlayDiskFile
-	jailState   = "/" + snapshotState
+	jailState   = "/" + checkpointState
 	jailMemory  = "/" + memoryFile
 	apiSocket   = "/api.sock"
 	jailVsock   = "/v.sock"
@@ -162,8 +162,8 @@ type Config struct {
 	// JailBase is the jailer's chroot base, on the reflink filesystem of Dir and the state directories, so each jail gets its files by reference.
 	JailBase string
 	Dirs     StateDirs
-	// Snapshots answers where a sandbox's pause writes, which an adopt checks before it resumes a paused VM. sandboxstate.Repository.SnapshotDir is what shard passes.
-	Snapshots StateDirs
+	// Checkpoints answers where a sandbox's pause writes, which an adopt checks before it resumes a paused VM. sandboxstate.Repository.CheckpointDir is what shard passes.
+	Checkpoints StateDirs
 	// Log takes what an operator must see of a guest, such as a refused control line; nil discards it.
 	Log *log.Logger
 }
@@ -199,8 +199,8 @@ type Provider struct {
 }
 
 func New(cfg Config) (*Provider, error) {
-	if cfg.Binary == "" || cfg.Jailer == "" || cfg.Kernel == "" || cfg.Init == "" || cfg.Dir == "" || cfg.JailBase == "" || cfg.Dirs == nil || cfg.Snapshots == nil {
-		return nil, errors.New("the firecracker provider needs a binary, a jailer, a kernel, a shard-init, a directory, a jail base, a state directory lookup and a snapshot directory lookup")
+	if cfg.Binary == "" || cfg.Jailer == "" || cfg.Kernel == "" || cfg.Init == "" || cfg.Dir == "" || cfg.JailBase == "" || cfg.Dirs == nil || cfg.Checkpoints == nil {
+		return nil, errors.New("the firecracker provider needs a binary, a jailer, a kernel, a shard-init, a directory, a jail base, a state directory lookup and a checkpoint directory lookup")
 	}
 	// Every load turns the dirty-page log on, which only firecracker 1.13 and newer take (SHARD-458).
 	if err := fcapi.CheckVersion(cfg.Binary); err != nil {

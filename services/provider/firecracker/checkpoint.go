@@ -17,8 +17,8 @@ import (
 	"github.com/presmihaylov/shard/services/supervisor"
 )
 
-// snapshot is snapshot.json: what the frozen memory ran as, which a fork's record takes over from the source's.
-type snapshot struct {
+// checkpoint is checkpoint.json: what the frozen memory ran as, which a fork's record takes over from the source's.
+type checkpoint struct {
 	BaseDisk  string             `json:"base_disk"`
 	RootFS    string             `json:"rootfs,omitempty"`
 	Resources models.Resources   `json:"resources"`
@@ -34,13 +34,13 @@ func (p *Provider) Pause(ctx context.Context, id string, dir string) error {
 		return err
 	}
 
-	// The install left the snapshot it replaced at tmp, and the new one is in place, so a Ctrl-C from here on must not leave a paused VM behind.
+	// The install left the checkpoint it replaced at tmp, and the new one is in place, so a Ctrl-C from here on must not leave a paused VM behind.
 	return errors.Join(os.RemoveAll(dir+".tmp"), p.end(context.WithoutCancel(ctx), m))
 }
 
-// install puts the paused VM's snapshot in dir and answers its vmm, still paused beside it.
+// install puts the paused VM's checkpoint in dir and answers its vmm, still paused beside it.
 func (p *Provider) install(ctx context.Context, id string, dir string) (*machine, error) {
-	m, r, err := p.snapshotSource(ctx, id, models.VerbPause)
+	m, r, err := p.checkpointSource(ctx, id, models.VerbPause)
 	if err != nil {
 		return nil, err
 	}
@@ -50,7 +50,7 @@ func (p *Provider) install(ctx context.Context, id string, dir string) (*machine
 		return nil, fmt.Errorf("sandbox %s: clear the capture marker: %w", id, err)
 	}
 
-	// The snapshot is staged beside dir and swapped in whole, so dir never holds half of one.
+	// The checkpoint is staged beside dir and swapped in whole, so dir never holds half of one.
 	tmp := dir + ".tmp"
 	if err := os.RemoveAll(tmp); err != nil {
 		return nil, fmt.Errorf("clear the checkpoint directory %s: %w", tmp, err)
@@ -64,7 +64,7 @@ func (p *Provider) install(ctx context.Context, id string, dir string) (*machine
 	}
 	// A pause cut after the vCPUs stopped left the VM paused, and this one carries on from there.
 	if info.State != fcapi.StatePaused {
-		// A guest process the snapshot held mid-run would draw from the saved crng key before a restore's reseed, so the guest is frozen first (SHARD-409).
+		// A guest process the checkpoint held mid-run would draw from the saved crng key before a restore's reseed, so the guest is frozen first (SHARD-409).
 		if err := m.freeze(ctx, models.VerbPause); err != nil {
 			return nil, p.abandon(m, tmp, fmt.Errorf("sandbox %s: freeze the guest before the pause: %w", id, err))
 		}
@@ -72,7 +72,7 @@ func (p *Provider) install(ctx context.Context, id string, dir string) (*machine
 			return nil, p.abandon(m, tmp, fmt.Errorf("pause sandbox %s: %w", id, err))
 		}
 	}
-	if err := p.stageSnapshot(m, r, models.VerbPause, stateDir, tmp); err != nil {
+	if err := p.stageCheckpoint(m, r, models.VerbPause, stateDir, tmp); err != nil {
 		return nil, p.abandon(m, tmp, fmt.Errorf("sandbox %s: %w", id, err))
 	}
 	if err := store.SwapDir(tmp, dir); err != nil {
@@ -82,8 +82,8 @@ func (p *Provider) install(ctx context.Context, id string, dir string) (*machine
 	return m, nil
 }
 
-// snapshotSource answers the vmm of a running sandbox a snapshot for verb can be taken of, and refuses any other.
-func (p *Provider) snapshotSource(ctx context.Context, id, verb string) (*machine, record, error) {
+// checkpointSource answers the vmm of a running sandbox a checkpoint for verb can be taken of, and refuses any other.
+func (p *Provider) checkpointSource(ctx context.Context, id, verb string) (*machine, record, error) {
 	stateDir, r, err := p.open(id)
 	if err != nil {
 		return nil, record{}, err
@@ -118,8 +118,8 @@ func (p *Provider) snapshotSource(ctx context.Context, id, verb string) (*machin
 	return m, r, nil
 }
 
-// stageSnapshot writes the vmm's state and memory, a copy of the overlay and the metadata into tmp, and marks it complete; the vCPUs are stopped, so the overlay is still.
-func (p *Provider) stageSnapshot(m *machine, r record, verb, stateDir, tmp string) error {
+// stageCheckpoint writes the vmm's state and memory, a copy of the overlay and the metadata into tmp, and marks it complete; the vCPUs are stopped, so the overlay is still.
+func (p *Provider) stageCheckpoint(m *machine, r record, verb, stateDir, tmp string) error {
 	snap := filepath.Join(m.jail, jailSnap)
 	if err := p.snapshotInto(m, r, verb, snap, tmp); err != nil {
 		return errors.Join(err, os.RemoveAll(snap))
@@ -128,11 +128,11 @@ func (p *Provider) stageSnapshot(m *machine, r record, verb, stateDir, tmp strin
 	if err := bundle.Reflink(filepath.Join(stateDir, bundle.OverlayDiskFile), filepath.Join(tmp, bundle.OverlayDiskFile)); err != nil {
 		return fmt.Errorf("copy the overlay: %w", err)
 	}
-	meta := snapshot{BaseDisk: r.BaseDisk, RootFS: r.RootFS, Resources: r.Resources, Run: r.Run, Jailed: true}
-	if err := writeJSON(filepath.Join(tmp, snapshotFile), meta); err != nil {
+	meta := checkpoint{BaseDisk: r.BaseDisk, RootFS: r.RootFS, Resources: r.Resources, Run: r.Run, Jailed: true}
+	if err := writeJSON(filepath.Join(tmp, checkpointMeta), meta); err != nil {
 		return err
 	}
-	if err := os.WriteFile(filepath.Join(tmp, checkpointFile), nil, snapshotFileMode); err != nil {
+	if err := os.WriteFile(filepath.Join(tmp, checkpointFile), nil, checkpointFileMode); err != nil {
 		return fmt.Errorf("mark the checkpoint complete: %w", err)
 	}
 
@@ -195,8 +195,8 @@ func (p *Provider) snapshotInto(m *machine, r record, verb, snap, tmp string) er
 	if err := m.cutExecs(verb); err != nil {
 		return err
 	}
-	// The vmm wrote both as its own uid and with its own umask; out of the jail they are root's, as every other snapshot file is.
-	for _, name := range []string{snapshotState, memoryFile} {
+	// The vmm wrote both as its own uid and with its own umask; out of the jail they are root's, as every other checkpoint file is.
+	for _, name := range []string{checkpointState, memoryFile} {
 		path := filepath.Join(tmp, name)
 		if err := os.Rename(filepath.Join(snap, name), path); err != nil {
 			return fmt.Errorf("move %s out of the jail: %w", name, err)
@@ -204,7 +204,7 @@ func (p *Provider) snapshotInto(m *machine, r record, verb, snap, tmp string) er
 		if err := p.chown(path, 0, 0); err != nil {
 			return fmt.Errorf("give %s to root: %w", name, err)
 		}
-		if err := os.Chmod(path, snapshotFileMode); err != nil {
+		if err := os.Chmod(path, checkpointFileMode); err != nil {
 			return fmt.Errorf("tighten %s: %w", name, err)
 		}
 	}
@@ -278,7 +278,7 @@ func (p *Provider) redial(m *machine, verb string) error {
 	}
 }
 
-// Resume brings the sandbox back from the snapshot in dir, in a fresh vmm over its own copy of the snapshot's overlay; the snapshot stays for the next one.
+// Resume brings the sandbox back from the checkpoint in dir, in a fresh vmm over its own copy of the checkpoint's overlay; the checkpoint stays for the next one.
 func (p *Provider) Resume(ctx context.Context, id string, dir string) error {
 	stateDir, r, err := p.open(id)
 	if err != nil {
@@ -287,7 +287,7 @@ func (p *Provider) Resume(ctx context.Context, id string, dir string) error {
 	if err := p.lost(id); err != nil {
 		return err
 	}
-	if _, err := readSnapshot(dir); err != nil {
+	if _, err := readCheckpoint(dir); err != nil {
 		return fmt.Errorf("sandbox %s: %w", id, err)
 	}
 	m, err := p.lookup(ctx, id, stateDir, r)
@@ -307,7 +307,7 @@ func (p *Provider) Resume(ctx context.Context, id string, dir string) error {
 	return err
 }
 
-// endLeftover ends the vmm a pause left after its snapshot: paused, the snapshot is the truth and the vmm goes; running, the sandbox moved past it and is refused.
+// endLeftover ends the vmm a pause left after its checkpoint: paused, the checkpoint is the truth and the vmm goes; running, the sandbox moved past it and is refused.
 func (p *Provider) endLeftover(ctx context.Context, m *machine) error {
 	if m == nil {
 		return nil
@@ -326,7 +326,7 @@ func (p *Provider) endLeftover(ctx context.Context, m *machine) error {
 	return p.end(ctx, m)
 }
 
-// restoreFiles puts the snapshot's overlay under the sandbox in place of its own, or the restored memory would meet a filesystem it never wrote.
+// restoreFiles puts the checkpoint's overlay under the sandbox in place of its own, or the restored memory would meet a filesystem it never wrote.
 func restoreFiles(dir, stateDir string) error {
 	overlay := filepath.Join(stateDir, bundle.OverlayDiskFile)
 	if err := os.Remove(overlay); err != nil && !errors.Is(err, fs.ErrNotExist) {
@@ -335,7 +335,7 @@ func restoreFiles(dir, stateDir string) error {
 	if err := bundle.Reflink(filepath.Join(dir, bundle.OverlayDiskFile), overlay); err != nil {
 		return fmt.Errorf("restore the overlay: %w", err)
 	}
-	// A state directory from before the jail links an older snapshot's memory, which no vmm maps now.
+	// A state directory from before the jail links an older checkpoint's memory, which no vmm maps now.
 	if err := os.Remove(filepath.Join(stateDir, memoryFile)); err != nil && !errors.Is(err, fs.ErrNotExist) {
 		return fmt.Errorf("drop the memory: %w", err)
 	}
@@ -343,7 +343,7 @@ func restoreFiles(dir, stateDir string) error {
 	return nil
 }
 
-// restore brings the snapshot in dir up in a fresh vmm in a jail of the sandbox's own, over the overlay restoreFiles put in its directory.
+// restore brings the checkpoint in dir up in a fresh vmm in a jail of the sandbox's own, over the overlay restoreFiles put in its directory.
 // foreign marks a fork, whose guest wakes on the source's address, so a cut before the readdress must not resume it (SHARD-321).
 func (p *Provider) restore(ctx context.Context, id, stateDir string, r record, dir string, foreign bool) (*machine, error) {
 	if err := p.bound(id, r.Resources); err != nil {
@@ -377,7 +377,7 @@ func (p *Provider) restore(ctx context.Context, id, stateDir string, r record, d
 		return nil, errors.Join(err, p.end(ctx, m))
 	}
 
-	// Only a running sandbox is ever paused, so what a snapshot brings back is running and Status says so.
+	// Only a running sandbox is ever paused, so what a checkpoint brings back is running and Status says so.
 	p.mu.Lock()
 	m.started = true
 	p.mu.Unlock()
@@ -385,7 +385,7 @@ func (p *Provider) restore(ctx context.Context, id, stateDir string, r record, d
 	return m, nil
 }
 
-// AdoptStaging drops the snapshot staging a cut pause left: resume reads the committed dir, never dir+".tmp", so a leftover stage is dead weight (SHARD-404).
+// AdoptStaging drops the checkpoint staging a cut pause left: resume reads the committed dir, never dir+".tmp", so a leftover stage is dead weight (SHARD-404).
 func (p *Provider) AdoptStaging(dir string) error {
 	return os.RemoveAll(dir + ".tmp")
 }
@@ -398,10 +398,10 @@ func (p *Provider) Fork(ctx context.Context, source string, spec models.SandboxS
 	}
 
 	// The fork's jail took its own copies of the state and the memory, and its overlay is a copy too, so the capture is spent.
-	return errors.Join(p.forkSnapshot(ctx, capture, spec), os.RemoveAll(capture))
+	return errors.Join(p.forkCheckpoint(ctx, capture, spec), os.RemoveAll(capture))
 }
 
-// capture stages the running source's snapshot in dir, then runs the source on, whatever the capture came to.
+// capture stages the running source's checkpoint in dir, then runs the source on, whatever the capture came to.
 func (p *Provider) capture(ctx context.Context, id, dir string) error {
 	m, err := p.hold(ctx, id, dir)
 	if m == nil {
@@ -416,9 +416,9 @@ func (p *Provider) capture(ctx context.Context, id, dir string) error {
 	return errors.Join(err, os.Remove(filepath.Join(m.dir, captureFile)))
 }
 
-// hold marks the source, stops it over a frozen guest and stages its snapshot in dir; a machine it answers must run again, error or not.
+// hold marks the source, stops it over a frozen guest and stages its checkpoint in dir; a machine it answers must run again, error or not.
 func (p *Provider) hold(ctx context.Context, id, dir string) (*machine, error) {
-	m, r, err := p.snapshotSource(ctx, id, models.VerbFork)
+	m, r, err := p.checkpointSource(ctx, id, models.VerbFork)
 	if err != nil {
 		return nil, err
 	}
@@ -435,16 +435,16 @@ func (p *Provider) hold(ctx context.Context, id, dir string) (*machine, error) {
 	if err := m.client.Pause(); err != nil {
 		return m, fmt.Errorf("pause sandbox %s for the capture: %w", id, err)
 	}
-	if err := p.stageSnapshot(m, r, models.VerbFork, m.dir, dir); err != nil {
+	if err := p.stageCheckpoint(m, r, models.VerbFork, m.dir, dir); err != nil {
 		return m, fmt.Errorf("sandbox %s: %w", id, err)
 	}
 
 	return m, nil
 }
 
-// forkSnapshot brings the snapshot in dir up as a new sandbox under the spec's id, over its own copy of the overlay, and gives the guest the spec's address.
-func (p *Provider) forkSnapshot(ctx context.Context, dir string, spec models.SandboxSpec) error {
-	snap, err := readSnapshot(dir)
+// forkCheckpoint brings the checkpoint in dir up as a new sandbox under the spec's id, over its own copy of the overlay, and gives the guest the spec's address.
+func (p *Provider) forkCheckpoint(ctx context.Context, dir string, spec models.SandboxSpec) error {
+	snap, err := readCheckpoint(dir)
 	if err != nil {
 		return err
 	}
@@ -482,22 +482,22 @@ func (p *Provider) forkSnapshot(ctx context.Context, dir string, spec models.San
 	return nil
 }
 
-// readSnapshot reads what a complete snapshot holds; one without its marker is a pause that did not finish, or no snapshot at all.
-func readSnapshot(dir string) (snapshot, error) {
+// readCheckpoint reads what a complete checkpoint holds; one without its marker is a pause that did not finish, or no checkpoint at all.
+func readCheckpoint(dir string) (checkpoint, error) {
 	if _, err := os.Stat(filepath.Join(dir, checkpointFile)); err != nil {
-		return snapshot{}, fmt.Errorf("no complete checkpoint in %s: %w", dir, err)
+		return checkpoint{}, fmt.Errorf("no complete checkpoint in %s: %w", dir, err)
 	}
-	blob, err := os.ReadFile(filepath.Join(dir, snapshotFile))
+	blob, err := os.ReadFile(filepath.Join(dir, checkpointMeta))
 	if err != nil {
-		return snapshot{}, fmt.Errorf("read the checkpoint in %s: %w", dir, err)
+		return checkpoint{}, fmt.Errorf("read the checkpoint in %s: %w", dir, err)
 	}
-	var snap snapshot
+	var snap checkpoint
 	if err := json.Unmarshal(blob, &snap); err != nil {
-		return snapshot{}, fmt.Errorf("decode the checkpoint in %s: %w", dir, err)
+		return checkpoint{}, fmt.Errorf("decode the checkpoint in %s: %w", dir, err)
 	}
 	// No migration: shard is pre-alpha, and a fresh pause writes one that loads.
 	if !snap.Jailed {
-		return snapshot{}, fmt.Errorf("the checkpoint in %s was taken before the jail, and no restore on %s can open the host paths it names: start the sandbox from its stopped state and pause it again", dir, Name)
+		return checkpoint{}, fmt.Errorf("the checkpoint in %s was taken before the jail, and no restore on %s can open the host paths it names: start the sandbox from its stopped state and pause it again", dir, Name)
 	}
 
 	return snap, nil

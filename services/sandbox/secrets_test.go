@@ -138,7 +138,7 @@ func TestGrantSecretRefusesAPausedSandbox(t *testing.T) {
 	svc, _, _ := granted(t, &recorder{}, pausedSandbox())
 
 	if _, err := svc.GrantSecret(context.Background(), "sandbox1", "TOKEN"); err == nil {
-		t.Fatal("the grant took a paused sandbox, whose snapshot already holds the environment")
+		t.Fatal("the grant took a paused sandbox, whose checkpoint already holds the environment")
 	}
 }
 

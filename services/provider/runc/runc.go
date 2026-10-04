@@ -1,6 +1,6 @@
 // Package runc runs sandboxes on bare runc, the OCI runtime under Docker. It is the no-isolation
 // tier: the guest shares the host kernel with only namespaces and cgroups between them, and root in
-// the guest is root on the host. It has no snapshot at all: every optional verb refuses by name.
+// the guest is root on the host. It has no checkpoint at all: every optional verb refuses by name.
 package runc
 
 import (
@@ -47,10 +47,10 @@ type StateDirs func(id string) (string, error)
 
 var _ models.Provider = (*Provider)(nil)
 
-// Provider implements models.Provider on bare runc. The snapshot verbs are NoSnapshots' refusals. It
+// Provider implements models.Provider on bare runc. The checkpoint verbs are NoCheckpoints' refusals. It
 // claims no user namespace, so the daemon owns every sandbox's netns from the host.
 type Provider struct {
-	models.NoSnapshots
+	models.NoCheckpoints
 
 	runner  *runccli.Runner
 	bundles *bundle.Service
@@ -64,7 +64,7 @@ func New(runner *runccli.Runner, bundles *bundle.Service, dirs StateDirs) (*Prov
 		return nil, errors.New("the runc provider needs a runc runner, a bundle service and a state directory lookup")
 	}
 
-	return &Provider{NoSnapshots: models.NoSnapshots{Provider: Name}, runner: runner, bundles: bundles, dirs: dirs, cgroupRoot: cgroup.Root}, nil
+	return &Provider{NoCheckpoints: models.NoCheckpoints{Provider: Name}, runner: runner, bundles: bundles, dirs: dirs, cgroupRoot: cgroup.Root}, nil
 }
 
 func (p *Provider) Name() string { return Name }

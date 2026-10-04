@@ -89,14 +89,14 @@ func (h *harness) open(t *testing.T) *firecracker.Provider {
 // config is what a daemon start hands the provider: this test binary, which answers as the jailer and the vmm.
 func (h *harness) config() firecracker.Config {
 	return firecracker.Config{
-		Binary:    os.Args[0],
-		Jailer:    os.Args[0],
-		JailBase:  filepath.Join(h.root, "j"),
-		Kernel:    h.kernel,
-		Init:      initBinary,
-		Dir:       h.root,
-		Dirs:      h.stateDir,
-		Snapshots: h.snapshotDir,
+		Binary:      os.Args[0],
+		Jailer:      os.Args[0],
+		JailBase:    filepath.Join(h.root, "j"),
+		Kernel:      h.kernel,
+		Init:        initBinary,
+		Dir:         h.root,
+		Dirs:        h.stateDir,
+		Checkpoints: h.checkpointDir,
 	}
 }
 
@@ -177,8 +177,8 @@ func (h *harness) stateDir(id string) (string, error) {
 	return filepath.Join(h.root, "s", id), nil
 }
 
-// snapshotDir answers where a pause of id writes, as the repository does; nothing creates it before a pause.
-func (h *harness) snapshotDir(id string) (string, error) {
+// checkpointDir answers where a pause of id writes, as the repository does; nothing creates it before a pause.
+func (h *harness) checkpointDir(id string) (string, error) {
 	return filepath.Join(h.root, "checkpoints", id), nil
 }
 
@@ -230,9 +230,9 @@ func TestConformance(t *testing.T) {
 
 			return h.newSpec(t, "/bin/sh", "-c", script)
 		},
-		SnapshotDir: func(t *testing.T) string { return t.TempDir() },
-		Shell:       func(script string) []string { return []string{"/bin/sh", "-c", script} },
-		// The fake guest is a host process, so the suite writes under the root; a snapshot here proves the verbs and not the disk.
+		EmptyDir: func(t *testing.T) string { return t.TempDir() },
+		Shell:    func(script string) []string { return []string{"/bin/sh", "-c", script} },
+		// The fake guest is a host process, so the suite writes under the root; a checkpoint here proves the verbs and not the disk.
 		Scratch:       h.root,
 		SharedScratch: true,
 		Reopen:        h.reopen,
@@ -396,8 +396,8 @@ func TestCreateRefusesAUIDPastTheRange(t *testing.T) {
 	}
 }
 
-// A snapshot from before the jail names host paths a jailed vmm cannot open, so a restore refuses it.
-func TestARestoreRefusesASnapshotFromBeforeTheJail(t *testing.T) {
+// A checkpoint from before the jail names host paths a jailed vmm cannot open, so a restore refuses it.
+func TestARestoreRefusesACheckpointFromBeforeTheJail(t *testing.T) {
 	h := newHarness(t)
 	requireReflink(t, h.root)
 	spec, _ := h.runLong(t)
@@ -405,7 +405,7 @@ func TestARestoreRefusesASnapshotFromBeforeTheJail(t *testing.T) {
 	if err := h.provider.Pause(t.Context(), spec.ID, dir); err != nil {
 		t.Fatalf("Pause: %v", err)
 	}
-	meta := filepath.Join(dir, "snapshot.json")
+	meta := filepath.Join(dir, "checkpoint.json")
 	blob, err := os.ReadFile(meta)
 	if err != nil {
 		t.Fatal(err)
@@ -424,11 +424,11 @@ func TestARestoreRefusesASnapshotFromBeforeTheJail(t *testing.T) {
 
 	err = h.provider.Resume(t.Context(), spec.ID, dir)
 	if err == nil || !strings.Contains(err.Error(), "before the jail") {
-		t.Fatalf("Resume from a snapshot before the jail = %v, want a refusal", err)
+		t.Fatalf("Resume from a checkpoint before the jail = %v, want a refusal", err)
 	}
-	err = h.provider.ForkSnapshot(t.Context(), dir, h.forkSpec(t))
+	err = h.provider.ForkCheckpoint(t.Context(), dir, h.forkSpec(t))
 	if err == nil || !strings.Contains(err.Error(), "before the jail") {
-		t.Fatalf("Fork from a snapshot before the jail = %v, want a refusal", err)
+		t.Fatalf("Fork from a checkpoint before the jail = %v, want a refusal", err)
 	}
 }
 
@@ -1112,8 +1112,8 @@ func TestCapabilitiesArePauseResumeAndFork(t *testing.T) {
 	}
 }
 
-// A pause writes the whole snapshot and ends the VM; the marker goes in last, and nothing of the staging is left.
-func TestPauseWritesTheSnapshotAndEndsTheVM(t *testing.T) {
+// A pause writes the whole checkpoint and ends the VM; the marker goes in last, and nothing of the staging is left.
+func TestPauseWritesTheCheckpointAndEndsTheVM(t *testing.T) {
 	h := newHarness(t)
 	requireReflink(t, h.root)
 	spec, _ := h.runLong(t)
@@ -1122,9 +1122,9 @@ func TestPauseWritesTheSnapshotAndEndsTheVM(t *testing.T) {
 	if err := h.provider.Pause(t.Context(), spec.ID, dir); err != nil {
 		t.Fatalf("Pause: %v", err)
 	}
-	for _, name := range []string{"vmstate", "memory", "overlay.raw", "snapshot.json", "checkpoint.img"} {
+	for _, name := range []string{"vmstate", "memory", "overlay.raw", "checkpoint.json", "checkpoint.img"} {
 		if _, err := os.Stat(filepath.Join(dir, name)); err != nil {
-			t.Errorf("%s in the snapshot: %v, want it written", name, err)
+			t.Errorf("%s in the checkpoint: %v, want it written", name, err)
 		}
 	}
 	if _, err := os.Stat(dir + ".tmp"); !errors.Is(err, os.ErrNotExist) {
@@ -1137,7 +1137,7 @@ func TestPauseWritesTheSnapshotAndEndsTheVM(t *testing.T) {
 }
 
 // The vmm writes vmstate and memory as its own uid and under its own umask, so Pause gives them to root and tightens them.
-func TestPauseTightensTheSnapshotFiles(t *testing.T) {
+func TestPauseTightensTheCheckpointFiles(t *testing.T) {
 	h := newHarness(t)
 	requireReflink(t, h.root)
 	spec, _ := h.runLong(t)
@@ -1165,8 +1165,8 @@ func TestPauseTightensTheSnapshotFiles(t *testing.T) {
 	}
 }
 
-// A resume brings the sandbox back over its own copy of the overlay, with a copy by reference of the memory the snapshot keeps in its jail.
-func TestResumeBringsTheSandboxBackOverTheSnapshot(t *testing.T) {
+// A resume brings the sandbox back over its own copy of the overlay, with a copy by reference of the memory the checkpoint keeps in its jail.
+func TestResumeBringsTheSandboxBackOverTheCheckpoint(t *testing.T) {
 	h := newHarness(t)
 	requireReflink(t, h.root)
 	spec, _ := h.runLong(t)
@@ -1184,12 +1184,12 @@ func TestResumeBringsTheSandboxBackOverTheSnapshot(t *testing.T) {
 	}
 	requireJailed(t, h, spec, dir)
 
-	// The snapshot is not consumed: a stopped sandbox comes back from the same one.
+	// The checkpoint is not consumed: a stopped sandbox comes back from the same one.
 	if err := h.provider.Stop(t.Context(), spec.ID, stopGrace); err != nil {
 		t.Fatal(err)
 	}
 	if err := h.provider.Resume(t.Context(), spec.ID, dir); err != nil {
-		t.Fatalf("the second Resume from the same snapshot: %v", err)
+		t.Fatalf("the second Resume from the same checkpoint: %v", err)
 	}
 	if err := h.provider.Remove(t.Context(), spec.ID); err != nil {
 		t.Fatal(err)
@@ -1198,12 +1198,12 @@ func TestResumeBringsTheSandboxBackOverTheSnapshot(t *testing.T) {
 		t.Errorf("the jail after Remove: %v, want gone", err)
 	}
 	if _, err := os.Stat(filepath.Join(dir, "memory")); err != nil {
-		t.Errorf("the snapshot's memory after Remove: %v, want it kept", err)
+		t.Errorf("the checkpoint's memory after Remove: %v, want it kept", err)
 	}
 }
 
-// requireJailed proves a restored vmm opens its own overlay through its jail, and maps a copy of the snapshot's memory the snapshot does not share a name with.
-func requireJailed(t *testing.T, h *harness, spec models.SandboxSpec, snapshot string) {
+// requireJailed proves a restored vmm opens its own overlay through its jail, and maps a copy of the checkpoint's memory the checkpoint does not share a name with.
+func requireJailed(t *testing.T, h *harness, spec models.SandboxSpec, checkpoint string) {
 	t.Helper()
 
 	if got := driveOf(t, spec.StateDir, "overlay"); got != "/overlay.raw" {
@@ -1215,13 +1215,13 @@ func requireJailed(t *testing.T, h *harness, spec models.SandboxSpec, snapshot s
 	}
 	memory := filepath.Join(jail, "memory")
 	if got := links(t, memory); got != 1 {
-		t.Errorf("the jail's memory has %d links, want 1: a copy by reference, not the snapshot's file", got)
+		t.Errorf("the jail's memory has %d links, want 1: a copy by reference, not the checkpoint's file", got)
 	}
 	if got := h.owner(memory); got != readVM(t, spec.StateDir).UID {
 		t.Errorf("the jail's memory went to uid %d, want the vmm's", got)
 	}
-	if got := links(t, filepath.Join(snapshot, "memory")); got != 1 {
-		t.Errorf("the snapshot's memory has %d links, want 1: no vmm maps the snapshot's own file", got)
+	if got := links(t, filepath.Join(checkpoint, "memory")); got != 1 {
+		t.Errorf("the checkpoint's memory has %d links, want 1: no vmm maps the checkpoint's own file", got)
 	}
 	if _, err := os.Stat(filepath.Join(spec.StateDir, "memory")); !errors.Is(err, os.ErrNotExist) {
 		t.Errorf("the memory in the state directory: %v, want none", err)
@@ -1244,8 +1244,8 @@ func sameFile(t *testing.T, a, b string) bool {
 	return os.SameFile(ai, bi)
 }
 
-// One snapshot forks as many sandboxes as are asked of it: each takes its own overlay, and the snapshot stays whole.
-func TestForkTakesACopyAndLeavesTheSnapshot(t *testing.T) {
+// One checkpoint forks as many sandboxes as are asked of it: each takes its own overlay, and the checkpoint stays whole.
+func TestForkTakesACopyAndLeavesTheCheckpoint(t *testing.T) {
 	h := newHarness(t)
 	requireReflink(t, h.root)
 	spec, _ := h.runLong(t)
@@ -1257,7 +1257,7 @@ func TestForkTakesACopyAndLeavesTheSnapshot(t *testing.T) {
 
 	forks := []models.SandboxSpec{h.forkSpec(t), h.forkSpec(t)}
 	for _, fork := range forks {
-		if err := h.provider.ForkSnapshot(t.Context(), dir, fork); err != nil {
+		if err := h.provider.ForkCheckpoint(t.Context(), dir, fork); err != nil {
 			t.Fatalf("Fork: %v", err)
 		}
 	}
@@ -1268,13 +1268,13 @@ func TestForkTakesACopyAndLeavesTheSnapshot(t *testing.T) {
 		}
 		got := readVM(t, fork.StateDir)
 		if got.BaseDisk != src.BaseDisk || got.RootFS != src.RootFS || !reflect.DeepEqual(got.Run, src.Run) {
-			t.Errorf("the fork's record = %+v, want the snapshot's image, rootfs and run %+v", got, src)
+			t.Errorf("the fork's record = %+v, want the checkpoint's image, rootfs and run %+v", got, src)
 		}
 		requireJailed(t, h, fork, dir)
 	}
 	for _, name := range []string{"vmstate", "memory", "checkpoint.img"} {
 		if _, err := os.Stat(filepath.Join(dir, name)); err != nil {
-			t.Errorf("%s after the forks: %v, want the snapshot whole", name, err)
+			t.Errorf("%s after the forks: %v, want the checkpoint whole", name, err)
 		}
 	}
 }
@@ -1554,12 +1554,12 @@ func TestAFailedCaptureRunsTheSourceOn(t *testing.T) {
 	}
 }
 
-// A source the fork could not resume after its capture keeps the marker beside an older pause's snapshot, so the next daemon runs it again, never ends it (SHARD-427, SHARD-462).
+// A source the fork could not resume after its capture keeps the marker beside an older pause's checkpoint, so the next daemon runs it again, never ends it (SHARD-427, SHARD-462).
 func TestASourceTheForkCouldNotResumeRunsAgain(t *testing.T) {
 	h := newHarness(t)
 	requireReflink(t, h.root)
 	spec, pid := h.runLong(t)
-	dir, _ := h.snapshotDir(spec.ID)
+	dir, _ := h.checkpointDir(spec.ID)
 	if err := os.MkdirAll(dir, 0o700); err != nil {
 		t.Fatal(err)
 	}
@@ -1592,13 +1592,13 @@ func TestASourceTheForkCouldNotResumeRunsAgain(t *testing.T) {
 	}
 }
 
-// A daemon cut inside a capture leaves the source paused and frozen beside an older pause's snapshot; the marker has the next daemon run it again, never end it (SHARD-427, SHARD-462).
+// A daemon cut inside a capture leaves the source paused and frozen beside an older pause's checkpoint; the marker has the next daemon run it again, never end it (SHARD-427, SHARD-462).
 func TestASourceACutCaptureLeftPausedRunsAgain(t *testing.T) {
 	h := newHarness(t)
 	requireReflink(t, h.root)
 	spec, _ := h.runLong(t)
 	// The checkpoint is all the SHARD-427 judge reads, and a booted source keeps the fake guest's ready, which a fake restore starts without.
-	dir, _ := h.snapshotDir(spec.ID)
+	dir, _ := h.checkpointDir(spec.ID)
 	if err := os.MkdirAll(dir, 0o700); err != nil {
 		t.Fatal(err)
 	}
@@ -1623,12 +1623,12 @@ func TestASourceACutCaptureLeftPausedRunsAgain(t *testing.T) {
 	}
 }
 
-// A capture marker its fork left behind spares no pause cut after its install: the frozen VM beside the new snapshot is still ended (SHARD-427, SHARD-462).
+// A capture marker its fork left behind spares no pause cut after its install: the frozen VM beside the new checkpoint is still ended (SHARD-427, SHARD-462).
 func TestAStaleCaptureMarkerSparesNoCutPause(t *testing.T) {
 	h := newHarness(t)
 	requireReflink(t, h.root)
 	spec, _ := h.runLong(t)
-	dir, _ := h.snapshotDir(spec.ID)
+	dir, _ := h.checkpointDir(spec.ID)
 	if err := os.WriteFile(filepath.Join(spec.StateDir, firecracker.CaptureFile), nil, 0o600); err != nil {
 		t.Fatal(err)
 	}
@@ -1643,7 +1643,7 @@ func TestAStaleCaptureMarkerSparesNoCutPause(t *testing.T) {
 	}
 }
 
-// Every restore of one snapshot wakes with the same crng key, so the source's resume and each fork are reseeded once, and only on a restore.
+// Every restore of one checkpoint wakes with the same crng key, so the source's resume and each fork are reseeded once, and only on a restore.
 func TestEveryRestoreReseedsTheGuest(t *testing.T) {
 	h := newHarness(t)
 	requireReflink(t, h.root)
@@ -1658,7 +1658,7 @@ func TestEveryRestoreReseedsTheGuest(t *testing.T) {
 		t.Fatalf("Pause: %v", err)
 	}
 	for _, fork := range forks {
-		if err := h.provider.ForkSnapshot(t.Context(), dir, fork); err != nil {
+		if err := h.provider.ForkCheckpoint(t.Context(), dir, fork); err != nil {
 			t.Fatalf("Fork: %v", err)
 		}
 	}
@@ -1689,7 +1689,7 @@ func TestADaemonCutBeforeTheReseedLeavesItToTheNext(t *testing.T) {
 	if err := h.provider.Pause(t.Context(), spec.ID, dir); err != nil {
 		t.Fatalf("Pause: %v", err)
 	}
-	if err := h.provider.ForkSnapshot(t.Context(), dir, fork); err != nil {
+	if err := h.provider.ForkCheckpoint(t.Context(), dir, fork); err != nil {
 		t.Fatalf("Fork: %v", err)
 	}
 	if err := h.provider.Resume(t.Context(), spec.ID, dir); err != nil {
@@ -1721,7 +1721,7 @@ func TestADaemonCutBeforeTheReseedLeavesItToTheNext(t *testing.T) {
 	}
 }
 
-// A pause freezes the guest before the snapshot, and every restore reseeds the frozen guest before the thaw lets it run on the saved key (SHARD-409).
+// A pause freezes the guest before the checkpoint, and every restore reseeds the frozen guest before the thaw lets it run on the saved key (SHARD-409).
 func TestARestoreReseedsTheFrozenGuestBeforeTheThaw(t *testing.T) {
 	h := newHarness(t)
 	requireReflink(t, h.root)
@@ -1734,7 +1734,7 @@ func TestARestoreReseedsTheFrozenGuestBeforeTheThaw(t *testing.T) {
 	if err := h.provider.Pause(t.Context(), spec.ID, dir); err != nil {
 		t.Fatalf("Pause: %v", err)
 	}
-	if err := h.provider.ForkSnapshot(t.Context(), dir, fork); err != nil {
+	if err := h.provider.ForkCheckpoint(t.Context(), dir, fork); err != nil {
 		t.Fatalf("Fork: %v", err)
 	}
 	if err := h.provider.Resume(t.Context(), spec.ID, dir); err != nil {
@@ -1863,7 +1863,7 @@ func TestAFreezeWhoseAnswerADropTookIsThawed(t *testing.T) {
 	}
 }
 
-// A daemon cut between the freeze and the snapshot leaves the guest frozen, and the next daemon thaws it as it adopts the VM (SHARD-409).
+// A daemon cut between the freeze and the checkpoint leaves the guest frozen, and the next daemon thaws it as it adopts the VM (SHARD-409).
 func TestAGuestACutPauseLeftFrozenIsThawedByTheNextDaemon(t *testing.T) {
 	h := newHarness(t)
 	spec, _ := h.runLong(t)
@@ -1872,7 +1872,7 @@ func TestAGuestACutPauseLeftFrozenIsThawedByTheNextDaemon(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	// This is the pause of a daemon that froze the guest and stopped the vCPUs, then died before the snapshot.
+	// This is the pause of a daemon that froze the guest and stopped the vCPUs, then died before the checkpoint.
 	api, vsock := h.sockets(spec.ID)
 	client, _, err := fcapi.Adopt(t.Context(), api, vsock)
 	if err != nil {
@@ -1958,17 +1958,17 @@ func TestAnAdoptedFrozenGuestThatRefusesTheReseedIsEnded(t *testing.T) {
 }
 
 // Each verb refuses the state it cannot take, and says which sandbox and which state that is.
-func TestTheSnapshotVerbsRefuseWhatTheyCannotTake(t *testing.T) {
+func TestTheCheckpointVerbsRefuseWhatTheyCannotTake(t *testing.T) {
 	h := newHarness(t)
 	requireReflink(t, h.root)
 	spec, _ := h.runLong(t)
 
 	empty := t.TempDir()
 	if err := h.provider.Resume(t.Context(), spec.ID, empty); err == nil || !strings.Contains(err.Error(), "no complete checkpoint") {
-		t.Errorf("Resume without a snapshot = %v, want the refusal", err)
+		t.Errorf("Resume without a checkpoint = %v, want the refusal", err)
 	}
-	if err := h.provider.ForkSnapshot(t.Context(), empty, h.forkSpec(t)); err == nil || !strings.Contains(err.Error(), "no complete checkpoint") {
-		t.Errorf("Fork without a snapshot = %v, want the refusal", err)
+	if err := h.provider.ForkCheckpoint(t.Context(), empty, h.forkSpec(t)); err == nil || !strings.Contains(err.Error(), "no complete checkpoint") {
+		t.Errorf("Fork without a checkpoint = %v, want the refusal", err)
 	}
 
 	dir := t.TempDir()
@@ -1986,13 +1986,13 @@ func TestTheSnapshotVerbsRefuseWhatTheyCannotTake(t *testing.T) {
 	}
 	// A fork onto a live sandbox would take the directory from under it.
 	onto := models.SandboxSpec{ID: spec.ID, StateDir: spec.StateDir, Resources: spec.Resources}
-	if err := h.provider.ForkSnapshot(t.Context(), dir, onto); err == nil || !strings.Contains(err.Error(), "already exists") {
+	if err := h.provider.ForkCheckpoint(t.Context(), dir, onto); err == nil || !strings.Contains(err.Error(), "already exists") {
 		t.Errorf("Fork onto a live sandbox = %v, want the refusal", err)
 	}
 }
 
-// A pause that cannot finish leaves the VM running and the last snapshot whole: the new one is staged beside it.
-func TestAFailedPauseResumesTheVMAndKeepsTheLastSnapshot(t *testing.T) {
+// A pause that cannot finish leaves the VM running and the last checkpoint whole: the new one is staged beside it.
+func TestAFailedPauseResumesTheVMAndKeepsTheLastCheckpoint(t *testing.T) {
 	h := newHarness(t)
 	requireReflink(t, h.root)
 	spec, _ := h.runLong(t)
@@ -2020,12 +2020,12 @@ func TestAFailedPauseResumesTheVMAndKeepsTheLastSnapshot(t *testing.T) {
 		t.Errorf("the staging directory after the failed Pause: %v, want gone", err)
 	}
 	if _, err := os.Stat(filepath.Join(dir, "checkpoint.img")); err != nil {
-		t.Errorf("the last snapshot after the failed Pause: %v, want it whole", err)
+		t.Errorf("the last checkpoint after the failed Pause: %v, want it whole", err)
 	}
 }
 
-// A pause over a directory that already holds a snapshot puts the new one there in one step, and nothing of the old stays.
-func TestASecondPauseReplacesTheWholeSnapshot(t *testing.T) {
+// A pause over a directory that already holds a checkpoint puts the new one there in one step, and nothing of the old stays.
+func TestASecondPauseReplacesTheWholeCheckpoint(t *testing.T) {
 	h := newHarness(t)
 	requireReflink(t, h.root)
 	spec, _ := h.runLong(t)
@@ -2033,7 +2033,7 @@ func TestASecondPauseReplacesTheWholeSnapshot(t *testing.T) {
 	if err := h.provider.Pause(t.Context(), spec.ID, dir); err != nil {
 		t.Fatalf("the first Pause: %v", err)
 	}
-	// A file only the first snapshot has: it must go with it, not survive beside the second.
+	// A file only the first checkpoint has: it must go with it, not survive beside the second.
 	if err := os.WriteFile(filepath.Join(dir, "stale"), nil, 0o600); err != nil {
 		t.Fatal(err)
 	}
@@ -2052,7 +2052,7 @@ func TestASecondPauseReplacesTheWholeSnapshot(t *testing.T) {
 	for _, entry := range entries {
 		got = append(got, entry.Name())
 	}
-	want := []string{"checkpoint.img", "memory", "overlay.raw", "snapshot.json", "vmstate"}
+	want := []string{"checkpoint.img", "checkpoint.json", "memory", "overlay.raw", "vmstate"}
 	if !slices.Equal(got, want) {
 		t.Errorf("the checkpoint directory holds %v, want the second checkpoint alone %v", got, want)
 	}
@@ -2060,7 +2060,7 @@ func TestASecondPauseReplacesTheWholeSnapshot(t *testing.T) {
 		t.Errorf("the staging directory after the second Pause: %v, want gone", err)
 	}
 	if err := h.provider.Resume(t.Context(), spec.ID, dir); err != nil {
-		t.Fatalf("Resume from the second snapshot: %v", err)
+		t.Fatalf("Resume from the second checkpoint: %v", err)
 	}
 }
 
@@ -2069,7 +2069,7 @@ func TestAPausedVMLeftByACutPauseComesBack(t *testing.T) {
 	h := newHarness(t)
 	spec, _ := h.runLong(t)
 
-	// The vCPUs are stopped and no snapshot was written: this is the pause of a daemon that died before it ended the vmm.
+	// The vCPUs are stopped and no checkpoint was written: this is the pause of a daemon that died before it ended the vmm.
 	api, vsock := h.sockets(spec.ID)
 	client, _, err := fcapi.Adopt(t.Context(), api, vsock)
 	if err != nil {
@@ -2089,12 +2089,12 @@ func TestAPausedVMLeftByACutPauseComesBack(t *testing.T) {
 	}
 }
 
-// A daemon cut after a pause installed its snapshot leaves the guest frozen beside it; the next daemon ends that vmm and never runs the guest past it (SHARD-427).
-func TestAVMFrozenBesideItsSnapshotIsEndedNotResumed(t *testing.T) {
+// A daemon cut after a pause installed its checkpoint leaves the guest frozen beside it; the next daemon ends that vmm and never runs the guest past it (SHARD-427).
+func TestAVMFrozenBesideItsCheckpointIsEndedNotResumed(t *testing.T) {
 	h := newHarness(t)
 	requireReflink(t, h.root)
 	spec, _ := h.runLong(t)
-	dir, _ := h.snapshotDir(spec.ID)
+	dir, _ := h.checkpointDir(spec.ID)
 	record := filepath.Join(spec.StateDir, "vm.json")
 	shape, err := os.ReadFile(record)
 	if err != nil {
@@ -2117,7 +2117,7 @@ func TestAVMFrozenBesideItsSnapshotIsEndedNotResumed(t *testing.T) {
 		t.Fatalf("the frozen vmm still answers in state %s after the new daemon read it", info.State)
 	}
 	if err := p.Resume(t.Context(), spec.ID, dir); err != nil {
-		t.Fatalf("Resume from the snapshot the cut pause installed: %v", err)
+		t.Fatalf("Resume from the checkpoint the cut pause installed: %v", err)
 	}
 	status, err = p.Status(t.Context(), spec.ID)
 	if err != nil || !status.Alive() {
@@ -2624,7 +2624,7 @@ func TestBoundOutputLogBoundsALegacyLogWithNoLaterOutput(t *testing.T) {
 
 // A cut pause leaves dir+".tmp" that resume never reads, so AdoptStaging drops it at daemon start (SHARD-404).
 func TestAdoptStagingDropsACutPauseStage(t *testing.T) {
-	dir := filepath.Join(t.TempDir(), "snapshot")
+	dir := filepath.Join(t.TempDir(), "checkpoint")
 	tmp := dir + ".tmp"
 	if err := os.MkdirAll(tmp, 0o700); err != nil {
 		t.Fatalf("stage a cut pause: %v", err)

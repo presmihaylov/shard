@@ -324,7 +324,7 @@ func TestBuildJoinsTheNetworkNamespace(t *testing.T) {
 	}
 }
 
-// The list is the contract every snapshot carries, so the test pins the exact value and not a sample of it.
+// The list is the contract every checkpoint carries, so the test pins the exact value and not a sample of it.
 func TestBuildCapsTheCPUFeaturesTheGuestSees(t *testing.T) {
 	_, got := build(t, models.SandboxSpec{}, models.ImageConfig{})
 

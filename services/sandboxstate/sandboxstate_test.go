@@ -67,12 +67,12 @@ func sandboxDir(t *testing.T, r *sandboxstate.Repository, id string) string {
 	return dir
 }
 
-func snapshotDir(t *testing.T, r *sandboxstate.Repository, id string) string {
+func checkpointDir(t *testing.T, r *sandboxstate.Repository, id string) string {
 	t.Helper()
 
-	dir, err := r.SnapshotDir(id)
+	dir, err := r.CheckpointDir(id)
 	if err != nil {
-		t.Fatalf("SnapshotDir(%s): %v", id, err)
+		t.Fatalf("CheckpointDir(%s): %v", id, err)
 	}
 
 	return dir
@@ -473,8 +473,8 @@ func TestABadIDNeverLeavesTheRoot(t *testing.T) {
 			t.Errorf("Dir(%q) went through, and the caller hands that path to RemoveAll", id)
 		}
 
-		if _, err := r.SnapshotDir(id); err == nil {
-			t.Errorf("SnapshotDir(%q) went through", id)
+		if _, err := r.CheckpointDir(id); err == nil {
+			t.Errorf("CheckpointDir(%q) went through", id)
 		}
 
 		if err := r.Update(id, func(*models.Sandbox) error { return nil }); err == nil {
@@ -582,12 +582,12 @@ func TestUpdateRefusesAnUnknownState(t *testing.T) {
 	}
 }
 
-func TestDeleteRemovesTheRecordAndTheSnapshot(t *testing.T) {
+func TestDeleteRemovesTheRecordAndTheCheckpoint(t *testing.T) {
 	r, _ := repo(t)
 	sb := create(t, r)
 
-	snapshot := snapshotDir(t, r, sb.ID)
-	if err := os.MkdirAll(snapshot, 0o750); err != nil {
+	checkpoint := checkpointDir(t, r, sb.ID)
+	if err := os.MkdirAll(checkpoint, 0o750); err != nil {
 		t.Fatalf("create the checkpoint directory: %v", err)
 	}
 
@@ -595,7 +595,7 @@ func TestDeleteRemovesTheRecordAndTheSnapshot(t *testing.T) {
 		t.Fatalf("Delete: %v", err)
 	}
 
-	for _, dir := range []string{sandboxDir(t, r, sb.ID), snapshot} {
+	for _, dir := range []string{sandboxDir(t, r, sb.ID), checkpoint} {
 		if _, err := os.Stat(dir); !errors.Is(err, os.ErrNotExist) {
 			t.Errorf("%s is still there after the delete", dir)
 		}
@@ -615,11 +615,11 @@ func TestDeleteOfAMissingSandboxIsNotFound(t *testing.T) {
 }
 
 // A pause the daemon did not finish leaves <id>.tmp beside the checkpoint, so a delete must take it too (SHARD-368).
-func TestDeleteRemovesTheUnfinishedSnapshotTmp(t *testing.T) {
+func TestDeleteRemovesTheUnfinishedCheckpointTmp(t *testing.T) {
 	r, _ := repo(t)
 	sb := create(t, r)
 
-	tmp := snapshotDir(t, r, sb.ID) + ".tmp"
+	tmp := checkpointDir(t, r, sb.ID) + ".tmp"
 	if err := os.MkdirAll(tmp, 0o750); err != nil {
 		t.Fatalf("create the unfinished checkpoint directory: %v", err)
 	}
@@ -638,7 +638,7 @@ func TestDeleteRemovesTheUnfinishedSnapshotTmp(t *testing.T) {
 
 // SHARD-368: the start sweep removes an orphan .tmp no record reaches, and an invalid-id one, but keeps a
 // .tmp a record still names, because that record's provider frees its own staging, not the sweep.
-func TestSweepSnapshotTmpRemovesOrphansAndKeepsRecorded(t *testing.T) {
+func TestSweepCheckpointTmpRemovesOrphansAndKeepsRecorded(t *testing.T) {
 	r, root := repo(t)
 	held := create(t, r)
 	corrupt := create(t, r)
@@ -646,8 +646,8 @@ func TestSweepSnapshotTmpRemovesOrphansAndKeepsRecorded(t *testing.T) {
 	checkpoints := filepath.Join(root, "checkpoints")
 	orphan := filepath.Join(checkpoints, "quiet-otter-0000.tmp")
 	invalid := filepath.Join(checkpoints, "NOT A VALID ID.tmp")
-	heldTmp := snapshotDir(t, r, held.ID) + ".tmp"
-	corruptTmp := snapshotDir(t, r, corrupt.ID) + ".tmp"
+	heldTmp := checkpointDir(t, r, held.ID) + ".tmp"
+	corruptTmp := checkpointDir(t, r, corrupt.ID) + ".tmp"
 	for _, dir := range []string{orphan, invalid, heldTmp, corruptTmp} {
 		if err := os.MkdirAll(dir, 0o750); err != nil {
 			t.Fatalf("plant %s: %v", dir, err)
@@ -660,8 +660,8 @@ func TestSweepSnapshotTmpRemovesOrphansAndKeepsRecorded(t *testing.T) {
 	}
 
 	var lines []string
-	if err := r.SweepSnapshotTmp(func(line string) { lines = append(lines, line) }); err != nil {
-		t.Fatalf("SweepSnapshotTmp: %v", err)
+	if err := r.SweepCheckpointTmp(func(line string) { lines = append(lines, line) }); err != nil {
+		t.Fatalf("SweepCheckpointTmp: %v", err)
 	}
 
 	for _, gone := range []string{orphan, invalid} {
@@ -690,8 +690,8 @@ func TestSweepSnapshotTmpRemovesOrphansAndKeepsRecorded(t *testing.T) {
 
 	// A later start finds no orphan, and names only the staging the unreadable record keeps, one line per daemon life.
 	lines = nil
-	if err := r.SweepSnapshotTmp(func(line string) { lines = append(lines, line) }); err != nil {
-		t.Fatalf("second SweepSnapshotTmp: %v", err)
+	if err := r.SweepCheckpointTmp(func(line string) { lines = append(lines, line) }); err != nil {
+		t.Fatalf("second SweepCheckpointTmp: %v", err)
 	}
 	if len(lines) != 1 || !strings.Contains(lines[0], "will not read") {
 		t.Errorf("the second sweep reported %q, want only the note on the unreadable record", lines)

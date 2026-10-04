@@ -96,14 +96,14 @@ func (h *vmHarness) open(t *testing.T) *firecracker.Provider {
 	t.Helper()
 
 	p, err := firecracker.New(firecracker.Config{
-		Binary:    lookPath(t, firecracker.Binary),
-		Jailer:    lookPath(t, firecracker.Jailer),
-		JailBase:  filepath.Join(h.root, "j"),
-		Kernel:    h.kernel,
-		Init:      guestInit(t),
-		Dir:       h.root,
-		Dirs:      h.stateDir,
-		Snapshots: h.snapshotDir,
+		Binary:      lookPath(t, firecracker.Binary),
+		Jailer:      lookPath(t, firecracker.Jailer),
+		JailBase:    filepath.Join(h.root, "j"),
+		Kernel:      h.kernel,
+		Init:        guestInit(t),
+		Dir:         h.root,
+		Dirs:        h.stateDir,
+		Checkpoints: h.checkpointDir,
 	})
 	if err != nil {
 		t.Fatalf("open the provider: %v", err)
@@ -389,7 +389,7 @@ func allocate(t *testing.T, svc *network.Service, id string) models.NetworkSpec 
 }
 
 // The pause AC: the vCPUs stop and the memory lands on disk, and the resume brings that memory back with the guest counting on from it.
-func TestAMicroVMResumesFromItsSnapshotWithItsMemory(t *testing.T) {
+func TestAMicroVMResumesFromItsCheckpointWithItsMemory(t *testing.T) {
 	h := newVMHarness(t)
 	requireReflink(t, h.root)
 
@@ -436,8 +436,8 @@ func TestAMicroVMResumesFromItsSnapshotWithItsMemory(t *testing.T) {
 	}
 }
 
-// The fork AC: one snapshot brings up many sandboxes, each with the source's memory and its own copy of the disk, and the source and the snapshot outlive them all.
-func TestManyMicroVMsForkFromOneSnapshot(t *testing.T) {
+// The fork AC: one checkpoint brings up many sandboxes, each with the source's memory and its own copy of the disk, and the source and the checkpoint outlive them all.
+func TestManyMicroVMsForkFromOneCheckpoint(t *testing.T) {
 	h := newVMHarness(t)
 	requireReflink(t, h.root)
 
@@ -460,7 +460,7 @@ func TestManyMicroVMsForkFromOneSnapshot(t *testing.T) {
 	forks := []models.SandboxSpec{h.forkSpec(t), h.forkSpec(t), h.forkSpec(t)}
 	for _, fork := range forks {
 		began := time.Now()
-		if err := h.provider.ForkSnapshot(t.Context(), dir, fork); err != nil {
+		if err := h.provider.ForkCheckpoint(t.Context(), dir, fork); err != nil {
 			t.Fatalf("Fork into %s: %v", fork.ID, err)
 		}
 		// hypeman takes about 62ms for the same verb over the same substrate.
@@ -488,7 +488,7 @@ func TestManyMicroVMsForkFromOneSnapshot(t *testing.T) {
 		}
 	}
 
-	// The snapshot is not consumed: the source comes back from the same one, and holds nothing a fork wrote.
+	// The checkpoint is not consumed: the source comes back from the same one, and holds nothing a fork wrote.
 	if err := h.provider.Resume(t.Context(), spec.ID, dir); err != nil {
 		t.Fatalf("Resume after the forks: %v", err)
 	}
@@ -528,7 +528,7 @@ func TestAForkTakesItsOwnAddress(t *testing.T) {
 	if fork.Network.Address.String() != "10.213.0.3/24" || fork.Network.HostInterface != "shardv3" {
 		t.Fatalf("the fork's lease is %+v, want the second address of %s over shardv3", fork.Network, testSubnet)
 	}
-	if err := h.provider.ForkSnapshot(t.Context(), dir, fork); err != nil {
+	if err := h.provider.ForkCheckpoint(t.Context(), dir, fork); err != nil {
 		t.Fatalf("Fork: %v", err)
 	}
 	if out, err := exec.Command("ip", "neigh", "flush", "dev", testBridge).CombinedOutput(); err != nil {
@@ -600,9 +600,9 @@ func TestConformanceOnMicroVMs(t *testing.T) {
 
 			return h.newSpec(t, "/bin/sh", "-c", script)
 		},
-		SnapshotDir: func(t *testing.T) string { return t.TempDir() },
-		Shell:       func(script string) []string { return []string{"/bin/sh", "-c", script} },
-		Reopen:      h.reopen,
+		EmptyDir: func(t *testing.T) string { return t.TempDir() },
+		Shell:    func(script string) []string { return []string{"/bin/sh", "-c", script} },
+		Reopen:   h.reopen,
 		// A source paused past 47 s of uptime gave equal fork draws without the reseed, 6 runs of 6 (SHARD-414).
 		ReseedWindow: 50 * time.Second,
 	})

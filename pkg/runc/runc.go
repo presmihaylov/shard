@@ -382,7 +382,7 @@ func (r *Runner) Pause(ctx context.Context, id string) error {
 	return r.run(ctx, io.Discard, "pause", id)
 }
 
-// Resume thaws a paused container. It is the runc verb, not the shard one, which restores a snapshot.
+// Resume thaws a paused container. It is the runc verb, not the shard one, which restores a checkpoint.
 func (r *Runner) Resume(ctx context.Context, id string) error {
 	return r.run(ctx, io.Discard, "resume", id)
 }

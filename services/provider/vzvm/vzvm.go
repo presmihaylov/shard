@@ -50,11 +50,11 @@ const (
 	supervisorFailedFile = "supervisor-failed"
 )
 
-// The files a snapshot directory holds: the saved VM, its disk at the save, and what a restore must know.
+// The files a checkpoint directory holds: the saved VM, its disk at the save, and what a restore must know.
 const (
-	snapshotFile     = "snapshot.json"
-	snapshotState    = "vm.vzvmstate"
-	snapshotDiskFile = "disk.img"
+	checkpointMeta     = "checkpoint.json"
+	checkpointState    = "vm.vzvmstate"
+	checkpointDiskFile = "disk.img"
 	// checkpointFile is the completion marker the sandbox service reads, the name gVisor's own checkpoint has.
 	checkpointFile = "checkpoint.img"
 )
@@ -171,7 +171,7 @@ func (p *Provider) Capabilities() models.Capabilities {
 // ReleaseRoot has nothing to give back: a VM pins nothing under the root between sandboxes.
 func (p *Provider) ReleaseRoot() error { return nil }
 
-// record is vm.json: what a boot, a restart of the daemon and a snapshot need to know about the sandbox.
+// record is vm.json: what a boot, a restart of the daemon and a checkpoint need to know about the sandbox.
 type record struct {
 	// MachineID is the identifier the shim made on the first boot, which every later boot must reuse.
 	MachineID string `json:"machine_id,omitempty"`
@@ -185,14 +185,14 @@ type record struct {
 	RootFS    string             `json:"rootfs,omitempty"`
 	Resources models.Resources   `json:"resources"`
 	Run       supervisor.RunSpec `json:"run"`
-	// Paused says the last verb was a pause: the VM is saved into the snapshot and its shim is gone.
+	// Paused says the last verb was a pause: the VM is saved into the checkpoint and its shim is gone.
 	Paused bool `json:"paused,omitempty"`
-	// Pauses counts them, so a snapshot a crashed pause staged is told from the one it meant to replace.
+	// Pauses counts them, so a checkpoint a crashed pause staged is told from the one it meant to replace.
 	Pauses int `json:"pauses,omitempty"`
 }
 
-// snapshot is snapshot.json: what a restore of the saved state beside it must reuse.
-type snapshot struct {
+// checkpoint is checkpoint.json: what a restore of the saved state beside it must reuse.
+type checkpoint struct {
 	MachineID string             `json:"machine_id"`
 	Pause     int                `json:"pause"`
 	RootFS    string             `json:"rootfs,omitempty"`

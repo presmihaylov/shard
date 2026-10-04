@@ -46,13 +46,13 @@ func TestForkRefusesAGuestSymlinkOutOfTheLayer(t *testing.T) {
 			write(t, filepath.Join(host, "hosts"), "the host's own\n")
 			plantLink(t, filepath.Join(b.Upper, "etc"), link(host))
 
-			snapshot := t.TempDir()
-			if err := b.Export(t.Context(), snapshot); err != nil {
+			checkpoint := t.TempDir()
+			if err := b.Export(t.Context(), checkpoint); err != nil {
 				t.Fatalf("Export: %v", err)
 			}
 
 			fork := models.SandboxSpec{ID: "s-fork", StateDir: t.TempDir(), Network: network("s-fork", "10.87.0.3/16")}
-			if _, err := newService(t).Fork(snapshot, fork); err == nil {
+			if _, err := newService(t).Fork(checkpoint, fork); err == nil {
 				t.Error("Fork followed a guest symlink out of the writable layer")
 			}
 

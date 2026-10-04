@@ -40,7 +40,7 @@ type failingLink struct{ err error }
 
 func (l failingLink) Close() error { return l.err }
 
-// ForkSnapshot is the restore of a paused snapshot into a new sandbox, which SHARD-463 builds the live fork on and the public Fork no longer offers.
-func (p *Provider) ForkSnapshot(ctx context.Context, dir string, spec models.SandboxSpec) error {
-	return p.forkSnapshot(ctx, dir, spec)
+// ForkCheckpoint is the restore of a paused checkpoint into a new sandbox, which SHARD-463 builds the live fork on and the public Fork no longer offers.
+func (p *Provider) ForkCheckpoint(ctx context.Context, dir string, spec models.SandboxSpec) error {
+	return p.forkCheckpoint(ctx, dir, spec)
 }

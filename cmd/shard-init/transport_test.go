@@ -936,7 +936,7 @@ func TestTransportKillReplaysFrozenOnTheNextHost(t *testing.T) {
 	}
 }
 
-// A pause waits on the freeze, and the host that restores the snapshot reads the frozen root off the replay and thaws it.
+// A pause waits on the freeze, and the host that restores the checkpoint reads the frozen root off the replay and thaws it.
 func TestTransportFreezeAndThawReplayOnTheNextHost(t *testing.T) {
 	cmd, dial := startTransport(t)
 	ctx := testContext(t)

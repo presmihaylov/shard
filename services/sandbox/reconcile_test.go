@@ -19,8 +19,8 @@ import (
 type recRepo struct {
 	t       *testing.T
 	records map[string]*models.Sandbox
-	// snapshots replaces the fixed root when a test needs a snapshot directory on disk.
-	snapshots string
+	// checkpoints replaces the fixed root when a test needs a checkpoint directory on disk.
+	checkpoints string
 	// updateErr fails every record write, the way a full root does.
 	updateErr error
 }
@@ -69,12 +69,12 @@ func (r *recRepo) Delete(id string) error {
 
 func (r *recRepo) Dir(id string) (string, error) { return "/state/" + id, nil }
 
-func (r *recRepo) SnapshotDir(id string) (string, error) {
-	if r.snapshots != "" {
-		return filepath.Join(r.snapshots, id), nil
+func (r *recRepo) CheckpointDir(id string) (string, error) {
+	if r.checkpoints != "" {
+		return filepath.Join(r.checkpoints, id), nil
 	}
 
-	return "/snapshots/" + id, nil
+	return "/checkpoints/" + id, nil
 }
 
 // recProvider answers Status per id, which is the whole substrate a reconcile asks about.
@@ -213,8 +213,8 @@ func retryTwice(_ string, run func() error) error {
 func TestReconcileReportsAKeptStagingOnceAcrossARetry(t *testing.T) {
 	p := &recProvider{status: map[string]models.Status{"sandbox1": alive(42)}}
 	lab := newReconcileLab(t, p, models.Sandbox{ID: "sandbox1", State: models.StateRunning, PID: 42})
-	lab.repo.snapshots = t.TempDir()
-	staging := filepath.Join(lab.repo.snapshots, "sandbox1") + ".tmp"
+	lab.repo.checkpoints = t.TempDir()
+	staging := filepath.Join(lab.repo.checkpoints, "sandbox1") + ".tmp"
 	if err := os.MkdirAll(staging, 0o700); err != nil {
 		t.Fatal(err)
 	}
@@ -227,7 +227,7 @@ func TestReconcileReportsAKeptStagingOnceAcrossARetry(t *testing.T) {
 		t.Fatalf("ReconcileAll: %v", err)
 	}
 
-	if len(lab.reports) != 1 || !strings.Contains(lab.reports[0], "kept the snapshot staging "+staging) {
+	if len(lab.reports) != 1 || !strings.Contains(lab.reports[0], "kept the checkpoint staging "+staging) {
 		t.Errorf("the start reported %q, want one line that the provider kept %s", lab.reports, staging)
 	}
 	if len(p.adopted) != 1 {
@@ -374,7 +374,7 @@ func TestReconcileLeavesARunningSandboxAndReAppliesTheHostRules(t *testing.T) {
 	}
 }
 
-// At daemon start the provider adopts the snapshot staging of every record, so a cut pause's stage is settled before the first verb (SHARD-404).
+// At daemon start the provider adopts the checkpoint staging of every record, so a cut pause's stage is settled before the first verb (SHARD-404).
 func TestReconcileAdoptsTheStagingOfEveryRecord(t *testing.T) {
 	one := models.Sandbox{ID: "sandbox1", State: models.StateRunning, PID: 42}
 	two := models.Sandbox{ID: "sandbox2", State: models.StateStopped}
@@ -386,7 +386,7 @@ func TestReconcileAdoptsTheStagingOfEveryRecord(t *testing.T) {
 	}
 
 	slices.Sort(provider.adopted)
-	if want := []string{"/snapshots/sandbox1", "/snapshots/sandbox2"}; !slices.Equal(provider.adopted, want) {
+	if want := []string{"/checkpoints/sandbox1", "/checkpoints/sandbox2"}; !slices.Equal(provider.adopted, want) {
 		t.Errorf("the reconcile adopted the staging of %v, want %v", provider.adopted, want)
 	}
 }
@@ -412,9 +412,9 @@ func TestReconcileCorrectsAStoppedRecordWithALiveProcess(t *testing.T) {
 	}
 }
 
-func TestReconcileKeepsAPausedSandboxThatHoldsItsSnapshot(t *testing.T) {
+func TestReconcileKeepsAPausedSandboxThatHoldsItsCheckpoint(t *testing.T) {
 	dir := t.TempDir()
-	if err := os.WriteFile(filepath.Join(dir, "checkpoint.img"), []byte("snapshot"), 0o600); err != nil {
+	if err := os.WriteFile(filepath.Join(dir, "checkpoint.img"), []byte("checkpoint"), 0o600); err != nil {
 		t.Fatalf("write the checkpoint: %v", err)
 	}
 
@@ -426,7 +426,7 @@ func TestReconcileKeepsAPausedSandboxThatHoldsItsSnapshot(t *testing.T) {
 	}
 
 	if got := lab.repo.records["sandbox1"]; got.State != models.StatePaused {
-		t.Errorf("the record says %s, want paused: the snapshot is what a paused sandbox has instead of a process", got.State)
+		t.Errorf("the record says %s, want paused: the checkpoint is what a paused sandbox has instead of a process", got.State)
 	}
 	if lab.net.applied != 0 {
 		t.Errorf("the host rules were re-applied %d times, want none", lab.net.applied)
@@ -451,7 +451,7 @@ func TestReconcileCatchesUpARunningRecordTheSubstrateHoldsPaused(t *testing.T) {
 	}
 }
 
-func TestReconcileStopsAPausedRecordWhoseSnapshotIsGone(t *testing.T) {
+func TestReconcileStopsAPausedRecordWhoseCheckpointIsGone(t *testing.T) {
 	sb := models.Sandbox{ID: "sandbox1", State: models.StatePaused, Checkpoint: filepath.Join(t.TempDir(), "empty")}
 	lab := newReconcileLab(t, &recProvider{status: map[string]models.Status{"sandbox1": gone()}}, sb)
 
@@ -465,23 +465,23 @@ func TestReconcileStopsAPausedRecordWhoseSnapshotIsGone(t *testing.T) {
 	}
 }
 
-// heldCheckpoint writes a complete checkpoint where the lab's repository puts the sandbox's snapshot, and answers that directory.
+// heldCheckpoint writes a complete checkpoint where the lab's repository puts the sandbox's checkpoint, and answers that directory.
 func heldCheckpoint(t *testing.T, lab *reconcileLab, id string) string {
 	t.Helper()
 
-	lab.repo.snapshots = t.TempDir()
-	dir := filepath.Join(lab.repo.snapshots, id)
+	lab.repo.checkpoints = t.TempDir()
+	dir := filepath.Join(lab.repo.checkpoints, id)
 	if err := os.MkdirAll(dir, 0o700); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.WriteFile(filepath.Join(dir, "checkpoint.img"), []byte("snapshot"), 0o600); err != nil {
+	if err := os.WriteFile(filepath.Join(dir, "checkpoint.img"), []byte("checkpoint"), 0o600); err != nil {
 		t.Fatal(err)
 	}
 
 	return dir
 }
 
-// A daemon cut after a pause installed its snapshot and before the pause wrote the record must not lose the pause (SHARD-366).
+// A daemon cut after a pause installed its checkpoint and before the pause wrote the record must not lose the pause (SHARD-366).
 func TestReconcilePausesAMarkedRecordWhosePauseLeftACheckpoint(t *testing.T) {
 	sb := models.Sandbox{ID: "sandbox1", State: models.StateRunning, PID: 42, Pausing: true}
 	lab := newReconcileLab(t, &recProvider{status: map[string]models.Status{"sandbox1": gone()}}, sb)
@@ -493,7 +493,7 @@ func TestReconcilePausesAMarkedRecordWhosePauseLeftACheckpoint(t *testing.T) {
 
 	got := lab.repo.records["sandbox1"]
 	if got.State != models.StatePaused || got.PID != 0 || got.Checkpoint != dir || got.Pausing || got.StoppedReason != "" {
-		t.Errorf("the record is %+v, want paused with pid 0, snapshot %s, no mark and no reason", *got, dir)
+		t.Errorf("the record is %+v, want paused with pid 0, checkpoint %s, no mark and no reason", *got, dir)
 	}
 	if len(lab.reports) != 1 || !strings.Contains(lab.reports[0], "now says paused") {
 		t.Errorf("the reconcile reported %v, want one line on the pause", lab.reports)
@@ -516,7 +516,7 @@ func TestReconcileKeepsThePauseADaemonCrashLeftOverASilentShimUntilTheShimDies(t
 	}
 	silent := *lab.repo.records[sb.ID]
 	if silent.State != models.StateUnresponsive || !silent.Pausing || silent.Checkpoint != "" || silent.PID != sb.PID {
-		t.Fatalf("after the first restart the record is %+v, want unresponsive with its pid and the mark kept, and no snapshot: the shim may still answer", silent)
+		t.Fatalf("after the first restart the record is %+v, want unresponsive with its pid and the mark kept, and no checkpoint: the shim may still answer", silent)
 	}
 
 	if err := lab.run(t); err != nil {
@@ -533,7 +533,7 @@ func TestReconcileKeepsThePauseADaemonCrashLeftOverASilentShimUntilTheShimDies(t
 
 	got := lab.repo.records[sb.ID]
 	if got.State != models.StatePaused || got.PID != 0 || got.Checkpoint != dir || got.Pausing || got.UnresponsiveReason != "" || got.StoppedReason != "" {
-		t.Errorf("after the third restart the record is %+v, want paused with pid 0, snapshot %s, no mark and no reason", *got, dir)
+		t.Errorf("after the third restart the record is %+v, want paused with pid 0, checkpoint %s, no mark and no reason", *got, dir)
 	}
 	if len(lab.reports) != 2 || !strings.Contains(lab.reports[1], "said unresponsive") || !strings.Contains(lab.reports[1], "now says paused") {
 		t.Errorf("the restarts reported %v, want the silence and then the pause of an unresponsive record", lab.reports)
@@ -565,11 +565,11 @@ func TestReconcileDropsTheMarkWhenASilentShimAnswersRunningAgain(t *testing.T) {
 	}
 	got := lab.repo.records[sb.ID]
 	if got.State != models.StateStopped || got.Checkpoint != "" {
-		t.Errorf("after the death the record is %+v, want stopped with no snapshot: the checkpoint is older than the run", *got)
+		t.Errorf("after the death the record is %+v, want stopped with no checkpoint: the checkpoint is older than the run", *got)
 	}
 }
 
-// A daemon cut after the swap leaves the sentry frozen beside a complete snapshot, and the reconcile finishes that pause (SHARD-366).
+// A daemon cut after the swap leaves the sentry frozen beside a complete checkpoint, and the reconcile finishes that pause (SHARD-366).
 func TestReconcileReleasesAMarkedSandboxItsPauseLeftFrozen(t *testing.T) {
 	sb := models.Sandbox{ID: "sandbox1", State: models.StateRunning, PID: 42, Pausing: true}
 	provider := &releasingProvider{recProvider: &recProvider{status: map[string]models.Status{"sandbox1": frozen()}}}
@@ -582,7 +582,7 @@ func TestReconcileReleasesAMarkedSandboxItsPauseLeftFrozen(t *testing.T) {
 
 	got := lab.repo.records["sandbox1"]
 	if got.State != models.StatePaused || got.PID != 0 || got.Checkpoint != dir || got.Pausing {
-		t.Errorf("the record is %+v, want paused with pid 0, snapshot %s and no mark", *got, dir)
+		t.Errorf("the record is %+v, want paused with pid 0, checkpoint %s and no mark", *got, dir)
 	}
 	if len(provider.released) != 1 || provider.released[0] != dir {
 		t.Errorf("the substrate released %v, want the sandbox once beside %s: a resume refuses a live one", provider.released, dir)
@@ -605,7 +605,7 @@ func TestReconcileFreesTheMountACutPauseLeftAfterItsDelete(t *testing.T) {
 	sb.Pausing = true
 	r := &recorder{}
 	svc, l := newService(t, r, sb)
-	l.repo.snapshotDir = dir
+	l.repo.checkpointDir = dir
 	l.provider.status, l.provider.mounted = gone(), true
 
 	if err := svc.ReconcileAll(t.Context(), []models.Sandbox{sb}, func(string) {}, runOnce); err != nil {
@@ -626,7 +626,7 @@ func TestReconcileFreesTheMountACutPauseLeftAfterItsDelete(t *testing.T) {
 	}
 }
 
-// A substrate that cannot release keeps what it holds, so the reconcile does not take the snapshot from under it.
+// A substrate that cannot release keeps what it holds, so the reconcile does not take the checkpoint from under it.
 func TestReconcileKeepsTheMarkOfAFrozenSandboxTheSubstrateCannotRelease(t *testing.T) {
 	sb := models.Sandbox{ID: "sandbox1", State: models.StateRunning, PID: 42, Pausing: true}
 	lab := newReconcileLab(t, &recProvider{status: map[string]models.Status{"sandbox1": frozen()}}, sb)
@@ -665,8 +665,8 @@ func TestReconcileReleasesNoFrozenSandboxWhosePauseLeftNoCompleteCheckpoint(t *t
 	sb := models.Sandbox{ID: "sandbox1", State: models.StateRunning, PID: 42, Pausing: true}
 	provider := &releasingProvider{recProvider: &recProvider{status: map[string]models.Status{"sandbox1": frozen()}}}
 	lab := newReconcileLab(t, provider, sb)
-	lab.repo.snapshots = t.TempDir()
-	partial := filepath.Join(lab.repo.snapshots, "sandbox1.tmp")
+	lab.repo.checkpoints = t.TempDir()
+	partial := filepath.Join(lab.repo.checkpoints, "sandbox1.tmp")
 	if err := os.MkdirAll(partial, 0o700); err != nil {
 		t.Fatal(err)
 	}
@@ -686,8 +686,8 @@ func TestReconcileReleasesNoFrozenSandboxWhosePauseLeftNoCompleteCheckpoint(t *t
 	}
 }
 
-// A cut after the vz swap leaves a shim the next daemon runs on past the snapshot, so a later death of that run is no pause (SHARD-429).
-func TestReconcileDropsTheMarkOfASandboxTheSubstrateRunsPastItsSnapshot(t *testing.T) {
+// A cut after the vz swap leaves a shim the next daemon runs on past the checkpoint, so a later death of that run is no pause (SHARD-429).
+func TestReconcileDropsTheMarkOfASandboxTheSubstrateRunsPastItsCheckpoint(t *testing.T) {
 	sb := models.Sandbox{ID: "sandbox1", State: models.StateRunning, PID: 42, Pausing: true}
 	provider := &recProvider{status: map[string]models.Status{"sandbox1": alive(42)}}
 	lab := newReconcileLab(t, provider, sb)
@@ -712,7 +712,7 @@ func TestReconcileDropsTheMarkOfASandboxTheSubstrateRunsPastItsSnapshot(t *testi
 	}
 }
 
-// Only a substrate that says running proves the run went past the snapshot; an unresponsive vz shim may still hold it frozen (SHARD-422).
+// Only a substrate that says running proves the run went past the checkpoint; an unresponsive vz shim may still hold it frozen (SHARD-422).
 func TestReconcileKeepsTheMarkOfASandboxTheSubstrateDoesNotSayRuns(t *testing.T) {
 	sb := models.Sandbox{ID: "sandbox1", State: models.StateRunning, PID: 42, Pausing: true}
 	provider := &recProvider{status: map[string]models.Status{"sandbox1": unproven(42)}}
@@ -1045,9 +1045,9 @@ func TestReconcileProbesFrozenSandboxesConcurrently(t *testing.T) {
 	}
 }
 
-func TestReconcileReportsASnapshotItCannotRead(t *testing.T) {
-	// A file where the snapshot directory belongs: the stat fails, and it fails with neither a yes nor a no.
-	blocked := filepath.Join(t.TempDir(), "snapshot")
+func TestReconcileReportsACheckpointItCannotRead(t *testing.T) {
+	// A file where the checkpoint directory belongs: the stat fails, and it fails with neither a yes nor a no.
+	blocked := filepath.Join(t.TempDir(), "checkpoint")
 	if err := os.WriteFile(blocked, []byte("not a directory"), 0o600); err != nil {
 		t.Fatalf("write the file in the way: %v", err)
 	}

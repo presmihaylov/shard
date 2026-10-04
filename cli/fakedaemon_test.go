@@ -44,7 +44,7 @@ type sandboxRepo interface {
 	Update(id string, mutate func(*models.Sandbox) error) error
 	Delete(id string) error
 	Dir(id string) (string, error)
-	SnapshotDir(id string) (string, error)
+	CheckpointDir(id string) (string, error)
 }
 
 // sandboxNetwork is the part of network.Service the daemon drives.
