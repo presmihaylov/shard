@@ -586,7 +586,7 @@ func TestARecordIsOneErrno(t *testing.T) {
 	}
 }
 
-// killWhenTraced sends sigs once the host's trace holds the shim, and says how that went.
+// killWhenTraced sends sigs to the shim's main thread once the host's trace holds it, and says how that went.
 func killWhenTraced(r *launchRun, sigs ...syscall.Signal) <-chan error {
 	sent := make(chan error, 1)
 	go func() {
@@ -598,7 +598,8 @@ func killWhenTraced(r *launchRun, sigs ...syscall.Signal) <-chan error {
 
 		var errs []error
 		for _, sig := range sigs {
-			if err := unix.Kill(pid, sig); err != nil {
+			// The trace holds the main thread alone, and another thread could take a process signal while the main one execs.
+			if err := unix.Tgkill(pid, pid, sig); err != nil {
 				errs = append(errs, fmt.Errorf("send %v to the shim: %w", sig, err))
 			}
 		}
