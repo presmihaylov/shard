@@ -23,7 +23,7 @@ DARWIN_ARCH ?= $(shell go env GOARCH)
 KERNEL_OUT := bin/kernel
 KERNEL_IMAGE := packaging-kernel-builder
 
-.PHONY: all build build-linux build-shard-init build-shard-init-linux build-shard-vz-shim build-shard-vz-init build-darwin test test-integration e2e-test vet lint lint-fix fmt fmt-check vuln check clean devbox-sync devbox-test itest e2e devbox-e2e e2e-firecracker devbox-demo kernel kernel-reproducible
+.PHONY: all build build-linux build-shard-init build-shard-init-linux build-shard-vz-shim build-shard-vz-init build-darwin test test-integration e2e-test vet lint lint-fix fmt fmt-check vuln check clean devbox-sync devbox-test itest e2e devbox-e2e e2e-firecracker devbox-demo kernel kernel-reproducible sdk-py sdk-py-check
 
 all: check build
 
@@ -126,6 +126,18 @@ vuln:
 	go run $(GOVULNCHECK) ./...
 
 check: fmt-check vet lint test e2e-test
+
+# The Python SDK's generated code: the sync client, which scripts/unasync.py writes from the async one.
+sdk-py:
+	cd sdks/python && uv run --locked python scripts/unasync.py
+
+# The Python SDK's gate. Its shared suite needs a daemon, so only the unit tests run here.
+sdk-py-check:
+	cd sdks/python && uv run --locked ruff check src scripts suite tests && \
+		uv run --locked ruff format --check src scripts suite tests && \
+		uv run --locked mypy && \
+		uv run --locked python scripts/unasync.py --check && \
+		uv run --locked pytest -q tests
 
 clean:
 	rm -rf bin $(VZ_SHIM_BIN) $(VZ_INIT_BIN)
