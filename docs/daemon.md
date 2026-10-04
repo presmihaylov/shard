@@ -573,7 +573,7 @@ and `image prune` leaves it.
 - `GET /v0/sandboxes/{id}/egress-log` answers 200 with the newest 10000 egress decisions of the
   sandbox as a JSON array, oldest first. The array holds the proxy's own records and the host drops
   that the daemon wrote into the same file. The `Shard-Egress-Cut` header counts the older records
-  the route left out, and is absent when it left out none. Errors: 404. `shard logs --egress` prints
+  the route left out, and is absent when it left out none. Errors: 404. `shard policy logs` prints
   one record per line.
 - `GET /v0/sandboxes/{id}/egress-log?follow=true` with the handshake answers in text messages, one
   JSON record each, live. A stopped or removed sandbox ends the stream with close 1000 and the reason
@@ -1013,6 +1013,7 @@ Caddy passes a WebSocket upgrade through by itself, and `flush_interval -1` send
 `?follow=true` body on at once. On a host with no public name, `tls internal` inside the site block
 gives Caddy a CA of its own. The client then names that CA's root with `--ca-file`. A Debian
 package keeps it at `/var/lib/caddy/.local/share/caddy/pki/authorities/local/root.crt`.
+`docs/https-devbox.md` runs this setup on a devbox, for the SDK tests.
 
 Cloudflare Tunnel, with no inbound port open on the host:
 

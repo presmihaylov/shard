@@ -54,12 +54,12 @@ var sandboxArg = row{"<id|name>", "the sandbox, by its id or by its --name"}
 // signingKeyDefault is the key serve and every tokens verb use without --signing-key-file.
 const signingKeyDefault = "<root>/" + serve.AuthDir + "/" + serve.SigningKeyFileName
 
-// verbGroups is the top level: every verb once, under its heading, in the order it prints.
+// verbGroups is the top level: every verb once, under its heading, in the order it prints; policy logs sits by logs, as both read a sandbox.
 var verbGroups = []struct {
 	title string
 	verbs []string
 }{
-	{"Sandboxes", []string{"create", "run", "exec", "list", "logs", "inspect", "stop", "start", "remove", "pause", "resume", "fork", "cp"}},
+	{"Sandboxes", []string{"create", "run", "exec", "list", "logs", "policy logs", "inspect", "stop", "start", "remove", "pause", "resume", "fork", "cp"}},
 	{"Images, snapshots, secrets and egress", []string{"pull", "image", "snapshot", "secret", "policy"}},
 	{"Host and access", []string{"daemon", "info", "serve", "tokens", "version"}},
 }
@@ -167,13 +167,12 @@ var helps = map[string]verbHelp{
 		example: "shard list --all",
 	},
 	"logs": {
-		usage:   []string{"logs [-f] [--egress] <id|name>"},
-		summary: "print what the entrypoint wrote, or the egress decisions",
+		usage:   []string{"logs [-f] <id|name>"},
+		summary: "show output from the sandbox's main command",
 		args:    []row{sandboxArg},
 		flags: []flagHelp{
 			{"-f", "the same as --follow", ""},
 			{"--follow", "keep printing until the sandbox stops", ""},
-			{"--egress", "print the egress decisions instead of the entrypoint output", ""},
 		},
 		example: "shard logs -f web",
 	},
@@ -411,6 +410,17 @@ var helps = map[string]verbHelp{
 		summary: "remove the policy from a sandbox and leave its secrets as they are",
 		args:    []row{sandboxArg},
 		example: "shard policy detach web",
+	},
+	"policy logs": {
+		usage:   []string{"policy logs [-f] <id|name>"},
+		summary: "show network policy decisions for a sandbox",
+		args:    []row{sandboxArg},
+		flags: []flagHelp{
+			{"-f", "the same as --follow", ""},
+			{"--follow", "keep printing until the sandbox stops", ""},
+		},
+		notes:   []string{"Each decision prints as one JSON line, oldest first. When the log holds more than it prints, stderr says how many older ones it left out."},
+		example: "shard policy logs -f web",
 	},
 	"daemon": {
 		usage:   []string{"daemon [flags]", "daemon status"},

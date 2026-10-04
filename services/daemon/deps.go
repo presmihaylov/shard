@@ -651,7 +651,7 @@ func (d *deps) egressLogLocked(repo *sandboxstate.Repository) *egress.Log {
 	return d.logSvc
 }
 
-// egressReader is what shard logs --egress reads: the sandbox's own file, which the daemon writes
+// egressReader is what shard policy logs reads: the sandbox's own file, which the daemon writes
 // both halves into.
 func (d *deps) egressReader() (*egress.LogReader, error) {
 	decisions, err := d.egressLog()

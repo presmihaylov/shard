@@ -8,6 +8,7 @@
 | GitHub macOS runner (`ci.yml`, `darwin` job) | `make build-darwin` for arm64 and amd64, `go vet` and `go test` with cgo | Every PR. The Virtualization.framework binding is cgo over an ObjC framework, so the darwin binaries only build on a Mac (`docs/provider-vz.md`). |
 | A Mac with bare metal, by hand | The VZ boot tests and the vz conformance suite | The runner is itself a VM with no nested virtualization, so every test that boots a VM skips there. |
 | The devbox, by hand | `make itest`, `make devbox-e2e` | gVisor, Sysbox and runc need a Linux box with root. |
+| devbox-shard2, by hand | The HTTPS endpoint the SDKs test against (`docs/https-devbox.md`) | A real certificate needs a public name on a public box. |
 
 CI calls those steps directly. `make check` is the local gate before a commit, and it runs the same
 checks plus the self-test of the e2e script, `scripts/e2e_test.sh`. The macOS job does for darwin

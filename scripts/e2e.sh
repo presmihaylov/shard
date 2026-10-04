@@ -1290,7 +1290,7 @@ say "a granted host the policy does not allow does not resolve, and the echo nev
 # The answer and the log line are two writes, so the log is read until the line lands.
 DNS_DENY=""
 for _ in $(seq 1 20); do
-	DNS_DENY=$(shard logs --egress "${ID}" | grep '"source":"dns"' | grep '"verdict":"deny"' | grep "\"host\":\"${ECHO_HOST}\"" || true)
+	DNS_DENY=$(shard policy logs "${ID}" | grep '"source":"dns"' | grep '"verdict":"deny"' | grep "\"host\":\"${ECHO_HOST}\"" || true)
 	[ -n "${DNS_DENY}" ] && break
 	sleep 0.1
 done
@@ -1303,7 +1303,7 @@ step "a secret opens no DNS either"
 # open DNS by address and prove nothing.
 shard policy create --allow 1.0.0.1 --deny any e2e-policy >/dev/null
 # The grant step already logged a deny for the name, so only a line past that count proves this lookup.
-DNS_DENIES_BEFORE=$(shard logs --egress "${ID}" | grep '"source":"dns"' | grep '"verdict":"deny"' | grep -c "\"host\":\"${ECHO_HOST}\"" || true)
+DNS_DENIES_BEFORE=$(shard policy logs "${ID}" | grep '"source":"dns"' | grep '"verdict":"deny"' | grep -c "\"host\":\"${ECHO_HOST}\"" || true)
 expect_exec "unresolved" "a policy of addresses only leaves the granted host unresolvable" \
 	/bin/sh -c "timeout 5 nslookup ${ECHO_HOST} >/dev/null 2>&1 && echo resolved || echo unresolved"
 
@@ -1315,7 +1315,7 @@ say "policy create notes a policy that opens no DNS, and exits 0"
 # The lookup the address-only policy refused is in the log, as a dns deny for the name the guest asked.
 DNS_DENIES=0
 for _ in $(seq 1 20); do
-	DNS_DENIES=$(shard logs --egress "${ID}" | grep '"source":"dns"' | grep '"verdict":"deny"' | grep -c "\"host\":\"${ECHO_HOST}\"" || true)
+	DNS_DENIES=$(shard policy logs "${ID}" | grep '"source":"dns"' | grep '"verdict":"deny"' | grep -c "\"host\":\"${ECHO_HOST}\"" || true)
 	[ "${DNS_DENIES}" -gt "${DNS_DENIES_BEFORE}" ] && break
 	sleep 0.1
 done
@@ -1415,7 +1415,7 @@ step "read the egress decision log"
 # The daemon tails the host's half out of the kernel ring, so the drop is a moment behind the probe.
 EGRESS=""
 for _ in $(seq 1 20); do
-	EGRESS=$(shard logs --egress "${ID}")
+	EGRESS=$(shard policy logs "${ID}")
 	has_line '"source":"host"' '"rule":"ipv6"' <<<"${EGRESS}" && break
 	sleep 0.1
 done
@@ -1446,13 +1446,13 @@ for _ in 1 2; do
 done
 
 start_daemon || fail "the daemon did not come up"
-EGRESS=$(shard logs --egress "${ID}") || fail "logs --egress failed after the restart with status $?"
+EGRESS=$(shard policy logs "${ID}") || fail "policy logs failed after the restart with status $?"
 grep -q '"source":"host"' <<<"${EGRESS}" || fail "the host drop did not outlive the daemon that wrote it: $(printf '%s' "${EGRESS}" | head -c 400)"
 say "the host drop is still in the log after a daemon restart"
 
 EGRESS=""
 for _ in $(seq 1 20); do
-	EGRESS=$(shard logs --egress "${ID}") || fail "logs --egress failed at catch-up with status $?"
+	EGRESS=$(shard policy logs "${ID}") || fail "policy logs failed at catch-up with status $?"
 	grep -q '"rule":"e2e-catchup"' <<<"${EGRESS}" && break
 	sleep 0.1
 done
@@ -1462,7 +1462,7 @@ say "a drop that landed while the daemon was down is written at catch-up"
 # A follow is a tail of the one file, so both halves of the log reach it live.
 FOLLOW_LOG=$(mktemp)
 # The binary, so the kill below ends the client and not only a subshell around it.
-"${PREFIX}/shard" --root "${SHARD_ROOT}" logs -f --egress "${ID}" >"${FOLLOW_LOG}" 2>&1 &
+"${PREFIX}/shard" --root "${SHARD_ROOT}" policy logs -f "${ID}" >"${FOLLOW_LOG}" 2>&1 &
 FOLLOW_PID=$!
 
 shard exec "${ID}" /bin/sh -c "wget -S -O /dev/null http://${DENIED_HOST}/ >/dev/null 2>&1" >/dev/null 2>&1 || true
@@ -1478,10 +1478,10 @@ wait "${FOLLOW_PID}" 2>/dev/null || true
 
 grep -q '"verdict":"deny"' "${FOLLOW_LOG}" || fail "the follow never printed the resolver's deny: $(cat "${FOLLOW_LOG}")"
 grep -q '"source":"host"' "${FOLLOW_LOG}" || fail "the follow never printed the host's drop: $(cat "${FOLLOW_LOG}")"
-say "logs -f --egress prints both halves as they happen"
+say "policy logs -f prints both halves as they happen"
 
 # The same follow without a WebSocket is one JSON record per line, so curl -N reads it live too.
-DENIES_BEFORE=$(shard logs --egress "${ID}" | grep -c '"verdict":"deny"' || true)
+DENIES_BEFORE=$(shard policy logs "${ID}" | grep -c '"verdict":"deny"' || true)
 NDJSON_LOG=$(mktemp)
 NDJSON_HEADERS=$(mktemp)
 curl -sN -D "${NDJSON_HEADERS}" --unix-socket "${SOCKET}" "http://shard/v0/sandboxes/${ID}/egress-log?follow=true" >"${NDJSON_LOG}" 2>&1 &
@@ -2398,7 +2398,7 @@ say "the attach fronts the sandbox"
 
 expect_exec_in "${GRANT_ID}" "403 Forbidden" "the attached policy denies the request with a 403" \
 	/bin/sh -c "wget -S -O /dev/null http://${ECHO_HOST}/ 2>&1 | grep -o '403 Forbidden' | head -1"
-DECISIONS=$(shard logs --egress "${GRANT_ID}")
+DECISIONS=$(shard policy logs "${GRANT_ID}")
 PROXY_DECISIONS=$(grep '"source":"proxy"' <<<"${DECISIONS}" || true)
 grep -q '"verdict":"deny"' <<<"${PROXY_DECISIONS}" || fail "the egress log holds no proxy deny for ${GRANT_ID}"
 say "the deny is in the egress decision log with source proxy"
