@@ -2099,19 +2099,19 @@
             }
           },
           {
-            "description": "Keep the stream open until the sandbox stops or is removed. A WebSocket upgrade takes effect only with follow.",
+            "description": "Keep the stream open until the sandbox stops or is removed; a WebSocket upgrade requires follow=true.",
             "explode": false,
             "in": "query",
             "name": "follow",
             "schema": {
-              "description": "Keep the stream open until the sandbox stops or is removed. A WebSocket upgrade takes effect only with follow.",
+              "description": "Keep the stream open until the sandbox stops or is removed; a WebSocket upgrade requires follow=true.",
               "type": "boolean"
             }
           }
         ],
         "responses": {
           "101": {
-            "description": "A WebSocket follow: one egress decision per text message, until the sandbox stops or is removed."
+            "description": "A WebSocket follow with follow=true: one egress decision per text message, until the sandbox stops or is removed."
           },
           "200": {
             "content": {
@@ -2831,19 +2831,19 @@
             }
           },
           {
-            "description": "Keep the stream open until the sandbox stops or is removed. A WebSocket upgrade takes effect only with follow.",
+            "description": "Keep the stream open until the sandbox stops or is removed; a WebSocket upgrade requires follow=true.",
             "explode": false,
             "in": "query",
             "name": "follow",
             "schema": {
-              "description": "Keep the stream open until the sandbox stops or is removed. A WebSocket upgrade takes effect only with follow.",
+              "description": "Keep the stream open until the sandbox stops or is removed; a WebSocket upgrade requires follow=true.",
               "type": "boolean"
             }
           }
         ],
         "responses": {
           "101": {
-            "description": "A WebSocket follow. Each binary message leads with its stream byte: 1 the output, 3 an EndMessage naming why the follow ended, 5 a FailureMessage.",
+            "description": "A WebSocket follow with follow=true. Each binary message leads with its stream byte: 1 the output, 3 an EndMessage naming why the follow ended, 5 a FailureMessage.",
             "x-shard-messages": {
               "3": {
                 "$ref": "#/components/schemas/EndMessage"

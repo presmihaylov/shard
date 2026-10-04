@@ -57,5 +57,5 @@ type filePath struct {
 
 type followInput struct {
 	ID     string `path:"id" doc:"The sandbox id or name."`
-	Follow bool   `query:"follow" doc:"Keep the stream open until the sandbox stops or is removed. A WebSocket upgrade takes effect only with follow."`
+	Follow bool   `query:"follow" doc:"Keep the stream open until the sandbox stops or is removed; a WebSocket upgrade requires follow=true."`
 }

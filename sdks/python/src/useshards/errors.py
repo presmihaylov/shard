@@ -68,11 +68,12 @@ class CommandNotStartedError(ShardError):
 class APIError(ShardError):
     """The daemon refused a request. code is the daemon's error code, empty when the body held none."""
 
-    def __init__(self, status: int, code: str, message: str) -> None:
+    def __init__(self, status: int, code: str, message: str, holders: list[str] | None = None) -> None:
         super().__init__(f"{status} {code}: {message}" if code else f"{status}: {message}")
         self.status = status
         self.code = code
         self.message = message
+        self.holders = holders
 
 
 class AuthenticationError(APIError):
@@ -140,10 +141,10 @@ _CODE_STATUS: Mapping[str, int] = {
 
 def api_error(status: int, body: bytes) -> APIError | CommandNotStartedError:
     """Classify a refusal by the daemon's code, then by its status."""
-    code, message, exit_code = _parse_body(body)
+    code, message, exit_code, holders = _parse_body(body)
     if code == "command_not_started" and exit_code is not None:
         return CommandNotStartedError(exit_code, message)
-    return _classified(status, code, message)
+    return _classified(status, code, message, holders)
 
 
 def failure_error(code: str, message: str) -> APIError:
@@ -151,30 +152,32 @@ def failure_error(code: str, message: str) -> APIError:
     return _classified(_CODE_STATUS.get(code, 500), code, message)
 
 
-def _classified(status: int, code: str, message: str) -> APIError:
+def _classified(status: int, code: str, message: str, holders: list[str] | None = None) -> APIError:
     if code == "unsupported":
-        return UnsupportedError(status, code, message)
+        return UnsupportedError(status, code, message, holders)
     cls = _CLASSES.get(status, ServerError if status >= 500 else APIError)
-    return cls(status, code, message)
+    return cls(status, code, message, holders)
 
 
-def _parse_body(body: bytes) -> tuple[str, str, int | None]:
+def _parse_body(body: bytes) -> tuple[str, str, int | None, list[str] | None]:
     try:
         decoded = json.loads(body)
     except (ValueError, UnicodeDecodeError):
-        return "", _raw(body), None
+        return "", _raw(body), None, None
     if not isinstance(decoded, dict):
-        return "", _raw(body), None
+        return "", _raw(body), None, None
     err = decoded.get("error")
     if not isinstance(err, dict):
-        return "", _raw(body), None
+        return "", _raw(body), None, None
     code = err.get("code")
     message = err.get("message")
     exit_code = err.get("exit_code")
+    holders = err.get("holders")
     return (
         code if isinstance(code, str) else "",
         message if isinstance(message, str) else "",
         exit_code if isinstance(exit_code, int) and not isinstance(exit_code, bool) else None,
+        holders if isinstance(holders, list) and all(isinstance(holder, str) for holder in holders) else None,
     )
 
 

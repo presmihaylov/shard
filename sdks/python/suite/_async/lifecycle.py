@@ -42,7 +42,7 @@ async def inspect_get_list(ctx: AsyncContext) -> None:
     ok(info.image.endswith(ctx.image), f"image {info.image}")
     equal((await ctx.shard.get(sandbox.id)).id, sandbox.id)
     equal((await ctx.shard.get(named(sandbox.name, "the sandbox"))).id, sandbox.id)
-    ok(any(each.id == sandbox.id for each in await ctx.shard.list()), "list holds the sandbox")
+    ok(any(each.id == sandbox.id for each in (await ctx.shard.list()).sandboxes), "list holds the sandbox")
     await rejects(NotFoundError, lambda: ctx.shard.get(f"{ctx.prefix}-no-such-sandbox"))
 
 
