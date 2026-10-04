@@ -1,0 +1,34 @@
+{
+  "name": "useshards",
+  "version": "0.1.0",
+  "description": "The TypeScript SDK for shard, the sandbox manager.",
+  "license": "Apache-2.0",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/presmihaylov/shard.git",
+    "directory": "sdks/typescript"
+  },
+  "type": "module",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "default": "./dist/index.js"
+    }
+  },
+  "files": [
+    "dist"
+  ],
+  "engines": {
+    "node": ">=20"
+  },
+  "scripts": {
+    "build": "tsc -p tsconfig.build.json",
+    "typecheck": "tsc -p tsconfig.json",
+    "suite": "npm run build && tsx suite/main.ts"
+  },
+  "devDependencies": {
+    "@types/node": "20.19.43",
+    "tsx": "4.23.15",
+    "typescript": "5.9.3"
+  }
+}
