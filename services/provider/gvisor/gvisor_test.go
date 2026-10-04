@@ -450,14 +450,11 @@ func pauseKept(t *testing.T, err error) {
 	if err == nil {
 		return
 	}
-	// The release joins the unmount to the other cleanup errors, so every joined line must be the refusal.
-	for line := range strings.SplitSeq(err.Error(), "\n") {
-		if runtime.GOOS == "linux" || !strings.Contains(line, "overlayfs") {
-			t.Errorf("Pause after runsc wrote the memory image returned %v, want nil", err)
-
-			return
-		}
+	// The exact text, so a cleanup error the release joins to the refusal still fails.
+	if runtime.GOOS != "linux" && err.Error() == (bundle.Bundle{}).Unmount().Error() {
+		return
 	}
+	t.Errorf("Pause after runsc wrote the memory image returned %v, want nil", err)
 }
 
 func TestResumeTakesOnlyACheckpointOfAPausedSandbox(t *testing.T) {
