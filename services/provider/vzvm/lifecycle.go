@@ -539,7 +539,7 @@ func (p *Provider) lost(id string) error {
 		return nil
 	}
 
-	return fmt.Errorf("sandbox %s lost its lifecycle state: %w", id, m.lost)
+	return fmt.Errorf("sandbox %s %w: %w", id, models.ErrLostState, m.lost)
 }
 
 // Status asks the shim, because a record saying running or paused can outlive a restart of the daemon.
