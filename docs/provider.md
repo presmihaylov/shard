@@ -334,10 +334,11 @@ copy, and the pause after its next resume is a Diff again. A fork's capture read
 source's log as well, so the source's next pause takes a Full. A pause still refuses a vmm whose cgroup
 it cannot hold at `memory.swap.max` 0, and names the cgroup; every boot sets that value. Only
 firecracker 1.13.0 and newer turn the log on at a load, so the daemon refuses an older
-`firecracker` and names its version. The daemon builds the provider on the first verb that needs it,
-so that verb gets the refusal, not the daemon's start. Diff snapshots are a developer preview in
-Firecracker, so an upgrade of the binary must pass the memory-integrity kit of SHARD-450 again
-before it ships.
+`firecracker` and names its version. The check runs when the daemon first builds the provider. Over
+an empty root that is the first verb that needs it, so that verb gets the refusal. Over a root that
+holds a record, the reconcile at the start builds it, so the daemon refuses to start and never
+listens. Diff snapshots are a developer preview in Firecracker, so an upgrade of the binary must pass
+the memory-integrity kit of SHARD-450 again before it ships.
 
 Two more limits apply. The data dir must be able to clone a file by sharing its blocks, because
 `pause` on this provider needs that, as `docs/daemon.md` covers. The daemon probes its root and puts

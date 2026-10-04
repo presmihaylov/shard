@@ -1024,8 +1024,8 @@ A Go program gets the same rules from `client.NewRemoteFromEnv` in `services/cli
 `SHARD_REMOTE`, `SHARD_API_KEY` and `SHARD_CA_FILE`. `client.NewRemote` takes a host, a raw token
 and the CA bytes. The warning is the CLI's own. The switch is one transport change inside
 `services/client`, and nothing else changes. The typed calls, the messages and the errors stay the
-same. It is also the one way a client off Linux drives sandboxes, because the daemon itself runs on
-Linux alone.
+same. The daemon runs on Linux, and on macOS over the `vz` provider as `docs/mac.md` explains, so
+a client on any other system drives sandboxes only through a remote.
 
 ### A proxy in front
 

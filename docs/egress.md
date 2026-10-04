@@ -123,6 +123,7 @@ throughout: an error fails closed and never opens access.
 shard stop web
 shard policy attach web locked
 shard start web
+shard stop web
 shard policy detach web
 ```
 
@@ -252,11 +253,12 @@ connection is judged by the new rules.
 
 Every fronted sandbox keeps a decision log. `shard policy logs <id|name>` prints it as one JSON
 record per line, oldest first. `shard policy logs -f <id|name>` prints the same and then keeps
-running, so a new record appears within about a second of the decision. The follow ends at Ctrl-C or
-when the sandbox is removed, and it says on stderr which of the two happened. If the log renames a
-file away before the follow has read it, the follow fails and says to follow again. A record names
-the time, the source, the verdict, the host, the port, the address, the rule that decided, and that
-rule's text. It never carries a header, a body or a secret value.
+running, so a new record appears within about a second of the decision. The follow ends at Ctrl-C,
+when the sandbox stops, or when it is removed. A stop or a removal prints the reason on stderr, and
+Ctrl-C leaves without a word. If the log renames a file away before the follow has read it, the
+follow fails and says to follow again. A record names the time, the source, the verdict, the host,
+the port, the address, the rule that decided, and that rule's text. It never carries a header, a
+body or a secret value.
 
 The log has three sources, and the daemon writes all of them into one file,
 `${root}/sandboxes/<id>/egress.jsonl`:
