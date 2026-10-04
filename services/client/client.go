@@ -1,5 +1,4 @@
-// Package client is the typed side of the daemon's REST API, for the CLI. It speaks the unix
-// socket, or the same routes over https to the proxy in front of a shard serve front.
+// Package client is the typed side of the daemon's REST API, over the socket or an http or https remote.
 package client
 
 import (
@@ -34,8 +33,10 @@ const DefaultRoot = "/var/lib/shard"
 type Client struct {
 	// target is the socket path or the host url, which is what an error names.
 	target string
-	// dialer is the whole of the transport switch: the unix socket, or tls to the proxy in front of shard serve.
+	// dialer is the whole of the transport switch: the unix socket, tcp to an http remote, or tls to an https one.
 	dialer func(ctx context.Context) (net.Conn, error)
+	// plain is an http remote, whose bytes, the token among them, cross the network in the clear.
+	plain bool
 	// authority is the Host of every request: shard on the socket, and otherwise the --remote host a proxy routes by.
 	authority string
 	// token is the bearer token a front checks. The socket takes none: its mode is the check.
@@ -53,26 +54,16 @@ type Version struct {
 	APIVersion string `json:"api_version"`
 }
 
-// Sandbox is the public record a write verb answers, and all a remote front ever answers: the host side stays on the daemon host.
+// Sandbox is the public record every sandbox route answers: the host side stays in the daemon's state.
 type Sandbox = api.Sandbox
 
 // Inspection is the public record beside the egress rules the host enforces for it.
 type Inspection = api.Inspection
 
-// Public is the record a remote front would answer for sb.
-func Public(sb models.Sandbox) Sandbox {
-	return api.PublicSandbox(sb)
-}
-
-// PublicInspection is the inspection a remote front would answer for insp.
-func PublicInspection(insp sandbox.Inspection) Inspection {
-	return api.PublicInspection(insp)
-}
-
 // ListResult is what ls prints: the sandboxes the daemon read, beside the records it could not.
 type ListResult struct {
-	Sandboxes []models.Sandbox `json:"sandboxes"`
-	Warnings  []string         `json:"warnings,omitempty"`
+	Sandboxes []Sandbox `json:"sandboxes"`
+	Warnings  []string  `json:"warnings,omitempty"`
 }
 
 // ConnectError is a socket nothing answers on. Its text is the one line the operator needs.
@@ -136,14 +127,11 @@ func New(root string) *Client {
 	return c
 }
 
-// NewRemote dials the https proxy in front of a shard serve front, a byte proxy onto the socket, with its bearer token.
+// NewRemote dials an http or https remote, a shard serve front or the proxy in front of it, with its bearer token; ca verifies an https remote only.
 func NewRemote(host, token string, ca []byte) (*Client, error) {
-	parsed, err := url.Parse(host)
+	parsed, err := parseRemote(host)
 	if err != nil {
-		return nil, fmt.Errorf("parse the host %q: %w", host, err)
-	}
-	if parsed.Scheme != "https" || parsed.Host == "" {
-		return nil, fmt.Errorf("--remote must be an https url, as https://shard.example.com, got %q", host)
+		return nil, err
 	}
 	if token == "" {
 		return nil, errors.New("--remote needs a token: shard serve answers 401 without one")
@@ -153,6 +141,20 @@ func NewRemote(host, token string, ca []byte) (*Client, error) {
 	}
 
 	address := remoteAddress(parsed)
+	c := &Client{target: host, authority: parsed.Host, token: token, hint: "shard serve at " + parsed.Host + ", or the proxy in front of it", Timeout: DefaultTimeout}
+
+	if parsed.Scheme == "http" {
+		if len(ca) > 0 {
+			return nil, fmt.Errorf("a CA certificate verifies an https remote, and %s is http", host)
+		}
+		c.plain = true
+		c.dialer = func(ctx context.Context) (net.Conn, error) {
+			return (&net.Dialer{}).DialContext(ctx, "tcp", address)
+		}
+		c.transport()
+
+		return c, nil
+	}
 
 	settings := &tls.Config{ServerName: parsed.Hostname(), MinVersion: tls.VersionTLS12}
 	if len(ca) > 0 {
@@ -162,8 +164,6 @@ func NewRemote(host, token string, ca []byte) (*Client, error) {
 		}
 		settings.RootCAs = pool
 	}
-
-	c := &Client{target: host, authority: parsed.Host, token: token, hint: "the proxy at " + parsed.Host + " and the shard serve behind it", Timeout: DefaultTimeout}
 	c.dialer = func(ctx context.Context) (net.Conn, error) {
 		return (&tls.Dialer{Config: settings}).DialContext(ctx, "tcp", address)
 	}
@@ -172,14 +172,33 @@ func NewRemote(host, token string, ca []byte) (*Client, error) {
 	return c, nil
 }
 
-// remoteAddress is the host and port a --remote dials: 443, where every proxy and tunnel answers, when the url names no port.
-func remoteAddress(parsed *url.URL) string {
-	if parsed.Port() == "" {
-		return net.JoinHostPort(parsed.Hostname(), "443")
+// parseRemote takes an http or https url with a host; any other scheme is refused, never guessed.
+func parseRemote(host string) (*url.URL, error) {
+	parsed, err := url.Parse(host)
+	if err != nil {
+		return nil, fmt.Errorf("parse the host %q: %w", host, err)
+	}
+	if parsed.Scheme != "http" && parsed.Scheme != "https" || parsed.Host == "" {
+		return nil, fmt.Errorf("--remote must be an http or https url, as https://shard.example.com, got %q", host)
 	}
 
-	return parsed.Host
+	return parsed, nil
 }
+
+// remoteAddress is the host and port a --remote dials: the port of its scheme, 80 or 443, when the url names none.
+func remoteAddress(parsed *url.URL) string {
+	if parsed.Port() != "" {
+		return parsed.Host
+	}
+	if parsed.Scheme == "http" {
+		return net.JoinHostPort(parsed.Hostname(), "80")
+	}
+
+	return net.JoinHostPort(parsed.Hostname(), "443")
+}
+
+// Plain says the client speaks http to a remote, so nothing encrypts what it sends.
+func (c *Client) Plain() bool { return c.plain }
 
 // Format prints the target alone, whatever the verb, so a client in a log line never shows its token.
 func (c Client) Format(f fmt.State, _ rune) {
@@ -232,6 +251,19 @@ func (c *Client) Version(ctx context.Context) (Version, error) {
 	return out, nil
 }
 
+// Capabilities is every lifecycle verb and whether the server supports it.
+type Capabilities = api.Capabilities
+
+// Capabilities asks the server which lifecycle verbs it supports; a front answers it for any valid token.
+func (c *Client) Capabilities(ctx context.Context) (Capabilities, error) {
+	var out Capabilities
+	if err := c.call(ctx, http.MethodGet, "/v0/capabilities", nil, &out, c.Timeout); err != nil {
+		return Capabilities{}, err
+	}
+
+	return out, nil
+}
+
 // Daemon is what the daemon reports about its process, its provider and its proxy.
 func (c *Client) Daemon(ctx context.Context) (api.Daemon, error) {
 	var out api.Daemon
@@ -242,18 +274,9 @@ func (c *Client) Daemon(ctx context.Context) (api.Daemon, error) {
 	return out, nil
 }
 
-// sandboxes is where the records are read: the whole record over the socket, the public one through a front, which refuses the local route.
-func (c *Client) sandboxes() string {
-	if c.token != "" {
-		return "/v0/sandboxes"
-	}
-
-	return "/v0/local/sandboxes"
-}
-
-// ListSandboxes answers whole records over the socket; through a front the host fields are zero.
+// ListSandboxes answers the public records, and names the ones the daemon could not read.
 func (c *Client) ListSandboxes(ctx context.Context, all bool) (ListResult, error) {
-	path := c.sandboxes()
+	path := "/v0/sandboxes"
 	if all {
 		path += "?all=true"
 	}
@@ -266,11 +289,11 @@ func (c *Client) ListSandboxes(ctx context.Context, all bool) (ListResult, error
 	return out, nil
 }
 
-// GetSandbox answers for an id or a name, with the egress rules the host enforces when the record names a policy; through a front the host fields are zero.
-func (c *Client) GetSandbox(ctx context.Context, ref string) (sandbox.Inspection, error) {
-	var out sandbox.Inspection
-	if err := c.call(ctx, http.MethodGet, c.sandboxes()+"/"+url.PathEscape(ref), nil, &out, c.Timeout); err != nil {
-		return sandbox.Inspection{}, missing(ref, err)
+// GetSandbox answers for an id or a name, with the egress rules the host enforces when the record names a policy.
+func (c *Client) GetSandbox(ctx context.Context, ref string) (Inspection, error) {
+	var out Inspection
+	if err := c.call(ctx, http.MethodGet, "/v0/sandboxes/"+url.PathEscape(ref), nil, &out, c.Timeout); err != nil {
+		return Inspection{}, missing(ref, err)
 	}
 
 	return out, nil
@@ -287,10 +310,10 @@ func (c *Client) CreateSandbox(ctx context.Context, req sandbox.CreateRequest) (
 }
 
 // WaitSandbox blocks until the sandbox leaves pending, then answers its record. The pull runs in the daemon, so it has no bound of its own.
-func (c *Client) WaitSandbox(ctx context.Context, ref string) (sandbox.Inspection, error) {
-	var out sandbox.Inspection
-	if err := c.call(ctx, http.MethodGet, c.sandboxes()+"/"+url.PathEscape(ref)+"?wait=true", nil, &out, 0); err != nil {
-		return sandbox.Inspection{}, missing(ref, err)
+func (c *Client) WaitSandbox(ctx context.Context, ref string) (Inspection, error) {
+	var out Inspection
+	if err := c.call(ctx, http.MethodGet, "/v0/sandboxes/"+url.PathEscape(ref)+"?wait=true", nil, &out, 0); err != nil {
+		return Inspection{}, missing(ref, err)
 	}
 
 	return out, nil

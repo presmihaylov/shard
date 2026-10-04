@@ -340,8 +340,6 @@ The routes:
 curl --unix-socket /var/lib/shard/shard.sock http://localhost/v0/version
 curl --unix-socket /var/lib/shard/shard.sock http://localhost/v0/capabilities
 curl --unix-socket /var/lib/shard/shard.sock http://localhost/v0/daemon
-curl --unix-socket /var/lib/shard/shard.sock http://localhost/v0/local/sandboxes
-curl --unix-socket /var/lib/shard/shard.sock http://localhost/v0/local/sandboxes/<id or name>
 curl --unix-socket /var/lib/shard/shard.sock http://localhost/v0/sandboxes
 curl --unix-socket /var/lib/shard/shard.sock 'http://localhost/v0/sandboxes?all=true'
 curl --unix-socket /var/lib/shard/shard.sock 'http://localhost/v0/sandboxes?limit=20&cursor=<id>'
@@ -389,21 +387,24 @@ curl --unix-socket /var/lib/shard/shard.sock -X POST http://localhost/v0/images/
 ```
 
 - Every route is public or local. A local route answers on the socket only, and `shard serve`
-  refuses it with the same `403` as an unknown route. The local routes are `GET /v0/daemon`, the
-  four `images` routes, `GET /v0/local/sandboxes` and `GET /v0/local/sandboxes/{id}`. The CLI on the
-  daemon host reads its sandboxes through the two local ones.
-- A public route answers the sandbox record without its host side: `pid`, `netns_path`,
-  `host_interface`, `address`, `checkpoint`, `pausing`, `exit_channel` and `unresponsive_reason`.
-  `GET /v0/local/sandboxes` and `GET /v0/local/sandboxes/{id}` take the same query as the public
-  routes and answer the whole record. In the public `egress` of a record, an implied DNS rule names
-  the group `dns` in place of the bridge gateway, and keeps its `id`.
+  refuses it with the same `403` as an unknown route. The local routes are `GET /v0/daemon` and the
+  four `images` routes.
+- Every route that answers a sandbox answers the record without its host side, which stays in the
+  daemon's state. In the `egress` of a record, an implied DNS rule names the group `dns` in place of
+  the bridge gateway, and keeps its `id`.
+- No public error body, `failed_reason`, list warning or stream error frame names a host path, a
+  pid or the root. Each says what its error type made public, and the daemon log keeps the whole
+  cause. A record from before this answers `the sandbox failed; the daemon log has the cause`.
 - `GET /v0/version` answers `{"version": "...", "api_version": "v0"}`. `shard version` prints the
   `version` as its `daemon` line, under the `client` line of the binary that asked. `shard
   --version` prints only the `client` line, touches no socket, and never fails, like `docker
   --version`.
-- `GET /v0/capabilities` answers `{"provider": "...", "unsupported": [...]}`, where `unsupported`
-  lists each optional verb the provider refuses (`pause`, `resume`, `fork`) and is `[]` when it
-  refuses none.
+- `GET /v0/capabilities` answers the eight lifecycle verbs and whether this server supports each:
+  `{"create": true, "start": true, "stop": true, "remove": true, "pause": true, "resume": true,
+  "fork": false, "snapshot": true}`. Every provider runs `create`, `start`, `stop`, `remove` and
+  `snapshot`, the copy of a stopped sandbox's files; `pause`, `resume` and `fork` are the
+  provider's own. The scopes of the token and the state of any sandbox never change the answer.
+  `shard capabilities` prints it.
 - `GET /v0/daemon` answers what the daemon knows about itself: `version`, `pid`, `started_at`,
   `socket`, `provider`, `capabilities` as the provider's three booleans (`pause`, `resume`, `fork`),
   and `proxy` with `plain_port` and `tls_port`. `shard daemon status` prints it, one field per line.
@@ -716,7 +717,7 @@ else that a refusal carries lives inside `error`, and the root never holds anyth
 | `sandbox_not_paused` | 409 | resume on a sandbox that is not paused |
 | `no_app` | 409 | attach or app stop on a sandbox that `create` made, which runs no app |
 | `app_ended` | 409 | app stop once the restart policy of the app ended |
-| `sandbox_failed` | 409 | any verb except a get or a `remove` on a create that ended `failed`. The message carries the `failed_reason`, and `remove` frees the sandbox |
+| `sandbox_failed` | 409 | any verb except a get or a `remove` on a create that ended `failed`. The message carries the public `failed_reason`, and `remove` frees the sandbox |
 | `sandbox_live` | 409 | grant, ungrant, attach or detach while the sandbox runs or is paused |
 | `no_checkpoint` | 409 | resume on a paused sandbox whose record names no checkpoint |
 | `unsupported` | 409 | the provider does not claim the verb |
@@ -725,13 +726,20 @@ else that a refusal carries lives inside `error`, and the root never holds anyth
 | `unauthorized` | 401 | the TCP front, when the request carries no valid bearer token, and then the front dials nothing |
 | `forbidden` | 403 | the TCP front, when the token is valid but its scopes do not reach the route, and then the front dials nothing. Also the daemon, on a create that names a secret without `secret:*` or a policy without `policy:*` |
 | `substrate_timeout` | 504 | a stop, remove or restart whose substrate status call did not answer within the budget. Retry it once the runtime frees. On gVisor, rm --force reclaims through the wedge instead. It SIGKILLs the sandbox's own runsc processes, which it finds by the sandbox's cgroup and by the sandbox id on their command line, then finishes the teardown. It answers this code only when that kill fails too |
-| `internal` | 500 | anything else, and the message says what the daemon got back |
+| `internal` | 500 | anything else. A local route answers what the daemon got back. A public route answers only `the daemon could not complete the request; its log has the cause`, and the daemon log keeps the cause |
 
 `services/client` decodes only that object into `*client.APIError`, with `Status`, `Code`,
 `Message` and `Holders`. A caller therefore matches on the code with `errors.As`, never on the
 text. A body of any other shape is quoted as it came, under `internal`.
 
 The base path is `/v0`, and `/v0` may change until launch 1. SHARD-83 freezes the contract as `/v1`.
+
+`docs/openapi.json` is the OpenAPI 3.1 spec of the public routes. The daemon builds it from the same
+route table it serves, so every operation names its token scope in `x-shard-scope`, which is the
+scope the TCP front checks. `make openapi` writes it, and `make test` fails while the committed file
+differs. The daemon validates each request against the spec before a handler runs. A refusal names
+the field, as `validation failed: expected number >= 1 (query.limit)`, and never echoes its value.
+The local routes are not in the spec, as the TCP front never forwards them.
 
 The typed side of these routes is `services/client`, hand-written over the socket. It has `Version`,
 `ListSandboxes`, `GetSandbox`, `CreateSandbox`, `StartSandbox`, `StopSandbox`, `RemoveSandbox`,
@@ -880,11 +888,10 @@ sees the signing key. `--name` is the subject the front logs. `--duration` defau
 mints a token with no `exp` that never expires. `--scopes` is a comma-separated list of the scopes
 the token carries. An empty `--scopes` mints `["*"]`, which is every verb, so pass `--scopes` for
 any token except an operator's. The verb refuses a scope that is neither `*` nor one of the eight
-capabilities above. The error lists the capabilities, and nothing is recorded. The client's
-`--token-file` takes this object whole or the bare token, so `shard tokens mint ... > ci.token`
-needs no extra step. `SHARD_API_KEY` takes the bare token, the `token` field, as `jq -r .token
-ci.token` prints it. When an operator replaces the signing key, every token it signed stops
-verifying at once.
+capabilities above. The error lists the capabilities, and nothing is recorded. A client takes the
+`token` field in `SHARD_API_KEY`:
+`export SHARD_API_KEY=$(shard tokens mint --name ci | jq -r .token)`. When an operator replaces the
+signing key, every token it signed stops verifying at once.
 
 The front reads the signing key once, at start, so a new key needs a `shard serve` restart. That
 restart ends no connection that is already spliced.
@@ -952,39 +959,36 @@ export SHARD_API_KEY=<the token field of a shard tokens mint record>
 shard list
 ```
 
-`SHARD_API_KEY` is the raw credential, the `token` field of the record that `shard tokens mint`
-prints. The client sends it as the same bearer token a token file holds, so its scopes, its expiry
-and its revocation apply unchanged. The client trims the whitespace around it, and an empty or blank
-value is unset. It refuses only a value with a control character inside, such as a newline, because
-no HTTP header carries one, and that error names `SHARD_API_KEY`. A wrong, revoked or expired key
-reaches the front, which answers `401` with "no valid bearer token". No error or log line on either
-side holds a token.
+`SHARD_API_KEY` is the one credential, the `token` field of the record that `shard tokens mint`
+prints. The client sends it as the bearer token, so its scopes, its expiry and its revocation apply
+unchanged. The client trims the whitespace around it, and an empty or blank value is unset. With a
+remote and no key, the client refuses before it dials, and the error names `SHARD_API_KEY`. It
+refuses a value with a control character inside, such as a newline, because no HTTP header carries
+one. A wrong, revoked or expired key reaches the front, which answers `401` with "no valid bearer
+token". No error or log line on either side holds a token.
 
-The client takes the token from the first of three sources that is set:
-
-1. `--token-file <path>`, a token file named on the command line.
-2. `SHARD_API_KEY`, the raw token.
-3. `SHARD_TOKEN_FILE`, a token file named in the environment.
-
-A token file is the alternative. It holds the mint record whole or the bare token, and the client
-refuses one that everyone on the host can read:
+`--remote`, or `SHARD_REMOTE`, is an `http` or an `https` url, and `--remote` wins when both are
+set. An `https` url dials TLS, on port 443 when it names no port, and verifies the certificate. Use
+it for anything that crosses a public network. Without `SHARD_CA_FILE` the host's own trust store
+decides. A private CA or a self-signed certificate needs `SHARD_CA_FILE`, the certificate that
+signed the proxy's own:
 
 ```
-shard --remote https://shard.example.com --token-file ~/.shard/token --ca-file ~/.shard/ca.pem list
-SHARD_REMOTE=https://shard.example.com SHARD_TOKEN_FILE=~/.shard/token shard list
+SHARD_CA_FILE=./company-ca.pem shard --remote https://shard.internal list
 ```
 
-An empty `SHARD_TOKEN_FILE` is unset too. With `--remote` and none of the three, the client refuses
-before it dials, and the error names all three in that order. A Go program gets the same order from
-`client.NewRemoteFromEnv` in `services/client`, which reads `SHARD_REMOTE`, `SHARD_API_KEY`,
-`SHARD_TOKEN_FILE` and `SHARD_CA_FILE`. `client.NewRemote` still takes a host and a raw token.
+An `http` url dials plain TCP, on port 80 when it names no port, and nothing encrypts the bytes, the
+bearer token among them. It suits `shard serve` on localhost, which speaks plain HTTP itself, or a
+front reached through an encrypted VPN. Every command over it prints one warning to stderr, never
+to stdout, so `--format json` stays clean. `SHARD_CA_FILE` with an `http` url is refused before the
+client dials, and the error names both.
 
-`--remote` and `--ca-file` can also come from `SHARD_REMOTE` and `SHARD_CA_FILE`. `--remote` must
-be the `https` url of the proxy, and its port defaults to 443. `--ca-file` names the certificate that
-signed the proxy's own. A private CA or a self-signed certificate needs it. Without it, the host's own trust
-store decides. The switch is one transport change inside `services/client`, and nothing else
-changes. The typed calls, the messages and the errors stay the same. It is also the one way a client
-off Linux drives sandboxes, because the daemon itself runs on Linux alone.
+A Go program gets the same rules from `client.NewRemoteFromEnv` in `services/client`, which reads
+`SHARD_REMOTE`, `SHARD_API_KEY` and `SHARD_CA_FILE`. `client.NewRemote` takes a host, a raw token
+and the CA bytes. The warning is the CLI's own. The switch is one transport change inside
+`services/client`, and nothing else changes. The typed calls, the messages and the errors stay the
+same. It is also the one way a client off Linux drives sandboxes, because the daemon itself runs on
+Linux alone.
 
 ### A proxy in front
 
@@ -1004,7 +1008,7 @@ shard.example.com {
 
 Caddy passes a WebSocket upgrade through by itself, and `flush_interval -1` sends each chunk of a
 `?follow=true` body on at once. On a host with no public name, `tls internal` inside the site block
-gives Caddy a CA of its own. The client then names that CA's root with `--ca-file`. A Debian
+gives Caddy a CA of its own. The client then names that CA's root in `SHARD_CA_FILE`. A Debian
 package keeps it at `/var/lib/caddy/.local/share/caddy/pki/authorities/local/root.crt`.
 `docs/https-devbox.md` runs this setup on a devbox, for the SDK tests.
 

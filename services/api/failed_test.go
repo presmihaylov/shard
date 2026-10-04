@@ -10,11 +10,10 @@ import (
 	"github.com/presmihaylov/shard/services/sandbox"
 )
 
-// getAndRm are the only sandbox-scoped routes a failed sandbox still answers, the get on each class; every other one is 409.
-var getAndRm = map[api.Route]bool{
-	{Method: http.MethodGet, Pattern: "/v0/sandboxes/{id}", Class: api.Public}:      true,
-	{Method: http.MethodGet, Pattern: "/v0/local/sandboxes/{id}", Class: api.Local}: true,
-	{Method: http.MethodDelete, Pattern: "/v0/sandboxes/{id}", Class: api.Public}:   true,
+// getAndRm are the only sandbox-scoped routes a failed sandbox still answers; every other one is 409.
+var getAndRm = map[string]bool{
+	"GET /v0/sandboxes/{id}":    true,
+	"DELETE /v0/sandboxes/{id}": true,
 }
 
 // The walk reads api.Routes, so a route added to the daemon is covered here without an edit to this test.
@@ -26,7 +25,7 @@ func TestEveryVerbButGetAndRmIs409OnAFailedSandbox(t *testing.T) {
 	subst := strings.NewReplacer("{id}", failed.ID, "{exec}", "e1", "{name}", "n1")
 	walked := 0
 	for _, route := range api.Routes() {
-		if !strings.Contains(route.Pattern, "{id}") || getAndRm[route] {
+		if !strings.Contains(route.Pattern, "{id}") || getAndRm[route.Method+" "+route.Pattern] {
 			continue
 		}
 		walked++

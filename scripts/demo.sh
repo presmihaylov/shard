@@ -29,7 +29,10 @@ timed() {
 	awk -v a="${started}" -v b="${ended}" 'BEGIN { printf "  -> %.3f s\n", b - a }'
 }
 
-pid_of() { shard inspect "$1" | grep -o '"pid": *[0-9]*' | grep -o '[0-9]*$'; }
+# record is the state file of a sandbox, which holds the host side that inspect does not print.
+record() { echo "${SHARD_ROOT}/sandboxes/$(shard inspect "$1" | grep -o '"id": *"[^"]*"' | cut -d'"' -f4)/sandbox.json"; }
+
+pid_of() { grep -o '"pid": *[0-9]*' "$(record "$1")" | grep -o '[0-9]*$'; }
 
 # rss prints the resident set of a host pid, or "gone" once runsc holds nothing of the sandbox.
 rss() {
@@ -75,7 +78,7 @@ echo "  host RSS of pid ${PID}: ${RSS_BEFORE} KiB before, $(rss "${PID}") after"
 CGROUP="/sys/fs/cgroup/shard/$(shard inspect web | grep -o '"id": *"[^"]*"' | cut -d'"' -f4)/memory.current"
 echo "  ${CGROUP}: $([ -e "${CGROUP}" ] && echo present || echo gone)"
 echo "  host MemAvailable: +$(( $(mem_available_kib) - FREE_BEFORE )) KiB"
-show ls -la "$(shard inspect web | grep -o '"checkpoint": *"[^"]*"' | cut -d'"' -f4)"
+show ls -la "$(grep -o '"checkpoint": *"[^"]*"' "$(record web)" | cut -d'"' -f4)"
 
 timed shard resume web
 sleep 2

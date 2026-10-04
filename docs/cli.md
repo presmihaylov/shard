@@ -17,17 +17,27 @@ This is the final shape of every verb, flag and output of `shard`. The SDKs buil
 
 `daemon status` exits 1 when a background task is in backoff, after it prints the whole status.
 
-## Global flags
+## Global options
 
 They go before the verb.
 
 | flag | what |
 | --- | --- |
 | `--root <dir>` | where shard keeps its state (default `/var/lib/shard`) |
-| `--remote <url>` | the https URL of the proxy in front of `shard serve`; also `SHARD_REMOTE` |
-| `--token-file <path>` | a token file for `--remote`; the token comes from it, then `SHARD_API_KEY`, then `SHARD_TOKEN_FILE` |
-| `--ca-file <pem>` | the CA that signed the proxy's certificate; also `SHARD_CA_FILE` |
+| `--remote <url>` | the URL of the Shard API server, `shard serve` or the proxy in front of it; `http` or `https`, and `https` is recommended |
 | `--version` | print the client version; it never fails |
+
+A remote client reads three environment variables.
+
+| variable | what |
+| --- | --- |
+| `SHARD_REMOTE` | the API server URL; `--remote` overrides it |
+| `SHARD_API_KEY` | the API token, the `token` field of a `shard tokens mint` record |
+| `SHARD_CA_FILE` | a custom CA certificate file, for `https` only; unset, the host's trust store decides |
+
+An `http` remote encrypts nothing, so every command over one prints one warning to stderr and never
+to stdout. Use it only on localhost or through a trusted encrypted network. `SHARD_CA_FILE` with an
+`http` remote is refused before the client dials.
 
 `pull`, `image list`, `image remove`, `image prune` and `daemon status` run on the daemon host only,
 because `shard serve` refuses their routes. With `--remote` or `SHARD_REMOTE` set, each one fails
@@ -44,7 +54,7 @@ prints the same help. The help never lists an alias.
 
 ## Verbs
 
-`shard <verb> --help` prints the flags and an example. The format column is the default `--format`;
+`shard COMMAND --help` prints the options and examples. The format column is the default `--format`;
 a dash is a verb with no `--format`.
 
 ### Sandboxes
@@ -105,6 +115,7 @@ shard: sandbox <id> is paused: resume it with shard resume <id>
 
 | verb | flags | format | stdout |
 | --- | --- | --- | --- |
+| `capabilities` | `--format` | table | the eight lifecycle verbs and whether the server supports each |
 | `daemon` | `--provider --timeout --insecure-registry --log` | - | its log; `--log` on a Mac sends stdout and stderr to that file |
 | `daemon status` | `--format` | table | the daemon's state and its tasks |
 | `info` | `--format` | table | the provider a daemon would pick, and why |
@@ -129,11 +140,8 @@ nothing and fails.
 
 The values are synthetic.
 
-`list` prints an array of sandbox records. `id`, `image`, `provider`, `state`, `pid`, `netns_path`,
-`address`, `host_interface`, `resources` and `created_at` are always present on the daemon host. With
-`--remote`, the record leaves out `pid`, `netns_path`, `address`, `host_interface`, `checkpoint`,
-`pausing`, `exit_channel` and `unresponsive_reason`, and an implied DNS rule in `egress` names the
-group `dns`:
+`list` prints an array of sandbox records, the same on the daemon host and with `--remote`. `id`,
+`image`, `provider`, `state`, `resources` and `created_at` are always present:
 
 ```json
 [
@@ -143,10 +151,6 @@ group `dns`:
     "image": "python:3.12",
     "provider": "gvisor",
     "state": "running",
-    "pid": 41207,
-    "netns_path": "/var/run/netns/misty-otter-81c0",
-    "address": "10.87.0.2/16",
-    "host_interface": "shardv2",
     "resources": {"memory_mib": 512, "vcpus": 1, "disk_mib": 2048},
     "command": ["python", "-m", "http.server"],
     "restart": {"policy": "on-failure", "retries": 3, "backoff": 1, "count": 0, "gave_up": false, "ended": false},
@@ -158,8 +162,8 @@ group `dns`:
 ]
 ```
 
-`state` is `pending`, `created`, `running`, `paused`, `unresponsive`, `stopped` or `failed`. `pid` is
-0 when nothing runs. `resources` holds `memory_mib`, `vcpus` and `disk_mib`. Every other field is
+`state` is `pending`, `created`, `running`, `paused`, `unresponsive`, `stopped` or `failed`.
+`resources` holds `memory_mib`, `vcpus` and `disk_mib`. Every other field is
 absent when empty:
 
 | field | present when |
@@ -167,14 +171,10 @@ absent when empty:
 | `name` | the sandbox has a `--name` |
 | `kernel` | a microVM provider booted it; the guest kernel release tag |
 | `exit_status` | the entrypoint exited at least once: `{"code": 0, "signal": 0}` |
-| `exit_channel` | the daemon no longer reads the entrypoint exit from the guest, and why |
 | `stopped_reason` | shard stopped it with no operator, or `shard-init` died on a stop |
 | `failed_reason` | `state` is `failed` |
-| `unresponsive_reason` | `state` is `unresponsive` |
 | `digest` | the substrate created it; the image digest |
 | `snapshot` | `create --snapshot` made it; the snapshot id |
-| `checkpoint` | a pause wrote a checkpoint; the directory |
-| `pausing` | `true`, during a pause |
 | `command` | `run` made it; the app's argv |
 | `restart` | it has a restart policy |
 | `secrets` | it holds a placeholder; the secret names |
@@ -194,18 +194,14 @@ first one.
   "provider": "gvisor",
   "state": "stopped",
   "exit_status": {"code": 0, "signal": 0},
-  "pid": 0,
-  "netns_path": "/var/run/netns/misty-otter-81c0",
-  "address": "10.87.0.2/16",
-  "host_interface": "shardv2",
   "resources": {"memory_mib": 512, "vcpus": 1, "disk_mib": 2048},
   "policy": "api-only",
   "created_at": "2026-10-01T09:30:00Z",
   "egress": {
     "policy": "api-only",
     "rules": [
-      {"action": "allow", "destination": {"kind": "cidr", "value": "10.87.0.1"}, "protocol": "udp", "ports": [53], "id": "1", "implied": "dns"},
-      {"action": "allow", "destination": {"kind": "cidr", "value": "10.87.0.1"}, "protocol": "tcp", "ports": [53], "id": "2", "implied": "dns"},
+      {"action": "allow", "destination": {"kind": "group", "value": "dns"}, "protocol": "udp", "ports": [53], "id": "1", "implied": "dns"},
+      {"action": "allow", "destination": {"kind": "group", "value": "dns"}, "protocol": "tcp", "ports": [53], "id": "2", "implied": "dns"},
       {"action": "allow", "destination": {"kind": "domain", "value": "api.example.com"}, "protocol": "tcp", "ports": [80, 443], "id": "3"}
     ]
   }
@@ -290,6 +286,12 @@ null}` and the sandbox reaches nothing.
 }
 ```
 
+`capabilities` is the body of `GET /v0/capabilities`, the same eight keys for every provider:
+
+```json
+{"create": true, "start": true, "stop": true, "remove": true, "pause": true, "resume": true, "fork": false, "snapshot": true}
+```
+
 `version`. `shim` is `embedded` or `absent` on a Mac, as the VM shim is in the binary, and absent
 elsewhere:
 
@@ -303,9 +305,10 @@ line.
 
 ### Tables
 
-`list`, `image list`, `snapshot list`, `secret list`, `policy list`, `tokens list`, `info`, `daemon
-status` and `version` print tables by default. `list` prints `ID NAME IMAGE STATE UPTIME IP RESTART POLICY`, and
-`snapshot list` prints `ID NAME SOURCE IMAGE SIZE CREATED`.
+`list`, `image list`, `snapshot list`, `secret list`, `policy list`, `tokens list`, `info`,
+`capabilities`, `daemon status` and `version` print tables by default. `list` prints `ID NAME IMAGE
+STATE UPTIME RESTART POLICY`, `snapshot list` prints `ID NAME SOURCE IMAGE SIZE CREATED`, and
+`capabilities` prints `CAPABILITY SUPPORTED`.
 
 The tables of the JSON verbs:
 

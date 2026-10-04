@@ -336,7 +336,7 @@ func TestListRefusesAnAllThatIsNotABoolean(t *testing.T) {
 	s := seed(t)
 
 	status, body := get(t, s.server, "/v0/sandboxes?all=yes")
-	if status != http.StatusBadRequest || !strings.Contains(errorOf(t, body).message, "all=") {
+	if status != http.StatusBadRequest || !strings.Contains(errorOf(t, body).message, "query.all") {
 		t.Errorf("GET /v0/sandboxes?all=yes answered %d %v, want 400 naming the query", status, body)
 	}
 }
@@ -483,13 +483,8 @@ func TestAFailedRecordAnswersOnlyItsPublicReason(t *testing.T) {
 			}
 		}
 
-		status, body := get(t, s.server, "/v0/local/sandboxes/"+c.ref)
-		if status != http.StatusOK || body["failed_reason"] != failedCause {
-			t.Errorf("the local get of %s answered %d with failed_reason %v, want the raw cause", c.ref, status, body["failed_reason"])
-		}
-
 		// The logs route repeats the guard every lifecycle verb runs, so its 409 stands for theirs.
-		status, body = get(t, s.server, "/v0/sandboxes/"+c.ref+"/logs?follow=true")
+		status, body := get(t, s.server, "/v0/sandboxes/"+c.ref+"/logs?follow=true")
 		if refusal := errorOf(t, body); status != http.StatusConflict || refusal.code != string(models.CodeSandboxFailed) || !strings.Contains(refusal.message, c.want) {
 			t.Errorf("logs of %s answered %d %v, want 409 sandbox_failed with %q", c.ref, status, body, c.want)
 		}
@@ -569,11 +564,6 @@ func TestGetIs500WhenTheNameLinkIsBroken(t *testing.T) {
 
 	status, body := get(t, s.server, "/v0/sandboxes/broken")
 	wantInternal(t, s, status, body, "not a sandbox id")
-
-	status, body = get(t, s.server, "/v0/local/sandboxes/broken")
-	if status != http.StatusInternalServerError || !strings.Contains(errorOf(t, body).message, "not a sandbox id") {
-		t.Errorf("GET /v0/local/sandboxes/broken answered %d %v, want 500 with the whole cause", status, body)
-	}
 }
 
 func TestGetIs500WhenTheRecordIsUnreadable(t *testing.T) {
@@ -586,11 +576,6 @@ func TestGetIs500WhenTheRecordIsUnreadable(t *testing.T) {
 
 	status, body := get(t, s.server, "/v0/sandboxes/"+s.running.ID)
 	wantInternal(t, s, status, body, "decode")
-
-	status, body = get(t, s.server, "/v0/local/sandboxes/"+s.running.ID)
-	if status != http.StatusInternalServerError || !strings.Contains(errorOf(t, body).message, "decode") {
-		t.Errorf("GET of a corrupt record on the local route answered %d %v, want 500 with the whole cause", status, body)
-	}
 }
 
 func TestAnUnknownRouteIsAJSON404(t *testing.T) {

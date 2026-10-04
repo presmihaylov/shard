@@ -250,26 +250,24 @@ has its own setup, the LaunchDaemon under "Keep it up" above.
 
 ### The CLI on the Mac
 
-The native `shard` binary reaches the front with three flags, or with the environment variables
-behind them:
+The native `shard` binary reaches the front with three environment variables:
 
 ```
 install -d -m0700 ~/.shard
-(umask 077 && limactl shell shard sudo cat /etc/shard/mac.token > ~/.shard/token)
 limactl shell shard sudo cat /var/lib/caddy/.local/share/caddy/pki/authorities/local/root.crt > ~/.shard/ca.pem
 export SHARD_REMOTE=https://localhost:8443
-export SHARD_TOKEN_FILE=$HOME/.shard/token SHARD_CA_FILE=$HOME/.shard/ca.pem
+export SHARD_API_KEY=$(limactl shell shard sudo cat /etc/shard/mac.token | jq -r .token)
+export SHARD_CA_FILE=$HOME/.shard/ca.pem
 shard run -d alpine:3.20 sh -c 'echo hello from the VM'
 shard logs <id>
 shard list
 ```
 
-The client refuses a token file that everyone can read, which is why the `umask` is there. A script
-or a CI job exports `SHARD_API_KEY` in place of `SHARD_TOKEN_FILE`, set to the `token` field of the
-record in `mac.token`. The key wins when both are set, and the client never prints it. Every
-verb works this way, exec and `logs -f` included, because the front splices the bytes and the daemon
-sees the same requests as it does from the socket. `docs/daemon.md` has the flags, the scopes a token
-carries, and how to revoke a token.
+`SHARD_API_KEY` is the `token` field of the record in `mac.token`, which `jq` on the Mac reads out.
+The client never prints it.
+Every verb works this way, exec and `logs -f` included, because the front splices the bytes and the
+daemon sees the same requests as it does from the socket. `docs/daemon.md` has the variables, the
+scopes a token carries, and how to revoke a token.
 
 ### Tearing it down
 

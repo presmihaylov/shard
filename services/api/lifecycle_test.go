@@ -889,7 +889,7 @@ func TestStopIs400ForAnUnknownField(t *testing.T) {
 
 	status, got := send(t, s.server, http.MethodPost, "/v0/sandboxes/sandbox1/stop", `{"bogus":1}`)
 	refusal := errorOf(t, got)
-	if status != http.StatusBadRequest || refusal.code != "invalid_request" || !strings.Contains(refusal.message, `unknown field "bogus"`) {
+	if status != http.StatusBadRequest || refusal.code != "invalid_request" || !strings.Contains(refusal.message, "body.bogus") {
 		t.Errorf("POST stop with an unknown field answered %d %v, want 400 naming it", status, got)
 	}
 	if s.verbs.ref != "" {

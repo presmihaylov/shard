@@ -11,6 +11,7 @@ import (
 
 	"github.com/presmihaylov/shard/models"
 	"github.com/presmihaylov/shard/services/api"
+	"github.com/presmihaylov/shard/services/client"
 	"github.com/presmihaylov/shard/services/sandboxstate"
 )
 
@@ -30,10 +31,10 @@ func TestListJSONIsAnArrayOfTheRecords(t *testing.T) {
 		t.Fatalf("list --format json: %v", err)
 	}
 
-	var got []models.Sandbox
+	var got []client.Sandbox
 	decodeJSON(t, out.Bytes(), &got)
-	if len(got) != 2 || got[0].ID != "up-1" || got[1].ID != "down-2" || got[0].Address.String() != "10.44.0.2/24" {
-		t.Errorf("got %+v, want both records with their addresses", got)
+	if len(got) != 2 || got[0].ID != "up-1" || got[1].ID != "down-2" {
+		t.Errorf("got %+v, want both records", got)
 	}
 }
 
@@ -59,7 +60,7 @@ func TestListJSONWritesTheWholeValueBeforeItFailsOnAnUnreadableRecord(t *testing
 		t.Errorf("list returned %v, want the unreadable record named", err)
 	}
 
-	var got []models.Sandbox
+	var got []client.Sandbox
 	decodeJSON(t, out.Bytes(), &got)
 	if len(got) != 1 || got[0].ID != "up-1" {
 		t.Errorf("got %+v, want the one sandbox that is up", got)
@@ -256,6 +257,23 @@ func TestDaemonStatusJSONWritesTheValueThenFailsOnABackoff(t *testing.T) {
 	decodeJSON(t, []byte(out.String()), &got)
 	if got.PID != 7 || len(got.Tasks) != 1 || got.Tasks[0].LastError != "runsc is gone" {
 		t.Errorf("got %+v, want the whole status", got)
+	}
+}
+
+// The CLI writes the object the route answers, so a script reads the same keys either way.
+func TestCapabilitiesJSONIsTheObjectTheRouteAnswers(t *testing.T) {
+	var out bytes.Buffer
+
+	app, f := newClientApp(t, &out, models.Sandbox{})
+	f.providerSvc = &fakeLifecycleProvider{r: &recorder{}, noPause: true, noResume: true}
+	if err := app.Run(t.Context(), []string{"capabilities", "--format", "json"}); err != nil {
+		t.Fatalf("capabilities --format json: %v", err)
+	}
+
+	want := `{"create":true,"start":true,"stop":true,"remove":true,"pause":false,"resume":false,"fork":true,"snapshot":true}`
+	var got bytes.Buffer
+	if err := json.Compact(&got, out.Bytes()); err != nil || got.String() != want {
+		t.Errorf("capabilities --format json wrote %s (%v), want %s", out.String(), err, want)
 	}
 }
 

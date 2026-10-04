@@ -3,13 +3,13 @@ package cli
 import (
 	"bytes"
 	"errors"
-	"net/netip"
 	"slices"
 	"strings"
 	"testing"
 	"time"
 
 	"github.com/presmihaylov/shard/models"
+	"github.com/presmihaylov/shard/services/client"
 	"github.com/presmihaylov/shard/services/sandboxstate"
 )
 
@@ -45,8 +45,8 @@ func newListApp(t *testing.T, out *bytes.Buffer, left []models.Sandbox, unreadab
 
 func listed() []models.Sandbox {
 	return []models.Sandbox{
-		{ID: "up-1", Name: "web", Image: "alpine:3.20", State: models.StateRunning, CreatedAt: time.Now(), Address: netip.MustParsePrefix("10.44.0.2/24")},
-		{ID: "down-2", Image: "alpine:3.20", State: models.StateStopped, CreatedAt: time.Now(), Address: netip.MustParsePrefix("10.44.0.3/24")},
+		{ID: "up-1", Name: "web", Image: "alpine:3.20", State: models.StateRunning, CreatedAt: time.Now()},
+		{ID: "down-2", Image: "alpine:3.20", State: models.StateStopped, CreatedAt: time.Now()},
 	}
 }
 
@@ -63,16 +63,13 @@ func TestListShowsWhatIsUp(t *testing.T) {
 	if len(lines) != 2 {
 		t.Fatalf("list printed %d lines, want the header and the one sandbox that is up:\n%s", len(lines), out.String())
 	}
-	if !strings.HasPrefix(lines[0], "ID") || !strings.Contains(lines[0], "UPTIME") || !strings.Contains(lines[0], "IP") {
+	if !strings.HasPrefix(lines[0], "ID") || !strings.Contains(lines[0], "UPTIME") {
 		t.Errorf("the header is %q", lines[0])
 	}
-	for _, want := range []string{"up-1", "web", "alpine:3.20", "running", "10.44.0.2"} {
+	for _, want := range []string{"up-1", "web", "alpine:3.20", "running"} {
 		if !strings.Contains(lines[1], want) {
 			t.Errorf("the line %q lacks %q", lines[1], want)
 		}
-	}
-	if strings.Contains(lines[1], "/24") {
-		t.Errorf("the line %q shows the prefix, want the bare address", lines[1])
 	}
 }
 
@@ -161,7 +158,7 @@ func TestUptime(t *testing.T) {
 	}
 
 	for name, c := range cases {
-		sb := models.Sandbox{State: c.state, CreatedAt: created, StartedAt: c.started}
+		sb := client.Sandbox{State: c.state, CreatedAt: created, StartedAt: c.started}
 		if got := uptime(sb, now); got != c.want {
 			t.Errorf("%s: uptime is %q, want %q", name, got, c.want)
 		}
@@ -181,23 +178,6 @@ func TestListGivesTheReasonASandboxNobodyStoppedIsStopped(t *testing.T) {
 	}
 
 	if !strings.Contains(out.String(), "stopped (daemon restarted and found no process)") {
-		t.Errorf("list printed %q, want the state and the reason beside it", out.String())
-	}
-}
-
-func TestListGivesTheReasonASandboxIsUnresponsive(t *testing.T) {
-	var out bytes.Buffer
-
-	sandboxes := []models.Sandbox{{ID: "silent-1", Image: "alpine:3.20", State: models.StateUnresponsive,
-		UnresponsiveReason: "its shim (pid 42) did not answer within 5s", CreatedAt: time.Now()}}
-
-	app := newListApp(t, &out, sandboxes, nil)
-
-	if err := app.Run(t.Context(), []string{"list"}); err != nil {
-		t.Fatalf("list: %v", err)
-	}
-
-	if !strings.Contains(out.String(), "unresponsive (its shim (pid 42) did not answer within 5s)") {
 		t.Errorf("list printed %q, want the state and the reason beside it", out.String())
 	}
 }
@@ -303,7 +283,7 @@ func TestListPrintsNoHealthColumn(t *testing.T) {
 	}
 
 	header := strings.Fields(strings.SplitN(out.String(), "\n", 2)[0])
-	want := []string{"ID", "NAME", "IMAGE", "STATE", "UPTIME", "IP", "RESTART", "POLICY"}
+	want := []string{"ID", "NAME", "IMAGE", "STATE", "UPTIME", "RESTART", "POLICY"}
 	if !slices.Equal(header, want) {
 		t.Errorf("the header is %q, want %q", header, want)
 	}
