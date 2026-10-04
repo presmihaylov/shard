@@ -619,9 +619,9 @@ shard_front() {
 		"${PREFIX}/shard" --remote "https://127.0.0.1:${FRONT_TLS_PORT}" "$@"
 }
 
-# shard_plain drives a verb straight to the front over plain http, as on loopback, with no proxy.
+# shard_plain drives a verb straight to the front over plain http, with no proxy; an exported SHARD_CA_FILE would refuse it.
 shard_plain() {
-	SHARD_API_KEY="${TOKEN}" "${PREFIX}/shard" --remote "http://127.0.0.1:${SERVE_PORT}" "$@"
+	SHARD_API_KEY="${TOKEN}" SHARD_CA_FILE="" "${PREFIX}/shard" --remote "http://127.0.0.1:${SERVE_PORT}" "$@"
 }
 
 # recorded_sandboxes prints the id of every sandbox the root still records, whether a step tracked it or not.

@@ -44,8 +44,7 @@ func (f front) use(t *testing.T) []string {
 	return []string{"--remote", f.url}
 }
 
-// newFrontApp puts a fake daemon and an https front over it up, records a token in the front's ledger, and answers
-// the front and the signing key file the front signs and checks with.
+// newFrontApp answers an https front over a fake daemon, with a key its ledger holds, so no test needs a live daemon.
 func newFrontApp(t *testing.T, out *bytes.Buffer) (App, front, string) {
 	t.Helper()
 

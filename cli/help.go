@@ -644,26 +644,33 @@ func widest(rows []row) int {
 	return width
 }
 
-// wrap appends text to lead a word at a time, and starts a line indented by indent wherever the next word would pass the width or the text breaks its line.
+// wrap wraps each line of text on its own, so a newline in it starts a line indented by indent.
 func wrap(lead string, indent int, text string) string {
 	var lines []string
-	line, empty := lead, true
 	for i, part := range strings.Split(text, "\n") {
 		if i > 0 {
+			lead = strings.Repeat(" ", indent)
+		}
+		lines = append(lines, wrapLine(lead, indent, part))
+	}
+
+	return strings.Join(lines, "\n")
+}
+
+// wrapLine appends text to lead a word at a time, and starts a line indented by indent wherever the next word would pass the width.
+func wrapLine(lead string, indent int, text string) string {
+	var lines []string
+	line, empty := lead, true
+	for word := range strings.FieldsSeq(text) {
+		if !empty && len(line)+1+len(word) > helpWidth {
 			lines = append(lines, line)
 			line, empty = strings.Repeat(" ", indent), true
 		}
-		for word := range strings.FieldsSeq(part) {
-			if !empty && len(line)+1+len(word) > helpWidth {
-				lines = append(lines, line)
-				line, empty = strings.Repeat(" ", indent), true
-			}
-			if !empty {
-				line += " "
-			}
-			line += word
-			empty = false
+		if !empty {
+			line += " "
 		}
+		line += word
+		empty = false
 	}
 
 	return strings.Join(append(lines, line), "\n")

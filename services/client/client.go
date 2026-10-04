@@ -1,5 +1,4 @@
-// Package client is the typed side of the daemon's REST API, for the CLI. It speaks the unix
-// socket, or the same routes over http or https to a shard serve front or the proxy in front of it.
+// Package client is the typed side of the daemon's REST API, over the socket or an http or https remote.
 package client
 
 import (
