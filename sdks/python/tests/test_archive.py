@@ -158,6 +158,25 @@ def test_byte_cap(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     assert leftovers(dst) == []
 
 
+def negative(size: int) -> io.BytesIO:
+    """top/a with a GNU base-256 size of size, then top/b, which must never land."""
+    out = top(entry("top/a"), entry("top/b", data=b"hello"))
+    raw = bytearray(out.getvalue())
+    header = next(i for i in range(0, len(raw), 512) if raw[i : i + 6] == b"top/a\0")
+    raw[header + 124 : header + 136] = b"\xff" + (256**11 + size).to_bytes(11, "big")
+    raw[header + 148 : header + 156] = b" " * 8
+    raw[header + 148 : header + 156] = b"%06o\0 " % sum(raw[header : header + 512])
+    return io.BytesIO(bytes(raw))
+
+
+def test_negative_size_refused(tmp_path: Path) -> None:
+    with tarfile.open(fileobj=negative(-1)) as t:
+        assert t.getmember("top/a").size == -1
+    dst = refused(tmp_path, negative(-1), "a negative size")
+    assert not (dst / "b").exists()
+    assert leftovers(dst) == []
+
+
 def test_entry_cap(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(_archive, "MAX_ENTRIES", 2)
     refused(tmp_path, top(entry("top/a"), entry("top/b")), "runs past 2 entries")

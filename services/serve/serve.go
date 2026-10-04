@@ -631,7 +631,7 @@ func closeWrite(conn net.Conn) error {
 	return nil
 }
 
-// copyBothWays copies each direction until the daemon's answer ends, then ends the other copier's read.
+// copyBothWays copies each direction until the daemon's answer ends, then ends the other copier's read and drains the client.
 func copyBothWays(client, upstream net.Conn) error {
 	sent := make(chan error, 1)
 	go func() { sent <- forward(upstream, client) }()
@@ -642,8 +642,10 @@ func copyBothWays(client, upstream net.Conn) error {
 	if err := client.SetReadDeadline(time.Now()); err != nil {
 		return errors.Join(received, fmt.Errorf("end the read of %s: %w", client.RemoteAddr(), err))
 	}
+	ended := <-sent
 
-	return errors.Join(received, <-sent)
+	// A copier the deadline beat to a pipelined request leaves it unread, and a close over unread bytes is a reset.
+	return errors.Join(received, ended, linger(client))
 }
 
 // readStatusLine reads the daemon's response status line one byte at a time, so nothing past it is consumed and the splice that may follow loses no bytes.

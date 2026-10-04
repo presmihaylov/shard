@@ -38,6 +38,8 @@ from .rule_text import RuleText
 from .rule_text_action import RuleTextAction
 from .sandbox import Sandbox
 from .sandboxes_response import SandboxesResponse
+from .scope import Scope
+from .scopes_response import ScopesResponse
 from .secret import Secret
 from .secret_request import SecretRequest
 from .secrets_response import SecretsResponse
@@ -87,6 +89,8 @@ __all__ = (
     "RuleTextAction",
     "Sandbox",
     "SandboxesResponse",
+    "Scope",
+    "ScopesResponse",
     "Secret",
     "SecretRequest",
     "SecretsResponse",

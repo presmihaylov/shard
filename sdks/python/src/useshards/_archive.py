@@ -139,6 +139,9 @@ class _Unpacker:
         self.dirs.append((at, _mode(member)))
 
     def _file(self, name: str, member: tarfile.TarInfo, tar: tarfile.TarFile) -> None:
+        # A GNU base-256 size can be negative, which would wind the byte count back under the cap.
+        if member.size < 0:
+            raise UnsafeArchiveError(member.name, "a negative size")
         if member.size > MAX_BYTES - self.bytes:
             raise UnsafeArchiveError(member.name, f"the archive runs past {MAX_BYTES} bytes")
         self.bytes += member.size
