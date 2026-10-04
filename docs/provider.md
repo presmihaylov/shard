@@ -305,6 +305,16 @@ source, and never ends it as it ends a pause interrupted after its install. A VM
 older shard runs a `shard-init` whose freeze cannot reach the upper disk. Its state says so, and the
 pause is refused before any freeze, with an error that says to restart the sandbox first.
 
+The snapshot create resets every vsock stream of the guest. So the daemon dials the source's control
+and logs streams again after a fork, and thaws the guest over the new control stream (SHARD-462). An
+`exec` that runs across the capture loses its stream. It fails with an error that names the verb,
+and its command runs on in the sandbox with no reader. An `exec` that starts while the freeze holds
+is refused with `a fork holds the sandbox frozen, and nothing starts in it until that ends: run the
+command again`, and it runs once the verb returns. A restart of the entrypoint waits out the freeze.
+If the guest takes no new control stream within 30 s, the fork fails with an error that says the
+source stays frozen. `stop` and `rm` of that source still work, the daemon dials on until the guest
+answers and thaws it, and the next daemon start thaws it from the capture marker.
+
 A `pause` takes a Firecracker Diff snapshot, which writes only the pages that the guest wrote since
 the vmm booted or loaded (SHARD-450, SHARD-451, SHARD-458). Every boot and every load turns on
 firecracker's dirty-page log, and each snapshot reads and clears it. After a boot, the pages that

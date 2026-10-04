@@ -1315,6 +1315,102 @@ func TestAForkOfARunningSandboxLeavesTheSourceRunning(t *testing.T) {
 	}
 }
 
+// An exec that starts while a fork holds the source frozen is refused by name, and the control stream the capture reset is dialed again and thaws the source (SHARD-462).
+func TestAnExecWhileAForkHoldsTheSourceIsRefused(t *testing.T) {
+	h := newHarness(t)
+	requireReflink(t, h.root)
+	spec, pid := h.runLong(t)
+	watchControls(t, spec)
+	if err := os.WriteFile(filepath.Join(spec.StateDir, execInFreezeFile), []byte(spec.ID), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := h.provider.Fork(t.Context(), spec.ID, h.forkSpec(t)); err != nil {
+		t.Fatalf("Fork: %v", err)
+	}
+	refused, err := os.ReadFile(filepath.Join(spec.StateDir, execResultFile))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if want := fmt.Sprintf("sandbox %s could not run the command: a fork holds the sandbox frozen", spec.ID); !strings.Contains(string(refused), want) {
+		t.Errorf("the exec while the fork held the source = %q, want %q", refused, want)
+	}
+	status, err := h.provider.Status(t.Context(), spec.ID)
+	if err != nil || status.State != models.StateRunning || status.PID != pid {
+		t.Fatalf("Status of the source after the fork = %+v, %v, want running as pid %d", status, err, pid)
+	}
+	want := []string{supervisor.KindFreeze, "attach", supervisor.KindThaw}
+	if got := controls(t, spec.StateDir, want...); !slices.Equal(got, want) {
+		t.Errorf("the guest of the source read %q, want the freeze, a control stream dialed again and the thaw on it", got)
+	}
+	exit, err := h.provider.Exec(t.Context(), spec.ID, models.ExecSpec{Argv: []string{"/bin/sh", "-c", "exit 0"}})
+	if err != nil || exit.Code != 0 {
+		t.Fatalf("Exec on the source after the fork = %+v, %v, want exit 0", exit, err)
+	}
+}
+
+// A source whose guest takes no control stream after the capture fails the fork by name, keeps its marker for the next daemon, and still stops (SHARD-462).
+func TestAForkWhoseSourceTakesNoStreamAgainSaysItIsFrozen(t *testing.T) {
+	h := newHarness(t)
+	spec, _ := h.severedFork(t)
+
+	if _, err := os.Stat(filepath.Join(spec.StateDir, firecracker.CaptureFile)); err != nil {
+		t.Fatalf("the capture marker after the failed fork: %v, want kept for the next daemon", err)
+	}
+	if err := h.provider.Stop(t.Context(), spec.ID, stopGrace); err != nil {
+		t.Fatalf("Stop of the frozen source: %v", err)
+	}
+	status, err := h.provider.Status(t.Context(), spec.ID)
+	if err != nil || status.Alive() {
+		t.Fatalf("Status of the source after the stop = %+v, %v, want stopped", status, err)
+	}
+}
+
+// The stream the daemon dials on after a failed fork thaws the source once its guest takes one (SHARD-462).
+func TestASourceAFailedForkLeftFrozenThawsOnALaterStream(t *testing.T) {
+	h := newHarness(t)
+	spec, pid := h.severedFork(t)
+
+	if err := os.Remove(filepath.Join(spec.StateDir, severOnResetFile)); err != nil {
+		t.Fatal(err)
+	}
+	if err := syscall.Kill(pid, syscall.SIGUSR2); err != nil {
+		t.Fatalf("let streams through the fake vmm again: %v", err)
+	}
+	want := []string{supervisor.KindFreeze, "attach", supervisor.KindThaw}
+	deadline := time.Now().Add(10 * time.Second)
+	for got := controls(t, spec.StateDir, want...); !slices.Equal(got, want); got = controls(t, spec.StateDir, want...) {
+		if time.Now().After(deadline) {
+			t.Fatalf("the guest of the source read %q, want the freeze, then a stream dialed again and the thaw on it", got)
+		}
+		time.Sleep(50 * time.Millisecond)
+	}
+	exit, err := h.provider.Exec(t.Context(), spec.ID, models.ExecSpec{Argv: []string{"/bin/sh", "-c", "exit 0"}})
+	if err != nil || exit.Code != 0 {
+		t.Fatalf("Exec on the thawed source = %+v, %v, want exit 0", exit, err)
+	}
+}
+
+// severedFork forks a running source whose transport the capture's reset severs, so the redial runs out, and returns the source and its vmm pid.
+func (h *harness) severedFork(t *testing.T) (models.SandboxSpec, int) {
+	t.Helper()
+
+	requireReflink(t, h.root)
+	spec, pid := h.runLong(t)
+	watchControls(t, spec)
+	t.Cleanup(firecracker.SetRedialGrace(500 * time.Millisecond))
+	if err := os.WriteFile(filepath.Join(spec.StateDir, severOnResetFile), nil, 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	err := h.provider.Fork(t.Context(), spec.ID, h.forkSpec(t))
+	if want := fmt.Sprintf("sandbox %s stays frozen after the fork", spec.ID); err == nil || !strings.Contains(err.Error(), want) {
+		t.Fatalf("Fork over a severed source = %v, want %q", err, want)
+	}
+
+	return spec, pid
+}
+
 // A fork takes a running source only: a paused one is refused by name, and the fork's directory keeps no record and no capture (SHARD-462).
 func TestAForkOfAPausedSandboxIsRefused(t *testing.T) {
 	h := newHarness(t)
@@ -1697,7 +1793,7 @@ func TestAGuestACutPauseLeftFrozenIsThawedByTheNextDaemon(t *testing.T) {
 	if _, err := control.Next(); err != nil {
 		t.Fatal(err)
 	}
-	if err := control.Freeze(t.Context()); err != nil {
+	if err := control.Freeze(t.Context(), models.VerbPause); err != nil {
 		t.Fatal(err)
 	}
 	if err := control.Close(); err != nil {
@@ -1740,7 +1836,7 @@ func TestAnAdoptedFrozenGuestThatRefusesTheReseedIsEnded(t *testing.T) {
 	if _, err := control.Next(); err != nil {
 		t.Fatal(err)
 	}
-	if err := control.Freeze(t.Context()); err != nil {
+	if err := control.Freeze(t.Context(), models.VerbPause); err != nil {
 		t.Fatal(err)
 	}
 	if err := control.Close(); err != nil {

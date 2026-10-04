@@ -8,6 +8,7 @@ import (
 	"io/fs"
 	"os"
 	"path/filepath"
+	"time"
 
 	"github.com/presmihaylov/shard/models"
 	fcapi "github.com/presmihaylov/shard/pkg/firecracker"
@@ -64,18 +65,18 @@ func (p *Provider) install(ctx context.Context, id string, dir string) (*machine
 	// A pause cut after the vCPUs stopped left the VM paused, and this one carries on from there.
 	if info.State != fcapi.StatePaused {
 		// A guest process the snapshot held mid-run would draw from the saved crng key before a restore's reseed, so the guest is frozen first (SHARD-409).
-		if err := m.freeze(ctx); err != nil {
-			return nil, abandon(m, tmp, fmt.Errorf("sandbox %s: freeze the guest before the pause: %w", id, err))
+		if err := m.freeze(ctx, models.VerbPause); err != nil {
+			return nil, p.abandon(m, tmp, fmt.Errorf("sandbox %s: freeze the guest before the pause: %w", id, err))
 		}
 		if err := m.client.Pause(); err != nil {
-			return nil, abandon(m, tmp, fmt.Errorf("pause sandbox %s: %w", id, err))
+			return nil, p.abandon(m, tmp, fmt.Errorf("pause sandbox %s: %w", id, err))
 		}
 	}
-	if err := p.stageSnapshot(m, r, stateDir, tmp); err != nil {
-		return nil, abandon(m, tmp, fmt.Errorf("sandbox %s: %w", id, err))
+	if err := p.stageSnapshot(m, r, models.VerbPause, stateDir, tmp); err != nil {
+		return nil, p.abandon(m, tmp, fmt.Errorf("sandbox %s: %w", id, err))
 	}
 	if err := store.SwapDir(tmp, dir); err != nil {
-		return nil, abandon(m, tmp, fmt.Errorf("install the snapshot of sandbox %s: %w", id, err))
+		return nil, p.abandon(m, tmp, fmt.Errorf("install the snapshot of sandbox %s: %w", id, err))
 	}
 
 	return m, nil
@@ -118,9 +119,9 @@ func (p *Provider) snapshotSource(ctx context.Context, id, verb string) (*machin
 }
 
 // stageSnapshot writes the vmm's state and memory, a copy of the overlay and the metadata into tmp, and marks it complete; the vCPUs are stopped, so the overlay is still.
-func (p *Provider) stageSnapshot(m *machine, r record, stateDir, tmp string) error {
+func (p *Provider) stageSnapshot(m *machine, r record, verb, stateDir, tmp string) error {
 	snap := filepath.Join(m.jail, jailSnap)
-	if err := p.snapshotInto(m, r, snap, tmp); err != nil {
+	if err := p.snapshotInto(m, r, verb, snap, tmp); err != nil {
 		return errors.Join(err, os.RemoveAll(snap))
 	}
 	// The copy shares the overlay's blocks or is refused: a fork that copied every byte is not what the verb promises.
@@ -164,8 +165,8 @@ func (p *Provider) seedMemory(m *machine, r record, snap string) error {
 	return nil
 }
 
-// snapshotInto has the vmm write its state and memory into a directory of the jail, then moves both into tmp as root's.
-func (p *Provider) snapshotInto(m *machine, r record, snap, tmp string) error {
+// snapshotInto has the vmm write its state and memory for verb into a directory of the jail, then moves both into tmp as root's.
+func (p *Provider) snapshotInto(m *machine, r record, verb, snap, tmp string) error {
 	// A pause cut after the snapshot left its files, which the vmm refuses to write over.
 	if err := os.RemoveAll(snap); err != nil {
 		return fmt.Errorf("clear %s: %w", snap, err)
@@ -186,8 +187,13 @@ func (p *Provider) snapshotInto(m *machine, r record, snap, tmp string) error {
 	}
 	// Once shard attempts a create, it conservatively treats the next snapshot as Full.
 	m.wholeLog = false
+	// The create resets every vsock stream of the guest, so the run after it dials the control stream again, and no exec waits on a dead one.
+	m.resetBy = verb
 	if err := m.client.Snapshot(kind, jailSnap+jailState, jailSnap+jailMemory); err != nil {
-		return fmt.Errorf("snapshot the vm: %w", err)
+		return errors.Join(fmt.Errorf("snapshot the vm: %w", err), m.cutExecs(verb))
+	}
+	if err := m.cutExecs(verb); err != nil {
+		return err
 	}
 	// The vmm wrote both as its own uid and with its own umask; out of the jail they are root's, as every other snapshot file is.
 	for _, name := range []string{snapshotState, memoryFile} {
@@ -207,25 +213,27 @@ func (p *Provider) snapshotInto(m *machine, r record, snap, tmp string) error {
 }
 
 // abandon gives up a pause that could not complete: the VM and its guest run on and the staging directory goes.
-func abandon(m *machine, tmp string, err error) error {
-	return errors.Join(err, runAgain(m), os.RemoveAll(tmp))
+func (p *Provider) abandon(m *machine, tmp string, err error) error {
+	return errors.Join(err, p.runAgain(m), os.RemoveAll(tmp))
 }
 
-// freeze holds the guest for the pause in flight, which a stream dialed again meanwhile leaves frozen.
-func (m *machine) freeze(ctx context.Context) error {
+// freeze holds the guest for the verb in flight, which a stream dialed again meanwhile leaves frozen.
+func (m *machine) freeze(ctx context.Context, verb string) error {
 	m.freezing.Lock()
 	defer m.freezing.Unlock()
 	m.pausing = true
 
-	return m.control.Load().Freeze(ctx)
+	return m.control.Load().Freeze(ctx, verb)
 }
 
-// runAgain resumes the VM if the pause got that far, then thaws the guest, which a paused VM could never answer.
-func runAgain(m *machine) error {
+// runAgain resumes the VM if the pause got that far, then thaws the guest, over a control stream dialed again once a snapshot create reset the old one.
+func (p *Provider) runAgain(m *machine) error {
 	// A reconnect swaps and thaws under freezing too, so either this thaw lands on the stream it put in, or that reconnect thaws.
 	m.freezing.Lock()
 	defer m.freezing.Unlock()
 	m.pausing = false
+	verb := m.resetBy
+	m.resetBy = ""
 
 	info, err := m.client.State(context.Background())
 	if err != nil {
@@ -236,12 +244,36 @@ func runAgain(m *machine) error {
 			return fmt.Errorf("resume sandbox %s: %w", m.id, err)
 		}
 	}
-	// The thaw outlives the pause's caller: a guest left frozen runs nothing again.
-	if err := m.control.Load().Thaw(context.Background()); err != nil {
-		return fmt.Errorf("sandbox %s: thaw the guest: %w", m.id, err)
-	}
+	if verb == "" {
+		// The thaw outlives the pause's caller: a guest left frozen runs nothing again.
+		if err := m.control.Load().Thaw(context.Background()); err != nil {
+			return fmt.Errorf("sandbox %s: thaw the guest: %w", m.id, err)
+		}
 
-	return nil
+		return nil
+	}
+	m.kickLogs()
+
+	return p.redial(m, verb)
+}
+
+// redial puts in a control stream dialed again after verb's snapshot create, whose replay has adopt thaw the guest; the caller holds freezing.
+func (p *Provider) redial(m *machine, verb string) error {
+	deadline := time.Now().Add(redialGrace)
+	for {
+		if !m.alive() {
+			return fmt.Errorf("sandbox %s stays frozen after the %s: its vmm no longer runs the VM", m.id, verb)
+		}
+		adopted, err := p.dialAgain(m, time.Until(deadline))
+		if adopted {
+			return err
+		}
+		if time.Now().After(deadline) {
+			// The follower waits on the stream the reset killed, so it ends here and the follower dials on until a guest answers.
+			return errors.Join(fmt.Errorf("sandbox %s stays frozen after the %s: its guest took no new control stream within %s: %w", m.id, verb, redialGrace, err), closeControl(m.control.Load()))
+		}
+		time.Sleep(max(pollInterval, m.refusals.Note(err)))
+	}
 }
 
 // Resume brings the sandbox back from the snapshot in dir, in a fresh vmm over its own copy of the snapshot's overlay; the snapshot stays for the next one.
@@ -375,7 +407,7 @@ func (p *Provider) capture(ctx context.Context, id, dir string) error {
 	}
 
 	// A source this run left paused keeps its marker, so the next daemon's adopt runs it again rather than end it as a cut pause.
-	if runErr := runAgain(m); runErr != nil {
+	if runErr := p.runAgain(m); runErr != nil {
 		return errors.Join(err, runErr)
 	}
 
@@ -395,13 +427,13 @@ func (p *Provider) hold(ctx context.Context, id, dir string) (*machine, error) {
 		return nil, fmt.Errorf("mark the capture of sandbox %s: %w", id, err)
 	}
 	// A guest process the capture held mid-run would draw from the saved crng key before the fork's reseed, so the guest is frozen first (SHARD-409).
-	if err := m.freeze(ctx); err != nil {
+	if err := m.freeze(ctx, models.VerbFork); err != nil {
 		return m, fmt.Errorf("sandbox %s: freeze the guest before the capture: %w", id, err)
 	}
 	if err := m.client.Pause(); err != nil {
 		return m, fmt.Errorf("pause sandbox %s for the capture: %w", id, err)
 	}
-	if err := p.stageSnapshot(m, r, m.dir, dir); err != nil {
+	if err := p.stageSnapshot(m, r, models.VerbFork, m.dir, dir); err != nil {
 		return m, fmt.Errorf("sandbox %s: %w", id, err)
 	}
 

@@ -2,6 +2,7 @@ package firecracker
 
 import (
 	"context"
+	"time"
 
 	"github.com/presmihaylov/shard/models"
 	fcapi "github.com/presmihaylov/shard/pkg/firecracker"
@@ -79,3 +80,11 @@ const CaptureFile = captureFile
 
 // CaptureDir is where a fork stages its source's capture, in the fork's own state directory.
 const CaptureDir = captureDir
+
+// SetRedialGrace shortens the wait for the control stream a snapshot's run dials again, which a test runs out on purpose.
+func SetRedialGrace(grace time.Duration) (restore func()) {
+	was := redialGrace
+	redialGrace = grace
+
+	return func() { redialGrace = was }
+}

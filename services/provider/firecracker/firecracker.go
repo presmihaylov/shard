@@ -131,6 +131,9 @@ const (
 	startGrace = 30 * time.Second
 )
 
+// redialGrace bounds the control stream a snapshot's run dials again, past which the source is reported frozen; a test shortens it.
+var redialGrace = startGrace
+
 // JailSockets names every socket a sandbox's vmm binds in its jail under base, so the daemon refuses a root they do not fit under.
 func JailSockets(base, id string) []string {
 	root := jailRoot(base, id)
