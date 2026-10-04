@@ -136,11 +136,16 @@ type fakeRepo struct {
 	// checkpointDir and stateDir replace the fixed paths when a test needs the directory to exist on disk.
 	checkpointDir string
 	stateDir      string
+	// onGet runs inside every Get, so a test moves the record on the goroutine that polls it.
+	onGet func()
 }
 
 func (f *fakeRepo) Get(id string) (models.Sandbox, error) {
 	if err := f.r.record("repo.Get"); err != nil {
 		return models.Sandbox{}, err
+	}
+	if f.onGet != nil {
+		f.onGet()
 	}
 	if f.made != nil && id == f.made.ID {
 		return *f.made, nil

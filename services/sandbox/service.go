@@ -547,6 +547,15 @@ func diskRefused(err error) error {
 	return err
 }
 
+// userRefused makes the request's fault a user or group the image does not list; the substrate's wrapping says nothing the caller can fix.
+func userRefused(err error) error {
+	if unknown, ok := errors.AsType[*bundle.UnknownUserError](err); ok {
+		return &RequestError{Err: unknown}
+	}
+
+	return err
+}
+
 // diskAdmitter reserves the disk of a new sandbox before its record exists; only the VM substrates hold a disk file.
 type diskAdmitter interface {
 	AdmitDisk(dir string, res models.Resources) error
@@ -666,7 +675,7 @@ func (s *Service) Complete(ctx context.Context, id string, req CreateRequest) (e
 	td.Push(func(ctx context.Context) error { return s.cfg.Provider.Remove(ctx, id) })
 
 	if err := s.cfg.Provider.Create(ctx, spec); err != nil {
-		return err
+		return userRefused(err)
 	}
 
 	if err := s.recordCreated(ctx, spec, img.Digest); err != nil {
