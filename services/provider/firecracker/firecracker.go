@@ -129,6 +129,9 @@ const (
 	adoptBound = 4 * time.Second
 	// startGrace bounds the wait for the supervisor to answer on vsock once the vmm is up.
 	startGrace = 30 * time.Second
+	// snapshotFloor and snapshotRate bound one snapshot create: a Full writes the guest's whole memory, which any disk that writes snapshotRate MiB a second finishes (SHARD-559).
+	snapshotFloor = 30 * time.Second
+	snapshotRate  = 8
 )
 
 // redialGrace bounds the control stream a snapshot's run dials again, past which the source is reported frozen; a test shortens it.
