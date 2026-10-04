@@ -615,6 +615,21 @@ func Pinned(ref, digest string) (string, error) {
 	return parsed.Context().Digest(digest).Name(), nil
 }
 
+// DigestOf is the digest a by-digest reference names, so a holder found by digest matches an rm by tag.
+func DigestOf(ref string) (string, bool) {
+	parsed, err := parseRef(ref)
+	if err != nil {
+		return "", false
+	}
+
+	digest, ok := parsed.(name.Digest)
+	if !ok {
+		return "", false
+	}
+
+	return digest.DigestStr(), true
+}
+
 // parseRef also rejects what ParseReference accepts and a later path join would not: a . or .. segment.
 func parseRef(ref string) (name.Reference, error) {
 	parsed, err := name.ParseReference(ref)
