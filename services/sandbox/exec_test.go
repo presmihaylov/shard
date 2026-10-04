@@ -261,7 +261,6 @@ func TestExecRefusesASandboxTheRecordDoesNotHold(t *testing.T) {
 	}
 }
 
-// A record that says stopped outranks the oom count the cgroup kept: the user stopped this one.
 // A stop that tore the runtime down under an in-flight exec answers sandbox_not_running, never a 500 internal (SHARD-563).
 func TestExecThatRacesAStopAnswersSandboxNotRunning(t *testing.T) {
 	r := &recorder{}
@@ -293,6 +292,28 @@ func TestExecThatRacesARemoveAnswersNotFound(t *testing.T) {
 	}
 }
 
+// A teardown that holds the lock past the budget leaves the record unread, so the launch error is a 504 timeout, never a raw 500 (SHARD-563).
+func TestExecThatRacesAHeldTeardownAnswersTimeout(t *testing.T) {
+	r := &recorder{}
+	svc, l := newService(t, r, running(), func(cfg *sandbox.Config) { cfg.ExecStartBudget = 20 * time.Millisecond })
+	l.provider.serve = func(models.ExecSpec) (models.ExitStatus, error) {
+		return models.ExitStatus{}, errors.New("the runtime ended before the launch shim was ready")
+	}
+
+	unlock, err := svc.Hold(t.Context(), "sandbox1")
+	if err != nil {
+		t.Fatalf("Hold: %v", err)
+	}
+	defer unlock()
+
+	_, err = svc.CreateExec(t.Context(), "sandbox1", sandbox.ExecRequest{Command: []string{"echo", "hi"}})
+	timeout, ok := errors.AsType[*sandbox.SubstrateTimeoutError](err)
+	if !ok || timeout.Op != "exec" {
+		t.Fatalf("CreateExec answered %v, want a SubstrateTimeoutError for exec", err)
+	}
+}
+
+// A record that says stopped outranks the oom count the cgroup kept: the user stopped this one.
 func TestExecRefusesAStoppedSandboxWithoutTheProvider(t *testing.T) {
 	r := &recorder{}
 	sb := running()

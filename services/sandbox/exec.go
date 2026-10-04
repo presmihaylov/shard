@@ -1404,11 +1404,13 @@ func (s *Service) endedUnderExec(id string, session *execSession, err error) err
 	}
 
 	// Stop and remove hold the per-sandbox lock until the record is settled, so the read past it is deterministic, never the teardown's own half-written state.
-	lockCtx, cancel := context.WithTimeout(context.Background(), s.execStartBudget())
+	budget := s.execStartBudget()
+	lockCtx, cancel := context.WithTimeout(context.Background(), budget)
 	defer cancel()
 	unlock, lockErr := s.lock(lockCtx, id)
+	// A teardown that holds the lock past the budget is the timeout itself, so name it 504, never a raw 500.
 	if lockErr != nil {
-		return err
+		return &SubstrateTimeoutError{ID: id, Op: "exec", Budget: budget}
 	}
 	defer unlock()
 
