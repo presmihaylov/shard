@@ -71,7 +71,8 @@ reason the unit sets `KillMode=process`, so that systemd ends only the daemon an
 sandboxes running.
 
 An exec is a resource the daemon owns for the life of the sandbox. The daemon starts the command at
-once and keeps the last 8 MiB of its output. A client that drops can re-attach by exec id, replay
+once and keeps the last 8 MiB of its output. The create answers only once the command's `execve`
+took, so a command that cannot start gets no exec id. A client that drops can re-attach by exec id, replay
 what it missed and stream the rest. One client attaches at a time. The command waits for that client
 rather than evict output the client has not taken. A client that takes nothing for 30 s
 (`ExecStallBound`) is detached, the command keeps running, and `lost_bytes` counts what no client
@@ -526,10 +527,13 @@ and `image prune` leaves it.
 - `POST /v0/sandboxes/{id}/exec` takes `{"command", "env", "workdir", "user", "stdin", "tty",
   "size": {"rows", "cols"}, "attach"}`, where `attach` holds the output for the first attach under the
   same 30 s bound. The route validates the body, starts the command at once, and answers 201 with
-  the exec record:
+  the exec record once the command's `execve` took:
   `{"exec", "sandbox", "command", "state": "running"|"exited", "exit_status": {"code",
   "signal"} or null, "started_at", "exited_at", "truncated", "lost_bytes"}`. Errors: 400 for a body that does not decode or
-  a request that names no command, 404, and 409 when no command can run in the sandbox.
+  a request that names no command, 404, and 409 when no command can run in the sandbox. A command
+  that is not there or cannot run answers 422 `command_not_started`, and the daemon keeps no record
+  of it. A launch that 20 s (`DefaultExecStartBudget`) does not prove answers 504
+  `substrate_timeout`, and the daemon ends the command.
 - `GET /v0/sandboxes/{id}/exec` answers `{"execs": [...], "next"}` with every exec the sandbox holds.
 - `GET /v0/sandboxes/{id}/exec/{exec-id}` answers the exec record. With `?wait=true` it holds the
   answer until the command ends, then answers the ended record. With the WebSocket handshake it
@@ -716,14 +720,15 @@ else that a refusal carries lives inside `error`, and the root never holds anyth
 | `no_checkpoint` | 409 | resume on a paused sandbox whose record names no checkpoint |
 | `unsupported` | 409 | the provider does not claim the verb |
 | `in_use` | 409 | delete a policy, secret or image that sandboxes hold, delete an image that snapshots hold, or move the placeholder of a secret sandboxes hold. `error` then adds `"holders": [ids]`. Also a second attach of an exec, without holders |
+| `command_not_started` | 422 | an exec whose command never started: it is not there, it cannot run, or its interpreter is not there. The message names the command and the kernel's reason, never a host path. `error` then adds `"exit_code"`, 127 for a command that is not there and 126 for one that cannot run, as a shell answers |
 | `name_taken` | 409 | a create whose `name` another sandbox already holds, or a snapshot create whose `name` another snapshot holds |
 | `unauthorized` | 401 | the TCP front, when the request carries no valid bearer token, and then the front dials nothing |
 | `forbidden` | 403 | the TCP front, when the token is valid but its scopes do not reach the route, and then the front dials nothing. Also the daemon, on a create that names a secret without `secret:*` or a policy without `policy:*` |
-| `substrate_timeout` | 504 | a stop, remove or restart whose substrate status call did not answer within the budget. Retry it once the runtime frees. On gVisor, rm --force reclaims through the wedge instead. It SIGKILLs the sandbox's own runsc processes, which it finds by the sandbox's cgroup and by the sandbox id on their command line, then finishes the teardown. It answers this code only when that kill fails too |
+| `substrate_timeout` | 504 | a stop, remove or restart whose substrate status call did not answer within the budget, or an exec whose launch the substrate did not prove within 20 s. Retry it once the runtime frees. On gVisor, rm --force reclaims through the wedge instead. It SIGKILLs the sandbox's own runsc processes, which it finds by the sandbox's cgroup and by the sandbox id on their command line, then finishes the teardown. It answers this code only when that kill fails too |
 | `internal` | 500 | anything else, and the message says what the daemon got back |
 
 `services/client` decodes only that object into `*client.APIError`, with `Status`, `Code`,
-`Message` and `Holders`. A caller therefore matches on the code with `errors.As`, never on the
+`Message`, `Holders` and `ExitCode`. A caller therefore matches on the code with `errors.As`, never on the
 text. A body of any other shape is quoted as it came, under `internal`.
 
 The base path is `/v0`, and `/v0` may change until launch 1. SHARD-83 freezes the contract as `/v1`.
