@@ -43,6 +43,7 @@ the granted host in that policy.
 shard stop web
 shard secret grant web OPENAI_API_KEY
 shard start web
+shard stop web
 shard secret ungrant web OPENAI_API_KEY
 ```
 
@@ -93,11 +94,12 @@ shard secret set --destination api.stripe.com --placeholder sk_test_placeholder0
 A chosen placeholder uses only letters, digits, `_`, `-` and `.`, so no URL, JSON or base64 encoder
 ever changes it on the way out. It is refused in four cases: when it is inside the value, when it is
 shorter than 8 characters, when it holds anything outside that set, or when another secret already
-owns it as its own placeholder or as its default. The default `mock-NAME` is exempt from all but the
-first, so a short name still gets one. Only a placeholder that this call names is checked for shape,
-so the placeholder the record carries forward never blocks a rotation. Changing the placeholder of a
-secret that a sandbox holds is refused, because that guest already holds the old one. Ungrant it
-first. `shard secret list` prints the placeholder.
+owns it as its own placeholder or as its default. The default `mock-NAME` is exempt from the length
+and the character checks, so a short name still gets one, but not from the other two. Only a
+placeholder that this call names is checked for shape, so the placeholder the record carries forward
+never blocks a rotation. Changing the placeholder of a secret that a sandbox holds is refused,
+because that guest already holds the old one. Ungrant it first. `shard secret list` prints the
+placeholder.
 
 **The value.** `shard secret set` takes the value in one of three ways. It reads stdin when the value
 is `-` or when stdin is a pipe. Use stdin in a script, because the value then lands in no shell

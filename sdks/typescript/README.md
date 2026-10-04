@@ -93,3 +93,13 @@ error. Read `result.exitCode`.
 ## License
 
 Apache-2.0.
+
+## Lists and errors
+
+`shard.list()` returns `{ sandboxes, warnings }`. `shard.secrets.list()` returns
+`{ secrets, warnings }`. The warnings name entries the daemon could not read. Both lists collect
+warnings from every page, keeping each exact text once in first-seen order. Check them before you
+treat the result as complete. Other lists return arrays.
+
+An `APIError` can carry `holders`, the sandbox ids that prevent an operation such as secret removal.
+The property is `undefined` when the error has no holders field.
