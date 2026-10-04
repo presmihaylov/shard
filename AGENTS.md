@@ -37,7 +37,8 @@ make fmt                     apply formatting
 make check                   the same gates as CI; must pass before every commit
 make vuln                    govulncheck
 make openapi                 write docs/openapi.json from the routes; make test fails while it differs (SHARD-489)
-make sdk-ts-check            the TypeScript SDK's typecheck, unit tests and build; needs Node 22
+make sdk-ts                  regenerate the TypeScript SDK's private types from docs/openapi.json
+make sdk-ts-check            the TypeScript SDK's drift check, typecheck, unit tests and build; needs Node 22
 ```
 
 ## Layout
