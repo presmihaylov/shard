@@ -158,7 +158,7 @@ type CreateRequest struct {
 	Secrets []string `json:"secrets,omitempty"`
 	// Policy is what the host enforces for the sandbox.
 	Policy    string          `json:"policy,omitempty"`
-	Resources ResourceRequest `json:"resources"`
+	Resources ResourceRequest `json:"resources" required:"false"`
 	// Restart is when the supervisor starts the entrypoint again inside the sandbox, nil for never.
 	Restart *models.RestartSpec `json:"restart,omitempty"`
 }
@@ -166,8 +166,8 @@ type CreateRequest struct {
 // ResourceRequest is the bounds a create asks for. A nil memory is an omitted --memory, which a snapshot fills, and 0 is no bound.
 type ResourceRequest struct {
 	MemoryMiB *int64 `json:"memory_mib,omitempty"`
-	VCPUs     int    `json:"vcpus"`
-	DiskMiB   int64  `json:"disk_mib"`
+	VCPUs     int    `json:"vcpus" required:"false"`
+	DiskMiB   int64  `json:"disk_mib" required:"false"`
 }
 
 // bounds is what the record keeps, where an omitted memory is no bound.

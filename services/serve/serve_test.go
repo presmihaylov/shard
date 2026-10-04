@@ -624,8 +624,8 @@ func TestALocalRouteIs403ForEveryTokenAndNothingIsDialed(t *testing.T) {
 	address := front(t, up.root, env.secret)
 
 	tokens := map[string]string{"no scopes": mint(t, env, "root"), "star": mintScoped(t, env, "root", "*")}
-	for _, c := range capabilities {
-		tokens[string(c)] = mintScoped(t, env, "scoped", string(c))
+	for _, scope := range api.Scopes {
+		tokens[string(scope)] = mintScoped(t, env, "scoped", string(scope))
 	}
 
 	var locals []api.Route
@@ -794,23 +794,16 @@ func readAll(t *testing.T, resp *http.Response) string {
 	return string(body)
 }
 
-// Every public route has a capability, so no request reaches the front without one to check, and no other route has one the front could forward under.
-func TestEveryPublicRouteAndNoOtherHasACapability(t *testing.T) {
+// A public route with no scope a token can carry would be reachable by a "*" token alone, and a local route with one reads as forwardable.
+func TestEveryPublicRouteAndNoOtherNeedsAScopeATokenCanCarry(t *testing.T) {
 	covered := 0
-	public := map[string]bool{}
 	for _, r := range api.Routes() {
 		covered++
-		_, ok := capabilityOf(r)
-		if r.Class == api.Public && !ok {
-			t.Errorf("public route %s %s has no capability", r.Method, r.Pattern)
+		if r.Class == api.Public && r.Scope != api.AnyToken && !slices.Contains(api.Scopes, r.Scope) {
+			t.Errorf("public route %s %s needs %q, which mint refuses as a scope", r.Method, r.Pattern, r.Scope)
 		}
-		if r.Class == api.Public {
-			public[r.Method+" "+r.Pattern] = true
-		}
-	}
-	for route := range routeCapabilities {
-		if !public[route] {
-			t.Errorf("route %s has a capability but is no public route, so the front would forward it", route)
+		if r.Class == api.Local && r.Scope != "" {
+			t.Errorf("local route %s %s needs %q, but the front never forwards it", r.Method, r.Pattern, r.Scope)
 		}
 	}
 
@@ -1288,13 +1281,4 @@ func shortRoot(t *testing.T) string {
 	t.Cleanup(func() { os.RemoveAll(root) })
 
 	return root
-}
-
-// A route whose capability no scope can name would be reachable by a "*" token alone, since mint refuses the name.
-func TestEveryRouteCapabilityIsOneAScopeCanName(t *testing.T) {
-	for route, c := range routeCapabilities {
-		if c != capAnyToken && !slices.Contains(capabilities, c) {
-			t.Errorf("route %s needs %s, which mint refuses as a scope", route, c)
-		}
-	}
 }

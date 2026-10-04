@@ -25,7 +25,7 @@ DARWIN_ARCH ?= $(shell go env GOARCH)
 KERNEL_OUT := bin/kernel
 KERNEL_IMAGE := packaging-kernel-builder
 
-.PHONY: all build build-linux build-shard-init build-shard-init-linux build-shard-vz-shim build-shard-vz-init build-darwin test test-integration e2e-test vet lint lint-fix fmt fmt-check vuln check clean devbox-sync devbox-test itest e2e devbox-e2e e2e-firecracker devbox-demo kernel kernel-reproducible
+.PHONY: all build build-linux build-shard-init build-shard-init-linux build-shard-vz-shim build-shard-vz-init build-darwin test test-integration e2e-test vet lint lint-fix fmt fmt-check vuln check clean devbox-sync devbox-test itest e2e devbox-e2e e2e-firecracker devbox-demo kernel kernel-reproducible openapi
 
 all: check build
 
@@ -126,6 +126,10 @@ fmt-check:
 
 vuln:
 	go run $(GOVULNCHECK) ./...
+
+# Regenerates the spec from the routes; a unit test fails while docs/openapi.json differs (SHARD-489).
+openapi:
+	go run ./cmd/shard-openapi docs/openapi.json
 
 check: fmt-check vet lint test e2e-test
 

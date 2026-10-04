@@ -2,7 +2,6 @@ package cli
 
 import (
 	"errors"
-	"path/filepath"
 	"slices"
 	"strings"
 	"testing"
@@ -40,9 +39,13 @@ func helpOf(t *testing.T, args ...string) printExit {
 	return helpUnder(t, App{Version: "test", Root: t.TempDir()}, args...)
 }
 
-// badRemote points every verb at a shard serve whose token file does not exist.
+// badRemote points every verb at a shard serve with no SHARD_API_KEY to reach it.
 func badRemote(t *testing.T) App {
-	return App{Version: "test", Root: t.TempDir(), Remote: "https://example.invalid", TokenFile: filepath.Join(t.TempDir(), "missing")}
+	t.Helper()
+
+	noRemoteEnv(t)
+
+	return App{Version: "test", Root: t.TempDir(), Remote: "https://example.invalid"}
 }
 
 func helpUnder(t *testing.T, app App, args ...string) printExit {
@@ -98,16 +101,37 @@ func TestEveryCommandHasItsHelp(t *testing.T) {
 	}
 }
 
-// The token is read when a verb calls the daemon, so a real verb under a broken --remote setup still fails on it.
-func TestAVerbUnderABadRemoteFailsOnTheTokenFile(t *testing.T) {
-	app := badRemote(t)
-
-	err := app.Run(t.Context(), []string{"list"})
-	if want := "read the token file " + app.TokenFile; err == nil || !strings.Contains(err.Error(), want) {
-		t.Errorf("list under a missing token file returned %v, want %q", err, want)
+// The key is read when a verb calls the daemon, so a real verb under a broken --remote setup still fails on it.
+func TestAVerbUnderABadRemoteFailsOnTheMissingKey(t *testing.T) {
+	err := badRemote(t).Run(t.Context(), []string{"list"})
+	if want := "a remote client needs SHARD_API_KEY"; err == nil || !strings.Contains(err.Error(), want) {
+		t.Errorf("list with no key returned %v, want %q", err, want)
 	}
 	if top := helpUnder(t, badRemote(t), "--help").text; !strings.HasPrefix(top, "Usage: shard ") {
-		t.Errorf("shard --help under a missing token file printed %q", top)
+		t.Errorf("shard --help with no key printed %q", top)
+	}
+}
+
+// The top level ends with the global options, the variables a remote reads and how to reach one, as SHARD-503 words them.
+func TestTheTopLevelEndsWithTheRemoteSetup(t *testing.T) {
+	want := `Global options:
+  --root <dir>    directory for local Shard data (default ` + DefaultRoot + `)
+  --remote <url>  URL of the Shard API server; HTTP/HTTPS supported,
+                  HTTPS recommended
+  --version       show the client version
+
+Environment variables:
+  SHARD_REMOTE   API server URL; --remote overrides it
+  SHARD_API_KEY  API token from shard tokens mint
+  SHARD_CA_FILE  custom CA certificate file; HTTPS only
+
+Set SHARD_REMOTE and SHARD_API_KEY for remote access.
+Without a remote URL, Shard connects to the local daemon.
+
+Run 'shard COMMAND --help' for options and examples.`
+
+	if top := strings.TrimRight(helpOf(t, "--help").text, "\n"); !strings.HasSuffix(top, "\n\n"+want) {
+		t.Errorf("the top level ends with\n%s\nwant\n%s", top[max(0, len(top)-len(want)):], want)
 	}
 }
 
