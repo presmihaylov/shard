@@ -256,7 +256,7 @@ expect_fronted() {
 	if ! got=$(fetch "${id}" https "${ECHO_HOST}"); then
 		fail "the request to ${ECHO_HOST} from ${id} failed"
 	fi
-	echo "${got}" | grep -qx "authorization=$(seen "Bearer ${SECRET_VALUE}")" || fail "the echo saw '${got}', want the value in Authorization"
+	grep -qx "authorization=$(seen "Bearer ${SECRET_VALUE}")" <<<"${got}" || fail "the echo saw '${got}', want the value in Authorization"
 	say "${note}"
 }
 
@@ -739,7 +739,7 @@ snapshot_steps() {
 	CODE=0
 	REFUSAL=$(shard exec "${ID}" /bin/true 2>&1) || CODE=$?
 	[ "${CODE}" != "0" ] || fail "exec ran in a paused sandbox"
-	echo "${REFUSAL}" | grep -q "shard resume ${ID}" || fail "exec said '${REFUSAL}', want it to name the resume"
+	grep -q "shard resume ${ID}" <<<"${REFUSAL}" || fail "exec said '${REFUSAL}', want it to name the resume"
 	say "exec refused the paused sandbox and named the resume"
 
 	step "resume the sandbox"
@@ -764,7 +764,7 @@ fork_steps() {
 		CODE=0
 		REFUSAL=$(shard fork --name e2e-fork "${ID}" 2>&1) || CODE=$?
 		[ "${CODE}" != "0" ] || fail "fork ran on ${PROVIDER}, which claims no fork"
-		echo "${REFUSAL}" | grep -q "${PROVIDER}" || fail "the fork refusal '${REFUSAL}' does not name ${PROVIDER}"
+		grep -q "${PROVIDER}" <<<"${REFUSAL}" || fail "the fork refusal '${REFUSAL}' does not name ${PROVIDER}"
 		[ "$(listed_state "${ID}")" = "running" ] || fail "the refused fork moved the source off running"
 		say "fork is refused by name on ${PROVIDER}, and the source runs on"
 
@@ -888,11 +888,11 @@ step "prove the socket mode is what the daemon claims"
 if getent group shard >/dev/null; then
 	WANT_MODE="0660"
 	WANT_GROUP="shard"
-	echo "${LISTEN_LINE}" | grep -q "mode 0660, group shard" || fail "the host has a shard group and the daemon logged '${LISTEN_LINE}'"
+	grep -q "mode 0660, group shard" <<<"${LISTEN_LINE}" || fail "the host has a shard group and the daemon logged '${LISTEN_LINE}'"
 else
 	WANT_MODE="0600"
 	WANT_GROUP="root"
-	echo "${LISTEN_LINE}" | grep -q "mode 0600, no shard group" || fail "the host has no shard group and the daemon logged '${LISTEN_LINE}'"
+	grep -q "mode 0600, no shard group" <<<"${LISTEN_LINE}" || fail "the host has no shard group and the daemon logged '${LISTEN_LINE}'"
 fi
 expect "$(stat -c '%a %U:%G' "${SOCKET}")" "${WANT_MODE#0} root:${WANT_GROUP}" "the socket sits at ${WANT_MODE} root:${WANT_GROUP}, as logged"
 
@@ -948,20 +948,20 @@ printf '%s\n' "${SECRET_VALUE}" | shard secret set --to "${ECHO_HOST}" E2E_TOKEN
 SHAPED_PLACEHOLDER="sk_test_e2eplaceholder01"
 SHAPED_VALUE="sk_live_e2e_$$_$(date +%s)"
 CAUTION=$(shard secret set --to "${ECHO_HOST}" --placeholder "${SHAPED_PLACEHOLDER}" E2E_SHAPED "${SHAPED_VALUE}" 2>&1 >/dev/null)
-echo "${CAUTION}" | grep -q "visible in the process list" || fail "a value on the command line printed no caution: '${CAUTION}'"
+grep -q "visible in the process list" <<<"${CAUTION}" || fail "a value on the command line printed no caution: '${CAUTION}'"
 say "a value on the command line is stored, with a caution on stderr"
 # The caution is about what ps saw, and a refusal does not un-see it.
 CODE=0
 REFUSED_CAUTION=$(shard secret set --to no-dot E2E_REFUSED "${SHAPED_VALUE}" 2>&1 >/dev/null) || CODE=$?
 [ "${CODE}" != "0" ] || fail "secret set took a destination with no dot"
-echo "${REFUSED_CAUTION}" | grep -q "caution" || fail "a refused set printed no caution: '${REFUSED_CAUTION}'"
+grep -q "caution" <<<"${REFUSED_CAUTION}" || fail "a refused set printed no caution: '${REFUSED_CAUTION}'"
 say "a refused set still cautions about the value on the command line"
 SHAPED_LS=$(shard secret ls)
-echo "${SHAPED_LS}" | grep -q "${SHAPED_PLACEHOLDER}" || fail "shard secret ls does not print the chosen placeholder: ${SHAPED_LS}"
+grep -q "${SHAPED_PLACEHOLDER}" <<<"${SHAPED_LS}" || fail "shard secret ls does not print the chosen placeholder: ${SHAPED_LS}"
 say "secret ls prints the chosen placeholder"
 SECRET_LS=$(shard secret ls)
-echo "${SECRET_LS}" | grep -q "E2E_TOKEN" || fail "shard secret ls does not list E2E_TOKEN: ${SECRET_LS}"
-echo "${SECRET_LS}" | grep -q "${SECRET_VALUE}" && fail "shard secret ls printed the value"
+grep -q "E2E_TOKEN" <<<"${SECRET_LS}" || fail "shard secret ls does not list E2E_TOKEN: ${SECRET_LS}"
+grep -q "${SECRET_VALUE}" <<<"${SECRET_LS}" && fail "shard secret ls printed the value"
 say "secret ls lists the name and the destination, and not the value"
 SECRET_MODE=$(stat -c '%a' "${SHARD_ROOT}/secrets/E2E_TOKEN")
 [ "${SECRET_MODE}" = "600" ] || fail "the secret file is mode ${SECRET_MODE}, want 600"
@@ -973,7 +973,7 @@ step "store an egress policy"
 shard policy create --deny any e2e-deny-all >/dev/null
 shard policy create --allow 1.1.1.1 --allow "${OTHER_HOST}" --deny any e2e-policy >/dev/null
 POLICY_LS=$(shard policy ls)
-echo "${POLICY_LS}" | grep -q "e2e-policy" || fail "shard policy ls does not list e2e-policy: ${POLICY_LS}"
+grep -q "e2e-policy" <<<"${POLICY_LS}" || fail "shard policy ls does not list e2e-policy: ${POLICY_LS}"
 holds '"kind": "cidr"' shard policy show e2e-policy || fail "shard policy show does not print the rules"
 say "policy ls lists the policies and policy show prints the rules"
 shard policy create --allow suffix:example.com --allow '*.example.com' e2e-web >/dev/null
@@ -1012,7 +1012,7 @@ say "the namespace and the link are up"
 step "list the sandbox"
 LISTED=$(shard ls | grep "^${ID}" || true)
 [ -n "${LISTED}" ] || fail "shard ls does not list ${ID}"
-echo "${LISTED}" | grep -q "${ADDRESS%%/*}" || fail "shard ls listed '${LISTED}', want the address ${ADDRESS%%/*} on it"
+grep -q "${ADDRESS%%/*}" <<<"${LISTED}" || fail "shard ls listed '${LISTED}', want the address ${ADDRESS%%/*} on it"
 [ "$(listed_state "${ID}")" = "running" ] || fail "shard ls listed '${LISTED}', want it running"
 say "ls shows the sandbox running on its address"
 
@@ -1053,7 +1053,7 @@ EXECS=$(curl -sS --unix-socket "${SOCKET}" "http://shard/v0/sandboxes/${ID}/exec
 EXEC_ID=$(echo "${EXECS}" | grep -o '"exec": *"[^"]*"' | head -1 | cut -d'"' -f4)
 [ -n "${EXEC_ID}" ] || fail "the sandbox lists no exec after a shard exec returned: ${EXECS}"
 RECORD_JSON=$(curl -sS --unix-socket "${SOCKET}" "http://shard/v0/sandboxes/${ID}/exec/${EXEC_ID}")
-echo "${RECORD_JSON}" | grep -q '"state": *"exited"' || fail "the exec record ${EXEC_ID} is not exited: ${RECORD_JSON}"
+grep -q '"state": *"exited"' <<<"${RECORD_JSON}" || fail "the exec record ${EXEC_ID} is not exited: ${RECORD_JSON}"
 say "a curl GET answers the exited exec record ${EXEC_ID} that shard exec left behind"
 # grep -c reads to the end, so nft never takes a SIGPIPE that pipefail would count as a miss.
 nft list table inet shard | grep -c "chain egress_${LINK}" >/dev/null || fail "the host holds no chain for ${LINK} after the daemon restart"
@@ -1274,7 +1274,7 @@ say "the host turns the sandbox's 80 and 443 to the proxy"
 # The guest trusts the proxy CA beside the image's own roots, at the path the image already reads.
 CA_LINE=$(sed -n 2p "${SHARD_ROOT}/proxy/ca.crt")
 GUEST_BUNDLE=$(shard exec "${ID}" /bin/sh -c 'cat "$SSL_CERT_FILE"')
-echo "${GUEST_BUNDLE}" | grep -q "${CA_LINE}" || fail "the guest's \$SSL_CERT_FILE does not hold the proxy CA"
+grep -qF "${CA_LINE}" <<<"${GUEST_BUNDLE}" || fail "the guest's \$SSL_CERT_FILE does not hold the proxy CA"
 [ "$(echo "${GUEST_BUNDLE}" | grep -c 'BEGIN CERTIFICATE')" -gt 1 ] || fail "the guest's bundle holds the proxy CA alone"
 say "the guest trusts the proxy CA and still trusts the image's roots"
 
@@ -1306,7 +1306,7 @@ expect_exec "unresolved" "a policy of addresses only leaves the granted host unr
 	/bin/sh -c "timeout 5 nslookup ${ECHO_HOST} >/dev/null 2>&1 && echo resolved || echo unresolved"
 
 NOTE=$(shard policy create --allow 1.0.0.1 --deny any e2e-note 2>&1 >/dev/null)
-echo "${NOTE}" | grep -q "this policy opens no DNS" || fail "policy create said '${NOTE}' over a policy that opens no DNS"
+grep -q "this policy opens no DNS" <<<"${NOTE}" || fail "policy create said '${NOTE}' over a policy that opens no DNS"
 shard policy rm e2e-note >/dev/null
 say "policy create notes a policy that opens no DNS, and exits 0"
 
@@ -1338,17 +1338,17 @@ shard policy create --allow 1.1.1.1 --allow "${ECHO_HOST}" --allow "${OTHER_HOST
 
 expect_fronted "${ID}" "a request to the granted host carries the value, and the guest only ever sent the placeholder"
 GOT=$(fetch "${ID}" https "${ECHO_HOST}") || fail "the https request to ${ECHO_HOST} failed"
-echo "${GOT}" | grep -qx "x-shaped=$(seen "${SHAPED_VALUE}")" || fail "the echo saw '${GOT}' over tls, want the value under the chosen placeholder"
+grep -qx "x-shaped=$(seen "${SHAPED_VALUE}")" <<<"${GOT}" || fail "the echo saw '${GOT}' over tls, want the value under the chosen placeholder"
 say "the chosen placeholder carries its own value"
 
 GOT=$(fetch "${ID}" http "${ECHO_HOST}") || fail "the http request to ${ECHO_HOST} failed"
-echo "${GOT}" | grep -qx "authorization=$(seen "Bearer mock-E2E_TOKEN")" || fail "the echo saw '${GOT}' over plain http, want the placeholder, never the value in cleartext"
-echo "${GOT}" | grep -qx "x-shaped=$(seen "${SHAPED_PLACEHOLDER}")" || fail "the echo saw '${GOT}' over plain http, want the chosen placeholder untouched"
+grep -qx "authorization=$(seen "Bearer mock-E2E_TOKEN")" <<<"${GOT}" || fail "the echo saw '${GOT}' over plain http, want the placeholder, never the value in cleartext"
+grep -qx "x-shaped=$(seen "${SHAPED_PLACEHOLDER}")" <<<"${GOT}" || fail "the echo saw '${GOT}' over plain http, want the chosen placeholder untouched"
 say "plain http to the granted host keeps both placeholders: the value goes out over tls alone"
 
 GOT=$(fetch "${ID}" https "${OTHER_HOST}") || fail "the https request to ${OTHER_HOST} failed"
-echo "${GOT}" | grep -qx "authorization=$(seen "Bearer mock-E2E_TOKEN")" || fail "the echo saw '${GOT}' from the other host, want the placeholder untouched"
-echo "${GOT}" | grep -qx "x-shaped=$(seen "${SHAPED_PLACEHOLDER}")" || fail "the echo saw '${GOT}' from the other host, want the chosen placeholder untouched"
+grep -qx "authorization=$(seen "Bearer mock-E2E_TOKEN")" <<<"${GOT}" || fail "the echo saw '${GOT}' from the other host, want the placeholder untouched"
+grep -qx "x-shaped=$(seen "${SHAPED_PLACEHOLDER}")" <<<"${GOT}" || fail "the echo saw '${GOT}' from the other host, want the chosen placeholder untouched"
 say "a request to a host the policy allows but the grant does not keeps both placeholders"
 
 step "a client that encodes the placeholder still gets the value"
@@ -1406,7 +1406,7 @@ expect_network "after the policy was put back"
 CODE=0
 REFUSAL=$(shard policy rm e2e-policy 2>&1) || CODE=$?
 [ "${CODE}" != "0" ] || fail "policy rm removed a policy a sandbox holds"
-echo "${REFUSAL}" | grep -q "${ID}" || fail "policy rm said '${REFUSAL}', want it to name the sandbox"
+grep -q "${ID}" <<<"${REFUSAL}" || fail "policy rm said '${REFUSAL}', want it to name the sandbox"
 say "policy rm refused it and named the sandbox"
 
 step "read the egress decision log"
@@ -1445,16 +1445,16 @@ done
 
 start_daemon || fail "the daemon did not come up"
 EGRESS=$(shard logs --egress "${ID}") || fail "logs --egress failed after the restart with status $?"
-echo "${EGRESS}" | grep -q '"source":"host"' || fail "the host drop did not outlive the daemon that wrote it: $(printf '%s' "${EGRESS}" | head -c 400)"
+grep -q '"source":"host"' <<<"${EGRESS}" || fail "the host drop did not outlive the daemon that wrote it: $(printf '%s' "${EGRESS}" | head -c 400)"
 say "the host drop is still in the log after a daemon restart"
 
 EGRESS=""
 for _ in $(seq 1 20); do
 	EGRESS=$(shard logs --egress "${ID}") || fail "logs --egress failed at catch-up with status $?"
-	echo "${EGRESS}" | grep -q '"rule":"e2e-catchup"' && break
+	grep -q '"rule":"e2e-catchup"' <<<"${EGRESS}" && break
 	sleep 0.1
 done
-echo "${EGRESS}" | grep -q '"rule":"e2e-catchup"' || fail "the drop that landed while the daemon was down never reached the log: $(printf '%s' "${EGRESS}" | head -c 400)"
+grep -q '"rule":"e2e-catchup"' <<<"${EGRESS}" || fail "the drop that landed while the daemon was down never reached the log: $(printf '%s' "${EGRESS}" | head -c 400)"
 say "a drop that landed while the daemon was down is written at catch-up"
 
 # A follow is a tail of the one file, so both halves of the log reach it live.
@@ -2158,7 +2158,7 @@ step "refuse to remove a sandbox that is still up"
 CODE=0
 REFUSAL=$(shard rm "${ID}" 2>&1) || CODE=$?
 [ "${CODE}" != "0" ] || fail "rm removed a running sandbox"
-echo "${REFUSAL}" | grep -q "shard stop ${ID}" || fail "rm said '${REFUSAL}', want it to say to stop it first"
+grep -q "shard stop ${ID}" <<<"${REFUSAL}" || fail "rm said '${REFUSAL}', want it to say to stop it first"
 say "rm refused it and named the stop"
 
 # curl -N holds the log open through the stop, and the body must end on its own once the sandbox is stopped.
@@ -2284,7 +2284,7 @@ step "refuse to remove the image a stopped sandbox references"
 CODE=0
 REFUSAL=$(shard image rm "${IMAGE}" 2>&1) || CODE=$?
 [ "${CODE}" != "0" ] || fail "image rm removed the image under a stopped sandbox"
-echo "${REFUSAL}" | grep -q "${ID}" || fail "image rm said '${REFUSAL}', want it to name the sandbox"
+grep -q "${ID}" <<<"${REFUSAL}" || fail "image rm said '${REFUSAL}', want it to name the sandbox"
 holds "${IMAGE%%:*}" shard image ls || fail "image ls no longer lists the image"
 say "image rm refused it and named the sandbox"
 
@@ -2334,7 +2334,7 @@ shard start "${GRANT_ID}" >/dev/null
 expect_exec_in "${GRANT_ID}" "mock-E2E_TOKEN" "the granted guest sees the placeholder" /bin/sh -c 'echo "$E2E_TOKEN"'
 
 GRANT_BUNDLE=$(shard exec "${GRANT_ID}" /bin/sh -c 'cat "$SSL_CERT_FILE"')
-echo "${GRANT_BUNDLE}" | grep -q "${CA_LINE}" || fail "the late grant did not plant the proxy CA"
+grep -qF "${CA_LINE}" <<<"${GRANT_BUNDLE}" || fail "the late grant did not plant the proxy CA"
 [ "$(echo "${GRANT_BUNDLE}" | grep -c 'BEGIN CERTIFICATE')" -gt 1 ] || fail "the late bundle holds the proxy CA alone"
 say "the grant planted the proxy CA beside the image's roots"
 fronted "${GRANT_ID}" || fail "the host holds no dnat to the proxy for ${GRANT_LINK}"
@@ -2361,7 +2361,7 @@ shard policy create --allow dns --deny "${ECHO_HOST}" --deny any e2e-attach >/de
 CODE=0
 REFUSAL=$(shard policy attach "${GRANT_ID}" e2e-attach 2>&1) || CODE=$?
 [ "${CODE}" != "0" ] || fail "policy attach took a running sandbox"
-echo "${REFUSAL}" | grep -q "stop it first" || fail "policy attach said '${REFUSAL}', want the fix"
+grep -q "stop it first" <<<"${REFUSAL}" || fail "policy attach said '${REFUSAL}', want the fix"
 say "policy attach refuses a running sandbox"
 
 shard stop "${GRANT_ID}" >/dev/null
@@ -2383,7 +2383,7 @@ say "shard ls shows the attached policy"
 CODE=0
 REFUSAL=$(shard policy rm e2e-attach 2>&1) || CODE=$?
 [ "${CODE}" != "0" ] || fail "policy rm removed a policy an attach put on a sandbox"
-echo "${REFUSAL}" | grep -q "${GRANT_ID}" || fail "policy rm said '${REFUSAL}', want it to name the sandbox"
+grep -q "${GRANT_ID}" <<<"${REFUSAL}" || fail "policy rm said '${REFUSAL}', want it to name the sandbox"
 say "policy rm refuses the attached policy and names the sandbox"
 
 step "detach the policy and prove the sandbox is not fronted any more"
@@ -2410,11 +2410,11 @@ shard rm "${GRANT_ID}" >/dev/null
 # The rules are keyed by the address, so rules left here would front whoever takes that address next.
 for _ in $(seq 1 10); do
 	RULES=$(nft list ruleset)
-	echo "${RULES}" | grep -q "${GRANT_ADDRESS}" || break
+	grep -q "${GRANT_ADDRESS}" <<<"${RULES}" || break
 	sleep 0.1
 done
-echo "${RULES}" | grep -q "${GRANT_ADDRESS}" && fail "rm left the host rules of ${GRANT_ADDRESS}: $(echo "${RULES}" | grep "${GRANT_ADDRESS}")"
-echo "${RULES}" | grep -q "chain egress_${GRANT_LINK}" && fail "rm left the egress chain of ${GRANT_LINK}"
+grep -q "${GRANT_ADDRESS}" <<<"${RULES}" && fail "rm left the host rules of ${GRANT_ADDRESS}: $(echo "${RULES}" | grep "${GRANT_ADDRESS}")"
+grep -q "chain egress_${GRANT_LINK}" <<<"${RULES}" && fail "rm left the egress chain of ${GRANT_LINK}"
 say "rm took the host rules of the sandbox with it"
 ip link delete "${GRANT_LINK}" >/dev/null 2>&1 || true
 GRANT_ID=""
