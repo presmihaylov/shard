@@ -366,7 +366,7 @@ checks the vmm's jail, uid and seccomp filter, its host cgroup and its bounds, t
 and an entrypoint that exits. One guest outgrows its memory and stops with its reason, nothing
 starts it again, and `start` brings it back over its kept files. The run then checks the policy and
 the proxy on the vmm's link, a daemon restart that adopts the vmm, and a vmm lost while the daemon
-was down. After that come a `fork` that is refused by name, `pause`, `resume`, `stop` with the
+was down. After that come a live `fork`, `pause`, `resume`, `stop` with the
 cgroup kept empty, a snapshot by reflink, two sandboxes from it, a smaller `--disk` refused by
 name, a larger one that the guest sees grown, `start` back into that cgroup, and `remove`. The last check is a host with no link,
 no namespace, no vmm, no jail, no cgroup, no image and no fstab line left. It runs on demand only.
