@@ -176,7 +176,7 @@ daemon's own userspace netstack enforces it and writes every drop to the sandbox
 ## Images
 
 ```
-shard pull python:3.12           pull an image and unpack its rootfs
+shard pull python:3.12           download an image
 shard image list                 list the pulled images
 shard image remove python:3.12   remove one, with the rootfs no other tag needs
 ```
