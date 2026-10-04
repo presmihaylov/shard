@@ -74,8 +74,8 @@ type versionView struct {
 }
 
 // inspectSections is the record read down a page, then the rules the host enforces for it.
-func inspectSections(insp sandbox.Inspection) ([]section, error) {
-	fields, err := fieldSection(insp.Sandbox)
+func inspectSections(record any, insp sandbox.Inspection) ([]section, error) {
+	fields, err := fieldSection(record)
 	if err != nil {
 		return nil, err
 	}

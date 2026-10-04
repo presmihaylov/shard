@@ -136,7 +136,9 @@ func (c *Client) PullImage(ctx context.Context, ref string, report func(PullEven
 	}{Ref: ref}
 
 	if report != nil {
-		return progress(ctx, c, "/v0/images/pull", req, report, func(line api.ProgressLine) *Image { return line.Image })
+		return progress(ctx, c, "/v0/images/pull", req, report, func(line api.ProgressLine) (*PullEvent, *Image, *api.ErrorObject) {
+			return line.Event, line.Image, line.Error
+		})
 	}
 
 	var out Image

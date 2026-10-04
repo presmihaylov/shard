@@ -363,3 +363,46 @@ func selfSigned(t *testing.T, dir string) (string, string) {
 
 	return certPath, keyPath
 }
+
+// A front refuses every local route, so a local-only verb under --remote fails before it dials, naming itself, never as a bare 403. (SHARD-488)
+func TestALocalOnlyVerbUnderARemoteFailsBeforeItDials(t *testing.T) {
+	listener, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("listen: %v", err)
+	}
+	t.Cleanup(func() { listener.Close() })
+
+	accepted := make(chan struct{}, 8)
+	go func() {
+		for {
+			conn, err := listener.Accept()
+			if err != nil {
+				return
+			}
+			accepted <- struct{}{}
+			conn.Close()
+		}
+	}()
+
+	noRemoteEnv(t)
+	remote := "https://" + listener.Addr().String()
+	for verb, args := range map[string][]string{
+		"pull":          {"pull", "alpine:3.20"},
+		"image list":    {"image", "list"},
+		"image remove":  {"image", "remove", "alpine:3.20"},
+		"image prune":   {"image", "prune"},
+		"daemon status": {"daemon", "status"},
+	} {
+		app := App{Version: "test", Root: t.TempDir(), Remote: remote, TokenFile: filepath.Join(t.TempDir(), "missing"), Out: io.Discard}
+		err := app.Run(t.Context(), args)
+		if want := "shard " + verb + " runs on the daemon host only"; err == nil || !strings.Contains(err.Error(), want) {
+			t.Errorf("%s under --remote returned %v, want %q", verb, err, want)
+		}
+	}
+
+	select {
+	case <-accepted:
+		t.Error("a local-only verb dialed the remote, want no connection at all")
+	case <-time.After(100 * time.Millisecond):
+	}
+}

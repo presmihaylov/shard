@@ -208,7 +208,7 @@ func (h *Handler) pullImage(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if streamed(r) {
-		h.streamProgress(w, r, http.StatusOK, "pull "+req.Ref, func(ctx context.Context) (ProgressLine, error) {
+		streamProgress(h, w, r, http.StatusOK, "pull "+req.Ref, pullLines, func(ctx context.Context) (ProgressLine, error) {
 			img, err := h.stores.PullImage(ctx, req.Ref)
 
 			return ProgressLine{Image: &img}, err
