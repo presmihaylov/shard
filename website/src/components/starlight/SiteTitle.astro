@@ -1,0 +1,8 @@
+---
+const { siteTitle, siteTitleHref } = Astro.locals.starlightRoute;
+---
+
+<a href={siteTitleHref} class="site-title sl-flex items-baseline gap-2 no-underline">
+	<span class="font-brand text-lg leading-none text-foreground" translate="no">{siteTitle}</span>
+	<span class="mono-label">Docs</span>
+</a>

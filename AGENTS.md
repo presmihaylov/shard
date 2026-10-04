@@ -94,6 +94,7 @@ packaging/kernel/          the guest kernel build: pinned image, config per arch
 services/kernel/           the guest kernel fetch: release URL, checksum, the dev override
 third_party/vz/            Code-Hex/vz as upstream wrote it, bar the one patch its UPSTREAM file names
 docs/
+website/                   useshards.com: Astro + Starlight, landing at /, docs at /docs, outside the Go module
 ```
 
 ### Rules
