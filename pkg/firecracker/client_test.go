@@ -524,7 +524,6 @@ func TestKillEndsAVmmTooWedgedToAnswer(t *testing.T) {
 	awaitRefused(t, client)
 }
 
-// A state read ends by its context's deadline and names the peer it waited on, so a kill reaches that vmm and no owner since (SHARD-388, SHARD-392).
 // A snapshot create has its own bound, so a guest whose memory takes longer than callTimeout to write still gets one (SHARD-559).
 func TestSnapshotEndsByItsOwnBoundOnAVmmThatNeverAnswers(t *testing.T) {
 	root := shortRoot(t)
@@ -543,6 +542,7 @@ func TestSnapshotEndsByItsOwnBoundOnAVmmThatNeverAnswers(t *testing.T) {
 	}
 }
 
+// A state read ends by its context's deadline and names the peer it waited on, so a kill reaches that vmm and no owner since (SHARD-388, SHARD-392).
 func TestStateEndsByItsDeadlineOnAVmmThatNeverAnswers(t *testing.T) {
 	root := shortRoot(t)
 	client, info := start(t, jail(root, "a"), config(root))

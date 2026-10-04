@@ -297,13 +297,17 @@ func Exec(ctx context.Context, dial Dialer, id string, header ExecHeader, spec m
 		return models.ExitStatus{}, execFailure(ctx, header, err)
 	}
 
-	fed := make(chan error, 1)
-	go func() { fed <- feedStdin(conn, &writes, spec.Stdin) }()
+	fed, unread := make(chan error, 1), make(chan error, 1)
+	go func() { fed <- feedStdin(conn, &writes, spec.Stdin, unread) }()
 	go feedResizes(ctx, conn, &writes, spec.Resizes)
 
 	exit, err := readExec(ctx, conn, id, spec)
 	if err != nil {
 		return models.ExitStatus{}, errors.Join(execFailure(ctx, header, err), giveUp(stop, conn, &writes, canceled), stdinFault(fed))
+	}
+	// A command fed only part of its input may still exit 0, so the read that cut it short is the exec's answer.
+	if err := stdinFault(unread); err != nil {
+		return models.ExitStatus{}, fmt.Errorf("exec %q: %w", header.Argv[0], err)
 	}
 
 	return exit, nil
@@ -355,8 +359,8 @@ func cancelExec(conn net.Conn, writes *sync.Mutex) error {
 	return nil
 }
 
-// feedStdin frames stdin until it ends, then tells the guest so, at once for a nil one.
-func feedStdin(conn net.Conn, writes *sync.Mutex, stdin *os.File) error {
+// feedStdin frames stdin until it ends, then tells the guest so, at once for a nil one; a failed read lands in unread before the guest hears of the end.
+func feedStdin(conn net.Conn, writes *sync.Mutex, stdin *os.File, unread chan<- error) error {
 	if stdin == nil {
 		return closeStdin(conn, writes, nil)
 	}
@@ -375,7 +379,10 @@ func feedStdin(conn net.Conn, writes *sync.Mutex, stdin *os.File) error {
 			return closeStdin(conn, writes, nil)
 		}
 		if err != nil {
-			return closeStdin(conn, writes, fmt.Errorf("read the exec's stdin: %w", err))
+			cause := fmt.Errorf("read the exec's stdin: %w", err)
+			unread <- cause
+
+			return closeStdin(conn, writes, cause)
 		}
 	}
 }
