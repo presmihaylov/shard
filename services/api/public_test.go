@@ -161,11 +161,11 @@ func TestPublicReadsFilterStoppedReasons(t *testing.T) {
 		{name: "process lost", provider: "sysbox", raw: sandbox.LostReason, want: sandbox.LostReason},
 		{name: "firecracker supervisor failed", provider: "firecracker",
 			raw:  sandbox.SupervisorFailedReason + ": sandbox sb1 lost its lifecycle state: open /var/lib/shard/sandboxes/sb1/exit: is a directory",
-			want: "the sandbox supervisor failed; start the sandbox again"},
+			want: "the sandbox supervisor failed; remove it and create another sandbox"},
 		{name: "Mac VM supervisor failed", provider: "vz", raw: sandbox.SupervisorFailedReason + ": write /run/shard/exit: permission denied",
-			want: "the sandbox supervisor failed; start the sandbox again"},
+			want: "the sandbox supervisor failed; remove it and create another sandbox"},
 		{name: "supervisor failed without a cause", provider: "firecracker", raw: sandbox.SupervisorFailedReason,
-			want: "the sandbox supervisor failed; start the sandbox again"},
+			want: "the sandbox supervisor failed; remove it and create another sandbox"},
 		{name: "unknown diagnosis", provider: "firecracker", raw: failedCause, want: "the sandbox stopped; the daemon log has the cause"},
 		{name: "diagnosis after a known reason", provider: "firecracker", raw: sandbox.DiedReason + ": " + failedCause,
 			want: "the sandbox stopped; the daemon log has the cause"},
@@ -184,13 +184,8 @@ func TestPublicReadsFilterStoppedReasons(t *testing.T) {
 					t.Fatalf("GET %s answered %d %v, want 200", path, status, body)
 				}
 
-				if rows, ok := body["sandboxes"].([]any); ok {
-					for _, row := range rows {
-						if listed, ok := row.(map[string]any); ok && listed["id"] == sb.ID {
-							body = listed
-							break
-						}
-					}
+				if path == "/v0/sandboxes?all=true" {
+					body = listedSandbox(t, body, sb.ID)
 				}
 
 				got, _ := body["stopped_reason"].(string)
@@ -208,4 +203,23 @@ func TestPublicReadsFilterStoppedReasons(t *testing.T) {
 			}
 		})
 	}
+}
+
+func listedSandbox(t *testing.T, body map[string]any, id string) map[string]any {
+	t.Helper()
+
+	rows, ok := body["sandboxes"].([]any)
+	if !ok {
+		t.Fatalf("the list answered %v, want a sandboxes array", body)
+	}
+	for _, row := range rows {
+		listed, ok := row.(map[string]any)
+		if ok && listed["id"] == id {
+			return listed
+		}
+	}
+
+	t.Fatalf("the list answered %v, want sandbox %s", body, id)
+
+	return nil
 }
