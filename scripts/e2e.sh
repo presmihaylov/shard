@@ -950,16 +950,16 @@ say "info refuses --provider and names shard daemon --provider"
 step "store a secret"
 # The value is synthetic and unique to this run, so a grep of the root can prove where it is and is not.
 SECRET_VALUE="e2e-secret-value-$$-$(date +%s)"
-printf '%s\n' "${SECRET_VALUE}" | shard secret set --to "${ECHO_HOST}" E2E_TOKEN >/dev/null
+printf '%s\n' "${SECRET_VALUE}" | shard secret set --destination "${ECHO_HOST}" E2E_TOKEN >/dev/null
 # The second secret names its own placeholder, for an SDK that checks the shape of a key before it sends it.
 SHAPED_PLACEHOLDER="sk_test_e2eplaceholder01"
 SHAPED_VALUE="sk_live_e2e_$$_$(date +%s)"
-CAUTION=$(shard secret set --to "${ECHO_HOST}" --placeholder "${SHAPED_PLACEHOLDER}" E2E_SHAPED "${SHAPED_VALUE}" 2>&1 >/dev/null)
+CAUTION=$(shard secret set --destination "${ECHO_HOST}" --placeholder "${SHAPED_PLACEHOLDER}" E2E_SHAPED "${SHAPED_VALUE}" 2>&1 >/dev/null)
 grep -q "visible in the process list" <<<"${CAUTION}" || fail "a value on the command line printed no caution: '${CAUTION}'"
 say "a value on the command line is stored, with a caution on stderr"
 # The caution is about what ps saw, and a refusal does not un-see it.
 CODE=0
-REFUSED_CAUTION=$(shard secret set --to no-dot E2E_REFUSED "${SHAPED_VALUE}" 2>&1 >/dev/null) || CODE=$?
+REFUSED_CAUTION=$(shard secret set --dest no-dot E2E_REFUSED "${SHAPED_VALUE}" 2>&1 >/dev/null) || CODE=$?
 [ "${CODE}" != "0" ] || fail "secret set took a destination with no dot"
 grep -q "caution" <<<"${REFUSED_CAUTION}" || fail "a refused set printed no caution: '${REFUSED_CAUTION}'"
 say "a refused set still cautions about the value on the command line"

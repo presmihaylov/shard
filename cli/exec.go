@@ -245,7 +245,7 @@ func parseExec(args []string) (execOptions, error) {
 
 	rest := flags.Args()
 	if len(rest) == 0 {
-		return execOptions{}, errors.New("exec takes one sandbox id, got none")
+		return execOptions{}, errors.New("exec takes one sandbox id or name, got none")
 	}
 	argv := rest[1:]
 	if len(argv) > 0 && argv[0] == "--" {

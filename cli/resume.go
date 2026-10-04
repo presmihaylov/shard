@@ -12,7 +12,7 @@ func (a App) resume(ctx context.Context, args []string) error {
 		return err
 	}
 	if len(rest) != 1 {
-		return fmt.Errorf("resume takes one sandbox id, got %d", len(rest))
+		return fmt.Errorf("resume takes one sandbox id or name, got %s", gotArgs(rest))
 	}
 
 	c, err := a.client()

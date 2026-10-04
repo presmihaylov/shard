@@ -471,7 +471,7 @@ func TestCreateRefusesAMemoryBoundBelowTheMinimum(t *testing.T) {
 
 }
 
-// The orchestrator asks before it writes a record, so a refused --memory or --cpus leaves no failed sandbox in ls.
+// The orchestrator asks before it writes a record, so a refused --memory or --vcpus leaves no failed sandbox in ls.
 func TestCheckResourcesRefusesWhatCreateRefuses(t *testing.T) {
 	h := newHarness(t)
 

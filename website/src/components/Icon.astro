@@ -1,0 +1,20 @@
+---
+import { icons, type IconName } from './icons';
+
+interface Props {
+	name: IconName;
+	size?: number;
+	class?: string;
+}
+
+const { name, size = 16, class: className } = Astro.props;
+---
+
+<svg
+	viewBox="0 0 24 24"
+	width={size}
+	height={size}
+	aria-hidden="true"
+	class:list={['nairi-icon', className]}
+	set:html={icons[name]}
+/>

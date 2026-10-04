@@ -1,0 +1,69 @@
+/* Card, ink fill, glass and separator surfaces, copied from @nairi/ui. */
+@layer components {
+	[data-slot="card"] {
+		border: none;
+		border-radius: 8px;
+		background: rgba(255, 255, 255, 0.42);
+		-webkit-backdrop-filter: blur(16px) saturate(1.1);
+		backdrop-filter: blur(16px) saturate(1.1);
+		box-shadow: none;
+	}
+	[data-theme="dark"] [data-slot="card"] {
+		background: rgba(250, 244, 236, 0.05);
+	}
+
+	.nairi-ink-fill {
+		position: relative;
+		overflow: hidden;
+		isolation: isolate;
+		color: #F4F1EA;
+		background: radial-gradient(125% 130% at 35% 25%, #3A352D 0%, #2B2822 46%, #16130F 100%);
+	}
+	.nairi-ink-fill::after {
+		content: "";
+		position: absolute;
+		inset: 0;
+		z-index: 1;
+		pointer-events: none;
+		background-image: url("data:image/svg+xml;base64,PHN2ZyB4bWxucz0naHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmcnIHdpZHRoPScyMjAnIGhlaWdodD0nMjIwJz48ZmlsdGVyIGlkPSdnJz48ZmVUdXJidWxlbmNlIHR5cGU9J2ZyYWN0YWxOb2lzZScgYmFzZUZyZXF1ZW5jeT0nMC44JyBudW1PY3RhdmVzPSc0JyBzdGl0Y2hUaWxlcz0nc3RpdGNoJy8+PGZlQ29sb3JNYXRyaXggdHlwZT0nbWF0cml4JyB2YWx1ZXM9JzAuMzQgMC4zNCAwLjM0IDAgMCAgMC4zNCAwLjM0IDAuMzQgMCAwICAwLjM0IDAuMzQgMC4zNCAwIDAgIDAgMCAwIDAgMScvPjwvZmlsdGVyPjxyZWN0IHdpZHRoPScxMDAlJyBoZWlnaHQ9JzEwMCUnIGZpbHRlcj0ndXJsKCNnKScvPjwvc3ZnPg==");
+		background-size: 90px 90px;
+		mix-blend-mode: overlay;
+		opacity: 0.5;
+	}
+	.nairi-ink-fill > * {
+		position: relative;
+		z-index: 2;
+	}
+	[data-theme="dark"] .nairi-ink-fill {
+		color: #22201B;
+		background: radial-gradient(125% 130% at 35% 25%, #E8E2D7 0%, #DBD4C7 46%, #C7BFAF 100%);
+	}
+	/* The cream fill is right on a small control and too loud on a sidebar row, so the quiet one is a soft warm pill in dark. */
+	[data-theme="dark"] .nairi-ink-fill.nairi-ink-fill--quiet {
+		color: var(--color-foreground);
+		background: color-mix(in oklab, var(--color-foreground) 14%, transparent);
+	}
+	[data-theme="dark"] .nairi-ink-fill.nairi-ink-fill--quiet::after {
+		opacity: 0;
+	}
+
+	/* The Solar duotone ghost layer vanishes on the night wall at its light-mode opacity. */
+	[data-theme="dark"] .nairi-icon [opacity] {
+		opacity: 0.5;
+	}
+
+	.nairi-glass-panel {
+		background: rgba(255, 255, 255, 0.6);
+		-webkit-backdrop-filter: blur(22px) saturate(1.25);
+		backdrop-filter: blur(22px) saturate(1.25);
+		border: none;
+		box-shadow: none;
+	}
+	[data-theme="dark"] .nairi-glass-panel {
+		background: rgba(52, 44, 39, 0.62);
+	}
+
+	[data-slot="separator"] {
+		background: color-mix(in srgb, var(--color-foreground) 7%, transparent);
+	}
+}

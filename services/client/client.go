@@ -564,7 +564,7 @@ func (c *Client) EgressLog(ctx context.Context, ref string, out, errOut io.Write
 	}
 
 	if cut := header.Get(api.EgressCutHeader); cut != "" {
-		note := fmt.Sprintf("the egress log of sandbox %s holds %s older records; this prints the newest %d\n", ref, cut, len(records))
+		note := fmt.Sprintf("the egress log of sandbox %s holds %s older decisions; this prints the newest %d\n", ref, cut, len(records))
 		if err := write(errOut, []byte(note)); err != nil {
 			return fmt.Errorf("write the note on the egress log of sandbox %s: %w", ref, err)
 		}

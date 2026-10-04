@@ -58,7 +58,7 @@ func TestCreatePrintsTheDaemonsRefusalAsItCame(t *testing.T) {
 	app, _, r := newDaemonCreateApp(t, &out)
 
 	err := app.Run(t.Context(), []string{"create", "--secret", "NOPE", "alpine:3.20"})
-	if err == nil || err.Error() != "secret NOPE does not exist: run shard secret set --to <host> NOPE first" {
+	if err == nil || err.Error() != "secret NOPE does not exist: run shard secret set --destination <host> NOPE first" {
 		t.Errorf("create = %v, want the daemon's refusal as it came", err)
 	}
 	if slices.Contains(r.seen(), "images.Pull") {
