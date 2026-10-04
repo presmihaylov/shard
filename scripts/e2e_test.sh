@@ -304,6 +304,18 @@ rm -rf "${SHARD_ROOT}" "${DAEMON_LOG}"
 DAEMON_LOG=""
 
 echo
+echo "== start_daemon empties the log in the parent and the daemon only appends, so a restart never waits on the last daemon's lines"
+for script in e2e.sh e2e-fc.sh; do
+	# A truncation in the child's own redirect can lose the race to the wait, so only the line order proves this.
+	order=$(awk 'index($0, "start_daemon() {") == 1 {p = 1}
+		p && index($0, ": >\"${DAEMON_LOG}\"") {e = NR}
+		p && /daemon --provider .*&$/ {f = NR; a = (index($0, ">>\"${DAEMON_LOG}\" 2>&1 &") > 0)}
+		p && /^}/ {exit}
+		END {print (e && f && e < f ? "emptied first" : "not emptied first") ", " (a ? "appends" : "truncates")}' "${HERE}/${script}")
+	check "${script}: the parent empties the log, then the daemon appends" "${order}" "emptied first, appends"
+done
+
+echo
 echo "== the run never swaps ID for the fork, so a failure in the fork section still removes the source"
 check "no line assigns FORK_ID to ID" "$(grep -c '^ID="\${FORK_ID}"' "${HERE}/e2e.sh")" "0"
 
