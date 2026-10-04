@@ -11,12 +11,21 @@ export interface Handlers {
   onStderr?: ((chunk: Uint8Array) => void) | undefined;
 }
 
-/** ExecRecord is a command as the daemon holds it, which any client can read. */
-export interface ExecRecord {
+export type CommandState = "running" | "exited";
+
+/** CommandInfo is a command as the daemon holds it, which any client can read. */
+export interface CommandInfo {
   id: string;
+  sandboxId: string;
   command: string[];
-  state: string;
-  exitStatus: { code: number; signal: number | null } | null;
+  state: CommandState;
+  /** The exit code once the command ended, or null while it runs. */
+  exitCode: number | null;
+  /** The signal that ended the command, as 15 for TERM, or null. */
+  signal: number | null;
+  startedAt: Date;
+  exitedAt: Date | null;
+  /** Output the daemon dropped before any client read it. */
   lostBytes: number;
 }
 
@@ -48,7 +57,7 @@ export class Session {
     handlers: Handlers,
     signal?: AbortSignal,
   ): Promise<Session> {
-    const record = execRecord(await transport.call("POST", wire.path("sandboxes", sandboxId, "exec"), { json: request, signal }));
+    const record = commandInfo(await transport.call("POST", wire.path("sandboxes", sandboxId, "exec"), { json: request, signal }));
     const session = new Session(transport, sandboxId, record.id, capture, handlers);
     await session.attach(signal);
 
@@ -109,8 +118,8 @@ export class Session {
     return exit;
   }
 
-  async inspect(): Promise<ExecRecord> {
-    return execRecord(await this.transport.call("GET", this.path()));
+  async inspect(): Promise<CommandInfo> {
+    return commandInfo(await this.transport.call("GET", this.path()));
   }
 
   async kill(signal = ""): Promise<void> {
@@ -225,26 +234,47 @@ function message(stream: number, payload: Uint8Array): Buffer {
   return Buffer.concat([Buffer.of(stream), payload]);
 }
 
-export function execRecord(value: unknown): ExecRecord {
+export function commandInfo(value: unknown): CommandInfo {
   const refused = new ProtocolError(`the daemon answered ${JSON.stringify(value)} as a command record`);
   if (!isObject(value)) {
     throw refused;
   }
-  const { exec, command, state, exit_status: status, lost_bytes: lost = 0 } = value;
+  const { exec, sandbox, command, state, exit_status: status, started_at: started, exited_at: exited = null, lost_bytes: lost = 0 } = value;
   const statusValid = status === null || (isObject(status) && Number.isInteger(status.code) && Number.isInteger(status.signal));
-  if (typeof exec !== "string" || !isStrings(command) || typeof state !== "string" || !statusValid || !Number.isInteger(lost)) {
+  const startedAt = date(started);
+  const exitedAt = exited === null ? null : date(exited);
+  if (
+    typeof exec !== "string" ||
+    typeof sandbox !== "string" ||
+    !isStrings(command) ||
+    (state !== "running" && state !== "exited") ||
+    !statusValid ||
+    !startedAt ||
+    exitedAt === undefined ||
+    !Number.isInteger(lost)
+  ) {
     throw refused;
   }
 
   return {
     id: exec,
+    sandboxId: sandbox,
     command,
     state,
-    exitStatus: isObject(status) ? { code: Number(status.code), signal: Number(status.signal) || null } : null,
+    exitCode: isObject(status) ? Number(status.code) : null,
+    signal: isObject(status) ? Number(status.signal) || null : null,
+    startedAt,
+    exitedAt,
     lostBytes: Number(lost),
   };
 }
 
 function isStrings(value: unknown): value is string[] {
   return Array.isArray(value) && value.every((item) => typeof item === "string");
+}
+
+function date(value: unknown): Date | undefined {
+  const parsed = typeof value === "string" ? new Date(value) : undefined;
+
+  return parsed && !Number.isNaN(parsed.getTime()) ? parsed : undefined;
 }

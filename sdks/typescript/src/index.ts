@@ -1,5 +1,8 @@
 export type { ShardOptions } from "./config.js";
 export { defaultOutputLimit } from "./capture.js";
+export { Command, Commands, type ExecOptions, type ExecResult, type OutputOptions } from "./commands.js";
+export type { CommandInfo, CommandState } from "./exec.js";
+export type { TerminalSize } from "./wire.js";
 export {
   APIError,
   AuthenticationError,

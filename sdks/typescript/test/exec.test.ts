@@ -17,6 +17,8 @@ function record(fields: Record<string, unknown> = {}): Record<string, unknown> {
     command: ["/bin/sh", "-c", "echo hi"],
     state: "running",
     exit_status: null,
+    started_at: "2026-10-04T10:00:00Z",
+    exited_at: null,
     truncated: false,
     lost_bytes: 0,
     ...fields,
@@ -215,7 +217,10 @@ test("kill, resize and inspect reach their routes", async () => {
   };
   routes.set(`POST ${execPath}/kill`, noContent);
   routes.set(`POST ${execPath}/resize`, noContent);
-  routes.set(`GET ${execPath}`, () => ({ status: 200, json: record({ state: "exited", exit_status: { code: 1, signal: 9 } }) }));
+  routes.set(`GET ${execPath}`, () => ({
+    status: 200,
+    json: record({ state: "exited", exit_status: { code: 137, signal: 9 }, exited_at: "2026-10-04T10:00:05Z" }),
+  }));
   const session = await start();
   await session.kill();
   await session.kill("KILL");
@@ -223,9 +228,13 @@ test("kill, resize and inspect reach their routes", async () => {
   assert.deepEqual(bodies.map((b) => JSON.parse(b)), [{}, { signal: "KILL" }, { rows: 40, cols: 100 }]);
   assert.deepEqual(await session.inspect(), {
     id: "ex_1",
+    sandboxId: "sb_1",
     command: ["/bin/sh", "-c", "echo hi"],
     state: "exited",
-    exitStatus: { code: 1, signal: 9 },
+    exitCode: 137,
+    signal: 9,
+    startedAt: new Date("2026-10-04T10:00:00Z"),
+    exitedAt: new Date("2026-10-04T10:00:05Z"),
     lostBytes: 0,
   });
 });
@@ -243,8 +252,10 @@ test("an abort lets go of the stream, leaves the command, and rejects with the c
 });
 
 test("a command record the SDK cannot read is a protocol error", async () => {
-  routes.set(`POST /v0/sandboxes/sb_1/exec`, () => ({ status: 201, json: { exec: 7 } }));
-  await assert.rejects(start(), ProtocolError);
+  for (const json of [{ exec: 7 }, record({ state: "paused" }), record({ started_at: "yesterday" }), record({ exit_status: { code: 1 } })]) {
+    routes.set(`POST /v0/sandboxes/sb_1/exec`, () => ({ status: 201, json }));
+    await assert.rejects(start(), ProtocolError);
+  }
 });
 
 async function until(ready: () => boolean): Promise<void> {
