@@ -115,6 +115,23 @@ func TestCapabilitiesAnswerEveryLifecycleVerb(t *testing.T) {
 	}
 }
 
+// Discovery answers the table mint checks against, name and description, so the two never disagree.
+func TestScopesAnswerTheTableMintChecks(t *testing.T) {
+	s := seed(t)
+
+	status, body := get(t, s.server, "/v0/scopes")
+	listed, ok := body["scopes"].([]any)
+	if status != http.StatusOK || len(body) != 1 || !ok || len(listed) != len(models.Scopes) {
+		t.Fatalf("GET /v0/scopes answered %d %v, want only the %d scopes", status, body, len(models.Scopes))
+	}
+	for i, want := range models.Scopes {
+		got, _ := listed[i].(map[string]any)
+		if len(got) != 2 || got["name"] != want.Name || got["description"] != want.Description {
+			t.Errorf("scope %d reads %v, want name %q and description %q", i, got, want.Name, want.Description)
+		}
+	}
+}
+
 // A create is public, so its pull progress never names the host path the image lands at.
 func TestTheCreateStreamLeavesOutThePath(t *testing.T) {
 	s := seed(t)

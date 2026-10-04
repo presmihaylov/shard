@@ -186,8 +186,8 @@ func TestSigningKeyPathIsTheDefaultOrTheNamedFile(t *testing.T) {
 	if err != nil || path != filepath.Join(root, "auth", "signing-key") {
 		t.Errorf("SigningKeyPath answered %q, %v, want the default under the root", path, err)
 	}
-	if TokensPath(path, "") != filepath.Join(root, "auth", "serve.tokens") {
-		t.Errorf("the ledger beside the default key is %s", TokensPath(path, ""))
+	if TokensPath(path) != filepath.Join(root, "auth", "serve.tokens") {
+		t.Errorf("the ledger beside the default key is %s", TokensPath(path))
 	}
 	assertNoAuthDir(t, root)
 
@@ -314,7 +314,7 @@ func TestSigningKeyHelperProcess(t *testing.T) {
 
 func TestRevokeOnNoLedgerCreatesNothing(t *testing.T) {
 	root := t.TempDir()
-	path := TokensPath(filepath.Join(root, "auth", "signing-key"), "")
+	path := TokensPath(filepath.Join(root, "auth", "signing-key"))
 
 	found, err := RevokeToken(path, "no-such-id")
 	if err != nil || found != 0 {

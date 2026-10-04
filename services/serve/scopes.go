@@ -7,14 +7,15 @@ import (
 	"slices"
 	"strings"
 
+	"github.com/presmihaylov/shard/models"
 	"github.com/presmihaylov/shard/services/api"
 )
 
-// CheckScopes refuses a scope that is neither "*" nor one a route needs, because the front would answer 403 to every request the token makes.
+// CheckScopes refuses a scope models.Scopes does not list, because the front would answer 403 to every request the token makes.
 func CheckScopes(scopes []string) error {
 	for _, s := range scopes {
-		if s != "*" && !slices.Contains(api.Scopes, api.Scope(s)) {
-			return fmt.Errorf("unknown scope %q: a scope is * or one of %s", s, strings.Join(scopeNames(), ", "))
+		if !slices.ContainsFunc(models.Scopes, func(known models.Scope) bool { return known.Name == s }) {
+			return fmt.Errorf("unknown scope %q: a scope is one of %s", s, strings.Join(scopeNames(), ", "))
 		}
 	}
 
@@ -22,9 +23,9 @@ func CheckScopes(scopes []string) error {
 }
 
 func scopeNames() []string {
-	names := make([]string, 0, len(api.Scopes))
-	for _, s := range api.Scopes {
-		names = append(names, string(s))
+	names := make([]string, 0, len(models.Scopes))
+	for _, s := range models.Scopes {
+		names = append(names, s.Name)
 	}
 
 	return names
@@ -79,7 +80,7 @@ func covers(scopes []string, need api.Scope) bool {
 	}
 
 	for _, s := range scopes {
-		if s == "*" || s == string(need) {
+		if s == models.ScopeAll || s == string(need) {
 			return true
 		}
 	}
