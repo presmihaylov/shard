@@ -74,7 +74,7 @@ a dash is a verb with no `--format`.
 shard: sandbox <id> is paused: resume it with shard resume <id>
 ```
 
-### Images, snapshots, secrets and egress
+### Images, snapshots, secrets and network policies
 
 | verb | flags | format | stdout |
 | --- | --- | --- | --- |

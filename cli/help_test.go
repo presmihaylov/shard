@@ -6,7 +6,6 @@ import (
 	"slices"
 	"strings"
 	"testing"
-	"unicode"
 	"unicode/utf8"
 )
 
@@ -71,13 +70,12 @@ func TestEveryCommandHasItsHelp(t *testing.T) {
 			continue
 		}
 
-		verb, _, _ := strings.Cut(path.key, " ")
-		line := topLine(top, verb)
-		if line == "" {
+		verb, sub, _ := strings.Cut(path.key, " ")
+		if topLine(top, verb) == "" {
 			t.Errorf("the top level lists no %s", verb)
 		}
-		if words := strings.FieldsFunc(line, func(r rune) bool { return !unicode.IsLetter(r) }); !slices.Contains(words, path.cmd.name) {
-			t.Errorf("the top-level line of %s does not name %s: %q", verb, path.cmd.name, line)
+		if sub != "" && topLine(helpOf(t, verb, "--help").text, sub) == "" {
+			t.Errorf("shard %s --help lists no %s", verb, sub)
 		}
 
 		for _, words := range path.words {
