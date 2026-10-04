@@ -44,7 +44,7 @@ func TestTheDaemonStopsAnOOMKilledSandboxAndAStartBringsItBack(t *testing.T) {
 	if err := app.Run(t.Context(), []string{"start", id}); err != nil {
 		t.Fatalf("start after the kill: %v", err)
 	}
-	if got, err := runExec(t, app, "exec", id, "--", "/bin/ls", "/ran"); err != nil || !strings.Contains(got, "/ran") {
+	if got, err := runExec(t, app, "exec", id, "--", "/bin/list", "/ran"); err != nil || !strings.Contains(got, "/ran") {
 		t.Errorf("the run a start brought back lost the file its first run wrote: %q, %v", got, err)
 	}
 }

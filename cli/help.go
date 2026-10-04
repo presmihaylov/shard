@@ -58,7 +58,7 @@ var verbGroups = []struct {
 	title string
 	verbs []string
 }{
-	{"Sandboxes", []string{"create", "run", "exec", "ls", "logs", "inspect", "stop", "start", "rm", "pause", "resume", "fork", "clone", "cp"}},
+	{"Sandboxes", []string{"create", "run", "exec", "list", "logs", "inspect", "stop", "start", "remove", "pause", "resume", "fork", "clone", "cp"}},
 	{"Images, secrets and egress", []string{"pull", "image", "secret", "policy"}},
 	{"Host and access", []string{"daemon", "info", "serve", "tokens", "version"}},
 }
@@ -147,12 +147,12 @@ var helps = map[string]verbHelp{
 		notes:   []string{"The flags go before the id or name. The command follows it; an optional -- may precede the command. shard exits with the exit code of the command."},
 		example: "shard exec -it web /bin/sh",
 	},
-	"ls": {
-		usage:   []string{"ls [--all]"},
+	"list": {
+		usage:   []string{"list [--all]"},
 		summary: "list the sandboxes; --all adds the stopped ones",
 		flags:   []flagHelp{{"--all", "list the stopped sandboxes too", ""}},
 		notes:   []string{"The columns are ID, NAME, IMAGE, STATE, UPTIME, IP, RESTART and POLICY."},
-		example: "shard ls --all",
+		example: "shard list --all",
 	},
 	"logs": {
 		usage:   []string{"logs [-f] [--egress] <id|name>"},
@@ -187,18 +187,18 @@ var helps = map[string]verbHelp{
 		notes:   []string{"The entrypoint starts from the beginning, over the files the last run wrote."},
 		example: "shard start web",
 	},
-	"rm": {
-		usage:   []string{"rm [--force] <id|name>"},
+	"remove": {
+		usage:   []string{"remove [--force] <id|name>"},
 		summary: "delete a stopped or failed sandbox and its files",
 		args:    []row{sandboxArg},
 		flags: []flagHelp{
 			{"--force", "stop a running or paused sandbox first, and warn rather than fail on one that does not exist", ""},
 		},
 		notes: []string{
-			"Without --force, rm refuses a running or paused sandbox. A sandbox that is still pulling its image needs no --force: rm ends the pull.",
+			"Without --force, remove refuses a running or paused sandbox. A sandbox that is still pulling its image needs no --force: remove ends the pull.",
 			"--force stops the sandbox as stop does, with the same " + short(models.StopGrace) + " grace, and then deletes it.",
 		},
-		example: "shard rm --force web",
+		example: "shard remove --force web",
 	},
 	"pause": {
 		usage:   []string{"pause <id|name>"},
@@ -251,17 +251,17 @@ var helps = map[string]verbHelp{
 		usage:   []string{"image <subcommand> [flags] [args]"},
 		summary: "the pulled images",
 	},
-	"image ls": {
-		usage:   []string{"image ls"},
+	"image list": {
+		usage:   []string{"image list"},
 		summary: "list the pulled images",
-		example: "shard image ls",
+		example: "shard image list",
 	},
-	"image rm": {
-		usage:   []string{"image rm [--force] <image>"},
+	"image remove": {
+		usage:   []string{"image remove [--force] <image>"},
 		summary: "remove a pulled image",
-		args:    []row{{"<image>", "the image reference, as image ls prints it"}},
+		args:    []row{{"<image>", "the image reference, as image list prints it"}},
 		flags:   []flagHelp{{"--force", "remove it even when a sandbox still references it", ""}},
-		example: "shard image rm python:3.12",
+		example: "shard image remove python:3.12",
 	},
 	"image prune": {
 		usage:   []string{"image prune"},
@@ -291,17 +291,17 @@ var helps = map[string]verbHelp{
 		},
 		example: `printf '%s' "$TOKEN" | shard secret set --to api.example.com API_TOKEN`,
 	},
-	"secret ls": {
-		usage:   []string{"secret ls"},
+	"secret list": {
+		usage:   []string{"secret list"},
 		summary: "list the secrets by name, destination and placeholder, without their values",
-		example: "shard secret ls",
+		example: "shard secret list",
 	},
-	"secret rm": {
-		usage:   []string{"secret rm [--force] <NAME>"},
+	"secret remove": {
+		usage:   []string{"secret remove [--force] <NAME>"},
 		summary: "remove a secret",
 		args:    []row{{"<NAME>", "the secret"}},
 		flags:   []flagHelp{{"--force", "remove it even when a sandbox still holds it", ""}},
-		example: "shard secret rm API_TOKEN",
+		example: "shard secret remove API_TOKEN",
 	},
 	"secret grant": {
 		usage:   []string{"secret grant <id|name> <NAME>"},
@@ -343,16 +343,16 @@ var helps = map[string]verbHelp{
 		args:    []row{{"<name>", "the policy"}},
 		example: "shard policy show api-only",
 	},
-	"policy ls": {
-		usage:   []string{"policy ls"},
+	"policy list": {
+		usage:   []string{"policy list"},
 		summary: "list the policies",
-		example: "shard policy ls",
+		example: "shard policy list",
 	},
-	"policy rm": {
-		usage:   []string{"policy rm <name>"},
+	"policy remove": {
+		usage:   []string{"policy remove <name>"},
 		summary: "remove a policy that no sandbox holds",
 		args:    []row{{"<name>", "the policy"}},
-		example: "shard policy rm api-only",
+		example: "shard policy remove api-only",
 	},
 	"policy attach": {
 		usage:   []string{"policy attach <id|name> <policy>"},
@@ -424,20 +424,20 @@ var helps = map[string]verbHelp{
 		},
 		example: "shard tokens mint --name build-agent --duration 24h",
 	},
-	"tokens ls": {
-		usage:   []string{"tokens ls [flags]"},
+	"tokens list": {
+		usage:   []string{"tokens list [flags]"},
 		summary: "list every token the ledger records, with its status",
 		flags: []flagHelp{
 			{"--signing-key-file <path>", "the signing key file, whose directory holds the ledger", signingKeyDefault},
 			{"--tokens-file <path>", "the ledger itself, in place of the one beside the signing key file", ""},
 		},
-		notes:   []string{"ls reads the ledger and never creates a key or a file. The columns are ID, NAME, ISSUED, EXPIRES, SCOPES and STATUS."},
-		example: "shard tokens ls",
+		notes:   []string{"list reads the ledger and never creates a key or a file. The columns are ID, NAME, ISSUED, EXPIRES, SCOPES and STATUS."},
+		example: "shard tokens list",
 	},
 	"tokens revoke": {
 		usage:   []string{"tokens revoke [flags] <id>", "tokens revoke [flags] --name <sub>"},
 		summary: "mark a token revoked, so the next request that carries it fails",
-		args:    []row{{"<id>", "the token, as tokens ls prints it"}},
+		args:    []row{{"<id>", "the token, as tokens list prints it"}},
 		flags: []flagHelp{
 			{"--name <sub>", "revoke every token of this subject instead of one id", ""},
 			{"--signing-key-file <path>", "the signing key file, whose directory holds the ledger", signingKeyDefault},

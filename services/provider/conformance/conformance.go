@@ -188,7 +188,7 @@ func Run(t *testing.T, s Subject) {
 		}
 	})
 
-	// Remove force-ends a running sandbox. shard rm needs it, and nothing else drops the rootfs.
+	// Remove force-ends a running sandbox. shard remove needs it, and nothing else drops the rootfs.
 	t.Run("RemoveARunningSandbox", func(t *testing.T) {
 		id := s.running(t)
 

@@ -12,14 +12,14 @@ import (
 	"github.com/presmihaylov/shard/models"
 )
 
-// lsOptions is one parsed shard ls invocation.
-type lsOptions struct {
+// listOptions is one parsed shard list invocation.
+type listOptions struct {
 	all bool
 }
 
-// ls asks the daemon and nothing else: the state it lists is what the last verb left in the record.
-func (a App) ls(ctx context.Context, args []string) error {
-	opts, err := parseLs(args)
+// list asks the daemon and nothing else: the state it lists is what the last verb left in the record.
+func (a App) list(ctx context.Context, args []string) error {
+	opts, err := parseList(args)
 	if err != nil {
 		return err
 	}
@@ -133,18 +133,18 @@ func orDash(s string) string {
 	return s
 }
 
-func parseLs(args []string) (lsOptions, error) {
-	var opts lsOptions
+func parseList(args []string) (listOptions, error) {
+	var opts listOptions
 
-	flags := newFlags("ls")
+	flags := newFlags("list")
 	flags.BoolVar(&opts.all, "all", false, "")
 
 	if err := parseVerb(flags, args); err != nil {
-		return lsOptions{}, err
+		return listOptions{}, err
 	}
 
 	if rest := flags.Args(); len(rest) != 0 {
-		return lsOptions{}, fmt.Errorf("ls takes no argument, got %d", len(rest))
+		return listOptions{}, fmt.Errorf("list takes no argument, got %d", len(rest))
 	}
 
 	return opts, nil

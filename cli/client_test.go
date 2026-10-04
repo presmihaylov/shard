@@ -80,7 +80,7 @@ func TestVersionFlagPrintsTheClientLineWithNoDaemon(t *testing.T) {
 	}
 }
 
-func TestLsFailsWhenTheDaemonNeverAnswers(t *testing.T) {
+func TestListFailsWhenTheDaemonNeverAnswers(t *testing.T) {
 	var out bytes.Buffer
 
 	root := shortRoot(t)
@@ -96,12 +96,12 @@ func TestLsFailsWhenTheDaemonNeverAnswers(t *testing.T) {
 	t.Cleanup(server.Close)
 
 	start := time.Now()
-	err = app.Run(t.Context(), []string{"ls"})
+	err = app.Run(t.Context(), []string{"list"})
 	if took := time.Since(start); took > 2*time.Second {
-		t.Errorf("ls took %s to give up, want the 100ms deadline", took)
+		t.Errorf("list took %s to give up, want the 100ms deadline", took)
 	}
 	if want := "GET /v0/sandboxes on " + filepath.Join(root, api.SocketFile) + ": no answer within 100ms"; err == nil || err.Error() != want {
-		t.Errorf("ls returned %v, want %q", err, want)
+		t.Errorf("list returned %v, want %q", err, want)
 	}
 }
 
@@ -121,17 +121,17 @@ func TestVersionWithNoDaemonPrintsTheClientLineAndFails(t *testing.T) {
 	}
 }
 
-func TestLsWithNoDaemonFailsFast(t *testing.T) {
+func TestListWithNoDaemonFailsFast(t *testing.T) {
 	var out bytes.Buffer
 
 	root := shortRoot(t)
 	app := App{Version: "test", Root: root, Out: &out}
 
-	err := app.Run(t.Context(), []string{"ls"})
+	err := app.Run(t.Context(), []string{"list"})
 	if want := "cannot connect to shard daemon at " + filepath.Join(root, api.SocketFile) + ": is it running? shard --root " + root + " daemon"; err == nil || err.Error() != want {
-		t.Errorf("ls with no daemon returned %v, want %q", err, want)
+		t.Errorf("list with no daemon returned %v, want %q", err, want)
 	}
 	if out.Len() != 0 {
-		t.Errorf("ls printed %q before it failed", out.String())
+		t.Errorf("list printed %q before it failed", out.String())
 	}
 }

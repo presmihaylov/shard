@@ -107,12 +107,12 @@ func (a App) policyShow(ctx context.Context, args []string) error {
 }
 
 func (a App) policyList(ctx context.Context, args []string) error {
-	rest, err := parseArgs("policy ls", args)
+	rest, err := parseArgs("policy list", args)
 	if err != nil {
 		return err
 	}
 	if len(rest) != 0 {
-		return fmt.Errorf("policy ls takes no arguments, got %d", len(rest))
+		return fmt.Errorf("policy list takes no arguments, got %d", len(rest))
 	}
 
 	c, err := a.client()
@@ -158,12 +158,12 @@ func (a App) policyRemove(ctx context.Context, args []string) error {
 }
 
 func parsePolicyRemove(args []string) (string, error) {
-	rest, err := parseArgs("policy rm", args)
+	rest, err := parseArgs("policy remove", args)
 	if err != nil {
 		return "", err
 	}
 	if len(rest) != 1 {
-		return "", fmt.Errorf("policy rm takes one name, got %d", len(rest))
+		return "", fmt.Errorf("policy remove takes one name, got %d", len(rest))
 	}
 
 	return rest[0], nil

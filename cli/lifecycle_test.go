@@ -518,7 +518,7 @@ func newLifecycleApp(t *testing.T, out *bytes.Buffer, r *recorder, sb models.San
 	}, f
 }
 
-// running is the record of a sandbox that is up, which is what stop and rm are given in most tests.
+// running is the record of a sandbox that is up, which is what stop and remove are given in most tests.
 func running() models.Sandbox {
 	return models.Sandbox{ID: "sandbox1", State: models.StateRunning, PID: 42}
 }

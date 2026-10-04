@@ -10,7 +10,7 @@ import (
 	"github.com/presmihaylov/shard/services/image"
 )
 
-// SHARD-359: a create that pulls while image rm is past its check must still find its rootfs at the mount.
+// SHARD-359: a create that pulls while image remove is past its check must still find its rootfs at the mount.
 func TestACreateKeepsTheRootFSAnImageRmHasPassed(t *testing.T) {
 	h := newHarness(t)
 

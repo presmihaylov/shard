@@ -19,7 +19,7 @@ type Image = image.Image
 // Secret is one entry of the secret store: a name and its destinations, never a value.
 type Secret = secret.Secret
 
-// DefaultPlaceholder is what a secret gets when the operator names none; secret ls prints the stored one.
+// DefaultPlaceholder is what a secret gets when the operator names none; secret list prints the stored one.
 func DefaultPlaceholder(name string) string { return secret.DefaultPlaceholder(name) }
 
 // RuleText is one --allow or --deny as the operator typed it; the daemon owns the grammar.
@@ -28,7 +28,7 @@ type RuleText = sandbox.RuleText
 // PolicyView is a policy and the sandboxes whose record names it, which is what policy show prints.
 type PolicyView = sandbox.PolicyView
 
-// SecretsResult is what secret ls prints: the secrets the daemon read, beside the files it could not.
+// SecretsResult is what secret list prints: the secrets the daemon read, beside the files it could not.
 type SecretsResult struct {
 	Secrets  []Secret `json:"secrets"`
 	Warnings []string `json:"warnings,omitempty"`

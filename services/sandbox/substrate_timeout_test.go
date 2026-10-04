@@ -54,14 +54,14 @@ func TestRemoveFailsFastWhenTheSubstrateDoesNotAnswer(t *testing.T) {
 
 	start := time.Now()
 	err := svc.Remove(t.Context(), "sandbox1", false)
-	bounded(t, start, "rm")
+	bounded(t, start, "remove")
 
 	var timeout *sandbox.SubstrateTimeoutError
 	if !errors.As(err, &timeout) {
 		t.Fatalf("Remove returned %v, want a SubstrateTimeoutError", err)
 	}
-	if timeout.Op != "rm" {
-		t.Errorf("the error names op %q, want rm", timeout.Op)
+	if timeout.Op != "remove" {
+		t.Errorf("the error names op %q, want remove", timeout.Op)
 	}
 	if l.provider.stopped || l.repo.deleted {
 		t.Error("rm without force killed or removed a sandbox it could not read")
@@ -124,8 +124,8 @@ func TestRemoveForceFailsFastWhenTheSubstrateOffersNoKill(t *testing.T) {
 	if !errors.As(err, &timeout) {
 		t.Fatalf("Remove --force returned %v, want a SubstrateTimeoutError", err)
 	}
-	if timeout.Op != "rm" {
-		t.Errorf("the error names op %q, want rm", timeout.Op)
+	if timeout.Op != "remove" {
+		t.Errorf("the error names op %q, want remove", timeout.Op)
 	}
 	if l.provider.stopped || l.provider.removed || l.repo.deleted {
 		t.Errorf("rm --force acted on a wedged sandbox it had no kill for: stopped=%v removed=%v deleted=%v", l.provider.stopped, l.provider.removed, l.repo.deleted)
