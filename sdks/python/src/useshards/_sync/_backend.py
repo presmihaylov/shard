@@ -5,10 +5,17 @@ from __future__ import annotations
 import threading
 import time
 from collections.abc import Callable
+from typing import TypeVar
+
+T = TypeVar("T")
 
 Lock = threading.Lock
 Event = threading.Event
 sleep = time.sleep
+
+
+def offload(fn: Callable[[], T]) -> T:
+    return fn()
 
 
 def wait_event(event: threading.Event, timeout: float | None) -> bool:

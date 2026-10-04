@@ -75,3 +75,60 @@ def command_info(record: Any) -> CommandInfo:
         )
     except (KeyError, TypeError, ValueError) as e:
         raise ProtocolError(f"the daemon answered a command record the SDK cannot read: {e!r}") from None
+
+
+FileType = Literal["file", "dir", "symlink", "other"]
+
+
+@attrs.frozen
+class FileInfo:
+    """One sandbox path as the guest sees it; mode is the permission bits with setuid, setgid and sticky."""
+
+    type: FileType
+    size: int
+    mode: int
+    uid: int
+    gid: int
+    mtime: datetime.datetime
+
+
+@attrs.frozen
+class FileEntry:
+    """One name in a sandbox directory with its own stat, never what a symlink points to."""
+
+    name: str
+    type: FileType
+    size: int
+    mode: int
+    uid: int
+    gid: int
+    mtime: datetime.datetime
+
+
+def file_info(record: Any) -> FileInfo:
+    return FileInfo(**_stat(record))
+
+
+def file_entry(record: Any) -> FileEntry:
+    try:
+        name = str(record["name"])
+    except (KeyError, TypeError) as e:
+        raise ProtocolError(f"the daemon answered a directory entry the SDK cannot read: {e!r}") from None
+    return FileEntry(name=name, **_stat(record))
+
+
+def _stat(record: Any) -> dict[str, Any]:
+    try:
+        kind = record["type"]
+        if kind not in ("file", "dir", "symlink", "other"):
+            raise ValueError(kind)
+        return {
+            "type": kind,
+            "size": int(record["size"]),
+            "mode": int(record["mode"]),
+            "uid": int(record["uid"]),
+            "gid": int(record["gid"]),
+            "mtime": datetime.datetime.fromisoformat(record["mtime"]),
+        }
+    except (KeyError, TypeError, ValueError) as e:
+        raise ProtocolError(f"the daemon answered a file stat the SDK cannot read: {e!r}") from None

@@ -19,6 +19,7 @@ __all__ = [
     "ShardConnectionError",
     "ShardError",
     "UnknownLengthError",
+    "UnsafeArchiveError",
     "UnsupportedError",
 ]
 
@@ -44,6 +45,15 @@ class ProtocolError(ShardError):
 
 class UnknownLengthError(ShardError):
     """An upload's size is unknown, and the daemon refuses a body without a Content-Length."""
+
+
+class UnsafeArchiveError(ShardError):
+    """A sandbox's tar holds an entry a download refuses to land, as one that leaves the destination."""
+
+    def __init__(self, entry: str, reason: str) -> None:
+        super().__init__(f"refuse the entry {entry!r}: {reason}")
+        self.entry = entry
+        self.reason = reason
 
 
 class CommandNotStartedError(ShardError):

@@ -4,11 +4,18 @@ from __future__ import annotations
 
 import asyncio
 from collections.abc import Callable, Coroutine
-from typing import Any
+from typing import Any, TypeVar
+
+T = TypeVar("T")
 
 Lock = asyncio.Lock
 Event = asyncio.Event
 sleep = asyncio.sleep
+
+
+async def offload(fn: Callable[[], T]) -> T:
+    """Run blocking disk work off the loop."""
+    return await asyncio.to_thread(fn)
 
 
 async def wait_event(event: asyncio.Event, timeout: float | None) -> bool:

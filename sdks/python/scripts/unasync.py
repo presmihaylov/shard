@@ -24,6 +24,7 @@ NAMES = {
     "aiter_bytes": "iter_bytes",
     "aiter_lines": "iter_lines",
     "aread": "read",
+    "asynccontextmanager": "contextmanager",
     "StopAsyncIteration": "StopIteration",
     "_async": "_sync",
 }

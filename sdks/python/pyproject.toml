@@ -49,6 +49,10 @@ select = ["E", "F", "W", "I", "B", "UP", "RUF", "SIM", "ASYNC"]
 # The async client mirrors the sync one, whose callers pass a timeout, so asyncio.timeout is no substitute.
 ignore = ["ASYNC109"]
 
+[tool.ruff.lint.per-file-ignores]
+# A twin is the async source with the keywords cut, so an async for that yields reads as a plain loop there.
+"**/_sync/*.py" = ["UP028"]
+
 [tool.mypy]
 strict = true
 python_version = "3.11"
