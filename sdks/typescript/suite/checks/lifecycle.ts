@@ -27,6 +27,21 @@ async function others(sandbox: Sandbox): Promise<string[]> {
     .filter((line) => !/^(\S*\/)?(shard-)?init\b/.test(line));
 }
 
+/** agrees runs a verb and proves the capabilities said whether the server would refuse it. */
+async function agrees(verb: string, supported: boolean, run: () => Promise<unknown>): Promise<void> {
+  try {
+    await run();
+  } catch (err) {
+    if (!(err instanceof UnsupportedError)) {
+      throw err;
+    }
+    assert.equal(supported, false, `capabilities say ${verb}, but the server refused it: ${err.message}`);
+    assert.match(err.message, new RegExp(verb), `the refusal names ${verb}`);
+    return;
+  }
+  assert.equal(supported, true, `capabilities say no ${verb}, but it ran`);
+}
+
 export const checks: Check[] = [
   {
     name: "lifecycle.create_no_app",
@@ -135,6 +150,22 @@ export const checks: Check[] = [
       for (const err of refused) {
         assert.equal(err.code, "unsupported");
       }
+    },
+  },
+  {
+    name: "lifecycle.capabilities",
+    run: async (ctx) => {
+      const capabilities = await ctx.shard.capabilities();
+      assert.deepEqual(Object.keys(capabilities).sort(), ["create", "fork", "pause", "remove", "resume", "snapshot", "start", "stop"]);
+      for (const verb of ["create", "start", "stop", "remove"] as const) {
+        assert.equal(capabilities[verb], true, `every provider can ${verb}`);
+      }
+      assert.equal(capabilities.resume, capabilities.pause, "pause and resume come as a pair");
+      const sandbox = await ctx.create();
+      await agrees("pause", capabilities.pause, () => sandbox.pause().then(() => sandbox.resume()));
+      await agrees("fork", capabilities.fork, () => sandbox.fork({ name: ctx.name("fork") }).then((fork) => fork.remove({ force: true })));
+      await sandbox.stop();
+      await agrees("snapshot", capabilities.snapshot, () => ctx.snapshot(sandbox));
     },
   },
 ];

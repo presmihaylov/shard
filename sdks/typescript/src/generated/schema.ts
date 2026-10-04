@@ -7,7 +7,7 @@ export interface paths {
             path?: never;
             cookie?: never;
         };
-        /** List the optional verbs the provider refuses */
+        /** List the lifecycle verbs and whether this server supports each */
         get: operations["get-capabilities"];
         put?: never;
         post?: never;
@@ -523,9 +523,15 @@ export interface components {
         AppStopRequest: {
             force?: boolean;
         };
-        CapabilitiesResponse: {
-            provider: string;
-            unsupported: string[];
+        Capabilities: {
+            create: boolean;
+            fork: boolean;
+            pause: boolean;
+            remove: boolean;
+            resume: boolean;
+            snapshot: boolean;
+            start: boolean;
+            stop: boolean;
         };
         CopyRequest: {
             name?: string;
@@ -854,7 +860,7 @@ export interface operations {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": components["schemas"]["CapabilitiesResponse"];
+                    "application/json": components["schemas"]["Capabilities"];
                 };
             };
             /** @description Error */

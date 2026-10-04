@@ -61,8 +61,9 @@ try {
 - **Files stream.** `files.download()` writes to a temporary file and renames it at the end, so a
   large file never sits in memory. `files.upload()` sends a local file with its length.
   `uploadDir()` and `downloadDir()` move a whole tree as a tar.
-- **A verb the provider lacks throws `UnsupportedError`.** `shard.capabilities()` names the provider
-  and the verbs it refuses, as `pause`, `resume` and `fork`, before you call them.
+- **A verb the provider lacks throws `UnsupportedError`.** `shard.capabilities()` says which of the
+  eight lifecycle verbs the server supports (create, start, stop, remove, pause, resume, fork and
+  snapshot), before you call them.
 
 ## Errors
 

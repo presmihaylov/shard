@@ -150,10 +150,16 @@ export interface Version {
   apiVersion: string;
 }
 
-/** Capabilities name the provider and the optional verbs it refuses, as pause, resume and fork. */
+/** Capabilities say which of the eight lifecycle verbs the server supports; snapshot is filesystem snapshot creation. */
 export interface Capabilities {
-  provider: string;
-  unsupported: string[];
+  create: boolean;
+  start: boolean;
+  stop: boolean;
+  remove: boolean;
+  pause: boolean;
+  resume: boolean;
+  fork: boolean;
+  snapshot: boolean;
 }
 
 export function sandboxInfo(value: unknown): SandboxInfo {
@@ -253,7 +259,16 @@ export function version(value: unknown): Version {
 export function capabilities(value: unknown): Capabilities {
   const fields = Fields.of(value, "the capabilities");
 
-  return { provider: fields.string("provider"), unsupported: fields.strings("unsupported") };
+  return {
+    create: fields.bool("create"),
+    start: fields.bool("start"),
+    stop: fields.bool("stop"),
+    remove: fields.bool("remove"),
+    pause: fields.bool("pause"),
+    resume: fields.bool("resume"),
+    fork: fields.bool("fork"),
+    snapshot: fields.bool("snapshot"),
+  };
 }
 
 /** records reads a JSON array the daemon may answer as null when it is empty. */

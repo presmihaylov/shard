@@ -7,8 +7,8 @@ const image = "docker.io/library/alpine:3";
 const shard = new Shard();
 try {
   const { version } = await shard.version();
-  const { provider } = await shard.capabilities();
-  console.log(`daemon ${version} on ${provider}`);
+  const { fork } = await shard.capabilities();
+  console.log(`daemon ${version}, fork ${fork ? "supported" : "unsupported"}`);
 
   const sandbox = await shard.create({ image });
   try {
