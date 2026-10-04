@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io/fs"
 	"log"
 	"net"
 	"os"
@@ -471,6 +472,59 @@ func TestAPauseRetriedDuringARecoveryThawFreezesAfterIt(t *testing.T) {
 	}
 	if got, want := strings.Fields(string(order)), []string{supervisor.KindFreeze, supervisor.KindThaw, supervisor.KindFreeze}; !slices.Equal(got, want) {
 		t.Fatalf("the guest read %q, want the lost freeze, the recovery's thaw, then the retry's freeze", got)
+	}
+}
+
+// An exec while a pause holds the VM is refused by the pause's name, never dialed into a VM that cannot answer it (SHARD-478).
+func TestAnExecInsideAPauseIsRefusedByName(t *testing.T) {
+	h := newHarness(t)
+	spec := h.newSpec(t, "/bin/sh", "-c", "while true; do sleep 1; done")
+	if err := h.provider.Create(t.Context(), spec); err != nil {
+		t.Fatal(err)
+	}
+	if err := h.provider.Start(t.Context(), spec.ID); err != nil {
+		t.Fatal(err)
+	}
+	dir, err := h.stateDir(spec.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	hold := filepath.Join(dir, holdSaveFile)
+	if err := os.WriteFile(hold, nil, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	// A failure inside the hold must still let the pause go, or the stop of the sandbox waits behind it.
+	t.Cleanup(func() {
+		if err := os.Remove(hold); err != nil && !errors.Is(err, fs.ErrNotExist) {
+			t.Error(err)
+		}
+	})
+
+	paused := make(chan error, 1)
+	go func() { paused <- h.provider.Pause(t.Context(), spec.ID, t.TempDir()) }()
+	deadline := time.Now().Add(stopGrace)
+	for {
+		if _, err := os.Stat(filepath.Join(dir, savingFile)); err == nil {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("the pause did not reach its save within %s", stopGrace)
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+
+	ctx, cancel := context.WithTimeout(t.Context(), 5*time.Second)
+	_, err = h.provider.Exec(ctx, spec.ID, models.ExecSpec{Argv: []string{"true"}})
+	cancel()
+	var notStarted *models.CommandNotStartedError
+	if !errors.As(err, &notStarted) || notStarted.Code != models.CommandNotExecutableExitCode || !strings.Contains(notStarted.Reason, "a pause holds the sandbox frozen") {
+		t.Errorf("Exec inside a pause = %v, want the pause's refusal with code %d", err, models.CommandNotExecutableExitCode)
+	}
+	if err := os.Remove(hold); err != nil {
+		t.Fatal(err)
+	}
+	if err := <-paused; err != nil {
+		t.Fatalf("the pause after the refused exec: %v", err)
 	}
 }
 

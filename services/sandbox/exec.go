@@ -1183,6 +1183,15 @@ func (s *Service) readyForExec(ctx context.Context, ref string) (string, error) 
 		return id, nil
 	}
 
+	// A pause ends the substrate's run before its record says paused, so the record read again names that pause and no stop (SHARD-478).
+	paused, err := s.pausedMeanwhile(id)
+	if err != nil {
+		return "", err
+	}
+	if paused {
+		return "", &StateError{ID: id, State: models.StatePaused, Fix: "resume it with shard resume " + id, Code: models.CodeSandboxNotRunning}
+	}
+
 	// The exit file records a 137 for this, which is what a plain kill -9 records too, so the reason
 	// is named here or an operator never learns it.
 	if status.OOMKilled {
@@ -1194,6 +1203,23 @@ func (s *Service) readyForExec(ctx context.Context, ref string) (string, error) 
 	}
 
 	return "", &StateError{ID: id, State: status.State, Fix: "start it again with shard start " + id, Code: models.CodeSandboxNotRunning}
+}
+
+// pausedMeanwhile says a pause that holds no lock against an exec completed since the record was read, recorded or not yet.
+func (s *Service) pausedMeanwhile(id string) (bool, error) {
+	sb, err := s.cfg.Repo.Get(id)
+	if err != nil {
+		return false, err
+	}
+	if sb.State == models.StatePaused {
+		return true, nil
+	}
+	dir, err := s.markedSnapshot(sb)
+	if err != nil {
+		return false, err
+	}
+
+	return dir != "", nil
 }
 
 // outputPipe copies one of the guest's streams into the buffer and reports what stopped the copy.

@@ -5,6 +5,8 @@ import (
 	"context"
 	"errors"
 	"io"
+	"os"
+	"path/filepath"
 	"slices"
 	"strings"
 	"sync"
@@ -289,6 +291,59 @@ func TestExecRefusesAPausedSandboxWithTheResumeHint(t *testing.T) {
 	_, _, _, err := execOf(t, l, svc, "sandbox1", sandbox.ExecRequest{Command: []string{"true"}}, "")
 	if err == nil || !strings.Contains(err.Error(), "shard resume sandbox1") {
 		t.Fatalf("Exec of a paused sandbox returned %v, want the resume hint", err)
+	}
+}
+
+// A pause ends the substrate's run before its record says paused, so an exec in that window reads paused and never stopped (SHARD-478).
+func TestExecInsideAPauseNamesThePauseAndNeverAStop(t *testing.T) {
+	for _, tc := range []struct {
+		name   string
+		marked bool
+		// land is what the pause writes between the exec's read of the record and its ask of the substrate.
+		land func(sb *models.Sandbox)
+	}{
+		{name: "the checkpoint is in and the record still says running", marked: true},
+		{name: "the mark lands after the read", land: func(sb *models.Sandbox) { sb.Pausing = true }},
+		{name: "the record says paused after the read", land: func(sb *models.Sandbox) { sb.State = models.StatePaused }},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			dir := t.TempDir()
+			if err := os.WriteFile(filepath.Join(dir, "checkpoint.img"), nil, 0o600); err != nil {
+				t.Fatal(err)
+			}
+			r := &recorder{}
+			sb := running()
+			sb.Pausing = tc.marked
+			svc, l := newService(t, r, sb)
+			l.repo.snapshotDir = dir
+			l.provider.status = models.Status{Exists: true, State: models.StateStopped}
+			if tc.land != nil {
+				l.provider.onStatus = func() { tc.land(&l.repo.sb) }
+			}
+
+			_, _, _, err := execOf(t, l, svc, "sandbox1", sandbox.ExecRequest{Command: []string{"true"}}, "")
+			if err == nil || !strings.Contains(err.Error(), "is paused: resume it with shard resume sandbox1") {
+				t.Fatalf("Exec inside a pause returned %v, want the pause and the resume hint", err)
+			}
+			if slices.Contains(r.calls, "provider.Exec") {
+				t.Error("exec reached the provider inside a pause")
+			}
+		})
+	}
+}
+
+// A mark with no checkpoint under it is a pause that lost the sandbox before its save, so the stop stands.
+func TestExecInsideAPauseThatSavedNothingReportsTheStop(t *testing.T) {
+	r := &recorder{}
+	sb := running()
+	sb.Pausing = true
+	svc, l := newService(t, r, sb)
+	l.repo.snapshotDir = t.TempDir()
+	l.provider.status = models.Status{Exists: true, State: models.StateStopped}
+
+	_, _, _, err := execOf(t, l, svc, "sandbox1", sandbox.ExecRequest{Command: []string{"true"}}, "")
+	if err == nil || !strings.Contains(err.Error(), "is stopped: start it again with shard start sandbox1") {
+		t.Fatalf("Exec inside a pause that saved nothing returned %v, want the stop and the start hint", err)
 	}
 }
 

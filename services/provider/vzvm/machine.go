@@ -41,8 +41,8 @@ type machine struct {
 	cancel context.CancelFunc
 	// freezing, taken before swap, holds each freeze and thaw of the guest's root until the guest answers, so none lands inside another.
 	freezing sync.Mutex
-	// pausing, under freezing, is a pause that froze the guest's root and still means to stop the VM.
-	pausing bool
+	// pausing, set under freezing and read bare by an exec, is a pause that froze the guest's root and still means to stop the VM.
+	pausing atomic.Bool
 	// events closes when the control connection ended, which is the guest gone.
 	events chan struct{}
 
@@ -700,7 +700,7 @@ func (p *Provider) adopt(m *machine, control *supervisor.Control, state supervis
 
 	var thawed error
 	// A root frozen with no pause in flight is a freeze whose answer the drop lost, and nothing else would thaw it.
-	if state.Frozen && !m.pausing {
+	if state.Frozen && !m.pausing.Load() {
 		if p.recovering != nil {
 			p.recovering()
 		}
