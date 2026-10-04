@@ -12,6 +12,7 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"time"
 
 	"github.com/presmihaylov/shard/models"
 	"github.com/presmihaylov/shard/services/api"
@@ -98,34 +99,42 @@ func TestAWaitedCreateOffAnUncachedImageRefusesAnUnknownUser(t *testing.T) {
 
 // A waited create of an uncached image answered 201 with the failed record when its refused app's sandbox stayed (SHARD-497).
 func TestAWaitedCreateAnswersTheRemovalThatLeftARefusedSandbox(t *testing.T) {
-	for _, streamed := range []bool{false, true} {
-		t.Run(fmt.Sprintf("streamed=%t", streamed), func(t *testing.T) {
-			logged := &lockedWriter{}
-			d := &deps{cfg: Config{Root: t.TempDir(), Out: logged, Provider: "gvisor"}}
-			repo, err := d.repo()
-			if err != nil {
-				t.Fatalf("build the repository: %v", err)
-			}
+	removals := map[string]error{
+		"plain": errors.New("the state dir is busy"),
+		// A typed removal error is the daemon log's to read, never a code the refusal answers with.
+		"timeout": &sandbox.SubstrateTimeoutError{ID: "amber-otter-1a2b", Op: "remove", Budget: time.Second},
+	}
+	for name, removal := range removals {
+		for _, streamed := range []bool{false, true} {
+			t.Run(fmt.Sprintf("%s/streamed=%t", name, streamed), func(t *testing.T) {
+				logged := &lockedWriter{}
+				d := &deps{cfg: Config{Root: t.TempDir(), Out: logged, Provider: "gvisor"}}
+				repo, err := d.repo()
+				if err != nil {
+					t.Fatalf("build the repository: %v", err)
+				}
 
-			svc := sandbox.New(sandbox.Config{Repo: undeletable{repo}, Images: pulledImages{}, Network: hostlessNetwork{}, Provider: refusedApp{}})
-			life := &lifecycle{deps: d, base: t.Context(), svc: svc}
-			t.Cleanup(life.wait)
-			server := httptest.NewServer(api.NewHandler("v-test", nil, repo, nil, life, nil, nil, nil, logged))
-			t.Cleanup(server.Close)
+				svc := sandbox.New(sandbox.Config{Repo: undeletable{repo, removal}, Images: pulledImages{}, Network: hostlessNetwork{}, Provider: refusedApp{}})
+				life := &lifecycle{deps: d, base: t.Context(), svc: svc}
+				t.Cleanup(life.wait)
+				server := httptest.NewServer(api.NewHandler("v-test", nil, repo, nil, life, nil, nil, nil, logged))
+				t.Cleanup(server.Close)
 
-			status, refusal := waitedCreate(t, server, streamed)
+				status, refusal := waitedCreate(t, server, streamed)
 
-			want := http.StatusInternalServerError
-			if streamed {
-				want = http.StatusCreated
-			}
-			if status != want || refusal["code"] != string(models.CodeInternal) {
-				t.Fatalf("the waited create answered %d with %v, want %d and the internal error", status, refusal, want)
-			}
-			if !strings.Contains(logged.String(), "was not removed") {
-				t.Errorf("the daemon log lost the removal:\n%s", logged.String())
-			}
-		})
+				want := http.StatusInternalServerError
+				if streamed {
+					want = http.StatusCreated
+				}
+				stayed := strings.HasSuffix(fmt.Sprint(refusal["message"]), "and the sandbox was not removed")
+				if status != want || refusal["code"] != string(models.CodeInternal) || !stayed {
+					t.Fatalf("the waited create answered %d with %v, want %d and the internal error that says the sandbox stayed", status, refusal, want)
+				}
+				if !strings.Contains(logged.String(), removal.Error()) {
+					t.Errorf("the daemon log lost the removal:\n%s", logged.String())
+				}
+			})
+		}
 	}
 }
 
@@ -189,10 +198,14 @@ func (w *lockedWriter) String() string {
 	return w.buf.String()
 }
 
-// undeletable refuses the delete, as a state dir the host will not let go of does.
-type undeletable struct{ *sandboxstate.Repository }
+// undeletable refuses the delete with err, as a state dir the host will not let go of does.
+type undeletable struct {
+	*sandboxstate.Repository
 
-func (undeletable) Delete(string) error { return errors.New("the state dir is busy") }
+	err error
+}
+
+func (u undeletable) Delete(string) error { return u.err }
 
 // refusedApp is a substrate whose start reports an app that never ran.
 type refusedApp struct{ models.Provider }
