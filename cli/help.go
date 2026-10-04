@@ -582,7 +582,7 @@ var helps = map[string]verbHelp{
 	"tokens": {
 		usage:   []string{"tokens COMMAND [OPTIONS] [ARGS...]"},
 		summary: "create, list and revoke API tokens",
-		notes:   []note{para("These commands run locally.")},
+		notes:   []note{para("mint, list and revoke run locally.")},
 	},
 	"tokens mint": {
 		usage:   []string{"tokens mint [OPTIONS]"},
