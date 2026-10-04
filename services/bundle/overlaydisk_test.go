@@ -82,7 +82,12 @@ func TestMinOverlayDiskMiBIsTheSmallestOverlay(t *testing.T) {
 func TestCheckGrowBoundAgreesWithTheGrow(t *testing.T) {
 	for _, mib := range []int64{126, 127, 128, 129, 130, 131, 132, 254, 255, 256, 257, 258, 259, 260} {
 		check := bundle.CheckGrowBound(mib)
-		grow := bundle.WriteOverlayDisk(filepath.Join(t.TempDir(), bundle.OverlayDiskFile), models.Resources{DiskMiB: mib})
+		// A root per disk, or the admission counts each earlier row's disk as another sandbox's (SHARD-594).
+		sandbox := filepath.Join(t.TempDir(), "sandbox")
+		if err := os.Mkdir(sandbox, 0o700); err != nil {
+			t.Fatal(err)
+		}
+		grow := bundle.WriteOverlayDisk(filepath.Join(sandbox, bundle.OverlayDiskFile), models.Resources{DiskMiB: mib})
 		if (check == nil) != (grow == nil) {
 			t.Errorf("--disk %d: CheckGrowBound says %v, WriteOverlayDisk says %v", mib, check, grow)
 		}
