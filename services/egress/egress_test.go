@@ -236,6 +236,11 @@ func TestParseRuleRefusesPortsPastTheBoundBeforeTheyExpand(t *testing.T) {
 			t.Errorf("ParseRule(%q) = %v, want the port bound", text, err)
 		}
 	}
+	for _, text := range []string{"any tcp:9223372036854775807", "any tcp:0-9223372036854775807", "any tcp:0", "any tcp:65535-65536"} {
+		if _, err := ParseRule(models.ActionAllow, text); err == nil || !strings.Contains(err.Error(), "not between 1 and 65535") {
+			t.Errorf("ParseRule(%q) = %v, want the port range", text, err)
+		}
+	}
 }
 
 // A deny typed in any case or with a trailing dot matches the host the proxy and the resolver compare, parsed now or stored as typed before (SHARD-303).
