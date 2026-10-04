@@ -39,6 +39,8 @@ type Subject struct {
 	Reopen func(t *testing.T) models.Provider
 	// ReseedWindow is the guest uptime the fork source passes before its pause, so no early-boot crng reseed can split the forks; zero pauses at once.
 	ReseedWindow time.Duration
+	// RootHoldsEveryCapability says the runtime gives root every capability in its user namespace whatever the spec asks, as sysbox-runc does.
+	RootHoldsEveryCapability bool
 }
 
 // environments is where the daemon rewrites a stopped sandbox's guest environment.
