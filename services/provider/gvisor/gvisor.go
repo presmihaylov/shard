@@ -411,7 +411,7 @@ func (p *Provider) neverStarted(id string, b bundle.Bundle) error {
 		return err
 	}
 
-	return fmt.Errorf("the entrypoint of sandbox %s did not start%s", id, diagnostics(path))
+	return &models.EntrypointNotStartedError{Sandbox: id, Err: diagnostics(path)}
 }
 
 // hasStarted reports whether the supervisor wrote its handshake. The file arrives by rename, so its
@@ -428,19 +428,19 @@ func hasStarted(path string) (bool, error) {
 	return true, nil
 }
 
-// diagnostics quotes the tail of the sandbox output, as the suffix of the error that reports it.
-func diagnostics(path string) string {
+// diagnostics quotes the tail of the sandbox output as the cause of the error that reports it.
+func diagnostics(path string) error {
 	blob, err := readTail(path)
 	if err != nil {
-		return fmt.Sprintf(": its diagnostics were unreadable: %v", err)
+		return fmt.Errorf("its diagnostics were unreadable: %w", err)
 	}
 
 	text := strings.TrimSpace(string(blob))
 	if text == "" {
-		return ": it printed nothing"
+		return errors.New("it printed nothing")
 	}
 
-	return ": " + text
+	return errors.New(text)
 }
 
 // readTail keeps the last diagnosticTail bytes, because the guest writes to this file for as long
