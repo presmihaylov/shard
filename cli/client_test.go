@@ -100,7 +100,7 @@ func TestListFailsWhenTheDaemonNeverAnswers(t *testing.T) {
 	if took := time.Since(start); took > 2*time.Second {
 		t.Errorf("list took %s to give up, want the 100ms deadline", took)
 	}
-	if want := "GET /v0/local/sandboxes on " + filepath.Join(root, api.SocketFile) + ": no answer within 100ms"; err == nil || err.Error() != want {
+	if want := "GET /v0/sandboxes on " + filepath.Join(root, api.SocketFile) + ": no answer within 100ms"; err == nil || err.Error() != want {
 		t.Errorf("list returned %v, want %q", err, want)
 	}
 }

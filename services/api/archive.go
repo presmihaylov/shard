@@ -6,8 +6,25 @@ import (
 	"io"
 	"net/http"
 
+	"github.com/danielgtaylor/huma/v2"
+
 	"github.com/presmihaylov/shard/services/sandbox"
 )
+
+type archiveInput struct {
+	ID   string `path:"id" doc:"The sandbox id or name."`
+	Path string `query:"path" doc:"The absolute guest directory."`
+	User string `query:"user" doc:"Who unpacks and owns the files; none is the entrypoint's user."`
+}
+
+func describeWriteArchive(_ huma.Registry, op *huma.Operation) {
+	op.RequestBody = binaryBody("application/x-tar")
+	op.Responses["204"] = &huma.Response{Description: "The tar unpacked under the directory."}
+}
+
+func describeReadArchive(_ huma.Registry, op *huma.Operation) {
+	op.Responses["200"] = &huma.Response{Description: "A tar of the path; a body cut short is a failed read.", Headers: statHeader(), Content: map[string]*huma.MediaType{"application/x-tar": {Schema: binary()}}}
+}
 
 // putArchive unpacks the tar body under the guest directory at ?path=; the body streams, so no length is needed, and a stall still ends it.
 func (h *Handler) putArchive(w http.ResponseWriter, r *http.Request) {

@@ -8,7 +8,7 @@ import (
 	"github.com/presmihaylov/shard/services/network"
 )
 
-// LogReader is what shard logs --egress reads: one sandbox's own file. The daemon writes both halves
+// LogReader is what shard policy logs reads: one sandbox's own file. The daemon writes both halves
 // into it, the proxy's own decisions and the packets the host chains dropped, so a read needs no ring.
 type LogReader struct {
 	log *Log

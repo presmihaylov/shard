@@ -73,7 +73,7 @@ type fakeDaemon struct {
 	secretSvc    *secret.Store
 	policySvc    *egress.Store
 	snapshotSvc  *sandboxstate.Snapshots
-	// egressLog is what shard logs --egress prints, canned: the real one reads the kernel ring.
+	// egressLog is what shard policy logs prints, canned: the real one reads the kernel ring.
 	egressLog []egress.Record
 	// proxyCA is what a grant plants in the guest, and nil is a shard that fronts nothing.
 	proxyCA []byte

@@ -1,0 +1,3460 @@
+{
+  "components": {
+    "schemas": {
+      "AppExit": {
+        "additionalProperties": false,
+        "properties": {
+          "code": {
+            "format": "int64",
+            "type": "integer"
+          },
+          "restarts": {
+            "format": "int64",
+            "type": "integer"
+          },
+          "signal": {
+            "format": "int64",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "code",
+          "signal",
+          "restarts"
+        ],
+        "type": "object"
+      },
+      "AppStopRequest": {
+        "additionalProperties": false,
+        "properties": {
+          "force": {
+            "type": "boolean"
+          }
+        },
+        "type": "object"
+      },
+      "CapabilitiesResponse": {
+        "additionalProperties": false,
+        "properties": {
+          "provider": {
+            "type": "string"
+          },
+          "unsupported": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          }
+        },
+        "required": [
+          "provider",
+          "unsupported"
+        ],
+        "type": "object"
+      },
+      "CopyRequest": {
+        "additionalProperties": false,
+        "properties": {
+          "name": {
+            "type": "string"
+          }
+        },
+        "type": "object"
+      },
+      "CreateLine": {
+        "additionalProperties": false,
+        "properties": {
+          "error": {
+            "$ref": "#/components/schemas/ErrorObject"
+          },
+          "event": {
+            "$ref": "#/components/schemas/Event"
+          },
+          "sandbox": {
+            "$ref": "#/components/schemas/Sandbox"
+          }
+        },
+        "type": "object"
+      },
+      "CreateRequest": {
+        "additionalProperties": false,
+        "properties": {
+          "command": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "env": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "image": {
+            "type": "string"
+          },
+          "name": {
+            "type": "string"
+          },
+          "policy": {
+            "type": "string"
+          },
+          "resources": {
+            "$ref": "#/components/schemas/ResourceRequest"
+          },
+          "restart": {
+            "$ref": "#/components/schemas/RestartSpec"
+          },
+          "secrets": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "snapshot": {
+            "type": "string"
+          },
+          "user": {
+            "type": "string"
+          },
+          "workdir": {
+            "type": "string"
+          }
+        },
+        "type": "object"
+      },
+      "Destination": {
+        "additionalProperties": false,
+        "properties": {
+          "kind": {
+            "type": "string"
+          },
+          "value": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "kind",
+          "value"
+        ],
+        "type": "object"
+      },
+      "Effective": {
+        "additionalProperties": false,
+        "properties": {
+          "missing": {
+            "type": "boolean"
+          },
+          "policy": {
+            "type": "string"
+          },
+          "rules": {
+            "items": {
+              "$ref": "#/components/schemas/EffectiveRule"
+            },
+            "type": "array"
+          }
+        },
+        "required": [
+          "policy",
+          "rules"
+        ],
+        "type": "object"
+      },
+      "EffectiveRule": {
+        "additionalProperties": false,
+        "properties": {
+          "action": {
+            "type": "string"
+          },
+          "destination": {
+            "$ref": "#/components/schemas/Destination"
+          },
+          "id": {
+            "type": "string"
+          },
+          "implied": {
+            "type": "string"
+          },
+          "ports": {
+            "items": {
+              "format": "int64",
+              "type": "integer"
+            },
+            "type": "array"
+          },
+          "protocol": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "action",
+          "destination"
+        ],
+        "type": "object"
+      },
+      "EntriesResponse": {
+        "additionalProperties": false,
+        "properties": {
+          "entries": {
+            "items": {
+              "$ref": "#/components/schemas/FileEntry"
+            },
+            "type": "array"
+          }
+        },
+        "required": [
+          "entries"
+        ],
+        "type": "object"
+      },
+      "Error": {
+        "additionalProperties": false,
+        "properties": {
+          "error": {
+            "$ref": "#/components/schemas/ErrorObject"
+          }
+        },
+        "required": [
+          "error"
+        ],
+        "type": "object"
+      },
+      "ErrorObject": {
+        "additionalProperties": false,
+        "properties": {
+          "code": {
+            "type": "string"
+          },
+          "holders": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "message": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "code",
+          "message"
+        ],
+        "type": "object"
+      },
+      "Event": {
+        "additionalProperties": false,
+        "properties": {
+          "bytes": {
+            "format": "int64",
+            "type": "integer"
+          },
+          "digest": {
+            "type": "string"
+          },
+          "layer": {
+            "format": "int64",
+            "type": "integer"
+          },
+          "layers": {
+            "format": "int64",
+            "type": "integer"
+          },
+          "present": {
+            "type": "boolean"
+          },
+          "reference": {
+            "type": "string"
+          },
+          "status": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "status"
+        ],
+        "type": "object"
+      },
+      "Exec": {
+        "additionalProperties": false,
+        "properties": {
+          "command": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "exec": {
+            "type": "string"
+          },
+          "exit_status": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/ExitStatus"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "exited_at": {
+            "format": "date-time",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "lost_bytes": {
+            "format": "int64",
+            "type": "integer"
+          },
+          "sandbox": {
+            "type": "string"
+          },
+          "started_at": {
+            "format": "date-time",
+            "type": "string"
+          },
+          "state": {
+            "type": "string"
+          },
+          "truncated": {
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "exec",
+          "sandbox",
+          "command",
+          "state",
+          "exit_status",
+          "started_at",
+          "exited_at",
+          "truncated",
+          "lost_bytes"
+        ],
+        "type": "object"
+      },
+      "ExecRequest": {
+        "additionalProperties": false,
+        "properties": {
+          "attach": {
+            "type": "boolean"
+          },
+          "command": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "env": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "size": {
+            "$ref": "#/components/schemas/TerminalSize"
+          },
+          "stdin": {
+            "type": "boolean"
+          },
+          "tty": {
+            "type": "boolean"
+          },
+          "user": {
+            "type": "string"
+          },
+          "workdir": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "command"
+        ],
+        "type": "object"
+      },
+      "ExecsResponse": {
+        "additionalProperties": false,
+        "properties": {
+          "execs": {
+            "items": {
+              "$ref": "#/components/schemas/Exec"
+            },
+            "type": "array"
+          },
+          "next": {
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        },
+        "required": [
+          "execs",
+          "next"
+        ],
+        "type": "object"
+      },
+      "ExitStatus": {
+        "additionalProperties": false,
+        "properties": {
+          "code": {
+            "format": "int64",
+            "type": "integer"
+          },
+          "signal": {
+            "format": "int64",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "code",
+          "signal"
+        ],
+        "type": "object"
+      },
+      "FileEntry": {
+        "additionalProperties": false,
+        "properties": {
+          "gid": {
+            "format": "int32",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "mode": {
+            "format": "int32",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "mtime": {
+            "format": "date-time",
+            "type": "string"
+          },
+          "name": {
+            "type": "string"
+          },
+          "size": {
+            "format": "int64",
+            "type": "integer"
+          },
+          "type": {
+            "type": "string"
+          },
+          "uid": {
+            "format": "int32",
+            "minimum": 0,
+            "type": "integer"
+          }
+        },
+        "required": [
+          "name",
+          "type",
+          "size",
+          "mode",
+          "uid",
+          "gid",
+          "mtime"
+        ],
+        "type": "object"
+      },
+      "Inspection": {
+        "additionalProperties": false,
+        "properties": {
+          "command": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "created_at": {
+            "format": "date-time",
+            "type": "string"
+          },
+          "digest": {
+            "type": "string"
+          },
+          "egress": {
+            "$ref": "#/components/schemas/Effective"
+          },
+          "exit_status": {
+            "$ref": "#/components/schemas/ExitStatus"
+          },
+          "failed_reason": {
+            "type": "string"
+          },
+          "id": {
+            "type": "string"
+          },
+          "image": {
+            "type": "string"
+          },
+          "kernel": {
+            "type": "string"
+          },
+          "name": {
+            "type": "string"
+          },
+          "policy": {
+            "type": "string"
+          },
+          "provider": {
+            "type": "string"
+          },
+          "resources": {
+            "$ref": "#/components/schemas/Resources"
+          },
+          "restart": {
+            "$ref": "#/components/schemas/Restart"
+          },
+          "secrets": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "snapshot": {
+            "type": "string"
+          },
+          "started_at": {
+            "format": "date-time",
+            "type": "string"
+          },
+          "state": {
+            "type": "string"
+          },
+          "stopped_reason": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "image",
+          "provider",
+          "state",
+          "resources",
+          "created_at"
+        ],
+        "type": "object"
+      },
+      "KillRequest": {
+        "additionalProperties": false,
+        "properties": {
+          "signal": {
+            "type": "string"
+          }
+        },
+        "type": "object"
+      },
+      "MkdirRequest": {
+        "additionalProperties": false,
+        "properties": {
+          "mode": {
+            "type": "string"
+          },
+          "parents": {
+            "type": "boolean"
+          },
+          "path": {
+            "type": "string"
+          },
+          "user": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "path"
+        ],
+        "type": "object"
+      },
+      "PoliciesResponse": {
+        "additionalProperties": false,
+        "properties": {
+          "next": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "policies": {
+            "items": {
+              "$ref": "#/components/schemas/Policy"
+            },
+            "type": "array"
+          }
+        },
+        "required": [
+          "policies",
+          "next"
+        ],
+        "type": "object"
+      },
+      "Policy": {
+        "additionalProperties": false,
+        "properties": {
+          "name": {
+            "type": "string"
+          },
+          "rules": {
+            "items": {
+              "$ref": "#/components/schemas/Rule"
+            },
+            "type": "array"
+          }
+        },
+        "required": [
+          "name",
+          "rules"
+        ],
+        "type": "object"
+      },
+      "PolicyAttachRequest": {
+        "additionalProperties": false,
+        "properties": {
+          "policy": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "policy"
+        ],
+        "type": "object"
+      },
+      "PolicyRequest": {
+        "additionalProperties": false,
+        "properties": {
+          "rules": {
+            "items": {
+              "$ref": "#/components/schemas/RuleText"
+            },
+            "type": "array"
+          }
+        },
+        "type": "object"
+      },
+      "PolicyView": {
+        "additionalProperties": false,
+        "properties": {
+          "dns": {
+            "type": "string"
+          },
+          "holders": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "name": {
+            "type": "string"
+          },
+          "rules": {
+            "items": {
+              "$ref": "#/components/schemas/Rule"
+            },
+            "type": "array"
+          }
+        },
+        "required": [
+          "dns",
+          "name",
+          "rules"
+        ],
+        "type": "object"
+      },
+      "Record": {
+        "additionalProperties": false,
+        "properties": {
+          "address": {
+            "type": "string"
+          },
+          "host": {
+            "type": "string"
+          },
+          "port": {
+            "format": "int64",
+            "type": "integer"
+          },
+          "reason": {
+            "type": "string"
+          },
+          "rule": {
+            "type": "string"
+          },
+          "rule_text": {
+            "type": "string"
+          },
+          "source": {
+            "type": "string"
+          },
+          "time": {
+            "format": "date-time",
+            "type": "string"
+          },
+          "verdict": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "time",
+          "source",
+          "verdict",
+          "rule"
+        ],
+        "type": "object"
+      },
+      "ResourceRequest": {
+        "additionalProperties": false,
+        "properties": {
+          "disk_mib": {
+            "format": "int64",
+            "type": "integer"
+          },
+          "memory_mib": {
+            "format": "int64",
+            "type": "integer"
+          },
+          "vcpus": {
+            "format": "int64",
+            "type": "integer"
+          }
+        },
+        "type": "object"
+      },
+      "Resources": {
+        "additionalProperties": false,
+        "properties": {
+          "disk_mib": {
+            "format": "int64",
+            "type": "integer"
+          },
+          "memory_mib": {
+            "format": "int64",
+            "type": "integer"
+          },
+          "vcpus": {
+            "format": "int64",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "memory_mib",
+          "vcpus",
+          "disk_mib"
+        ],
+        "type": "object"
+      },
+      "Restart": {
+        "additionalProperties": false,
+        "properties": {
+          "backoff": {
+            "format": "int64",
+            "type": "integer"
+          },
+          "count": {
+            "format": "int64",
+            "type": "integer"
+          },
+          "ended": {
+            "type": "boolean"
+          },
+          "gave_up": {
+            "type": "boolean"
+          },
+          "last_at": {
+            "format": "date-time",
+            "type": "string"
+          },
+          "policy": {
+            "enum": [
+              "no",
+              "on-failure",
+              "always"
+            ],
+            "type": "string"
+          },
+          "retries": {
+            "format": "int64",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "policy",
+          "count",
+          "gave_up",
+          "ended"
+        ],
+        "type": "object"
+      },
+      "RestartSpec": {
+        "additionalProperties": false,
+        "properties": {
+          "backoff": {
+            "format": "int64",
+            "type": "integer"
+          },
+          "policy": {
+            "enum": [
+              "no",
+              "on-failure",
+              "always"
+            ],
+            "type": "string"
+          },
+          "retries": {
+            "format": "int64",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "policy"
+        ],
+        "type": "object"
+      },
+      "Rule": {
+        "additionalProperties": false,
+        "properties": {
+          "action": {
+            "type": "string"
+          },
+          "destination": {
+            "$ref": "#/components/schemas/Destination"
+          },
+          "ports": {
+            "items": {
+              "format": "int64",
+              "type": "integer"
+            },
+            "type": "array"
+          },
+          "protocol": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "action",
+          "destination"
+        ],
+        "type": "object"
+      },
+      "RuleText": {
+        "additionalProperties": false,
+        "properties": {
+          "action": {
+            "enum": [
+              "allow",
+              "deny"
+            ],
+            "type": "string"
+          },
+          "rule": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "action",
+          "rule"
+        ],
+        "type": "object"
+      },
+      "Sandbox": {
+        "additionalProperties": false,
+        "properties": {
+          "command": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "created_at": {
+            "format": "date-time",
+            "type": "string"
+          },
+          "digest": {
+            "type": "string"
+          },
+          "exit_status": {
+            "$ref": "#/components/schemas/ExitStatus"
+          },
+          "failed_reason": {
+            "type": "string"
+          },
+          "id": {
+            "type": "string"
+          },
+          "image": {
+            "type": "string"
+          },
+          "kernel": {
+            "type": "string"
+          },
+          "name": {
+            "type": "string"
+          },
+          "policy": {
+            "type": "string"
+          },
+          "provider": {
+            "type": "string"
+          },
+          "resources": {
+            "$ref": "#/components/schemas/Resources"
+          },
+          "restart": {
+            "$ref": "#/components/schemas/Restart"
+          },
+          "secrets": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "snapshot": {
+            "type": "string"
+          },
+          "started_at": {
+            "format": "date-time",
+            "type": "string"
+          },
+          "state": {
+            "type": "string"
+          },
+          "stopped_reason": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "image",
+          "provider",
+          "state",
+          "resources",
+          "created_at"
+        ],
+        "type": "object"
+      },
+      "SandboxesResponse": {
+        "additionalProperties": false,
+        "properties": {
+          "next": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "sandboxes": {
+            "items": {
+              "$ref": "#/components/schemas/Sandbox"
+            },
+            "type": "array"
+          },
+          "warnings": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          }
+        },
+        "required": [
+          "sandboxes",
+          "next"
+        ],
+        "type": "object"
+      },
+      "Secret": {
+        "additionalProperties": false,
+        "properties": {
+          "destinations": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "name": {
+            "type": "string"
+          },
+          "placeholder": {
+            "type": "string"
+          },
+          "updated_at": {
+            "format": "date-time",
+            "type": "string"
+          }
+        },
+        "required": [
+          "name",
+          "destinations",
+          "placeholder",
+          "updated_at"
+        ],
+        "type": "object"
+      },
+      "SecretRequest": {
+        "additionalProperties": false,
+        "properties": {
+          "destinations": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "placeholder": {
+            "type": "string"
+          },
+          "value": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "value"
+        ],
+        "type": "object"
+      },
+      "SecretsResponse": {
+        "additionalProperties": false,
+        "properties": {
+          "next": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "secrets": {
+            "items": {
+              "$ref": "#/components/schemas/Secret"
+            },
+            "type": "array"
+          },
+          "warnings": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          }
+        },
+        "required": [
+          "secrets",
+          "next"
+        ],
+        "type": "object"
+      },
+      "Snapshot": {
+        "additionalProperties": false,
+        "properties": {
+          "created_at": {
+            "format": "date-time",
+            "type": "string"
+          },
+          "digest": {
+            "type": "string"
+          },
+          "disk_mib": {
+            "format": "int64",
+            "type": "integer"
+          },
+          "id": {
+            "type": "string"
+          },
+          "image": {
+            "type": "string"
+          },
+          "memory_mib": {
+            "format": "int64",
+            "type": "integer"
+          },
+          "name": {
+            "type": "string"
+          },
+          "provider": {
+            "type": "string"
+          },
+          "size": {
+            "format": "int64",
+            "type": "integer"
+          },
+          "source": {
+            "type": "string"
+          },
+          "source_name": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "source",
+          "image",
+          "digest",
+          "provider",
+          "disk_mib",
+          "memory_mib",
+          "size",
+          "created_at"
+        ],
+        "type": "object"
+      },
+      "SnapshotRequest": {
+        "additionalProperties": false,
+        "properties": {
+          "name": {
+            "type": "string"
+          },
+          "sandbox": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "sandbox"
+        ],
+        "type": "object"
+      },
+      "SnapshotsResponse": {
+        "additionalProperties": false,
+        "properties": {
+          "next": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "snapshots": {
+            "items": {
+              "$ref": "#/components/schemas/Snapshot"
+            },
+            "type": "array"
+          }
+        },
+        "required": [
+          "snapshots",
+          "next"
+        ],
+        "type": "object"
+      },
+      "StopRequest": {
+        "additionalProperties": false,
+        "type": "object"
+      },
+      "TerminalSize": {
+        "additionalProperties": false,
+        "properties": {
+          "cols": {
+            "format": "int32",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "rows": {
+            "format": "int32",
+            "minimum": 0,
+            "type": "integer"
+          }
+        },
+        "type": "object"
+      },
+      "VersionResponse": {
+        "additionalProperties": false,
+        "properties": {
+          "api_version": {
+            "type": "string"
+          },
+          "version": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "version",
+          "api_version"
+        ],
+        "type": "object"
+      }
+    },
+    "securitySchemes": {
+      "bearer": {
+        "scheme": "bearer",
+        "type": "http"
+      }
+    }
+  },
+  "info": {
+    "description": "The public routes of the shard daemon. shard serve checks a bearer token and its scope, named per operation as x-shard-scope; the daemon socket takes no token.",
+    "title": "shard",
+    "version": "v0"
+  },
+  "openapi": "3.1.0",
+  "paths": {
+    "/v0/capabilities": {
+      "get": {
+        "operationId": "get-capabilities",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CapabilitiesResponse"
+                }
+              }
+            },
+            "description": "OK"
+          },
+          "default": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Error"
+          }
+        },
+        "summary": "List the optional verbs the provider refuses",
+        "tags": [
+          "meta"
+        ],
+        "x-shard-scope": "any"
+      }
+    },
+    "/v0/policies": {
+      "get": {
+        "operationId": "list-policies",
+        "parameters": [
+          {
+            "description": "The most rows a page holds; none answers the whole list.",
+            "explode": false,
+            "in": "query",
+            "name": "limit",
+            "schema": {
+              "description": "The most rows a page holds; none answers the whole list.",
+              "format": "int64",
+              "minimum": 1,
+              "type": "integer"
+            }
+          },
+          {
+            "description": "The next of the page before; this page starts after it.",
+            "explode": false,
+            "in": "query",
+            "name": "cursor",
+            "schema": {
+              "description": "The next of the page before; this page starts after it.",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PoliciesResponse"
+                }
+              }
+            },
+            "description": "OK"
+          },
+          "default": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Error"
+          }
+        },
+        "summary": "List policies",
+        "tags": [
+          "policies"
+        ],
+        "x-shard-scope": "policy:*"
+      }
+    },
+    "/v0/policies/{name}": {
+      "delete": {
+        "operationId": "remove-policy",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "name",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "204": {
+            "description": "No Content"
+          },
+          "default": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Error"
+          }
+        },
+        "summary": "Remove a policy",
+        "tags": [
+          "policies"
+        ],
+        "x-shard-scope": "policy:*"
+      },
+      "get": {
+        "operationId": "get-policy",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "name",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PolicyView"
+                }
+              }
+            },
+            "description": "OK"
+          },
+          "default": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Error"
+          }
+        },
+        "summary": "Read a policy",
+        "tags": [
+          "policies"
+        ],
+        "x-shard-scope": "policy:*"
+      },
+      "put": {
+        "operationId": "put-policy",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "name",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/PolicyRequest"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PolicyView"
+                }
+              }
+            },
+            "description": "OK"
+          },
+          "default": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Error"
+          }
+        },
+        "summary": "Create or replace a policy",
+        "tags": [
+          "policies"
+        ],
+        "x-shard-scope": "policy:*"
+      }
+    },
+    "/v0/sandboxes": {
+      "get": {
+        "operationId": "list-sandboxes",
+        "parameters": [
+          {
+            "description": "List stopped sandboxes too.",
+            "explode": false,
+            "in": "query",
+            "name": "all",
+            "schema": {
+              "description": "List stopped sandboxes too.",
+              "type": "boolean"
+            }
+          },
+          {
+            "description": "The most rows a page holds; none answers the whole list.",
+            "explode": false,
+            "in": "query",
+            "name": "limit",
+            "schema": {
+              "description": "The most rows a page holds; none answers the whole list.",
+              "format": "int64",
+              "minimum": 1,
+              "type": "integer"
+            }
+          },
+          {
+            "description": "The next of the page before; this page starts after it.",
+            "explode": false,
+            "in": "query",
+            "name": "cursor",
+            "schema": {
+              "description": "The next of the page before; this page starts after it.",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SandboxesResponse"
+                }
+              }
+            },
+            "description": "OK"
+          },
+          "default": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Error"
+          }
+        },
+        "summary": "List sandboxes",
+        "tags": [
+          "sandboxes"
+        ],
+        "x-shard-scope": "sandbox:read"
+      },
+      "post": {
+        "operationId": "create-sandbox",
+        "parameters": [
+          {
+            "description": "Answer once the sandbox leaves pending; with Accept: application/x-ndjson the pull streams first.",
+            "explode": false,
+            "in": "query",
+            "name": "wait",
+            "schema": {
+              "description": "Answer once the sandbox leaves pending; with Accept: application/x-ndjson the pull streams first.",
+              "type": "boolean"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/CreateRequest"
+              }
+            }
+          }
+        },
+        "responses": {
+          "201": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Sandbox"
+                }
+              },
+              "application/x-ndjson": {
+                "schema": {
+                  "$ref": "#/components/schemas/CreateLine"
+                }
+              }
+            },
+            "description": "The sandbox, or with wait and Accept: application/x-ndjson one CreateLine per pull event and then the sandbox."
+          },
+          "default": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Error"
+          }
+        },
+        "summary": "Create a sandbox",
+        "tags": [
+          "sandboxes"
+        ],
+        "x-shard-scope": "sandbox:write"
+      }
+    },
+    "/v0/sandboxes/{id}": {
+      "delete": {
+        "operationId": "remove-sandbox",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "description": "Stop a sandbox that is still up or paused first.",
+            "explode": false,
+            "in": "query",
+            "name": "force",
+            "schema": {
+              "description": "Stop a sandbox that is still up or paused first.",
+              "type": "boolean"
+            }
+          }
+        ],
+        "responses": {
+          "204": {
+            "description": "No Content"
+          },
+          "default": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Error"
+          }
+        },
+        "summary": "Remove a sandbox",
+        "tags": [
+          "sandboxes"
+        ],
+        "x-shard-scope": "sandbox:delete"
+      },
+      "get": {
+        "operationId": "get-sandbox",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "description": "Block until a pending create lands.",
+            "explode": false,
+            "in": "query",
+            "name": "wait",
+            "schema": {
+              "description": "Block until a pending create lands.",
+              "type": "boolean"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Inspection"
+                }
+              }
+            },
+            "description": "OK"
+          },
+          "default": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Error"
+          }
+        },
+        "summary": "Read a sandbox and the egress rules the host enforces for it",
+        "tags": [
+          "sandboxes"
+        ],
+        "x-shard-scope": "sandbox:read"
+      }
+    },
+    "/v0/sandboxes/{id}/app/stop": {
+      "post": {
+        "operationId": "stop-app",
+        "parameters": [
+          {
+            "description": "The sandbox id or name.",
+            "in": "path",
+            "name": "id",
+            "required": true,
+            "schema": {
+              "description": "The sandbox id or name.",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/AppStopRequest"
+              }
+            }
+          }
+        },
+        "responses": {
+          "204": {
+            "description": "No Content"
+          },
+          "default": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Error"
+          }
+        },
+        "summary": "Stop the app of a run",
+        "tags": [
+          "app"
+        ],
+        "x-shard-scope": "sandbox:write"
+      }
+    },
+    "/v0/sandboxes/{id}/archive": {
+      "get": {
+        "operationId": "read-archive",
+        "parameters": [
+          {
+            "description": "The sandbox id or name.",
+            "in": "path",
+            "name": "id",
+            "required": true,
+            "schema": {
+              "description": "The sandbox id or name.",
+              "type": "string"
+            }
+          },
+          {
+            "description": "The absolute guest path.",
+            "explode": false,
+            "in": "query",
+            "name": "path",
+            "schema": {
+              "description": "The absolute guest path.",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/x-tar": {
+                "schema": {
+                  "contentMediaType": "application/octet-stream",
+                  "format": "binary",
+                  "type": "string"
+                }
+              }
+            },
+            "description": "A tar of the path; a body cut short is a failed read.",
+            "headers": {
+              "X-Shard-Stat": {
+                "description": "The guest path's stat as JSON: type, size, mode, uid, gid and mtime.",
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "default": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Error"
+          }
+        },
+        "summary": "Read a path as a tar",
+        "tags": [
+          "files"
+        ],
+        "x-shard-scope": "exec"
+      },
+      "put": {
+        "operationId": "write-archive",
+        "parameters": [
+          {
+            "description": "The sandbox id or name.",
+            "in": "path",
+            "name": "id",
+            "required": true,
+            "schema": {
+              "description": "The sandbox id or name.",
+              "type": "string"
+            }
+          },
+          {
+            "description": "The absolute guest directory.",
+            "explode": false,
+            "in": "query",
+            "name": "path",
+            "schema": {
+              "description": "The absolute guest directory.",
+              "type": "string"
+            }
+          },
+          {
+            "description": "Who unpacks and owns the files; none is the entrypoint's user.",
+            "explode": false,
+            "in": "query",
+            "name": "user",
+            "schema": {
+              "description": "Who unpacks and owns the files; none is the entrypoint's user.",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/x-tar": {
+              "schema": {
+                "contentMediaType": "application/octet-stream",
+                "format": "binary",
+                "type": "string"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "204": {
+            "description": "The tar unpacked under the directory."
+          },
+          "default": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Error"
+          }
+        },
+        "summary": "Unpack a tar under a directory",
+        "tags": [
+          "files"
+        ],
+        "x-shard-scope": "exec"
+      }
+    },
+    "/v0/sandboxes/{id}/attach": {
+      "get": {
+        "operationId": "attach-app",
+        "parameters": [
+          {
+            "description": "The sandbox id or name.",
+            "in": "path",
+            "name": "id",
+            "required": true,
+            "schema": {
+              "description": "The sandbox id or name.",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "101": {
+            "description": "A WebSocket attach. Each binary message leads with its stream byte: 1 the output from the start of the log, 3 the AppExit, 5 a FailureMessage."
+          },
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AppExit"
+                }
+              }
+            },
+            "description": "How the app ended, once it ends."
+          },
+          "default": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Error"
+          }
+        },
+        "summary": "Wait for or attach to the app of a run",
+        "tags": [
+          "app"
+        ],
+        "x-shard-scope": "sandbox:read"
+      }
+    },
+    "/v0/sandboxes/{id}/egress-log": {
+      "get": {
+        "operationId": "get-sandbox-egress-log",
+        "parameters": [
+          {
+            "description": "The sandbox id or name.",
+            "in": "path",
+            "name": "id",
+            "required": true,
+            "schema": {
+              "description": "The sandbox id or name.",
+              "type": "string"
+            }
+          },
+          {
+            "description": "Keep the stream open; a WebSocket upgrade follows too.",
+            "explode": false,
+            "in": "query",
+            "name": "follow",
+            "schema": {
+              "description": "Keep the stream open; a WebSocket upgrade follows too.",
+              "type": "boolean"
+            }
+          }
+        ],
+        "responses": {
+          "101": {
+            "description": "A WebSocket follow: one egress record per text message, until the sandbox stops."
+          },
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "items": {
+                    "$ref": "#/components/schemas/Record"
+                  },
+                  "type": "array"
+                }
+              },
+              "application/x-ndjson": {
+                "schema": {
+                  "$ref": "#/components/schemas/Record"
+                }
+              }
+            },
+            "description": "The egress decisions, oldest first; with follow one record per line until the sandbox stops.",
+            "headers": {
+              "Shard-Egress-Cut": {
+                "description": "The older records the read left out; absent when it left out none.",
+                "schema": {
+                  "type": "integer"
+                }
+              }
+            }
+          },
+          "default": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Error"
+          }
+        },
+        "summary": "Read or follow the egress decisions of a sandbox",
+        "tags": [
+          "sandboxes"
+        ],
+        "x-shard-scope": "sandbox:read"
+      }
+    },
+    "/v0/sandboxes/{id}/exec": {
+      "get": {
+        "operationId": "list-execs",
+        "parameters": [
+          {
+            "description": "The sandbox id or name.",
+            "in": "path",
+            "name": "id",
+            "required": true,
+            "schema": {
+              "description": "The sandbox id or name.",
+              "type": "string"
+            }
+          },
+          {
+            "description": "The most rows a page holds; none answers the whole list.",
+            "explode": false,
+            "in": "query",
+            "name": "limit",
+            "schema": {
+              "description": "The most rows a page holds; none answers the whole list.",
+              "format": "int64",
+              "minimum": 1,
+              "type": "integer"
+            }
+          },
+          {
+            "description": "The next of the page before; this page starts after it.",
+            "explode": false,
+            "in": "query",
+            "name": "cursor",
+            "schema": {
+              "description": "The next of the page before; this page starts after it.",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ExecsResponse"
+                }
+              }
+            },
+            "description": "OK"
+          },
+          "default": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Error"
+          }
+        },
+        "summary": "List the execs of a sandbox",
+        "tags": [
+          "exec"
+        ],
+        "x-shard-scope": "exec"
+      },
+      "post": {
+        "operationId": "create-exec",
+        "parameters": [
+          {
+            "description": "The sandbox id or name.",
+            "in": "path",
+            "name": "id",
+            "required": true,
+            "schema": {
+              "description": "The sandbox id or name.",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ExecRequest"
+              }
+            }
+          }
+        },
+        "responses": {
+          "201": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Exec"
+                }
+              }
+            },
+            "description": "Created"
+          },
+          "default": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Error"
+          }
+        },
+        "summary": "Create an exec, which runs once a client attaches",
+        "tags": [
+          "exec"
+        ],
+        "x-shard-scope": "exec"
+      }
+    },
+    "/v0/sandboxes/{id}/exec/{exec}": {
+      "delete": {
+        "operationId": "delete-exec",
+        "parameters": [
+          {
+            "description": "The sandbox id or name.",
+            "in": "path",
+            "name": "id",
+            "required": true,
+            "schema": {
+              "description": "The sandbox id or name.",
+              "type": "string"
+            }
+          },
+          {
+            "description": "The exec id.",
+            "in": "path",
+            "name": "exec",
+            "required": true,
+            "schema": {
+              "description": "The exec id.",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "204": {
+            "description": "No Content"
+          },
+          "default": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Error"
+          }
+        },
+        "summary": "Forget an exec that ended",
+        "tags": [
+          "exec"
+        ],
+        "x-shard-scope": "exec"
+      },
+      "get": {
+        "operationId": "get-exec",
+        "parameters": [
+          {
+            "description": "The sandbox id or name.",
+            "in": "path",
+            "name": "id",
+            "required": true,
+            "schema": {
+              "description": "The sandbox id or name.",
+              "type": "string"
+            }
+          },
+          {
+            "description": "The exec id.",
+            "in": "path",
+            "name": "exec",
+            "required": true,
+            "schema": {
+              "description": "The exec id.",
+              "type": "string"
+            }
+          },
+          {
+            "description": "Block until the exec ends.",
+            "explode": false,
+            "in": "query",
+            "name": "wait",
+            "schema": {
+              "description": "Block until the exec ends.",
+              "type": "boolean"
+            }
+          }
+        ],
+        "responses": {
+          "101": {
+            "description": "A WebSocket attach. Each binary message leads with its stream byte: 0 stdin and 4 stdin closed from the client; 1 stdout, 2 stderr, 3 the ExitMessage and 5 a FailureMessage from the daemon."
+          },
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Exec"
+                }
+              }
+            },
+            "description": "The exec as it stands, or with wait once it ends."
+          },
+          "default": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Error"
+          }
+        },
+        "summary": "Read, wait for or attach to an exec",
+        "tags": [
+          "exec"
+        ],
+        "x-shard-scope": "exec"
+      }
+    },
+    "/v0/sandboxes/{id}/exec/{exec}/kill": {
+      "post": {
+        "operationId": "kill-exec",
+        "parameters": [
+          {
+            "description": "The sandbox id or name.",
+            "in": "path",
+            "name": "id",
+            "required": true,
+            "schema": {
+              "description": "The sandbox id or name.",
+              "type": "string"
+            }
+          },
+          {
+            "description": "The exec id.",
+            "in": "path",
+            "name": "exec",
+            "required": true,
+            "schema": {
+              "description": "The exec id.",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/KillRequest"
+              }
+            }
+          }
+        },
+        "responses": {
+          "204": {
+            "description": "No Content"
+          },
+          "default": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Error"
+          }
+        },
+        "summary": "Send a signal to a running exec",
+        "tags": [
+          "exec"
+        ],
+        "x-shard-scope": "exec"
+      }
+    },
+    "/v0/sandboxes/{id}/exec/{exec}/resize": {
+      "post": {
+        "operationId": "resize-exec",
+        "parameters": [
+          {
+            "description": "The sandbox id or name.",
+            "in": "path",
+            "name": "id",
+            "required": true,
+            "schema": {
+              "description": "The sandbox id or name.",
+              "type": "string"
+            }
+          },
+          {
+            "description": "The exec id.",
+            "in": "path",
+            "name": "exec",
+            "required": true,
+            "schema": {
+              "description": "The exec id.",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/TerminalSize"
+              }
+            }
+          }
+        },
+        "responses": {
+          "204": {
+            "description": "No Content"
+          },
+          "default": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Error"
+          }
+        },
+        "summary": "Resize the terminal of an exec",
+        "tags": [
+          "exec"
+        ],
+        "x-shard-scope": "exec"
+      }
+    },
+    "/v0/sandboxes/{id}/files": {
+      "delete": {
+        "operationId": "delete-file",
+        "parameters": [
+          {
+            "description": "The sandbox id or name.",
+            "in": "path",
+            "name": "id",
+            "required": true,
+            "schema": {
+              "description": "The sandbox id or name.",
+              "type": "string"
+            }
+          },
+          {
+            "description": "The absolute guest path.",
+            "explode": false,
+            "in": "query",
+            "name": "path",
+            "schema": {
+              "description": "The absolute guest path.",
+              "type": "string"
+            }
+          },
+          {
+            "description": "Take a directory and everything in it.",
+            "explode": false,
+            "in": "query",
+            "name": "recursive",
+            "schema": {
+              "description": "Take a directory and everything in it.",
+              "type": "boolean"
+            }
+          }
+        ],
+        "responses": {
+          "204": {
+            "description": "No Content"
+          },
+          "default": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Error"
+          }
+        },
+        "summary": "Delete a path",
+        "tags": [
+          "files"
+        ],
+        "x-shard-scope": "exec"
+      },
+      "get": {
+        "operationId": "read-file",
+        "parameters": [
+          {
+            "description": "The sandbox id or name.",
+            "in": "path",
+            "name": "id",
+            "required": true,
+            "schema": {
+              "description": "The sandbox id or name.",
+              "type": "string"
+            }
+          },
+          {
+            "description": "The absolute guest path.",
+            "explode": false,
+            "in": "query",
+            "name": "path",
+            "schema": {
+              "description": "The absolute guest path.",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/octet-stream": {
+                "schema": {
+                  "contentMediaType": "application/octet-stream",
+                  "format": "binary",
+                  "type": "string"
+                }
+              }
+            },
+            "description": "The file's bytes, chunked to the end; a body cut short is a failed read.",
+            "headers": {
+              "X-Shard-Stat": {
+                "description": "The guest path's stat as JSON: type, size, mode, uid, gid and mtime.",
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "default": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Error"
+          }
+        },
+        "summary": "Read a file",
+        "tags": [
+          "files"
+        ],
+        "x-shard-scope": "exec"
+      },
+      "head": {
+        "operationId": "stat-file",
+        "parameters": [
+          {
+            "description": "The sandbox id or name.",
+            "in": "path",
+            "name": "id",
+            "required": true,
+            "schema": {
+              "description": "The sandbox id or name.",
+              "type": "string"
+            }
+          },
+          {
+            "description": "The absolute guest path.",
+            "explode": false,
+            "in": "query",
+            "name": "path",
+            "schema": {
+              "description": "The absolute guest path.",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "The path's stat, in a header and no body.",
+            "headers": {
+              "X-Shard-Stat": {
+                "description": "The guest path's stat as JSON: type, size, mode, uid, gid and mtime.",
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "default": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Error"
+          }
+        },
+        "summary": "Stat a path",
+        "tags": [
+          "files"
+        ],
+        "x-shard-scope": "exec"
+      },
+      "put": {
+        "operationId": "write-file",
+        "parameters": [
+          {
+            "description": "The sandbox id or name.",
+            "in": "path",
+            "name": "id",
+            "required": true,
+            "schema": {
+              "description": "The sandbox id or name.",
+              "type": "string"
+            }
+          },
+          {
+            "description": "The absolute guest path.",
+            "explode": false,
+            "in": "query",
+            "name": "path",
+            "schema": {
+              "description": "The absolute guest path.",
+              "type": "string"
+            }
+          },
+          {
+            "description": "The file mode in octal; none is 0644.",
+            "explode": false,
+            "in": "query",
+            "name": "mode",
+            "schema": {
+              "description": "The file mode in octal; none is 0644.",
+              "type": "string"
+            }
+          },
+          {
+            "description": "Who writes and owns the file; none is the entrypoint's user.",
+            "explode": false,
+            "in": "query",
+            "name": "user",
+            "schema": {
+              "description": "Who writes and owns the file; none is the entrypoint's user.",
+              "type": "string"
+            }
+          },
+          {
+            "description": "Make the missing parent directories.",
+            "explode": false,
+            "in": "query",
+            "name": "parents",
+            "schema": {
+              "description": "Make the missing parent directories.",
+              "type": "boolean"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/octet-stream": {
+              "schema": {
+                "contentMediaType": "application/octet-stream",
+                "format": "binary",
+                "type": "string"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "204": {
+            "description": "The file landed. A put needs a Content-Length."
+          },
+          "default": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Error"
+          }
+        },
+        "summary": "Write a file",
+        "tags": [
+          "files"
+        ],
+        "x-shard-scope": "exec"
+      }
+    },
+    "/v0/sandboxes/{id}/fork": {
+      "post": {
+        "operationId": "fork-sandbox",
+        "parameters": [
+          {
+            "description": "The sandbox id or name.",
+            "in": "path",
+            "name": "id",
+            "required": true,
+            "schema": {
+              "description": "The sandbox id or name.",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/CopyRequest"
+              }
+            }
+          }
+        },
+        "responses": {
+          "201": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Sandbox"
+                }
+              }
+            },
+            "description": "Created"
+          },
+          "default": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Error"
+          }
+        },
+        "summary": "Fork a sandbox into a new one",
+        "tags": [
+          "sandboxes"
+        ],
+        "x-shard-scope": "sandbox:write"
+      }
+    },
+    "/v0/sandboxes/{id}/logs": {
+      "get": {
+        "operationId": "get-sandbox-logs",
+        "parameters": [
+          {
+            "description": "The sandbox id or name.",
+            "in": "path",
+            "name": "id",
+            "required": true,
+            "schema": {
+              "description": "The sandbox id or name.",
+              "type": "string"
+            }
+          },
+          {
+            "description": "Keep the stream open; a WebSocket upgrade follows too.",
+            "explode": false,
+            "in": "query",
+            "name": "follow",
+            "schema": {
+              "description": "Keep the stream open; a WebSocket upgrade follows too.",
+              "type": "boolean"
+            }
+          }
+        ],
+        "responses": {
+          "101": {
+            "description": "A WebSocket follow. Each binary message leads with its stream byte: 1 the output, 3 an EndMessage naming why the follow ended, 5 a FailureMessage."
+          },
+          "200": {
+            "content": {
+              "text/plain": {
+                "schema": {
+                  "type": "string"
+                }
+              }
+            },
+            "description": "The entrypoint's output as it was written; with follow the body streams until the sandbox stops."
+          },
+          "default": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Error"
+          }
+        },
+        "summary": "Read or follow the output of a sandbox",
+        "tags": [
+          "sandboxes"
+        ],
+        "x-shard-scope": "sandbox:read"
+      }
+    },
+    "/v0/sandboxes/{id}/ls": {
+      "get": {
+        "operationId": "list-dir",
+        "parameters": [
+          {
+            "description": "The sandbox id or name.",
+            "in": "path",
+            "name": "id",
+            "required": true,
+            "schema": {
+              "description": "The sandbox id or name.",
+              "type": "string"
+            }
+          },
+          {
+            "description": "The absolute guest path.",
+            "explode": false,
+            "in": "query",
+            "name": "path",
+            "schema": {
+              "description": "The absolute guest path.",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/EntriesResponse"
+                }
+              }
+            },
+            "description": "The directory's entries; a listing cut short never parses."
+          },
+          "default": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Error"
+          }
+        },
+        "summary": "List a directory",
+        "tags": [
+          "files"
+        ],
+        "x-shard-scope": "exec"
+      }
+    },
+    "/v0/sandboxes/{id}/mkdir": {
+      "post": {
+        "operationId": "make-dir",
+        "parameters": [
+          {
+            "description": "The sandbox id or name.",
+            "in": "path",
+            "name": "id",
+            "required": true,
+            "schema": {
+              "description": "The sandbox id or name.",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/MkdirRequest"
+              }
+            }
+          }
+        },
+        "responses": {
+          "204": {
+            "description": "No Content"
+          },
+          "default": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Error"
+          }
+        },
+        "summary": "Make a directory",
+        "tags": [
+          "files"
+        ],
+        "x-shard-scope": "exec"
+      }
+    },
+    "/v0/sandboxes/{id}/pause": {
+      "post": {
+        "operationId": "pause-sandbox",
+        "parameters": [
+          {
+            "description": "The sandbox id or name.",
+            "in": "path",
+            "name": "id",
+            "required": true,
+            "schema": {
+              "description": "The sandbox id or name.",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Sandbox"
+                }
+              }
+            },
+            "description": "OK"
+          },
+          "default": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Error"
+          }
+        },
+        "summary": "Pause a running sandbox",
+        "tags": [
+          "sandboxes"
+        ],
+        "x-shard-scope": "sandbox:write"
+      }
+    },
+    "/v0/sandboxes/{id}/policy": {
+      "delete": {
+        "operationId": "detach-policy",
+        "parameters": [
+          {
+            "description": "The sandbox id or name.",
+            "in": "path",
+            "name": "id",
+            "required": true,
+            "schema": {
+              "description": "The sandbox id or name.",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Sandbox"
+                }
+              }
+            },
+            "description": "OK"
+          },
+          "default": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Error"
+          }
+        },
+        "summary": "Detach the policy of a sandbox",
+        "tags": [
+          "sandboxes"
+        ],
+        "x-shard-scope": "policy:*"
+      },
+      "put": {
+        "operationId": "attach-policy",
+        "parameters": [
+          {
+            "description": "The sandbox id or name.",
+            "in": "path",
+            "name": "id",
+            "required": true,
+            "schema": {
+              "description": "The sandbox id or name.",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/PolicyAttachRequest"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Sandbox"
+                }
+              }
+            },
+            "description": "OK"
+          },
+          "default": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Error"
+          }
+        },
+        "summary": "Attach a policy to a sandbox",
+        "tags": [
+          "sandboxes"
+        ],
+        "x-shard-scope": "policy:*"
+      }
+    },
+    "/v0/sandboxes/{id}/resume": {
+      "post": {
+        "operationId": "resume-sandbox",
+        "parameters": [
+          {
+            "description": "The sandbox id or name.",
+            "in": "path",
+            "name": "id",
+            "required": true,
+            "schema": {
+              "description": "The sandbox id or name.",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Sandbox"
+                }
+              }
+            },
+            "description": "OK"
+          },
+          "default": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Error"
+          }
+        },
+        "summary": "Resume a paused sandbox",
+        "tags": [
+          "sandboxes"
+        ],
+        "x-shard-scope": "sandbox:write"
+      }
+    },
+    "/v0/sandboxes/{id}/secrets/{name}": {
+      "delete": {
+        "operationId": "ungrant-secret",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "in": "path",
+            "name": "name",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Sandbox"
+                }
+              }
+            },
+            "description": "OK"
+          },
+          "default": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Error"
+          }
+        },
+        "summary": "Take a secret back from a sandbox",
+        "tags": [
+          "sandboxes"
+        ],
+        "x-shard-scope": "secret:*"
+      },
+      "post": {
+        "operationId": "grant-secret",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "in": "path",
+            "name": "name",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Sandbox"
+                }
+              }
+            },
+            "description": "OK"
+          },
+          "default": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Error"
+          }
+        },
+        "summary": "Grant a secret to a sandbox",
+        "tags": [
+          "sandboxes"
+        ],
+        "x-shard-scope": "secret:*"
+      }
+    },
+    "/v0/sandboxes/{id}/start": {
+      "post": {
+        "operationId": "start-sandbox",
+        "parameters": [
+          {
+            "description": "The sandbox id or name.",
+            "in": "path",
+            "name": "id",
+            "required": true,
+            "schema": {
+              "description": "The sandbox id or name.",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Sandbox"
+                }
+              }
+            },
+            "description": "OK"
+          },
+          "default": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Error"
+          }
+        },
+        "summary": "Start a stopped sandbox",
+        "tags": [
+          "sandboxes"
+        ],
+        "x-shard-scope": "sandbox:write"
+      }
+    },
+    "/v0/sandboxes/{id}/stop": {
+      "post": {
+        "operationId": "stop-sandbox",
+        "parameters": [
+          {
+            "description": "The sandbox id or name.",
+            "in": "path",
+            "name": "id",
+            "required": true,
+            "schema": {
+              "description": "The sandbox id or name.",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/StopRequest"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Sandbox"
+                }
+              }
+            },
+            "description": "OK"
+          },
+          "default": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Error"
+          }
+        },
+        "summary": "Stop a sandbox",
+        "tags": [
+          "sandboxes"
+        ],
+        "x-shard-scope": "sandbox:write"
+      }
+    },
+    "/v0/secrets": {
+      "get": {
+        "operationId": "list-secrets",
+        "parameters": [
+          {
+            "description": "The most rows a page holds; none answers the whole list.",
+            "explode": false,
+            "in": "query",
+            "name": "limit",
+            "schema": {
+              "description": "The most rows a page holds; none answers the whole list.",
+              "format": "int64",
+              "minimum": 1,
+              "type": "integer"
+            }
+          },
+          {
+            "description": "The next of the page before; this page starts after it.",
+            "explode": false,
+            "in": "query",
+            "name": "cursor",
+            "schema": {
+              "description": "The next of the page before; this page starts after it.",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SecretsResponse"
+                }
+              }
+            },
+            "description": "OK"
+          },
+          "default": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Error"
+          }
+        },
+        "summary": "List secrets, never their values",
+        "tags": [
+          "secrets"
+        ],
+        "x-shard-scope": "secret:*"
+      }
+    },
+    "/v0/secrets/{name}": {
+      "delete": {
+        "operationId": "remove-secret",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "name",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "description": "Remove the secret while a sandbox record still names it.",
+            "explode": false,
+            "in": "query",
+            "name": "force",
+            "schema": {
+              "description": "Remove the secret while a sandbox record still names it.",
+              "type": "boolean"
+            }
+          }
+        ],
+        "responses": {
+          "204": {
+            "description": "No Content"
+          },
+          "default": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Error"
+          }
+        },
+        "summary": "Remove a secret",
+        "tags": [
+          "secrets"
+        ],
+        "x-shard-scope": "secret:*"
+      },
+      "put": {
+        "operationId": "put-secret",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "name",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/SecretRequest"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Secret"
+                }
+              }
+            },
+            "description": "OK"
+          },
+          "default": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Error"
+          }
+        },
+        "summary": "Create or rotate a secret",
+        "tags": [
+          "secrets"
+        ],
+        "x-shard-scope": "secret:*"
+      }
+    },
+    "/v0/snapshots": {
+      "get": {
+        "operationId": "list-snapshots",
+        "parameters": [
+          {
+            "description": "The most rows a page holds; none answers the whole list.",
+            "explode": false,
+            "in": "query",
+            "name": "limit",
+            "schema": {
+              "description": "The most rows a page holds; none answers the whole list.",
+              "format": "int64",
+              "minimum": 1,
+              "type": "integer"
+            }
+          },
+          {
+            "description": "The next of the page before; this page starts after it.",
+            "explode": false,
+            "in": "query",
+            "name": "cursor",
+            "schema": {
+              "description": "The next of the page before; this page starts after it.",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SnapshotsResponse"
+                }
+              }
+            },
+            "description": "OK"
+          },
+          "default": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Error"
+          }
+        },
+        "summary": "List snapshots",
+        "tags": [
+          "snapshots"
+        ],
+        "x-shard-scope": "sandbox:read"
+      },
+      "post": {
+        "operationId": "create-snapshot",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/SnapshotRequest"
+              }
+            }
+          }
+        },
+        "responses": {
+          "201": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Snapshot"
+                }
+              }
+            },
+            "description": "Created"
+          },
+          "default": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Error"
+          }
+        },
+        "summary": "Snapshot a sandbox",
+        "tags": [
+          "snapshots"
+        ],
+        "x-shard-scope": "sandbox:write"
+      }
+    },
+    "/v0/snapshots/{ref}": {
+      "delete": {
+        "operationId": "remove-snapshot",
+        "parameters": [
+          {
+            "description": "The snapshot id or name.",
+            "in": "path",
+            "name": "ref",
+            "required": true,
+            "schema": {
+              "description": "The snapshot id or name.",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "204": {
+            "description": "No Content"
+          },
+          "default": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Error"
+          }
+        },
+        "summary": "Remove a snapshot",
+        "tags": [
+          "snapshots"
+        ],
+        "x-shard-scope": "sandbox:delete"
+      },
+      "get": {
+        "operationId": "get-snapshot",
+        "parameters": [
+          {
+            "description": "The snapshot id or name.",
+            "in": "path",
+            "name": "ref",
+            "required": true,
+            "schema": {
+              "description": "The snapshot id or name.",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Snapshot"
+                }
+              }
+            },
+            "description": "OK"
+          },
+          "default": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Error"
+          }
+        },
+        "summary": "Read a snapshot",
+        "tags": [
+          "snapshots"
+        ],
+        "x-shard-scope": "sandbox:read"
+      }
+    },
+    "/v0/version": {
+      "get": {
+        "operationId": "get-version",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/VersionResponse"
+                }
+              }
+            },
+            "description": "OK"
+          },
+          "default": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Error"
+          }
+        },
+        "summary": "Read the daemon and API versions",
+        "tags": [
+          "meta"
+        ],
+        "x-shard-scope": "any"
+      }
+    }
+  },
+  "security": [
+    {
+      "bearer": []
+    }
+  ]
+}

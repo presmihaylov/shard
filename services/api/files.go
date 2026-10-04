@@ -1,6 +1,7 @@
 package api
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -8,6 +9,8 @@ import (
 	"net/http"
 	"strconv"
 	"time"
+
+	"github.com/danielgtaylor/huma/v2"
 
 	"github.com/presmihaylov/shard/models"
 	"github.com/presmihaylov/shard/services/sandbox"
@@ -195,37 +198,47 @@ func writeEntries(w io.Writer, listing sandbox.Listing) error {
 }
 
 // makeDir makes the directory the JSON body names.
-func (h *Handler) makeDir(w http.ResponseWriter, r *http.Request) {
-	var req sandbox.MkdirRequest
-	if err := decode(w, r, &req); err != nil {
-		h.writeError(w, err)
+func (h *Handler) makeDir(ctx context.Context, in *sandboxBody[sandbox.MkdirRequest]) (*struct{}, error) {
+	return done(h.lifecycle.MakeDir(ctx, in.ID, value(in.Body)))
+}
 
-		return
-	}
-
-	if err := h.lifecycle.MakeDir(r.Context(), r.PathValue("id"), req); err != nil {
-		h.writeError(w, err)
-
-		return
-	}
-
-	w.WriteHeader(http.StatusNoContent)
+type deleteFileInput struct {
+	ID        string `path:"id" doc:"The sandbox id or name."`
+	Path      string `query:"path" doc:"The absolute guest path."`
+	Recursive bool   `query:"recursive" doc:"Take a directory and everything in it."`
 }
 
 // deleteFile removes the guest path at ?path=; ?recursive=true takes a directory and everything in it.
-func (h *Handler) deleteFile(w http.ResponseWriter, r *http.Request) {
-	recursive, err := boolQuery(r, "recursive")
-	if err != nil {
-		h.writeError(w, err)
+func (h *Handler) deleteFile(ctx context.Context, in *deleteFileInput) (*struct{}, error) {
+	return done(h.lifecycle.DeleteFile(ctx, in.ID, in.Path, in.Recursive))
+}
 
-		return
-	}
+type writeFileInput struct {
+	ID      string `path:"id" doc:"The sandbox id or name."`
+	Path    string `query:"path" doc:"The absolute guest path."`
+	Mode    string `query:"mode" doc:"The file mode in octal; none is 0644."`
+	User    string `query:"user" doc:"Who writes and owns the file; none is the entrypoint's user."`
+	Parents bool   `query:"parents" doc:"Make the missing parent directories."`
+}
 
-	if err := h.lifecycle.DeleteFile(r.Context(), r.PathValue("id"), r.URL.Query().Get("path"), recursive); err != nil {
-		h.writeError(w, err)
+// entriesResponse is the body listDir streams, named here so the spec describes it.
+type entriesResponse struct {
+	Entries []models.FileEntry `json:"entries"`
+}
 
-		return
-	}
+func describeWriteFile(_ huma.Registry, op *huma.Operation) {
+	op.RequestBody = binaryBody("application/octet-stream")
+	op.Responses["204"] = &huma.Response{Description: "The file landed. A put needs a Content-Length."}
+}
 
-	w.WriteHeader(http.StatusNoContent)
+func describeReadFile(_ huma.Registry, op *huma.Operation) {
+	op.Responses["200"] = &huma.Response{Description: "The file's bytes, chunked to the end; a body cut short is a failed read.", Headers: statHeader(), Content: map[string]*huma.MediaType{"application/octet-stream": {Schema: binary()}}}
+}
+
+func describeStatFile(_ huma.Registry, op *huma.Operation) {
+	op.Responses["200"] = &huma.Response{Description: "The path's stat, in a header and no body.", Headers: statHeader()}
+}
+
+func describeListDir(registry huma.Registry, op *huma.Operation) {
+	op.Responses["200"] = response("The directory's entries; a listing cut short never parses.", "application/json", schemaOf[entriesResponse](registry))
 }

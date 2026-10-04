@@ -94,13 +94,13 @@ func (e *HeldError) Error() string {
 
 // RuleText is one --allow or --deny as the operator typed it. The daemon owns the grammar.
 type RuleText struct {
-	Action models.Action `json:"action"`
+	Action models.Action `json:"action" enum:"allow,deny"`
 	Rule   string        `json:"rule"`
 }
 
 // PolicyRequest is the body of a policy PUT: the rules in the order the host evaluates them.
 type PolicyRequest struct {
-	Rules []RuleText `json:"rules"`
+	Rules []RuleText `json:"rules,omitempty"`
 }
 
 // SecretRequest is the body of a secret PUT. The value crosses the socket here and nowhere else.

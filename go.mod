@@ -7,6 +7,7 @@ require (
 	github.com/Microsoft/hcsshim v0.15.0-rc.1
 	github.com/coder/websocket v1.8.15
 	github.com/containerd/containerd/v2 v2.3.6
+	github.com/danielgtaylor/huma/v2 v2.39.1
 	github.com/golang-jwt/jwt/v5 v5.3.1
 	github.com/google/go-containerregistry v0.21.9
 	github.com/moby/profiles/apparmor v0.2.3
