@@ -2588,6 +2588,33 @@ func TestRemoveEndsAnAdoptedVMMWhoseGuestDoesNotAttach(t *testing.T) {
 	}
 }
 
+// The end of a vmm whose guest does not attach kills through the pin its attach took, so a process on its pid since is never hit (SHARD-557).
+func TestAnUnattachedVMMEndsThroughItsPinNotItsPid(t *testing.T) {
+	h := newHarness(t)
+	spec, p, pid := h.guestGone(t)
+	innocent := exec.Command("sleep", "60")
+	if err := innocent.Start(); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		if err := innocent.Process.Kill(); err != nil && !errors.Is(err, os.ErrProcessDone) {
+			t.Error(err)
+		}
+		var exit *exec.ExitError
+		if err := innocent.Wait(); err != nil && !errors.As(err, &exit) {
+			t.Error(err)
+		}
+	})
+
+	if err := p.EndUnattachedAs(t.Context(), spec.ID, innocent.Process.Pid); err != nil {
+		t.Fatalf("the end of a vmm whose guest does not attach: %v", err)
+	}
+	awaitReaped(t, pid)
+	if err := syscall.Kill(innocent.Process.Pid, 0); err != nil {
+		t.Fatalf("the process on the vmm's pid since was hit: %v", err)
+	}
+}
+
 // A status during a boot waits for it, so the guest gives its one control stream to one machine (SHARD-558).
 func TestAStatusDuringABootAttachesNoSecondMachine(t *testing.T) {
 	h := newHarness(t)

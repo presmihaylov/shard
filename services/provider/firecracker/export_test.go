@@ -2,6 +2,7 @@ package firecracker
 
 import (
 	"context"
+	"fmt"
 	"time"
 
 	"github.com/presmihaylov/shard/models"
@@ -40,6 +41,26 @@ func (p *Provider) RenumberSilent(id string, pid int) {
 		return
 	}
 	p.unadopted[id].pid = pid
+}
+
+// EndUnattachedAs ends a vmm whose guest does not attach after its pid reads as pid, which is how a pid the kernel reused between the attach and the kill looks from here.
+func (p *Provider) EndUnattachedAs(ctx context.Context, id string, pid int) error {
+	dir, r, err := p.open(id)
+	if err != nil {
+		return err
+	}
+	socket, vsock := r.sockets(dir)
+	client, info, err := fcapi.Adopt(ctx, socket, vsock)
+	if err != nil {
+		return err
+	}
+	m, err := p.attach(ctx, id, dir, r.Jail, client, info, adoptBound)
+	if m == nil {
+		return fmt.Errorf("the attach handed back no machine: %w", err)
+	}
+	m.pid = pid
+
+	return p.endUnattached(ctx, m, err)
 }
 
 // SetOwners stands in for the chown and the tap's owner, which need root; a test runs as a user who can give a file to nobody.
