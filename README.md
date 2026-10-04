@@ -121,8 +121,8 @@ of the writable layer as it was at the pause.
 `shard fork` starts a new sandbox from a running one. It freezes the source for a moment, captures
 its memory and its writable layer, lets the same sandbox run on, and starts the new one from that
 capture, never from an older checkpoint. Each fork takes a capture of its own, so two forks share
-nothing, and the capture is never a checkpoint you can name. gVisor and Firecracker fork today
-(SHARD-457, SHARD-462).
+nothing, and the capture is never a checkpoint you can name. gVisor, Firecracker and `vz` fork today
+(SHARD-457, SHARD-462, SHARD-463).
 
 ```
 shard stop web
