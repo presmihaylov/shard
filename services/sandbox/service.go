@@ -547,6 +547,15 @@ func diskRefused(err error) error {
 	return err
 }
 
+// userRefused makes the request's fault a user or group the image does not list; the substrate's wrapping says nothing the caller can fix.
+func userRefused(err error) error {
+	if unknown, ok := errors.AsType[*bundle.UnknownUserError](err); ok {
+		return &RequestError{Err: unknown}
+	}
+
+	return err
+}
+
 // diskAdmitter reserves the disk of a new sandbox before its record exists; only the VM substrates hold a disk file.
 type diskAdmitter interface {
 	AdmitDisk(dir string, res models.Resources) error
@@ -666,7 +675,7 @@ func (s *Service) Complete(ctx context.Context, id string, req CreateRequest) (e
 	td.Push(func(ctx context.Context) error { return s.cfg.Provider.Remove(ctx, id) })
 
 	if err := s.cfg.Provider.Create(ctx, spec); err != nil {
-		return err
+		return userRefused(err)
 	}
 
 	if err := s.recordCreated(ctx, spec, img.Digest); err != nil {
@@ -729,6 +738,11 @@ func (s *Service) Create(ctx context.Context, req CreateRequest) (models.Sandbox
 // WaitState answers at once: this service's Create is synchronous, so a sandbox it holds never sits in pending.
 // The daemon composes Prepare and Complete in the background and overrides this with a wait that blocks.
 func (s *Service) WaitState(_ context.Context, _ string) error { return nil }
+
+// CreateAndWait is Create: the record this service's Create answers has already left pending.
+func (s *Service) CreateAndWait(ctx context.Context, req CreateRequest) (models.Sandbox, error) {
+	return s.Create(ctx, req)
+}
 
 // fail records why a create never reached running. It keeps the record so a get reads the reason and rm
 // frees it, and it returns the cause so the synchronous caller still sees the failure.

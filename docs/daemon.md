@@ -460,7 +460,11 @@ curl --unix-socket /var/lib/shard/shard.sock -X POST http://localhost/v0/images/
   `{"sandbox"}` with the settled record. The create is a public route, so an `{"event"}` line
   carries no `path`. The create answers 400 when the body does not decode, when
   a field does not validate, or when the body names a secret or a policy the host does not hold. It
-  answers 409 `name_taken` when another sandbox already holds the name.
+  answers 400 `invalid_request` naming the user when `user` names a user or group the image does
+  not list, on the plain create, the wait and the NDJSON wait, whose last line carries the error
+  once an event is out. An uncached image is read only after the pull, so there the plain create
+  answers the `pending` record and the user lands in the `failed_reason`, while both waits still
+  answer the 400. It answers 409 `name_taken` when another sandbox already holds the name.
 - `POST /v0/sandboxes/{id}/start` takes no body and answers 200 with the record of the sandbox it
   started again. It answers 404 when nothing has the reference, and 409 when the sandbox is not
   stopped.
@@ -567,13 +571,18 @@ and `image prune` leaves it.
   says, and answers 204. Errors: 404, 409 `no_app`, 409 `app_ended` once the policy ended, and 409
   `sandbox_not_running`.
 - `GET /v0/sandboxes/{id}/logs` answers 200 `text/plain; charset=utf-8` with everything the
-  entrypoint wrote. Errors: 404, and 400 for a `follow` that is not a boolean.
+  entrypoint wrote. A `pending` sandbox has written nothing yet, so it answers 200 with an empty
+  body, as a `created` one does. Errors: 404, 409 `sandbox_failed`, and 400 for a `follow` that is
+  not a boolean.
 - `GET /v0/sandboxes/{id}/logs?follow=true` with the WebSocket handshake answers in binary messages.
   The log bytes come on stream 1. When the sandbox is gone, `{"reason": "stopped"|"removed"}` comes
   on stream 3 and the daemon closes with 1000. A failure comes on stream 5 instead. Without the
   handshake the route answers 200 with chunked `text/plain`, the bytes as they come. The body ends
-  when the sandbox stops or is removed, so `curl -N` follows a log. Either way, a 404 comes before
-  anything is on the wire. `shard logs -f` uses the WebSocket.
+  when the sandbox stops or is removed, so `curl -N` follows a log. A follow of a `pending` sandbox
+  waits for the create: it follows once the sandbox is up, ends with `removed` when an rm takes it,
+  and ends with a `sandbox_failed` failure on stream 5 when the create fails, or ends the body without
+  the handshake. Either way, a 404 or a 409 `sandbox_failed` comes before anything is on the wire.
+  `shard logs -f` uses the WebSocket.
 - `GET /v0/sandboxes/{id}/egress-log` answers 200 with the newest 10000 egress decisions of the
   sandbox as a JSON array, oldest first. The array holds the proxy's own records and the host drops
   that the daemon wrote into the same file. The `Shard-Egress-Cut` header counts the older records

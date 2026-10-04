@@ -28,6 +28,8 @@ type fakeLifecycle struct {
 	created sandbox.CreateRequest
 	// createdID is the id Create answers, so a ?wait re-read can point at a record the test seeded.
 	createdID string
+	// repo is where a waited create reads the record it settled into.
+	repo *sandboxstate.Repository
 	// hold is how long Create takes, and heldErr what its context said at the end of it.
 	hold    time.Duration
 	heldErr error
@@ -248,6 +250,17 @@ func (f *fakeLifecycle) Create(ctx context.Context, req sandbox.CreateRequest) (
 	}
 
 	return models.Sandbox{ID: id, Name: req.Name, Image: req.Image, State: models.StatePending}, f.err
+}
+
+// CreateAndWait records the id it waited on, then answers the record the test seeded under it.
+func (f *fakeLifecycle) CreateAndWait(ctx context.Context, req sandbox.CreateRequest) (models.Sandbox, error) {
+	sb, err := f.Create(ctx, req)
+	if err != nil {
+		return models.Sandbox{}, err
+	}
+	f.waited = sb.ID
+
+	return sandbox.Get(f.repo, sb.ID)
 }
 
 // WaitState records the ref a get with ?wait blocked on, and refuses like any verb.
