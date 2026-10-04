@@ -214,6 +214,8 @@ func (r *Runner) Create(ctx context.Context, id string, opts CreateOptions) erro
 // ExecOptions is one process in a sandbox that already runs. It is never the entrypoint, so it has
 // no supervisor and its exit ends nothing.
 type ExecOptions struct {
+	// Bundle holds config.json, whose process the exec starts from.
+	Bundle  string
 	Argv    []string
 	Env     []string
 	WorkDir string
@@ -236,6 +238,9 @@ func (r *Runner) Exec(ctx context.Context, id string, opts ExecOptions) (code in
 	if len(opts.Argv) == 0 {
 		return 0, errors.New("no command: runsc exec has nothing to run")
 	}
+	if opts.Bundle == "" {
+		return 0, errors.New("no bundle: runsc exec has no process to start from")
+	}
 
 	dir, err := os.MkdirTemp(r.execDir, "shard-exec-")
 	if err != nil {
@@ -245,9 +250,13 @@ func (r *Runner) Exec(ctx context.Context, id string, opts ExecOptions) (code in
 
 	pidFile := filepath.Join(dir, "pid")
 	logFile := filepath.Join(dir, "log")
+	processFile := filepath.Join(dir, "process.json")
+	if err := writeProcess(processFile, opts); err != nil {
+		return 0, fmt.Errorf("runsc exec %s: %w", id, err)
+	}
 
 	// --log is global, and r.command puts what it is given after its own globals and before the subcommand.
-	cmd := r.command(ctx, append([]string{"--log", logFile, "--log-format=json"}, execArgs(id, pidFile, opts)...)...)
+	cmd := r.command(ctx, append([]string{"--log", logFile, "--log-format=json"}, execArgs(id, pidFile, processFile, opts)...)...)
 	cmd.Stdin, cmd.Stdout, cmd.Stderr = opts.Stdin, opts.Stdout, opts.Stderr
 
 	// runsc writes its own refusals to its stderr, so the guest gets its stderr as fd 3 and never reads them.
@@ -388,28 +397,15 @@ func logReason(path string) (string, error) {
 	return reason, nil
 }
 
-// execArgs spells one runsc exec. The flags precede the id, and everything after it is the command.
-func execArgs(id, pidFile string, opts ExecOptions) []string {
+// execArgs spells one runsc exec. The process file holds the command, and runsc refuses one after the id beside it.
+func execArgs(id, pidFile, processFile string, opts ExecOptions) []string {
 	args := []string{"exec", "--internal-pid-file", pidFile}
 
 	if passesStderr(opts) {
 		args = append(args, "--pass-fd", "3:2")
 	}
 
-	if opts.WorkDir != "" {
-		args = append(args, "--cwd", opts.WorkDir)
-	}
-	if opts.User != "" {
-		args = append(args, "--user", opts.User)
-		for _, gid := range opts.Groups {
-			args = append(args, "--additional-gids", strconv.FormatUint(uint64(gid), 10))
-		}
-	}
-	for _, entry := range opts.Env {
-		args = append(args, "--env", entry)
-	}
-
-	return append(append(args, id), opts.Argv...)
+	return append(args, "--process", processFile, id)
 }
 
 // passesStderr says the guest's stderr goes to runsc as fd 3, which a tty cannot: runsc needs all three of its own to be one.

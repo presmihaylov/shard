@@ -698,6 +698,7 @@ func execOptions(b bundle.Bundle, spec models.ExecSpec) (runsc.ExecOptions, erro
 	}
 
 	opts := runsc.ExecOptions{
+		Bundle:  b.Dir,
 		Argv:    spec.Argv,
 		Env:     runspec.MergeEnv(runtime.Env, spec.Env),
 		WorkDir: firstNonEmpty(spec.WorkDir, runtime.WorkDir, "/"),
