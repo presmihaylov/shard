@@ -178,7 +178,7 @@ var helps = map[string]verbHelp{
 		flags: append(slices.Clone(sandboxFlagHelps),
 			flagHelp{"--restart <policy>", "restart policy: no, on-failure or always", ""},
 			flagHelp{"--restart-retries <n>", "maximum restarts; default unlimited", ""},
-			flagHelp{"--restart-backoff <duration>", "initial restart delay", seconds(sandbox.DefaultRestartBackoff)},
+			flagHelp{"--restart-backoff <duration>", "initial restart delay, up to " + seconds(models.RestartBackoffCap), seconds(sandbox.DefaultRestartBackoff)},
 			flagHelp{"-d, --detach", "run in the background and print the sandbox ID", ""},
 		),
 		notes: []note{
@@ -468,18 +468,21 @@ var helps = map[string]verbHelp{
 	"policy create": {
 		usage:   []string{"policy create [OPTIONS] NAME"},
 		summary: "store a network policy",
-		args:    []row{{"NAME", "policy name; lower-case letters, digits and hyphens"}},
+		args:    []row{{"NAME", "policy name; up to 64 lower-case letters, digits and hyphens"}},
 		flags: []flagHelp{
 			{"--allow <rule>", "allow matching traffic; repeatable", ""},
 			{"--deny <rule>", "deny matching traffic; repeatable", ""},
 		},
 		notes: []note{
+			para("The name starts with a letter or a digit."),
 			para("Rules apply in the order given. The first match decides access.", "Traffic that no rule allows is denied."),
 			{title: "Rules", lines: []string{
 				"Use a destination with an optional protocol and ports:",
 				"  DESTINATION [tcp|udp[:PORTS]]",
 				"",
 				"Destinations can be domains, IP addresses, network ranges, 'any' or 'dns'.",
+				"'*.example.com' matches the names under example.com, not example.com itself.",
+				"'suffix:example.com' matches example.com and every name under it.",
 				"Ports can be numbers or ranges, separated by commas.",
 				"Domain rules default to TCP ports 80 and 443.",
 				"Domain rules also allow the DNS access needed to resolve their names.",
@@ -528,7 +531,7 @@ var helps = map[string]verbHelp{
 		summary:  "remove a sandbox's policy",
 		about:    "Remove a sandbox's network policy.",
 		args:     []row{sandboxArg},
-		notes:    []note{para("Secret access remains unchanged.", noPolicyLine)},
+		notes:    []note{para("The sandbox must be created or stopped.", "Secret access remains unchanged.", noPolicyLine)},
 		examples: []string{"shard policy detach web"},
 	},
 	"policy logs": {
@@ -658,9 +661,10 @@ var helps = map[string]verbHelp{
 		examples: []string{"shard tokens revoke 0123456789abcdef", "shard tokens revoke --name build-agent"},
 	},
 	"tokens scopes": {
-		usage:   []string{"tokens scopes [OPTIONS]"},
-		summary: "list available token scopes",
-		flags:   []flagHelp{formatTableHelp},
+		usage:    []string{"tokens scopes [OPTIONS]"},
+		summary:  "list available token scopes",
+		flags:    []flagHelp{formatTableHelp},
+		examples: []string{"shard tokens scopes", "shard tokens scopes --format json"},
 	},
 	"version": {
 		usage:    []string{"version [OPTIONS]"},

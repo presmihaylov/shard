@@ -10,7 +10,8 @@ thin client of that socket, and each command runs one verb.
 
 **Status: pre-alpha.** Every verb runs on gVisor, Firecracker, and `vz` on an Apple silicon Mac
 with macOS 14 or later. Sysbox and runc refuse pause, resume and fork, and run every other verb.
-Every verb talks to the daemon, so the daemon must be up. See `docs/daemon.md`.
+Every verb talks to the daemon, so the daemon must be up, bar `info`, `--version` and `tokens mint`,
+`list` and `revoke`, which run on the host without it. See `docs/daemon.md`.
 
 ## Providers
 
@@ -61,8 +62,8 @@ and exits 130. The sandbox stays `running` through all of it, until `shard stop`
 `shard create` takes no command. Only `shard-init` runs, and the sandbox stays up for `shard exec`.
 
 `shard daemon` runs first, in a terminal of its own or as the systemd unit in `packaging/systemd`.
-It owns the state. Every other verb is a client of its socket and fails fast when the daemon is not
-running.
+It owns the state. Every other verb but those four is a client of its socket and fails fast when the
+daemon is not running.
 
 The daemon never binds TCP. A client on another host reaches it through `shard serve`, an
 unprivileged process that speaks plain HTTP behind an HTTPS proxy such as Caddy, checks a bearer
@@ -176,9 +177,9 @@ daemon's own userspace netstack enforces it and writes every drop to the sandbox
 ## Images
 
 ```
-shard pull python:3.12           download an image
-shard image list                 list the pulled images
-shard image remove python:3.12   remove one, with the rootfs no other tag needs
+shard pull python:3.12           # download an image
+shard image list                 # list the pulled images
+shard image remove python:3.12   # remove one, with the rootfs no other tag needs
 ```
 
 Everything lands under `/var/lib/shard`, and `--root` overrides that. shard unpacks an image once

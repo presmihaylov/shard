@@ -137,10 +137,10 @@ shard: sandbox <id> is paused: resume it with shard resume <id>
 nothing: `list --format table` prints what `list` prints.
 
 **A `--format json` call writes one value or nothing.** JSON is one value, indented by two spaces, and a list verb
-prints an array. A failure to parse, to reach the daemon, or to encode writes nothing to stdout. A
-list with warnings, or a `daemon status` with a task in backoff, still writes the whole value, then
-the warnings or the error on stderr, and exits 1. `version --format json` with no daemon writes
-nothing and fails.
+prints an array. `tokens mint` is the one exception, and writes its value on one line. A failure to
+parse, to reach the daemon, or to encode writes nothing to stdout. A list with warnings, or a
+`daemon status` with a task in backoff, still writes the whole value, then the warnings or the error
+on stderr, and exits 1. `version --format json` with no daemon writes nothing and fails.
 
 ### JSON
 
@@ -189,7 +189,8 @@ absent when empty:
 
 `restart.policy` is `no`, `on-failure` or `always`. `retries` is absent for no cap, `backoff` is the
 first wait in seconds, `count` is the starts again on this run, and `last_at` is absent before the
-first one.
+first one. `gave_up` says an exit asked for a start again after the retries were spent, and `ended`
+says no start again follows the last exit.
 
 `inspect` prints one sandbox record, and adds `egress` when the record names a policy:
 
