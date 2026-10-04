@@ -107,7 +107,7 @@ explicit selection. **Sysbox is single-tenant. Use runc only for code you trust.
 | Concept | Behavior |
 |---|---|
 | Sandbox | `create` starts without a main command. `run` starts the command you supply. The image's ENTRYPOINT and CMD never run. |
-| Exec | Execute another command in a running sandbox. Use `-i` / `--interactive` for stdin and `-t` / `--tty` for a terminal. |
+| Exec | Execute another command in a running sandbox. Use `-i` / `--interactive` for stdin; `-t` / `--tty` requires it. |
 | Stop and start | Stop frees memory and keeps files. Start uses those files and starts any main command from the beginning. |
 | Pause and resume | Save memory and files, then continue the processes from that state. Availability depends on the provider. |
 | Fork | Capture a running sandbox's memory and files as a new sandbox. The source briefly pauses, then continues. |
@@ -149,9 +149,9 @@ They provide sandbox commands, files, lifecycle operations, secrets, and policie
 requires Node.js 20.3 or later; Python requires Python 3.11 or later and has synchronous and
 asynchronous clients.
 
-SDK distributions use separate GitHub releases: `sdk-typescript-v0.1.0` and
-`sdk-python-v0.1.0`. When those releases are available, download the TypeScript `.tgz` or the
-Python `.whl` from their assets and install the local file. The SDKs are not published on npm
+Separate SDK releases are planned on GitHub under `sdk-typescript-v0.1.0` and
+`sdk-python-v0.1.0`. After publication, download the TypeScript `.tgz` or the Python `.whl`
+from their release assets and install the local file. The SDKs are not published on npm
 or PyPI. Until the releases are available, the source and examples are in those directories.
 
 ## Documentation
