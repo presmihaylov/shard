@@ -142,10 +142,19 @@ func NewHandler(version string, process Process, repo sandbox.Reader, enforcer s
 	return mux
 }
 
-// Route is one method and pattern the daemon serves. The front maps each to the capability it enforces.
+// Class says who reaches a route: the TCP front forwards a public one, and only the daemon socket reaches a local one.
+type Class string
+
+const (
+	Public Class = "public"
+	Local  Class = "local"
+)
+
+// Route is one method and pattern the daemon serves. The front maps each public one to the capability it enforces.
 type Route struct {
 	Method  string
 	Pattern string
+	Class   Class
 }
 
 // routeEntry binds a route to its handler; routeTable is the one list NewHandler registers and Routes reports.
@@ -157,60 +166,64 @@ type routeEntry struct {
 // routeTable is the single source of the daemon's routes, less the catch-all that answers an unknown path.
 func (h *Handler) routeTable() []routeEntry {
 	return []routeEntry{
-		{Route{"GET", "/v0/version"}, h.getVersion},
-		{Route{"GET", "/v0/daemon"}, h.getDaemon},
-		{Route{"GET", "/v0/sandboxes"}, h.listSandboxes},
-		{Route{"GET", "/v0/sandboxes/{id}"}, h.getSandbox},
-		{Route{"POST", "/v0/sandboxes"}, h.createSandbox},
-		{Route{"POST", "/v0/sandboxes/{id}/start"}, h.startSandbox},
-		{Route{"POST", "/v0/sandboxes/{id}/stop"}, h.stopSandbox},
-		{Route{"DELETE", "/v0/sandboxes/{id}"}, h.removeSandbox},
-		{Route{"POST", "/v0/sandboxes/{id}/pause"}, h.pauseSandbox},
-		{Route{"POST", "/v0/sandboxes/{id}/resume"}, h.resumeSandbox},
-		{Route{"POST", "/v0/sandboxes/{id}/fork"}, h.forkSandbox},
-		{Route{"POST", "/v0/sandboxes/{id}/exec"}, h.createExec},
-		{Route{"GET", "/v0/sandboxes/{id}/exec"}, h.listExecs},
-		{Route{"GET", "/v0/sandboxes/{id}/exec/{exec}"}, h.getExec},
-		{Route{"POST", "/v0/sandboxes/{id}/exec/{exec}/kill"}, h.killExec},
-		{Route{"DELETE", "/v0/sandboxes/{id}/exec/{exec}"}, h.deleteExec},
-		{Route{"POST", "/v0/sandboxes/{id}/exec/{exec}/resize"}, h.resizeExec},
-		{Route{"PUT", "/v0/sandboxes/{id}/files"}, h.putFile},
-		{Route{"GET", "/v0/sandboxes/{id}/files"}, h.getFile},
+		{Route{"GET", "/v0/version", Public}, h.getVersion},
+		{Route{"GET", "/v0/capabilities", Public}, h.getCapabilities},
+		{Route{"GET", "/v0/daemon", Local}, h.getDaemon},
+		{Route{"GET", "/v0/sandboxes", Public}, listSandboxes(h, PublicSandbox)},
+		{Route{"GET", "/v0/sandboxes/{id}", Public}, getSandbox(h, PublicInspection)},
+		// The CLI on the daemon host reads the whole record, the host side included, which no public route answers.
+		{Route{"GET", "/v0/local/sandboxes", Local}, listSandboxes(h, same[models.Sandbox])},
+		{Route{"GET", "/v0/local/sandboxes/{id}", Local}, getSandbox(h, same[sandbox.Inspection])},
+		{Route{"POST", "/v0/sandboxes", Public}, h.createSandbox},
+		{Route{"POST", "/v0/sandboxes/{id}/start", Public}, h.startSandbox},
+		{Route{"POST", "/v0/sandboxes/{id}/stop", Public}, h.stopSandbox},
+		{Route{"DELETE", "/v0/sandboxes/{id}", Public}, h.removeSandbox},
+		{Route{"POST", "/v0/sandboxes/{id}/pause", Public}, h.pauseSandbox},
+		{Route{"POST", "/v0/sandboxes/{id}/resume", Public}, h.resumeSandbox},
+		{Route{"POST", "/v0/sandboxes/{id}/fork", Public}, h.forkSandbox},
+		{Route{"POST", "/v0/sandboxes/{id}/exec", Public}, h.createExec},
+		{Route{"GET", "/v0/sandboxes/{id}/exec", Public}, h.listExecs},
+		{Route{"GET", "/v0/sandboxes/{id}/exec/{exec}", Public}, h.getExec},
+		{Route{"POST", "/v0/sandboxes/{id}/exec/{exec}/kill", Public}, h.killExec},
+		{Route{"DELETE", "/v0/sandboxes/{id}/exec/{exec}", Public}, h.deleteExec},
+		{Route{"POST", "/v0/sandboxes/{id}/exec/{exec}/resize", Public}, h.resizeExec},
+		{Route{"PUT", "/v0/sandboxes/{id}/files", Public}, h.putFile},
+		{Route{"GET", "/v0/sandboxes/{id}/files", Public}, h.getFile},
 		// A GET pattern also serves HEAD, so the stat needs its own, more specific one.
-		{Route{"HEAD", "/v0/sandboxes/{id}/files"}, h.statFile},
-		{Route{"DELETE", "/v0/sandboxes/{id}/files"}, h.deleteFile},
-		{Route{"GET", "/v0/sandboxes/{id}/ls"}, h.listDir},
-		{Route{"POST", "/v0/sandboxes/{id}/mkdir"}, h.makeDir},
-		{Route{"PUT", "/v0/sandboxes/{id}/archive"}, h.putArchive},
-		{Route{"GET", "/v0/sandboxes/{id}/archive"}, h.getArchive},
-		{Route{"GET", "/v0/sandboxes/{id}/logs"}, h.sandboxLogs},
-		{Route{"GET", "/v0/sandboxes/{id}/attach"}, h.attachApp},
-		{Route{"POST", "/v0/sandboxes/{id}/app/stop"}, h.stopApp},
-		{Route{"GET", "/v0/sandboxes/{id}/egress-log"}, h.sandboxEgressLog},
-		{Route{"POST", "/v0/sandboxes/{id}/secrets/{name}"}, h.grantSecret},
-		{Route{"DELETE", "/v0/sandboxes/{id}/secrets/{name}"}, h.ungrantSecret},
-		{Route{"PUT", "/v0/sandboxes/{id}/policy"}, h.attachPolicy},
-		{Route{"DELETE", "/v0/sandboxes/{id}/policy"}, h.detachPolicy},
-		{Route{"POST", "/v0/snapshots"}, h.createSnapshot},
-		{Route{"GET", "/v0/snapshots"}, h.listSnapshots},
-		{Route{"GET", "/v0/snapshots/{ref}"}, h.getSnapshot},
-		{Route{"DELETE", "/v0/snapshots/{ref}"}, h.removeSnapshot},
-		{Route{"GET", "/v0/policies"}, h.listPolicies},
-		{Route{"GET", "/v0/policies/{name}"}, h.getPolicy},
-		{Route{"PUT", "/v0/policies/{name}"}, h.putPolicy},
-		{Route{"DELETE", "/v0/policies/{name}"}, h.removePolicy},
-		{Route{"GET", "/v0/secrets"}, h.listSecrets},
-		{Route{"PUT", "/v0/secrets/{name}"}, h.putSecret},
-		{Route{"DELETE", "/v0/secrets/{name}"}, h.removeSecret},
-		{Route{"GET", "/v0/images"}, h.listImages},
-		{Route{"POST", "/v0/images/pull"}, h.pullImage},
-		{Route{"POST", "/v0/images/prune"}, h.pruneImages},
+		{Route{"HEAD", "/v0/sandboxes/{id}/files", Public}, h.statFile},
+		{Route{"DELETE", "/v0/sandboxes/{id}/files", Public}, h.deleteFile},
+		{Route{"GET", "/v0/sandboxes/{id}/ls", Public}, h.listDir},
+		{Route{"POST", "/v0/sandboxes/{id}/mkdir", Public}, h.makeDir},
+		{Route{"PUT", "/v0/sandboxes/{id}/archive", Public}, h.putArchive},
+		{Route{"GET", "/v0/sandboxes/{id}/archive", Public}, h.getArchive},
+		{Route{"GET", "/v0/sandboxes/{id}/logs", Public}, h.sandboxLogs},
+		{Route{"GET", "/v0/sandboxes/{id}/attach", Public}, h.attachApp},
+		{Route{"POST", "/v0/sandboxes/{id}/app/stop", Public}, h.stopApp},
+		{Route{"GET", "/v0/sandboxes/{id}/egress-log", Public}, h.sandboxEgressLog},
+		{Route{"POST", "/v0/sandboxes/{id}/secrets/{name}", Public}, h.grantSecret},
+		{Route{"DELETE", "/v0/sandboxes/{id}/secrets/{name}", Public}, h.ungrantSecret},
+		{Route{"PUT", "/v0/sandboxes/{id}/policy", Public}, h.attachPolicy},
+		{Route{"DELETE", "/v0/sandboxes/{id}/policy", Public}, h.detachPolicy},
+		{Route{"POST", "/v0/snapshots", Public}, h.createSnapshot},
+		{Route{"GET", "/v0/snapshots", Public}, h.listSnapshots},
+		{Route{"GET", "/v0/snapshots/{ref}", Public}, h.getSnapshot},
+		{Route{"DELETE", "/v0/snapshots/{ref}", Public}, h.removeSnapshot},
+		{Route{"GET", "/v0/policies", Public}, h.listPolicies},
+		{Route{"GET", "/v0/policies/{name}", Public}, h.getPolicy},
+		{Route{"PUT", "/v0/policies/{name}", Public}, h.putPolicy},
+		{Route{"DELETE", "/v0/policies/{name}", Public}, h.removePolicy},
+		{Route{"GET", "/v0/secrets", Public}, h.listSecrets},
+		{Route{"PUT", "/v0/secrets/{name}", Public}, h.putSecret},
+		{Route{"DELETE", "/v0/secrets/{name}", Public}, h.removeSecret},
+		{Route{"GET", "/v0/images", Local}, h.listImages},
+		{Route{"POST", "/v0/images/pull", Local}, h.pullImage},
+		{Route{"POST", "/v0/images/prune", Local}, h.pruneImages},
 		// An image reference carries slashes, so it is the rest of the path and not one segment of it.
-		{Route{"DELETE", "/v0/images/{ref...}"}, h.removeImage},
+		{Route{"DELETE", "/v0/images/{ref...}", Local}, h.removeImage},
 	}
 }
 
-// Routes lists every method and pattern the daemon serves. The front covers each with a capability.
+// Routes lists every route the daemon serves. The front covers each public one with a capability.
 func Routes() []Route {
 	// The zero Handler is enough: Routes reads only each method and pattern, never a handler.
 	var h Handler
@@ -223,14 +236,24 @@ func Routes() []Route {
 	return routes
 }
 
+// APIVersion is the path prefix of every route, which a client checks before it trusts the shape of an answer.
+const APIVersion = "v0"
+
 type versionResponse struct {
-	Version string `json:"version"`
+	Version    string `json:"version"`
+	APIVersion string `json:"api_version"`
+}
+
+// capabilitiesResponse names the provider and every optional verb it refuses, in the order of the verb constants.
+type capabilitiesResponse struct {
+	Provider    string   `json:"provider"`
+	Unsupported []string `json:"unsupported"`
 }
 
 // listResponse is the page: the rows, the cursor of the next page or null, and what could not be read.
-type listResponse struct {
-	Sandboxes []models.Sandbox `json:"sandboxes"`
-	Next      *string          `json:"next"`
+type listResponse[S any] struct {
+	Sandboxes []S     `json:"sandboxes"`
+	Next      *string `json:"next"`
 	// Warnings names the records the daemon could not read, one string each, beside the ones it could.
 	Warnings []string `json:"warnings,omitempty"`
 }
@@ -248,7 +271,33 @@ type ErrorObject struct {
 }
 
 func (h *Handler) getVersion(w http.ResponseWriter, _ *http.Request) {
-	h.writeJSON(w, http.StatusOK, versionResponse{Version: h.version})
+	h.writeJSON(w, http.StatusOK, versionResponse{Version: h.version, APIVersion: APIVersion})
+}
+
+func (h *Handler) getCapabilities(w http.ResponseWriter, _ *http.Request) {
+	d, err := h.process.Daemon()
+	if err != nil {
+		h.writeError(w, err)
+
+		return
+	}
+
+	h.writeJSON(w, http.StatusOK, capabilitiesResponse{Provider: d.Provider, Unsupported: unsupported(d.Capabilities)})
+}
+
+// unsupported is never null, so a client reads an empty list as a provider that refuses nothing.
+func unsupported(c models.Capabilities) []string {
+	verbs := []string{}
+	for _, v := range []struct {
+		name      string
+		supported bool
+	}{{models.VerbPause, c.Pause}, {models.VerbResume, c.Resume}, {models.VerbFork, c.Fork}} {
+		if !v.supported {
+			verbs = append(verbs, v.name)
+		}
+	}
+
+	return verbs
 }
 
 func (h *Handler) getDaemon(w http.ResponseWriter, _ *http.Request) {
@@ -263,62 +312,75 @@ func (h *Handler) getDaemon(w http.ResponseWriter, _ *http.Request) {
 	h.writeJSON(w, http.StatusOK, d)
 }
 
-func (h *Handler) listSandboxes(w http.ResponseWriter, r *http.Request) {
-	all, err := boolQuery(r, "all")
-	if err != nil {
-		h.writeError(w, err)
-
-		return
-	}
-
-	q, err := pageOf(r, sandboxstate.ValidID)
-	if err != nil {
-		h.writeError(w, err)
-
-		return
-	}
-
-	sandboxes, unreadable := sandbox.List(h.repo, all)
-
-	warnings, err := partial(unreadable)
-	if err != nil {
-		h.writeError(w, err)
-
-		return
-	}
-
-	sandboxes, next := page(sandboxes, q, func(sb models.Sandbox) string { return sb.ID })
-
-	h.writeJSON(w, http.StatusOK, listResponse{Sandboxes: sandboxes, Next: next, Warnings: warnings})
-}
-
-// getSandbox answers the record two ways: ?wait=true blocks until a pending create lands, the default reads now.
-func (h *Handler) getSandbox(w http.ResponseWriter, r *http.Request) {
-	wait, err := boolQuery(r, "wait")
-	if err != nil {
-		h.writeError(w, err)
-
-		return
-	}
-
-	ref := r.PathValue("id")
-	if wait {
-		if err := h.lifecycle.WaitState(r.Context(), ref); err != nil {
+// listSandboxes answers a page of records, each through project: the public view, or the whole record on the socket.
+func listSandboxes[S any](h *Handler, project func(models.Sandbox) S) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		all, err := boolQuery(r, "all")
+		if err != nil {
 			h.writeError(w, err)
 
 			return
 		}
+
+		q, err := pageOf(r, sandboxstate.ValidID)
+		if err != nil {
+			h.writeError(w, err)
+
+			return
+		}
+
+		sandboxes, unreadable := sandbox.List(h.repo, all)
+
+		warnings, err := partial(unreadable)
+		if err != nil {
+			h.writeError(w, err)
+
+			return
+		}
+
+		sandboxes, next := page(sandboxes, q, func(sb models.Sandbox) string { return sb.ID })
+
+		rows := make([]S, 0, len(sandboxes))
+		for _, sb := range sandboxes {
+			rows = append(rows, project(sb))
+		}
+
+		h.writeJSON(w, http.StatusOK, listResponse[S]{Sandboxes: rows, Next: next, Warnings: warnings})
 	}
-
-	sb, err := sandbox.Inspect(h.repo, h.enforcer, ref)
-	if err != nil {
-		h.writeError(w, err)
-
-		return
-	}
-
-	h.writeJSON(w, http.StatusOK, sb)
 }
+
+// getSandbox answers the record through project two ways: ?wait=true blocks until a pending create lands, the default reads now.
+func getSandbox[I any](h *Handler, project func(sandbox.Inspection) I) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		wait, err := boolQuery(r, "wait")
+		if err != nil {
+			h.writeError(w, err)
+
+			return
+		}
+
+		ref := r.PathValue("id")
+		if wait {
+			if err := h.lifecycle.WaitState(r.Context(), ref); err != nil {
+				h.writeError(w, err)
+
+				return
+			}
+		}
+
+		insp, err := sandbox.Inspect(h.repo, h.enforcer, ref)
+		if err != nil {
+			h.writeError(w, err)
+
+			return
+		}
+
+		h.writeJSON(w, http.StatusOK, project(insp))
+	}
+}
+
+// same is the projection of a local route, which answers the record as the daemon holds it.
+func same[T any](v T) T { return v }
 
 func (h *Handler) sandboxEgressLog(w http.ResponseWriter, r *http.Request) {
 	id, err := h.repo.Resolve(r.PathValue("id"))
@@ -376,7 +438,7 @@ func (h *Handler) grantSecret(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	h.writeJSON(w, http.StatusOK, sb)
+	h.writeJSON(w, http.StatusOK, PublicSandbox(sb))
 }
 
 func (h *Handler) ungrantSecret(w http.ResponseWriter, r *http.Request) {
@@ -387,7 +449,7 @@ func (h *Handler) ungrantSecret(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	h.writeJSON(w, http.StatusOK, sb)
+	h.writeJSON(w, http.StatusOK, PublicSandbox(sb))
 }
 
 func (h *Handler) attachPolicy(w http.ResponseWriter, r *http.Request) {
@@ -405,7 +467,7 @@ func (h *Handler) attachPolicy(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	h.writeJSON(w, http.StatusOK, sb)
+	h.writeJSON(w, http.StatusOK, PublicSandbox(sb))
 }
 
 func (h *Handler) detachPolicy(w http.ResponseWriter, r *http.Request) {
@@ -416,7 +478,7 @@ func (h *Handler) detachPolicy(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	h.writeJSON(w, http.StatusOK, sb)
+	h.writeJSON(w, http.StatusOK, PublicSandbox(sb))
 }
 
 // createSandbox answers the new record at once, or with ?wait=true once it leaves pending, streaming the pull when asked.
@@ -442,19 +504,20 @@ func (h *Handler) createSandbox(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if wait && streamed(r) {
-		h.streamProgress(w, r, http.StatusCreated, "create", func(ctx context.Context) (ProgressLine, error) {
+		streamProgress(h, w, r, http.StatusCreated, "create", createLines, func(ctx context.Context) (CreateLine, error) {
 			sb, err := h.lifecycle.Create(ctx, req)
 			if err != nil {
-				return ProgressLine{}, err
+				return CreateLine{}, err
 			}
 
 			if err := h.lifecycle.WaitState(ctx, sb.ID); err != nil {
-				return ProgressLine{}, err
+				return CreateLine{}, err
 			}
 
 			sb, err = sandbox.Get(h.repo, sb.ID)
+			out := PublicSandbox(sb)
 
-			return ProgressLine{Sandbox: &sb}, err
+			return CreateLine{Sandbox: &out}, err
 		})
 
 		return
@@ -482,7 +545,7 @@ func (h *Handler) createSandbox(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	h.writeJSON(w, http.StatusCreated, sb)
+	h.writeJSON(w, http.StatusCreated, PublicSandbox(sb))
 }
 
 // ScopesHeader carries the token's scopes from the TCP front to the daemon. The front stamps it on every request it forwards and strips any client copy; a request with no such header reached the socket directly.
@@ -561,7 +624,7 @@ func (h *Handler) startSandbox(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	h.writeJSON(w, http.StatusOK, sb)
+	h.writeJSON(w, http.StatusOK, PublicSandbox(sb))
 }
 
 // stopRequest is the body of a stop, which carries nothing.
@@ -582,7 +645,7 @@ func (h *Handler) stopSandbox(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	h.writeJSON(w, http.StatusOK, sb)
+	h.writeJSON(w, http.StatusOK, PublicSandbox(sb))
 }
 
 func (h *Handler) removeSandbox(w http.ResponseWriter, r *http.Request) {
@@ -610,7 +673,7 @@ func (h *Handler) pauseSandbox(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	h.writeJSON(w, http.StatusOK, sb)
+	h.writeJSON(w, http.StatusOK, PublicSandbox(sb))
 }
 
 func (h *Handler) resumeSandbox(w http.ResponseWriter, r *http.Request) {
@@ -621,7 +684,7 @@ func (h *Handler) resumeSandbox(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	h.writeJSON(w, http.StatusOK, sb)
+	h.writeJSON(w, http.StatusOK, PublicSandbox(sb))
 }
 
 func (h *Handler) forkSandbox(w http.ResponseWriter, r *http.Request) {
@@ -639,7 +702,7 @@ func (h *Handler) forkSandbox(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	h.writeJSON(w, http.StatusCreated, sb)
+	h.writeJSON(w, http.StatusCreated, PublicSandbox(sb))
 }
 
 // classify maps what a typed error refused to the status and the code that say so; anything untyped broke.

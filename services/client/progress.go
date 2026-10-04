@@ -10,7 +10,6 @@ import (
 	"mime"
 	"net/http"
 
-	"github.com/presmihaylov/shard/models"
 	"github.com/presmihaylov/shard/services/api"
 	"github.com/presmihaylov/shard/services/image"
 	"github.com/presmihaylov/shard/services/sandbox"
@@ -30,13 +29,21 @@ const (
 	PullPulled    = image.StatusPulled
 )
 
-// CreateSandboxAndWait is one call, so a pull that ends before a separate wait could attach is never missed.
-func (c *Client) CreateSandboxAndWait(ctx context.Context, req sandbox.CreateRequest, report func(PullEvent)) (models.Sandbox, error) {
-	return progress(ctx, c, "/v0/sandboxes?wait=true", req, report, func(line api.ProgressLine) *models.Sandbox { return line.Sandbox })
+// CreateSandboxAndWait is one call, so a pull that ends before a separate wait could attach is never missed. Its events carry no host path.
+func (c *Client) CreateSandboxAndWait(ctx context.Context, req sandbox.CreateRequest, report func(PullEvent)) (Sandbox, error) {
+	return progress(ctx, c, "/v0/sandboxes?wait=true", req, report, func(line api.CreateLine) (*PullEvent, *Sandbox, *api.ErrorObject) {
+		if line.Event == nil {
+			return nil, line.Sandbox, line.Error
+		}
+
+		e := line.Event
+
+		return &PullEvent{Status: e.Status, Reference: e.Reference, Digest: e.Digest, Layers: e.Layers, Layer: e.Layer, Bytes: e.Bytes, Present: e.Present}, nil, nil
+	})
 }
 
 // progress hands each streamed event to report and answers the last line; an older daemon answers plain JSON, read whole.
-func progress[T any](ctx context.Context, c *Client, path string, in any, report func(PullEvent), pick func(api.ProgressLine) *T) (T, error) {
+func progress[L, T any](ctx context.Context, c *Client, path string, in any, report func(PullEvent), split func(L) (*PullEvent, *T, *api.ErrorObject)) (T, error) {
 	var zero T
 
 	encoded, err := json.Marshal(in)
@@ -83,7 +90,7 @@ func progress[T any](ctx context.Context, c *Client, path string, in any, report
 	}
 
 	for {
-		var line api.ProgressLine
+		var line L
 		if err := decoder.Decode(&line); err != nil {
 			if errors.Is(err, io.EOF) {
 				return zero, fmt.Errorf("POST %s on %s: the daemon ended the answer before the result", path, c.target)
@@ -92,20 +99,20 @@ func progress[T any](ctx context.Context, c *Client, path string, in any, report
 			return zero, c.wrap(ctx, http.MethodPost, path, 0, fmt.Errorf("read the answer: %w", err))
 		}
 
-		if line.Event != nil {
+		event, result, failure := split(line)
+		if event != nil {
 			if report != nil {
-				report(*line.Event)
+				report(*event)
 			}
 
 			continue
 		}
 
 		// The answer is already a 2xx, so a failure after the first event has a code and no status.
-		if line.Error != nil {
-			return zero, &APIError{Code: line.Error.Code, Message: line.Error.Message, Holders: line.Error.Holders}
+		if failure != nil {
+			return zero, &APIError{Code: failure.Code, Message: failure.Message, Holders: failure.Holders}
 		}
 
-		result := pick(line)
 		if result == nil {
 			return zero, fmt.Errorf("POST %s on %s: the daemon answered no result", path, c.target)
 		}

@@ -9,6 +9,8 @@ LDFLAGS  := -X main.version=$(VERSION)
 GOVULNCHECK := golang.org/x/vuln/cmd/govulncheck@v1.1.4
 
 DEVBOX ?= devbox-shard
+# The HTTPS endpoint keeps its own binaries, which the test runs never replace (docs/https-devbox.md).
+DEVBOX_PREFIX ?= /usr/local/bin
 # PROVIDER is the substrate the e2e daemon runs on: gvisor or sysbox.
 PROVIDER ?= gvisor
 
@@ -66,9 +68,9 @@ test-integration:
 # The hardened sshd runs no sftp subsystem, so scp needs -O.
 devbox-sync: build-linux build-shard-init-linux
 	scp -O -q $(BIN)-linux-amd64 $(SHARD_INIT_BIN)-linux-amd64 $(DEVBOX):/tmp/
-	ssh $(DEVBOX) 'sudo install -m0755 /tmp/shard-linux-amd64 /usr/local/bin/shard && \
-		sudo install -m0755 /tmp/shard-init-linux-amd64 /usr/local/bin/shard-init'
-	@installed=$$(ssh $(DEVBOX) shard version 2>/dev/null | sed -n 's/^client //p'); \
+	ssh $(DEVBOX) 'sudo install -m0755 /tmp/shard-linux-amd64 $(DEVBOX_PREFIX)/shard && \
+		sudo install -m0755 /tmp/shard-init-linux-amd64 $(DEVBOX_PREFIX)/shard-init'
+	@installed=$$(ssh $(DEVBOX) $(DEVBOX_PREFIX)/shard version 2>/dev/null | sed -n 's/^client //p'); \
 		if [ "$$installed" != "$(VERSION)" ]; then \
 			echo "the devbox runs $$installed, not $(VERSION): the install did not land"; \
 			exit 1; \

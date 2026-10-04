@@ -10,10 +10,11 @@ import (
 	"github.com/presmihaylov/shard/services/sandbox"
 )
 
-// getAndRm are the only two sandbox-scoped routes a failed sandbox still answers; every other one is 409.
+// getAndRm are the only sandbox-scoped routes a failed sandbox still answers, the get on each class; every other one is 409.
 var getAndRm = map[api.Route]bool{
-	{Method: http.MethodGet, Pattern: "/v0/sandboxes/{id}"}:    true,
-	{Method: http.MethodDelete, Pattern: "/v0/sandboxes/{id}"}: true,
+	{Method: http.MethodGet, Pattern: "/v0/sandboxes/{id}", Class: api.Public}:      true,
+	{Method: http.MethodGet, Pattern: "/v0/local/sandboxes/{id}", Class: api.Local}: true,
+	{Method: http.MethodDelete, Pattern: "/v0/sandboxes/{id}", Class: api.Public}:   true,
 }
 
 // The walk reads api.Routes, so a route added to the daemon is covered here without an edit to this test.

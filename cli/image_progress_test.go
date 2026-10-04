@@ -32,6 +32,9 @@ unpacking docker.io/library/alpine:3.20, 2 layers
 pulled docker.io/library/alpine:3.20 into /var/lib/shard/images/alpine/rootfs
 `
 
+// createOfTwoLayersText is the same pull through create, a public route, which never names the host path the image lands at.
+var createOfTwoLayersText = strings.Replace(pullOfTwoLayersText, " into /var/lib/shard/images/alpine/rootfs", "", 1)
+
 func TestPullLineSaysEachStep(t *testing.T) {
 	cases := []struct {
 		event client.PullEvent
@@ -41,6 +44,9 @@ func TestPullLineSaysEachStep(t *testing.T) {
 		{client.PullEvent{Status: client.PullPulling, Reference: "alpine:3.20", Digest: "sha256:beef", Layers: 1, Bytes: 999}, "pulling alpine:3.20 sha256:beef, 1 layer, 999 B"},
 		{client.PullEvent{Status: client.PullUnpacking, Reference: "alpine:3.20", Layers: 1}, "unpacking alpine:3.20, 1 layer"},
 		{client.PullEvent{Status: client.PullBuilding, Path: "/images/disks/sha256-beef.ext4"}, "  building /images/disks/sha256-beef.ext4"},
+		{client.PullEvent{Status: client.PullCached, Reference: "alpine:3.20", Digest: "sha256:beef"}, "alpine:3.20 sha256:beef is already on disk"},
+		{client.PullEvent{Status: client.PullBuilding}, "  building the image file"},
+		{client.PullEvent{Status: client.PullPulled, Reference: "alpine:3.20"}, "pulled alpine:3.20"},
 		{client.PullEvent{Status: "verifying"}, "pull: verifying"},
 	}
 
@@ -66,12 +72,13 @@ func TestCreatePrintsThePullOnStderrAndTheIDAloneOnStdout(t *testing.T) {
 	if out.String() != "sandbox2\n" {
 		t.Errorf("create printed %q on stdout, want the bare id", out.String())
 	}
-	if errOut.String() != pullOfTwoLayersText {
-		t.Errorf("create printed\n%s\non stderr, want\n%s", errOut.String(), pullOfTwoLayersText)
+	if errOut.String() != createOfTwoLayersText {
+		t.Errorf("create printed\n%s\non stderr, want\n%s", errOut.String(), createOfTwoLayersText)
 	}
 }
 
-func TestPullPrintsTheSameStepsAsCreate(t *testing.T) {
+// Pull is a local route, so it prints the steps create does and the host path the image lands at.
+func TestPullPrintsTheStepsOfCreateAndWhereTheImageLands(t *testing.T) {
 	var out, errOut bytes.Buffer
 
 	app, d, r := newDaemonCreateApp(t, &out)

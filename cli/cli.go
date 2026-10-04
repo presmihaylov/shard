@@ -428,6 +428,15 @@ func (a App) client() (*client.Client, error) {
 	return c, nil
 }
 
+// localClient is the socket for a verb no front forwards, so a remote target fails here, before any dial, and never as a bare 403.
+func (a App) localClient(verb string) (*client.Client, error) {
+	if a.Remote != "" {
+		return nil, fmt.Errorf("shard %s runs on the daemon host only, over its socket, and cannot reach %s; unset --remote and %s to run it there", verb, a.Remote, client.RemoteEnv)
+	}
+
+	return a.client()
+}
+
 // version prints this binary's line first, so it is on the screen even when no daemon answers.
 func (a App) version(ctx context.Context, args []string) error {
 	rest, format, err := parseFormatArgs("version", args, formatTable)
