@@ -65,7 +65,7 @@ def sync_detailed(
     client: AuthenticatedClient | Client,
     body: CopyRequest | Unset = UNSET,
 ) -> Response[Error | Sandbox]:
-    """Fork a sandbox into a new one"""
+    """create a sandbox from a running sandbox's memory and files"""
 
     kwargs = _get_kwargs(
         id=id,
@@ -85,7 +85,7 @@ def sync(
     client: AuthenticatedClient | Client,
     body: CopyRequest | Unset = UNSET,
 ) -> Error | Sandbox | None:
-    """Fork a sandbox into a new one"""
+    """create a sandbox from a running sandbox's memory and files"""
 
     return sync_detailed(
         id=id,
@@ -100,7 +100,7 @@ async def asyncio_detailed(
     client: AuthenticatedClient | Client,
     body: CopyRequest | Unset = UNSET,
 ) -> Response[Error | Sandbox]:
-    """Fork a sandbox into a new one"""
+    """create a sandbox from a running sandbox's memory and files"""
 
     kwargs = _get_kwargs(
         id=id,
@@ -118,7 +118,7 @@ async def asyncio(
     client: AuthenticatedClient | Client,
     body: CopyRequest | Unset = UNSET,
 ) -> Error | Sandbox | None:
-    """Fork a sandbox into a new one"""
+    """create a sandbox from a running sandbox's memory and files"""
 
     return (
         await asyncio_detailed(

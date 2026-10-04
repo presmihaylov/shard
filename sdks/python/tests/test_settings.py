@@ -155,6 +155,7 @@ def test_stream_failure_takes_the_status_of_its_code() -> None:
     assert isinstance(err, ConflictError)
     assert err.status == 409
     assert isinstance(failure_error("no_such_code", "m"), ServerError)
+    assert failure_error("timeout", "the provider did not answer").status == 504
 
 
 def test_capture_keeps_the_newest_bytes_across_streams() -> None:

@@ -24,15 +24,15 @@ const (
 
 // Destination is where a rule applies.
 type Destination struct {
-	Kind  DestinationKind `json:"kind"`
+	Kind  DestinationKind `json:"kind" enum:"cidr,domain,domain-suffix,group"`
 	Value string          `json:"value"`
 }
 
 // Rule is one line of a policy. Protocol empty means every protocol, and then Ports is empty too.
 type Rule struct {
-	Action      Action      `json:"action"`
+	Action      Action      `json:"action" enum:"allow,deny"`
 	Destination Destination `json:"destination"`
-	Protocol    string      `json:"protocol,omitempty"`
+	Protocol    string      `json:"protocol,omitempty" enum:"tcp,udp" doc:"Absent for a rule over every protocol."`
 	Ports       []int       `json:"ports,omitempty"`
 }
 

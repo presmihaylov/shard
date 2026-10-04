@@ -11,6 +11,7 @@ import (
 	"os"
 	"path/filepath"
 	"sync"
+	"syscall"
 	"time"
 
 	"github.com/presmihaylov/shard/pkg/store"
@@ -227,20 +228,24 @@ func appendEntry(path string, e ledgerEntry) error {
 }
 
 // readEntries reads every record from the ledger; a missing file is an empty ledger, not an error.
-func readEntries(path string) ([]ledgerEntry, error) {
-	if err := checkTokensMode(path); err != nil {
-		return nil, err
-	}
-
-	f, err := os.Open(path)
+func readEntries(path string) (entries []ledgerEntry, err error) {
+	f, _, err := openLedger(path)
 	if errors.Is(err, os.ErrNotExist) {
 		return nil, nil
 	}
 	if err != nil {
-		return nil, fmt.Errorf("open the ledger %s: %w", path, err)
+		return nil, err
 	}
-	defer f.Close()
+	defer func() {
+		if closeErr := f.Close(); closeErr != nil {
+			err = errors.Join(err, fmt.Errorf("close the ledger %s: %w", path, closeErr))
+		}
+	}()
 
+	return scanEntries(f, path)
+}
+
+func scanEntries(f *os.File, path string) ([]ledgerEntry, error) {
 	var entries []ledgerEntry
 	scanner := bufio.NewScanner(f)
 	scanner.Buffer(make([]byte, 0, 64*1024), 4*1024*1024)
@@ -261,6 +266,26 @@ func readEntries(path string) ([]ledgerEntry, error) {
 	}
 
 	return entries, nil
+}
+
+func openLedger(path string) (*os.File, os.FileInfo, error) {
+	// A path can become a FIFO between its stat and its open.
+	f, err := os.OpenFile(path, os.O_RDONLY|syscall.O_NONBLOCK, 0)
+	if err != nil {
+		return nil, nil, fmt.Errorf("open the ledger %s: %w", path, err)
+	}
+	info, err := f.Stat()
+	if err != nil {
+		return nil, nil, errors.Join(fmt.Errorf("stat the ledger %s: %w", path, err), f.Close())
+	}
+	if !info.Mode().IsRegular() {
+		return nil, nil, errors.Join(fmt.Errorf("the ledger %s is not a regular file", path), f.Close())
+	}
+	if info.Mode().Perm()&0o007 != 0 {
+		return nil, nil, errors.Join(fmt.Errorf("the ledger %s is at mode %04o, which everyone on the host can read", path, info.Mode().Perm()), f.Close())
+	}
+
+	return f, info, nil
 }
 
 // writeEntries rewrites the whole ledger atomically, which revoke does to flip one record in place.
@@ -320,8 +345,8 @@ func newLedger(path string) (*ledger, error) {
 }
 
 // refresh reloads the ledger when its file changed; a file that was there and vanished refuses every request.
-func (l *ledger) refresh() error {
-	info, err := os.Stat(l.path)
+func (l *ledger) refresh() (err error) {
+	f, info, err := openLedger(l.path)
 	if errors.Is(err, os.ErrNotExist) {
 		l.mu.RLock()
 		loaded := l.loaded
@@ -333,8 +358,13 @@ func (l *ledger) refresh() error {
 		return nil
 	}
 	if err != nil {
-		return fmt.Errorf("stat the ledger %s: %w", l.path, err)
+		return err
 	}
+	defer func() {
+		if closeErr := f.Close(); closeErr != nil {
+			err = errors.Join(err, fmt.Errorf("close the ledger %s: %w", l.path, closeErr))
+		}
+	}()
 
 	l.mu.RLock()
 	fresh := l.loaded && info.ModTime().Equal(l.modTime) && info.Size() == l.size
@@ -343,7 +373,7 @@ func (l *ledger) refresh() error {
 		return nil
 	}
 
-	entries, err := readEntries(l.path)
+	entries, err := scanEntries(f, l.path)
 	if err != nil {
 		return err
 	}

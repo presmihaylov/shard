@@ -45,9 +45,9 @@ apps.stop_keeps_sandbox
 apps.restart_policy
 logs.read
 logs.follow
-logs.network_read
-logs.network_follow
+logs.egress_read
+logs.egress_follow
 secrets.set_list_remove
-secrets.grant_revoke
+secrets.grant_ungrant
 policies.set_get_list_remove
-policies.assign_clear
+policies.attach_detach

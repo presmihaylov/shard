@@ -95,5 +95,8 @@ func (h *Handler) stopApp(ctx context.Context, in *sandboxBody[appStopRequest]) 
 // describeAttachApp names the two answers of attachApp: the exit, or the output and then the exit over a WebSocket.
 func describeAttachApp(registry huma.Registry, op *huma.Operation) {
 	op.Responses["200"] = response("How the app ended, once it ends.", "application/json", schemaOf[models.AppExit](registry))
-	op.Responses["101"] = upgrade("A WebSocket attach. Each binary message leads with its stream byte: 1 the output from the start of the log, 3 the AppExit, 5 a FailureMessage.")
+	op.Responses["101"] = upgrade("A WebSocket attach. Each binary message leads with its stream byte: 1 the output from the start of the log, 3 the AppExit, 5 a FailureMessage.", map[string]*huma.Schema{
+		"3": schemaOf[models.AppExit](registry),
+		"5": schemaOf[FailureMessage](registry),
+	})
 }

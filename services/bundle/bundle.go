@@ -286,11 +286,11 @@ func (s *Service) runtimeSpec(spec models.SandboxSpec, b Bundle) (*specs.Spec, e
 			Args: argv,
 			Env:  Environment(spec.Env),
 			Cwd:  firstNonEmpty(spec.WorkDir, "/"),
+			// No Inheritable, as containerd since CVE-2022-24769: a file's inheritable bits then find nothing to raise.
 			Capabilities: &specs.LinuxCapabilities{
-				Bounding:    defaultCapabilities,
-				Effective:   defaultCapabilities,
-				Permitted:   defaultCapabilities,
-				Inheritable: defaultCapabilities,
+				Bounding:  defaultCapabilities,
+				Effective: defaultCapabilities,
+				Permitted: defaultCapabilities,
 			},
 			// The supervisor must not gain privileges the sandbox did not grant it.
 			NoNewPrivileges: true,
