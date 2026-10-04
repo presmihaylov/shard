@@ -13,7 +13,7 @@ import (
 
 type archiveInput struct {
 	ID   string `path:"id" doc:"The sandbox id or name."`
-	Path string `query:"path" doc:"The absolute guest directory."`
+	Path string `query:"path" required:"true" doc:"The absolute guest directory."`
 	User string `query:"user" doc:"Who unpacks and owns the files; none is the entrypoint's user."`
 }
 

@@ -49,6 +49,7 @@ export class APIError extends ShardError {
     readonly status: number,
     readonly code: string,
     readonly detail: string,
+    readonly holders?: string[],
   ) {
     super(code ? `${status} ${code}: ${detail}` : `${status}: ${detail}`);
   }
@@ -75,7 +76,7 @@ export class UnsupportedError extends APIError {}
 /** ServerError is a 5xx: the daemon or the provider failed. */
 export class ServerError extends APIError {}
 
-type APIErrorClass = new (status: number, code: string, detail: string) => APIError;
+type APIErrorClass = new (status: number, code: string, detail: string, holders?: string[]) => APIError;
 
 const byStatus: ReadonlyMap<number, APIErrorClass> = new Map([
   [400, InvalidRequestError],
@@ -113,12 +114,12 @@ const codeStatus: ReadonlyMap<string, number> = new Map([
 
 /** apiError classifies a refusal by the daemon's code, then by its status. */
 export function apiError(status: number, body: Uint8Array): APIError | CommandNotStartedError {
-  const { code, detail, exitCode } = parseBody(body);
+  const { code, detail, exitCode, holders } = parseBody(body);
   if (code === "command_not_started" && exitCode !== undefined) {
     return new CommandNotStartedError(exitCode, detail);
   }
 
-  return classified(status, code, detail);
+  return classified(status, code, detail, holders);
 }
 
 /** statusError classifies a refusal that came with no body, as the answer to a HEAD. */
@@ -131,16 +132,16 @@ export function failureError(code: string, detail: string): APIError {
   return classified(codeStatus.get(code) ?? 500, code, detail);
 }
 
-function classified(status: number, code: string, detail: string): APIError {
+function classified(status: number, code: string, detail: string, holders?: string[]): APIError {
   if (code === "unsupported") {
-    return new UnsupportedError(status, code, detail);
+    return new UnsupportedError(status, code, detail, holders);
   }
   const Class = byStatus.get(status) ?? (status >= 500 ? ServerError : APIError);
 
-  return new Class(status, code, detail);
+  return new Class(status, code, detail, holders);
 }
 
-function parseBody(body: Uint8Array): { code: string; detail: string; exitCode?: number } {
+function parseBody(body: Uint8Array): { code: string; detail: string; exitCode?: number; holders?: string[] } {
   let decoded: unknown;
   try {
     decoded = JSON.parse(new TextDecoder("utf-8", { fatal: true }).decode(body));
@@ -156,6 +157,7 @@ function parseBody(body: Uint8Array): { code: string; detail: string; exitCode?:
     code: typeof err.code === "string" ? err.code : "",
     detail: typeof err.message === "string" ? err.message : "",
     ...(typeof err.exit_code === "number" && Number.isInteger(err.exit_code) ? { exitCode: err.exit_code } : {}),
+    ...(Array.isArray(err.holders) && err.holders.every((holder: unknown): holder is string => typeof holder === "string") ? { holders: err.holders } : {}),
   };
 }
 
