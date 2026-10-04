@@ -528,7 +528,9 @@ class Gate:
         call("GET", "/v0/sandboxes", key=None)
         call("GET", f"/v0/gate-no-such-route-{self.tag}")
         call("POST", "/v0/sandboxes", raw=b"{")
-        call("POST", "/v0/sandboxes", {"image": f"gate.invalid/none-{self.tag}:none"})
+        unpullable = call("POST", "/v0/sandboxes", {"image": f"gate.invalid/none-{self.tag}:none"})
+        if unpullable.status < 300:
+            self.sandboxes.append(str(unpullable.json()["id"]))
         call("POST", f"{box}/exec", {"command": []})
         call("GET", f"{box}/files?path=/gate/no/such/file")
         call("GET", f"{box}/files?path=relative")
