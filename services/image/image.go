@@ -246,6 +246,11 @@ func Canonical(ref string) (string, error) {
 	return registry.Canonical(ref)
 }
 
+// Pinned names ref's repository at digest, the reference a pull restores one image's exact files from.
+func Pinned(ref, digest string) (string, error) {
+	return registry.Pinned(ref, digest)
+}
+
 // List returns every pulled image, ordered by reference.
 func (s *Service) List() ([]Image, error) {
 	cached, err := s.store.List()

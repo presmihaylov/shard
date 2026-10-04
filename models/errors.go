@@ -22,6 +22,9 @@ var ErrExitChannelReplaced = errors.New("exit channel replaced")
 // ErrExecLost is a command that started while the substrate lost its wait on it, so how it ended is unknown.
 var ErrExecLost = errors.New("the substrate lost its wait on the command")
 
+// ErrImageGone is an image whose files left the host while a sandbox still stacks over them.
+var ErrImageGone = errors.New("its image is gone from the host")
+
 // CommandNotStartedError is a command a sandbox refused to start, which is no exit code of that
 // command: it never ran. Code is what a shell answers for the same refusal.
 type CommandNotStartedError struct {

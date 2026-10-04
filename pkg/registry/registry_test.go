@@ -551,3 +551,19 @@ func TestAFetchErrorNamesOnlyTheRegistrysAnswer(t *testing.T) {
 		t.Errorf("public text = %q, want the ref alone with no host path", got)
 	}
 }
+
+// A tag can move after the pull, so only the digest names the files a sandbox stacks over (SHARD-585).
+func TestPinnedNamesTheRepositoryAtTheDigest(t *testing.T) {
+	digest := "sha256:" + strings.Repeat("ab", 32)
+	for ref, want := range map[string]string{
+		"alpine:3.20":                              "index.docker.io/library/alpine@" + digest,
+		"index.docker.io/library/alpine:3.20":      "index.docker.io/library/alpine@" + digest,
+		"localhost:5000/team/app:v1":               "localhost:5000/team/app@" + digest,
+		"index.docker.io/library/alpine@" + digest: "index.docker.io/library/alpine@" + digest,
+	} {
+		got, err := registry.Pinned(ref, digest)
+		if err != nil || got != want {
+			t.Errorf("Pinned(%q) = %q, %v, want %q", ref, got, err, want)
+		}
+	}
+}

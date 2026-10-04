@@ -605,6 +605,16 @@ func Canonical(ref string) (string, error) {
 	return parsed.Name(), nil
 }
 
+// Pinned is ref's repository at digest, so a pull fetches those files whatever a tag in ref names now.
+func Pinned(ref, digest string) (string, error) {
+	parsed, err := parseRef(ref)
+	if err != nil {
+		return "", err
+	}
+
+	return parsed.Context().Digest(digest).Name(), nil
+}
+
 // parseRef also rejects what ParseReference accepts and a later path join would not: a . or .. segment.
 func parseRef(ref string) (name.Reference, error) {
 	parsed, err := name.ParseReference(ref)
