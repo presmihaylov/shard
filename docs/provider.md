@@ -28,7 +28,7 @@ substrate lacks.
 | `create`, `start`, `stop`, `rm`, `clone`, `exec`, `logs`, `inspect` | yes | yes | yes | yes | yes |
 | `pause` | yes | **no** | **no** | Apple silicon on macOS 14+, **no** on 13 or on Intel | yes |
 | `resume` | yes | **no** | **no** | Apple silicon on macOS 14+, **no** on 13 or on Intel | yes |
-| `fork` of a running sandbox | yes | **no** | **no** | **no**, until SHARD-463 | **no**, until SHARD-462 |
+| `fork` of a running sandbox | yes | **no** | **no** | **no**, until SHARD-463 | yes |
 
 ### What a host picks without --provider
 
@@ -197,8 +197,8 @@ Three verbs are optional: `Pause`, `Resume` and `Fork`. `Capabilities` reports o
 optional verb, and it is the only place where one substrate may differ from another. `fork` takes a
 running source and refuses any other state. It freezes the source for a moment, captures its memory
 and files, lets the same runtime run on, and restores the new sandbox from that capture, never from
-an older snapshot (SHARD-457). gVisor forks this way. Firecracker and `vz` refuse fork by name until
-SHARD-462 and SHARD-463 bring the same live fork to them.
+an older snapshot (SHARD-457). gVisor and Firecracker fork this way. `vz` refuses fork by name until
+SHARD-463 brings the same live fork to it.
 
 ### What vz does and does not do
 
@@ -284,8 +284,10 @@ holds, and swaps the two in one step, so no interruption leaves the sandbox with
 stays, so `inspect` reports the sandbox stopped, and the snapshot is what brings it back. `resume`
 loads that snapshot into a fresh vmm, over its own reflinked copy of the overlay and a reflinked
 copy of the memory file in its jail, and it does not consume the snapshot. Firecracker maps the
-memory private, so the vmm never writes to that copy. `fork` refuses by name on Firecracker until
-SHARD-462, which builds the live fork on this restore. Firecracker cannot pause the wall clock, so
+memory private, so the vmm never writes to that copy. `fork` builds on this restore (SHARD-462). It
+freezes and stops the running source as `pause` does, writes the same snapshot into the fork's own
+directory, and runs the source on in the same vmm. The fork loads that capture, and the capture then
+goes. Firecracker cannot pause the wall clock, so
 the guest's clock is corrected at the load on x86_64, where it reads kvm-clock, and nowhere else.
 Every load of one snapshot also wakes with the same guest crng key, and the kernel has no vmgenid
 driver. So each `resume` sends the guest 32 bytes of host entropy, and `shard-init` rekeys from them
@@ -297,9 +299,22 @@ it stops the vCPUs, and every restore reseeds the guest before it thaws it (SHAR
 an overlay, which takes no `FIFREEZE`, so the freeze holds its ext4 upper disk instead. A guest that
 cannot freeze refuses the pause, and the VM runs on. The thaw paths are the ones that
 `docs/provider-vz.md` lists for `vz`: a failed pause, a daemon interrupted between the freeze and
-the snapshot, and a control connection that dropped with the freeze's answer. A VM booted by an
+the snapshot, and a control connection that dropped with the freeze's answer. A daemon interrupted
+inside a fork's capture leaves a marker beside the source, so the next daemon resumes and thaws the
+source, and never ends it as it ends a pause interrupted after its install. A VM booted by an
 older shard runs a `shard-init` whose freeze cannot reach the upper disk. Its state says so, and the
 pause is refused before any freeze, with an error that says to restart the sandbox first.
+
+The snapshot create resets every vsock stream of the guest. So the daemon dials the source's control
+and logs streams again after a fork, and thaws the guest over the new control stream (SHARD-462). An
+`exec` that runs across the capture loses its stream. It fails with an error that names the verb,
+and its command runs on in the sandbox with no reader. An `exec` that starts while the freeze holds
+is refused with `a fork holds the sandbox frozen, and nothing starts in it until that ends: run the
+command again`. Nothing queues it, so the caller runs it again once the verb returns. A restart of
+the entrypoint waits out the freeze.
+If the guest takes no new control stream within 30 s, the fork fails with an error that says the
+source stays frozen. `stop` and `rm` of that source still work, the daemon dials on until the guest
+answers and thaws it, and the next daemon start thaws it from the capture marker.
 
 A `pause` takes a Firecracker Diff snapshot, which writes only the pages that the guest wrote since
 the vmm booted or loaded (SHARD-450, SHARD-451, SHARD-458). Every boot and every load turns on
@@ -310,7 +325,8 @@ into that copy, never into the file that it maps. So a pause reads nothing back 
 snapshot, and a page that the guest only read is not written again. The log is whole only for a vmm
 that this daemon booted or loaded and has not snapshotted since. A vmm that a restarted daemon
 adopted, or one whose last pause failed at or after its snapshot, takes a Full snapshot over no
-copy, and the pause after its next resume is a Diff again. A pause still refuses a vmm whose cgroup
+copy, and the pause after its next resume is a Diff again. A fork's capture reads and clears the
+source's log as well, so the source's next pause takes a Full. A pause still refuses a vmm whose cgroup
 it cannot hold at `memory.swap.max` 0, and names the cgroup; every boot sets that value. Only
 firecracker 1.13.0 and newer turn the log on at a load, so the daemon refuses an older
 `firecracker` at its start, and names its version. Diff snapshots are a developer preview in

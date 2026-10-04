@@ -58,6 +58,16 @@ const (
 	snapshotsFile = "snapshots"
 	// refuseSnapshotFile, while it exists, has the vmm refuse every snapshot create, as one whose disk is full does.
 	refuseSnapshotFile = "refuse-snapshot"
+	// refuseResumeFile, while it exists, has the vmm refuse every resume of its vCPUs.
+	refuseResumeFile = "refuse-resume"
+	// severOnResetFile, while it exists, has a snapshot create's reset sever the transport too, until a USR2 lets streams through again.
+	severOnResetFile = "sever-on-reset"
+	// execInFreezeFile, once a test writes a sandbox id into it, has the next pause start an exec in the frozen guest first, and write how it ended to execResultFile.
+	execInFreezeFile = "exec-in-freeze"
+	execResultFile   = "exec-result"
+	// holdSnapshotFile, while it exists, has a snapshot create hold the API as a large memory write does, and write heldSnapshotFile once it holds.
+	holdSnapshotFile = "hold-snapshot"
+	heldSnapshotFile = "held-snapshot"
 	// fakeVersionEnv is the version the fake vmm names on --version, 1.17.0 when unset.
 	fakeVersionEnv = "SHARD_FAKE_FIRECRACKER_VERSION"
 )
@@ -205,7 +215,7 @@ func fakeVMM() error {
 	if err != nil {
 		return err
 	}
-	f := &fake{dir: os.Getenv(fakeStateEnv), state: "Not started", streams: map[net.Conn]struct{}{}, sending: map[chan struct{}]struct{}{}}
+	f := &fake{dir: os.Getenv(fakeStateEnv), state: "Not started", streams: map[net.Conn]*stream{}, sending: map[chan struct{}]struct{}{}}
 	server := &http.Server{Handler: f} //nolint:gosec // a fake behind a unix socket needs no timeouts
 	served := make(chan error, 1)
 	go func() { served <- server.Serve(listener) }()
@@ -243,7 +253,7 @@ type fake struct {
 	// drives is every drive put, in order, which with the boot args is what a test reads back from bootFile.
 	drives []json.RawMessage
 	// streams is every host connection through the vsock device, so a drop can end them all; severed refuses the ones after it.
-	streams map[net.Conn]struct{}
+	streams map[net.Conn]*stream
 	severed bool
 	// frozen is what the guest was last told, freeze or thaw, which a snapshot keeps the way its memory would.
 	frozen bool
@@ -373,10 +383,16 @@ func (f *fake) patchVM(body []byte) (string, error) {
 	}
 	switch v.State {
 	case "Paused":
+		if err := f.execInFreeze(); err != nil {
+			return "", err
+		}
 		f.state = "Paused"
 
 		return "", f.signal(syscall.SIGSTOP)
 	case "Resumed":
+		if _, err := os.Stat(filepath.Join(f.dir, refuseResumeFile)); err == nil {
+			return "Cannot resume microVM: refused by the test", nil
+		}
 		f.state = "Running"
 
 		return "", f.signal(syscall.SIGCONT)
@@ -400,6 +416,9 @@ func (f *fake) createSnapshot(body []byte) (string, error) {
 	}
 	if _, err := os.Stat(filepath.Join(f.dir, refuseSnapshotFile)); err == nil {
 		return "Cannot create snapshot: No space left on device", nil
+	}
+	if err := f.holdSnapshot(); err != nil {
+		return "", err
 	}
 	encoded, err := json.Marshal(vmstate{Boot: f.boot, Drives: f.drives, Vsock: f.vsock, Frozen: f.frozen})
 	if err != nil {
@@ -426,8 +445,85 @@ func (f *fake) createSnapshot(body []byte) (string, error) {
 	if c.Type != "Diff" {
 		found = nil
 	}
+	if err := os.WriteFile(memory, append(found, c.Type+"\n"...), 0o644); err != nil {
+		return "", err
+	}
 
-	return "", os.WriteFile(memory, append(found, c.Type+"\n"...), 0o644)
+	return "", f.reset()
+}
+
+// holdSnapshot keeps f.mu, and so every request, for as long as holdSnapshotFile stays.
+func (f *fake) holdSnapshot() error {
+	hold := filepath.Join(f.dir, holdSnapshotFile)
+	_, err := os.Stat(hold)
+	if errors.Is(err, fs.ErrNotExist) {
+		return nil
+	}
+	if err != nil {
+		return err
+	}
+	if err := os.WriteFile(filepath.Join(f.dir, heldSnapshotFile), []byte("held\n"), 0o600); err != nil {
+		return err
+	}
+	for {
+		_, err := os.Stat(hold)
+		if errors.Is(err, fs.ErrNotExist) {
+			return nil
+		}
+		if err != nil {
+			return err
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+}
+
+// reset kills the guest end of every stream, as the TRANSPORT_RESET of a snapshot create does; f.mu is held.
+func (f *fake) reset() error {
+	var errs []error
+	for _, s := range f.streams {
+		if s.guest == nil || s.reset.Swap(true) {
+			continue
+		}
+		errs = append(errs, s.guest.Close())
+	}
+	_, err := os.Stat(filepath.Join(f.dir, severOnResetFile))
+	if errors.Is(err, fs.ErrNotExist) {
+		return errors.Join(errs...)
+	}
+	if err != nil {
+		return errors.Join(append(errs, err)...)
+	}
+	f.severed = true
+
+	return errors.Join(errs...)
+}
+
+// execInFreeze starts the exec a test asked for in the guest, which the freeze before the pause holds.
+func (f *fake) execInFreeze() error {
+	path := filepath.Join(f.dir, execInFreezeFile)
+	id, err := os.ReadFile(path)
+	if errors.Is(err, fs.ErrNotExist) {
+		return nil
+	}
+	if err != nil {
+		return err
+	}
+	if err := os.Remove(path); err != nil {
+		return err
+	}
+	dial := func(ctx context.Context, port uint32) (net.Conn, error) {
+		var d net.Dialer
+
+		return d.DialContext(ctx, "unix", filepath.Join(f.dir, "guest", fmt.Sprintf("%d.sock", port)))
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	result := "ran"
+	if _, err := supervisor.Exec(ctx, dial, string(id), supervisor.ExecHeader{Argv: []string{"/bin/sh", "-c", "exit 0"}, WorkDir: "/"}, models.ExecSpec{}); err != nil {
+		result = err.Error()
+	}
+
+	return os.WriteFile(filepath.Join(f.dir, execResultFile), []byte(result), 0o600)
 }
 
 // loadSnapshot brings a snapshot up in this fresh vmm: the state names the devices by their paths in the jail, and the overrides the tap and the vsock.
@@ -589,7 +685,7 @@ func refreeze(dir string) error {
 		return errors.Join(err, control.Close())
 	}
 
-	return errors.Join(control.Freeze(context.Background()), control.Close())
+	return errors.Join(control.Freeze(context.Background(), models.VerbPause), control.Close())
 }
 
 // stop is what a signal does to firecracker: the VM is gone with it, which here is the guest killed; false when none was started.
@@ -614,16 +710,31 @@ func (f *fake) drop(severed bool) {
 	}
 }
 
-// hold registers a stream for drop, and says whether the transport still carries any.
-func (f *fake) hold(conn net.Conn) bool {
+// stream is one host connection through the vsock device, and the guest end it was put through to.
+type stream struct {
+	guest net.Conn
+	// reset is a snapshot create that killed the guest end, after which the host end closes only once the host writes, as firecracker's does.
+	reset atomic.Bool
+}
+
+// hold registers a stream for drop, or nil once the transport carries none.
+func (f *fake) hold(conn net.Conn) *stream {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	if f.severed {
-		return false
+		return nil
 	}
-	f.streams[conn] = struct{}{}
+	s := &stream{}
+	f.streams[conn] = s
 
-	return true
+	return s
+}
+
+// through puts a stream through to its guest end, which a reset from then on kills.
+func (f *fake) through(s *stream, guest net.Conn) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	s.guest = guest
 }
 
 func (f *fake) let(conn net.Conn) {
@@ -650,7 +761,8 @@ func (f *fake) proxy(conn net.Conn, dir string) {
 	if err != nil {
 		return
 	}
-	if !f.hold(conn) {
+	s := f.hold(conn)
+	if s == nil {
 		return
 	}
 	defer f.let(conn)
@@ -660,6 +772,7 @@ func (f *fake) proxy(conn net.Conn, dir string) {
 		return
 	}
 	defer guest.Close()
+	f.through(s, guest)
 	if _, err := fmt.Fprintf(conn, "OK %d\n", port); err != nil {
 		return
 	}
@@ -690,7 +803,10 @@ func (f *fake) proxy(conn net.Conn, dir string) {
 	f.mu.Unlock()
 	go func() {
 		_, _ = io.Copy(toHost, answers)
-		closeWrite(conn)
+		// A reset leaves the host end open, so the host hears of it on its next write only, as firecracker's muxer does.
+		if !s.reset.Load() {
+			closeWrite(conn)
+		}
 		f.mu.Lock()
 		delete(f.sending, sent)
 		f.mu.Unlock()

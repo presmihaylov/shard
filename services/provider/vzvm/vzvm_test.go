@@ -1893,7 +1893,7 @@ func cutPause(t *testing.T, recorded bool) (*harness, models.SandboxSpec, int) {
 	if _, err := control.Next(); err != nil {
 		t.Fatalf("read the guest's state: %v", err)
 	}
-	if err := errors.Join(control.Freeze(t.Context()), control.Close()); err != nil {
+	if err := errors.Join(control.Freeze(t.Context(), models.VerbPause), control.Close()); err != nil {
 		t.Fatalf("freeze the guest's root: %v", err)
 	}
 	if _, err := client.Pause(); err != nil {

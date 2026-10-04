@@ -185,8 +185,10 @@ func (c *Control) Reseed(ctx context.Context) error {
 	return c.request(ctx, Message{Kind: KindReseed, Seed: seed})
 }
 
-// Freeze flushes the guest's root and holds every write to it, so a disk copied while the VM is paused is whole.
-func (c *Control) Freeze(ctx context.Context) error { return c.request(ctx, Message{Kind: KindFreeze}) }
+// Freeze flushes the guest's root and holds every write to it, so a disk copied while the VM is paused is whole; verb is what holds it.
+func (c *Control) Freeze(ctx context.Context, verb string) error {
+	return c.request(ctx, Message{Kind: KindFreeze, Verb: verb})
+}
 
 // Thaw lets the guest's root take writes again; a root that is not frozen is already thawed.
 func (c *Control) Thaw(ctx context.Context) error { return c.request(ctx, Message{Kind: KindThaw}) }

@@ -11,7 +11,6 @@ import (
 	"path/filepath"
 	"strings"
 	"sync"
-	"sync/atomic"
 	"syscall"
 	"time"
 
@@ -33,8 +32,6 @@ type transport struct {
 	logs     *logSink
 	// rekey reseeds the guest crng; nil in a test on a Linux host, whose crng is the host's own.
 	rekey func([]byte) error
-	// frozen is the guest held for a pause; a snapshot keeps it, so the replay tells a restoring host to thaw.
-	frozen atomic.Bool
 	// freezing puts one freeze and its answer before the next, so a freeze undone for want of a host never undoes a later one.
 	freezing sync.Mutex
 	// bound is the sandbox cgroup a freeze stops before it holds the root; nil off a VM.
@@ -231,7 +228,7 @@ func (t *transport) attach(conn net.Conn) error {
 		}
 		count := t.g.count
 		count.Ended = count.Ended && t.endSent
-		state := supervisor.Message{Kind: supervisor.KindState, Ready: t.g.started, Exit: t.g.lastExit, Restarts: &count, OOM: t.g.oom, Frozen: t.frozen.Load(), Logs: supervisor.LogsVersion, FreezesOverlay: true}
+		state := supervisor.Message{Kind: supervisor.KindState, Ready: t.g.started, Exit: t.g.lastExit, Restarts: &count, OOM: t.g.oom, Frozen: t.g.frozen.Load() != nil, Logs: supervisor.LogsVersion, FreezesOverlay: true}
 		err = supervisor.WriteMessage(conn, state)
 		if err != nil {
 			t.control = nil
@@ -337,7 +334,7 @@ func (t *transport) serveControl(conn net.Conn) {
 			return
 		}
 		if m.Kind == supervisor.KindFreeze {
-			t.freeze(conn, m.ID)
+			t.freeze(conn, m.ID, m.Verb)
 
 			continue
 		}
@@ -372,14 +369,11 @@ func (t *transport) answer(conn net.Conn, id int, err error) bool {
 }
 
 // freeze holds the root for a pause; a host replaced before the answer may have read the root unfrozen off its replay, so the freeze is undone.
-func (t *transport) freeze(conn net.Conn, id int) {
+func (t *transport) freeze(conn net.Conn, id int, verb string) {
 	t.freezing.Lock()
 	defer t.freezing.Unlock()
 
-	err := freezeGuest(t.bound, t.root)
-	if err == nil {
-		t.frozen.Store(true)
-	}
+	err := t.hold(verb, func() error { return freezeGuest(t.bound, t.root) })
 	if t.answer(conn, id, err) || err != nil {
 		return
 	}
@@ -454,9 +448,6 @@ func (t *transport) forceStop(conn net.Conn, id int) {
 	defer t.freezing.Unlock()
 
 	err := t.killAndFreeze()
-	if err == nil {
-		t.frozen.Store(true)
-	}
 	if t.answer(conn, id, err) || err != nil {
 		return
 	}
@@ -467,19 +458,32 @@ func (t *transport) forceStop(conn net.Conn, id int) {
 
 // killAndFreeze kills the entrypoint, holds every exec and child so none dirties the disk, then flushes it before the cut.
 func (t *transport) killAndFreeze() error {
-	var stopErr error
-	t.g.run(func() {
+	err := t.hold("stop", func() error {
 		// A gone entrypoint ends nothing here: the published freeze, not a power off, is what a lost cut recovers from.
-		_, stopErr = t.g.stop(syscall.SIGKILL)
+		if _, err := t.g.stop(syscall.SIGKILL); err != nil {
+			return err
+		}
+
+		return freezeBound(t.bound)
 	})
-	if stopErr != nil {
-		return stopErr
-	}
-	if err := freezeBound(t.bound); err != nil {
+	if err != nil {
 		return err
 	}
 
 	return syncDisk()
+}
+
+// hold freezes on the guest's goroutine and marks the verb there, so no child start lands between the two and blocks it.
+func (t *transport) hold(verb string, freeze func() error) error {
+	var err error
+	t.g.run(func() {
+		err = freeze()
+		if err == nil {
+			t.g.frozen.Store(&verb)
+		}
+	})
+
+	return err
 }
 
 // thaw lets the root take writes before the guest's processes run again, so none wakes into a held write.
@@ -487,7 +491,7 @@ func (t *transport) thaw() error {
 	if err := errors.Join(thawRoot(t.root), thawBound(t.bound)); err != nil {
 		return err
 	}
-	t.frozen.Store(false)
+	t.g.frozen.Store(nil)
 
 	return nil
 }

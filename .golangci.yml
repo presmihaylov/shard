@@ -105,6 +105,10 @@ formatters:
   enable:
     - gofmt
     - goimports
+  exclusions:
+    # A patched upstream copy stays as upstream wrote it, so its diff shows only the patch.
+    paths:
+      - third_party/
   settings:
     goimports:
       local-prefixes:

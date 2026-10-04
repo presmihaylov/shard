@@ -8,9 +8,9 @@ sandbox, Firecracker microVMs on a host with `/dev/kvm`, and Virtualization.fram
 resident `shard daemon` owns the state and serves it over a REST API on a unix socket. The CLI is a
 thin client of that socket, and each command runs one verb.
 
-**Status: pre-alpha.** Every verb runs on gVisor. Firecracker and `vz` on an Apple silicon Mac with
-macOS 14 or later run every verb but fork, which comes to them with SHARD-462 and SHARD-463. Sysbox
-and runc refuse pause, resume and fork, and run every other verb.
+**Status: pre-alpha.** Every verb runs on gVisor and Firecracker. `vz` on an Apple silicon Mac with
+macOS 14 or later runs every verb but fork, which comes to it with SHARD-463. Sysbox and runc refuse
+pause, resume and fork, and run every other verb.
 Every verb talks to the daemon, so the daemon must be up. See `docs/daemon.md`.
 
 ## Providers
@@ -122,7 +122,8 @@ of the writable layer as it was at the pause.
 `shard fork` starts a new sandbox from a running one. It freezes the source for a moment, captures
 its memory and its writable layer, lets the same sandbox run on, and starts the new one from that
 capture, never from an older snapshot. Each fork takes a capture of its own, so two forks share
-nothing, and the capture is never a snapshot you can name. Only gVisor forks today (SHARD-457).
+nothing, and the capture is never a snapshot you can name. gVisor and Firecracker fork today
+(SHARD-457, SHARD-462).
 
 `shard clone` takes no memory image at all. It copies every file that a stopped or paused sandbox
 kept, `/tmp` included, and runs the entrypoint again from the beginning under a new id and address,

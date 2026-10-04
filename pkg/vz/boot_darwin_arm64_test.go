@@ -14,6 +14,7 @@ import (
 	"regexp"
 	"strconv"
 	"strings"
+	"sync"
 	"syscall"
 	"testing"
 	"time"
@@ -277,6 +278,68 @@ func TestASecondStartOnTheSameSocketIsRefusedAndTheFirstVMStays(t *testing.T) {
 		t.Fatalf("Stop: %v", err)
 	}
 	awaitExit(t, info.PID)
+}
+
+// Code-Hex/vz closed each vsock fd a second time, so a burst of connects closed the shim's own socket and it went silent (SHARD-462).
+func TestABurstOfConnectsKeepsTheShimAnswering(t *testing.T) {
+	f := prepare(t)
+	cfg := config(t, f)
+	client, _ := start(t, f.shim, cfg)
+	guestPID(t, client)
+
+	var mu sync.Mutex
+	failures := map[string]int{}
+	fail := func(err error) {
+		mu.Lock()
+		defer mu.Unlock()
+		failures[err.Error()]++
+	}
+	stop := time.Now().Add(10 * time.Second)
+	var wg sync.WaitGroup
+	for range 6 {
+		wg.Go(func() {
+			for time.Now().Before(stop) {
+				if err := askPID(client); err != nil {
+					fail(err)
+				}
+			}
+		})
+	}
+	wg.Go(func() {
+		for ; time.Now().Before(stop); time.Sleep(50 * time.Millisecond) {
+			ctx, cancel := context.WithTimeout(t.Context(), 5*time.Second)
+			_, err := client.Await(ctx)
+			cancel()
+			if err != nil {
+				fail(fmt.Errorf("state: %w", err))
+			}
+		}
+	})
+	wg.Wait()
+
+	if len(failures) == 0 {
+		return
+	}
+	b, err := os.ReadFile(strings.TrimSuffix(cfg.Console, ".log") + ".shim.log")
+	if err != nil {
+		t.Fatalf("the shim failed under a burst of connects: %v, and its log is unreadable: %v", failures, err)
+	}
+	t.Fatalf("the shim failed under a burst of connects: %v\nits log ends with: %s", failures, tailOf(string(b)))
+}
+
+// askPID is one connect, one answer and one close: the churn that hands a closed fd number to the next open.
+func askPID(client *Client) error {
+	conn, err := client.Connect(guestPort)
+	if err != nil {
+		return err
+	}
+	defer conn.Close()
+	if err := conn.SetReadDeadline(time.Now().Add(5 * time.Second)); err != nil {
+		return err
+	}
+	_, err = bufio.NewReader(conn).ReadString('\n')
+
+	return err
 }
 
 // The framework keeps the descriptors and not the files, so a collection in the shim must not close a live device.

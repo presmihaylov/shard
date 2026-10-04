@@ -42,6 +42,15 @@ type machine struct {
 	freezing sync.Mutex
 	// pausing, under freezing, is a pause that froze the guest and still means to snapshot it.
 	pausing bool
+	// resetBy is the verb whose snapshot create reset every vsock stream, so its runAgain dials the control stream again; only that verb's goroutine reads it.
+	resetBy string
+	// holder is the verb that froze the guest, until its runAgain ends; the vmm holds its API while it writes the snapshot, so silence then is that verb at work.
+	holder atomic.Pointer[string]
+	// logsRound ends the logs stream in use, so a stream the reset killed is dialed again.
+	logsRound atomic.Pointer[context.CancelFunc]
+	// execs holds each open exec stream, with the verb that cut it, or "" while it runs.
+	execs   map[net.Conn]string
+	execsMu sync.Mutex
 	// freezesOverlay is what the guest said when attached: an older shard-init fails every freeze on the overlay root.
 	freezesOverlay bool
 	// wholeLog says the vmm's dirty-page log holds every page the guest wrote since this process booted or loaded it, so a Diff is whole (SHARD-458).
@@ -76,6 +85,10 @@ func (p *Provider) lookup(ctx context.Context, id, dir string, r record) (*machi
 	silent, found := p.unadopted[id]
 	p.mu.Unlock()
 	if held {
+		// A probe would queue behind the snapshot and read the verb at work as a vmm that does not answer.
+		if m.holder.Load() != nil {
+			return m, nil
+		}
 		bound := adoptBound
 		// A held vmm already silent has its one request out, so a lookup waits only the floor on it.
 		if p.waiting(m) {
@@ -134,12 +147,16 @@ func (p *Provider) lookup(ctx context.Context, id, dir string, r record) (*machi
 		if restoring {
 			return nil, p.endJudged(id, client, info.PID, r.Jail)
 		}
+		capturing, err := exists(filepath.Join(dir, captureFile))
+		if err != nil {
+			return nil, fmt.Errorf("sandbox %s: read the capture marker: %w", id, err)
+		}
 		frozen, err := p.installed(id)
 		if err != nil {
 			return nil, fmt.Errorf("sandbox %s: %w", id, err)
 		}
-		// A pause cut after its install left the guest frozen beside a complete snapshot, and a resume would run it past that (SHARD-427).
-		if frozen {
+		// A pause cut after its install left the guest frozen beside a complete snapshot, and a resume would run it past that; a capture's source runs on (SHARD-427, SHARD-462).
+		if frozen && !capturing {
 			return nil, p.endJudged(id, client, info.PID, r.Jail)
 		}
 		// A pause cut before its install leaves a paused VM with nothing to stand for it, and its stopped guest answers no handshake.
@@ -155,6 +172,10 @@ func (p *Provider) lookup(ctx context.Context, id, dir string, r record) (*machi
 	// A daemon cut between a restore's attach and its reseed left the guest on the snapshot's key, and no other step gives it one.
 	if err := m.reseed(ctx); err != nil {
 		return nil, errors.Join(err, p.end(ctx, m))
+	}
+	// The attach thawed a guest the cut capture left frozen, so the source runs again and the marker is spent.
+	if err := os.Remove(filepath.Join(dir, captureFile)); err != nil && !errors.Is(err, fs.ErrNotExist) {
+		return nil, fmt.Errorf("sandbox %s: clear the capture marker: %w", id, err)
 	}
 
 	return m, nil
@@ -634,11 +655,12 @@ func (p *Provider) attach(ctx context.Context, id, dir, jail string, client *fca
 func (p *Provider) follow(m *machine) {
 	defer close(m.followed)
 	for {
-		event, err := m.control.Load().Next()
+		control := m.control.Load()
+		event, err := control.Next()
 		if err != nil {
 			// A refused stream waits before the redial, so a guest that floods every stream cannot keep the daemon dialing (SHARD-408).
 			time.Sleep(m.refusals.Note(err))
-			again, err := p.reconnect(m)
+			again, err := p.reconnect(m, control)
 			p.keep(m, err)
 			if again {
 				continue
@@ -723,37 +745,73 @@ func (m *machine) failedAtBoot(event supervisor.Message) error {
 	return fmt.Errorf("sandbox %s: shard-init failed at boot with exit %d: %s", m.id, event.Exit.Code, supervisor.OneLine(event.Error))
 }
 
-// reconnect dials the control stream again after a drop, for as long as the vmm runs the VM: a lost stream is not a dead guest.
-func (p *Provider) reconnect(m *machine) (bool, error) {
-	for m.alive() {
-		conn, err := m.dial(context.Background(), supervisor.ControlPort)
-		if err != nil {
-			time.Sleep(pollInterval)
+// reconnect dials the control stream again after dropped ends, for as long as the vmm runs the VM: a lost stream is not a dead guest.
+func (p *Provider) reconnect(m *machine, dropped *supervisor.Control) (bool, error) {
+	for {
+		m.freezing.Lock()
+		// The snapshot's runAgain put the next stream in, so the follower moves to it and never dials beside it.
+		if m.control.Load() != dropped {
+			m.freezing.Unlock()
 
-			continue
+			return true, nil
 		}
-		control := supervisor.ControlOver(conn)
-		state, err := control.Next()
-		if err != nil || state.Kind != supervisor.KindState {
+		pausing := m.pausing
+		if !pausing && m.alive() {
+			adopted, err := p.dialAgain(m, startGrace)
+			m.freezing.Unlock()
+			if adopted {
+				return true, err
+			}
 			// A dial the vmm answers can still land on a transport mid-reset, so a short read is one more try; a refusal waits longer.
-			p.keep(m, control.Close())
 			time.Sleep(max(pollInterval, m.refusals.Note(err)))
 
 			continue
 		}
-		return p.adopt(m, control, state)
+		m.freezing.Unlock()
+		// A snapshot in flight dials once it runs the VM again; a vmm that no longer answers has nothing left to follow.
+		if !pausing || m.vmState() == "" {
+			return false, nil
+		}
+		time.Sleep(pollInterval)
 	}
-
-	return false, nil
 }
 
-// adopt makes control the machine's stream before the replay is reconciled, so a stop the replay calls for goes down the live one.
+// dialAgain dials the control stream once and takes it in once the guest replays its state there within bound; the caller holds freezing.
+func (p *Provider) dialAgain(m *machine, bound time.Duration) (bool, error) {
+	conn, err := m.dial(context.Background(), supervisor.ControlPort)
+	if err != nil {
+		return false, fmt.Errorf("sandbox %s: dial the control stream: %w", m.id, err)
+	}
+	control := supervisor.ControlOver(conn)
+	type replay struct {
+		state supervisor.Message
+		err   error
+	}
+	replayed := make(chan replay, 1)
+	go func() {
+		state, err := control.Next()
+		replayed <- replay{state, err}
+	}()
+	select {
+	case <-time.After(bound):
+		return false, errors.Join(fmt.Errorf("sandbox %s: the guest replayed no state within %s", m.id, bound), control.Close())
+	case r := <-replayed:
+		if r.err != nil {
+			return false, errors.Join(fmt.Errorf("sandbox %s: read the replayed state: %w", m.id, r.err), control.Close())
+		}
+		if r.state.Kind != supervisor.KindState {
+			return false, errors.Join(fmt.Errorf("sandbox %s: the guest opened with a %q message, not its state", m.id, r.state.Kind), control.Close())
+		}
+
+		return p.adopt(m, control, r.state)
+	}
+}
+
+// adopt makes control the machine's stream before the replay is reconciled, so a stop the replay calls for goes down the live one; the caller holds freezing.
 func (p *Provider) adopt(m *machine, control *supervisor.Control, state supervisor.Message) (bool, error) {
-	m.freezing.Lock()
 	m.swap.Lock()
 	if m.closed.Load() {
 		m.swap.Unlock()
-		m.freezing.Unlock()
 
 		return false, control.Close()
 	}
@@ -761,15 +819,23 @@ func (p *Provider) adopt(m *machine, control *supervisor.Control, state supervis
 	m.swap.Unlock()
 
 	var thawed error
-	// A guest frozen with no pause in flight is a freeze whose answer the drop lost, and nothing else would thaw it.
+	// A guest frozen with no pause in flight is a freeze whose answer the drop lost, or a snapshot run again, and nothing else would thaw it.
 	if state.Frozen && !m.pausing {
 		if err := control.Thaw(context.Background()); err != nil {
 			thawed = fmt.Errorf("sandbox %s: thaw the guest: %w", m.id, err)
 		}
 	}
-	m.freezing.Unlock()
 
-	return true, errors.Join(thawed, p.reconcile(m, state), dropped.Close())
+	return true, errors.Join(thawed, p.reconcile(m, state), closeControl(dropped))
+}
+
+// closeControl ends a control stream that a redial which ran out may have ended already.
+func closeControl(control *supervisor.Control) error {
+	if err := control.Close(); err != nil && !errors.Is(err, net.ErrClosed) {
+		return err
+	}
+
+	return nil
 }
 
 // reconcile lands what the replayed state says happened while no stream was open, so no reader waits for an event that is gone.
@@ -803,12 +869,20 @@ func (p *Provider) reconcile(m *machine, state supervisor.Message) error {
 
 // alive says the vmm still answers with a running VM and this process has not let it go.
 func (m *machine) alive() bool {
+	return m.vmState() == fcapi.StateRunning
+}
+
+// vmState is the state the vmm answers with, or "" once it does not answer or this process let it go.
+func (m *machine) vmState() fcapi.State {
 	if m.closed.Load() {
-		return false
+		return ""
 	}
 	info, err := m.client.State(context.Background())
+	if err != nil {
+		return ""
+	}
 
-	return err == nil && info.State == fcapi.StateRunning
+	return info.State
 }
 
 // followLogs appends what the logs connection carries to the log file, in the protocol the guest's state named, and opens it again after a drop while the VM runs.
@@ -816,7 +890,10 @@ func (p *Provider) followLogs(ctx context.Context, m *machine, logs net.Conn, ou
 	defer out.Close()
 	opened := func(context.Context, uint32) (net.Conn, error) { return logs, nil }
 	for {
-		err := supervisor.Logs(ctx, opened, out, version)
+		round, end := context.WithCancel(ctx)
+		m.logsRound.Store(&end)
+		err := supervisor.Logs(round, opened, out, version)
+		end()
 		if ctx.Err() != nil {
 			return
 		}
@@ -843,6 +920,13 @@ func (p *Provider) followLogs(ctx context.Context, m *machine, logs net.Conn, ou
 	}
 }
 
+// kickLogs ends the logs stream in use, which a host that only reads would wait on for good once a reset killed it.
+func (m *machine) kickLogs() {
+	if end := m.logsRound.Load(); end != nil {
+		(*end)()
+	}
+}
+
 // close ends what this process holds of the vmm; the vmm itself, and its VM, are the stop's business.
 func (m *machine) close() error {
 	m.swap.Lock()
@@ -856,7 +940,7 @@ func (m *machine) close() error {
 		errs = append(errs, m.pinned.Close())
 	}
 	if control := m.control.Load(); control != nil {
-		errs = append(errs, control.Close())
+		errs = append(errs, closeControl(control))
 	}
 
 	return errors.Join(errs...)
@@ -917,7 +1001,7 @@ func (m *machine) status(p *Provider) models.Status {
 		return models.Status{Exists: true, State: models.StateStopped, OOMKilled: oomKilled(m.dir)}
 	}
 	// An unadopted vmm has no stream to the guest, so it reads unresponsive until an adopt attaches it, even past an answer.
-	if m.silent || m.control.Load() == nil {
+	if (m.silent && m.holder.Load() == nil) || m.control.Load() == nil {
 		return models.Status{Exists: true, State: models.StateUnresponsive, PID: m.pid, Reason: fmt.Sprintf("its vmm (pid %d) did not answer within %s", m.pid, adoptBound)}
 	}
 	state := models.StateCreated

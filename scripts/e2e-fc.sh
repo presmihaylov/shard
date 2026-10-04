@@ -224,7 +224,7 @@ STATUS_OUT=$(shard daemon status)
 status_field() { echo "${STATUS_OUT}" | awk -v name="$1" '$1 == name { print $2 }'; }
 expect "$(status_field pid)" "${DAEMON_PID}" "the status names the pid of the daemon this run started"
 expect "$(status_field provider)" "firecracker" "the status names firecracker"
-expect "$(status_field pause) $(status_field resume) $(status_field fork)" "true true false" "firecracker pauses and resumes, and refuses fork until SHARD-462"
+expect "$(status_field pause) $(status_field resume) $(status_field fork)" "true true true" "firecracker pauses, resumes and forks a running sandbox (SHARD-462)"
 
 step "store a secret and a policy"
 SECRET_VALUE="fc-e2e-secret-value-$$-$(date +%s)"
@@ -576,4 +576,4 @@ say "the root, the image, the fstab line, every cgroup of the run and the parent
 
 trap - EXIT
 echo
-echo "e2e PASSED on firecracker: install, xfs bootstrap, daemon up, create, the vmm's host cgroup, logs, exec, an entrypoint exit, an OOM stop and start, network, policy, proxy, daemon restart, reconcile, fork refused by name, pause, resume, stop, clone twice, start, rm, prune, daemon down, and a host with no cgroup, no bridge and no policy table left"
+echo "e2e PASSED on firecracker: install, xfs bootstrap, daemon up, create, the vmm's host cgroup, logs, exec, an entrypoint exit, an OOM stop and start, network, policy, proxy, daemon restart, reconcile, a live fork, pause, resume, stop, clone twice, start, rm, prune, daemon down, and a host with no cgroup, no bridge and no policy table left"
