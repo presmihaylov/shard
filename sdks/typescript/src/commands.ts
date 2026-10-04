@@ -4,6 +4,7 @@ import { ProtocolError, isObject } from "./errors.js";
 import { Session, commandInfo, type CommandInfo, type Handlers } from "./exec.js";
 import type { Transport } from "./transport.js";
 import * as wire from "./wire.js";
+import { endedStream } from "./ws.js";
 
 /** OutputOptions say where a command's output goes: every chunk to the callbacks, the newest bytes to the result. */
 export interface OutputOptions {
@@ -101,8 +102,17 @@ export class Commands {
   /** run answers how the command ended; a nonzero exit is a result, and a command that never started throws. */
   async run(command: string | string[], options: ExecOptions = {}): Promise<ExecResult> {
     const { session, capture, input } = await this.open(command, options);
-    const fed = input === undefined ? Promise.resolve() : feed(session, input);
-    const [exit] = await Promise.all([session.wait(options.signal), fed]);
+    if (input === undefined) {
+      return result(await session.wait(options.signal), capture);
+    }
+    // A failed feed ends the wait too, so the rejected run holds no stream open.
+    const fedFailed = new AbortController();
+    const signal = options.signal ? AbortSignal.any([options.signal, fedFailed.signal]) : fedFailed.signal;
+    const fed = feed(session, input).catch((err: unknown) => {
+      fedFailed.abort(err);
+      throw err;
+    });
+    const [exit] = await Promise.all([session.wait(signal), fed]);
 
     return result(exit, capture);
   }
@@ -111,7 +121,11 @@ export class Commands {
   async start(command: string | string[], options: ExecOptions = {}): Promise<Command> {
     const { session, capture, input } = await this.open(command, options);
     if (input !== undefined) {
-      await feed(session, input);
+      // The caller gets no handle, so nothing else would ever let go of the stream.
+      await feed(session, input).catch((err: unknown) => {
+        session.disconnect();
+        throw err;
+      });
     }
 
     return new Command(session, capture);
@@ -167,7 +181,7 @@ async function feed(session: Session, input: string | Uint8Array): Promise<void>
     await session.writeStdin(input);
     await session.closeStdin();
   } catch (err) {
-    if (await session.endedWithExit()) {
+    if (endedStream(err) && (await session.endedWithExit())) {
       // @shard 2026-10-04: stdin closed by the command; wait() reports the exit
       return;
     }

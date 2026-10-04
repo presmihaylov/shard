@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { afterEach, beforeEach, test } from "node:test";
 import { Commands } from "../src/commands.js";
 import { ConnectionError, NotFoundError, ProtocolError } from "../src/errors.js";
-import { opBinary } from "../src/frames.js";
+import { opBinary, opClose } from "../src/frames.js";
 import { Transport } from "../src/transport.js";
 import { FakeDaemon, type Answer, type Peer, type Request } from "./helpers/daemon.js";
 
@@ -48,6 +48,13 @@ function started(index = 0): Record<string, unknown> {
   assert.ok(create, "the command was started");
 
   return JSON.parse(create.body);
+}
+
+/** Broken is input this client fails to send, for a reason of its own rather than the stream's. */
+class Broken extends Uint8Array {
+  override subarray(): never {
+    throw new Error("local failure");
+  }
 }
 
 /** stdinOf reads the client's frames until stdin closes, and answers what it sent. */
@@ -111,6 +118,24 @@ test("a stdin write that fails on a stream cut before the exit rejects run", asy
   peer.socket.pause();
   peer.socket.destroy();
   await assert.rejects(running, ConnectionError);
+});
+
+test("a stdin write that fails in this client rejects run at once and lets go of the stream", async () => {
+  const running = commands.run("cat", { stdin: new Broken(4) });
+  const peer = await daemon.peer(0);
+  await assert.rejects(running, /local failure/);
+  assert.equal((await peer.next())?.opcode, opClose, "the client says goodbye");
+});
+
+test("a command whose exit came with the attach answers it, whatever its input", async () => {
+  daemon.upgrade = (peer) => {
+    // Written right behind the handshake, so the exit reaches the client in the same read.
+    queueMicrotask(() => {
+      peer.exit({ code: 0 });
+      peer.close();
+    });
+  };
+  assert.deepEqual(await commands.run("true", { stdin: "x" }), { exitCode: 0, signal: null, lostBytes: 0, stdout: "", stderr: "" });
 });
 
 test("the output limit keeps the newest bytes, while the callbacks get every chunk", async () => {
@@ -193,6 +218,13 @@ test("a stdin write that fails on a stream cut before the exit rejects start", a
   peer.socket.pause();
   peer.socket.destroy();
   await assert.rejects(starting, (err: unknown) => err instanceof ConnectionError && /dropped$/.test(err.message));
+});
+
+test("a stdin write that fails in this client rejects start and lets go of the stream", async () => {
+  const starting = commands.start("cat", { stdin: new Broken(4) });
+  const peer = await daemon.peer(0);
+  await assert.rejects(starting, /local failure/);
+  assert.equal((await peer.next())?.opcode, opClose, "the client says goodbye");
 });
 
 test("list follows the daemon's pages", async () => {

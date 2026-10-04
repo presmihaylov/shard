@@ -4,7 +4,7 @@ import { ConnectionError, ProtocolError, isObject } from "./errors.js";
 import { opBinary } from "./frames.js";
 import type { Transport } from "./transport.js";
 import * as wire from "./wire.js";
-import { WebSocket } from "./ws.js";
+import { WebSocket, streamEnd } from "./ws.js";
 
 export interface Handlers {
   onStdout?: ((chunk: Uint8Array) => void) | undefined;
@@ -178,7 +178,7 @@ export class Session {
   private send(write: (ws: WebSocket) => Promise<void>): Promise<void> {
     const ws = this.ws;
     if (!ws) {
-      return Promise.reject(new ConnectionError(`${this.what} is not attached`));
+      return Promise.reject(streamEnd(`${this.what} is not attached`));
     }
     const sent = this.writing.then(() => write(ws));
     this.writing = sent.then(undefined, () => undefined);

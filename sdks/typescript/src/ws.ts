@@ -20,6 +20,21 @@ import type { Transport } from "./transport.js";
 const closeWaitMs = 5_000;
 // A reader that falls this many messages behind stops the socket, so a slow consumer stalls the daemon, not memory.
 const highWater = 16;
+// The write errors that only say the stream was gone, which the command's exit may explain.
+const streamEnds = new WeakSet<Error>();
+
+/** endedStream says a write failed because its stream was gone, not for a fault of the write's own. */
+export function endedStream(err: unknown): boolean {
+  return err instanceof Error && streamEnds.has(err);
+}
+
+/** streamEnd is the error of a write that found its stream gone. */
+export function streamEnd(message: string, options?: ErrorOptions): ConnectionError {
+  const err = new ConnectionError(message, options);
+  streamEnds.add(err);
+
+  return err;
+}
 
 export class WebSocket {
   private readonly reader = new MessageReader();
@@ -63,7 +78,7 @@ export class WebSocket {
 
   sendBinary(payload: Uint8Array): Promise<void> {
     if (this.closeSent || this.ended) {
-      return Promise.reject(new ConnectionError(`${this.what}: the stream to the daemon is closed`));
+      return Promise.reject(streamEnd(`${this.what}: the stream to the daemon is closed`));
     }
 
     return this.write(encodeFrame(opBinary, payload));
@@ -176,7 +191,7 @@ export class WebSocket {
     return new Promise((resolve, reject) => {
       this.socket.write(frame, (err) => {
         if (err) {
-          reject(new ConnectionError(`${this.what}: the stream to the daemon dropped`, { cause: err }));
+          reject(streamEnd(`${this.what}: the stream to the daemon dropped`, { cause: err }));
 
           return;
         }
