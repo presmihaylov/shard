@@ -962,7 +962,7 @@ func endShim(id string, client *vz.Client, pid int) error {
 	// The create's context may already be canceled, and the shim must go either way, so the cleanup runs on its own clock.
 	ctx, cancel := context.WithTimeout(context.Background(), 3*killGrace)
 	defer cancel()
-	// The identity comes before the stop, so a refused dial after it reads the shim gone only once this pid is (SHARD-423).
+	// The identity comes before the stop, so the wait after it follows this process and never a later one on its pid (SHARD-423).
 	shim, err := vz.Identify(pid)
 	if err != nil && !errors.Is(err, syscall.ESRCH) {
 		return fmt.Errorf("end the shim of sandbox %s after a failed boot: %w", id, err)
@@ -971,8 +971,7 @@ func endShim(id string, client *vz.Client, pid int) error {
 	if _, err := client.Stop(ctx); err != nil && !absent(err) {
 		stopErr = fmt.Errorf("stop the vm after a failed boot: %w", err)
 	}
-	m := &machine{id: id, client: client, shim: shim}
-	ended, err := m.awaitGone(ctx, killGrace)
+	ended, err := awaitExit(ctx, id, shim, killGrace)
 	if err != nil {
 		return errors.Join(stopErr, err)
 	}
@@ -982,15 +981,37 @@ func endShim(id string, client *vz.Client, pid int) error {
 	if err := shim.Kill(); err != nil {
 		return errors.Join(stopErr, fmt.Errorf("kill the shim of sandbox %s after a failed boot: %w", id, err))
 	}
-	ended, err = m.awaitGone(ctx, killGrace)
+	ended, err = awaitExit(ctx, id, shim, killGrace)
 	if err != nil {
 		return errors.Join(stopErr, err)
 	}
 	if !ended {
-		return errors.Join(stopErr, fmt.Errorf("the shim %d of sandbox %s still answers %s after a kill", pid, id, killGrace))
+		return errors.Join(stopErr, fmt.Errorf("the shim %d of sandbox %s still runs %s after a kill", pid, id, killGrace))
 	}
 
 	return stopErr
+}
+
+// awaitExit polls the shim's pid, since a shim drops its socket before its last connections and its VM close (SHARD-530).
+func awaitExit(ctx context.Context, id string, shim vz.Process, grace time.Duration) (bool, error) {
+	deadline := time.Now().Add(grace)
+	for {
+		alive, err := shim.Alive()
+		if err != nil {
+			return false, fmt.Errorf("sandbox %s: %w", id, err)
+		}
+		if !alive {
+			return true, nil
+		}
+		if !time.Now().Before(deadline) {
+			return false, nil
+		}
+		select {
+		case <-ctx.Done():
+			return false, fmt.Errorf("wait for the shim of sandbox %s to exit: %w", id, ctx.Err())
+		case <-time.After(pollInterval):
+		}
+	}
 }
 
 // awaitGone polls the shim until it stops answering, which is the VM powered off and the shim exited.

@@ -2290,7 +2290,7 @@ func TestAFailedBootKillsAShimWhoseSocketQueueIsFull(t *testing.T) {
 	exited := make(chan error, 1)
 	go func() { exited <- stand.Wait() }()
 	t.Cleanup(func() {
-		if err := syscall.Kill(stand.Process.Pid, syscall.SIGKILL); err != nil && !errors.Is(err, syscall.ESRCH) {
+		if err := stand.Process.Kill(); err != nil && !errors.Is(err, os.ErrProcessDone) {
 			t.Errorf("end the stand-in shim: %v", err)
 		}
 	})
@@ -2303,6 +2303,35 @@ func TestAFailedBootKillsAShimWhoseSocketQueueIsFull(t *testing.T) {
 	case <-exited:
 	case <-time.After(stopGrace):
 		t.Fatal("the shim outlived the cleanup of its failed boot")
+	}
+}
+
+// The cleanup of a failed boot waits out a shim that dropped its socket and still runs, as one closing its last connections does (SHARD-530).
+func TestAFailedBootWaitsForAShimPastItsSocket(t *testing.T) {
+	dir, err := os.MkdirTemp("", "vzq") //nolint:usetesting // t.TempDir is too long for a socket path
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { os.RemoveAll(dir) })
+	stand := exec.Command("sleep", "1")
+	stand.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
+	if err := stand.Start(); err != nil {
+		t.Fatal(err)
+	}
+	exited := make(chan error, 1)
+	go func() { exited <- stand.Wait() }()
+	t.Cleanup(func() {
+		if err := stand.Process.Kill(); err != nil && !errors.Is(err, os.ErrProcessDone) {
+			t.Errorf("end the stand-in shim: %v", err)
+		}
+		<-exited
+	})
+
+	if err := vzvm.EndShim("a", vz.Open(filepath.Join(dir, "shim.sock")), stand.Process.Pid); err != nil {
+		t.Fatalf("EndShim over a shim past its socket: %v", err)
+	}
+	if _, err := vz.Identify(stand.Process.Pid); !errors.Is(err, syscall.ESRCH) {
+		t.Fatalf("EndShim returned while the shim still ran: %v", err)
 	}
 }
 

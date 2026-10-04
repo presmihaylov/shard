@@ -860,6 +860,9 @@ func TestAPauseFreezesTheRootUnderALoopingWriter(t *testing.T) {
 	if err := h.provider.Create(t.Context(), seeded); err != nil {
 		t.Fatal(err)
 	}
+	if err := h.provider.Start(t.Context(), seeded.ID); err != nil {
+		t.Fatal(err)
+	}
 	onDisk, err := strconv.Atoi(execIn(t, h, seeded.ID, `awk 'NR != $1 { print "a gap at line " NR ": " $0; exit 1 } END { print NR }' /root/log`))
 	if err != nil {
 		t.Fatal(err)
