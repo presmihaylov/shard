@@ -739,6 +739,11 @@ func (s *Service) Create(ctx context.Context, req CreateRequest) (models.Sandbox
 // The daemon composes Prepare and Complete in the background and overrides this with a wait that blocks.
 func (s *Service) WaitState(_ context.Context, _ string) error { return nil }
 
+// CreateAndWait is Create: the record this service's Create answers has already left pending.
+func (s *Service) CreateAndWait(ctx context.Context, req CreateRequest) (models.Sandbox, error) {
+	return s.Create(ctx, req)
+}
+
 // fail records why a create never reached running. It keeps the record so a get reads the reason and rm
 // frees it, and it returns the cause so the synchronous caller still sees the failure.
 func (s *Service) fail(ctx context.Context, id string, cause error) error {

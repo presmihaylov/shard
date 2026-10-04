@@ -61,7 +61,7 @@ func seed(t *testing.T) seeded {
 
 	enforcer := egress.New(policies, repo, netip.MustParseAddr("10.87.0.1"), network.DefaultNameservers, nil)
 
-	verbs, stores, egressLog := &fakeLifecycle{ended: make(chan struct{})}, &fakeStores{}, &fakeEgressLog{}
+	verbs, stores, egressLog := &fakeLifecycle{ended: make(chan struct{}), repo: repo}, &fakeStores{}, &fakeEgressLog{}
 
 	logged := &lockedBuffer{}
 	handler := api.NewHandler("v-test", fakeProcess{}, repo, enforcer, verbs, stores, egressLog, nil, logged)

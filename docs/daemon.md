@@ -462,9 +462,9 @@ curl --unix-socket /var/lib/shard/shard.sock -X POST http://localhost/v0/images/
   a field does not validate, or when the body names a secret or a policy the host does not hold. It
   answers 400 `invalid_request` naming the user when `user` names a user or group the image does
   not list, on the plain create, the wait and the NDJSON wait, whose last line carries the error
-  once an event is out. An uncached image is read only after the pull, so there the unknown user is
-  the `failed_reason` of the `failed` record. It answers 409 `name_taken` when another sandbox
-  already holds the name.
+  once an event is out. An uncached image is read only after the pull, so there the plain create
+  answers the `pending` record and the user lands in the `failed_reason`, while both waits still
+  answer the 400. It answers 409 `name_taken` when another sandbox already holds the name.
 - `POST /v0/sandboxes/{id}/start` takes no body and answers 200 with the record of the sandbox it
   started again. It answers 404 when nothing has the reference, and 409 when the sandbox is not
   stopped.
