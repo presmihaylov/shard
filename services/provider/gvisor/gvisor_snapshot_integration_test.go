@@ -116,7 +116,7 @@ func TestPauseAndResumeRefuseTheWrongState(t *testing.T) {
 		t.Error("Pause of a stopped sandbox went through")
 	}
 	if _, err := os.Stat(snapshot); err == nil {
-		t.Error("the refused pause made the snapshot directory")
+		t.Error("the refused pause made the checkpoint directory")
 	}
 }
 

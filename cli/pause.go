@@ -5,7 +5,7 @@ import (
 	"fmt"
 )
 
-// pause asks the daemon to write the sandbox into its snapshot and prints the id it acted on.
+// pause asks the daemon to write the sandbox into its checkpoint and prints the id it acted on.
 func (a App) pause(ctx context.Context, args []string) error {
 	rest, err := parseArgs("pause", args)
 	if err != nil {

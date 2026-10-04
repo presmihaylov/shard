@@ -8,8 +8,9 @@ install first, neither Docker nor Homebrew, and the daemon runs as your user.
 shard needs Apple silicon and macOS 14 or later, which is the one supported Mac. An Intel Mac is not
 supported. The binary builds and the framework boots there, but nothing is tested on it, `pause`,
 `resume` and `fork` refuse by name on every macOS, and a bug on Intel gets no fix. macOS 13 is not
-supported either, because the three snapshot verbs need the save API of macOS 14 and refuse by name
-on 13 (`docs/provider-vz.md`). There is no fallback provider. The appendix is the workaround for both.
+supported either, because `pause`, `resume` and `fork` need the save API of macOS 14 and refuse by
+name on 13 (`docs/provider-vz.md`). There is no fallback provider. The appendix is the workaround
+for both.
 
 ## Get the binary
 

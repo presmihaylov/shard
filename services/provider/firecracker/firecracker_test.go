@@ -1599,10 +1599,10 @@ func TestTheSnapshotVerbsRefuseWhatTheyCannotTake(t *testing.T) {
 	spec, _ := h.runLong(t)
 
 	empty := t.TempDir()
-	if err := h.provider.Resume(t.Context(), spec.ID, empty); err == nil || !strings.Contains(err.Error(), "no complete snapshot") {
+	if err := h.provider.Resume(t.Context(), spec.ID, empty); err == nil || !strings.Contains(err.Error(), "no complete checkpoint") {
 		t.Errorf("Resume without a snapshot = %v, want the refusal", err)
 	}
-	if err := h.provider.ForkSnapshot(t.Context(), empty, h.forkSpec(t)); err == nil || !strings.Contains(err.Error(), "no complete snapshot") {
+	if err := h.provider.ForkSnapshot(t.Context(), empty, h.forkSpec(t)); err == nil || !strings.Contains(err.Error(), "no complete checkpoint") {
 		t.Errorf("Fork without a snapshot = %v, want the refusal", err)
 	}
 
@@ -1689,7 +1689,7 @@ func TestASecondPauseReplacesTheWholeSnapshot(t *testing.T) {
 	}
 	want := []string{"checkpoint.img", "memory", "overlay.raw", "snapshot.json", "vmstate"}
 	if !slices.Equal(got, want) {
-		t.Errorf("the snapshot directory holds %v, want the second snapshot alone %v", got, want)
+		t.Errorf("the checkpoint directory holds %v, want the second checkpoint alone %v", got, want)
 	}
 	if _, err := os.Stat(dir + ".tmp"); !errors.Is(err, os.ErrNotExist) {
 		t.Errorf("the staging directory after the second Pause: %v, want gone", err)

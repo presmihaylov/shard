@@ -171,8 +171,8 @@ func TestPauseAndResumeRunThroughTheDaemon(t *testing.T) {
 	if err := app.Run(t.Context(), []string{"pause", "sandbox1"}); err != nil {
 		t.Fatalf("pause: %v", err)
 	}
-	if got := d.providerSvc.(*fakeLifecycleProvider).snapshot; got != "/snapshots/sandbox1" {
-		t.Errorf("the provider was told to write %q, want the repository's snapshot directory", got)
+	if got := d.providerSvc.(*fakeLifecycleProvider).snapshot; got != "/checkpoints/sandbox1" {
+		t.Errorf("the provider was told to write %q, want the repository's checkpoint directory", got)
 	}
 
 	if err := app.Run(t.Context(), []string{"resume", "sandbox1"}); err != nil {
@@ -186,23 +186,21 @@ func TestPauseAndResumeRunThroughTheDaemon(t *testing.T) {
 	}
 }
 
-func TestForkAndClonePrintTheNewIDTheDaemonAnswered(t *testing.T) {
-	// A fork captures a running source (SHARD-457), and a clone copies one that holds still.
-	for verb, source := range map[string]models.Sandbox{"fork": running(), "clone": paused()} {
-		var out bytes.Buffer
+func TestForkPrintsTheNewIDTheDaemonAnswered(t *testing.T) {
+	var out bytes.Buffer
 
-		app, d := newClientApp(t, &out, source)
+	source := running()
+	app, d := newClientApp(t, &out, source)
 
-		if err := app.Run(t.Context(), []string{verb, "--name", "web-2", "web"}); err != nil {
-			t.Fatalf("%s: %v", verb, err)
-		}
+	if err := app.Run(t.Context(), []string{"fork", "--name", "web-2", "sandbox1"}); err != nil {
+		t.Fatalf("fork: %v", err)
+	}
 
-		if got := strings.TrimSpace(out.String()); got != "sandbox2" {
-			t.Errorf("%s printed %q, want the new id", verb, got)
-		}
-		if got := d.repoSvc.(*fakeLifecycleRepo).created; got.Name != "web-2" || got.Image != source.Image {
-			t.Errorf("%s created %+v, want the source's image under the new name", verb, got)
-		}
+	if got := strings.TrimSpace(out.String()); got != "sandbox2" {
+		t.Errorf("fork printed %q, want the new id", got)
+	}
+	if got := d.repoSvc.(*fakeLifecycleRepo).created; got.Name != "web-2" || got.Image != source.Image {
+		t.Errorf("fork created %+v, want the source's image under the new name", got)
 	}
 }
 
@@ -243,7 +241,11 @@ func TestTheLifecycleVerbsWithNoDaemonFailFast(t *testing.T) {
 		{"pause", "sandbox1"},
 		{"resume", "sandbox1"},
 		{"fork", "sandbox1"},
-		{"clone", "sandbox1"},
+		{"snapshot", "create", "sandbox1"},
+		{"snapshot", "list"},
+		{"snapshot", "inspect", "web-base"},
+		{"snapshot", "remove", "web-base"},
+		{"create", "--snapshot", "web-base"},
 		{"cp", "sandbox1:/srv/app", "/tmp/app"},
 	} {
 		var out bytes.Buffer
@@ -253,10 +255,10 @@ func TestTheLifecycleVerbsWithNoDaemonFailFast(t *testing.T) {
 
 		err := app.Run(t.Context(), args)
 		if want := "cannot connect to shard daemon at " + filepath.Join(root, api.SocketFile) + ": is it running? shard --root " + root + " daemon"; err == nil || err.Error() != want {
-			t.Errorf("%s with no daemon returned %v, want %q", args[0], err, want)
+			t.Errorf("%v with no daemon returned %v, want %q", args, err, want)
 		}
 		if out.Len() != 0 {
-			t.Errorf("%s printed %q before it failed", args[0], out.String())
+			t.Errorf("%v printed %q before it failed", args, out.String())
 		}
 	}
 }

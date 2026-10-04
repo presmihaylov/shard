@@ -170,7 +170,7 @@ func (f *fakeLifecycleRepo) SnapshotDir(id string) (string, error) {
 		return f.snapshotDir, nil
 	}
 
-	return "/snapshots/" + id, nil
+	return "/checkpoints/" + id, nil
 }
 
 func (f *fakeLifecycleRepo) Delete(id string) error {
@@ -531,7 +531,7 @@ func stopped() models.Sandbox {
 	return models.Sandbox{ID: "sandbox1", Name: "web", State: models.StateStopped, ExitStatus: &models.ExitStatus{Code: 3}}
 }
 
-// paused is the record of a sandbox that holds a snapshot, which is what resume is given.
+// paused is the record of a sandbox that holds a checkpoint, which is what resume is given.
 func paused() models.Sandbox {
 	return models.Sandbox{ID: "sandbox1", Name: "web", State: models.StatePaused, Checkpoint: "/checkpoints/sandbox1"}
 }

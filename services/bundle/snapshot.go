@@ -30,7 +30,7 @@ func (b Bundle) Export(ctx context.Context, dir string) error {
 		return fmt.Errorf("read %s: %w", source, err)
 	}
 	if err := store.WriteFile(filepath.Join(dir, "config.json"), blob, 0o644); err != nil { // #nosec G306
-		return fmt.Errorf("copy config.json into the snapshot: %w", err)
+		return fmt.Errorf("copy config.json into the checkpoint: %w", err)
 	}
 
 	for name, layer := range b.layers() {
@@ -56,7 +56,7 @@ func (s *Service) Fork(snapshot string, spec models.SandboxSpec) (Bundle, error)
 	}
 
 	// A fork carries the source exit record, so a fork of an exited sandbox answers Wait at once.
-	return s.clone(filepath.Join(snapshot, "config.json"), layers, filepath.Join(snapshot, exitFileName), spec)
+	return s.copyBundle(filepath.Join(snapshot, "config.json"), layers, filepath.Join(snapshot, exitFileName), spec)
 }
 
 // Snapshot copies the writable layer and /tmp of a stopped bundle into dir, which a Build reads back as its Seed.
@@ -88,10 +88,10 @@ func seed(b Bundle, dir string) error {
 	return nil
 }
 
-// clone copies the layers and rewrites config.json under the new identity, and carries the source's exit record.
-func (s *Service) clone(configPath string, layers map[string]string, sourceExit string, spec models.SandboxSpec) (Bundle, error) {
+// copyBundle copies the layers and rewrites config.json under the new identity, and carries the source's exit record.
+func (s *Service) copyBundle(configPath string, layers map[string]string, sourceExit string, spec models.SandboxSpec) (Bundle, error) {
 	if spec.ID == "" || spec.StateDir == "" {
-		return Bundle{}, fmt.Errorf("a clone needs an id and a state directory, got %q and %q", spec.ID, spec.StateDir)
+		return Bundle{}, fmt.Errorf("a fork needs an id and a state directory, got %q and %q", spec.ID, spec.StateDir)
 	}
 
 	b, err := newBundle(spec.StateDir)
@@ -110,7 +110,7 @@ func (s *Service) clone(configPath string, layers map[string]string, sourceExit 
 		}
 	}
 
-	// The clone has its own address and name, and the layer copy still holds the source's.
+	// The fork has its own address and name, and the layer copy still holds the source's.
 	if err := writeNetworkFiles(b, spec); err != nil {
 		return Bundle{}, err
 	}

@@ -36,8 +36,8 @@ jobs:
       - name: vet
         run: go vet ./...
 
-      # A firecracker clone shares blocks or is refused, and the runner's ext4 shares none: the tests get an xfs root.
-      - name: reflink root for the clone tests
+      # A firecracker snapshot shares blocks or is refused, and the runner's ext4 shares none: the tests get an xfs root.
+      - name: reflink root for the snapshot tests
         run: |
           command -v mkfs.xfs >/dev/null || (sudo apt-get update -q && sudo apt-get install -y -q xfsprogs)
           truncate -s 4G /tmp/reflink.img

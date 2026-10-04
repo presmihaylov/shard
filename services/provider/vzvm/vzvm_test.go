@@ -273,7 +273,7 @@ func TestCreateGivesAnImageWithoutAPathTheDefault(t *testing.T) {
 	}
 }
 
-// A clone boots from the disk alone, so a pause freezes the guest's root before it stops the VM, and every path that runs the guest again thaws it (SHARD-296).
+// The disk is copied apart from the memory, so a pause freezes the guest's root before it stops the VM, and every path that runs the guest again thaws it (SHARD-296).
 func TestAPauseFreezesTheGuestAndEveryPathThatRunsItAgainThawsIt(t *testing.T) {
 	h := newHarness(t)
 	spec := h.newSpec(t, "/bin/sh", "-c", "while true; do sleep 1; done")
@@ -515,7 +515,7 @@ func TestPauseKeepsWhatAResumeAndAForkNeed(t *testing.T) {
 	if err := h.provider.Pause(t.Context(), spec.ID, snap); err != nil {
 		t.Fatalf("a second Pause = %v, want a no-op", err)
 	}
-	if err := h.provider.Pause(t.Context(), spec.ID, t.TempDir()); err == nil || !strings.Contains(err.Error(), "no complete snapshot") {
+	if err := h.provider.Pause(t.Context(), spec.ID, t.TempDir()); err == nil || !strings.Contains(err.Error(), "no complete checkpoint") {
 		t.Fatalf("a second Pause into an empty directory = %v, want a refusal", err)
 	}
 	if err := h.provider.Start(t.Context(), spec.ID); err == nil || !strings.Contains(err.Error(), "resume it first") {

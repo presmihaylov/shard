@@ -922,10 +922,10 @@ func (p *Provider) Pause(ctx context.Context, id string, dir string) error {
 	// The snapshot is staged beside dir and swapped in whole, so dir never holds half of one.
 	tmp := dir + ".tmp"
 	if err := os.RemoveAll(tmp); err != nil {
-		return fmt.Errorf("clear the snapshot directory %s: %w", tmp, err)
+		return fmt.Errorf("clear the checkpoint directory %s: %w", tmp, err)
 	}
 	if err := os.MkdirAll(tmp, 0o700); err != nil {
-		return fmt.Errorf("create the snapshot directory %s: %w", tmp, err)
+		return fmt.Errorf("create the checkpoint directory %s: %w", tmp, err)
 	}
 
 	if err := p.runsc.Pause(ctx, id); err != nil {
@@ -939,7 +939,7 @@ func (p *Provider) Pause(ctx context.Context, id string, dir string) error {
 
 	// A filesystem without an atomic exchange refuses the install, after a checkpoint the sentry did not survive.
 	if err := store.SwapDir(tmp, dir); err != nil {
-		return p.lose(ctx, id, b, tmp, fmt.Errorf("install the snapshot of sandbox %s: %w", id, err))
+		return p.lose(ctx, id, b, tmp, fmt.Errorf("install the checkpoint of sandbox %s: %w", id, err))
 	}
 
 	// ctx is the service's, cut from the client and bounded, so a Ctrl-C leaves no frozen sandbox and a wedged teardown holds no lock.
@@ -968,7 +968,7 @@ func (p *Provider) release(ctx context.Context, id string, b bundle.Bundle, tmp 
 // Release frees what a cut pause left past its checkpoint, a frozen sentry or a mounted view, beside the snapshot in dir (SHARD-366).
 func (p *Provider) Release(ctx context.Context, id, dir string) error {
 	if _, err := os.Stat(filepath.Join(dir, checkpointFile)); err != nil {
-		return fmt.Errorf("sandbox %s has no snapshot in %s to release it beside: %w", id, dir, err)
+		return fmt.Errorf("sandbox %s has no checkpoint in %s to release it beside: %w", id, dir, err)
 	}
 
 	// The same bound a lost pause's release has, over the probe too, so a wedged runsc stalls no boot and holds no lock.
@@ -980,7 +980,7 @@ func (p *Provider) Release(ctx context.Context, id, dir string) error {
 		return err
 	}
 	if status.Alive() && status.State != models.StatePaused {
-		return fmt.Errorf("sandbox %s is %s on %s: only a frozen or ended sandbox is released beside its snapshot", id, status.State, Name)
+		return fmt.Errorf("sandbox %s is %s on %s: only a frozen or ended sandbox is released beside its checkpoint", id, status.State, Name)
 	}
 
 	b, err := p.open(id)
@@ -994,7 +994,7 @@ func (p *Provider) Release(ctx context.Context, id, dir string) error {
 // Resume brings the sandbox back from the snapshot in dir over the writable layer the pause kept, as a new runsc container, the one the pause ended being gone for good.
 func (p *Provider) Resume(ctx context.Context, id string, dir string) error {
 	if _, err := os.Stat(filepath.Join(dir, checkpointFile)); err != nil {
-		return fmt.Errorf("sandbox %s has no snapshot in %s: %w", id, dir, err)
+		return fmt.Errorf("sandbox %s has no checkpoint in %s: %w", id, dir, err)
 	}
 
 	stateDir, err := p.dirs(id)

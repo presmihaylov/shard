@@ -49,12 +49,12 @@ func TestForkIsTheSourceUnderANewIdentity(t *testing.T) {
 	}
 	c, err := newService(t).Fork(snapshot, fork)
 	if err != nil {
-		t.Fatalf("Clone: %v", err)
+		t.Fatalf("Fork: %v", err)
 	}
 
 	var got specs.Spec
 	if err := json.Unmarshal([]byte(readFile(t, filepath.Join(c.Dir, "config.json"))), &got); err != nil {
-		t.Fatalf("the clone's config.json does not parse: %v", err)
+		t.Fatalf("the fork's config.json does not parse: %v", err)
 	}
 
 	if got.Hostname != "web-2" {
@@ -96,20 +96,20 @@ func TestForkIsTheSourceUnderANewIdentity(t *testing.T) {
 		}
 	}
 	if got.Linux.Resources.Memory == nil || *got.Linux.Resources.Memory.Limit != 512<<20 {
-		t.Errorf("the clone lost the source's memory bound: %+v", got.Linux.Resources)
+		t.Errorf("the fork lost the source's memory bound: %+v", got.Linux.Resources)
 	}
 
 	if readFile(t, filepath.Join(c.Upper, "marker")) != "written before the pause\n" {
-		t.Error("the clone did not get the source's writable layer")
+		t.Error("the fork did not get the source's writable layer")
 	}
 	if readFile(t, filepath.Join(c.Tmp, "scratch")) != "tmp\n" {
-		t.Error("the clone did not get the source's tmp")
+		t.Error("the fork did not get the source's tmp")
 	}
 	if _, err := os.Stat(c.ReadyFile); err != nil {
-		t.Errorf("the clone did not get the supervisor's files: %v", err)
+		t.Errorf("the fork did not get the supervisor's files: %v", err)
 	}
 	if hosts := readFile(t, filepath.Join(c.Upper, "etc", "hosts")); !strings.Contains(hosts, "10.87.0.3\tweb-2") {
-		t.Errorf("the clone's hosts file is %q, want the fork's address and name", hosts)
+		t.Errorf("the fork's hosts file is %q, want the fork's address and name", hosts)
 	}
 }
 

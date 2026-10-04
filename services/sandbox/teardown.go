@@ -15,7 +15,7 @@ import (
 // teardownBudget bounds the whole give-back after a failed claim, on a context the verb's own cannot cancel.
 const teardownBudget = 30 * time.Second
 
-// Teardown is what a failed create, fork or clone gives back, in the reverse of the order it was claimed.
+// Teardown is what a failed create or fork gives back, in the reverse of the order it was claimed.
 type Teardown struct {
 	steps []func(context.Context) error
 }

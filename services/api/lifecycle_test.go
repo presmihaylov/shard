@@ -34,7 +34,7 @@ type fakeLifecycle struct {
 	// copied is the body a fork sent, and snapshotted the body a snapshot create sent.
 	copied      sandbox.CopyRequest
 	snapshotted sandbox.SnapshotRequest
-	ref    string
+	ref         string
 	// waited is the ref a get with ?wait blocked on.
 	waited string
 	// granted is the secret the grant or the ungrant named.

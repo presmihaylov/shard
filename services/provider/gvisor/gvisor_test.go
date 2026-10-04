@@ -373,7 +373,7 @@ func TestPauseTakesOnlyARunningSandbox(t *testing.T) {
 			t.Errorf("Pause of a %s sandbox returned %v, want a refusal that names it", state, err)
 		}
 		if _, err := os.Stat(dir); err == nil {
-			t.Errorf("Pause of a %s sandbox made the snapshot directory", state)
+			t.Errorf("Pause of a %s sandbox made the checkpoint directory", state)
 		}
 	}
 }

@@ -58,8 +58,8 @@ var verbGroups = []struct {
 	title string
 	verbs []string
 }{
-	{"Sandboxes", []string{"create", "run", "exec", "ls", "logs", "inspect", "stop", "start", "rm", "pause", "resume", "fork", "clone", "cp"}},
-	{"Images, secrets and egress", []string{"pull", "image", "secret", "policy"}},
+	{"Sandboxes", []string{"create", "run", "exec", "ls", "logs", "inspect", "stop", "start", "rm", "pause", "resume", "fork", "cp"}},
+	{"Images, snapshots, secrets and egress", []string{"pull", "image", "snapshot", "secret", "policy"}},
 	{"Host and access", []string{"daemon", "info", "serve", "tokens", "version"}},
 }
 
@@ -98,13 +98,16 @@ var helps = map[string]verbHelp{
 		},
 	},
 	"create": {
-		usage:   []string{"create [flags] <image>"},
+		usage:   []string{"create [flags] <image>", "create [flags] --snapshot <id|name>"},
 		summary: "create a sandbox that runs only shard-init and print its id",
 		args:    []row{{"<image>", "the image; create pulls it first when it is not on disk"}},
-		flags:   sandboxFlagHelps,
+		flags: append(slices.Clone(sandboxFlagHelps),
+			flagHelp{"--snapshot <id|name>", "start from the files of a snapshot, over the image it names, in place of an image", ""},
+		),
 		notes: []string{
 			"The flags go before the image. Pull progress goes to stderr. The id goes to stdout once the sandbox runs.",
 			"create takes no command: shard-init runs alone and the sandbox stays up until shard stop. shard run starts a sandbox with an app. To give a sandbox a policy after create, use shard policy attach.",
+			"--snapshot takes the place of the image, as the snapshot names its own. create never pulls for it: the image must still be on this host at the digest the snapshot recorded. Only the provider that made the snapshot starts it, and firecracker and vz refuse a --disk that differs from its disk.",
 			"Shard runs no health probe. To check the workload, run shard exec on your own schedule; it exits with the code of the command.",
 			sizeNote,
 		},
@@ -172,7 +175,7 @@ var helps = map[string]verbHelp{
 	},
 	"stop": {
 		usage:   []string{"stop <id|name>"},
-		summary: "stop a sandbox; its files stay for start or clone",
+		summary: "stop a sandbox; its files stay for start or snapshot create",
 		args:    []row{sandboxArg},
 		notes: []string{
 			"stop sends SIGTERM to the entrypoint and returns as soon as it exits. An entrypoint still running after " + short(models.StopGrace) + " is killed. The grace is fixed.",
@@ -202,14 +205,14 @@ var helps = map[string]verbHelp{
 	},
 	"pause": {
 		usage:   []string{"pause <id|name>"},
-		summary: "write a snapshot of a running sandbox and free its memory",
+		summary: "write a checkpoint of a running sandbox and free its memory",
 		args:    []row{sandboxArg},
 		notes:   []string{"The daemon gives up on a pause after " + short(sandbox.DefaultPauseBudget) + ". sysbox and runc refuse pause, as does vz on macOS 13 or on Intel."},
 		example: "shard pause web",
 	},
 	"resume": {
 		usage:   []string{"resume <id|name>"},
-		summary: "run a paused sandbox again from its snapshot",
+		summary: "run a paused sandbox again from its checkpoint",
 		args:    []row{sandboxArg},
 		example: "shard resume web",
 	},
@@ -220,14 +223,6 @@ var helps = map[string]verbHelp{
 		flags:   []flagHelp{{"--name <name>", "a handle for the new sandbox", ""}},
 		notes:   []string{"The source must be running. Fork freezes it for a moment, captures its memory and files, and lets the same sandbox run on, then starts the new one from that capture. It prints the new id. Only gvisor forks for now; the other providers refuse fork."},
 		example: "shard fork --name web-2 web",
-	},
-	"clone": {
-		usage:   []string{"clone [--name <name>] <id|name>"},
-		summary: "copy the files of a stopped or paused sandbox into a new one",
-		args:    []row{{"<id|name>", "the stopped or paused sandbox to copy, by its id or by its --name"}},
-		flags:   []flagHelp{{"--name <name>", "a handle for the new sandbox", ""}},
-		notes:   []string{"The new sandbox runs its entrypoint from the beginning and takes no memory from the source. clone refuses a running source. It prints the new id."},
-		example: "shard stop web && shard clone --name web-2 web",
 	},
 	"cp": {
 		usage:   []string{"cp [--user <user>] <src> <id|name>:<path>", "cp <id|name>:<path> <dst>"},
@@ -260,14 +255,48 @@ var helps = map[string]verbHelp{
 		usage:   []string{"image rm [--force] <image>"},
 		summary: "remove a pulled image",
 		args:    []row{{"<image>", "the image reference, as image ls prints it"}},
-		flags:   []flagHelp{{"--force", "remove it even when a sandbox still references it", ""}},
+		flags:   []flagHelp{{"--force", "remove it even when a sandbox or a snapshot still references it", ""}},
 		example: "shard image rm python:3.12",
 	},
 	"image prune": {
 		usage:   []string{"image prune"},
-		summary: "remove every pulled image that no sandbox references",
-		notes:   []string{"A stopped sandbox references its image too, so prune keeps that one."},
+		summary: "remove every pulled image that no sandbox or snapshot references",
+		notes:   []string{"A stopped sandbox and a snapshot reference their image too, so prune keeps that one."},
 		example: "shard image prune",
+	},
+	"snapshot": {
+		usage:   []string{"snapshot <subcommand> [flags] [args]"},
+		summary: "file copies of stopped sandboxes",
+	},
+	"snapshot create": {
+		usage:   []string{"snapshot create [--name <name>] <id|name>"},
+		summary: "copy the files of a stopped sandbox into a snapshot and print its id",
+		args:    []row{{"<id|name>", "the stopped sandbox, by its id or by its --name"}},
+		flags:   []flagHelp{{"--name <name>", "a handle the snapshot verbs and create --snapshot take in place of the id: lower-case letters, digits, - and _", ""}},
+		notes: []string{
+			"A snapshot holds the files of the sandbox and never its memory. It outlives its source: rm the sandbox and the snapshot stays.",
+			"snapshot create refuses a running or paused sandbox: stop it first. The id goes to stdout once the copy is done.",
+		},
+		example: "shard stop web && shard snapshot create --name web-base web",
+	},
+	"snapshot list": {
+		usage:   []string{"snapshot list"},
+		summary: "list the snapshots",
+		notes:   []string{"The columns are ID, NAME, SOURCE, IMAGE, SIZE and CREATED."},
+		example: "shard snapshot list",
+	},
+	"snapshot inspect": {
+		usage:   []string{"snapshot inspect <id|name>"},
+		summary: "print the record of a snapshot as JSON",
+		args:    []row{{"<id|name>", "the snapshot, by its id or by its --name"}},
+		example: "shard snapshot inspect web-base",
+	},
+	"snapshot remove": {
+		usage:   []string{"snapshot remove <id|name>"},
+		summary: "delete a snapshot and its files",
+		args:    []row{{"<id|name>", "the snapshot, by its id or by its --name"}},
+		notes:   []string{"A sandbox created from the snapshot holds its own copy of the files, so remove never refuses one."},
+		example: "shard snapshot remove web-base",
 	},
 	"secret": {
 		usage:   []string{"secret <subcommand> [flags] [args]"},
