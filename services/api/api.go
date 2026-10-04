@@ -263,11 +263,12 @@ type errorResponse struct {
 	Error ErrorObject `json:"error"`
 }
 
-// ErrorObject is a code for a program, a line for a human, and the holders an in_use names.
+// ErrorObject is a code for a program, a line for a human, the holders an in_use names, and the shell code a command_not_started carries.
 type ErrorObject struct {
-	Code    models.Code `json:"code"`
-	Message string      `json:"message"`
-	Holders []string    `json:"holders,omitempty"`
+	Code     models.Code `json:"code"`
+	Message  string      `json:"message"`
+	Holders  []string    `json:"holders,omitempty"`
+	ExitCode int         `json:"exit_code,omitempty"`
 }
 
 func (h *Handler) getVersion(w http.ResponseWriter, _ *http.Request) {
@@ -720,6 +721,7 @@ func classify(err error) (int, models.Code) {
 	var tooLarge *http.MaxBytesError
 	var scope *scopeError
 	var fileNotFound *sandbox.FileNotFoundError
+	var notStarted *models.CommandNotStartedError
 
 	switch {
 	case errors.As(err, &scope):
@@ -747,6 +749,8 @@ func classify(err error) (int, models.Code) {
 		return http.StatusConflict, models.CodeUnsupported
 	case errors.As(err, &substrateTimeout):
 		return http.StatusGatewayTimeout, models.CodeSubstrateTimeout
+	case errors.As(err, &notStarted):
+		return http.StatusUnprocessableEntity, models.CodeCommandNotStarted
 	default:
 		return http.StatusInternalServerError, models.CodeInternal
 	}
@@ -832,6 +836,11 @@ func errorBody(err error) (int, errorResponse) {
 	var held *sandbox.HeldError
 	if errors.As(err, &held) {
 		body.Error.Holders = held.Users
+	}
+
+	var notStarted *models.CommandNotStartedError
+	if errors.As(err, &notStarted) {
+		body.Error.ExitCode = notStarted.Code
 	}
 
 	return status, body

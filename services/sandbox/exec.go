@@ -571,7 +571,10 @@ func (e *execSession) setResult(exit models.ExitStatus, err error) {
 	var notStarted *models.CommandNotStartedError
 	switch {
 	case errors.As(err, &notStarted):
-		e.startErr = notStarted
+		// The provider knows the reason, and the session the program the caller named.
+		named := *notStarted
+		named.Command = e.command[0]
+		e.startErr = &named
 		e.exit = &models.ExitStatus{Code: notStarted.Code}
 	case err != nil:
 		e.runErr = err

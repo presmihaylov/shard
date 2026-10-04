@@ -3,6 +3,7 @@ package models
 import (
 	"errors"
 	"fmt"
+	"strconv"
 )
 
 // ErrUnsupported is the sentinel behind every refused verb. Match it with errors.Is.
@@ -25,13 +26,20 @@ var ErrExecLost = errors.New("the substrate lost its wait on the command")
 // command: it never ran. Code is what a shell answers for the same refusal.
 type CommandNotStartedError struct {
 	Sandbox string
+	// Command is the program as the caller named it, argv[0]; empty where only the reason reached this side.
+	Command string
 	// Reason is the substrate's own words for why the command did not start.
 	Reason string
 	Code   int
 }
 
 func (e *CommandNotStartedError) Error() string {
-	return fmt.Sprintf("sandbox %s could not run the command: %s", e.Sandbox, e.Reason)
+	command := "the command"
+	if e.Command != "" {
+		command = strconv.Quote(e.Command)
+	}
+
+	return fmt.Sprintf("sandbox %s could not run %s: %s", e.Sandbox, command, e.Reason)
 }
 
 // The optional verbs, spelled once here so a refusal and the conformance suite cannot drift apart.

@@ -331,6 +331,7 @@ func (f *fakeLifecycleProvider) Exec(_ context.Context, id string, spec models.E
 	if f.execErr != nil {
 		return models.ExitStatus{}, f.execErr
 	}
+	spec.Report(42)
 
 	if f.execOut != "" {
 		if _, err := spec.Stdout.WriteString(f.execOut); err != nil {

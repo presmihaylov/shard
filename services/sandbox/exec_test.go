@@ -405,9 +405,14 @@ func TestARefusalOutsideAPauseKeepsItsOwnWords(t *testing.T) {
 			l.provider.execPID = 7
 			l.provider.execNoPID, l.provider.execErr = tc.noPID, tc.execErr
 
+			want := tc.execErr.Error()
+			if notStarted, ok := errors.AsType[*models.CommandNotStartedError](tc.execErr); ok {
+				want = notStarted.Reason
+			}
+
 			_, _, _, err := execOf(t, l, svc, "sandbox1", sandbox.ExecRequest{Command: []string{"true"}}, "")
-			if err == nil || strings.Contains(err.Error(), "is paused") || !strings.Contains(err.Error(), tc.execErr.Error()) {
-				t.Fatalf("Exec returned %v, want the substrate's own %q", err, tc.execErr)
+			if err == nil || strings.Contains(err.Error(), "is paused") || !strings.Contains(err.Error(), want) {
+				t.Fatalf("Exec returned %v, want the substrate's own %q", err, want)
 			}
 		})
 	}
