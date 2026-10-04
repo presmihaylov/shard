@@ -8,6 +8,7 @@ import (
 
 	"github.com/presmihaylov/shard/models"
 	"github.com/presmihaylov/shard/services/api"
+	"github.com/presmihaylov/shard/services/egress"
 	"github.com/presmihaylov/shard/services/image"
 	"github.com/presmihaylov/shard/services/sandbox"
 	"github.com/presmihaylov/shard/services/secret"
@@ -27,6 +28,9 @@ type RuleText = sandbox.RuleText
 
 // PolicyView is a policy and the sandboxes whose record names it, which is what policy show prints.
 type PolicyView = sandbox.PolicyView
+
+// FormatRule spells a rule the way policy create takes it, which is how a table prints one.
+func FormatRule(rule models.Rule) string { return egress.FormatRule(rule) }
 
 // SecretsResult is what secret list prints: the secrets the daemon read, beside the files it could not.
 type SecretsResult struct {
