@@ -14,6 +14,16 @@ func TestExecArgsAsksForATTY(t *testing.T) {
 	}
 }
 
+// A launch hands the channel over as the first preserved fd, and the supervisor's shim runs ahead of the command.
+func TestExecArgsRunTheCommandUnderTheLaunchShim(t *testing.T) {
+	args := execArgs("amber-otter-1a2b", "/tmp/pid", ExecOptions{Argv: []string{"/bin/sh", "-c", "echo hi"}, Launch: "/.shard/init"})
+
+	want := []string{"exec", "--pid-file", "/tmp/pid", "--preserve-fds", "1", "amber-otter-1a2b", "/.shard/init", "launch", "/bin/sh", "-c", "echo hi"}
+	if !slices.Equal(args, want) {
+		t.Errorf("got argv %q, want %q", args, want)
+	}
+}
+
 // Without the flag runc joins a fresh session keyring per container, one key of the uid's quota each (SHARD-367).
 func TestCreateArgsSkipTheKeyringOnlyWhenAsked(t *testing.T) {
 	if args := createArgs("amber-otter-1a2b", "/b", true); !slices.Equal(args, []string{"create", "--bundle", "/b", "--no-new-keyring", "amber-otter-1a2b"}) {

@@ -18,6 +18,8 @@ import (
 	"strings"
 	"syscall"
 	"time"
+
+	"github.com/presmihaylov/shard/pkg/launch"
 )
 
 // ErrNotFound is what a verb aimed at a container runc does not hold returns. Match it with errors.Is.
@@ -179,11 +181,8 @@ type ExecOptions struct {
 	User string
 	// Groups is the supplementary set that goes with User.
 	Groups []uint32
-	// RootFS is the container's live tree on the host. When set, Exec looks the command up in it
-	// before anything runs, which is the only way to tell a command that never ran from one that did.
-	RootFS string
-	// Binds are the mounts from the host over RootFS, in config.json's order, which the lookup reads through.
-	Binds []Bind
+	// Launch is the supervisor's guest path; set, the command runs under its launch mode, which proves the execve took.
+	Launch string
 	// TTY says the three files below are one pty replica, which is the only way the guest gets a terminal.
 	TTY bool
 	// The files the guest process gets. They are files, not pipes, so a pty replica passes straight through.
@@ -195,17 +194,11 @@ type ExecOptions struct {
 }
 
 // Exec runs a command in a running container and returns its exit code, which is no driver failure.
-// runc reports a command it cannot start as exit 1 with nothing in its own log, so only the
-// lookup against RootFS tells the two apart. The caller checks the container is running first.
+// runc reports a command it cannot start as exit 1 with nothing in its own log, so only a launch
+// tells the two apart. The caller checks the container is running first.
 func (r *Runner) Exec(ctx context.Context, id string, opts ExecOptions) (code int, err error) {
 	if len(opts.Argv) == 0 {
 		return 0, fmt.Errorf("no command: %s exec has nothing to run", r.name())
-	}
-
-	if opts.RootFS != "" {
-		if err := LookPath(opts.RootFS, opts.Binds, opts.WorkDir, pathOf(opts.Env), opts.Argv[0]); err != nil {
-			return 0, fmt.Errorf("%s exec %s: %w", r.name(), id, err)
-		}
 	}
 
 	dir, err := os.MkdirTemp(r.execDir, "shard-exec-")
@@ -215,9 +208,27 @@ func (r *Runner) Exec(ctx context.Context, id string, opts ExecOptions) (code in
 	defer func() { err = errors.Join(err, os.RemoveAll(dir)) }()
 
 	pidFile := filepath.Join(dir, "pid")
+	logFile := filepath.Join(dir, "log")
 
-	cmd := r.command(ctx, execArgs(id, pidFile, opts)...)
+	var ch *launch.Channel
+	if opts.Launch != "" {
+		ch, err = launch.Open()
+		if err != nil {
+			return 0, fmt.Errorf("%s exec %s: %w", r.name(), id, err)
+		}
+		defer func() { err = errors.Join(err, ch.Close()) }()
+	}
+
+	args := execArgs(id, pidFile, opts)
+	if ch != nil {
+		args = append([]string{"--log", logFile}, args...)
+	}
+
+	cmd := r.command(ctx, args...)
 	cmd.Stdin, cmd.Stdout, cmd.Stderr = opts.Stdin, opts.Stdout, opts.Stderr
+	if ch != nil {
+		cmd.ExtraFiles = []*os.File{ch.Guest()}
+	}
 
 	// The driver dies with the daemon, so a restart orphans no runc exec; the guest process is reparented inside the container and outlives both.
 	cmd.SysProcAttr = execAttr(opts.TTY)
@@ -230,13 +241,33 @@ func (r *Runner) Exec(ctx context.Context, id string, opts ExecOptions) (code in
 	cmd.Cancel = func() error { return r.interrupt(cmd, id, pidFile) }
 
 	// The pid lets the caller signal this exec while it runs; the watch ends when the command does.
-	if opts.Report != nil {
+	if opts.Report != nil && ch == nil {
 		reportCtx, stop := context.WithCancel(ctx)
 		defer stop()
 		go reportPID(reportCtx, pidFile, opts.Report)
 	}
 
-	if err := cmd.Run(); err != nil {
+	if err := cmd.Start(); err != nil {
+		return 0, fmt.Errorf("%s exec %s: %w", r.name(), id, err)
+	}
+
+	launched := make(chan error, 1)
+	if ch != nil {
+		// The runtime holds its own copy now, and the shim's end must close with it for a runtime that fails to read as EOF.
+		if err := ch.CloseGuest(); err != nil {
+			return 0, errors.Join(err, r.interrupt(cmd, id, pidFile), cmd.Wait())
+		}
+		go func() { launched <- await(ctx, ch, pidFile, opts.Report) }()
+	}
+
+	err = cmd.Wait()
+	if ch != nil {
+		if lerr := <-launched; lerr != nil {
+			return 0, r.notLaunched(ctx, id, lerr, err, logFile)
+		}
+	}
+
+	if err != nil {
 		// A cancelled call says nothing about how the command would have ended.
 		if ctx.Err() != nil {
 			return 0, fmt.Errorf("%s exec %s: %w", r.name(), id, ctx.Err())
@@ -278,22 +309,50 @@ func execArgs(id, pidFile string, opts ExecOptions) []string {
 		args = append(args, "--tty")
 	}
 
-	return append(append(args, id), opts.Argv...)
-}
-
-// defaultPath is the OCI image spec default, what runc itself resolves against when the
-// process env names no PATH; the lookup must not refuse what the runtime would run.
-const defaultPath = "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
-
-// pathOf is the PATH the guest command is looked up on, which is the one the exec is given.
-func pathOf(env []string) string {
-	for _, entry := range env {
-		if value, ok := strings.CutPrefix(entry, "PATH="); ok {
-			return value
-		}
+	if opts.Launch == "" {
+		return append(append(args, id), opts.Argv...)
 	}
 
-	return defaultPath
+	// The channel is the first fd past stdio, which runc hands the shim as its fd 3.
+	args = append(args, "--preserve-fds", "1", id, opts.Launch, launch.Mode)
+
+	return append(args, opts.Argv...)
+}
+
+// await waits for the launch shim's verdict, and reports the pid only once the command's execve took.
+func await(ctx context.Context, ch *launch.Channel, pidFile string, report func(int)) error {
+	pid, err := ch.Await(ctx, func() (int, error) { return readPID(pidFile) })
+	if err != nil {
+		return err
+	}
+	if report != nil {
+		report(pid)
+	}
+
+	return nil
+}
+
+// notLaunched names an exec whose command never ran. A runc that failed before the shim says why in its own log.
+func (r *Runner) notLaunched(ctx context.Context, id string, launchErr, waitErr error, logFile string) error {
+	if ctx.Err() != nil {
+		return fmt.Errorf("%s exec %s: %w", r.name(), id, ctx.Err())
+	}
+	if !errors.Is(launchErr, launch.ErrNoShim) {
+		return fmt.Errorf("%s exec %s: %w", r.name(), id, launchErr)
+	}
+
+	why := "it ended"
+	var exit *exec.ExitError
+	if errors.As(waitErr, &exit) {
+		why = exit.String()
+	}
+
+	blob, err := readTail(logFile, 0)
+	if err != nil {
+		return fmt.Errorf("%s exec %s: %w: %s, and its log was unreadable: %w", r.name(), id, launchErr, why, err)
+	}
+
+	return fmt.Errorf("%s exec %s: %w: %s: %s", r.name(), id, launchErr, why, strings.TrimSpace(string(blob)))
 }
 
 // interrupt ends the guest process a cancelled exec started. It is SIGKILL because nothing above this

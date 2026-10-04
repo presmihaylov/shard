@@ -11,6 +11,7 @@ import (
 	"os/exec"
 	"os/signal"
 	"path/filepath"
+	"runtime"
 	"slices"
 	"strconv"
 	"strings"
@@ -19,6 +20,7 @@ import (
 	"time"
 
 	"github.com/presmihaylov/shard/models"
+	"github.com/presmihaylov/shard/pkg/launch"
 	"github.com/presmihaylov/shard/pkg/memfd"
 	"github.com/presmihaylov/shard/pkg/store"
 	"github.com/presmihaylov/shard/services/supervisor"
@@ -47,7 +49,18 @@ var errNoEntrypoint = errors.New("the entrypoint did not start")
 // errNoHost is a report with no host to take it; the kind that must land waits for the next connection's replay.
 var errNoHost = errors.New("no host attached")
 
+func init() {
+	// The host traces the launch shim's main thread alone, so the execve has to run on it.
+	if len(os.Args) > 1 && os.Args[1] == launch.Mode {
+		runtime.LockOSThread()
+	}
+}
+
 func main() {
+	// The daemon runs [/.shard/init launch <argv>] as an exec's own process, to prove the command's execve took.
+	if len(os.Args) > 1 && os.Args[1] == launch.Mode {
+		os.Exit(runLaunch(os.Args[2:]))
+	}
 	// The daemon runs [/.shard/init files] through an exec for one file operation, as the user that exec runs as.
 	if len(os.Args) == 2 && os.Args[1] == supervisor.FilesMode {
 		os.Exit(runFiles())
@@ -64,6 +77,21 @@ func main() {
 
 	fmt.Fprintln(os.Stderr, "shard-init:", err)
 	os.Exit(exitCodeFor(err))
+}
+
+// runLaunch returns only when the command did not start; the host has the errno already, so a shell's code is enough here.
+func runLaunch(argv []string) int {
+	err := launch.Shim(argv)
+	var failed *launch.NotStartedError
+	if !errors.As(err, &failed) {
+		fmt.Fprintln(os.Stderr, "shard-init:", err)
+		return models.SupervisorFailedExitCode
+	}
+	if failed.NotFound() {
+		return models.CommandNotFoundExitCode
+	}
+
+	return models.CommandNotExecutableExitCode
 }
 
 // The host reads this back with runsc wait, so a dead supervisor is diagnosable and not a mystery.

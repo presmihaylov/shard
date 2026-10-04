@@ -14,6 +14,7 @@ import (
 
 	"github.com/presmihaylov/shard/models"
 	"github.com/presmihaylov/shard/pkg/cgroup"
+	"github.com/presmihaylov/shard/pkg/launch"
 	runccli "github.com/presmihaylov/shard/pkg/runc"
 	"github.com/presmihaylov/shard/services/bundle"
 	"github.com/presmihaylov/shard/services/runspec"
@@ -535,24 +536,23 @@ func (p *Provider) StopApp(ctx context.Context, id string, force bool) error {
 	return nil
 }
 
-// notStarted gives a command the driver refused to start a name the cli can answer with a shell's
-// own exit code. The driver looked the command up on the host, so the reason is the shell's wording.
+// notStarted gives a command whose execve never took a name the cli answers with a shell's own exit code.
 func notStarted(id string, err error) error {
-	var lookup *runccli.LookupError
-	if !errors.As(err, &lookup) {
+	var failed *launch.NotStartedError
+	if !errors.As(err, &failed) {
 		return err
 	}
 
-	code := models.CommandNotFoundExitCode
-	if lookup.NotExecutable {
-		code = models.CommandNotExecutableExitCode
+	code := models.CommandNotExecutableExitCode
+	if failed.NotFound() {
+		code = models.CommandNotFoundExitCode
 	}
 
-	return &models.CommandNotStartedError{Sandbox: id, Reason: lookup.Reason, Code: code}
+	return &models.CommandNotStartedError{Sandbox: id, Reason: failed.Reason(), Code: code}
 }
 
 // execOptions puts the exec where the entrypoint runs. config.json is the only record of that, and
-// the rootfs it resolves a user and the command against is the sandbox's live tree, not the image's.
+// the rootfs it resolves a user against is the sandbox's live tree, not the image's.
 func execOptions(b bundle.Bundle, spec models.ExecSpec) (runccli.ExecOptions, error) {
 	runtime, err := b.Runtime()
 	if err != nil {
@@ -563,8 +563,7 @@ func execOptions(b bundle.Bundle, spec models.ExecSpec) (runccli.ExecOptions, er
 		Argv:    spec.Argv,
 		Env:     runspec.MergeEnv(runtime.Env, spec.Env),
 		WorkDir: firstNonEmpty(spec.WorkDir, runtime.WorkDir, "/"),
-		RootFS:  b.RootFS,
-		Binds:   runtime.Binds,
+		Launch:  bundle.GuestInitPath,
 		TTY:     spec.TTY,
 		Stdin:   spec.Stdin,
 		Stdout:  spec.Stdout,
