@@ -171,8 +171,8 @@ func TestPauseAndResumeRunThroughTheDaemon(t *testing.T) {
 	if err := app.Run(t.Context(), []string{"pause", "sandbox1"}); err != nil {
 		t.Fatalf("pause: %v", err)
 	}
-	if got := d.providerSvc.(*fakeLifecycleProvider).snapshot; got != "/snapshots/sandbox1" {
-		t.Errorf("the provider was told to write %q, want the repository's snapshot directory", got)
+	if got := d.providerSvc.(*fakeLifecycleProvider).snapshot; got != "/checkpoints/sandbox1" {
+		t.Errorf("the provider was told to write %q, want the repository's checkpoint directory", got)
 	}
 
 	if err := app.Run(t.Context(), []string{"resume", "sandbox1"}); err != nil {
@@ -241,6 +241,11 @@ func TestTheLifecycleVerbsWithNoDaemonFailFast(t *testing.T) {
 		{"pause", "sandbox1"},
 		{"resume", "sandbox1"},
 		{"fork", "sandbox1"},
+		{"snapshot", "create", "sandbox1"},
+		{"snapshot", "list"},
+		{"snapshot", "inspect", "web-base"},
+		{"snapshot", "remove", "web-base"},
+		{"create", "--snapshot", "web-base"},
 		{"cp", "sandbox1:/srv/app", "/tmp/app"},
 	} {
 		var out bytes.Buffer
@@ -250,10 +255,10 @@ func TestTheLifecycleVerbsWithNoDaemonFailFast(t *testing.T) {
 
 		err := app.Run(t.Context(), args)
 		if want := "cannot connect to shard daemon at " + filepath.Join(root, api.SocketFile) + ": is it running? shard --root " + root + " daemon"; err == nil || err.Error() != want {
-			t.Errorf("%s with no daemon returned %v, want %q", args[0], err, want)
+			t.Errorf("%v with no daemon returned %v, want %q", args, err, want)
 		}
 		if out.Len() != 0 {
-			t.Errorf("%s printed %q before it failed", args[0], out.String())
+			t.Errorf("%v printed %q before it failed", args, out.String())
 		}
 	}
 }

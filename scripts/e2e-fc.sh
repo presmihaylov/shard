@@ -445,7 +445,7 @@ RECONCILE_ID=""
 RECONCILE_LINK=""
 say "list gives the reason, and remove freed what it left on the host"
 
-snapshot_steps
+checkpoint_steps
 # The resume brought the microVM up in a fresh vmm, so the stop and the start below read that one.
 VMM_PID=$(record_pid "${ID}")
 expect "$(ps -o comm= -p "${VMM_PID}" | tr -d ' ')" "firecracker" "a fresh vmm ${VMM_PID} drives the resumed microVM"
@@ -471,6 +471,65 @@ holds "shard-e2e-entrypoint" timeout 10 "${PREFIX}/shard" --root "${SHARD_ROOT}"
 say "logs still reads a stopped sandbox, and -f ends on its own"
 shard stop "${ID}" >/dev/null
 say "a second stop is idempotent"
+
+step "snapshot the stopped microVM, by reflink"
+timed "snapshot create" snapshot_it
+[ -n "${SNAPSHOT_ID}" ] || fail "snapshot create printed no id"
+SNAPSHOT_DIR="${SHARD_ROOT}/snapshots/${SNAPSHOT_ID}"
+[ -f "${SNAPSHOT_DIR}/files/overlay.raw" ] || fail "the snapshot holds no overlay disk at ${SNAPSHOT_DIR}/files/overlay.raw"
+holds "e2e-snapshot" shard snapshot list || fail "snapshot list does not list e2e-snapshot"
+grep -q '"state": *"stopped"' "${RECORD}" || fail "the snapshot changed the source's state"
+say "snapshot create printed ${SNAPSHOT_ID}, and the snapshot holds the overlay disk"
+
+step "create two microVMs from the snapshot"
+timed "create --snapshot" seed_it e2e-seeded-1
+timed "create --snapshot" seed_it e2e-seeded-2
+# shellcheck disable=SC2086 # the seeded list is meant to split
+set -- ${SEEDED_IDS}
+[ "$#" = "2" ] && [ "$1" != "$2" ] && [ "$1" != "${ID}" ] && [ "$2" != "${ID}" ] || fail "create --snapshot printed '${SEEDED_IDS}', want two new ids"
+N=0
+for SEEDED_ID in "$@"; do
+	N=$((N + 1))
+	SEEDED_ADDRESS=$(record_field "${SEEDED_ID}" address)
+	SEEDED_LINKS="${SEEDED_LINKS} $(record_field "${SEEDED_ID}" host_interface)"
+	[ "${SEEDED_ADDRESS}" != "${ADDRESS}" ] || fail "sandbox ${SEEDED_ID} got the source's address ${ADDRESS}"
+	expect "$(listed_state "${SEEDED_ID}")" "running" "sandbox ${SEEDED_ID} runs on its own address ${SEEDED_ADDRESS}"
+	expect "$(record_field "${SEEDED_ID}" snapshot)" "${SNAPSHOT_ID}" "sandbox ${SEEDED_ID} names the snapshot it came from"
+	# A snapshot runs shard-init alone, so the source's app never prints its banner again.
+	expect "$(shard logs "${SEEDED_ID}" | grep -c "shard-e2e-entrypoint")" "0" "sandbox ${SEEDED_ID} ran no entrypoint"
+	holds '"exit_status"' shard inspect "${SEEDED_ID}" && fail "sandbox ${SEEDED_ID} carries the source's exit status"
+	expect_exec_in "${SEEDED_ID}" "kept" "sandbox ${SEEDED_ID} holds the file the source wrote before the stop" /bin/cat /root/kept
+	expect_exec_in "${SEEDED_ID}" "e2e-seeded-${N}" "sandbox ${SEEDED_ID} carries its own hostname" /bin/hostname
+	expect_exec_in "${SEEDED_ID}" "mock-E2E_TOKEN" "sandbox ${SEEDED_ID} holds the placeholder its create granted" /bin/sh -c 'echo "$E2E_TOKEN"'
+	expect_blocked "${SEEDED_ID}" "the policy holds on sandbox ${SEEDED_ID}"
+	expect_fronted "${SEEDED_ID}" "the proxy fronts sandbox ${SEEDED_ID}"
+done
+shard exec "$1" /bin/sh -c 'echo seeded-only > /root/seeded-only' >/dev/null
+CODE=0
+shard exec "$2" /bin/cat /root/seeded-only >/dev/null 2>&1 || CODE=$?
+[ "${CODE}" != "0" ] || fail "sandbox $2 sees the file sandbox $1 wrote"
+grep -q '"state": *"stopped"' "${RECORD}" || fail "the seeded microVMs changed the source's state"
+say "the seeded microVMs share nothing with each other or with the source, which is still stopped"
+
+step "refuse a --disk that differs from the snapshot's"
+SNAPSHOT_DISK=$(shard snapshot inspect "${SNAPSHOT_ID}" | grep -o '"disk_mib": *[0-9]*' | grep -o '[0-9]*$')
+CODE=0
+REFUSAL=$(shard create --disk "$((SNAPSHOT_DISK + 64))MiB" --snapshot "${SNAPSHOT_ID}" 2>&1) || CODE=$?
+[ "${CODE}" != "0" ] || fail "create --snapshot took a --disk the snapshot's disk does not have"
+grep -q -- "--disk" <<<"${REFUSAL}" || fail "create --snapshot --disk said '${REFUSAL}', want it to name --disk"
+say "firecracker refused the other disk size by name"
+
+step "stop and remove the seeded microVMs and the snapshot"
+for SEEDED_ID in "$@"; do
+	shard stop "${SEEDED_ID}" >/dev/null
+	shard remove "${SEEDED_ID}" >/dev/null
+done
+SEEDED_IDS=""
+SEEDED_LINKS=""
+absent "a seeded record" "$(shard list --all | grep e2e-seeded || true)"
+shard snapshot remove e2e-snapshot >/dev/null
+absent "the snapshot ${SNAPSHOT_ID}" "$([ -e "${SNAPSHOT_DIR}" ] && echo "${SNAPSHOT_DIR}" || true)"
+SNAPSHOT_ID=""
 
 step "start the microVM again"
 start_it() { shard start "${ID}" >/dev/null; }
@@ -536,4 +595,4 @@ say "the root, the image, the fstab line, every cgroup of the run and the parent
 
 trap - EXIT
 echo
-echo "e2e PASSED on firecracker: install, xfs bootstrap, daemon up, create, the vmm's host cgroup, logs, exec, an entrypoint exit, an OOM stop and start, network, policy, proxy, daemon restart, reconcile, a live fork, pause, resume, stop, start, remove, prune, daemon down, and a host with no cgroup, no bridge and no policy table left"
+echo "e2e PASSED on firecracker: install, xfs bootstrap, daemon up, create, the vmm's host cgroup, logs, exec, an entrypoint exit, an OOM stop and start, network, policy, proxy, daemon restart, reconcile, a live fork, pause, resume, stop, snapshot, create twice from it, start, remove, prune, daemon down, and a host with no cgroup, no bridge and no policy table left"

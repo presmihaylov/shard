@@ -29,11 +29,10 @@ type Provider interface {
 	Start(ctx context.Context, id string) error
 	// Stop ends the sandbox, and nothing else does. It signals, returns once the entrypoint exits, and kills it when grace runs out.
 	Stop(ctx context.Context, id string, grace time.Duration) error
-	// Remove deletes the substrate's own state, not the shard record and not a snapshot.
+	// Remove deletes the substrate's own state, not the shard record and not a checkpoint.
 	Remove(ctx context.Context, id string) error
-	// Clone starts a new sandbox over a copy of the files sourceID kept and runs its entrypoint from the
-	// beginning. It refuses a source that is alive, and it writes nothing of the source.
-	Clone(ctx context.Context, sourceID string, spec SandboxSpec) error
+	// Snapshot refuses a live source, which could change the files during the copy.
+	Snapshot(ctx context.Context, sourceID, dir string) error
 
 	// Exec runs a command in a sandbox that already runs and returns how that command ended. It is
 	// never the entrypoint: it has no supervisor, and its exit ends nothing. ExitStatus.Signal is
@@ -63,13 +62,11 @@ type Provider interface {
 	// HeldLogs names the log files a process outside the daemon appends to, which the daemon bounds by copy and truncate.
 	HeldLogs(id string) ([]string, error)
 
-	// Pause writes a complete snapshot into dir, frees the memory and ends the sandbox on the substrate,
-	// so Status reports it stopped; a pause over a dir that holds one leaves it holding one. Optional,
-	// see Capabilities.
+	// A checkpoint replaces the runtime, so Status reports a stopped substrate. Optional.
 	Pause(ctx context.Context, id string, dir string) error
-	// Resume brings the sandbox back from the snapshot in dir and does not consume it. Optional.
+	// Resume brings the sandbox back from the checkpoint in dir and does not consume it. Optional.
 	Resume(ctx context.Context, id string, dir string) error
-	// Fork starts one more sandbox from a capture of the running sandbox sourceID, which runs on as it was; never from an older snapshot (SHARD-457). Optional.
+	// Fork starts one more sandbox from a capture of the running sandbox sourceID, which runs on as it was; never from an older checkpoint (SHARD-457). Optional.
 	Fork(ctx context.Context, sourceID string, spec SandboxSpec) error
 	// AdoptStaging settles the snapshot staging a cut pause left beside dir at daemon start: a provider that never reads a staged snapshot drops it, and vz keeps the one it finishes on the next resume (SHARD-404).
 	AdoptStaging(dir string) error
@@ -138,6 +135,9 @@ type SandboxSpec struct {
 	Resources Resources
 	// Restart is what the supervisor is told about starting the entrypoint again; the zero value is never.
 	Restart RestartSpec
+
+	// Seed is the files dir of the snapshot the writable layer starts from, empty for a fresh one.
+	Seed string
 
 	// ProxyCA is the PEM certificate a fronted sandbox must trust, so the proxy can terminate its TLS; nil fronts nothing.
 	ProxyCA []byte

@@ -20,10 +20,10 @@
 #   DIND_IMAGE the image the sysbox docker step runs dockerd from (default docker:27-dind)
 #   SKIP_INSTALL=1 to run against the binaries already on the box
 #
-# On sysbox the snapshot steps become their refusals: the provider claims no pause, resume or fork,
+# On sysbox the checkpoint steps become their refusals: the provider claims no pause, resume or fork,
 # and the run proves each one says so by name while the sandbox runs on. Sysbox then earns its slot:
 # a second sandbox runs dockerd and a docker build inside it, which no other substrate here can.
-# On runc the snapshot steps are the same refusals, and the docker step is skipped: bare runc holds no dockerd.
+# On runc the checkpoint steps are the same refusals, and the docker step is skipped: bare runc holds no dockerd.
 
 set -euo pipefail
 
@@ -61,6 +61,10 @@ FORK_LINK=""
 # The sandbox the reconcile step makes and removes itself, kept here so a failure halfway still frees it.
 RECONCILE_ID=""
 RECONCILE_LINK=""
+# The seeded sandboxes are space separated lists: two come off one snapshot, and both must go on teardown.
+SEEDED_IDS=""
+SEEDED_LINKS=""
+SNAPSHOT_ID=""
 # The sandbox that is created unfronted and granted a secret later (SHARD-114).
 GRANT_ID=""
 GRANT_LINK=""
@@ -334,6 +338,8 @@ timed() {
 pause_it() { shard pause "${ID}" >/dev/null; }
 resume_it() { shard resume "${ID}" >/dev/null; }
 fork_it() { FORK_ID=$(shard fork --name e2e-fork "${ID}"); }
+snapshot_it() { SNAPSHOT_ID=$(shard snapshot create --name e2e-snapshot "${ID}" | tail -n 1); }
+seed_it() { SEEDED_IDS="${SEEDED_IDS} $(shard create --name "$1" --secret E2E_TOKEN --policy e2e-policy --snapshot "${SNAPSHOT_ID}")"; }
 
 # rss_kib reads the resident set of a host process, which for a sandbox is the sentry and its guest memory.
 rss_kib() { ps -o rss= -p "$1" 2>/dev/null | tr -d ' ' || true; }
@@ -642,11 +648,11 @@ free_sandbox() {
 teardown() {
 	local id link
 	# remove speaks to the daemon, so a run that broke while the daemon was down gets one back first.
-	if [ -z "${DAEMON_PID}" ] && [ -x "${PREFIX}/shard" ] && [ -n "${ID}${FORK_ID}${RECONCILE_ID}${GRANT_ID}${DIND_ID}${FEATURE_IDS}$(recorded_sandboxes)" ]; then
+	if [ -z "${DAEMON_PID}" ] && [ -x "${PREFIX}/shard" ] && [ -n "${ID}${FORK_ID}${SEEDED_IDS}${RECONCILE_ID}${GRANT_ID}${DIND_ID}${FEATURE_IDS}$(recorded_sandboxes)" ]; then
 		start_daemon || echo "teardown: no daemon came up, so remove cannot run: $(cat "${DAEMON_LOG}")" >&2
 	fi
-	# shellcheck disable=SC2086 # the feature list is meant to split
-	for id in ${FEATURE_IDS} "${GRANT_ID}" "${RECONCILE_ID}" "${FORK_ID}" "${DIND_ID}" "${ID}"; do
+	# shellcheck disable=SC2086 # the seeded lists are meant to split
+	for id in ${SEEDED_IDS} ${FEATURE_IDS} "${GRANT_ID}" "${RECONCILE_ID}" "${FORK_ID}" "${DIND_ID}" "${ID}"; do
 		[ -n "${id}" ] || continue
 		shard remove --force "${id}" >/dev/null 2>&1 || true
 		ip netns delete "${id}" >/dev/null 2>&1 || true
@@ -654,7 +660,8 @@ teardown() {
 		umount "${USERNS_DIR}/${id}" >/dev/null 2>&1 || true
 		rm -f "${USERNS_DIR}/${id}"
 	done
-	for link in "${GRANT_LINK}" "${RECONCILE_LINK}" "${FORK_LINK}" "${DIND_LINK}" "${LINK}"; do
+	# shellcheck disable=SC2086
+	for link in ${SEEDED_LINKS} "${GRANT_LINK}" "${RECONCILE_LINK}" "${FORK_LINK}" "${DIND_LINK}" "${LINK}"; do
 		[ -n "${link}" ] || continue
 		ip link delete "${link}" >/dev/null 2>&1 || true
 	done
@@ -698,8 +705,8 @@ runtime_binary() {
 	esac
 }
 
-# snapshot_steps fork the running sandbox, then pause and resume it, which only a provider that holds snapshots can do.
-snapshot_steps() {
+# checkpoint_steps fork the running sandbox, then pause and resume it, which only a provider that holds checkpoints can do.
+checkpoint_steps() {
 	fork_steps
 
 	step "pause the sandbox"
@@ -715,11 +722,11 @@ snapshot_steps() {
 
 	timed "pause" pause_it
 	grep -q '"state": *"paused"' "${RECORD}" || fail "the record does not say paused"
-	SNAPSHOT=$(grep -o '"snapshot": *"[^"]*"' "${RECORD}" | cut -d'"' -f4)
-	[ -f "${SNAPSHOT}/checkpoint.img" ] || fail "there is no checkpoint at ${SNAPSHOT}/checkpoint.img"
-	say "the record says paused and the snapshot is at ${SNAPSHOT}"
-	# The snapshot is the guest's memory after it sent the placeholder out, so the value must not be in it.
-	absent "the value in the memory snapshot" "$(grep -rl "${SECRET_VALUE}" "${SNAPSHOT}" 2>/dev/null || true)"
+	CHECKPOINT=$(grep -o '"checkpoint": *"[^"]*"' "${RECORD}" | cut -d'"' -f4)
+	[ -f "${CHECKPOINT}/checkpoint.img" ] || fail "there is no checkpoint at ${CHECKPOINT}/checkpoint.img"
+	say "the record says paused and the checkpoint is at ${CHECKPOINT}"
+	# The checkpoint is the guest's memory after it sent the placeholder out, so the value must not be in it.
+	absent "the value in the checkpoint" "$(grep -rl "${SECRET_VALUE}" "${CHECKPOINT}" 2>/dev/null || true)"
 
 	# The whole point of a pause: the memory goes back to the host, so the sandbox process is gone.
 	absent "the sandbox process ${PID} and its ${RSS_BEFORE} KiB" "$(rss_kib "${PID}")"
@@ -738,7 +745,7 @@ snapshot_steps() {
 	say "exec refused the paused sandbox and named the resume"
 
 	step "resume the sandbox"
-	# A resume loads the snapshot and leaves it, so a second resume could load it again.
+	# A resume loads the checkpoint and leaves it, so a second resume could load it again.
 	timed "resume" resume_it
 	grep -q '"state": *"running"' "${RECORD}" || fail "the record does not say running after the resume"
 	grep -q "\"address\": *\"${ADDRESS}\"" "${RECORD}" || fail "the resume changed the address"
@@ -1626,7 +1633,7 @@ alone_in() {
 
 # no_command_steps proves the image's own ENTRYPOINT and CMD never run: with no command only shard-init does (SHARD-453).
 no_command_steps() {
-	local id code refusal policy started took
+	local id seeded snapshot code refusal policy started took
 
 	step "create with no command runs only shard-init and stays up"
 	id=$(shard create "${IMAGE}")
@@ -1647,11 +1654,19 @@ no_command_steps() {
 	holds '"exit_status"' shard inspect "${id}" && fail "the stop recorded an exit for a sandbox that ran nothing: $(shard inspect "${id}")"
 	say "the stop ends shard-init alone and records no exit status"
 
-	step "start a sandbox with no command, and still run nothing"
+	step "start and snapshot a sandbox with no command, and still run nothing"
 	shard start "${id}" >/dev/null
 	[ "$(listed_state "${id}")" = "running" ] || fail "the sandbox with no command is not running after the start"
 	alone_in "${id}" "after a start"
+	shard stop "${id}" >/dev/null
+	snapshot=$(shard snapshot create "${id}" | tail -n 1)
+	seeded=$(shard create --snapshot "${snapshot}")
+	track_sandbox "${seeded}"
+	[ "$(listed_state "${seeded}")" = "running" ] || fail "the sandbox from the snapshot of the sandbox with no command is not running"
+	alone_in "${seeded}" "in the sandbox from the snapshot"
+	drop_sandbox "${seeded}"
 	drop_sandbox "${id}"
+	shard snapshot remove "${snapshot}" >/dev/null
 
 	step "create refuses a command, and the API refuses restart.policy with no command"
 	code=0
@@ -1978,7 +1993,7 @@ oom_stop_steps() {
 
 # disk_bound_steps prove SHARD-173: a guest write past --disk fails with ENOSPC and the host holds no more than the bound.
 disk_bound_steps() {
-	local id rec image_mib state_mib disk_mount
+	local id seeded snapshot rec image_mib state_mib disk_mount
 	# Each fill asks for three times the bound. A full disk takes no status file, so the count goes through a pipe and the fill is freed after.
 	local fill_tmp='dd if=/dev/zero of=/tmp/fill bs=1M count=192 2>&1 | grep -c "No space left on device"; rm -f /tmp/fill'
 	local fill_root='dd if=/dev/zero of=/fill bs=1M count=192 2>&1 | grep -c "No space left on device"; rm -f /fill'
@@ -2016,7 +2031,19 @@ disk_bound_steps() {
 	esac
 	shard start "${id}" >/dev/null
 	expect_exec_in "${id}" "before-the-stop" "the marker survives the stop and start" /bin/cat /root/marker
+
+	step "a sandbox from a snapshot is bounded the way its source was"
+	shard stop "${id}" >/dev/null
+	snapshot=$(shard snapshot create "${id}" | tail -n 1)
+	seeded=$(shard create --name e2e-disk-seeded --snapshot "${snapshot}")
+	track_sandbox "${seeded}"
+	grep -q '"disk_mib": *64' "$(rec_of "${seeded}")" || fail "the seeded record does not carry the disk bound: $(cat "$(rec_of "${seeded}")")"
+	expect_exec_in "${seeded}" "before-the-stop" "the seeded sandbox holds the source's layer" /bin/cat /root/marker
+	expect_exec_in "${seeded}" "1" "a fill past the bound fails in the seeded sandbox too" /bin/sh -c "${fill_root}"
+	say "the sandbox from the snapshot carries disk_mib 64 and its own disk bounds it"
+	drop_sandbox "${seeded}"
 	drop_sandbox "${id}"
+	shard snapshot remove "${snapshot}" >/dev/null
 }
 
 # stop_grace_steps prove SHARD-460: the grace is fixed at 30 s, a stop ends with an entrypoint that exits on SIGTERM, and kills one that ignores it at 30 s.
@@ -2068,14 +2095,14 @@ oom_stop_steps
 disk_bound_steps
 stop_grace_steps
 
-# snapshot_refusals prove a provider without snapshots refuses each verb by name and leaves the sandbox running.
-snapshot_refusals() {
+# checkpoint_refusals prove a provider without checkpoints refuses each verb by name and leaves the sandbox running.
+checkpoint_refusals() {
 	local verb refusal code
 	for verb in pause resume; do
 		step "refuse to ${verb} on ${PROVIDER}"
 		code=0
 		refusal=$(shard "${verb}" "${ID}" 2>&1) || code=$?
-		[ "${code}" != "0" ] || fail "shard ${verb} exited 0 on ${PROVIDER}, which holds no snapshots"
+		[ "${code}" != "0" ] || fail "shard ${verb} exited 0 on ${PROVIDER}, which holds no checkpoints"
 		expect "${refusal}" "shard: provider ${PROVIDER} does not support ${verb} on this host" "${verb} names the provider and the verb"
 		[ "$(listed_state "${ID}")" = "running" ] || fail "the refused ${verb} left the sandbox $(listed_state "${ID}")"
 	done
@@ -2083,7 +2110,7 @@ snapshot_refusals() {
 	step "refuse to fork on ${PROVIDER}"
 	code=0
 	refusal=$(shard fork --name e2e-fork "${ID}" 2>&1) || code=$?
-	[ "${code}" != "0" ] || fail "shard fork exited 0 on ${PROVIDER}, which holds no snapshots"
+	[ "${code}" != "0" ] || fail "shard fork exited 0 on ${PROVIDER}, which holds no checkpoints"
 	expect "${refusal}" "shard: provider ${PROVIDER} does not support fork on this host" "fork names the provider and the verb"
 	absent "a sandbox named e2e-fork" "$(shard list --all | grep e2e-fork || true)"
 	expect_exec "still-running" "the source runs on after the refusals" /bin/echo still-running
@@ -2128,9 +2155,9 @@ docker_steps() {
 
 # The docker step is Sysbox's alone: bare runc holds no dockerd.
 case "${PROVIDER}" in
-gvisor) snapshot_steps ;;
-sysbox) snapshot_refusals; docker_steps ;;
-runc) snapshot_refusals ;;
+gvisor) checkpoint_steps ;;
+sysbox) checkpoint_refusals; docker_steps ;;
+runc) checkpoint_refusals ;;
 esac
 
 step "refuse to remove a sandbox that is still up"
@@ -2201,6 +2228,83 @@ CODE=0
 REFUSAL=$(shard inspect no-such-sandbox 2>&1) || CODE=$?
 [ "${CODE}" != "0" ] || fail "inspect answered for a sandbox nothing holds"
 expect "${REFUSAL}" "shard: no sandbox no-such-sandbox" "inspect of a name nothing holds is one line"
+
+step "snapshot the stopped sandbox"
+# A snapshot copies the files a stop kept, never the memory, and outlives its source.
+timed "snapshot create" snapshot_it
+[ -n "${SNAPSHOT_ID}" ] || fail "snapshot create printed no id"
+SNAPSHOT_DIR="${SHARD_ROOT}/snapshots/${SNAPSHOT_ID}"
+[ -f "${SNAPSHOT_DIR}/snapshot.json" ] || fail "there is no snapshot record at ${SNAPSHOT_DIR}/snapshot.json"
+holds "e2e-snapshot" shard snapshot list || fail "snapshot list does not list e2e-snapshot"
+holds "\"source\": \"${ID}\"" shard snapshot inspect e2e-snapshot || fail "snapshot inspect does not name the source: $(shard snapshot inspect e2e-snapshot)"
+grep -q '"state": *"stopped"' "${RECORD}" || fail "the snapshot changed the source's state"
+say "snapshot create printed ${SNAPSHOT_ID}, and list and inspect find it by name"
+
+step "create two sandboxes from the snapshot"
+timed "create --snapshot" seed_it e2e-seeded-1
+timed "create --snapshot" seed_it e2e-seeded-2
+# shellcheck disable=SC2086 # the seeded list is meant to split
+set -- ${SEEDED_IDS}
+[ "$#" = "2" ] && [ "$1" != "$2" ] && [ "$1" != "${ID}" ] && [ "$2" != "${ID}" ] || fail "create --snapshot printed '${SEEDED_IDS}', want two new ids"
+N=0
+for SEEDED_ID in "$@"; do
+	N=$((N + 1))
+	SEEDED_RECORD="${SHARD_ROOT}/sandboxes/${SEEDED_ID}/sandbox.json"
+	SEEDED_ADDRESS=$(grep -o '"address": *"[^"]*"' "${SEEDED_RECORD}" | cut -d'"' -f4)
+	SEEDED_LINKS="${SEEDED_LINKS} $(grep -o '"host_interface": *"[^"]*"' "${SEEDED_RECORD}" | cut -d'"' -f4)"
+	[ "${SEEDED_ADDRESS}" != "${ADDRESS}" ] || fail "sandbox ${SEEDED_ID} got the source's address ${ADDRESS}"
+	[ "$(listed_state "${SEEDED_ID}")" = "running" ] || fail "shard list does not list sandbox ${SEEDED_ID} running"
+	grep -q "\"snapshot\": *\"${SNAPSHOT_ID}\"" "${SEEDED_RECORD}" || fail "sandbox ${SEEDED_ID} does not name snapshot ${SNAPSHOT_ID}: $(cat "${SEEDED_RECORD}")"
+	grep -q '"checkpoint": *"[^"]' "${SEEDED_RECORD}" && fail "sandbox ${SEEDED_ID} names a checkpoint"
+	# A snapshot runs shard-init alone, so the source's app and its log never come along.
+	alone_in "${SEEDED_ID}" "in sandbox ${SEEDED_ID}"
+	[ "$(shard logs "${SEEDED_ID}" | grep -c "shard-e2e-entrypoint")" = "0" ] || fail "sandbox ${SEEDED_ID} printed the source's banner"
+	expect_exec_in "${SEEDED_ID}" "kept" "sandbox ${SEEDED_ID} holds the file the source wrote before the stop" /bin/cat /root/kept
+	expect_exec_in "${SEEDED_ID}" "${SEEDED_ADDRESS}" "sandbox ${SEEDED_ID} holds its own address" \
+		/bin/sh -c "ip -o -4 addr show eth0 | grep -o '${SEEDED_ADDRESS}'"
+	expect_exec_in "${SEEDED_ID}" "reachable" "sandbox ${SEEDED_ID} gets out through the NAT" \
+		/bin/sh -c 'ping -c 1 -W 3 1.1.1.1 >/dev/null && echo reachable'
+	expect_exec_in "${SEEDED_ID}" "e2e-seeded-${N}" "sandbox ${SEEDED_ID} carries its own hostname" /bin/hostname
+	expect_exec_in "${SEEDED_ID}" "mock-E2E_TOKEN" "sandbox ${SEEDED_ID} holds the placeholder its create granted" /bin/sh -c 'echo "$E2E_TOKEN"'
+	expect_blocked "${SEEDED_ID}" "the policy holds on sandbox ${SEEDED_ID}"
+	expect_fronted "${SEEDED_ID}" "the proxy fronts sandbox ${SEEDED_ID}"
+	[ -d "/sys/fs/cgroup/shard/${SEEDED_ID}" ] || fail "sandbox ${SEEDED_ID} has no cgroup under the shard parent"
+done
+say "both sandboxes run shard-init alone over the source's files, each on its own address"
+
+shard exec "$1" /bin/sh -c 'echo seeded-only > /root/seeded-only' >/dev/null
+CODE=0
+shard exec "$2" /bin/cat /root/seeded-only >/dev/null 2>&1 || CODE=$?
+[ "${CODE}" != "0" ] || fail "sandbox $2 sees the file sandbox $1 wrote"
+[ ! -e "${SHARD_ROOT}/sandboxes/${ID}/overlay/upper/root/seeded-only" ] || fail "the source's layer holds what a seeded sandbox wrote"
+absent "what a seeded sandbox wrote, in the snapshot" "$(find "${SNAPSHOT_DIR}" -name seeded-only)"
+grep -q '"state": *"stopped"' "${RECORD}" || fail "the seeded sandboxes changed the source's state"
+say "the seeded sandboxes share nothing with each other, the snapshot or the source, which is still stopped"
+
+step "refuse to snapshot a running sandbox"
+CODE=0
+REFUSAL=$(shard snapshot create "$1" 2>&1) || CODE=$?
+[ "${CODE}" != "0" ] || fail "snapshot create copied the running sandbox $1"
+grep -q "stop it first" <<<"${REFUSAL}" || fail "snapshot create said '${REFUSAL}', want it to say stop it first"
+say "snapshot create refused the running sandbox and named the stop"
+
+step "stop and remove the seeded sandboxes and the snapshot"
+for SEEDED_ID in "$@"; do
+	shard stop "${SEEDED_ID}" >/dev/null
+	shard remove "${SEEDED_ID}" >/dev/null
+	absent "the record of sandbox ${SEEDED_ID}" "$([ -e "${SHARD_ROOT}/sandboxes/${SEEDED_ID}" ] && echo "${SHARD_ROOT}/sandboxes/${SEEDED_ID}" || true)"
+done
+for SEEDED_LINK in ${SEEDED_LINKS}; do
+	absent "the link ${SEEDED_LINK} of a seeded sandbox" "$(ip link show "${SEEDED_LINK}" 2>/dev/null || true)"
+done
+SEEDED_IDS=""
+SEEDED_LINKS=""
+set --
+shard snapshot remove e2e-snapshot >/dev/null
+absent "the snapshot ${SNAPSHOT_ID}" "$([ -e "${SNAPSHOT_DIR}" ] && echo "${SNAPSHOT_DIR}" || true)"
+absent "e2e-snapshot in snapshot list" "$(shard snapshot list | grep e2e-snapshot || true)"
+SNAPSHOT_ID=""
+say "the seeded sandboxes and the snapshot are gone"
 
 step "refuse to remove the image a stopped sandbox references"
 CODE=0

@@ -79,3 +79,24 @@ func (s sizeMiB) Set(value string) error {
 
 	return nil
 }
+
+// optionalMiB is a size flag that stays nil until it is given, so an explicit 0 differs from an omitted flag.
+type optionalMiB struct{ mib **int64 }
+
+func (o optionalMiB) String() string {
+	if o.mib == nil || *o.mib == nil {
+		return ""
+	}
+
+	return strconv.FormatInt(**o.mib, 10)
+}
+
+func (o optionalMiB) Set(value string) error {
+	n, err := parseMiB(value)
+	if err != nil {
+		return err
+	}
+	*o.mib = &n
+
+	return nil
+}

@@ -55,10 +55,17 @@ type StoresConfig struct {
 	Compiler Compiler
 	Secrets  SecretStore
 	Images   ImageStore
+	// Snapshots hold their image as a record does, since a create from one never pulls.
+	Snapshots SnapshotLister
 	// Network is built on the first policy change a sandbox holds, so a daemon without one needs no root.
 	Network func() (Reapplier, error)
 	// PullTimeout bounds one pull; zero is no bound.
 	PullTimeout time.Duration
+}
+
+// SnapshotLister is the part of sandboxstate.Snapshots the image verbs read.
+type SnapshotLister interface {
+	List() ([]models.Snapshot, error)
 }
 
 // Stores owns the policy, secret and image verbs, and the sandbox records that hold what they keep.
@@ -75,12 +82,14 @@ type HeldError struct {
 	// Subject names the entry, as in `policy web`, and Verb is how a record holds it, as in `held by`.
 	Subject string
 	Verb    string
-	Users   []string
-	Fix     string
+	// Noun is what the users are: sandbox or snapshot.
+	Noun  string
+	Users []string
+	Fix   string
 }
 
 func (e *HeldError) Error() string {
-	return fmt.Sprintf("%s is %s sandbox %s: %s", e.Subject, e.Verb, strings.Join(e.Users, ", "), e.Fix)
+	return fmt.Sprintf("%s is %s %s %s: %s", e.Subject, e.Verb, e.Noun, strings.Join(e.Users, ", "), e.Fix)
 }
 
 // RuleText is one --allow or --deny as the operator typed it. The daemon owns the grammar.
@@ -192,7 +201,7 @@ func (s *Stores) RemovePolicy(name string) error {
 		return err
 	}
 	if len(users) != 0 {
-		return &HeldError{Subject: "policy " + name, Verb: "held by", Users: users, Fix: "remove the sandbox first"}
+		return &HeldError{Subject: "policy " + name, Verb: "held by", Noun: "sandbox", Users: users, Fix: "remove the sandbox first"}
 	}
 
 	return s.cfg.Policies.Remove(name)
@@ -229,7 +238,7 @@ func (s *Stores) SetSecret(name string, req SecretRequest) (secret.Secret, error
 	sec, err := s.cfg.Secrets.Set(name, req.Value, req.Destinations, req.Placeholder)
 	var held *secret.HeldError
 	if errors.As(err, &held) {
-		return secret.Secret{}, &HeldError{Subject: "secret " + name, Verb: "granted to", Users: held.Holders, Fix: "ungrant it first, its placeholder cannot change under a guest"}
+		return secret.Secret{}, &HeldError{Subject: "secret " + name, Verb: "granted to", Noun: "sandbox", Users: held.Holders, Fix: "ungrant it first, its placeholder cannot change under a guest"}
 	}
 	if err != nil {
 		return secret.Secret{}, &RequestError{Err: err}
@@ -273,7 +282,7 @@ func (s *Stores) ungranted(name string) error {
 		return nil
 	}
 
-	return &HeldError{Subject: "secret " + name, Verb: "granted to", Users: users, Fix: "ungrant it first, remove the sandbox, or pass --force"}
+	return &HeldError{Subject: "secret " + name, Verb: "granted to", Noun: "sandbox", Users: users, Fix: "ungrant it first, remove the sandbox, or pass --force"}
 }
 
 // PullImage fetches the reference and unpacks its rootfs. A second pull of the same one needs no network.
@@ -355,9 +364,14 @@ func (s *Stores) removeImage(ctx context.Context, ref string, free func() error)
 	return nil, nil
 }
 
-// unreferenced refuses when a record names the image, or one whose rootfs would go with it.
+// unreferenced refuses when a record or a snapshot names the image, or one whose rootfs would go with it.
 func (s *Stores) unreferenced(ref string) error {
-	held, err := s.heldImages()
+	sandboxes, err := s.heldImages()
+	if err != nil {
+		return err
+	}
+
+	snapshots, err := s.snapshotImages()
 	if err != nil {
 		return err
 	}
@@ -366,8 +380,6 @@ func (s *Stores) unreferenced(ref string) error {
 	if err != nil {
 		return &RequestError{Err: err}
 	}
-
-	users := held[canonical]
 
 	orphaned, err := s.cfg.Images.Orphaned(ref)
 	if err != nil {
@@ -379,17 +391,26 @@ func (s *Stores) unreferenced(ref string) error {
 		return err
 	}
 
-	for _, img := range images {
-		if img.Reference != canonical && slices.Contains(orphaned, img.Digest) {
-			users = append(users, held[img.Reference]...)
+	// holders names who holds the image, or another one whose rootfs goes with it.
+	holders := func(held map[string][]string) []string {
+		users := held[canonical]
+		for _, img := range images {
+			if img.Reference != canonical && slices.Contains(orphaned, img.Digest) {
+				users = append(users, held[img.Reference]...)
+			}
 		}
+
+		return users
 	}
 
-	if len(users) == 0 {
-		return nil
+	if users := holders(sandboxes); len(users) != 0 {
+		return &HeldError{Subject: "image " + ref, Verb: "referenced by", Noun: "sandbox", Users: users, Fix: "remove the sandbox first, or pass --force"}
+	}
+	if users := holders(snapshots); len(users) != 0 {
+		return &HeldError{Subject: "image " + ref, Verb: "referenced by", Noun: "snapshot", Users: users, Fix: "remove it first with shard snapshot remove, or pass --force"}
 	}
 
-	return &HeldError{Subject: "image " + ref, Verb: "referenced by", Users: users, Fix: "remove the sandbox first, or pass --force"}
+	return nil
 }
 
 // heldImages maps each image reference to the sandboxes whose records name it.
@@ -403,6 +424,21 @@ func (s *Stores) heldImages() (map[string][]string, error) {
 	held := map[string][]string{}
 	for _, sb := range sandboxes {
 		held[sb.Image] = append(held[sb.Image], sb.ID)
+	}
+
+	return held, nil
+}
+
+// snapshotImages maps each image reference to the snapshots whose layer sits over it.
+func (s *Stores) snapshotImages() (map[string][]string, error) {
+	snaps, err := s.cfg.Snapshots.List()
+	if err != nil {
+		return nil, fmt.Errorf("cannot tell which images the snapshots reference: %w", err)
+	}
+
+	held := map[string][]string{}
+	for _, snap := range snaps {
+		held[snap.Image] = append(held[snap.Image], snap.ID)
 	}
 
 	return held, nil

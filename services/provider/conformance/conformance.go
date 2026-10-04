@@ -8,6 +8,7 @@ import (
 	"io/fs"
 	"os"
 	"path"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"testing"
@@ -28,7 +29,7 @@ type Subject struct {
 	SnapshotDir func(t *testing.T) string
 	// Shell turns a shell script into the argv that runs it in the sandboxes NewSpec builds.
 	Shell func(script string) []string
-	// Scratch is a directory the sandbox's shell can write, for the files the suite leaves in one; empty is /.
+	// Scratch is a directory the sandbox's shell can write, for the files the suite leaves in one; empty is /, and a set one is a fake guest's host directory every sandbox shares.
 	Scratch string
 	// SharedScratch says every sandbox's shell writes the one host Scratch, as a fake VM guest's does, so a copy's write cannot be told from its source's.
 	SharedScratch bool
@@ -431,51 +432,82 @@ func Run(t *testing.T, s Subject) {
 		}
 	})
 
-	t.Run("CloneRunsTheEntrypointAgainOverWhatTheSourceKept", func(t *testing.T) {
-		source := s.running(t)
-		if status, _ := s.exec(t, source, models.ExecSpec{Argv: s.Shell("echo kept > " + s.scratch("conformance-clone"))}); status.Code != 0 {
+	t.Run("SnapshotHoldsWhatTheSourceKeptAndOutlivesIt", func(t *testing.T) {
+		source := s.NewSpec(t)
+		s.start(t, source)
+		if status, _ := s.exec(t, source.ID, models.ExecSpec{Argv: s.Shell("echo kept > " + s.scratch("conformance-snapshot"))}); status.Code != 0 {
 			t.Fatalf("the write into the source exited %d", status.Code)
+		}
+		if err := s.Provider.Stop(t.Context(), source.ID, stopGrace); err != nil {
+			t.Fatalf("Stop: %v", err)
+		}
+
+		dir := s.SnapshotDir(t)
+		if err := s.Provider.Snapshot(t.Context(), source.ID, dir); err != nil {
+			t.Fatalf("Snapshot: %v", err)
+		}
+
+		// An rm takes the substrate's state and then the record's directory, and the snapshot must need neither.
+		if err := s.Provider.Remove(t.Context(), source.ID); err != nil {
+			t.Fatalf("Remove the source: %v", err)
+		}
+		if err := os.RemoveAll(source.StateDir); err != nil {
+			t.Fatalf("remove the source's state directory: %v", err)
+		}
+
+		first, second := s.seeded(t, dir), s.seeded(t, dir)
+		for _, id := range []string{first, second} {
+			if _, out := s.exec(t, id, models.ExecSpec{Argv: s.Shell("cat " + s.scratch("conformance-snapshot"))}); !strings.Contains(out, "kept") {
+				t.Errorf("sandbox %s reads %q from the file the source wrote, want kept", id, out)
+			}
+		}
+
+		// A scratch directory is a fake guest's host directory, which every sandbox shares.
+		if s.Scratch != "" {
+			return
+		}
+		if status, _ := s.exec(t, first, models.ExecSpec{Argv: s.Shell("echo mine > " + s.scratch("conformance-snapshot"))}); status.Code != 0 {
+			t.Fatalf("the write into %s exited %d", first, status.Code)
+		}
+		if _, out := s.exec(t, second, models.ExecSpec{Argv: s.Shell("cat " + s.scratch("conformance-snapshot"))}); !strings.Contains(out, "kept") {
+			t.Errorf("sandbox %s reads %q after a write in %s, want its own kept", second, out, first)
+		}
+	})
+
+	t.Run("SnapshotKeepsASymlinkToTheHostAsALink", func(t *testing.T) {
+		host := path.Join(t.TempDir(), "conformance-host-secret")
+		if err := os.WriteFile(host, []byte("host only\n"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+
+		source := s.running(t)
+		link := s.scratch("conformance-escape")
+		if status, _ := s.exec(t, source, models.ExecSpec{Argv: s.Shell("ln -sf " + host + " " + link)}); status.Code != 0 {
+			t.Fatalf("the symlink in the source exited %d", status.Code)
 		}
 		if err := s.Provider.Stop(t.Context(), source, stopGrace); err != nil {
 			t.Fatalf("Stop: %v", err)
 		}
 
-		clone := copyOf(s.NewSpec(t))
-		if err := s.Provider.Clone(t.Context(), source, clone); err != nil {
-			t.Fatalf("Clone: %v", err)
+		dir := s.SnapshotDir(t)
+		if err := s.Provider.Snapshot(t.Context(), source, dir); err != nil {
+			t.Fatalf("Snapshot: %v", err)
+		}
+		if s.HostLayer {
+			requireLinkNotTarget(t, dir, host)
 		}
 
-		// A Create under the clone's id would pass everything below but this: the file is the source's.
-		if _, out := s.exec(t, clone.ID, models.ExecSpec{Argv: s.Shell("cat " + s.scratch("conformance-clone"))}); !strings.Contains(out, "kept") {
-			t.Errorf("the clone reads %q from the file the source wrote, want kept", out)
-		}
-
-		// The entrypoint exits 0 on its own, and only a fresh run of it can say so under the new id.
-		exit, err := s.Provider.Wait(t.Context(), clone.ID)
-		if err != nil {
-			t.Fatalf("Wait on the clone: %v", err)
-		}
-		if exit.Code != 0 {
-			t.Errorf("the clone's entrypoint exited %d, want 0", exit.Code)
-		}
-		if err := s.Provider.Stop(t.Context(), clone.ID, stopGrace); err != nil {
-			t.Fatalf("Stop the clone: %v", err)
-		}
-
-		status, err := s.Provider.Status(t.Context(), source)
-		if err != nil {
-			t.Fatalf("Status of the source: %v", err)
-		}
-		if status.Alive() {
-			t.Error("the clone brought the source back up")
+		id := s.seeded(t, dir)
+		if _, out := s.exec(t, id, models.ExecSpec{Argv: s.Shell("readlink " + link)}); strings.TrimSpace(out) != host {
+			t.Errorf("the link reads %q in the new sandbox, want %q", out, host)
 		}
 	})
 
-	t.Run("CloneRefusesASourceThatIsRunning", func(t *testing.T) {
+	t.Run("SnapshotRefusesASourceThatIsRunning", func(t *testing.T) {
 		source := s.running(t)
-		err := s.Provider.Clone(t.Context(), source, s.NewSpec(t))
+		err := s.Provider.Snapshot(t.Context(), source, s.SnapshotDir(t))
 		if err == nil {
-			t.Fatal("Clone copied a running sandbox")
+			t.Fatal("Snapshot copied a running sandbox")
 		}
 		if !strings.Contains(err.Error(), source) || !strings.Contains(err.Error(), string(models.StateRunning)) {
 			t.Errorf("the refusal is %q, and it must name the sandbox and its state", err)
@@ -728,7 +760,59 @@ func (s Subject) awaitUptime(t *testing.T, id string, least time.Duration) {
 	time.Sleep(least - time.Duration(up*float64(time.Second)))
 }
 
-// copyOf is the spec the orchestrator hands Clone and Fork: the copy's id, name, lease and bounds, and no entrypoint, which the source keeps.
+// seeded creates and starts a fresh sandbox whose writable layer starts from the snapshot in dir.
+func (s Subject) seeded(t *testing.T, dir string) string {
+	t.Helper()
+
+	spec := s.NewSpec(t)
+	spec.Seed = dir
+
+	return s.start(t, spec)
+}
+
+// requireLinkNotTarget fails unless the snapshot in dir holds a symlink to host and no copy of what host holds.
+func requireLinkNotTarget(t *testing.T, dir, host string) {
+	t.Helper()
+
+	want, err := os.ReadFile(host)
+	if err != nil {
+		t.Fatal(err)
+	}
+	root, err := os.OpenRoot(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer root.Close()
+	linked := false
+	err = fs.WalkDir(root.FS(), ".", func(name string, d fs.DirEntry, err error) error {
+		if err != nil {
+			return err
+		}
+		if d.Type()&fs.ModeSymlink != 0 {
+			target, err := root.Readlink(name)
+			linked = linked || (err == nil && target == host)
+
+			return err
+		}
+		if !d.Type().IsRegular() {
+			return nil
+		}
+		got, err := root.ReadFile(name)
+		if err == nil && string(got) == string(want) {
+			t.Errorf("the snapshot holds %s, a copy of the host file %s", filepath.Join(dir, name), host)
+		}
+
+		return err
+	})
+	if err != nil {
+		t.Fatalf("walk the snapshot %s: %v", dir, err)
+	}
+	if !linked {
+		t.Errorf("the snapshot %s holds no symlink to %s", dir, host)
+	}
+}
+
+// copyOf is the spec the orchestrator hands Fork: the copy's id, name, lease and bounds, and no entrypoint, which the source keeps.
 func copyOf(spec models.SandboxSpec) models.SandboxSpec {
 	return models.SandboxSpec{ID: spec.ID, Name: spec.Name, StateDir: spec.StateDir, Network: spec.Network, Resources: spec.Resources}
 }

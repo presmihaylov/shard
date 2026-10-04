@@ -1,9 +1,9 @@
 # Egress
 
-The host decides what a sandbox may reach, in netfilter, and the guest never does. A sandbox holds no
-rules of its own, because gVisor's netstack forgets its iptables across a checkpoint and restore, and
-whatever runs in the guest could rewrite them anyway. The host table is the policy of record. The
-host writes it again, in one transaction, on every create, start, resume, fork and policy
+The host decides what a sandbox may reach, in netfilter, and the guest never does. A sandbox holds
+no rules of its own, because gVisor's netstack forgets its iptables across a checkpoint and restore,
+and whatever runs in the guest could rewrite them anyway. The host table is the policy of record.
+The host writes it again, in one transaction, on every create, start, resume, fork and policy
 change.
 
 ## Without a policy
@@ -75,8 +75,8 @@ and never brokers it, so a secret sent on such a port leaves as the placeholder.
 `docs/secrets.md`.
 
 The proxy runs only in `shard daemon`, as its `proxy` task. Every verb goes over the daemon socket,
-so only the process that runs the proxy ever creates, starts or forks a fronted sandbox. No
-path can front a sandbox and leave the DNAT pointing at nothing.
+so only the process that runs the proxy ever creates, starts or forks a fronted sandbox. No path can
+front a sandbox and leave the DNAT pointing at nothing.
 
 The proxy terminates TLS with its own CA. The CA is minted once per root under `${root}/proxy/`, with
 the key at mode 0600. A fronted sandbox is built to trust it. The bundle merges the image's own roots
@@ -132,10 +132,10 @@ policy, so an attach replaces the one it holds, and attaching the policy it alre
 nothing. `shard policy detach` leaves the sandbox with no policy, and does not touch its secrets or
 their fronting.
 
-Both verbs take only a created or stopped sandbox, for the same reason as the secret verbs. A running
-guest holds its environment in its processes and a paused one holds it in its snapshot, so both are
-refused with `stop it first`. A policy the host does not hold is refused, and the refusal writes
-nothing.
+Both verbs take only a created or stopped sandbox, for the same reason as the secret verbs. A
+running guest holds its environment in its processes and a paused one holds it in its checkpoint, so
+both are refused with `stop it first`. A policy the host does not hold is refused, and the refusal
+writes nothing.
 
 When a sandbox held neither a policy nor a secret, the attach is what fronts it. So the attach first
 plants the proxy CA in the writable layer, the same way a grant does. A detach leaves the CA in place.

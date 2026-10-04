@@ -51,6 +51,17 @@ type Repository interface {
 // Images is the part of image.Service a create drives.
 type Images interface {
 	Pull(ctx context.Context, ref string) (image.Image, error)
+	Lookup(ref string) (image.Image, bool, error)
+}
+
+// Snapshots is the part of sandboxstate.Snapshots the snapshot verbs drive.
+type Snapshots interface {
+	Create(snap models.Snapshot, fill func(files string) error) (models.Snapshot, error)
+	Resolve(ref string) (string, error)
+	Get(id string) (models.Snapshot, error)
+	List() ([]models.Snapshot, error)
+	Delete(id string) error
+	Files(id string) (string, error)
 }
 
 // Network is the part of network.Service the lifecycle verbs drive.
@@ -85,6 +96,7 @@ type Environments interface {
 // Config is every layer the orchestrator drives. The daemon builds each one once.
 type Config struct {
 	Repo         Repository
+	Snapshots    Snapshots
 	Images       Images
 	Network      Network
 	Provider     models.Provider
@@ -145,10 +157,27 @@ type CreateRequest struct {
 	// Secrets is what the guest gets a placeholder for, each under its own name.
 	Secrets []string `json:"secrets,omitempty"`
 	// Policy is what the host enforces for the sandbox.
-	Policy    string           `json:"policy,omitempty"`
-	Resources models.Resources `json:"resources"`
+	Policy    string          `json:"policy,omitempty"`
+	Resources ResourceRequest `json:"resources"`
 	// Restart is when the supervisor starts the entrypoint again inside the sandbox, nil for never.
 	Restart *models.RestartSpec `json:"restart,omitempty"`
+}
+
+// ResourceRequest is the bounds a create asks for. A nil memory is an omitted --memory, which a snapshot fills, and 0 is no bound.
+type ResourceRequest struct {
+	MemoryMiB *int64 `json:"memory_mib,omitempty"`
+	VCPUs     int    `json:"vcpus"`
+	DiskMiB   int64  `json:"disk_mib"`
+}
+
+// bounds is what the record keeps, where an omitted memory is no bound.
+func (r ResourceRequest) bounds() models.Resources {
+	res := models.Resources{VCPUs: r.VCPUs, DiskMiB: r.DiskMiB}
+	if r.MemoryMiB != nil {
+		res.MemoryMiB = *r.MemoryMiB
+	}
+
+	return res
 }
 
 // fronted says the sandbox's web traffic goes through the proxy, which a policy and a grant both need.
@@ -369,20 +398,30 @@ func (s *Service) Prepare(ctx context.Context, req CreateRequest) (models.Sandbo
 	if err := validate(req); err != nil {
 		return models.Sandbox{}, err
 	}
+	snapshot := ""
+	if req.Snapshot != "" {
+		seed, err := s.seed(ctx, req.Snapshot, req)
+		if err != nil {
+			return models.Sandbox{}, err
+		}
+		defer seed.unlock()
+		req, snapshot = seed.req, seed.id
+	}
+	res := req.Resources.bounds()
 	// A bound the substrate refuses is the request's fault, and it must not leave a failed record behind.
-	if err := s.cfg.Provider.CheckResources(req.Resources); err != nil {
+	if err := s.cfg.Provider.CheckResources(res); err != nil {
 		return models.Sandbox{}, &RequestError{Err: err}
 	}
 	// A bound past the host's memory never binds: the host runs out of memory first.
-	if s.cfg.HostMemoryMiB > 0 && req.Resources.MemoryMiB > s.cfg.HostMemoryMiB {
-		return models.Sandbox{}, &RequestError{Err: fmt.Errorf("--memory %dMiB is more than the %d MiB of memory this host has", req.Resources.MemoryMiB, s.cfg.HostMemoryMiB)}
+	if s.cfg.HostMemoryMiB > 0 && res.MemoryMiB > s.cfg.HostMemoryMiB {
+		return models.Sandbox{}, &RequestError{Err: fmt.Errorf("--memory %dMiB is more than the %d MiB of memory this host has", res.MemoryMiB, s.cfg.HostMemoryMiB)}
 	}
 	// A quota past the host's CPUs never binds, and a large enough one overflows the quota to no bound at all.
-	if s.cfg.HostCPUs > 0 && req.Resources.VCPUs > s.cfg.HostCPUs {
-		return models.Sandbox{}, &RequestError{Err: fmt.Errorf("--cpus %d is more than the %d CPUs this host has", req.Resources.VCPUs, s.cfg.HostCPUs)}
+	if s.cfg.HostCPUs > 0 && res.VCPUs > s.cfg.HostCPUs {
+		return models.Sandbox{}, &RequestError{Err: fmt.Errorf("--cpus %d is more than the %d CPUs this host has", res.VCPUs, s.cfg.HostCPUs)}
 	}
 	// Record the disk bound the sandbox will actually run under, so inspect shows the enforced value, not a bare 0.
-	req.Resources.DiskMiB = bundle.DiskBound(req.Resources)
+	res.DiskMiB = bundle.DiskBound(res)
 
 	// The canonical reference is what a prune keys a hold on, so the pending record must carry it before
 	// the pull: a prune between the record and the pull would otherwise delete the rootfs the create needs.
@@ -413,7 +452,7 @@ func (s *Service) Prepare(ctx context.Context, req CreateRequest) (models.Sandbo
 	if admits {
 		admit = append(admit, func(dir string) error {
 			// A disk the root has no room for is the request's fault, refused before the record a later failure would leave.
-			if err := disks.AdmitDisk(dir, req.Resources); err != nil {
+			if err := disks.AdmitDisk(dir, res); err != nil {
 				return &RequestError{Err: err}
 			}
 			reserved = dir
@@ -425,9 +464,10 @@ func (s *Service) Prepare(ctx context.Context, req CreateRequest) (models.Sandbo
 	sb, err := s.cfg.Repo.Create(models.Sandbox{
 		Name:      req.Name,
 		Image:     ref,
+		Snapshot:  snapshot,
 		Provider:  s.cfg.Provider.Name(),
 		State:     models.StatePending,
-		Resources: req.Resources,
+		Resources: res,
 		Secrets:   req.Secrets,
 		Policy:    req.Policy,
 		Command:   slices.Clone(req.Command),
@@ -489,6 +529,16 @@ func (s *Service) Complete(ctx context.Context, id string, req CreateRequest) (e
 		}
 	}()
 
+	// The record pins the snapshot by id, and the lock holds it until the copy out of it is done.
+	var seed seeded
+	if sb.Snapshot != "" {
+		if seed, err = s.seed(ctx, sb.Snapshot, req); err != nil {
+			return err
+		}
+		defer seed.unlock()
+		req = seed.req
+	}
+
 	env, err := s.grantSecrets(req)
 	if err != nil {
 		return err
@@ -509,8 +559,15 @@ func (s *Service) Complete(ctx context.Context, id string, req CreateRequest) (e
 		}
 	}()
 
-	// Only the pull can be cancelled: the teardown and the fail below run under ctx, which rm never ends.
-	img, dir, err := s.claim(pullCtx, id, req)
+	img := seed.img
+	if sb.Snapshot == "" {
+		// Only the pull can be cancelled: the teardown and the fail below run under ctx, which rm never ends.
+		if img, err = s.pull(pullCtx, req); err != nil {
+			return err
+		}
+	}
+
+	dir, err := s.cfg.Repo.Dir(id)
 	if err != nil {
 		return err
 	}
@@ -537,8 +594,9 @@ func (s *Service) Complete(ctx context.Context, id string, req CreateRequest) (e
 		WorkDir:    req.WorkDir,
 		User:       req.User,
 		Network:    resolvedThrough(netSpec, req.Policy),
-		Resources:  req.Resources,
+		Resources:  req.Resources.bounds(),
 		Restart:    restartSpecOf(withRestartDefaults(req.Restart)),
+		Seed:       seed.files,
 		ProxyCA:    proxyCA,
 	}, img.Config)
 
@@ -550,7 +608,7 @@ func (s *Service) Complete(ctx context.Context, id string, req CreateRequest) (e
 		return err
 	}
 
-	if err := s.recordCreated(ctx, spec); err != nil {
+	if err := s.recordCreated(ctx, spec, img.Digest); err != nil {
 		return err
 	}
 
@@ -636,14 +694,22 @@ func failed(cause error) func(*models.Sandbox) error {
 // ValidName, ValidSecretName and ValidPolicyName let a client refuse a spelling before it asks the daemon.
 func ValidName(name string) error { return sandboxstate.ValidName(name) }
 
+func ValidSnapshotName(name string) error { return sandboxstate.ValidSnapshotName(name) }
+
 func ValidSecretName(name string) error { return secret.ValidName(name) }
 
 func ValidPolicyName(name string) error { return egress.ValidName(name) }
 
 // validate refuses what no store could hold or no verb could take back, before anything is pulled.
 func validate(req CreateRequest) error {
-	if req.Image == "" {
-		return &RequestError{Err: errors.New("the request names no image")}
+	if req.Image == "" && req.Snapshot == "" {
+		return &RequestError{Err: errors.New("the request names no image and no snapshot")}
+	}
+	if req.Image != "" && req.Snapshot != "" {
+		return &RequestError{Err: errors.New("the request names both an image and a snapshot: a snapshot already names its image")}
+	}
+	if req.Snapshot != "" && (len(req.Command) != 0 || req.Restart != nil) {
+		return &RequestError{Err: errors.New("a sandbox from a snapshot runs shard-init alone, so it takes no command and no restart policy")}
 	}
 
 	if req.Name != "" {
@@ -653,12 +719,13 @@ func validate(req CreateRequest) error {
 	}
 
 	// A bound below zero is not a spelling of unbounded, and the substrate would drop it without a word.
-	if req.Resources.MemoryMiB < 0 {
-		return &RequestError{Err: fmt.Errorf("the memory bound is in MiB and cannot be negative, got %d", req.Resources.MemoryMiB)}
+	memory := req.Resources.bounds().MemoryMiB
+	if memory < 0 {
+		return &RequestError{Err: fmt.Errorf("the memory bound is in MiB and cannot be negative, got %d", memory)}
 	}
 	// A bound this large overflows the byte count it is turned into, and an overflow reads as unbounded.
-	if req.Resources.MemoryMiB > MaxMemoryMiB {
-		return &RequestError{Err: fmt.Errorf("the memory bound is in MiB and no host holds that much, got %d", req.Resources.MemoryMiB)}
+	if memory > MaxMemoryMiB {
+		return &RequestError{Err: fmt.Errorf("the memory bound is in MiB and no host holds that much, got %d", memory)}
 	}
 	if req.Resources.VCPUs < 0 {
 		return &RequestError{Err: fmt.Errorf("the vcpu bound cannot be negative, got %d", req.Resources.VCPUs)}
@@ -735,9 +802,8 @@ func (s *Service) grantSecrets(req CreateRequest) ([]string, error) {
 	return env, nil
 }
 
-// claim pulls the image the pending record already references and answers the state dir. The record
-// exists before the pull, so a prune keyed on that reference cannot delete the rootfs the create runs.
-func (s *Service) claim(ctx context.Context, id string, req CreateRequest) (image.Image, string, error) {
+// The pending record prevents prune from removing the rootfs during the pull.
+func (s *Service) pull(ctx context.Context, req CreateRequest) (image.Image, error) {
 	// A registry that accepts the connection and then stalls would otherwise pin the create forever.
 	if s.cfg.PullTimeout > 0 {
 		var cancel context.CancelFunc
@@ -748,23 +814,18 @@ func (s *Service) claim(ctx context.Context, id string, req CreateRequest) (imag
 	img, err := s.cfg.Images.Pull(ctx, req.Image)
 	// A cached image answers even on an ended context, so a cancel that landed before the pull still fails the create.
 	if cause := context.Cause(ctx); errors.Is(cause, errCreateCancelled) {
-		return image.Image{}, "", cause
+		return image.Image{}, cause
 	}
 	if err != nil {
-		return image.Image{}, "", err
+		return image.Image{}, err
 	}
 
-	dir, err := s.cfg.Repo.Dir(id)
-	if err != nil {
-		return image.Image{}, "", err
-	}
-
-	return img, dir, nil
+	return img, nil
 }
 
 // recordCreated copies what the substrate decided into the record, so a later process can reach the
 // sandbox without asking the provider again. The state stays created until the start.
-func (s *Service) recordCreated(ctx context.Context, spec models.SandboxSpec) error {
+func (s *Service) recordCreated(ctx context.Context, spec models.SandboxSpec, digest string) error {
 	status, err := s.cfg.Provider.Status(ctx, spec.ID)
 	if err != nil {
 		return err
@@ -775,6 +836,7 @@ func (s *Service) recordCreated(ctx context.Context, spec models.SandboxSpec) er
 		sb.NetnsPath = spec.Network.NetnsPath
 		sb.Address = spec.Network.Address
 		sb.HostInterface = spec.Network.HostInterface
+		sb.Digest = digest
 
 		return nil
 	})

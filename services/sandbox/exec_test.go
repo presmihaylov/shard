@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"fmt"
 	"io"
 	"os"
 	"path/filepath"
@@ -332,6 +333,9 @@ func TestExecInsideAPauseNamesThePauseAndNeverAStop(t *testing.T) {
 	}
 }
 
+// errLostWait is what a substrate answers once its wait on a command that ran failed under it.
+var errLostWait = fmt.Errorf("sandbox sandbox1: %w: waiting on pid 7: EOF", models.ErrExecLost)
+
 // Each layer meets a pause at its own moment, and every one of them refuses in the words a paused record gives (SHARD-482).
 func TestEveryPauseRefusalReadsOneText(t *testing.T) {
 	const want = "sandbox sandbox1 is paused: resume it with shard resume sandbox1"
@@ -342,13 +346,19 @@ func TestEveryPauseRefusalReadsOneText(t *testing.T) {
 		state   models.State
 		pausing bool
 		status  models.Status
-		// execErr is what the substrate or the guest answers a command it never started.
+		// execErr is what the substrate or the guest answers the command.
 		execErr error
+		// fail is the step that errors, as a status asked after the pause removed the substrate's state.
+		fail []string
+		// ran says the command started, so only a wait the pause cut can refuse it.
+		ran bool
 	}{
 		{name: "the record says paused", state: models.StatePaused, status: alive(42)},
+		{name: "the substrate lost its state to the pause", state: models.StateRunning, pausing: true, fail: []string{"provider.Status"}},
 		{name: "the checkpoint is in and the substrate stopped", state: models.StateRunning, pausing: true, status: models.Status{Exists: true, State: models.StateStopped}},
 		{name: "the frozen guest refuses the command", state: models.StateRunning, pausing: true, status: alive(42), execErr: frozen},
 		{name: "the substrate refuses its paused VM", state: models.StateRunning, pausing: true, status: alive(42), execErr: errors.New("sandbox sandbox1 is paused on vz, so nothing can run in it")},
+		{name: "the pause cut the substrate's wait on a command that ran", state: models.StateRunning, pausing: true, status: alive(42), execErr: errLostWait, ran: true},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			dir := t.TempDir()
@@ -357,10 +367,11 @@ func TestEveryPauseRefusalReadsOneText(t *testing.T) {
 			}
 			sb := running()
 			sb.State, sb.Pausing = tc.state, tc.pausing
-			svc, l := newService(t, &recorder{}, sb)
+			svc, l := newService(t, &recorder{fail: tc.fail}, sb)
 			l.repo.snapshotDir = dir
 			l.provider.status = tc.status
-			l.provider.execNoPID, l.provider.execErr = true, tc.execErr
+			l.provider.execPID = 7
+			l.provider.execNoPID, l.provider.execErr = !tc.ran, tc.execErr
 
 			_, _, _, err := execOf(t, l, svc, "sandbox1", sandbox.ExecRequest{Command: []string{"true"}}, "")
 			if err == nil || err.Error() != want {
@@ -379,14 +390,17 @@ func TestARefusalOutsideAPauseKeepsItsOwnWords(t *testing.T) {
 		pausing bool
 		noPID   bool
 		execErr error
+		fail    []string
 	}{
 		{name: "a fork holds the guest frozen", noPID: true, execErr: forkFrozen},
 		{name: "the command ran before the pause cut it", pausing: true, execErr: errors.New("the exec connection dropped")},
+		{name: "the substrate fails its status with no pause", execErr: errors.New("forced failure at provider.Status"), fail: []string{"provider.Status"}},
+		{name: "the substrate lost its wait with no pause", execErr: errLostWait},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			sb := running()
 			sb.Pausing = tc.pausing
-			svc, l := newService(t, &recorder{}, sb)
+			svc, l := newService(t, &recorder{fail: tc.fail}, sb)
 			l.provider.status = alive(42)
 			l.provider.execPID = 7
 			l.provider.execNoPID, l.provider.execErr = tc.noPID, tc.execErr
@@ -511,6 +525,25 @@ func TestAnExecThatCannotStartDropsTheRawError(t *testing.T) {
 	}
 	if out.Len() != 0 || errOut.Len() != 0 {
 		t.Errorf("the client saw stdout %q and stderr %q, want the raw substrate error dropped", out, errOut)
+	}
+}
+
+// A substrate that refuses a command inside a pause writes its own words to the guest's stderr, and the pause text is the whole answer (SHARD-486).
+func TestAPauseRefusalDropsTheSubstratesRawWords(t *testing.T) {
+	sb := running()
+	sb.Pausing = true
+	svc, l := newService(t, &recorder{}, sb)
+	l.provider.status = alive(42)
+	l.provider.execNoPID = true
+	l.provider.execErrOut = "cannot exec in a paused container\n"
+	l.provider.execErr = errors.New("cannot exec in a paused container")
+
+	_, out, errOut, err := execOf(t, l, svc, "sandbox1", sandbox.ExecRequest{Command: []string{"true"}}, "")
+	if err == nil || err.Error() != "sandbox sandbox1 is paused: resume it with shard resume sandbox1" {
+		t.Fatalf("Exec inside a pause returned %v, want the pause text", err)
+	}
+	if out.Len() != 0 || errOut.Len() != 0 {
+		t.Errorf("the client saw stdout %q and stderr %q, want the substrate's raw words dropped", out, errOut)
 	}
 }
 

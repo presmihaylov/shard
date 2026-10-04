@@ -12,7 +12,7 @@ const (
 	CodeSandboxNotPaused  Code = "sandbox_not_paused"
 	CodeSandboxLive       Code = "sandbox_live"
 	CodeSandboxFailed     Code = "sandbox_failed"
-	CodeNoSnapshot        Code = "no_snapshot"
+	CodeNoCheckpoint      Code = "no_checkpoint"
 	CodeUnsupported       Code = "unsupported"
 	CodeInUse             Code = "in_use"
 	CodeNameTaken         Code = "name_taken"
@@ -23,6 +23,5 @@ const (
 	CodeUnauthorized      Code = "unauthorized"
 	CodeForbidden         Code = "forbidden"
 	CodeSubstrateTimeout  Code = "substrate_timeout"
-	CodeNotImplemented    Code = "not_implemented"
 	CodeInternal          Code = "internal"
 )

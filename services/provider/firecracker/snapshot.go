@@ -53,10 +53,10 @@ func (p *Provider) install(ctx context.Context, id string, dir string) (*machine
 	// The snapshot is staged beside dir and swapped in whole, so dir never holds half of one.
 	tmp := dir + ".tmp"
 	if err := os.RemoveAll(tmp); err != nil {
-		return nil, fmt.Errorf("clear the snapshot directory %s: %w", tmp, err)
+		return nil, fmt.Errorf("clear the checkpoint directory %s: %w", tmp, err)
 	}
 	if err := os.MkdirAll(tmp, 0o700); err != nil {
-		return nil, fmt.Errorf("create the snapshot directory %s: %w", tmp, err)
+		return nil, fmt.Errorf("create the checkpoint directory %s: %w", tmp, err)
 	}
 	info, err := m.client.State(ctx)
 	if err != nil {
@@ -76,7 +76,7 @@ func (p *Provider) install(ctx context.Context, id string, dir string) (*machine
 		return nil, p.abandon(m, tmp, fmt.Errorf("sandbox %s: %w", id, err))
 	}
 	if err := store.SwapDir(tmp, dir); err != nil {
-		return nil, p.abandon(m, tmp, fmt.Errorf("install the snapshot of sandbox %s: %w", id, err))
+		return nil, p.abandon(m, tmp, fmt.Errorf("install the checkpoint of sandbox %s: %w", id, err))
 	}
 
 	return m, nil
@@ -112,7 +112,7 @@ func (p *Provider) snapshotSource(ctx context.Context, id, verb string) (*machin
 	}
 	// A vmm spawned before the jail would write a snapshot that names host paths, which no jailed restore can open (SHARD-306).
 	if m.jail == "" {
-		return nil, record{}, fmt.Errorf("sandbox %s runs a vmm from before the jail, whose snapshot no restore on %s can load: restart the sandbox, then %s it", id, Name, verb)
+		return nil, record{}, fmt.Errorf("sandbox %s runs a vmm from before the jail, whose checkpoint no restore on %s can load: restart the sandbox, then %s it", id, Name, verb)
 	}
 
 	return m, r, nil
@@ -133,7 +133,7 @@ func (p *Provider) stageSnapshot(m *machine, r record, verb, stateDir, tmp strin
 		return err
 	}
 	if err := os.WriteFile(filepath.Join(tmp, checkpointFile), nil, snapshotFileMode); err != nil {
-		return fmt.Errorf("mark the snapshot complete: %w", err)
+		return fmt.Errorf("mark the checkpoint complete: %w", err)
 	}
 
 	return nil
@@ -190,7 +190,7 @@ func (p *Provider) snapshotInto(m *machine, r record, verb, snap, tmp string) er
 	// The create resets every vsock stream of the guest, so the run after it dials the control stream again, and no exec waits on a dead one.
 	m.resetBy = verb
 	if err := m.client.Snapshot(kind, jailSnap+jailState, jailSnap+jailMemory); err != nil {
-		return errors.Join(fmt.Errorf("snapshot the vm: %w", err), m.cutExecs(verb))
+		return errors.Join(fmt.Errorf("capture the vm: %w", err), m.cutExecs(verb))
 	}
 	if err := m.cutExecs(verb); err != nil {
 		return err
@@ -485,19 +485,19 @@ func (p *Provider) forkSnapshot(ctx context.Context, dir string, spec models.San
 // readSnapshot reads what a complete snapshot holds; one without its marker is a pause that did not finish, or no snapshot at all.
 func readSnapshot(dir string) (snapshot, error) {
 	if _, err := os.Stat(filepath.Join(dir, checkpointFile)); err != nil {
-		return snapshot{}, fmt.Errorf("no complete snapshot in %s: %w", dir, err)
+		return snapshot{}, fmt.Errorf("no complete checkpoint in %s: %w", dir, err)
 	}
 	blob, err := os.ReadFile(filepath.Join(dir, snapshotFile))
 	if err != nil {
-		return snapshot{}, fmt.Errorf("read the snapshot in %s: %w", dir, err)
+		return snapshot{}, fmt.Errorf("read the checkpoint in %s: %w", dir, err)
 	}
 	var snap snapshot
 	if err := json.Unmarshal(blob, &snap); err != nil {
-		return snapshot{}, fmt.Errorf("decode the snapshot in %s: %w", dir, err)
+		return snapshot{}, fmt.Errorf("decode the checkpoint in %s: %w", dir, err)
 	}
 	// No migration: shard is pre-alpha, and a fresh pause writes one that loads.
 	if !snap.Jailed {
-		return snapshot{}, fmt.Errorf("the snapshot in %s was taken before the jail, and no restore on %s can open the host paths it names: start the sandbox from its stopped state and pause it again", dir, Name)
+		return snapshot{}, fmt.Errorf("the checkpoint in %s was taken before the jail, and no restore on %s can open the host paths it names: start the sandbox from its stopped state and pause it again", dir, Name)
 	}
 
 	return snap, nil

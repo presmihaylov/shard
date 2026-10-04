@@ -20,10 +20,11 @@ record names the secret, and `--force` overrides that. The name is the environme
 reads, so it has the same form: uppercase letters, digits and `_`.
 
 **The grant.** A secret is granted to a destination and never to a sandbox alone. `--to` names the
-hosts the value may go to, and a request to any other host never carries it. `shard create --secret
-NAME` hands the guest the placeholder as `$NAME` and records the grant in the sandbox record, which
-`shard inspect` prints as `secrets`. A fork carries the grant of its source, because the
-copied bundle already hands the guest the placeholder.
+hosts the value may go to, and a request to any other host never carries it.
+`shard create --secret NAME` hands the guest the placeholder as `$NAME` and records the grant in the
+sandbox record, which `shard inspect` prints as `secrets`. A fork carries the grant of its source,
+because the copied bundle already hands the guest the placeholder. A snapshot holds no grant, so a
+create from one names its own `--secret` and `--policy` like any other create.
 
 **Caution: grant only to hosts that never echo the credential.** The proxy puts the value only into
 the request headers, never into the URL or the body, and reads nothing out of the response. A granted
@@ -53,8 +54,8 @@ for a VM both edits land in the run message its record holds, and the guest read
 next start.
 
 Both verbs take only a created or stopped sandbox. A running guest holds its environment in its
-processes and a paused one holds it in its snapshot, so both are refused with `stop it first`. Both
-verbs are safe to run again, because a grant the record already names changes nothing.
+processes and a paused one holds it in its checkpoint, so both are refused with `stop it first`.
+Both verbs are safe to run again, because a grant the record already names changes nothing.
 
 A grant is refused when the guest environment already holds that name, and a refused grant writes
 nothing at all. A secret named after a trust variable, such as `SSL_CERT_FILE` or `CURL_CA_BUNDLE`,

@@ -46,10 +46,10 @@ func (p *Provider) Pause(ctx context.Context, id string, dir string) error {
 	// Everything that can fail happens while the VM is only paused, so a failed pause resumes it and loses nothing.
 	tmp := dir + ".tmp"
 	if err := os.RemoveAll(tmp); err != nil {
-		return fmt.Errorf("clear the snapshot directory %s: %w", tmp, err)
+		return fmt.Errorf("clear the checkpoint directory %s: %w", tmp, err)
 	}
 	if err := os.MkdirAll(tmp, 0o700); err != nil {
-		return fmt.Errorf("create the snapshot directory %s: %w", tmp, err)
+		return fmt.Errorf("create the checkpoint directory %s: %w", tmp, err)
 	}
 	info, err := m.client.State(ctx)
 	if err != nil {
@@ -57,7 +57,7 @@ func (p *Provider) Pause(ctx context.Context, id string, dir string) error {
 	}
 	// A failed pause whose resume failed too left the VM paused, and this one carries on from there; a restart resumes it before this (SHARD-375).
 	if info.State != vz.StatePaused {
-		// A clone boots from the disk alone, so the guest's root is flushed and frozen first, and no write lands between the two.
+		// The disk is copied apart from the memory, so the guest's root is flushed and frozen first, and no write lands between the two.
 		if err := m.freeze(ctx); err != nil {
 			return abandon(m, tmp, fmt.Errorf("sandbox %s: freeze the guest's root before the pause: %w", id, err))
 		}
@@ -78,7 +78,7 @@ func (p *Provider) Pause(ctx context.Context, id string, dir string) error {
 		r.Paused = false
 		r.Pauses--
 
-		return abandon(m, tmp, errors.Join(fmt.Errorf("install the snapshot of sandbox %s: %w", id, err), writeRecord(stateDir, r)))
+		return abandon(m, tmp, errors.Join(fmt.Errorf("install the checkpoint of sandbox %s: %w", id, err), writeRecord(stateDir, r)))
 	}
 
 	// The install left the snapshot it replaced at tmp, which this pause owns and drops.
@@ -139,7 +139,7 @@ func stageSnapshot(m *machine, r record, stateDir, tmp string) error {
 	}
 	// The marker is what the sandbox service takes as a complete snapshot after a restart of the daemon.
 	if err := os.WriteFile(filepath.Join(tmp, checkpointFile), nil, 0o600); err != nil {
-		return fmt.Errorf("mark the snapshot complete: %w", err)
+		return fmt.Errorf("mark the checkpoint complete: %w", err)
 	}
 
 	return nil
@@ -202,7 +202,7 @@ func installStaged(dir string) error {
 		return os.RemoveAll(tmp)
 	}
 	if err := store.SwapDir(tmp, dir); err != nil {
-		return fmt.Errorf("install the staged snapshot: %w", err)
+		return fmt.Errorf("install the staged checkpoint: %w", err)
 	}
 
 	// The install left the older snapshot at tmp, which no resume and no fork reads again.
@@ -292,7 +292,7 @@ func (p *Provider) forkSnapshot(ctx context.Context, dir string, spec models.San
 		return err
 	}
 	if err := cloneDisk(filepath.Join(dir, snapshotDiskFile), filepath.Join(spec.StateDir, diskFile)); err != nil {
-		return fmt.Errorf("copy the snapshot disk for sandbox %s on %s: %w", spec.ID, Name, err)
+		return fmt.Errorf("copy the checkpoint disk for sandbox %s on %s: %w", spec.ID, Name, err)
 	}
 
 	// The saved memory restores under its own identifier and size only; the network, and the name the guest answers to, are what the fork changes.
@@ -315,16 +315,16 @@ func (p *Provider) forkSnapshot(ctx context.Context, dir string, spec models.San
 
 func readSnapshot(dir string) (snapshot, error) {
 	if _, err := os.Stat(filepath.Join(dir, checkpointFile)); err != nil {
-		return snapshot{}, fmt.Errorf("no complete snapshot in %s: %w", dir, err)
+		return snapshot{}, fmt.Errorf("no complete checkpoint in %s: %w", dir, err)
 	}
 	blob, err := os.ReadFile(filepath.Join(dir, snapshotFile))
 	if err != nil {
-		return snapshot{}, fmt.Errorf("read the snapshot in %s: %w", dir, err)
+		return snapshot{}, fmt.Errorf("read the checkpoint in %s: %w", dir, err)
 	}
 
 	var snap snapshot
 	if err := json.Unmarshal(blob, &snap); err != nil {
-		return snapshot{}, fmt.Errorf("decode the snapshot in %s: %w", dir, err)
+		return snapshot{}, fmt.Errorf("decode the checkpoint in %s: %w", dir, err)
 	}
 
 	return snap, nil

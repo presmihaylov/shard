@@ -32,6 +32,10 @@ type Lifecycle interface {
 	Pause(ctx context.Context, ref string) (models.Sandbox, error)
 	Resume(ctx context.Context, ref string) (models.Sandbox, error)
 	Fork(ctx context.Context, ref string, req sandbox.CopyRequest) (models.Sandbox, error)
+	CreateSnapshot(ctx context.Context, req sandbox.SnapshotRequest) (models.Snapshot, error)
+	ListSnapshots(ctx context.Context) ([]models.Snapshot, error)
+	InspectSnapshot(ctx context.Context, ref string) (models.Snapshot, error)
+	RemoveSnapshot(ctx context.Context, ref string) error
 	CreateExec(ctx context.Context, ref string, req sandbox.ExecRequest) (models.Exec, error)
 	Attach(ctx context.Context, ref, execID string, streams sandbox.Streams) (sandbox.Attached, error)
 	ListExecs(ctx context.Context, ref string) ([]models.Exec, error)
@@ -437,12 +441,6 @@ func (h *Handler) createSandbox(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if req.Snapshot != "" {
-		h.writeError(w, &notImplementedError{what: "create --snapshot", ticket: snapshotsTicket})
-
-		return
-	}
-
 	if wait && streamed(r) {
 		h.streamProgress(w, r, http.StatusCreated, "create", func(ctx context.Context) (ProgressLine, error) {
 			sb, err := h.lifecycle.Create(ctx, req)
@@ -659,18 +657,15 @@ func classify(err error) (int, models.Code) {
 	var tooLarge *http.MaxBytesError
 	var scope *scopeError
 	var fileNotFound *sandbox.FileNotFoundError
-	var notImplemented *notImplementedError
 
 	switch {
-	case errors.As(err, &notImplemented):
-		return http.StatusNotImplemented, models.CodeNotImplemented
 	case errors.As(err, &scope):
 		return http.StatusForbidden, models.CodeForbidden
 	case errors.As(err, &tooLarge):
 		return http.StatusRequestEntityTooLarge, models.CodeBodyTooLarge
 	case errors.As(err, &invalid), errors.As(err, &request), errors.Is(err, image.ErrBadReference):
 		return http.StatusBadRequest, models.CodeInvalidRequest
-	case errors.Is(err, sandboxstate.ErrNotFound), errors.Is(err, egress.ErrNotFound),
+	case errors.Is(err, sandboxstate.ErrNotFound), errors.Is(err, sandboxstate.ErrSnapshotNotFound), errors.Is(err, egress.ErrNotFound),
 		errors.Is(err, secret.ErrNotFound), errors.Is(err, image.ErrNotFound), errors.As(err, &fileNotFound):
 		return http.StatusNotFound, models.CodeNotFound
 	case errors.As(err, &nameTaken):

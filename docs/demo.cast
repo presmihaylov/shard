@@ -12,7 +12,7 @@
 [2.975886, "o", "  host RSS of pid 1532195: 39796 KiB before, gone after\r\n"]
 [2.986714, "o", "  /sys/fs/cgroup/shard/muddy-comet-92d3/memory.current: gone\r\n"]
 [2.988818, "o", "  host MemAvailable: +48292 KiB\r\n"]
-[3.001899, "o", "\r\n$ ls -la /var/lib/shard-demo/snapshots/muddy-comet-92d3\r\n"]
+[3.001899, "o", "\r\n$ ls -la /var/lib/shard-demo/checkpoints/muddy-comet-92d3\r\n"]
 [3.00401, "o", "total 1056\r\n"]
 [3.004208, "o", "drwx------ 3 root root   4096 Aug 30 12:12 .\r\ndrwxr-x--- 3 root root   4096 Aug 30 12:12 ..\r\n-rw-r--r-- 1 root root 198312 Aug 30 12:12 checkpoint.img\r\n-rw-r--r-- 1 root root   4479 Aug 30 12:12 config.json\r\ndrwxr-x--- 5 root root   4096 Aug 30 12:12 layers\r\n-rw-r--r-- 1 root root 856064 Aug 30 12:12 pages.img\r\n-rw-r--r-- 1 root root   3512 Aug 30 12:12 pages_meta.img\r\n"]
 [3.006962, "o", "\r\n$ shard resume web\r\n"]

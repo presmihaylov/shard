@@ -83,6 +83,52 @@ func TestInspectTableReadsTheRecordDownAPage(t *testing.T) {
 	}
 }
 
+func TestSnapshotListJSONOfNoSnapshotIsAnEmptyArray(t *testing.T) {
+	var out bytes.Buffer
+
+	app, _ := newClientApp(t, &out, stopped())
+	if err := app.Run(t.Context(), []string{"snapshot", "list", "--format", "json"}); err != nil {
+		t.Fatalf("snapshot list --format json: %v", err)
+	}
+
+	if out.String() != "[]\n" {
+		t.Errorf("got %q, want an empty array", out.String())
+	}
+}
+
+func TestSnapshotListJSONAndInspectTable(t *testing.T) {
+	var out bytes.Buffer
+
+	source := stopped()
+	source.Image = "index.docker.io/library/alpine:3.20"
+	source.Digest = "sha256:alpine"
+	app, d := newClientApp(t, &out, source)
+	d.imageSvc = fakeImages{r: &recorder{}}
+	if err := app.Run(t.Context(), []string{"snapshot", "create", "--name", "web-base", "web"}); err != nil {
+		t.Fatalf("snapshot create: %v", err)
+	}
+	id := strings.TrimSpace(out.String())
+
+	out.Reset()
+	if err := app.Run(t.Context(), []string{"snapshot", "list", "--format", "json"}); err != nil {
+		t.Fatalf("snapshot list --format json: %v", err)
+	}
+	var got []models.Snapshot
+	decodeJSON(t, out.Bytes(), &got)
+	if len(got) != 1 || got[0].ID != id || got[0].Name != "web-base" || got[0].Source != source.ID {
+		t.Errorf("got %+v, want the one snapshot of %s", got, source.ID)
+	}
+
+	out.Reset()
+	if err := app.Run(t.Context(), []string{"snapshot", "inspect", "--format", "table", "web-base"}); err != nil {
+		t.Fatalf("snapshot inspect --format table: %v", err)
+	}
+	lines := strings.Split(out.String(), "\n")
+	if !strings.HasPrefix(lines[0], "FIELD") || !strings.HasPrefix(lines[1], "id ") || !strings.HasSuffix(lines[1], id) {
+		t.Errorf("snapshot inspect printed:\n%s", out.String())
+	}
+}
+
 func TestImageListJSONOfAnEmptyStoreIsAnEmptyArray(t *testing.T) {
 	var out bytes.Buffer
 

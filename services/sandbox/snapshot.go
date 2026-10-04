@@ -17,7 +17,7 @@ import (
 // checkpointFile is the one file every snapshot holds, and the provider writes it last before it deletes.
 const checkpointFile = "checkpoint.img"
 
-// CopyRequest names the sandbox a fork or a clone makes. It is the JSON body of both routes.
+// CopyRequest names the sandbox a fork makes. It is the JSON body of the fork route.
 type CopyRequest struct {
 	Name string `json:"name,omitempty"`
 }
@@ -110,7 +110,7 @@ func (s *Service) recordPaused(id, dir string) error {
 	err := s.cfg.Repo.Update(id, func(sb *models.Sandbox) error {
 		sb.State = models.StatePaused
 		sb.PID = 0
-		sb.Snapshot = dir
+		sb.Checkpoint = dir
 		sb.Pausing = false
 		sb.UnresponsiveReason = ""
 
@@ -233,8 +233,8 @@ func (s *Service) Resume(ctx context.Context, ref string) (models.Sandbox, error
 	if sb.State != models.StatePaused {
 		return models.Sandbox{}, &StateError{ID: id, State: sb.State, Fix: "resume takes a paused sandbox", Code: models.CodeSandboxNotPaused}
 	}
-	if sb.Snapshot == "" {
-		return models.Sandbox{}, &StateError{ID: id, State: sb.State, Fix: "its record names no snapshot to resume from", Code: models.CodeNoSnapshot}
+	if sb.Checkpoint == "" {
+		return models.Sandbox{}, &StateError{ID: id, State: sb.State, Fix: "its record names no checkpoint to resume from", Code: models.CodeNoCheckpoint}
 	}
 
 	// The lease survived the pause, so this hands back the same address over a namespace built again.
@@ -242,7 +242,7 @@ func (s *Service) Resume(ctx context.Context, ref string) (models.Sandbox, error
 		return models.Sandbox{}, err
 	}
 
-	if err := s.cfg.Provider.Resume(ctx, id, sb.Snapshot); err != nil {
+	if err := s.cfg.Provider.Resume(ctx, id, sb.Checkpoint); err != nil {
 		return models.Sandbox{}, errors.Join(err, Reconcile(ctx, s.cfg.Repo, s.cfg.Provider, id, true))
 	}
 
@@ -282,6 +282,7 @@ func (s *Service) Fork(ctx context.Context, ref string, req CopyRequest) (sb mod
 	// The capture holds the source's run, so an entrypoint that had exited before it has in the fork too.
 	claim, err := s.claimCopy(ctx, &td, req, models.Sandbox{
 		Image:      src.Image,
+		Digest:     src.Digest,
 		Resources:  src.Resources,
 		Secrets:    slices.Clone(src.Secrets),
 		Policy:     src.Policy,
@@ -337,70 +338,7 @@ func (s *Service) Fork(ctx context.Context, ref string, req CopyRequest) (sb mod
 	return s.record(id)
 }
 
-// Clone starts a new sandbox over a copy of the files another one kept, and runs its entrypoint from
-// the beginning. It takes no memory: that is fork, which captures the running source.
-func (s *Service) Clone(ctx context.Context, ref string, req CopyRequest) (sb models.Sandbox, err error) {
-	// No capability gate: every provider copies files and starts a sandbox, so clone is mandatory.
-	source, src, unlock, err := s.readSource(ctx, ref, req)
-	if err != nil {
-		return models.Sandbox{}, err
-	}
-	defer unlock()
-
-	if src.State != models.StateStopped && src.State != models.StatePaused {
-		return models.Sandbox{}, &StateError{ID: source, State: src.State, Fix: "stop it first, clone copies what a stop kept", Code: models.CodeSandboxNotStopped}
-	}
-
-	var td Teardown
-
-	// The entrypoint runs from the beginning, so the source's exit is not the clone's.
-	claim, err := s.claimCopy(ctx, &td, req, models.Sandbox{
-		Image:     src.Image,
-		Resources: src.Resources,
-		Secrets:   slices.Clone(src.Secrets),
-		Policy:    src.Policy,
-		Command:   slices.Clone(src.Command),
-		Restart:   freshRestart(src.Restart),
-	})
-	defer claim.unlock()
-
-	// After the unlock defer, so the unwind runs first and no verb sees the half-built copy.
-	defer func() {
-		if err != nil {
-			err = errors.Join(err, td.Unwind(ctx))
-		}
-	}()
-
-	if err != nil {
-		return models.Sandbox{}, err
-	}
-	id := claim.id
-
-	td.Push(func(ctx context.Context) error { return s.cfg.Provider.Remove(ctx, id) })
-
-	spec := models.SandboxSpec{ID: id, Name: req.Name, StateDir: claim.dir, Network: claim.net, Resources: src.Resources}
-	if err := s.cfg.Provider.Clone(ctx, source, spec); err != nil {
-		// An interrupt kills the start process and not what it started, and only stop ends a sandbox.
-		if ctx.Err() != nil {
-			td.Discard()
-
-			return models.Sandbox{}, fmt.Errorf("the clone into sandbox %s was interrupted, so it may have started and it stays on the host: run shard rm %s: %w", id, id, err)
-		}
-
-		return models.Sandbox{}, err
-	}
-
-	// The commit point: the clone is live, so nothing below gives anything back.
-	td.Discard()
-
-	if err := RecordRunning(ctx, s.cfg.Repo, s.cfg.Provider, id, false); err != nil {
-		return models.Sandbox{}, err
-	}
-
-	return s.record(id)
-}
-
-// readSource takes the source of a fork or a clone and holds it, so no verb changes it under the copy.
+// readSource takes the source of a fork and holds it, so no verb changes it under the copy.
 func (s *Service) readSource(ctx context.Context, ref string, req CopyRequest) (string, models.Sandbox, func(), error) {
 	if req.Name != "" {
 		if err := sandboxstate.ValidName(req.Name); err != nil {
@@ -434,7 +372,7 @@ func (s *Service) readSource(ctx context.Context, ref string, req CopyRequest) (
 	return id, sb, unlock, nil
 }
 
-// copyClaim is the sandbox a fork or a clone brings up over, held until the verb that claimed it ends.
+// copyClaim is the sandbox a fork brings up over, held until the verb that claimed it ends.
 type copyClaim struct {
 	id  string
 	dir string

@@ -18,6 +18,9 @@ var ErrExitFileTooLarge = errors.New("the exit file is larger than any exit reco
 // ErrExitChannelReplaced is a PID 1 whose fd 0 is no longer the sealed channel create gave it, which only guest root can do.
 var ErrExitChannelReplaced = errors.New("exit channel replaced")
 
+// ErrExecLost is a command that started while the substrate lost its wait on it, so how it ended is unknown.
+var ErrExecLost = errors.New("the substrate lost its wait on the command")
+
 // CommandNotStartedError is a command a sandbox refused to start, which is no exit code of that
 // command: it never ran. Code is what a shell answers for the same refusal.
 type CommandNotStartedError struct {

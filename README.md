@@ -100,34 +100,45 @@ is atomic in the guest, and `--user` names the user who writes and owns the file
 as a tar, with its modes and symlinks. A copy out refuses any entry in it that would land outside
 the destination.
 
-## Snapshots
+## Checkpoints and snapshots
 
 Every sandbox sees at most one fixed CPU feature set, listed in `services/bundle/defaults.go`. The
 set is what Intel Broadwell, AMD Zen and every newer CPU have in common, and it leaves out anything a
-host may lack. That list bounds where a snapshot can restore. A host that lacks a listed feature runs
-its guests with a smaller set and reports no error, and its snapshots restore only where that smaller
-set exists. gVisor does not promise a restore across machines (gvisor#11486), so shard promises a
-restore only on the host that took the snapshot and treats any other host as best effort. Changing
-the list invalidates every existing snapshot, so do not tune it.
+host may lack. That list bounds where a checkpoint can restore. A host that lacks a listed feature
+runs its guests with a smaller set and reports no error, and its checkpoints restore only where that
+smaller set exists. gVisor does not promise a restore across machines (gvisor#11486), so shard
+promises a restore only on the host that took the checkpoint and treats any other host as best
+effort. Changing the list invalidates every existing checkpoint, so do not tune it.
 
-The snapshot verbs work on gVisor, and on `vz` on an Apple silicon Mac with macOS 14 or later. On
-Sysbox, on runc and on `vz` on any other Mac, each snapshot verb refuses by name and the sandbox
-keeps running.
+`pause` and `resume` work on gVisor, on Firecracker, and on `vz` on an Apple silicon Mac with macOS
+14 or later. On Sysbox, on runc and on `vz` on any other Mac, each of them refuses by name and the
+sandbox keeps running.
 
-`shard pause` writes a running sandbox into a snapshot and frees its memory. `shard resume` runs it
-again from that snapshot, and does not consume it. A pause copies the writable layer, so its time
-and disk cost grow with what the sandbox has written. The snapshot is the memory image plus a copy
+`shard pause` writes a running sandbox into a checkpoint and frees its memory. `shard resume` runs it
+again from that checkpoint, and does not consume it. A pause copies the writable layer, so its time
+and disk cost grow with what the sandbox has written. The checkpoint is the memory image plus a copy
 of the writable layer as it was at the pause.
 
 `shard fork` starts a new sandbox from a running one. It freezes the source for a moment, captures
 its memory and its writable layer, lets the same sandbox run on, and starts the new one from that
-capture, never from an older snapshot. Each fork takes a capture of its own, so two forks share
-nothing, and the capture is never a snapshot you can name. gVisor and Firecracker fork today
+capture, never from an older checkpoint. Each fork takes a capture of its own, so two forks share
+nothing, and the capture is never a checkpoint you can name. gVisor and Firecracker fork today
 (SHARD-457, SHARD-462).
 
-`shard snapshot create|list|inspect|remove` and `shard create --snapshot` hold their final shape
-and answer `not implemented yet` with exit 3 until SHARD-457a lands. [docs/cli.md](docs/cli.md) is
-the contract.
+```
+shard stop web
+shard snapshot create --name web-base web
+shard create --name web-2 --snapshot web-base
+```
+
+`shard snapshot create` copies every file that a stopped sandbox kept, `/tmp` included, and no
+memory image. It refuses a running or paused source: stop it first. A snapshot has an id and an
+optional unique name, and it outlives its source, so `shard remove` of the source leaves it in place.
+`shard create --snapshot` takes the place of an image, as the snapshot names its own, and the new
+sandbox runs shard-init alone under a new id and address. It never pulls: the image must still be on
+the host at the digest the snapshot recorded, and only the provider that made the snapshot starts
+it. Firecracker and `vz` copy the disk as it is, so they refuse a `--disk` that differs from the
+snapshot's. `shard snapshot list`, `inspect` and `remove` manage the rest.
 
 Measured on the devbox, a 2 vCPU Hetzner Cloud box with no `/dev/kvm`, with an idle Alpine sandbox
 of about 40 MiB resident: pause takes 0.19 to 0.24 s, and resume 0.46 to 0.48 s.

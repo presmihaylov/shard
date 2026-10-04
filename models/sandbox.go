@@ -12,8 +12,12 @@ type Sandbox struct {
 	ID string `json:"id"`
 	// Name is the handle --name gave it, empty when none. The guest hostname is this, or the id when
 	// this is empty.
-	Name     string `json:"name,omitempty"`
-	Image    string `json:"image"`
+	Name  string `json:"name,omitempty"`
+	Image string `json:"image"`
+	// Digest is the image the writable layer sits over, which a snapshot records: the tag in Image can move.
+	Digest string `json:"digest,omitempty"`
+	// Snapshot is the id of the snapshot the sandbox was created from, empty for one made from an image.
+	Snapshot string `json:"snapshot,omitempty"`
 	Provider string `json:"provider"`
 	// Kernel is the guest kernel a microVM substrate booted, as its release tag; empty on a container substrate.
 	Kernel string `json:"kernel,omitempty"`
@@ -29,9 +33,8 @@ type Sandbox struct {
 	// UnresponsiveReason says what missed its probe bound, set only in state unresponsive.
 	UnresponsiveReason string `json:"unresponsive_reason,omitempty"`
 
-	// Snapshot is the directory the last pause wrote, empty until one happens. A resume reads it and
-	// does not consume it, so it stands until the next pause replaces it or rm removes it.
-	Snapshot string `json:"snapshot,omitempty"`
+	// A resume keeps the checkpoint until the next pause or removal.
+	Checkpoint string `json:"checkpoint,omitempty"`
 	// Pausing is set for one pause, after it removed the old checkpoint, so any checkpoint found under it is that pause's own.
 	Pausing bool `json:"pausing,omitempty"`
 

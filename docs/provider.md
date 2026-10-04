@@ -17,7 +17,7 @@ any other `--provider`, because the other substrate has never heard of those san
 | systemd as PID 1 | no | no | no | no | no |
 | Tenancy | many tenants on one host | **one tenant per host** (see the Sysbox section) | **one tenant per host**, and only code you trust | many tenants on one Mac | many tenants on one host |
 | Exit code | host-verified, behind the sentry | **guest-attested**, and lost if PID 1 dies while the daemon is down or the daemon dies mid-stop (see the Sysbox section) | **guest-attested**, because guest root is host root | host-verified, behind the VM | host-verified, behind the VM |
-| Status | every verb | every required verb, no snapshot verb | every required verb, no snapshot verb | every verb on Apple silicon with macOS 14+; no snapshot verb on 13 or on Intel | every verb |
+| Status | every verb | every required verb, no optional verb | every required verb, no optional verb | every verb on Apple silicon with macOS 14+; no pause or resume on 13 or on Intel | every verb |
 
 The capability table uses the CLI names. The first row holds the required verbs. The other three
 rows are the optional verbs: `Capabilities` reports each one, and the CLI refuses the ones a
@@ -25,7 +25,7 @@ substrate lacks.
 
 | Verb | gVisor | Sysbox | runc | vz | Firecracker |
 |---|---|---|---|---|---|
-| `create`, `start`, `stop`, `remove`, `exec`, `logs`, `inspect` | yes | yes | yes | yes | yes |
+| `create`, `start`, `stop`, `remove`, `snapshot create`, `exec`, `logs`, `inspect` | yes | yes | yes | yes | yes |
 | `pause` | yes | **no** | **no** | Apple silicon on macOS 14+, **no** on 13 or on Intel | yes |
 | `resume` | yes | **no** | **no** | Apple silicon on macOS 14+, **no** on 13 or on Intel | yes |
 | `fork` of a running sandbox | yes | **no** | **no** | **no**, until SHARD-463 | yes |
@@ -108,7 +108,8 @@ init.
 `checkpoint` and `restore` (nestybox/sysbox#715, open since 2023), so there is no memory image to
 take. The provider claims `{Pause: false, Resume: false, Fork: false}`, and each verb refuses by
 name, for example `provider sysbox does not support pause on this host`. Nothing is emulated. A
-`pause` on Sysbox is a refusal and not a stop, and the sandbox keeps running.
+`pause` on Sysbox is a refusal and not a stop, and the sandbox keeps running. `snapshot create`
+still works, because it copies files and needs no memory image.
 
 **Sysbox CE is single-tenant.** Sysbox CE maps every container to the same host uid range,
 `0 165536 65536`. Exclusive ranges were a Sysbox EE feature, and EE is gone. So two Sysbox
@@ -174,30 +175,32 @@ every sandbox would run unconfined. So the daemon refuses the runc provider ther
 ## Required verbs against optional verbs
 
 Fourteen verbs are required. Every substrate must do all of them, and none of them has a capability
-flag. They are `CheckResources`, `Create`, `Start`, `Stop`, `Remove`, `Clone`, `Exec`, `Signal`, `Wait`,
-`ExitStatus`, `Status`, `Restarts`, `LogPath`, and `Capabilities` itself.
+flag. They are `CheckResources`, `Create`, `Start`, `Stop`, `Remove`, `Snapshot`, `Exec`, `Signal`,
+`Wait`, `ExitStatus`, `Status`, `Restarts`, `LogPath`, and `Capabilities` itself.
 
 `CheckResources` answers whether the substrate can run under a bound before the orchestrator writes
 a record, so a refusal leaves nothing in `list`. Only vz and Firecracker refuse anything. A VM's
 memory is real memory, so both refuse `--memory 0` and a bound under 128 MiB by name, and a `--disk`
 whose last block group cannot hold its own metadata. Firecracker also refuses a `--cpus` above 32
 and a `--disk` under 11 MiB. gVisor, Sysbox and runc take every bound. `Create` checks its spec
-again, so a clone or a fork is held to the same rule.
+again, so a create from a snapshot or a fork is held to the same rule.
 
-`Clone` is required because it needs nothing a substrate may lack. It copies the writable layer
-that another sandbox kept, and runs that sandbox's entrypoint again from the beginning, under the
-new id and the new network. It refuses a source that is alive or still mounted. Of the source, it
-reads only the status and the state directory. Firecracker reflinks `overlay.raw` where gVisor
-copies an overlay layer, so the clone shares the source's blocks. A root whose filesystem cannot
-share blocks (ext4, tmpfs) refuses the clone by name instead of copying every byte. XFS and Btrfs
-can.
+`Snapshot(ctx, sourceID, dir string) error` is required because it needs nothing a substrate may
+lack. It copies the files that a stopped sandbox kept into `dir`, and a later `Create` reads them
+back as its seed, under a new id and a new network. It writes nothing of the source, and of the
+source it reads only the status and the state directory. Every provider refuses a live source, and
+a paused one counts as live, with `stop it first`. gVisor, runc and Sysbox also refuse a source
+whose rootfs is still mounted. They copy the writable layer and `/tmp` with `cp -a`, which copies a
+symlink as a link and never follows it out of the tree. Firecracker reflinks `overlay.raw`, and
+`vz` makes an APFS clone of `disk.img`, so the copy shares the source's blocks. A Firecracker root
+always reflinks, because the daemon refuses or provisions any other root at its start.
 
 Three verbs are optional: `Pause`, `Resume` and `Fork`. `Capabilities` reports one boolean per
 optional verb, and it is the only place where one substrate may differ from another. `fork` takes a
 running source and refuses any other state. It freezes the source for a moment, captures its memory
 and files, lets the same runtime run on, and restores the new sandbox from that capture, never from
-an older snapshot (SHARD-457). gVisor and Firecracker fork this way. `vz` refuses fork by name until
-SHARD-463 brings the same live fork to it.
+an older checkpoint (SHARD-457). gVisor and Firecracker fork this way. `vz` refuses fork by name
+until SHARD-463 brings the same live fork to it.
 
 ### What vz does and does not do
 
@@ -261,50 +264,50 @@ The daemon spawns every vmm through Firecracker's `jailer`, and never as root (S
 sandbox gets a uid of its own, and a gid with the same value, from 0x70000000 to 0x7FFDFFFF
 (1879048192 to 2147352575). That range is clear of Sysbox, the `/etc/subuid` defaults and the
 systemd ranges. A counter in `<root>/firecracker/next-uid` hands out each uid once. A restart and a
-resume keep the uid, and a clone gets a new one. The jailer puts itself in the sandbox's cgroup and
-network namespace. It then starts the vmm in new pid and mount namespaces, chrooted into
-`<root>/jail/firecracker/<id>/root`, with no capability and under its seccomp filter. The jail holds
-the kernel, the initrd and the image. On a restore it also holds the snapshot's state and memory.
-Each of these is a reflinked copy that only the uid can read. The overlay is a hard link that the
-uid can write, so the guest writes where `clone` and `pause` read. The tap goes to the uid too, so
-the vmm can open it with no capability. Every spawn gets a fresh jail, and every end of a vmm
-removes it. The jailer makes `/dev/kvm` in the jail and runs the vmm from there, so at start the
-daemon refuses a root on a `nodev` or `noexec` mount. The jailer gets no `--resource-limit`. Its
-default of 2048 open files outlasts the vsock muxer's cap of 1023 connections, and those connections
-are the one count of descriptors that a sandbox grows. A vmm that a daemon spawned before the jail
-existed is still adopted at its socket in the state directory, and its next start jails it. A vmm
-from before SHARD-431 keeps its host tap until its stop, and its next start or resume joins a
-namespace.
+resume keep the uid, and a create from a snapshot gets a new one. The jailer puts itself in the
+sandbox's cgroup and network namespace. It then starts the vmm in new pid and mount namespaces,
+chrooted into `<root>/jail/firecracker/<id>/root`, with no capability and under its seccomp filter.
+The jail holds the kernel, the initrd and the image. On a restore it also holds the checkpoint's
+state and memory. Each of these is a reflinked copy that only the uid can read. The overlay is a
+hard link that the uid can write, so the guest writes where `snapshot create` and `pause` read. The
+tap goes to the uid too, so the vmm can open it with no capability. Every spawn gets a fresh jail,
+and every end of a vmm removes it. The jailer makes `/dev/kvm` in the jail and runs the vmm from
+there, so at start the daemon refuses a root on a `nodev` or `noexec` mount. The jailer gets no
+`--resource-limit`. Its default of 2048 open files outlasts the vsock muxer's cap of 1023
+connections, and those connections are the one count of descriptors that a sandbox grows. A vmm that
+a daemon spawned before the jail existed is still adopted at its socket in the state directory, and
+its next start jails it. A vmm from before SHARD-431 keeps its host tap until its stop, and its next
+start or resume joins a namespace.
 
 `pause` freezes the guest and stops the vCPUs. It writes the vmm's state and the guest's memory into
-the snapshot directory, beside a reflinked copy of `overlay.raw`. It then marks the snapshot
-complete and ends the vmm. It stages all of that beside the snapshot that the directory already
-holds, and swaps the two in one step, so no interruption leaves the sandbox with neither. The record
-stays, so `inspect` reports the sandbox stopped, and the snapshot is what brings it back. `resume`
-loads that snapshot into a fresh vmm, over its own reflinked copy of the overlay and a reflinked
-copy of the memory file in its jail, and it does not consume the snapshot. Firecracker maps the
-memory private, so the vmm never writes to that copy. `fork` builds on this restore (SHARD-462). It
-freezes and stops the running source as `pause` does, writes the same snapshot into the fork's own
-directory, and runs the source on in the same vmm. The fork loads that capture, and the capture then
-goes. Firecracker cannot pause the wall clock, so
-the guest's clock is corrected at the load on x86_64, where it reads kvm-clock, and nowhere else.
-Every load of one snapshot also wakes with the same guest crng key, and the kernel has no vmgenid
-driver. So each `resume` sends the guest 32 bytes of host entropy, and `shard-init` rekeys from them
-before the verb returns (SHARD-266). A restore keeps a marker until the seed lands. If the daemon is
+the checkpoint directory, `<root>/checkpoints/<id>`, beside a reflinked copy of `overlay.raw`. It
+then marks the checkpoint complete and ends the vmm. It stages all of that beside the checkpoint
+that the directory already holds, and swaps the two in one step, so no interruption leaves the
+sandbox with neither. The record stays, so `inspect` reports the sandbox stopped, and the checkpoint
+is what brings it back. `resume` loads that checkpoint into a fresh vmm, over its own reflinked copy
+of the overlay and a reflinked copy of the memory file in its jail, and it does not consume the
+checkpoint. Firecracker maps the memory private, so the vmm never writes to that copy. `fork` builds
+on this restore (SHARD-462). It freezes and stops the running source as `pause` does, writes the
+same capture into the fork's own directory, and runs the source on in the same vmm. The fork loads
+that capture, and the capture then goes. Firecracker cannot pause the wall clock, so the guest's
+clock is corrected at the load on x86_64, where it reads kvm-clock, and nowhere else. Every load of
+one checkpoint also wakes with the same guest crng key, and the kernel has no vmgenid driver. So
+each `resume` sends the guest 32 bytes of host entropy, and `shard-init` rekeys from them before the
+verb returns (SHARD-266). A restore keeps a marker until the seed lands. If the daemon is
 interrupted in between, it reseeds the guest it adopts, and it ends a guest that refuses the reseed
-or the thaw. No guest process draws from the saved key in between, because the snapshot holds the
+or the thaw. No guest process draws from the saved key in between, because the checkpoint holds the
 guest frozen. `pause` has `shard-init` freeze the sandbox cgroup and then the root's writes before
 it stops the vCPUs, and every restore reseeds the guest before it thaws it (SHARD-409). The root is
 an overlay, which takes no `FIFREEZE`, so the freeze holds its ext4 upper disk instead. A guest that
 cannot freeze refuses the pause, and the VM runs on. The thaw paths are the ones that
 `docs/provider-vz.md` lists for `vz`: a failed pause, a daemon interrupted between the freeze and
-the snapshot, and a control connection that dropped with the freeze's answer. A daemon interrupted
+the checkpoint, and a control connection that dropped with the freeze's answer. A daemon interrupted
 inside a fork's capture leaves a marker beside the source, so the next daemon resumes and thaws the
-source, and never ends it as it ends a pause interrupted after its install. A VM booted by an
-older shard runs a `shard-init` whose freeze cannot reach the upper disk. Its state says so, and the
-pause is refused before any freeze, with an error that says to restart the sandbox first.
+source, and never ends it as it ends a pause interrupted after its install. A VM booted by an older
+shard runs a `shard-init` whose freeze cannot reach the upper disk. Its state says so, and the pause
+is refused before any freeze, with an error that says to restart the sandbox first.
 
-The snapshot create resets every vsock stream of the guest. So the daemon dials the source's control
+The capture resets every vsock stream of the guest. So the daemon dials the source's control
 and logs streams again after a fork, and thaws the guest over the new control stream (SHARD-462). An
 `exec` that runs across the capture loses its stream. It fails with an error that names the verb,
 and its command runs on in the sandbox with no reader. An `exec` that starts while the freeze holds
@@ -336,32 +339,33 @@ Two more limits apply. The data dir must be able to clone a file by sharing its 
 `pause` on this provider needs that, as `docs/daemon.md` covers. The daemon probes its root and puts
 a loopback XFS under a root that cannot, so no `pause` ever fails halfway for that reason. The other
 limit is that the vmm's state names each drive by its path in the jail, so a load opens the
-sandbox's own `overlay.raw`. A snapshot taken before the jail existed names host paths instead, and
+sandbox's own `overlay.raw`. A checkpoint taken before the jail existed names host paths instead, and
 `resume` refuses it. To recover, start the sandbox and pause it again.
 
 Every writable drive runs with the cache type `Writeback`, so a guest `fsync` returns only once the
 vmm has flushed the data to the host disk. The firecracker default, `Unsafe`, drops the flush. The
-read-only EROFS base keeps the default. The vmm fixes the cache type when it boots, and a snapshot
+read-only EROFS base keeps the default. The vmm fixes the cache type when it boots, and a checkpoint
 keeps the type that its vmm ran with. So a sandbox created before the release that set this cache
-type, and any snapshot taken before it, keep `Unsafe`. A daemon restart adopts the running vmm as it
-is, and a `resume` of such a snapshot loads its saved drive. A `stop` and a `start` boot a fresh vmm
-with `Writeback`, which gives that sandbox a durable `fsync`. The daemon never stops a sandbox to
-make that switch.
+type, and any checkpoint taken before it, keep `Unsafe`. A daemon restart adopts the running vmm as
+it is, and a `resume` of such a checkpoint loads its saved drive. A `stop` and a `start` boot a
+fresh vmm with `Writeback`, which gives that sandbox a durable `fsync`. The daemon never stops a
+sandbox to make that switch.
 
 `scripts/e2e-fc.sh`, behind `make e2e-firecracker`, drives the whole lifecycle on this provider. It
 starts the daemon over a root that it turns into an XFS image, and runs `create` with `--memory`. It
 checks the vmm's jail, uid and seccomp filter, its host cgroup and its bounds, then `logs`, `exec`
 and an entrypoint that exits. One guest outgrows its memory and stops with its reason, nothing
-starts it again, and `start` brings it back over its kept files. The run then
-checks the policy and the proxy on the vmm's link, a daemon restart that adopts the vmm, and a vmm
-lost while the daemon was down. After that come a `fork` that is refused by name, `pause`, `resume`,
-`stop` with the cgroup kept empty, `start` back into that cgroup, and `remove`.
-The last check is a host with no link, no namespace, no vmm, no jail, no cgroup, no image and no
-fstab line left. It runs on demand only. It needs `/dev/kvm`, which no CI runner and no cloud devbox
-has, so CI, `make check`, `make e2e` and `make devbox-e2e` never call it. To run it, rent a
-bare-metal KVM box, run `sudo make e2e-firecracker` there with `erofs-utils`, `xfsprogs`,
-`firecracker`, `jailer` and Go on it, and destroy the box. `SHARD_KERNEL` and `SHARD_KERNEL_SHA256`
-point the run at a kernel on the box. When they are unset, the daemon fetches the release.
+starts it again, and `start` brings it back over its kept files. The run then checks the policy and
+the proxy on the vmm's link, a daemon restart that adopts the vmm, and a vmm lost while the daemon
+was down. After that come a `fork` that is refused by name, `pause`, `resume`, `stop` with the
+cgroup kept empty, a snapshot by reflink, two sandboxes from it, a refused `--disk` that differs
+from the snapshot's, `start` back into that cgroup, and `remove`. The last check is a host with no link,
+no namespace, no vmm, no jail, no cgroup, no image and no fstab line left. It runs on demand only.
+It needs `/dev/kvm`, which no CI runner and no cloud devbox has, so CI, `make check`, `make e2e` and
+`make devbox-e2e` never call it. To run it, rent a bare-metal KVM box, run
+`sudo make e2e-firecracker` there with `erofs-utils`, `xfsprogs`, `firecracker`, `jailer` and Go on
+it, and destroy the box. `SHARD_KERNEL` and `SHARD_KERNEL_SHA256` point the run at a kernel on the
+box. When they are unset, the daemon fetches the release.
 
 The guest reaches the resolver and the proxy on the bridge address. So a host firewall that drops
 `INPUT` discards those packets after shard's own table has accepted them. A rented box with `ufw` on
@@ -476,8 +480,9 @@ the bound less what ext4 keeps for itself.
 A stop detaches the disk and a start mounts it again, so the layer survives a stop and the next
 start. On Sysbox the disk stays mounted while `sysbox-runc` holds the stopped sandbox, because
 `sysbox-mgr` chowns the upper layer back when the container is deleted, at the next start or at
-`remove`, and it must find the layer in place. Fork and clone copy the layers into a disk of their own,
-bounded the way the source was, and config.json carries the bound for that. The record carries the
+`remove`, and it must find the layer in place. A fork and a create from a snapshot copy the layers into
+a disk of their own, and config.json carries the bound for that. A fork keeps the source's bound.
+A create from a snapshot takes the snapshot's unless it names `--disk`. The record carries the
 resolved bound, so `inspect` shows the value the image enforces instead of a bare `0`.
 `shard create` refuses a negative value. On the VM providers it also refuses, before the record
 exists, a bound that `ext4.Grow` cannot reach, and it names the nearest sizes that it can reach.
@@ -583,13 +588,16 @@ outlives the `shard daemon` that created it, and the next daemon finds it by tha
 - `Exec` applies its own env and workdir, and the entrypoint never sees them;
 - `Exec` refuses an id the substrate never held, and a sandbox that is stopped, naming both the
   sandbox and its state;
-- `Clone` runs the source's entrypoint again under a new id and leaves the source down, and it
-  refuses a source that is running, naming both the sandbox and its state;
+- `Snapshot` holds what a stopped source kept after the source is removed, and two sandboxes
+  seeded from it read that file and share nothing with each other;
+- `Snapshot` keeps a guest symlink to a host path as a link, and never copies the host file;
+- `Snapshot` refuses a source that is running, naming both the sandbox and its state;
 - `Capabilities` and the verbs agree, and every refusal names the provider and the verb.
 
 Every substrate runs it from its own `*_integration_test.go` under `make itest`. On Sysbox and runc
-every snapshot case ends at the refusal, and the suite skips the rest of that verb. So the suite
-proves the refuse path there. It proves the snapshot path on gVisor, on `vz` and on Firecracker.
+every pause, resume and fork case ends at the refusal, and the suite skips the rest of that verb. So
+the suite proves the refuse path there. It proves the checkpoint path on gVisor, on `vz` and on
+Firecracker.
 `vzvm_integration_test.go` runs the suite on real VMs on an Apple silicon Mac, and
 `firecracker_integration_test.go` runs it on real microVMs on a host with `/dev/kvm`. The suite
 forks one running source several times, and proves that the source runs on with its pid and its

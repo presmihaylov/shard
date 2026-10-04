@@ -16,8 +16,11 @@ import (
 	"github.com/presmihaylov/shard/pkg/store"
 )
 
-// layersDir is where a snapshot keeps the copy of the writable layers its memory image was taken over.
+// layersDir is where a checkpoint keeps the copy of the writable layers its memory image was taken over.
 const layersDir = "layers"
+
+// seedLayers is what a snapshot keeps: /.shard holds the last run's ready, restart and exit files, which a new sandbox must not inherit.
+var seedLayers = []string{"upper", "tmp"}
 
 // Export copies config.json and the writable layers into dir, so a fork restores over what the memory saw; ctx ends the copy, which runs while the guest is frozen.
 func (b Bundle) Export(ctx context.Context, dir string) error {
@@ -27,7 +30,7 @@ func (b Bundle) Export(ctx context.Context, dir string) error {
 		return fmt.Errorf("read %s: %w", source, err)
 	}
 	if err := store.WriteFile(filepath.Join(dir, "config.json"), blob, 0o644); err != nil { // #nosec G306
-		return fmt.Errorf("copy config.json into the snapshot: %w", err)
+		return fmt.Errorf("copy config.json into the checkpoint: %w", err)
 	}
 
 	for name, layer := range b.layers() {
@@ -53,31 +56,48 @@ func (s *Service) Fork(snapshot string, spec models.SandboxSpec) (Bundle, error)
 	}
 
 	// A fork carries the source exit record, so a fork of an exited sandbox answers Wait at once.
-	return s.clone(filepath.Join(snapshot, "config.json"), layers, filepath.Join(snapshot, exitFileName), spec)
+	return s.copyBundle(filepath.Join(snapshot, "config.json"), layers, filepath.Join(snapshot, exitFileName), spec)
 }
 
-// Clone lays out a new bundle over a copy of an unmounted sandbox's layers, so its entrypoint runs again over them.
-func (s *Service) Clone(source Bundle, spec models.SandboxSpec) (Bundle, error) {
-	var b Bundle
-	// The layers sit on the source's disk, which its stop detached, and a clone re-runs the entrypoint, so it carries no exit record.
-	err := source.withDisk(func() error {
-		var err error
-		b, err = s.clone(filepath.Join(source.Dir, "config.json"), source.layers(), "", spec)
+// Snapshot copies the writable layer and /tmp of a stopped bundle into dir, which a Build reads back as its Seed.
+func (b Bundle) Snapshot(ctx context.Context, dir string) error {
+	// The layers sit on the disk the stop detached.
+	return b.withDisk(func() error {
+		// A source that was never built has no layer, and copyTree would create the copy before cp fails.
+		for _, name := range seedLayers {
+			if _, err := os.Stat(b.layers()[name]); err != nil {
+				return fmt.Errorf("read the %s layer to snapshot: %w", name, err)
+			}
+		}
+		for _, name := range seedLayers {
+			if err := copyTree(ctx, b.layers()[name], filepath.Join(dir, name)); err != nil {
+				return err
+			}
+		}
 
-		return err
+		return nil
 	})
-	if err != nil {
-		return Bundle{}, err
+}
+
+// seed fills a fresh bundle's layers from a snapshot, before Build writes this sandbox's own files over them.
+func seed(b Bundle, dir string) error {
+	if dir == "" {
+		return nil
 	}
 
-	return b, nil
+	for _, name := range seedLayers {
+		if err := copyTree(context.Background(), filepath.Join(dir, name), b.layers()[name]); err != nil {
+			return err
+		}
+	}
+
+	return nil
 }
 
-// clone copies the layers and rewrites config.json under the new identity, and nothing else in it. A
-// non-empty sourceExit carries the source's exit record into the new bundle; an empty one carries none.
-func (s *Service) clone(configPath string, layers map[string]string, sourceExit string, spec models.SandboxSpec) (Bundle, error) {
+// copyBundle copies the layers and rewrites config.json under the new identity, and carries the source's exit record.
+func (s *Service) copyBundle(configPath string, layers map[string]string, sourceExit string, spec models.SandboxSpec) (Bundle, error) {
 	if spec.ID == "" || spec.StateDir == "" {
-		return Bundle{}, fmt.Errorf("a clone needs an id and a state directory, got %q and %q", spec.ID, spec.StateDir)
+		return Bundle{}, fmt.Errorf("a fork needs an id and a state directory, got %q and %q", spec.ID, spec.StateDir)
 	}
 
 	b, err := newBundle(spec.StateDir)
@@ -96,7 +116,7 @@ func (s *Service) clone(configPath string, layers map[string]string, sourceExit 
 		}
 	}
 
-	// The clone has its own address and name, and the layer copy still holds the source's.
+	// The fork has its own address and name, and the layer copy still holds the source's.
 	if err := writeNetworkFiles(b, spec); err != nil {
 		return Bundle{}, err
 	}
@@ -132,10 +152,8 @@ func (s *Service) clone(configPath string, layers map[string]string, sourceExit 
 		return Bundle{}, fmt.Errorf("write %s: %w", target, err)
 	}
 
-	if sourceExit != "" {
-		if err := copyExitFile(sourceExit, b.ExitFile); err != nil {
-			return Bundle{}, err
-		}
+	if err := copyExitFile(sourceExit, b.ExitFile); err != nil {
+		return Bundle{}, err
 	}
 
 	return b, nil

@@ -170,23 +170,25 @@ FORK_ID=""
 FORK_LINK=""
 
 echo
-echo "== teardown removes the tracked sandboxes, then the fork, then the source"
+echo "== teardown removes the seeded sandboxes, then the fork, then the source"
 SHARD_CALLS=$(mktemp)
 IP_CALLS=$(mktemp)
 SHARD_ROOT=$(mktemp -d)
 FORK_ID="e2e-fork-0304"
 FORK_LINK="shardv3"
-FEATURE_IDS=" e2e-feature-0506 e2e-feature-0708"
+SEEDED_IDS=" e2e-seeded-0506 e2e-seeded-0708"
+SEEDED_LINKS=" shardv4 shardv5"
 
 teardown
 
-check "the tracked sandboxes first, then the fork, then the source" "$(tr '\n' ',' <"${SHARD_CALLS}")" \
-	"remove --force e2e-feature-0506,remove --force e2e-feature-0708,remove --force e2e-fork-0304,remove --force tidy-otter-0102,"
-check "every link" "$(grep -c 'link delete' "${IP_CALLS}")" "2"
+check "the seeded sandboxes first, then the fork, then the source" "$(tr '\n' ',' <"${SHARD_CALLS}")" \
+	"remove --force e2e-seeded-0506,remove --force e2e-seeded-0708,remove --force e2e-fork-0304,remove --force tidy-otter-0102,"
+check "every link" "$(grep -c 'link delete' "${IP_CALLS}")" "4"
 rm -f "${SHARD_CALLS}" "${IP_CALLS}"
 FORK_ID=""
 FORK_LINK=""
-FEATURE_IDS=""
+SEEDED_IDS=""
+SEEDED_LINKS=""
 
 echo
 echo "== teardown stops the daemon it started, after the sandboxes and before the root goes"

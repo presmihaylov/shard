@@ -75,6 +75,14 @@ func (f fakeImages) Pull(ctx context.Context, ref string) (image.Image, error) {
 	return image.Image{Reference: ref, RootFS: "/images/alpine"}, nil
 }
 
+func (f fakeImages) Lookup(ref string) (image.Image, bool, error) {
+	if err := f.r.record("images.Lookup"); err != nil {
+		return image.Image{}, false, err
+	}
+
+	return image.Image{Reference: ref, RootFS: "/images/alpine", Digest: "sha256:alpine"}, true, nil
+}
+
 // fakeLifecycleRepo answers for one sandbox, so a test says what the record held before the verb ran.
 type fakeLifecycleRepo struct {
 	r  *recorder
@@ -162,7 +170,7 @@ func (f *fakeLifecycleRepo) SnapshotDir(id string) (string, error) {
 		return f.snapshotDir, nil
 	}
 
-	return "/snapshots/" + id, nil
+	return "/checkpoints/" + id, nil
 }
 
 func (f *fakeLifecycleRepo) Delete(id string) error {
@@ -235,9 +243,8 @@ type fakeLifecycleProvider struct {
 	snapshot string
 	forked   models.SandboxSpec
 	created  models.SandboxSpec
-	// clonedFrom and cloned are the source id and the spec Clone was handed.
-	clonedFrom string
-	cloned     models.SandboxSpec
+	// snapshotFrom is the source Snapshot copied.
+	snapshotFrom string
 	// noPause, noResume and noFork take a verb out of what the provider claims.
 	noPause, noResume, noFork bool
 	// logPath is the file logs reads, which a test writes into.
@@ -424,14 +431,11 @@ func (f *fakeLifecycleProvider) Fork(_ context.Context, dir string, spec models.
 	return nil
 }
 
-// Clone records the source and the spec, so a test says what the new sandbox was started over.
-func (f *fakeLifecycleProvider) Clone(_ context.Context, sourceID string, spec models.SandboxSpec) error {
-	if err := f.r.record("provider.Clone"); err != nil {
+func (f *fakeLifecycleProvider) Snapshot(_ context.Context, sourceID, _ string) error {
+	if err := f.r.record("provider.Snapshot"); err != nil {
 		return err
 	}
-	f.clonedFrom = sourceID
-	f.cloned = spec
-	f.status = models.Status{Exists: true, State: models.StateRunning, PID: 11}
+	f.snapshotFrom = sourceID
 
 	return nil
 }
@@ -527,9 +531,9 @@ func stopped() models.Sandbox {
 	return models.Sandbox{ID: "sandbox1", Name: "web", State: models.StateStopped, ExitStatus: &models.ExitStatus{Code: 3}}
 }
 
-// paused is the record of a sandbox that holds a snapshot, which is what resume is given.
+// paused is the record of a sandbox that holds a checkpoint, which is what resume is given.
 func paused() models.Sandbox {
-	return models.Sandbox{ID: "sandbox1", Name: "web", State: models.StatePaused, Snapshot: "/snapshots/sandbox1"}
+	return models.Sandbox{ID: "sandbox1", Name: "web", State: models.StatePaused, Checkpoint: "/checkpoints/sandbox1"}
 }
 
 // keep filters the calls down to the named ones, in the order they happened.

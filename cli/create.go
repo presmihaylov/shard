@@ -21,9 +21,6 @@ func (a App) create(ctx context.Context, args []string) error {
 	if err != nil {
 		return err
 	}
-	if req.Snapshot != "" {
-		return notImplemented("create --snapshot")
-	}
 
 	c, err := a.client()
 	if err != nil {
@@ -98,7 +95,7 @@ func sandboxFlags(flags *flag.FlagSet, req *sandbox.CreateRequest) {
 	flags.StringVar(&req.Policy, "policy", "", "")
 	flags.StringVar(&req.WorkDir, "workdir", "", "")
 	flags.StringVar(&req.User, "user", "", "")
-	flags.Var(sizeMiB{&req.Resources.MemoryMiB}, "memory", "")
+	flags.Var(optionalMiB{&req.Resources.MemoryMiB}, "memory", "")
 	flags.Var((*cpuCount)(&req.Resources.VCPUs), "cpus", "")
 	flags.Var(sizeMiB{&req.Resources.DiskMiB}, "disk", "")
 }
@@ -113,8 +110,8 @@ func checkSandbox(flags *flag.FlagSet, req sandbox.CreateRequest) error {
 	}
 
 	// A bound this large overflows the byte count it is turned into, and an overflow reads as unbounded.
-	if req.Resources.MemoryMiB > sandbox.MaxMemoryMiB {
-		return fmt.Errorf("--memory is a bound in MiB and no host holds that much, got %d", req.Resources.MemoryMiB)
+	if req.Resources.MemoryMiB != nil && *req.Resources.MemoryMiB > sandbox.MaxMemoryMiB {
+		return fmt.Errorf("--memory is a bound in MiB and no host holds that much, got %d", *req.Resources.MemoryMiB)
 	}
 	if req.Resources.VCPUs < 0 {
 		return fmt.Errorf("--cpus is a bound and cannot be negative, got %d", req.Resources.VCPUs)

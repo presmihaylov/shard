@@ -1,8 +1,6 @@
 # The CLI contract
 
-This is the final shape of every verb, flag and output of `shard`. The SDKs build against it. A verb,
-flag or format that holds its final shape before its work lands answers `not implemented yet`, and
-the ticket that fills it in is named beside it.
+This is the final shape of every verb, flag and output of `shard`. The SDKs build against it.
 
 ## Exit codes
 
@@ -10,7 +8,6 @@ the ticket that fills it in is named beside it.
 | --- | --- |
 | 0 | the verb did what it says |
 | 1 | any failure of shard, or of the request, with `shard: <reason>` on stderr |
-| 3 | the verb, flag or format is not implemented yet |
 | the command's code | `exec`, and `run` with the app's last code |
 | 126, 127 | `exec` of a command that is not executable, or not found |
 | 1 or more | `exec` whose output was lost, so a lost stream never reads as a pass |
@@ -19,27 +16,6 @@ the ticket that fills it in is named beside it.
 | 130 | `run` that Ctrl+C left; the sandbox stays running |
 
 `daemon status` exits 1 when a background task is in backoff, after it prints the whole status.
-
-## Not implemented yet
-
-A CLI stub parses its flags and arguments first, and a bad usage fails with 1 as it will once the
-work lands. A valid call then writes nothing to stdout, writes one line to stderr, and exits 3:
-
-```
-$ shard snapshot list
-shard: snapshot list: not implemented yet
-$ echo $?
-3
-```
-
-The line names the full verb path, and the flag when it is what is missing, for example
-`shard: create --snapshot: not implemented yet`. A stub never dials the daemon.
-
-An API stub answers 501 with the code `not_implemented`. A body that does not decode is still 400.
-
-```json
-{"error": {"code": "not_implemented", "message": "snapshot list: not implemented yet (SHARD-457a)"}}
-```
 
 ## Global flags
 
@@ -72,7 +48,7 @@ a dash is a verb with no `--format`.
 | verb | flags | format | stdout |
 | --- | --- | --- | --- |
 | `create <image>` | `--name --env --secret --policy --workdir --user --memory --cpus --disk` | - | the id |
-| `create --snapshot <ref>` | the same, in place of the image | - | the id. Not implemented yet (SHARD-457a) |
+| `create --snapshot <ref>` | the same, in place of the image | - | the id |
 | `run <image> <command>...` | the `create` flags, `--restart --restart-retries --restart-backoff -d/--detach` | - | the app's output, or the id with `--detach` |
 | `exec <ref> <argv>...` | `-i/--interactive -t/--tty --env --workdir --user` | - | the command's output |
 | `list` | `--all --format` | table | the sandboxes |
@@ -102,10 +78,10 @@ shard: sandbox <id> is paused: resume it with shard resume <id>
 | `image list` | `--format` | table | the images |
 | `image remove <image>` | `--force` | - | the reference |
 | `image prune` | | - | each reference it removed |
-| `snapshot create <ref>` | `--name` | - | the snapshot id. Not implemented yet (SHARD-457a) |
-| `snapshot list` | `--format` | table | the snapshots. Not implemented yet (SHARD-457a) |
-| `snapshot inspect <snap>` | `--format` | json | the record. Not implemented yet (SHARD-457a) |
-| `snapshot remove <snap>` | | - | the `<snap>` it was given. Not implemented yet (SHARD-457a) |
+| `snapshot create <ref>` | `--name` | - | the snapshot id |
+| `snapshot list` | `--format` | table | the snapshots |
+| `snapshot inspect <snap>` | `--format` | json | the record |
+| `snapshot remove <snap>` | | - | the `<snap>` it was given |
 | `secret set <NAME> [VALUE]` | `--to --placeholder` | - | the name |
 | `secret list` | `--format` | table | the secrets, never a value |
 | `secret remove <NAME>` | `--force` | - | the name |
@@ -187,7 +163,9 @@ absent when empty:
 | `stopped_reason` | shard stopped it with no operator, or `shard-init` died on a stop |
 | `failed_reason` | `state` is `failed` |
 | `unresponsive_reason` | `state` is `unresponsive` |
-| `snapshot` | a pause wrote a checkpoint; the directory |
+| `digest` | the substrate created it; the image digest |
+| `snapshot` | `create --snapshot` made it; the snapshot id |
+| `checkpoint` | a pause wrote a checkpoint; the directory |
 | `pausing` | `true`, during a pause |
 | `command` | `run` made it; the app's argv |
 | `restart` | it has a restart policy |
@@ -311,14 +289,15 @@ elsewhere:
 {"client": "v0.1.0", "daemon": "v0.1.0"}
 ```
 
-`inspect`, `policy show` and `tokens mint` print JSON by default: the sandbox record, `{name, rules,
-dns, holders}`, and `{token, expires_at, scopes}` on one line.
+`inspect`, `snapshot inspect`, `policy show` and `tokens mint` print JSON by default: the sandbox
+record, the snapshot record, `{name, rules, dns, holders}`, and `{token, expires_at, scopes}` on one
+line.
 
 ### Tables
 
-`list`, `image list`, `secret list`, `policy list`, `tokens list`, `info`, `daemon status` and
-`version` print tables by default. `list` prints `ID NAME IMAGE STATE UPTIME IP RESTART POLICY`, and
-`snapshot list` will print `ID NAME SOURCE IMAGE SIZE CREATED`.
+`list`, `image list`, `snapshot list`, `secret list`, `policy list`, `tokens list`, `info`, `daemon
+status` and `version` print tables by default. `list` prints `ID NAME IMAGE STATE UPTIME IP RESTART POLICY`, and
+`snapshot list` prints `ID NAME SOURCE IMAGE SIZE CREATED`.
 
 The tables of the JSON verbs:
 
@@ -332,8 +311,7 @@ The tables of the JSON verbs:
 ## Snapshots
 
 A snapshot is the files a stopped sandbox kept, with no memory image. It has an id and an optional
-name, unique among snapshots, and it outlives its source. Every verb and route below holds its final
-shape and answers not implemented yet until SHARD-457a lands.
+name, unique among snapshots, and it outlives its source.
 
 ```
 shard stop web
@@ -344,12 +322,12 @@ shard snapshot inspect web-base
 shard snapshot remove web-base
 ```
 
-`snapshot create` will refuse a running or paused sandbox. `create --snapshot` takes no image and
+`snapshot create` refuses a running or paused sandbox. `create --snapshot` takes no image and
 never pulls: the image must be on the host at the digest the snapshot recorded, and only the
 provider that made the snapshot starts it. With no `--memory` or `--disk`, the new sandbox takes the
 bounds its source ran under, and Firecracker and `vz` refuse a `--disk` that differs.
 
-| route | body | answer once it lands | scope |
+| route | body | answer | scope |
 | --- | --- | --- | --- |
 | `POST /v0/snapshots` | `{"sandbox", "name"}` | 201, the record | `sandbox:write` |
 | `GET /v0/snapshots` | | 200, `{"snapshots": [...], "next"}` | `sandbox:read` |
@@ -357,7 +335,7 @@ bounds its source ran under, and Firecracker and `vz` refuse a `--disk` that dif
 | `DELETE /v0/snapshots/{ref}` | | 204 | `sandbox:delete` |
 | `POST /v0/sandboxes` | `"snapshot"` in place of `"image"` | 201, the sandbox record | `sandbox:write` |
 
-Each answers 501 `not_implemented` today. `sandbox` and `{ref}` take an id or a name. A create from
+`sandbox` and `{ref}` take an id or a name. A create from
 a snapshot takes the rest of the create body, with `resources` as
 `{"memory_mib", "vcpus", "disk_mib"}`, and no `command` and no `restart`, because the new sandbox
 runs `shard-init` alone.

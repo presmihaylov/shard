@@ -8,11 +8,11 @@ made and the alternative each one rejected, and it records what a run on two Mac
 with it.
 
 The target is Apple Silicon on macOS 14 or later. Intel Macs can build and boot the framework, but
-shard does not support them: they get no Rosetta, no snapshot verb and no development attention.
-macOS 13 runs every verb except the three snapshot verbs, and it is not supported either.
-`docs/mac.md` has the workaround for both. Firecracker stays unsupported on a Mac. Nothing on this
-page runs on Linux, because `pkg/vz` sits behind `//go:build darwin` and its stub returns the
-unsupported-platform error.
+shard does not support them: they get no Rosetta, no `pause`, `resume` or `fork`, and no development
+attention. macOS 13 runs every verb except `pause`, `resume` and `fork`, and it is not supported
+either. `docs/mac.md` has the workaround for both. Firecracker stays unsupported on a Mac. Nothing
+on this page runs on Linux, because `pkg/vz` sits behind `//go:build darwin` and its stub returns
+the unsupported-platform error.
 
 ## The decisions
 
@@ -134,9 +134,9 @@ whether the blocks are shared. On a volume that is not APFS it falls back to a c
 provider says so once in the log (SHARD-215, the wiring and the log line in SHARD-218).
 
 Rejected: a virtiofs share of an unpacked directory. It is the simplest to build, but it has no
-consistent snapshot. A saved VM state and a directory that keeps changing under it cannot be
-restored together, so pause and fork would be wrong on it. Also rejected: squashfs plus an overlay,
-which needs squashfs tooling on the host and a second writable disk anyway.
+consistent point-in-time copy. A saved VM state and a directory that keeps changing under it cannot
+be restored together, so pause and fork would be wrong on it. Also rejected: squashfs plus an
+overlay, which needs squashfs tooling on the host and a second writable disk anyway.
 
 ### The channel is vsock, one guest port per stream, and the host opens every connection
 
@@ -256,17 +256,16 @@ frames would need a second hop to reach the proxy anyway.
 ### Pause, resume and fork are save and restore, and the state file is reusable
 
 - `pause` asks `shard-init` to freeze the guest, pauses the VM, saves its state to
-  `<snapshot dir>/vm.vzvmstate` and stops the VM. Then it takes an APFS clone of the quiescent disk
-  as `<snapshot dir>/disk.img` beside the state file, and the shim exits. The memory is freed, as
-  the verb promises on gVisor, and the live disk stays where it is. The two files are one snapshot:
-  the memory and the disk of the same instant. The freeze exists for `clone`, which boots the live
-  disk cold and never reads the state file (SHARD-296). `shard-init` first freezes the guest's
+  `<checkpoint dir>/vm.vzvmstate` and stops the VM. Then it takes an APFS clone of the quiescent
+  disk as `<checkpoint dir>/disk.img` beside the state file, and the shim exits. The memory is
+  freed, as the verb promises on gVisor, and the live disk stays where it is. The two files are one
+  checkpoint: the memory and the disk of the same instant. The disk is copied apart from the memory,
+  so the pause freezes the guest first (SHARD-296). `shard-init` first freezes the guest's
   processes, through `cgroup.freeze` on the sandbox cgroup, and then freezes the root. `FIFREEZE`
-  flushes the root and holds every write until the thaw, so no write lands between the flush and
-  the pause. A sync alone leaves that window open, and with only a sync a writer in a loop tore the
-  clone's copy of its file on every try. The cgroup freeze comes first because a writer that a
-  frozen root holds would sleep where no cgroup freeze reaches it. The thaw runs in the reverse
-  order.
+  flushes the root and holds every write until the thaw, so no write lands between the flush and the
+  pause. A sync alone leaves that window open, and with only a sync a writer in a loop tore the copy
+  of its file on every try. The cgroup freeze comes first because a writer that a frozen root holds
+  would sleep where no cgroup freeze reaches it. The thaw runs in the reverse order.
 - Every path that runs a frozen guest again thaws it. If a pause fails at or after the freeze, it
   resumes the VM (when the pause got that far) and then thaws. The state that `shard-init` replays
   on a new control connection says whether the guest is frozen, and the host that reads it thaws
@@ -275,16 +274,16 @@ frames would need a second hop to reach the proxy anyway.
   A connection dialed again while a pause is still in flight leaves the guest frozen for that pause.
   `shard-init` undoes a freeze whose host was replaced before the answer, since that host's replay
   may predate the freeze. A stop thaws the guest before it signals the entrypoint. A guest whose
-  `shard-init` predates the freeze refuses it, and the pause fails with that refusal. A snapshot
+  `shard-init` predates the freeze refuses it, and the pause fails with that refusal. A checkpoint
   taken before the freeze existed never says frozen, and it resumes the same way it always did.
-- `resume` first replaces the live disk with a fresh APFS clone of the snapshot's `disk.img`. It
+- `resume` first replaces the live disk with a fresh APFS clone of the checkpoint's `disk.img`. It
   clones to a temporary name and then renames. Next it starts a new shim, which restores the state
-  file over the new disk and resumes. The snapshot is not consumed, and every resume from it starts
+  file over the new disk and resumes. The checkpoint is not consumed, and every resume from it starts
   from the same pair. When a resume's shim dies after the restore has written to the live disk, and
-  the record is still paused over the same snapshot, the next resume gets the pause-time contents
+  the record is still paused over the same checkpoint, the next resume gets the pause-time contents
   again. The fork ticket (SHARD-215) ships that repeated-resume case, with a write after round one.
 - `fork` refuses by name until SHARD-463, because a fork now takes a running source (SHARD-457).
-  The restore below stays, and SHARD-463 builds the live fork on it. It clones the snapshot's
+  The restore below stays, and SHARD-463 builds the live fork on it. It clones the checkpoint's
   `disk.img` and never the live disk. It starts a new shim that restores the same state file over
   that clone and resumes. Then it sends one re-address message on
   the control port, so the guest drops the source's address and takes its own (hypeman's issue 423
@@ -309,13 +308,13 @@ cgroup, `init`, so it can answer while the guest is frozen. Only the kernel's ge
 A process that seeded its own generator before the pause carries that state into every copy.
 
 Rejected: an in-memory pause (the framework's `pause` alone). shard has no in-memory pause, so the
-verb means one thing on every substrate: a snapshot on disk and the memory given back.
+verb means one thing on every substrate: a checkpoint on disk and the memory given back.
 
 ### The capability list
 
 | Verb | macOS 14+ | macOS 13 |
 |---|---|---|
-| `create`, `start`, `stop`, `remove`, `exec`, `logs`, `inspect` | yes | yes |
+| `create`, `start`, `stop`, `remove`, `snapshot create`, `exec`, `logs`, `inspect` | yes | yes |
 | `pause` | yes | **no** |
 | `resume` | yes | **no** |
 | `fork` | yes | **no** |
@@ -397,11 +396,11 @@ line tool outside the sandbox does not need them, as the spike confirmed.
 
 | Piece | What hypeman has | Why shard writes its own |
 |---|---|---|
-| The shim config | `shimconfig/config.go` (`8331138c`): disks, NAT nets, balloon, Rosetta, snapshot manifest | shard's shim has one disk, one file-handle net device and no balloon, and the identifier lives in its record instead of a manifest |
+| The shim config | `shimconfig/config.go` (`8331138c`): disks, NAT nets, balloon, Rosetta, the manifest of a saved VM | shard's shim has one disk, one file-handle net device and no balloon, and the identifier lives in its record instead of a manifest |
 | The shim control channel | `cmd/vz-shim/server.go`, `lib/hypervisor/vz/client.go`: an HTTP API in the shape of cloud-hypervisor's | shard needs to pass the network fd over the socket (`SCM_RIGHTS`), and HTTP cannot carry it. The verbs are pause, resume, save, stop and vsock connect, each one a length-prefixed request |
 | The cpu and memory bounds | `cmd/vz-shim/vm.go` (`8331138c`) `computeMemorySize`, `computeCPUCount`: clamp a request into the framework's `MinimumAllowed`/`MaximumAllowed` | shard's `--memory` and `--cpus` are hard bounds that the record and `inspect` report, and a clamp would hand the VM more than the record says. Zero cpus means every host CPU the framework allows (SHARD-249). An explicit value outside the framework's range is refused with an error that names the range, as gVisor refuses a request below its minimum. The shim ticket (SHARD-213) ships the boundary tests at both ends of the range |
-| Fork | `lib/hypervisor/vz/fork.go` (`561e34fd`): rewrite the snapshot manifest's paths for the target | shard clones the snapshot disk and restores from the record. The lesson it takes is that the device configuration, the network device included, must not change between save and restore, or the restore fails with `Code=12` |
-| The unit tests | `save_restore_support_test.go`, `fork_test.go` (`5d9eff09`, `561e34fd`): the host probe matrix and the manifest path rewrites, against their registry | shard writes its own cases for every adapted behavior, next to the code that lands. SHARD-213 tests that the host probe fails closed on every row of the matrix (a non-darwin `GOOS`, a non-arm64 arch, macOS 13, an empty version, a malformed version). SHARD-215 tests the snapshot disk pairing and the re-address message, and SHARD-216 tests the vsock handshake. The conformance suite covers the verbs and not these internals. Without the probe cases, SHARD-213 could advertise a verb the host lacks and no focused test would fail |
+| Fork | `lib/hypervisor/vz/fork.go` (`561e34fd`): rewrite the paths in the manifest of the saved VM for the target | shard takes an APFS clone of the checkpoint's disk and restores from the record. The lesson it takes is that the device configuration, the network device included, must not change between save and restore, or the restore fails with `Code=12` |
+| The unit tests | `save_restore_support_test.go`, `fork_test.go` (`5d9eff09`, `561e34fd`): the host probe matrix and the manifest path rewrites, against their registry | shard writes its own cases for every adapted behavior, next to the code that lands. SHARD-213 tests that the host probe fails closed on every row of the matrix (a non-darwin `GOOS`, a non-arm64 arch, macOS 13, an empty version, a malformed version). SHARD-215 tests the checkpoint disk pairing and the re-address message, and SHARD-216 tests the vsock handshake. The conformance suite covers the verbs and not these internals. Without the probe cases, SHARD-213 could advertise a verb the host lacks and no focused test would fail |
 
 ### Not taken
 

@@ -173,7 +173,7 @@ func TestAMissingPolicyIsNotFound(t *testing.T) {
 
 func TestRemovingAHeldPolicyIsAConflictThatNamesTheHolders(t *testing.T) {
 	s := seed(t)
-	s.stores.err = &sandbox.HeldError{Subject: "policy web", Verb: "held by", Users: []string{"quiet-heron-3f0a"}, Fix: "remove the sandbox first"}
+	s.stores.err = &sandbox.HeldError{Subject: "policy web", Verb: "held by", Noun: "sandbox", Users: []string{"quiet-heron-3f0a"}, Fix: "remove the sandbox first"}
 
 	status, body := send(t, s.server, http.MethodDelete, "/v0/policies/web", "")
 	if status != http.StatusConflict || !strings.Contains(errorOf(t, body).message, "quiet-heron-3f0a") {
@@ -314,7 +314,7 @@ func raw(t *testing.T, server *httptest.Server, method, path, body string) (int,
 
 func TestRemovingAGrantedSecretIsAConflictUnlessForced(t *testing.T) {
 	s := seed(t)
-	s.stores.err = &sandbox.HeldError{Subject: "secret openai", Verb: "granted to", Users: []string{"quiet-heron-3f0a"}, Fix: "remove the sandbox first, or pass --force"}
+	s.stores.err = &sandbox.HeldError{Subject: "secret openai", Verb: "granted to", Noun: "sandbox", Users: []string{"quiet-heron-3f0a"}, Fix: "remove the sandbox first, or pass --force"}
 
 	status, body := send(t, s.server, http.MethodDelete, "/v0/secrets/openai", "")
 	if status != http.StatusConflict || !strings.Contains(errorOf(t, body).message, "quiet-heron-3f0a") {
@@ -397,7 +397,7 @@ func TestRemovingAnImageKeepsTheWholeReference(t *testing.T) {
 
 func TestRemovingAReferencedImageIsAConflict(t *testing.T) {
 	s := seed(t)
-	s.stores.err = &sandbox.HeldError{Subject: "image alpine:3.20", Verb: "referenced by", Users: []string{"quiet-heron-3f0a"}, Fix: "remove the sandbox first, or pass --force"}
+	s.stores.err = &sandbox.HeldError{Subject: "image alpine:3.20", Verb: "referenced by", Noun: "sandbox", Users: []string{"quiet-heron-3f0a"}, Fix: "remove the sandbox first, or pass --force"}
 
 	status, body := send(t, s.server, http.MethodDelete, "/v0/images/alpine:3.20", "")
 	if status != http.StatusConflict || !strings.Contains(errorOf(t, body).message, "quiet-heron-3f0a") {

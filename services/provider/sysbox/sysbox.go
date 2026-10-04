@@ -776,20 +776,20 @@ func stateOf(status runc.Status) models.State {
 	}
 }
 
-// Clone is a start after a stop under a new id: the source's layers are copied and its entrypoint runs again.
-func (p *Provider) Clone(ctx context.Context, sourceID string, spec models.SandboxSpec) error {
+// Snapshot copies the layers a stop kept into dir, and refuses a source that could still write them.
+func (p *Provider) Snapshot(ctx context.Context, sourceID, dir string) error {
 	source, err := p.open(sourceID)
 	if err != nil {
 		return err
 	}
 
 	// A live source writes its layer under the copy, and its rootfs mount hides the layer's whiteouts.
-	sourceStatus, err := p.Status(ctx, sourceID)
+	status, err := p.Status(ctx, sourceID)
 	if err != nil {
 		return err
 	}
-	if sourceStatus.Alive() {
-		return fmt.Errorf("sandbox %s is %s on %s: stop it first, clone copies what a stop kept", sourceID, sourceStatus.State, Name)
+	if status.Alive() {
+		return fmt.Errorf("sandbox %s is %s on %s: stop it first, a snapshot copies what a stop kept", sourceID, status.State, Name)
 	}
 	mounted, err := source.Mounted()
 	if err != nil {
@@ -798,62 +798,8 @@ func (p *Provider) Clone(ctx context.Context, sourceID string, spec models.Sandb
 	if mounted {
 		return fmt.Errorf("sandbox %s is still mounted at %s: a copy of its layer would miss what the mount holds", sourceID, source.RootFS)
 	}
-	if _, err := imageOf(source, sourceID); err != nil {
-		return err
-	}
 
-	status, err := p.Status(ctx, spec.ID)
-	if err != nil {
-		return err
-	}
-	if status.Alive() {
-		return fmt.Errorf("sandbox %s already exists on %s and is %s", spec.ID, Name, status.State)
-	}
-
-	existing, err := bundle.Open(spec.StateDir)
-	if err != nil {
-		return err
-	}
-	if err := orphaned(existing, spec.ID, status.Exists); err != nil {
-		return err
-	}
-
-	// The clone's own disk, bounded the way the source's was, takes the layer copy.
-	if err := existing.Provision(spec.Resources); err != nil {
-		return err
-	}
-
-	b, err := p.bundles.Clone(source, spec)
-	if err != nil {
-		return errors.Join(err, existing.Unmount())
-	}
-
-	rt, err := imageOf(b, spec.ID)
-	if err != nil {
-		return errors.Join(err, b.Unmount())
-	}
-
-	// A cgroup a removed sandbox of this id left behind would carry its counters into the clone.
-	if err := cgroup.Remove(cgroupDir(p.cgroupRoot, spec.ID)); err != nil {
-		return errors.Join(fmt.Errorf("sweep the cgroup of sandbox %s: %w", spec.ID, err), b.Unmount())
-	}
-
-	if err := b.Mount(rt.RootFS); err != nil {
-		return errors.Join(err, b.Unmount())
-	}
-
-	// config.json carries the source's bound, so the clone is bound the way the source was.
-	spec.Resources = rt.Resources
-
-	if err := p.create(ctx, spec, b); err != nil {
-		return errors.Join(err, b.Unmount())
-	}
-
-	if err := p.runner.Start(ctx, spec.ID); err != nil {
-		return err
-	}
-
-	return p.awaitStarted(ctx, spec.ID, b)
+	return source.Snapshot(ctx, dir)
 }
 
 // imageOf reads back the image a bundle stacks over, and refuses one that is gone before anything runs.

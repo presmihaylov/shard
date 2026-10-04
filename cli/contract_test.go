@@ -13,56 +13,13 @@ import (
 	"github.com/presmihaylov/shard/models"
 )
 
-// Every stub holds its final shape: it parses its flags, then exits 3 with its verb path and prints nothing to stdout.
-func TestEveryStubExitsThreeWithItsVerbAndNoStdout(t *testing.T) {
-	cases := []struct {
-		args []string
-		want string
-	}{
-		{[]string{"snapshot", "create", "web"}, "snapshot create"},
-		{[]string{"snapshot", "create", "--name", "base", "web"}, "snapshot create"},
-		{[]string{"snapshot", "list"}, "snapshot list"},
-		{[]string{"snapshot", "ls"}, "snapshot list"},
-		{[]string{"snapshot", "list", "--format", "json"}, "snapshot list"},
-		{[]string{"snapshot", "inspect", "base"}, "snapshot inspect"},
-		{[]string{"snapshot", "inspect", "--format", "table", "base"}, "snapshot inspect"},
-		{[]string{"snapshot", "remove", "base"}, "snapshot remove"},
-		{[]string{"snapshot", "rm", "base"}, "snapshot remove"},
-		{[]string{"create", "--snapshot", "base"}, "create --snapshot"},
-	}
-
-	for _, c := range cases {
-		t.Run(strings.Join(c.args, " "), func(t *testing.T) {
-			var out bytes.Buffer
-			app := App{Version: "test", Root: t.TempDir(), Out: &out}
-
-			err := app.Run(t.Context(), c.args)
-
-			var exit *ExitError
-			if !errors.As(err, &exit) {
-				t.Fatalf("returned %v, want an exit of %d", err, NotImplementedExitCode)
-			}
-			if exit.Code != NotImplementedExitCode || exit.Message != c.want+": not implemented yet" {
-				t.Errorf("exit %d %q, want %d %q", exit.Code, exit.Message, NotImplementedExitCode, c.want+": not implemented yet")
-			}
-			if out.Len() != 0 {
-				t.Errorf("stdout holds %q, want nothing", out.String())
-			}
-		})
-	}
-}
-
-// A stub still refuses a usage it would refuse once it lands, with the exit of any other error.
-func TestAStubRefusesABadUsageBeforeItExitsThree(t *testing.T) {
+// A bad usage is a plain error, so it exits 1 and never an exit code of its own.
+func TestABadUsageExitsOne(t *testing.T) {
 	for _, args := range [][]string{
-		{"snapshot", "create"},
-		{"snapshot", "list", "extra"},
-		{"snapshot", "inspect"},
-		{"snapshot", "remove"},
+		{"snapshot", "inspect", "--format", "table"},
 		{"snapshot", "create", "--name", "bad/name", "web"},
 		{"snapshot", "create", "--name", "", "web"},
 		{"list", "--format", "yaml"},
-		{"create", "--snapshot", "base", "alpine:3.20"},
 		{"tokens", "mint", "--format", "table"},
 		{"tokens", "mint", "--name", "ci", "--duration", "-1h", "--format", "table"},
 		{"tokens", "mint", "--name", "ci", "--scopes", "nope", "--format", "table"},

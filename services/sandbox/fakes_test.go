@@ -68,8 +68,13 @@ func (r *recorder) snapshot() []string {
 	return slices.Clone(r.calls)
 }
 
+// fakeDigest is what every image the fake holds is pinned at.
+const fakeDigest = "sha256:0a1b"
+
 type fakeImages struct {
 	r *recorder
+	// gone says the store holds no image, as after an rm --force.
+	gone bool
 }
 
 func (f fakeImages) Pull(_ context.Context, ref string) (image.Image, error) {
@@ -77,8 +82,23 @@ func (f fakeImages) Pull(_ context.Context, ref string) (image.Image, error) {
 		return image.Image{}, err
 	}
 
-	// The image names a command of its own, which a create must never run.
-	return image.Image{Reference: ref, RootFS: "/images/alpine", Config: models.ImageConfig{Entrypoint: []string{"/bin/sh"}, Cmd: []string{"-c", "exit 1"}}}, nil
+	return cachedImage(ref), nil
+}
+
+func (f fakeImages) Lookup(ref string) (image.Image, bool, error) {
+	if err := f.r.record("images.Lookup"); err != nil {
+		return image.Image{}, false, err
+	}
+	if f.gone {
+		return image.Image{}, false, nil
+	}
+
+	return cachedImage(ref), true, nil
+}
+
+// cachedImage names a command of its own, which a create must never run.
+func cachedImage(ref string) image.Image {
+	return image.Image{Reference: ref, Digest: fakeDigest, RootFS: "/images/alpine", Config: models.ImageConfig{Entrypoint: []string{"/bin/sh"}, Cmd: []string{"-c", "exit 1"}}}
 }
 
 // stalledImages holds every pull until its context ends, the way a registry that never answers does.
@@ -97,6 +117,8 @@ func (f stalledImages) Pull(ctx context.Context, _ string) (image.Image, error) 
 	return image.Image{}, ctx.Err()
 }
 
+func (f stalledImages) Lookup(string) (image.Image, bool, error) { return image.Image{}, false, nil }
+
 // fakeRepo holds one record, so a test says what it held before the verb ran and reads what it holds after.
 type fakeRepo struct {
 	r  *recorder
@@ -109,7 +131,7 @@ type fakeRepo struct {
 	deleted bool
 	// created is the record as Create was handed it, so a test says what the request put in it.
 	created models.Sandbox
-	// made is the record a fork or a clone created, which lives beside the source the test set up.
+	// made is the record a fork created, which lives beside the source the test set up.
 	made *models.Sandbox
 	// snapshotDir and stateDir replace the fixed paths when a test needs the directory to exist on disk.
 	snapshotDir string
@@ -160,7 +182,7 @@ func (f *fakeRepo) Create(sb models.Sandbox, admit ...func(dir string) error) (m
 	sb.ID = "sandbox1"
 	f.created = sb
 
-	// A fork and a clone create beside the source the test set up, so the copy takes the second id.
+	// A fork creates beside the source the test set up, so the copy takes the second id.
 	if f.sb.ID != "" {
 		sb.ID = "sandbox2"
 		f.made = &sb
@@ -195,7 +217,7 @@ func (f *fakeRepo) SnapshotDir(id string) (string, error) {
 		return f.snapshotDir, nil
 	}
 
-	return "/snapshots/" + id, nil
+	return "/checkpoints/" + id, nil
 }
 
 func (f *fakeRepo) Dir(id string) (string, error) {
@@ -326,7 +348,7 @@ type fakeProvider struct {
 	snapshotDir string
 	// forkedFrom is the running source the fork was told to capture.
 	forkedFrom string
-	// source is the sandbox the clone was told to copy.
+	// source is the stopped sandbox the snapshot was told to copy.
 	source  string
 	paused  bool
 	resumed bool
@@ -536,14 +558,13 @@ func (f *fakeProvider) Fork(_ context.Context, source string, spec models.Sandbo
 
 func (f *fakeProvider) AdoptStaging(string) error { return nil }
 
-func (f *fakeProvider) Clone(_ context.Context, source string, spec models.SandboxSpec) error {
-	if err := f.r.record("provider.Clone"); err != nil {
+func (f *fakeProvider) Snapshot(_ context.Context, source, dir string) error {
+	if err := f.r.record("provider.Snapshot"); err != nil {
 		return err
 	}
-	f.spec, f.source = spec, source
-	f.status = models.Status{Exists: true, State: models.StateRunning, PID: 7}
+	f.source = source
 
-	return nil
+	return os.WriteFile(filepath.Join(dir, "upper"), []byte("kept"), 0o600)
 }
 
 func (f *fakeProvider) Create(_ context.Context, spec models.SandboxSpec) error {
@@ -759,6 +780,7 @@ type layers struct {
 	substrate *fakeSubstrate
 	secrets   *secret.Store
 	policies  *egress.Store
+	snapshots *sandboxstate.Snapshots
 }
 
 // newService wires the orchestrator onto fakes and the two file stores, over the one record sb.
@@ -778,6 +800,11 @@ func newService(t *testing.T, r *recorder, sb models.Sandbox, tune ...func(*sand
 		t.Fatalf("egress.NewStore: %v", err)
 	}
 
+	snapshots, err := sandboxstate.NewSnapshots(filepath.Join(root, "state"))
+	if err != nil {
+		t.Fatalf("sandboxstate.NewSnapshots: %v", err)
+	}
+
 	// A record that is not there yet is what a create sees, and the substrate then reports the fresh sandbox.
 	status := models.Status{Exists: true, State: models.StateCreated, PID: 42}
 	if sb.ID != "" {
@@ -791,10 +818,12 @@ func newService(t *testing.T, r *recorder, sb models.Sandbox, tune ...func(*sand
 		substrate: &fakeSubstrate{r: r},
 		secrets:   secrets,
 		policies:  policies,
+		snapshots: snapshots,
 	}
 
 	cfg := sandbox.Config{
 		Repo:      l.repo,
+		Snapshots: snapshots,
 		Images:    fakeImages{r: r},
 		Network:   l.net,
 		Provider:  l.provider,
@@ -825,14 +854,14 @@ func running() models.Sandbox {
 	return models.Sandbox{ID: "sandbox1", State: models.StateRunning, PID: 42}
 }
 
-// pausedSandbox is a sandbox that holds a snapshot, which is what resume, fork and clone are given.
 // forkSource is a running sandbox whose entrypoint already exited, which a fork captures as it is.
 func forkSource() models.Sandbox {
 	return models.Sandbox{ID: "sandbox1", Name: "web", State: models.StateRunning, PID: 42, ExitStatus: &models.ExitStatus{Code: 3}}
 }
 
+// pausedSandbox is a sandbox that holds a checkpoint, which is what resume and fork are given.
 func pausedSandbox() models.Sandbox {
-	return models.Sandbox{ID: "sandbox1", Name: "web", State: models.StatePaused, Snapshot: "/snapshots/sandbox1",
+	return models.Sandbox{ID: "sandbox1", Name: "web", State: models.StatePaused, Checkpoint: "/checkpoints/sandbox1",
 		ExitStatus: &models.ExitStatus{Code: 3}}
 }
 

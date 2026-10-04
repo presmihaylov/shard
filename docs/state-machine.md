@@ -11,14 +11,14 @@ stateDiagram-v2
     created --> running: fork
     created --> stopped: stop before start
     created --> failed: the daemon restarted mid fork
-    running --> paused: pause (snapshot to disk, memory freed)
+    running --> paused: pause (checkpoint to disk, memory freed)
     running --> stopped: stop, and nothing else
     running --> failed: a pause that lost the guest
     running --> unresponsive: the substrate process missed its probe bound
     unresponsive --> running: the process answers again
     unresponsive --> paused: the process died after a marked pause wrote its checkpoint
     unresponsive --> stopped: stop
-    paused --> running: resume (the snapshot survives)
+    paused --> running: resume (the checkpoint survives)
     paused --> stopped: stop
     stopped --> running: start (over the preserved writable layer)
     stopped --> [*]: remove
@@ -55,11 +55,11 @@ daemon pulls and starts the sandbox behind the record. The record then lands in 
 `POST ?wait=true`, which holds until the record leaves `pending` and streams the pull while it waits.
 The CLI prints each layer on stderr, then the ready sandbox or the reason it failed.
 
-`created` is not where a create lands. It is the state that the copy of a fork passes
-through, and the status a provider reports for a sandbox it holds but has not started. No verb parks a
-sandbox in `created`, because a fork drives its copy on to `running` with no point in between
-where an operator can stop it. That is why `created --> stopped` is in the machine but nothing
-reaches it.
+`created` is not where a create lands, and a create from a snapshot passes `pending` like any other.
+Only the copy of a fork passes through `created`, and it is also the status a provider reports for a
+sandbox it holds but has not started. No verb parks a sandbox in `created`, because a fork drives
+its copy on to `running` with no point in between where an operator can stop it. That is why
+`created --> stopped` is in the machine but nothing reaches it.
 
 **`failed` is terminal, and only `remove` frees it.** A create that never reached `running` refuses every
 verb except `get` and `remove`. The refusal is `409 sandbox_failed` with the reason, so an operator can
@@ -93,7 +93,7 @@ not at the next tick, and a `pause` spends one 5 s bound on it (SHARD-424). When
 answers, the next liveness tick writes `running` again. A daemon can die after a pause wrote its
 checkpoint, and the pause mark then stays on the record. If the next daemon finds the shim silent,
 the record turns `unresponsive` and keeps the mark. When that shim dies, the liveness tick or a
-restart makes the record `paused` with that snapshot (SHARD-442). If the shim answers instead and
+restart makes the record `paused` with that checkpoint (SHARD-442). If the shim answers instead and
 its guest runs, the record drops the mark in the same write, because the guest ran past that
 checkpoint. `stop` and `remove --force` give the shim one more probe of 1 s, then kill it with no grace
 (SHARD-421). The kill goes through a pin that the kernel holds on the process, never through a bare
@@ -124,14 +124,13 @@ runtime refuses to signal a container that never started. The record then says `
 `Provider.Status` reports `Exists: false`. This answer is intended, because the record is what
 survives and `Status` only ever reports what the substrate says now. A paused sandbox is the second
 case. Its record says `paused` and `Status` reports `Exists: false`, because the pause deleted the
-sandbox from the substrate and only the snapshot holds it. A `pause` also kills any `exec` in flight.
-An `exec` that a pause keeps from starting, at any layer, is refused with `sandbox <id> is paused:
-resume it with shard resume <id>`, the text a paused record gives.
+sandbox from the substrate and only the checkpoint holds it. A `pause` also kills any `exec` in
+flight. An `exec` that a pause keeps from starting, at any layer, is refused with `sandbox <id> is
+paused: resume it with shard resume <id>`, the text a paused record gives.
 
-**There is no `checkpointed` state.** `pause` writes the snapshot to disk and frees the memory, so a
-paused sandbox holds no RAM. There is no in-memory pause to tell it apart from. The words `checkpoint`
-and `restore` appear only as `runsc` command names. The CLI, the API and the state records do not use
-them.
+**There is no `checkpointed` state.** `pause` writes a checkpoint to disk and frees the memory, so a
+paused sandbox holds no RAM. There is no in-memory pause to tell it apart from, so `paused` is the
+state, and the record's `checkpoint` key names the directory that a `resume` reads.
 
 **`remove` is not a state.** It removes the record and everything under it. `Provider.Remove` force-ends
 a running sandbox instead of refusing it, because nothing else drops the rootfs mount.
@@ -139,11 +138,19 @@ a running sandbox instead of refusing it, because nothing else drops the rootfs 
 **`fork` is not a transition.** It takes a `running` source only and refuses any other state
 (SHARD-457). It freezes the source for a moment, captures its memory and files, and lets the same
 runtime run on, so the source stays `running` with its pid and its record. It creates a second
-sandbox in `running` from that capture, never from an older snapshot. One `shard fork <source>` per
+sandbox in `running` from that capture, never from an older checkpoint. One `shard fork <source>` per
 new sandbox is the primitive for a warm pool. On gVisor the freeze lasts at most 10 minutes, and a
 capture still in flight then fails and thaws the source. A daemon cut while the source is frozen
 leaves a mark beside it, and the next read of that source thaws it. A fork cut before its restore
 gives back everything it claimed, and one cut later keeps a copy that the runtime reports alive.
+
+**`snapshot create` is not a transition either.** It reads a `stopped` sandbox under that sandbox's
+lock, copies the files that the stop kept, and leaves the sandbox `stopped`. A `start`, `stop` or
+`remove` of the source waits for the copy, because a start under it would write the layer it reads.
+Any other state is `409 sandbox_not_stopped`, because a running or paused sandbox holds memory that a
+copy of its files would miss. The snapshot is not a sandbox and has no state. A create from it is a
+plain create: the record begins `pending`, runs `shard-init` alone and lands in `running` or
+`failed`. It takes no memory, so `Snapshot` is a required verb on every provider.
 
 **A legal move is not always a possible move.** `State.CanTransitionTo` answers only whether the
 move is in the machine. The orchestrator decides whether the move can happen now. The provider decides

@@ -13,7 +13,6 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
-	"reflect"
 	"runtime"
 	"slices"
 	"strconv"
@@ -190,7 +189,7 @@ func TestConformance(t *testing.T) {
 		},
 		SnapshotDir: func(t *testing.T) string { return t.TempDir() },
 		Shell:       func(script string) []string { return []string{"/bin/sh", "-c", script} },
-		// The fake guest is a host process, so the suite writes under the root; a clone here proves the verbs and not the disk.
+		// The fake guest is a host process, so the suite writes under the root; a snapshot here proves the verbs and not the disk.
 		Scratch: h.root,
 		Reopen:  h.reopen,
 	})
@@ -207,7 +206,7 @@ func TestCreateRefusesAnImageWithoutARootDisk(t *testing.T) {
 	}
 }
 
-// The bound needs room under the 32 MiB headroom, so a VM too small for one is refused by name, on a create and a clone.
+// The bound needs room under the 32 MiB headroom, so a VM too small for one is refused by name.
 func TestCreateRefusesAMemoryBoundBelowTheMinimum(t *testing.T) {
 	h := newHarness(t)
 	spec := h.newSpec(t, "/bin/sh", "-c", "exit 0")
@@ -227,24 +226,6 @@ func TestCreateRefusesAMemoryBoundBelowTheMinimum(t *testing.T) {
 		}
 	}
 
-	source := h.newSpec(t, "/bin/sh", "-c", "exit 0")
-	if err := h.provider.Create(t.Context(), source); err != nil {
-		t.Fatal(err)
-	}
-	if err := h.provider.Stop(t.Context(), source.ID, stopGrace); err != nil {
-		t.Fatal(err)
-	}
-	clone := h.newSpec(t)
-	clone = models.SandboxSpec{ID: clone.ID, StateDir: clone.StateDir, Resources: models.Resources{MemoryMiB: 64}}
-	err = h.provider.Clone(t.Context(), source.ID, clone)
-	if err == nil || !strings.Contains(err.Error(), clone.ID) || !strings.Contains(err.Error(), "128 MiB") {
-		t.Fatalf("Clone = %v, want a refusal that names the sandbox and the minimum", err)
-	}
-	clone.Resources.MemoryMiB = 0
-	err = h.provider.Clone(t.Context(), source.ID, clone)
-	if err == nil || !strings.Contains(err.Error(), "--memory 0") {
-		t.Fatalf("Clone with --memory 0 = %v, want the refusal by name", err)
-	}
 }
 
 // The orchestrator asks before it writes a record, so a refused --memory leaves no failed sandbox in ls.
@@ -293,7 +274,7 @@ func TestCreateGivesAnImageWithoutAPathTheDefault(t *testing.T) {
 	}
 }
 
-// A clone boots from the disk alone, so a pause freezes the guest's root before it stops the VM, and every path that runs the guest again thaws it (SHARD-296).
+// The disk is copied apart from the memory, so a pause freezes the guest's root before it stops the VM, and every path that runs the guest again thaws it (SHARD-296).
 func TestAPauseFreezesTheGuestAndEveryPathThatRunsItAgainThawsIt(t *testing.T) {
 	h := newHarness(t)
 	spec := h.newSpec(t, "/bin/sh", "-c", "while true; do sleep 1; done")
@@ -588,7 +569,7 @@ func TestPauseKeepsWhatAResumeAndAForkNeed(t *testing.T) {
 	if err := h.provider.Pause(t.Context(), spec.ID, snap); err != nil {
 		t.Fatalf("a second Pause = %v, want a no-op", err)
 	}
-	if err := h.provider.Pause(t.Context(), spec.ID, t.TempDir()); err == nil || !strings.Contains(err.Error(), "no complete snapshot") {
+	if err := h.provider.Pause(t.Context(), spec.ID, t.TempDir()); err == nil || !strings.Contains(err.Error(), "no complete checkpoint") {
 		t.Fatalf("a second Pause into an empty directory = %v, want a refusal", err)
 	}
 	if err := h.provider.Start(t.Context(), spec.ID); err == nil || !strings.Contains(err.Error(), "resume it first") {
@@ -801,62 +782,54 @@ func TestALinkCloseFaultAfterTheVMIsDownNeverFailsTheStop(t *testing.T) {
 	}
 }
 
-// The orchestrator's clone spec carries no entrypoint, so the clone runs the source's, from a stopped source and from a paused one.
-func TestCloneRunsTheSourceEntrypointFromASpecWithoutOne(t *testing.T) {
+// A snapshot copies the disk a stop kept, and a create seeded from it boots that disk under a machine id of its own.
+func TestASnapshotSeedsTheDiskOfANewSandbox(t *testing.T) {
 	h := newHarness(t)
-	source := h.newSpec(t, "/bin/sh", "-c", "exit 3")
-	source.Env = []string{"KEPT=1"}
+	source := h.newSpec(t, "/bin/sh", "-c", "exit 0")
 	if err := h.provider.Create(t.Context(), source); err != nil {
 		t.Fatal(err)
 	}
-	if err := h.provider.Start(t.Context(), source.ID); err != nil {
-		t.Fatal(err)
-	}
-	if exit, err := h.provider.Wait(t.Context(), source.ID); err != nil || exit.Code != 3 {
-		t.Fatalf("Wait on the source = %+v, %v", exit, err)
+	files := t.TempDir()
+	if err := h.provider.Snapshot(t.Context(), source.ID, files); err == nil || !strings.Contains(err.Error(), "stop it first") {
+		t.Fatalf("Snapshot of a live source = %v, want a refusal", err)
 	}
 	if err := h.provider.Stop(t.Context(), source.ID, stopGrace); err != nil {
 		t.Fatal(err)
 	}
-	src := readVM(t, source.StateDir)
 
-	clone := h.newSpec(t)
-	clone = models.SandboxSpec{ID: clone.ID, StateDir: clone.StateDir, Resources: clone.Resources}
-	if err := h.provider.Clone(t.Context(), source.ID, clone); err != nil {
-		t.Fatalf("Clone from a stopped source: %v", err)
-	}
-	if exit, err := h.provider.Wait(t.Context(), clone.ID); err != nil || exit.Code != 3 {
-		t.Fatalf("Wait on the clone = %+v, %v", exit, err)
-	}
-	got := readVM(t, clone.StateDir)
-	if !reflect.DeepEqual(got.Run, src.Run) || got.RootFS != src.RootFS {
-		t.Errorf("the clone's record runs %+v over %q, want the source's %+v over %q", got.Run, got.RootFS, src.Run, src.RootFS)
-	}
-	if got.MachineID == "" || got.MachineID == src.MachineID {
-		t.Errorf("the clone's machine id is %q, want one of its own (the source's is %q)", got.MachineID, src.MachineID)
-	}
-
-	if err := h.provider.Start(t.Context(), source.ID); err != nil {
+	// The fake guest never writes its disk, so the test writes what a guest would have.
+	disk, err := os.OpenFile(filepath.Join(source.StateDir, "disk.img"), os.O_WRONLY|os.O_APPEND, 0)
+	if err != nil {
 		t.Fatal(err)
 	}
-	snap := t.TempDir()
-	if err := h.provider.Pause(t.Context(), source.ID, snap); err != nil {
+	if _, err := disk.WriteString("kept by the source"); err != nil {
 		t.Fatal(err)
 	}
-	second := h.newSpec(t)
-	second = models.SandboxSpec{ID: second.ID, StateDir: second.StateDir, Resources: second.Resources}
-	if err := h.provider.Clone(t.Context(), source.ID, second); err != nil {
-		t.Fatalf("Clone from a paused source: %v", err)
+	if err := disk.Close(); err != nil {
+		t.Fatal(err)
 	}
-	if exit, err := h.provider.Wait(t.Context(), second.ID); err != nil || exit.Code != 3 {
-		t.Fatalf("Wait on the clone of a paused source = %+v, %v", exit, err)
+	if err := h.provider.Snapshot(t.Context(), source.ID, files); err != nil {
+		t.Fatalf("Snapshot of a stopped source: %v", err)
 	}
-	if r := readVM(t, source.StateDir); !r.Paused {
-		t.Errorf("the source's record after the clone = %+v, want it still paused", r)
+
+	seeded := h.newSpec(t, "/bin/sh", "-c", "exit 0")
+	seeded.Seed = files
+	if err := h.provider.Create(t.Context(), seeded); err != nil {
+		t.Fatalf("Create from the snapshot: %v", err)
+	}
+	want, err := os.ReadFile(filepath.Join(source.StateDir, "disk.img"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got, err := os.ReadFile(filepath.Join(seeded.StateDir, "disk.img")); err != nil || !bytes.Equal(got, want) {
+		t.Errorf("the seeded disk holds %d bytes (%v), want the %d the source kept", len(got), err, len(want))
+	}
+	if got, src := readVM(t, seeded.StateDir).MachineID, readVM(t, source.StateDir).MachineID; got == "" || got == src {
+		t.Errorf("the seeded sandbox's machine id is %q, want one of its own (the source's is %q)", got, src)
 	}
 }
 
-// vm is the part of the record the clone test compares, decoded from the file as the provider wrote it.
+// vm is the part of the record a test compares, decoded from the file as the provider wrote it.
 type vm struct {
 	MachineID string             `json:"machine_id"`
 	RootFS    string             `json:"rootfs"`

@@ -212,6 +212,14 @@ func (s *Service) cached(ref string) (Image, bool, error) {
 	return img, err == nil, err
 }
 
+// Lookup answers with the image the store holds for ref and never pulls, so a create from a snapshot runs over the layer it was copied from or not at all.
+func (s *Service) Lookup(ref string) (Image, bool, error) {
+	s.removal.RLock()
+	defer s.removal.RUnlock()
+
+	return s.cached(ref)
+}
+
 // Cached says whether ref is pulled and unpacked, so a create can start it now instead of in the background.
 // A ref that does not parse is not in the store, and the create path is what rejects it, not this read.
 func (s *Service) Cached(ref string) (bool, error) {

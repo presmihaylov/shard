@@ -124,8 +124,16 @@ func (r reconciler) Reconcile(ctx context.Context, report func(string)) error {
 		return err
 	}
 
-	// A pause the last daemon did not finish left a snapshot .tmp that no record reaches anymore.
+	// A pause the last daemon did not finish left a checkpoint .tmp that no record reaches anymore.
 	if err := repo.SweepSnapshotTmp(report); err != nil {
+		return err
+	}
+
+	snaps, err := r.deps.snapshots()
+	if err != nil {
+		return err
+	}
+	if err := snaps.Sweep(report); err != nil {
 		return err
 	}
 
@@ -302,6 +310,13 @@ func (l *lifecycle) Create(ctx context.Context, req sandbox.CreateRequest) (mode
 		return models.Sandbox{}, err
 	}
 
+	// A create outlives the request, so it runs under base and ends with the daemon, but reports to the caller's progress.
+	detached := image.WithProgress(l.base, image.ProgressFrom(ctx))
+	// A create from a snapshot never pulls, so it has nothing to wait on in the background.
+	if req.Snapshot != "" {
+		return svc.Create(detached, req)
+	}
+
 	images, err := l.deps.images()
 	if err != nil {
 		return models.Sandbox{}, err
@@ -313,8 +328,6 @@ func (l *lifecycle) Create(ctx context.Context, req sandbox.CreateRequest) (mode
 		return models.Sandbox{}, err
 	}
 
-	// A create outlives the request, so it runs under base and ends with the daemon, but reports to the caller's progress.
-	detached := image.WithProgress(l.base, image.ProgressFrom(ctx))
 	if cached {
 		// A caller that hangs up never leaves its started app behind a pending record.
 		return svc.Create(detached, req)
@@ -467,6 +480,42 @@ func (l *lifecycle) Fork(ctx context.Context, ref string, req sandbox.CopyReques
 	}
 
 	return svc.Fork(ctx, ref, req)
+}
+
+func (l *lifecycle) CreateSnapshot(ctx context.Context, req sandbox.SnapshotRequest) (models.Snapshot, error) {
+	svc, err := l.service()
+	if err != nil {
+		return models.Snapshot{}, err
+	}
+
+	return svc.CreateSnapshot(ctx, req)
+}
+
+func (l *lifecycle) ListSnapshots(ctx context.Context) ([]models.Snapshot, error) {
+	svc, err := l.service()
+	if err != nil {
+		return nil, err
+	}
+
+	return svc.ListSnapshots(ctx)
+}
+
+func (l *lifecycle) InspectSnapshot(ctx context.Context, ref string) (models.Snapshot, error) {
+	svc, err := l.service()
+	if err != nil {
+		return models.Snapshot{}, err
+	}
+
+	return svc.InspectSnapshot(ctx, ref)
+}
+
+func (l *lifecycle) RemoveSnapshot(ctx context.Context, ref string) error {
+	svc, err := l.service()
+	if err != nil {
+		return err
+	}
+
+	return svc.RemoveSnapshot(ctx, ref)
 }
 
 func (l *lifecycle) CreateExec(ctx context.Context, ref string, req sandbox.ExecRequest) (models.Exec, error) {

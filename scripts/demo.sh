@@ -75,7 +75,7 @@ echo "  host RSS of pid ${PID}: ${RSS_BEFORE} KiB before, $(rss "${PID}") after"
 CGROUP="/sys/fs/cgroup/shard/$(shard inspect web | grep -o '"id": *"[^"]*"' | cut -d'"' -f4)/memory.current"
 echo "  ${CGROUP}: $([ -e "${CGROUP}" ] && echo present || echo gone)"
 echo "  host MemAvailable: +$(( $(mem_available_kib) - FREE_BEFORE )) KiB"
-show ls -la "$(shard inspect web | grep -o '"snapshot": *"[^"]*"' | cut -d'"' -f4)"
+show ls -la "$(shard inspect web | grep -o '"checkpoint": *"[^"]*"' | cut -d'"' -f4)"
 
 timed shard resume web
 sleep 2

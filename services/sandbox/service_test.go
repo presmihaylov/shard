@@ -214,7 +214,7 @@ func TestCreateRefusesMoreMemoryThanTheHostHas(t *testing.T) {
 	r := &recorder{}
 	svc, l := newService(t, r, models.Sandbox{}, func(c *sandbox.Config) { c.HostMemoryMiB = 4096 })
 	req := alpine()
-	req.Resources.MemoryMiB = 4097
+	req.Resources.MemoryMiB = new(int64(4097))
 
 	_, err := svc.Create(t.Context(), req)
 
@@ -234,7 +234,7 @@ func TestCreateTakesTheWholeHostMemory(t *testing.T) {
 	r := &recorder{}
 	svc, _ := newService(t, r, models.Sandbox{}, func(c *sandbox.Config) { c.HostMemoryMiB = 4096 })
 	req := alpine()
-	req.Resources.MemoryMiB = 4096
+	req.Resources.MemoryMiB = new(int64(4096))
 
 	if _, err := svc.Create(t.Context(), req); err != nil {
 		t.Fatalf("create with the host's whole memory: %v", err)
@@ -359,6 +359,9 @@ func TestCreateRecordsWhatTheSubstrateDecided(t *testing.T) {
 	if l.repo.sb.HostInterface != "shardv2" {
 		t.Errorf("the record holds host interface %q, want shardv2", l.repo.sb.HostInterface)
 	}
+	if l.repo.sb.Digest != fakeDigest {
+		t.Errorf("the record holds digest %q, want the pulled image's %s", l.repo.sb.Digest, fakeDigest)
+	}
 	if l.repo.sb.State != models.StatePending {
 		t.Errorf("the record says %s before the start was recorded, want pending", l.repo.sb.State)
 	}
@@ -379,11 +382,11 @@ func TestCreateRefusesWhatNoStoreCouldHold(t *testing.T) {
 	cases := map[string]sandbox.CreateRequest{
 		"no image":                {},
 		"a name no verb takes":    {Image: "alpine", Name: "a/b"},
-		"a negative memory":       {Image: "alpine", Resources: models.Resources{MemoryMiB: -512}},
-		"a memory that overflows": {Image: "alpine", Resources: models.Resources{MemoryMiB: sandbox.MaxMemoryMiB + 1}},
-		"a negative cpu bound":    {Image: "alpine", Resources: models.Resources{VCPUs: -2}},
-		"a negative disk bound":   {Image: "alpine", Resources: models.Resources{DiskMiB: -1}},
-		"a disk that overflows":   {Image: "alpine", Resources: models.Resources{DiskMiB: sandbox.MaxDiskMiB + 1}},
+		"a negative memory":       {Image: "alpine", Resources: sandbox.ResourceRequest{MemoryMiB: new(int64(-512))}},
+		"a memory that overflows": {Image: "alpine", Resources: sandbox.ResourceRequest{MemoryMiB: new(int64(sandbox.MaxMemoryMiB + 1))}},
+		"a negative cpu bound":    {Image: "alpine", Resources: sandbox.ResourceRequest{VCPUs: -2}},
+		"a negative disk bound":   {Image: "alpine", Resources: sandbox.ResourceRequest{DiskMiB: -1}},
+		"a disk that overflows":   {Image: "alpine", Resources: sandbox.ResourceRequest{DiskMiB: sandbox.MaxDiskMiB + 1}},
 		"a bad policy name":       {Image: "alpine", Policy: "Bad Name"},
 		"an env with no value":    {Image: "alpine", Env: []string{"DEBUG"}},
 		"an env with no name":     {Image: "alpine", Env: []string{"=1"}},

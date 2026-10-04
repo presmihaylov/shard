@@ -31,9 +31,10 @@ type fakeLifecycle struct {
 	// hold is how long Create takes, and heldErr what its context said at the end of it.
 	hold    time.Duration
 	heldErr error
-	// copied is the body a fork sent.
-	copied sandbox.CopyRequest
-	ref    string
+	// copied is the body a fork sent, and snapshotted the body a snapshot create sent.
+	copied      sandbox.CopyRequest
+	snapshotted sandbox.SnapshotRequest
+	ref         string
 	// waited is the ref a get with ?wait blocked on.
 	waited string
 	// granted is the secret the grant or the ungrant named.
@@ -314,6 +315,28 @@ func (f *fakeLifecycle) Fork(_ context.Context, ref string, req sandbox.CopyRequ
 	f.ref, f.copied = ref, req
 
 	return models.Sandbox{ID: "sandbox2", Name: req.Name, State: models.StateRunning}, f.err
+}
+
+func (f *fakeLifecycle) CreateSnapshot(_ context.Context, req sandbox.SnapshotRequest) (models.Snapshot, error) {
+	f.snapshotted = req
+
+	return models.Snapshot{ID: "snap1", Name: req.Name, Source: req.Sandbox}, f.err
+}
+
+func (f *fakeLifecycle) ListSnapshots(context.Context) ([]models.Snapshot, error) {
+	return []models.Snapshot{{ID: "snap1"}, {ID: "snap2"}, {ID: "snap3"}}, f.err
+}
+
+func (f *fakeLifecycle) InspectSnapshot(_ context.Context, ref string) (models.Snapshot, error) {
+	f.ref = ref
+
+	return models.Snapshot{ID: "snap1", Name: "base"}, f.err
+}
+
+func (f *fakeLifecycle) RemoveSnapshot(_ context.Context, ref string) error {
+	f.ref = ref
+
+	return f.err
 }
 
 // CreateExec starts the exec the way the orchestrator does, running from the moment it returns.
@@ -679,12 +702,12 @@ func TestTheStatusAndTheCodeFollowTheError(t *testing.T) {
 		{"a body past the cap", &sandbox.RequestError{Err: fmt.Errorf("decode the request body: %w", &http.MaxBytesError{Limit: 1 << 20})}, http.StatusRequestEntityTooLarge, "body_too_large", "too large"},
 		{"a bad name", &sandboxstate.ValidationError{Reason: "the name is a slash"}, http.StatusBadRequest, "invalid_request", "slash"},
 		{"not found", fmt.Errorf("sandbox ghost: %w", sandboxstate.ErrNotFound), http.StatusNotFound, "not_found", "ghost"},
-		{"a name taken", &sandboxstate.NameTakenError{Name: "web", Holder: "quiet-heron-3f0a"}, http.StatusConflict, "name_taken", "taken by sandbox quiet-heron-3f0a"},
+		{"a name taken", &sandboxstate.NameTakenError{Noun: "sandbox", Name: "web", Holder: "quiet-heron-3f0a"}, http.StatusConflict, "name_taken", "taken by sandbox quiet-heron-3f0a"},
 		{"not running", &sandbox.StateError{ID: "sandbox1", State: models.StateStopped, Fix: "pause takes a running sandbox", Code: models.CodeSandboxNotRunning}, http.StatusConflict, "sandbox_not_running", "sandbox sandbox1 is stopped: pause takes a running sandbox"},
 		{"not stopped", &sandbox.StateError{ID: "sandbox1", State: models.StateRunning, Fix: "stop it first with shard stop sandbox1, or pass --force", Code: models.CodeSandboxNotStopped}, http.StatusConflict, "sandbox_not_stopped", "sandbox sandbox1 is running: stop it first with shard stop sandbox1, or pass --force"},
 		{"not paused", &sandbox.StateError{ID: "sandbox1", State: models.StateRunning, Fix: "resume takes a paused sandbox", Code: models.CodeSandboxNotPaused}, http.StatusConflict, "sandbox_not_paused", "resume takes a paused sandbox"},
 		{"live", &sandbox.StateError{ID: "sandbox1", State: models.StateRunning, Fix: "stop it first", Code: models.CodeSandboxLive}, http.StatusConflict, "sandbox_live", "stop it first"},
-		{"no snapshot", &sandbox.StateError{ID: "sandbox1", State: models.StatePaused, Fix: "its record names no snapshot to resume from", Code: models.CodeNoSnapshot}, http.StatusConflict, "no_snapshot", "no snapshot"},
+		{"no checkpoint", &sandbox.StateError{ID: "sandbox1", State: models.StatePaused, Fix: "its record names no checkpoint to resume from", Code: models.CodeNoCheckpoint}, http.StatusConflict, "no_checkpoint", "no checkpoint"},
 		{"gone from the substrate", &sandbox.UnavailableError{ID: "sandbox1", Why: "is gone from gvisor", Fix: "remove it with shard remove sandbox1 and create another"}, http.StatusConflict, "sandbox_not_running", "gone from gvisor"},
 		{"an unclaimed verb", models.Unsupported("gvisor", "fork"), http.StatusConflict, "unsupported", "provider gvisor does not support fork on this host"},
 		{"anything else", errors.New("runsc: boom"), http.StatusInternalServerError, "internal", "boom"},
@@ -703,6 +726,9 @@ func TestTheStatusAndTheCodeFollowTheError(t *testing.T) {
 				{http.MethodPost, "/v0/sandboxes/sandbox1/pause", ""},
 				{http.MethodPost, "/v0/sandboxes/sandbox1/resume", ""},
 				{http.MethodPost, "/v0/sandboxes/sandbox1/fork", `{"name":"web-2"}`},
+				{http.MethodPost, "/v0/snapshots", `{"sandbox":"sandbox1"}`},
+				{http.MethodGet, "/v0/snapshots/base", ""},
+				{http.MethodDelete, "/v0/snapshots/base", ""},
 				{http.MethodPost, "/v0/sandboxes/sandbox1/secrets/TOKEN", ""},
 				{http.MethodDelete, "/v0/sandboxes/sandbox1/secrets/TOKEN", ""},
 				{http.MethodPut, "/v0/sandboxes/sandbox1/policy", `{"policy":"locked"}`},

@@ -21,6 +21,7 @@ import (
 	"github.com/presmihaylov/shard/services/image"
 	"github.com/presmihaylov/shard/services/network"
 	"github.com/presmihaylov/shard/services/sandbox"
+	"github.com/presmihaylov/shard/services/sandboxstate"
 	"github.com/presmihaylov/shard/services/secret"
 )
 
@@ -28,6 +29,7 @@ import (
 type imageService interface {
 	Pull(ctx context.Context, ref string) (image.Image, error)
 	Claim(ctx context.Context, ref string, record func(image.Image) error) (image.Image, error)
+	Lookup(ref string) (image.Image, bool, error)
 	List() ([]image.Image, error)
 	Orphaned(ref string) ([]string, error)
 	Remove(ctx context.Context, ref string, free func() error) error
@@ -70,6 +72,7 @@ type fakeDaemon struct {
 	substrateSvc substrate
 	secretSvc    *secret.Store
 	policySvc    *egress.Store
+	snapshotSvc  *sandboxstate.Snapshots
 	// egressLog is what shard logs --egress prints, canned: the real one reads the kernel ring.
 	egressLog []egress.Record
 	// proxyCA is what a grant plants in the guest, and nil is a shard that fronts nothing.
@@ -95,6 +98,7 @@ func (f *fakeDaemon) build() {
 			Secrets:   f.secretSvc,
 			Policies:  f.policySvc,
 			Substrate: f.substrateSvc,
+			Snapshots: f.snapshotSvc,
 			// A verb test without a repo never grants, so the opener asks the repo only when called.
 			Environments: bundle.Opener(func(id string) (string, error) { return f.repoSvc.Dir(id) }),
 			ProxyCA: func() ([]byte, error) {
@@ -117,6 +121,7 @@ func (f *fakeDaemon) build() {
 			Compiler:    egress.New(f.policySvc, f.repoSvc, netip.MustParseAddr("10.87.0.1"), network.DefaultNameservers, docsResolver{}),
 			Secrets:     f.secretSvc,
 			Images:      f.imageSvc,
+			Snapshots:   f.snapshotSvc,
 			Network:     func() (sandbox.Reapplier, error) { return f.netSvc, nil },
 			PullTimeout: time.Minute,
 		})
@@ -232,6 +237,15 @@ func (f *fakeDaemon) handler() http.Handler {
 // serveDaemon answers on the socket under the app's root, the way the daemon does over the real stores.
 func serveDaemon(t *testing.T, f *fakeDaemon) {
 	t.Helper()
+
+	// Every image verb reads the snapshots, so each fake daemon keeps a real store under its root.
+	if f.snapshotSvc == nil {
+		snaps, err := sandboxstate.NewSnapshots(f.app.Root)
+		if err != nil {
+			t.Fatalf("NewSnapshots: %v", err)
+		}
+		f.snapshotSvc = snaps
+	}
 
 	listener, err := net.Listen("unix", filepath.Join(f.app.Root, api.SocketFile))
 	if err != nil {
