@@ -131,11 +131,11 @@ shard: sandbox <id> is paused: resume it with shard resume <id>
 `--format` takes `json` or `table`, and any other word is a usage error. Naming the default changes
 nothing: `list --format table` prints what `list` prints.
 
-**A `--format json` call writes one value or nothing.** JSON is one value, indented by two spaces, and a list verb
-prints an array. A failure to parse, to reach the daemon, or to encode writes nothing to stdout. A
-list with warnings, or a `daemon status` with a task in backoff, still writes the whole value, then
-the warnings or the error on stderr, and exits 1. `version --format json` with no daemon writes
-nothing and fails.
+**A `--format json` call writes one value or nothing.** JSON is indented by two spaces, except
+`tokens mint`, which prints compact JSON. A list verb prints an array. A failure to parse, to reach
+the daemon, or to encode writes nothing to stdout. A list with warnings, or a `daemon status` with
+a task in backoff, still writes the whole value, then the warnings or the error on stderr, and
+exits 1. `version --format json` with no daemon writes nothing and fails.
 
 ### JSON
 
@@ -299,9 +299,9 @@ elsewhere:
 {"client": "v0.1.0", "daemon": "v0.1.0"}
 ```
 
-`inspect`, `snapshot inspect`, `policy show` and `tokens mint` print JSON by default: the sandbox
-record, the snapshot record, `{name, rules, dns, holders}`, and `{token, expires_at, scopes}` on one
-line.
+`inspect`, `snapshot inspect` and `policy show` print indented JSON by default: the sandbox record,
+the snapshot record, and `{name, rules, dns, holders}`. `tokens mint` prints compact JSON by default:
+`{token, expires_at, scopes}` on one line.
 
 ### Tables
 
