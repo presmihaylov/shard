@@ -223,15 +223,15 @@ export interface Raw {
   body: string;
 }
 
-/** raw sends one request with the suite's own key, so a refusal is the server's and not the SDK's. */
-export async function raw(method: string, path: string): Promise<Raw> {
+/** raw sends one request with the suite's own key, or the one given, so a refusal is the server's and not the SDK's. */
+export async function raw(method: string, path: string, key = process.env.SHARD_API_KEY ?? ""): Promise<Raw> {
   const remote = new URL(process.env.SHARD_REMOTE ?? "");
   const ca = process.env.SHARD_CA_FILE ? await readFile(process.env.SHARD_CA_FILE) : undefined;
 
   return new Promise((resolve, reject) => {
     const req = request(
       new URL(path, remote),
-      { method, ca, headers: { Authorization: `Bearer ${process.env.SHARD_API_KEY ?? ""}` } },
+      { method, ca, headers: { Authorization: `Bearer ${key}` } },
       (res) => {
         const chunks: Buffer[] = [];
         res.on("data", (chunk: Buffer) => chunks.push(chunk));

@@ -5,11 +5,16 @@ import { raw, rejects, type Check } from "../harness.js";
 // The local routes 488 keeps off serve; a probe that would change the daemon goes last, once every other one was refused.
 const localProbes: Array<[string, string]> = [
   ["GET", "/v0/daemon"],
+  ["GET", "/v0/local/sandboxes"],
+  ["GET", "/v0/local/sandboxes/suite-ts-no-such-sandbox"],
   ["GET", "/v0/images"],
   ["DELETE", "/v0/images/suite-ts-no-such-image:none"],
   ["POST", "/v0/images/pull"],
   ["POST", "/v0/images/prune"],
 ];
+
+// A scoped key is refused a local route on main too, so only a "*" key proves serve keeps the route local.
+const wildcardKeyEnv = "SHARD_SUITE_WILDCARD_KEY";
 
 /** withEnv runs with the given variables in place of the real ones and puts the real ones back. */
 async function withEnv(env: Record<string, string | undefined>, run: () => Promise<void>): Promise<void> {
@@ -68,13 +73,21 @@ export const checks: Check[] = [
   {
     name: "auth.local_routes_refused",
     run: async () => {
+      const wildcard = process.env[wildcardKeyEnv];
+      assert.ok(wildcard, `${wildcardKeyEnv} is not set: it must hold a "*" token`);
+      const keys: Array<[string, string]> = [
+        ["SHARD_API_KEY", process.env.SHARD_API_KEY ?? ""],
+        [wildcardKeyEnv, wildcard],
+      ];
       let refusal: string | undefined;
       for (const [method, path] of localProbes) {
-        const got = await raw(method, path);
-        assert.equal(got.status, 403, `${method} ${path} answered ${got.status} ${got.body}`);
-        // Every local route reads like an unknown one, so the body is the same for all of them.
-        refusal ??= got.body;
-        assert.equal(got.body, refusal, `${method} ${path} answered a different refusal`);
+        for (const [name, key] of keys) {
+          const got = await raw(method, path, key);
+          assert.equal(got.status, 403, `${method} ${path} with ${name} answered ${got.status} ${got.body}`);
+          // Every local route reads like an unknown one, so the body is the same for all of them.
+          refusal ??= got.body;
+          assert.equal(got.body, refusal, `${method} ${path} with ${name} answered a different refusal`);
+        }
       }
       const unknown = await raw("GET", "/v0/suite-ts-no-such-route");
       assert.equal(unknown.status, 403);

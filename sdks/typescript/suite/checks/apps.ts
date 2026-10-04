@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { setTimeout as sleep } from "node:timers/promises";
 import { type Check } from "../harness.js";
 
 export const checks: Check[] = [
@@ -43,11 +44,20 @@ export const checks: Check[] = [
   {
     name: "apps.stop_keeps_sandbox",
     run: async (ctx) => {
-      const app = await ctx.run(["sleep", "300"]);
+      // always would start a TERMed app again, so the stop must cancel the policy, not only signal the app.
+      const app = await ctx.run(["sleep", "300"], { restart: { policy: "always", backoff: 1 } });
       await app.stop();
-      assert.equal((await app.wait()).signal, 15, "stop ends the app with TERM");
+      const exit = await app.wait();
+      assert.equal(exit.signal, 15, "stop ends the app with TERM");
+      assert.equal(exit.restarts, 0);
+      await sleep(3000);
+      const { restart } = await app.inspect();
+      assert.ok(restart, "the app reports its policy");
+      assert.equal(restart.count, 0, "no start again follows the stop, past the backoff");
+      assert.equal(restart.ended, true);
       assert.equal((await app.sandbox.inspect()).state, "running", "stop ends the app and keeps the sandbox");
-      assert.equal((await app.sandbox.exec("echo kept")).stdout, "kept\n");
+      const ps = await app.sandbox.exec(["ps", "-o", "args"]);
+      assert.ok(!ps.stdout.split("\n").includes("sleep 300"), `the app is gone: ${JSON.stringify(ps.stdout)}`);
     },
   },
   {

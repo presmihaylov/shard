@@ -1,4 +1,4 @@
-// Run with SHARD_REMOTE and SHARD_API_KEY set; SHARD_SUITE_ONLY=name,name runs a subset and SHARD_SUITE_IMAGE picks the image.
+// Run with SHARD_REMOTE, SHARD_API_KEY and SHARD_SUITE_WILDCARD_KEY (a "*" token) set; SHARD_SUITE_ONLY=name,name runs a subset and SHARD_SUITE_IMAGE picks the image.
 import { readFile } from "node:fs/promises";
 import { checks as apps } from "./checks/apps.js";
 import { checks as auth } from "./checks/auth.js";
