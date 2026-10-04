@@ -29,7 +29,7 @@ DARWIN_ARCH ?= $(shell go env GOARCH)
 KERNEL_OUT := bin/kernel
 KERNEL_IMAGE := packaging-kernel-builder
 
-.PHONY: all build build-linux build-shard-init build-shard-init-linux build-shard-vz-shim build-shard-vz-init build-darwin test test-integration e2e-test vet lint lint-fix fmt fmt-check vuln check clean devbox-sync devbox-test itest e2e devbox-e2e e2e-firecracker devbox-demo kernel kernel-reproducible openapi sdk-ts sdk-ts-check sdk-py sdk-py-check
+.PHONY: all build build-linux build-shard-init build-shard-init-linux build-shard-vz-shim build-shard-vz-init build-darwin test test-integration e2e-test vet lint lint-fix fmt fmt-check vuln check clean devbox-sync devbox-test itest e2e devbox-e2e e2e-firecracker devbox-demo kernel kernel-reproducible openapi sdk-ts sdk-ts-check sdk-py sdk-py-check sdk-gate
 
 all: check build
 
@@ -161,6 +161,10 @@ sdk-py-check:
 		uv run --locked mypy && \
 		uv run --locked python scripts/unasync.py --check && \
 		uv run --locked pytest -q tests
+
+# The SDK release gate: both packages built and installed, both suites and the cross-SDK checks, against the daemon at SHARD_REMOTE.
+sdk-gate:
+	uv run --no-project --python '>=3.11' python sdks/gate/gate.py $(SDK_GATE_FLAGS)
 
 clean:
 	rm -rf bin $(VZ_SHIM_BIN) $(VZ_INIT_BIN)

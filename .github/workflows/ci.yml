@@ -160,3 +160,96 @@ jobs:
 
       - name: check
         run: make sdk-py-check
+
+  # The SDK release gate (SHARD-493): both packages against one real daemon, the runc provider as root, behind a TLS front.
+  sdk-gate:
+    name: sdk release gate
+    runs-on: ubuntu-latest
+    env:
+      SHARD_REMOTE: https://127.0.0.1:8443
+      SHARD_GATE_HOST_PATHS: /mnt/reflink
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: sdks/typescript/package-lock.json
+
+      - uses: astral-sh/setup-uv@v10.2.0
+        with:
+          version: ${{ env.UV_VERSION }}
+          python-version: "3.13"
+
+      - name: host tools
+        run: |
+          sudo apt-get update -q
+          sudo apt-get install -y -q xfsprogs socat nftables
+          command -v runc >/dev/null || sudo apt-get install -y -q runc
+
+      - name: build
+        run: make build build-shard-init
+
+      # The daemon refuses a root that cannot reflink, and the runner's ext4 cannot.
+      - name: daemon, front and tokens
+        run: |
+          set -o pipefail
+          dir="$RUNNER_TEMP/front"
+          root=/mnt/reflink/shard
+          mkdir -p "$dir"
+          truncate -s 8G "$RUNNER_TEMP/reflink.img"
+          mkfs.xfs -q -m reflink=1 "$RUNNER_TEMP/reflink.img"
+          sudo mkdir -p /mnt/reflink
+          sudo mount -o loop "$RUNNER_TEMP/reflink.img" /mnt/reflink
+
+          # One token with every public scope, and a "*" one the gate proves still reaches no local route.
+          api=$(sudo bin/shard --root "$root" tokens mint --name gate --scopes 'sandbox:read,sandbox:write,sandbox:delete,exec,secret:*,policy:*' | jq -r .token)
+          echo "::add-mask::$api"
+          wildcard=$(sudo bin/shard --root "$root" tokens mint --name gate-wildcard --scopes '*' | jq -r .token)
+          echo "::add-mask::$wildcard"
+          { echo "SHARD_API_KEY=$api"; echo "SHARD_SUITE_WILDCARD_KEY=$wildcard"; } >>"$GITHUB_ENV"
+
+          sudo SHARD_INIT_PATH="$PWD/bin/shard-init" bin/shard --root "$root" daemon --provider runc >"$dir/daemon.log" 2>&1 &
+          echo $! >"$dir/daemon.pid"
+          timeout 60 sh -c "until grep -q 'api listening on' '$dir/daemon.log' && grep -q 'proxy listening on' '$dir/daemon.log'; do sleep 0.2; done" || { cat "$dir/daemon.log"; exit 1; }
+
+          sudo bin/shard --root "$root" serve --listen 127.0.0.1:2377 >"$dir/serve.log" 2>&1 &
+          echo $! >"$dir/serve.pid"
+          timeout 30 sh -c "until grep -q 'serve listening on' '$dir/serve.log'; do sleep 0.2; done" || { cat "$dir/serve.log"; exit 1; }
+
+          openssl req -x509 -newkey ec -pkeyopt ec_paramgen_curve:prime256v1 -nodes -days 1 -subj /CN=127.0.0.1 \
+            -addext subjectAltName=IP:127.0.0.1 -keyout "$dir/key.pem" -out "$dir/cert.pem" 2>/dev/null
+          socat "OPENSSL-LISTEN:8443,bind=127.0.0.1,reuseaddr,fork,cert=$dir/cert.pem,key=$dir/key.pem,verify=0" TCP:127.0.0.1:2377 &
+          echo $! >"$dir/socat.pid"
+          echo "SHARD_CA_FILE=$dir/cert.pem" >>"$GITHUB_ENV"
+          # The front refuses a request with no token, so any answer at all proves the TLS front is up.
+          timeout 30 sh -c 'until curl -sS --cacert "$0" -o /dev/null https://127.0.0.1:8443/v0/version; do sleep 0.2; done' "$dir/cert.pem"
+
+      - name: gate
+        run: make sdk-gate SDK_GATE_FLAGS="--out $RUNNER_TEMP/gate"
+
+      - name: daemon and front logs
+        if: failure()
+        run: cat "$RUNNER_TEMP/front/daemon.log" "$RUNNER_TEMP/front/serve.log"
+
+      # The gate redacts both keys from every log and recorded response it writes.
+      - uses: actions/upload-artifact@v4
+        if: failure()
+        with:
+          name: sdk-gate
+          path: ${{ runner.temp }}/gate
+          if-no-files-found: ignore
+
+      - name: stop the daemon and the front
+        if: always()
+        run: |
+          for name in socat serve daemon; do
+            pid=$(cat "$RUNNER_TEMP/front/$name.pid" 2>/dev/null) || continue
+            sudo kill "$pid"
+          done
