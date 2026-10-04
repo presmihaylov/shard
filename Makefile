@@ -133,8 +133,8 @@ sdk-py:
 
 # The Python SDK's gate. Its shared suite needs a daemon, so only the unit tests run here.
 sdk-py-check:
-	cd sdks/python && uv run --locked ruff check src scripts suite tests && \
-		uv run --locked ruff format --check src scripts suite tests && \
+	cd sdks/python && uv run --locked ruff check src scripts suite tests examples && \
+		uv run --locked ruff format --check src scripts suite tests examples && \
 		uv run --locked mypy && \
 		uv run --locked python scripts/unasync.py --check && \
 		uv run --locked pytest -q tests

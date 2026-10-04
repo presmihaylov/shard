@@ -56,7 +56,7 @@ ignore = ["ASYNC109"]
 [tool.mypy]
 strict = true
 python_version = "3.11"
-files = ["src/useshards", "suite", "scripts", "tests"]
+files = ["src/useshards", "suite", "scripts", "tests", "examples"]
 exclude = ["src/useshards/_generated/"]
 
 [tool.pytest.ini_options]
