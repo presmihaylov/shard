@@ -16,16 +16,17 @@ import (
 // sees a placeholder asks this one, so a rotation, an rm and an ungrant can never disagree.
 func SecretHolders(repo Reader, name string) ([]string, error) {
 	sandboxes, unreadable := repo.List()
-	// A record that does not read back may name the secret, so nothing can say it is free.
-	if unreadable != nil {
-		return nil, &CauseError{Text: "cannot tell which sandboxes hold the secret", Err: unreadable}
-	}
 
 	var holders []string
 	for _, sb := range sandboxes {
 		if slices.Contains(sb.Secrets, name) {
 			holders = append(holders, sb.ID)
 		}
+	}
+
+	// A record that does not read back may name the secret, so nothing can say it is free; the readable holders still go back for a refusal to name (SHARD-584).
+	if unreadable != nil {
+		return holders, &CauseError{Text: "cannot tell which sandboxes hold the secret", Err: unreadable}
 	}
 
 	return holders, nil
@@ -47,7 +48,7 @@ func (s *Service) GrantSecret(ctx context.Context, ref, name string) (models.San
 
 	sec, err := s.cfg.Secrets.Get(name)
 	if errors.Is(err, secret.ErrNotFound) {
-		return models.Sandbox{}, &RequestError{Err: fmt.Errorf("secret %s does not exist: run shard secret set --to <host> %s first", name, name)}
+		return models.Sandbox{}, &RequestError{Err: fmt.Errorf("secret %s does not exist: run shard secret set --destination <host> %s first", name, name)}
 	}
 	if err != nil {
 		return models.Sandbox{}, err

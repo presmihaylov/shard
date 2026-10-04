@@ -941,6 +941,50 @@ func TestRunRejectsBadArguments(t *testing.T) {
 	}
 }
 
+// The error pipe of a fork reads EOF on a death before the exec too, so the flag the kernel clears at the exec is the proof it ran (SHARD-505).
+func TestStatExeced(t *testing.T) {
+	line := func(name string, flags uint64) string {
+		return fmt.Sprintf("42 (%s) Z 1 42 42 0 -1 %d 0 0 0 0 0 0 0 0 20 0 1 0", name, flags)
+	}
+	cases := map[string]struct {
+		stat string
+		want bool
+	}{
+		"an exec":                       {stat: line("sleep", 0x400000), want: true},
+		"a death before the exec":       {stat: line("shard-init", 0x400000|pfForkNoExec), want: false},
+		"a name that holds a stat line": {stat: line("a) Z 1 42 42 0 -1 64 (b", 0x400000), want: true},
+		"a name that holds a ')'":       {stat: line("x) S 1", 0x400000|pfForkNoExec), want: false},
+	}
+
+	for name, c := range cases {
+		t.Run(name, func(t *testing.T) {
+			got, err := statExeced(c.stat)
+			if err != nil {
+				t.Fatalf("statExeced(%q): %v", c.stat, err)
+			}
+			if got != c.want {
+				t.Errorf("statExeced(%q) = %t, want %t", c.stat, got, c.want)
+			}
+		})
+	}
+}
+
+func TestStatExecedRefusesWhatItCannotRead(t *testing.T) {
+	cases := map[string]string{
+		"no name":          "42 S 1 42 42 0 -1 0",
+		"no flags":         "42 (sleep) S 1 42 42 0",
+		"unreadable flags": "42 (sleep) S 1 42 42 0 -1 x",
+	}
+
+	for name, stat := range cases {
+		t.Run(name, func(t *testing.T) {
+			if _, err := statExeced(stat); err == nil {
+				t.Errorf("statExeced(%q) returned no error", stat)
+			}
+		})
+	}
+}
+
 // The host resolves the name, so the supervisor only ever reads ids off the flags.
 func TestParseCredential(t *testing.T) {
 	cases := map[string]struct {

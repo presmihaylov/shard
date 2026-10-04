@@ -80,3 +80,9 @@ func (p *Provider) HoldNextDir(entered chan<- struct{}, release <-chan struct{})
 		return dirs(id)
 	}
 }
+
+// RestoreDisk swaps the checkpoint's disk under the sandbox, which a test drives directly to prove a failed copy keeps the live disk.
+func RestoreDisk(id, dir, disk string) error { return restoreDisk(id, dir, disk) }
+
+// DiskFile is the sandbox's live disk name.
+const DiskFile = diskFile

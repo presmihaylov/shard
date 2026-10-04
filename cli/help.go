@@ -98,7 +98,7 @@ var sandboxFlagHelps = []flagHelp{
 	{"--workdir <dir>", "default directory for commands", ""},
 	{"--user <user>", "default user for commands", ""},
 	{"--memory <size>", "memory limit", ""},
-	{"--cpus <n>", "CPU count; 0 uses all available host CPUs", ""},
+	{"--vcpus <n>", "CPU count; 0 uses all available host CPUs", ""},
 	{"--disk <size>", "disk limit; 0 uses the default", ""},
 }
 
@@ -406,7 +406,7 @@ var helps = map[string]verbHelp{
 			{"VALUE", "secret value; omit it to read from input or a hidden prompt"},
 		},
 		flags: []flagHelp{
-			{"--to <host>", "approved destination; required and repeatable", ""},
+			{"--dest, --destination <host>", "approved destination; required and repeatable", ""},
 			{"--placeholder <string>", "value visible inside the sandbox", "mock-NAME"},
 		},
 		notes: []note{
@@ -421,8 +421,8 @@ var helps = map[string]verbHelp{
 			para("Avoid secret values in command arguments. Use input or the hidden prompt."),
 		},
 		examples: []string{
-			"shard secret set --to api.example.com API_TOKEN",
-			`printf '%s' "$TOKEN" | shard secret set --to api.example.com API_TOKEN`,
+			"shard secret set --destination api.example.com API_TOKEN",
+			`printf '%s' "$TOKEN" | shard secret set --destination api.example.com API_TOKEN`,
 		},
 	},
 	"secret list": {
@@ -860,7 +860,7 @@ func placeholder(spell string) string {
 	return strings.TrimSpace(strings.TrimPrefix(strings.TrimLeft(longSpell(spell), "-"), flagName(spell)))
 }
 
-// longSpell drops the one-letter alias a spell leads with, so -f, --follow reads as --follow.
+// longSpell drops the alias a spell leads with, so -f, --follow reads as --follow.
 func longSpell(spell string) string {
 	if _, long, ok := strings.Cut(spell, ", "); ok {
 		return long

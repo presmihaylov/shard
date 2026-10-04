@@ -185,7 +185,7 @@ func TestEveryHelpListsTheFlagsItsVerbParses(t *testing.T) {
 			}
 			listed = append(listed, name)
 			if alias, _, ok := strings.Cut(f.spell, ", "); ok {
-				listed = append(listed, strings.TrimPrefix(alias, "-"))
+				listed = append(listed, strings.TrimLeft(alias, "-"))
 			}
 		}
 

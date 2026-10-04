@@ -1,0 +1,12 @@
+---
+import { REPO_URL } from '../../site';
+import Icon from '../Icon.astro';
+---
+
+<a
+	href={REPO_URL}
+	aria-label="shard on GitHub"
+	class="flex size-8 items-center justify-center rounded-full text-foreground/75 transition-all hover:bg-muted hover:text-foreground nairi-focus-ring"
+>
+	<Icon name="github" size={16} />
+</a>

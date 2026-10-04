@@ -148,7 +148,7 @@ func TestSecretListJSONNeverHoldsTheValue(t *testing.T) {
 	var out bytes.Buffer
 
 	app, _ := newSecretApp(t, &out, "sk-live-abcdef123456\n", &fakeLifecycleRepo{r: &recorder{}})
-	if err := app.Run(t.Context(), []string{"secret", "set", "--to", "api.example.com", "API_TOKEN"}); err != nil {
+	if err := app.Run(t.Context(), []string{"secret", "set", "--destination", "api.example.com", "API_TOKEN"}); err != nil {
 		t.Fatalf("secret set: %v", err)
 	}
 

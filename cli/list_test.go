@@ -149,7 +149,7 @@ func TestUptime(t *testing.T) {
 		want    string
 	}{
 		"counts from the last start":         {models.StateRunning, started, "1m30s"},
-		"an old record counts from creation": {models.StateRunning, time.Time{}, "1h0m0s"},
+		"an old record counts from creation": {models.StateRunning, time.Time{}, "1h"},
 		"a stopped sandbox is not up":        {models.StateStopped, started, "-"},
 		"a paused sandbox is not up":         {models.StatePaused, started, "-"},
 		"a pending sandbox has not started":  {models.StatePending, time.Time{}, "-"},

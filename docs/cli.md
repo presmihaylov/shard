@@ -61,7 +61,7 @@ a dash is a verb with no `--format`.
 
 | verb | flags | format | stdout |
 | --- | --- | --- | --- |
-| `create <image>` | `--name --env --secret --policy --workdir --user --memory --cpus --disk` | - | the id |
+| `create <image>` | `--name --env --secret --policy --workdir --user --memory --vcpus --disk` | - | the id |
 | `create --snapshot <ref>` | the same, in place of the image | - | the id |
 | `run <image> <command>...` | the `create` flags, `--restart --restart-retries --restart-backoff -d/--detach` | - | the app's output, or the id with `--detach` |
 | `exec <ref> <argv>...` | `-i/--interactive -t/--tty --env --workdir --user` | - | the command's output |
@@ -70,11 +70,11 @@ a dash is a verb with no `--format`.
 | `inspect <ref>` | `--format` | json | the record |
 | `stop <ref>` | | - | the id |
 | `start <ref>` | | - | the id |
-| `remove <ref>` | `--force` | - | the id |
+| `remove <ref>` | `--force` | - | the id, or nothing for a missing sandbox with `--force` |
 | `pause <ref>` | | - | the id |
 | `resume <ref>` | | - | the id |
 | `fork <ref>` | `--name` | - | the new id |
-| `cp <src> <ref>:<path>`, `cp <ref>:<path> <dst>` | `--user` | - | nothing |
+| `cp <src> <ref>:<path>`, `cp <ref>:<path> <dst>` | `--user`, on a copy in only | - | nothing |
 
 `<ref>` is a sandbox id or its `--name`. A verb that prints the id prints the id even when it was given the name.
 
@@ -96,7 +96,7 @@ shard: sandbox <id> is paused: resume it with shard resume <id>
 | `snapshot list` | `--format` | table | the snapshots |
 | `snapshot inspect <snap>` | `--format` | json | the record |
 | `snapshot remove <snap>` | | - | the `<snap>` it was given |
-| `secret set <NAME> [VALUE]` | `--to --placeholder` | - | the name |
+| `secret set <NAME> [VALUE]` | `--dest/--destination --placeholder` | - | the name |
 | `secret list` | `--format` | table | the secrets, never a value |
 | `secret remove <NAME>` | `--force` | - | the name |
 | `secret grant <ref> <NAME>` | | - | the sandbox id |
@@ -199,7 +199,6 @@ first one.
   "policy": "api-only",
   "created_at": "2026-10-01T09:30:00Z",
   "egress": {
-    "policy": "api-only",
     "rules": [
       {"action": "allow", "destination": {"kind": "group", "value": "dns"}, "protocol": "udp", "ports": [53], "id": "1", "implied": "dns"},
       {"action": "allow", "destination": {"kind": "group", "value": "dns"}, "protocol": "tcp", "ports": [53], "id": "2", "implied": "dns"},
@@ -212,9 +211,9 @@ first one.
 `egress.rules` is the order the host and the proxy enforce. `id` is the place of a rule in it, from
 `"1"`. `action` is `allow` or `deny`, and `destination.kind` is `cidr`, `domain`, `domain-suffix` or
 `group`. `protocol` and `ports` are absent for a rule over every protocol. `implied` is present on a
-rule the policy did not write: `dns` when a name rule opened DNS, `dns rule` when a `dns` rule did.
-When the store no longer holds the policy, `egress` is `{"policy": "<name>", "missing": true, "rules":
-null}` and the sandbox reaches nothing.
+rule the policy did not write: `dns` when a name rule opened DNS, `dns-rule` when a `dns` rule did.
+`policy` names the policy once, at the top. When the store no longer holds it, `egress` is
+`{"missing": true, "rules": []}` and the sandbox reaches nothing.
 
 `snapshot list` prints an array of snapshot records, below.
 
@@ -313,7 +312,7 @@ IMAGE STATE UPTIME RESTART POLICY`, `snapshot list` prints `ID NAME SOURCE IMAGE
 
 The tables of the JSON verbs:
 
-- `inspect` prints `FIELD VALUE` rows, then `egress.policy`. A sandbox with a policy then gets an
+- `inspect` prints `FIELD VALUE` rows, with every time in RFC 3339 to the second in UTC. A sandbox with a policy then gets an
   `ID RULE IMPLIED` section, with each rule as `policy create` takes it, for example
   `allow suffix:example.com tcp:443`.
 - `snapshot inspect` prints `FIELD VALUE` rows.
@@ -336,7 +335,7 @@ shard snapshot inspect web-base
 shard snapshot remove web-base
 ```
 
-`snapshot create` refuses a running or paused sandbox. `create --snapshot` takes no image and
+`snapshot create` takes a stopped sandbox only. `create --snapshot` takes no image and
 never pulls: the image must be on the host at the digest the snapshot recorded, and only the
 provider that made the snapshot starts it. With no `--memory` or `--disk`, the new sandbox takes the
 bounds its source ran under. On Firecracker and `vz` a larger `--disk` grows the snapshot's disk and

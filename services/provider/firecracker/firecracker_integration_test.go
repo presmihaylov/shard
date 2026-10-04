@@ -73,6 +73,8 @@ func newVMHarness(t *testing.T) *vmHarness {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { os.RemoveAll(root) })
+	// The daemon refuses a root that shares no blocks (services/datadir), and every boot reflinks into its jail.
+	requireReflink(t, root)
 
 	svc, err := image.New(filepath.Join(root, "images"), image.WithErofs())
 	if err != nil {
@@ -184,6 +186,21 @@ func TestAMicroVMBootsAndRunsTheEntrypoint(t *testing.T) {
 	if !strings.Contains(string(log), "booted on") || !strings.Contains(string(log), "3.20") {
 		t.Fatalf("the entrypoint did not run over the image:\n%s", log)
 	}
+}
+
+// A kill while the exec's execve still opens the command is no launch, so the exec says the command never started (SHARD-505).
+func TestAMicroVMExecKilledBeforeItsCommandStartsIsNoLaunch(t *testing.T) {
+	h := newVMHarness(t)
+
+	spec := h.newSpec(t, "/bin/true")
+	if err := h.provider.Create(t.Context(), spec); err != nil {
+		t.Fatal(err)
+	}
+	if err := h.provider.Start(t.Context(), spec.ID); err != nil {
+		t.Fatal(err)
+	}
+
+	conformance.RequireAKillBeforeTheCommandIsNoLaunch(t, h.provider, spec.ID)
 }
 
 // A tap on the test bridge, leased the way the daemon leases one for a microVM; the bridge and the tables go with the test.
@@ -391,7 +408,6 @@ func allocate(t *testing.T, svc *network.Service, id string) models.NetworkSpec 
 // The pause AC: the vCPUs stop and the memory lands on disk, and the resume brings that memory back with the guest counting on from it.
 func TestAMicroVMResumesFromItsCheckpointWithItsMemory(t *testing.T) {
 	h := newVMHarness(t)
-	requireReflink(t, h.root)
 
 	spec := h.newSpec(t, "/bin/sh", "-c", tickScript)
 	if err := h.provider.Create(t.Context(), spec); err != nil {
@@ -439,7 +455,6 @@ func TestAMicroVMResumesFromItsCheckpointWithItsMemory(t *testing.T) {
 // The fork AC: one checkpoint brings up many sandboxes, each with the source's memory and its own copy of the disk, and the source and the checkpoint outlive them all.
 func TestManyMicroVMsForkFromOneCheckpoint(t *testing.T) {
 	h := newVMHarness(t)
-	requireReflink(t, h.root)
 
 	spec := h.newSpec(t, "/bin/sh", "-c", tickScript)
 	if err := h.provider.Create(t.Context(), spec); err != nil {
@@ -503,7 +518,6 @@ func TestManyMicroVMsForkFromOneCheckpoint(t *testing.T) {
 // The fork AC for the network: the restored guest holds the source's address, and the fork replaces it with the lease's own, MAC and name and all.
 func TestAForkTakesItsOwnAddress(t *testing.T) {
 	h := newVMHarness(t)
-	requireReflink(t, h.root)
 	tapNet := newTapNetwork(t)
 
 	spec := h.newSpec(t, "/bin/sh", "-c", tickScript)
@@ -590,7 +604,6 @@ func TestAnUnloadedMicroVMLeftByACutForkIsEnded(t *testing.T) {
 
 func TestConformanceOnMicroVMs(t *testing.T) {
 	h := newVMHarness(t)
-	requireReflink(t, h.root)
 
 	conformance.Run(t, conformance.Subject{
 		Provider: h.provider,

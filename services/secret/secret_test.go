@@ -519,7 +519,7 @@ func TestValidNameNeverEchoesTheNameItRefused(t *testing.T) {
 func TestValidDestinationNeverEchoesTheDestinationItRefused(t *testing.T) {
 	s, _ := newStore(t)
 
-	// A mistyped --to hands the value as the destination, and every refusal keeps it off the screen.
+	// A mistyped --destination hands the value as the destination, and every refusal keeps it off the screen.
 	for _, dest := range []string{"sk-live-abcdef123456", "https://sk-live-abcdef123456/v1", "10.0.0.1", "nodot", "api*.example.com", "sk_live_underscore.example.com", strings.Repeat("a", 254) + ".example.com"} {
 		_, err := ValidDestination(dest)
 		if err == nil {

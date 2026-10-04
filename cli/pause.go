@@ -12,7 +12,7 @@ func (a App) pause(ctx context.Context, args []string) error {
 		return err
 	}
 	if len(rest) != 1 {
-		return fmt.Errorf("pause takes one sandbox id, got %d", len(rest))
+		return fmt.Errorf("pause takes one sandbox id or name, got %s", gotArgs(rest))
 	}
 
 	c, err := a.client()

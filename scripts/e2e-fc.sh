@@ -153,7 +153,7 @@ done
 say "/dev/kvm, firecracker, jailer, mkfs.erofs, mkfs.xfs, ip, ss, nft, iptables, go, curl and openssl are on the host"
 # The guest reaches the resolver and the proxy over the bridge, and a host firewall that drops INPUT eats them before shard sees them.
 if iptables -S INPUT 2>/dev/null | has_line "^-P INPUT DROP$" && ! iptables -C INPUT -i shard0 -j ACCEPT 2>/dev/null; then
-	fail "the host firewall drops INPUT: run 'iptables -I INPUT -i shard0 -j ACCEPT' (ufw hosts: 'ufw allow in on shard0') and run this again"
+	fail "the host firewall drops INPUT: run 'iptables -I INPUT -i shard0 -j ACCEPT' and run this again"
 fi
 say "the host firewall lets the bridge reach the daemon"
 if [ -n "${SHARD_KERNEL:-}" ]; then
@@ -228,10 +228,10 @@ expect "$(status_field pause) $(status_field resume) $(status_field fork)" "true
 
 step "store a secret and a policy"
 SECRET_VALUE="fc-e2e-secret-value-$$-$(date +%s)"
-printf '%s\n' "${SECRET_VALUE}" | shard secret set --to "${ECHO_HOST}" E2E_TOKEN >/dev/null
+printf '%s\n' "${SECRET_VALUE}" | shard secret set --destination "${ECHO_HOST}" E2E_TOKEN >/dev/null
 SHAPED_PLACEHOLDER="sk_test_e2eplaceholder01"
 SHAPED_VALUE="sk_live_e2e_$$_$(date +%s)"
-shard secret set --to "${ECHO_HOST}" --placeholder "${SHAPED_PLACEHOLDER}" E2E_SHAPED "${SHAPED_VALUE}" >/dev/null 2>&1
+shard secret set --destination "${ECHO_HOST}" --placeholder "${SHAPED_PLACEHOLDER}" E2E_SHAPED "${SHAPED_VALUE}" >/dev/null 2>&1
 holds "E2E_TOKEN" shard secret list || fail "shard secret list does not list E2E_TOKEN"
 holds "${SECRET_VALUE}" shard secret list && fail "shard secret list printed the value"
 say "secret list lists the name and not the value"

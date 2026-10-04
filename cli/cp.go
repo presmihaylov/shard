@@ -58,7 +58,7 @@ func parseCp(args []string) (cpOptions, error) {
 		return cpOptions{}, err
 	}
 	if flags.NArg() != 2 {
-		return cpOptions{}, fmt.Errorf("cp takes a source and a destination, one of them <id|name>:<path>, got %d", flags.NArg())
+		return cpOptions{}, fmt.Errorf("cp takes a source and a destination, one of them <id|name>:<path>, got %s", gotArgs(flags.Args()))
 	}
 
 	opts.src, opts.dst = cpTargetOf(flags.Arg(0)), cpTargetOf(flags.Arg(1))

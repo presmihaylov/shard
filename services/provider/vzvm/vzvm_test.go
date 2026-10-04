@@ -25,6 +25,7 @@ import (
 
 	"github.com/presmihaylov/shard/models"
 	"github.com/presmihaylov/shard/pkg/ext4"
+	"github.com/presmihaylov/shard/pkg/pgroup"
 	"github.com/presmihaylov/shard/pkg/pidpin/pidpintest"
 	"github.com/presmihaylov/shard/pkg/vz"
 	"github.com/presmihaylov/shard/services/bundle"
@@ -1800,10 +1801,13 @@ func runningShimOn(t *testing.T, h *harness) (models.SandboxSpec, int) {
 		t.Fatalf("the guest pids are %d and %d, want two real processes", entrypoint, guest)
 	}
 	t.Cleanup(func() {
-		for _, pid := range []int{-entrypoint, -guest, guest} {
-			if err := syscall.Kill(pid, syscall.SIGKILL); err != nil && !errors.Is(err, syscall.ESRCH) {
-				t.Errorf("end the fake guest %d: %v", pid, err)
+		for _, group := range []int{entrypoint, guest} {
+			if err := pgroup.Kill(group, syscall.SIGKILL); err != nil && !errors.Is(err, syscall.ESRCH) {
+				t.Errorf("end the fake guest's group %d: %v", group, err)
 			}
+		}
+		if err := syscall.Kill(guest, syscall.SIGKILL); err != nil && !errors.Is(err, syscall.ESRCH) {
+			t.Errorf("end the fake guest %d: %v", guest, err)
 		}
 	})
 
@@ -1817,7 +1821,7 @@ func runningShimOn(t *testing.T, h *harness) (models.SandboxSpec, int) {
 		t.Fatalf("Status = %+v, want the shim's pid", status)
 	}
 	t.Cleanup(func() {
-		if err := syscall.Kill(-shim, syscall.SIGKILL); err != nil && !errors.Is(err, syscall.ESRCH) {
+		if err := pgroup.Kill(shim, syscall.SIGKILL); err != nil && !errors.Is(err, syscall.ESRCH) {
 			t.Errorf("end the fake shim %d: %v", shim, err)
 		}
 	})
@@ -2390,5 +2394,25 @@ func TestAdoptStagingKeepsACutPauseStage(t *testing.T) {
 
 	if _, err := os.Stat(tmp); err != nil {
 		t.Errorf("the staging %s is gone after adopt, want vz to keep it to finish on resume: %v", tmp, err)
+	}
+}
+
+// A restore whose checkpoint disk is missing must leave the live disk in place, so a failed copy never bricks a sandbox (SHARD-589).
+func TestRestoreDiskKeepsTheLiveDiskWhenTheCopyFails(t *testing.T) {
+	stateDir, checkpoint := t.TempDir(), t.TempDir()
+	disk := filepath.Join(stateDir, vzvm.DiskFile)
+	if err := os.WriteFile(disk, []byte("live"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	// The checkpoint has no disk, so the copy fails and the swap never runs.
+	if err := vzvm.RestoreDisk("sb-1", checkpoint, disk); err == nil {
+		t.Fatal("restoreDisk with no checkpoint disk = nil, want an error")
+	}
+	got, err := os.ReadFile(disk)
+	if err != nil {
+		t.Fatalf("the live disk after a failed restore: %v, want it kept", err)
+	}
+	if string(got) != "live" {
+		t.Errorf("the live disk = %q, want it unchanged", got)
 	}
 }
