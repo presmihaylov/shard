@@ -15,6 +15,8 @@ import (
 	"syscall"
 	"time"
 
+	"golang.org/x/sys/unix"
+
 	"github.com/presmihaylov/shard/models"
 	"github.com/presmihaylov/shard/pkg/vsock"
 	"github.com/presmihaylov/shard/services/supervisor"
@@ -39,6 +41,8 @@ type transport struct {
 	bound *os.File
 	// root is the disk a freeze holds; nil off a VM.
 	root *os.File
+	// endSent says the host heard the policy end, which waits for its ack of the app's last output; under controlMu.
+	endSent bool
 }
 
 // capbsetEnv marks the re-exec, so the second image knows the bounding set is already shrunk and the disk is the root.
@@ -226,6 +230,7 @@ func (t *transport) attach(conn net.Conn) error {
 			_ = t.control.Close()
 		}
 		count := t.g.count
+		count.Ended = count.Ended && t.endSent
 		state := supervisor.Message{Kind: supervisor.KindState, Ready: t.g.started, Exit: t.g.lastExit, Restarts: &count, OOM: t.g.oom, Frozen: t.frozen.Load(), Logs: supervisor.LogsVersion, FreezesOverlay: true}
 		err = supervisor.WriteMessage(conn, state)
 		if err != nil {
@@ -288,8 +293,32 @@ func (t *transport) oomKilled() error {
 	return nil
 }
 
+// restarted holds the end back until the host acks the app's last output, so a run that reads the end has read every byte.
 func (t *transport) restarted(count models.RestartCount) error {
-	return t.send(supervisor.Message{Kind: supervisor.KindRestarts, Restarts: &count})
+	m := supervisor.Message{Kind: supervisor.KindRestarts, Restarts: &count}
+	if !count.Ended {
+		return t.send(m)
+	}
+	mark, err := t.logs.end()
+	if err != nil {
+		return err
+	}
+	go func() {
+		t.logs.landed(mark)
+		t.controlMu.Lock()
+		defer t.controlMu.Unlock()
+		t.endSent = true
+		if t.control == nil {
+			return
+		}
+		// A host that missed the end reads it in the replay, so a failed write is reported and never fatal (AGENTS.md).
+		if err := supervisor.WriteMessage(t.control, m); err != nil {
+			t.control = nil
+			fmt.Fprintln(os.Stderr, "shard-init: report the end of the app:", err)
+		}
+	}()
+
+	return nil
 }
 
 // serveControl takes the host's messages until it hangs up, and answers each with done or failure.
@@ -378,6 +407,11 @@ func (t *transport) handle(m supervisor.Message) error {
 	case supervisor.KindStop:
 		// The stop takes the same path a Linux host's SIGTERM does, so one loop owns the grace; a frozen root would hold the entrypoint's last writes.
 		return errors.Join(t.thaw(), syscall.Kill(os.Getpid(), syscall.SIGTERM))
+	case supervisor.KindStopApp:
+		var err error
+		t.g.run(func() { err = t.g.stopApp(m.Force) })
+
+		return err
 	case supervisor.KindReaddress:
 		if m.Address == nil {
 			return errors.New("a readdress message names no address")
@@ -531,12 +565,16 @@ const logHold = 1 << 20
 // logSink keeps the entrypoint's output until a host acks it, so a host that comes back resumes where its log file ends.
 type logSink struct {
 	pipe *os.File
+	// read is the pipe's read end, which only copy reads, under mu, so every byte is in the pipe or in held.
+	read syscall.RawConn
 	mu   sync.Mutex
 	cond *sync.Cond
 	// held is the output no host has acked yet, and its first byte is output byte from.
 	held []byte
 	from uint64
 	conn net.Conn
+	// stopped is a host whose log refused the output, so until the next host nothing waits for an ack.
+	stopped bool
 }
 
 func newLogSink() (*logSink, error) {
@@ -545,9 +583,13 @@ func newLogSink() (*logSink, error) {
 		return nil, fmt.Errorf("open the log pipe: %w", err)
 	}
 
-	s := &logSink{pipe: w, held: make([]byte, 0, logHold)}
+	read, err := r.SyscallConn()
+	if err != nil {
+		return nil, fmt.Errorf("open the log pipe: %w", err)
+	}
+	s := &logSink{pipe: w, read: read, held: make([]byte, 0, logHold)}
 	s.cond = sync.NewCond(&s.mu)
-	go s.copy(r)
+	go s.copy()
 
 	return s, nil
 }
@@ -567,6 +609,7 @@ func (s *logSink) accept(l net.Listener) {
 			_ = s.conn.Close()
 		}
 		s.conn = conn
+		s.stopped = false
 		from, to := s.from, s.from+uint64(len(s.held))
 		s.cond.Broadcast()
 		s.mu.Unlock()
@@ -575,26 +618,65 @@ func (s *logSink) accept(l net.Listener) {
 }
 
 // copy holds each chunk of the pipe for the host, and waits for its acks while the hold is full.
-func (s *logSink) copy(r io.Reader) {
-	buf := make([]byte, 32<<10)
+func (s *logSink) copy() {
 	for {
-		n, err := r.Read(buf)
-		if err != nil {
+		s.mu.Lock()
+		for len(s.held) == cap(s.held) {
+			s.cond.Wait()
+		}
+		s.mu.Unlock()
+
+		var n int
+		var readErr error
+		err := s.read.Read(func(fd uintptr) bool {
+			s.mu.Lock()
+			defer s.mu.Unlock()
+			n, readErr = syscall.Read(int(fd), s.held[len(s.held):cap(s.held)])
+			if errors.Is(readErr, syscall.EAGAIN) || errors.Is(readErr, syscall.EINTR) {
+				return false
+			}
+			if readErr == nil {
+				s.held = s.held[:len(s.held)+n]
+				s.cond.Broadcast()
+			}
+
+			return true
+		})
+		// shard-init holds the write end, so the pipe never ends and a failed read is the last thing it reports.
+		if err := errors.Join(err, readErr); err != nil {
+			fmt.Fprintln(os.Stderr, "shard-init: read the log pipe:", err)
+
 			return
 		}
-		s.hold(buf[:n])
+		if n == 0 {
+			return
+		}
 	}
 }
 
-func (s *logSink) hold(chunk []byte) {
+// end is the output byte after the last one written so far: what the hold has, and what the pipe still holds.
+func (s *logSink) end() (uint64, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
-	for len(s.held)+len(chunk) > cap(s.held) {
+	var queued int
+	var ioctlErr error
+	err := s.read.Control(func(fd uintptr) { queued, ioctlErr = unix.IoctlGetInt(int(fd), fionread) })
+	if err := errors.Join(err, ioctlErr); err != nil {
+		return 0, fmt.Errorf("measure the log pipe: %w", err)
+	}
+
+	return s.from + uint64(len(s.held)) + uint64(queued), nil //nolint:gosec // a byte count is never negative
+}
+
+// landed waits until a host acks the output before byte mark, which its log file then holds, or says its log stopped.
+func (s *logSink) landed(mark uint64) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	for s.from < mark && !s.stopped {
 		s.cond.Wait()
 	}
-	s.held = append(s.held, chunk...)
-	s.cond.Broadcast()
 }
 
 // serve offers the host the output bytes [from, to), sends on from the one it answers, and lets go of what it acks.
@@ -608,8 +690,19 @@ func (s *logSink) serve(conn net.Conn, from, to uint64) {
 	if err := binary.Read(conn, binary.BigEndian, &at); err != nil {
 		return
 	}
+	if at == supervisor.LogsStopped {
+		s.stop(conn)
+
+		return
+	}
 	if at < from || at > to {
 		fmt.Fprintf(os.Stderr, "shard-init: the host resumes the logs at %d, outside the held %d..%d\n", at, from, to)
+
+		return
+	}
+	// The host's file already holds what it skips, which is an ack no write will send.
+	if err := s.release(conn, at); err != nil {
+		fmt.Fprintln(os.Stderr, "shard-init:", err)
 
 		return
 	}
@@ -652,6 +745,11 @@ func (s *logSink) acks(conn net.Conn) {
 		if err := binary.Read(conn, binary.BigEndian, &ack); err != nil {
 			return
 		}
+		if ack == supervisor.LogsStopped {
+			s.stop(conn)
+
+			return
+		}
 		if err := s.release(conn, ack); err != nil {
 			fmt.Fprintln(os.Stderr, "shard-init:", err)
 
@@ -676,6 +774,18 @@ func (s *logSink) release(conn net.Conn, ack uint64) error {
 	s.cond.Broadcast()
 
 	return nil
+}
+
+// stop lets the end go without the ack of a host whose log refused the output.
+func (s *logSink) stop(conn net.Conn) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	if s.conn != conn {
+		return
+	}
+	s.stopped = true
+	s.cond.Broadcast()
 }
 
 // drop ends conn, unless a newer host already took its place.

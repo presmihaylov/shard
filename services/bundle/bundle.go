@@ -367,8 +367,11 @@ func supervisorArgv(spec models.SandboxSpec) ([]string, error) {
 			"-restart", string(spec.Restart.Policy),
 			"-retries", strconv.Itoa(spec.Restart.Retries),
 			"-backoff", strconv.Itoa(spec.Restart.Backoff)+"s",
-			"-restart-file", path.Join(guestShardDir, restartFileName),
 		)
+	}
+	// Every app gets the file, because its end lands there under any policy and a run waits on it.
+	if len(spec.Entrypoint) != 0 {
+		argv = append(argv, "-restart-file", path.Join(guestShardDir, restartFileName))
 	}
 
 	return append(append(argv, "--"), spec.Entrypoint...), nil

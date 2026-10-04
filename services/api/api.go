@@ -51,6 +51,9 @@ type Lifecycle interface {
 	WriteArchive(ctx context.Context, ref string, req sandbox.ArchiveWrite, src io.Reader) error
 	Logs(ctx context.Context, ref string, w io.Writer) error
 	FollowLogs(ctx context.Context, ref string, w io.Writer) (string, error)
+	AttachApp(ctx context.Context, ref string, open func() (io.Writer, error)) (models.AppExit, error)
+	WaitApp(ctx context.Context, ref string) (models.AppExit, error)
+	StopApp(ctx context.Context, ref string, force bool) error
 	GrantSecret(ctx context.Context, ref, name string) (models.Sandbox, error)
 	UngrantSecret(ctx context.Context, ref, name string) (models.Sandbox, error)
 	AttachPolicy(ctx context.Context, ref, name string) (models.Sandbox, error)
@@ -179,6 +182,8 @@ func (h *Handler) routeTable() []routeEntry {
 		{Route{"PUT", "/v0/sandboxes/{id}/archive"}, h.putArchive},
 		{Route{"GET", "/v0/sandboxes/{id}/archive"}, h.getArchive},
 		{Route{"GET", "/v0/sandboxes/{id}/logs"}, h.sandboxLogs},
+		{Route{"GET", "/v0/sandboxes/{id}/attach"}, h.attachApp},
+		{Route{"POST", "/v0/sandboxes/{id}/app/stop"}, h.stopApp},
 		{Route{"GET", "/v0/sandboxes/{id}/egress-log"}, h.sandboxEgressLog},
 		{Route{"POST", "/v0/sandboxes/{id}/secrets/{name}"}, h.grantSecret},
 		{Route{"DELETE", "/v0/sandboxes/{id}/secrets/{name}"}, h.ungrantSecret},

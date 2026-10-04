@@ -25,7 +25,7 @@ func TestTheEntrypointRunsAsTheGivenUser(t *testing.T) {
 	dir := t.TempDir()
 	exitFile := filepath.Join(dir, "exit.json")
 	// A real /bin/sh, not this test binary: the go build cache is not readable by another user.
-	cmd := exec.Command(exe, "-ready-file", filepath.Join(dir, "started"),
+	cmd := exec.Command(exe, "-ready-file", filepath.Join(dir, "started"), "-restart-file", filepath.Join(dir, "restarts.json"),
 		"-user", "65534:65534", "--", "/bin/sh", "-c", "id -u")
 	cmd.Env = append(os.Environ(), roleEnv+"="+roleSupervisor)
 	cmd.Stderr = os.Stderr

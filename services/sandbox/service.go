@@ -428,6 +428,7 @@ func (s *Service) Prepare(ctx context.Context, req CreateRequest) (models.Sandbo
 		Resources: req.Resources,
 		Secrets:   req.Secrets,
 		Policy:    req.Policy,
+		Command:   slices.Clone(req.Command),
 		Restart:   withRestartDefaults(req.Restart),
 		CreatedAt: time.Now().UTC(),
 	}, admit...)

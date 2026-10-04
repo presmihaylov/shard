@@ -1,5 +1,5 @@
 {"version": 2, "width": 120, "height": 40, "timestamp": 1788091922, "env": {"SHELL": "/bin/bash", "TERM": "unknown"}}
-[0.044871, "o", "# shard on a box with no /dev/kvm: pause, resume and fork on gVisor\r\n\r\n$ shard create --name web alpine:3.20 /bin/sh -c i=0; while true; do i=$((i+1)); echo tick $i; sleep 1; done\r\n"]
+[0.044871, "o", "# shard on a box with no /dev/kvm: pause, resume and fork on gVisor\r\n\r\n$ shard run -d --name web alpine:3.20 /bin/sh -c i=0; while true; do i=$((i+1)); echo tick $i; sleep 1; done\r\n"]
 [0.583048, "o", "muddy-comet-92d3\r\n"]
 [2.592939, "o", "\r\n$ shard exec web /bin/sh -c echo hello > /root/state\r\n"]
 [2.656621, "o", "\r\n$ shard logs web\r\n"]

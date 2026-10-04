@@ -27,10 +27,12 @@ const usage = `shard-init - the guest supervisor, PID 1 inside a sandbox
 
 Usage:
   shard-init -ready-file <path> [-user <uid>:<gid>] [-groups <gid>,...]
-             [-restart no|on-failure|always -restart-file <path> [-retries <n>] [-backoff <duration>]] -- [<entrypoint> [args...]]
+             [-restart no|on-failure|always] [-restart-file <path>] [-retries <n>] [-backoff <duration>] -- [<entrypoint> [args...]]
   shard-init -transport vsock [-root <device> | -base <device> -overlay <device>] [-console <device>] [-reboot]
 
 The entrypoint exit status is reported to fd 0, which the host holds; the guest cannot reach it.
+An entrypoint needs -restart-file, where the count and the end of the app land.
+SIGUSR1 cancels every start again and terms the entrypoint, SIGUSR2 kills it; the supervisor stays up for both.
 With -transport the host sends the entrypoint over vsock, and the exit status goes back the same way.
 -root boots one ext4 disk; -base and -overlay boot a read-only EROFS image under an overlay whose upper layer is the second disk.
 -reboot ends the VM with a reboot instead of a power off, for a vmm such as firecracker that only exits on one.`
@@ -130,7 +132,7 @@ func run(args []string) error {
 	if err != nil {
 		return err
 	}
-	if err := checkRestartFile(restart, *restartFile); err != nil {
+	if err := checkRestartFile(restart, *restartFile, flags.Args()); err != nil {
 		return err
 	}
 
@@ -184,9 +186,11 @@ type guest struct {
 	restart restartPolicy
 	// commands run on the owning goroutine, so a transport starts, signals and waits for children without a lock.
 	commands chan func()
-	// Two channels, so a burst of child deaths can never push a stop signal out of the buffer.
+	// Separate channels, so a burst of child deaths can never push a stop signal out of the buffer.
 	childDeaths chan os.Signal
 	stopSignals chan os.Signal
+	// appSignals stop the app and leave the sandbox up: USR1 terms it, USR2 kills it, and both cancel every start again.
+	appSignals chan os.Signal
 
 	ep            entrypoint
 	entrypointPID int
@@ -194,6 +198,8 @@ type guest struct {
 	count         models.RestartCount
 	startAgain    <-chan time.Time
 	stopping      bool
+	// cancelled says the app was stopped, so no exit of it starts it again.
+	cancelled bool
 	// waiters are the exec sessions, each keyed by the pid it waits for.
 	waiters map[int]chan<- models.ExitStatus
 	// started and lastExit are what a new control connection is told first.
@@ -213,10 +219,11 @@ type guest struct {
 func newGuest(report reporter, restart restartPolicy) *guest {
 	g := &guest{
 		report: report, restart: restart, commands: make(chan func()), waiters: map[int]chan<- models.ExitStatus{},
-		childDeaths: make(chan os.Signal, 1), stopSignals: make(chan os.Signal, 4),
+		childDeaths: make(chan os.Signal, 1), stopSignals: make(chan os.Signal, 4), appSignals: make(chan os.Signal, 4),
 	}
 	signal.Notify(g.childDeaths, syscall.SIGCHLD)
 	signal.Notify(g.stopSignals, syscall.SIGTERM, syscall.SIGINT)
+	signal.Notify(g.appSignals, syscall.SIGUSR1, syscall.SIGUSR2)
 
 	return g
 }
@@ -262,6 +269,11 @@ func (g *guest) supervise() error {
 			if done, err := g.stop(received); done || err != nil {
 				return err
 			}
+		case received := <-g.appSignals:
+			// PID 1 must survive a failed signal, so it is reported and never fatal (AGENTS.md).
+			if err := g.stopApp(received == syscall.SIGUSR2); err != nil {
+				fmt.Fprintln(os.Stderr, "shard-init:", err)
+			}
 		case command := <-g.commands:
 			command()
 		}
@@ -291,6 +303,7 @@ func (g *guest) collect() bool {
 		}
 		if done {
 			g.entrypointPID = 0
+			killGroup(d.pid)
 
 			continue
 		}
@@ -306,13 +319,20 @@ func (g *guest) collect() bool {
 		if g.stopping {
 			return true
 		}
+		// Neither the next run nor an ended app keeps what this run left in its group, so a child that ignored the TERM ends here.
+		killGroup(d.pid)
+		if g.cancelled {
+			g.end()
+
+			continue
+		}
 		// A run that lasted the reset window starts the count over, so a rare crash never spends the retries.
 		if time.Since(g.runStartedAt) >= g.restart.reset {
 			g.count.Count = 0
 		}
 		g.startAgain = g.restart.schedule(d.exit, &g.count)
-		if g.count.GaveUp {
-			g.record()
+		if g.startAgain == nil {
+			g.end()
 		}
 	}
 	if !done {
@@ -340,13 +360,43 @@ func (g *guest) stop(received os.Signal) (bool, error) {
 	return false, nil
 }
 
+// stopApp cancels every start again and signals the app, and the sandbox stays up; a cancel in the backoff wait ends the app there.
+func (g *guest) stopApp(force bool) error {
+	if g.ep.argv == nil || g.count.Ended {
+		return nil
+	}
+	g.cancelled = true
+	if g.startAgain != nil {
+		g.startAgain = nil
+		g.end()
+
+		return nil
+	}
+	// kill(0) reaches the process group that holds PID 1.
+	if g.entrypointPID == 0 {
+		return nil
+	}
+	sig := syscall.SIGTERM
+	if force {
+		sig = syscall.SIGKILL
+	}
+
+	return forwardToEntrypoint(g.entrypointPID, sig)
+}
+
+// end records that no start again follows the last exit, which is what a run waits for.
+func (g *guest) end() {
+	g.count.Ended = true
+	g.record()
+}
+
 // restartEntrypoint forks it once more and records the count; an image that no longer starts is a give-up.
 func (g *guest) restartEntrypoint() int {
 	pid, err := g.start(g.ep, nil, false)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "shard-init: start %q again: %v\n", g.ep.argv[0], err)
 		g.count.GaveUp = true
-		g.record()
+		g.end()
 
 		return 0
 	}
@@ -424,19 +474,26 @@ func (g *guest) kill(pid int) {
 	})
 }
 
-// PID 1 in a namespace has no default disposition, so a stop only works if we pass it on ourselves.
+// PID 1 in a namespace has no default disposition, so a stop is passed on, to the group the entrypoint leads with what it forked.
 func forwardToEntrypoint(entrypointPID int, received os.Signal) error {
 	unixSignal, ok := received.(syscall.Signal)
 	if !ok {
 		return fmt.Errorf("cannot forward signal %v to the entrypoint", received)
 	}
 
-	err := syscall.Kill(entrypointPID, unixSignal)
+	err := syscall.Kill(-entrypointPID, unixSignal)
 	if err == nil || errors.Is(err, syscall.ESRCH) {
 		return nil
 	}
 
 	return fmt.Errorf("forward %s to the entrypoint: %w", unixSignal, err)
+}
+
+// killGroup ends what a run of the app left in its group; PID 1 survives a failed kill, so it is reported and never fatal (AGENTS.md).
+func killGroup(entrypointPID int) {
+	if err := syscall.Kill(-entrypointPID, syscall.SIGKILL); err != nil && !errors.Is(err, syscall.ESRCH) {
+		fmt.Fprintf(os.Stderr, "shard-init: kill the group of entrypoint %d: %v\n", entrypointPID, err)
+	}
 }
 
 // It collects every dead child, not only the entrypoint: orphaned grandchildren land on PID 1.

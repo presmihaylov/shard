@@ -265,7 +265,7 @@ func (p process) Daemon() (api.Daemon, error) {
 // lifecycle builds the orchestrator on the first verb, so a daemon on a host without runsc still answers reads.
 type lifecycle struct {
 	deps *deps
-	// base outlives one request: a create's background pull and start run under it, and it ends when the daemon stops.
+	// base outlives one request: every create runs under it, and it ends when the daemon stops.
 	base context.Context
 
 	mu  sync.Mutex
@@ -312,8 +312,12 @@ func (l *lifecycle) Create(ctx context.Context, req sandbox.CreateRequest) (mode
 	if err != nil {
 		return models.Sandbox{}, err
 	}
+
+	// A create outlives the request, so it runs under base and ends with the daemon, but reports to the caller's progress.
+	detached := image.WithProgress(l.base, image.ProgressFrom(ctx))
 	if cached {
-		return svc.Create(ctx, req)
+		// A caller that hangs up never leaves its started app behind a pending record.
+		return svc.Create(detached, req)
 	}
 
 	sb, err := svc.Prepare(ctx, req)
@@ -329,10 +333,8 @@ func (l *lifecycle) Create(ctx context.Context, req sandbox.CreateRequest) (mode
 	l.pending[sb.ID] = done
 	l.mu.Unlock()
 
-	// The pull outlives the request, so it runs under base and ends with the daemon, but reports to the caller's progress.
-	background := image.WithProgress(l.base, image.ProgressFrom(ctx))
 	l.wg.Go(func() {
-		completeErr := svc.Complete(background, sb.ID, req)
+		completeErr := svc.Complete(detached, sb.ID, req)
 
 		l.mu.Lock()
 		delete(l.pending, sb.ID)
@@ -636,6 +638,33 @@ func (l *lifecycle) FollowLogs(ctx context.Context, ref string, w io.Writer) (st
 	}
 
 	return svc.FollowLogs(ctx, ref, w)
+}
+
+func (l *lifecycle) AttachApp(ctx context.Context, ref string, open func() (io.Writer, error)) (models.AppExit, error) {
+	svc, err := l.service()
+	if err != nil {
+		return models.AppExit{}, err
+	}
+
+	return svc.AttachApp(ctx, ref, open)
+}
+
+func (l *lifecycle) WaitApp(ctx context.Context, ref string) (models.AppExit, error) {
+	svc, err := l.service()
+	if err != nil {
+		return models.AppExit{}, err
+	}
+
+	return svc.WaitApp(ctx, ref)
+}
+
+func (l *lifecycle) StopApp(ctx context.Context, ref string, force bool) error {
+	svc, err := l.service()
+	if err != nil {
+		return err
+	}
+
+	return svc.StopApp(ctx, ref, force)
 }
 
 // proxyTask runs the egress proxy every fronted sandbox's web traffic is turned to, on the bridge gateway.

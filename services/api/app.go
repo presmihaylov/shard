@@ -1,0 +1,103 @@
+package api
+
+import (
+	"context"
+	"io"
+	"net/http"
+
+	"github.com/coder/websocket"
+)
+
+// attachApp answers how a run's app ended: a WebSocket upgrade streams its output first, and a plain request answers the exit alone.
+func (h *Handler) attachApp(w http.ResponseWriter, r *http.Request) {
+	if isHandshake(r) {
+		h.streamApp(w, r)
+
+		return
+	}
+
+	exit, err := h.lifecycle.WaitApp(r.Context(), r.PathValue("id"))
+	if err != nil {
+		h.writeError(w, err)
+
+		return
+	}
+
+	h.writeJSON(w, http.StatusOK, exit)
+}
+
+// streamApp sends the app's output on stream 1 from the start of the log, then one exit on stream 3; every refusal comes before the 101.
+func (h *Handler) streamApp(w http.ResponseWriter, r *http.Request) {
+	// The poll runs under ctx, so a client that hangs up ends it even while the app writes nothing.
+	ctx, cancel := context.WithCancel(r.Context())
+	defer cancel()
+
+	answered := false
+	var f *follower
+	exit, err := h.lifecycle.AttachApp(ctx, r.PathValue("id"), func() (io.Writer, error) {
+		answered = true
+		opened, err := h.follow(w, r.WithContext(ctx), "app of sandbox "+r.PathValue("id"))
+		if err != nil {
+			return nil, err
+		}
+		f = opened
+		context.AfterFunc(f.ctx, cancel)
+
+		return writerFunc(func(p []byte) (int, error) {
+			if err := Send(f.ctx, f.conn, StreamStdout, p); err != nil {
+				return 0, err
+			}
+
+			return len(p), nil
+		}), nil
+	})
+
+	// Nothing was said on the wire yet, so the refusal is a status and a JSON body like every other route.
+	if !answered {
+		h.writeError(w, err)
+
+		return
+	}
+	// The library answered the handshake with its own refusal, so the daemon's log is the one place left.
+	if f == nil {
+		h.log.Printf("api: app of sandbox %s: %v", r.PathValue("id"), err)
+
+		return
+	}
+	defer f.close(websocket.StatusNormalClosure, "")
+
+	// The client hung up or the daemon is going down, and neither is anything to say on the wire.
+	if f.ctx.Err() != nil {
+		return
+	}
+	if err != nil {
+		f.send(StreamFailure, failureOf(err))
+
+		return
+	}
+
+	f.send(StreamExit, exit)
+}
+
+// appStopRequest says how a stop ends the app: TERM, or KILL with force.
+type appStopRequest struct {
+	Force bool `json:"force,omitempty"`
+}
+
+// stopApp cancels every start again of the app and ends it; the sandbox stays running.
+func (h *Handler) stopApp(w http.ResponseWriter, r *http.Request) {
+	var req appStopRequest
+	if err := decode(w, r, &req); err != nil {
+		h.writeError(w, err)
+
+		return
+	}
+
+	if err := h.lifecycle.StopApp(r.Context(), r.PathValue("id"), req.Force); err != nil {
+		h.writeError(w, err)
+
+		return
+	}
+
+	w.WriteHeader(http.StatusNoContent)
+}

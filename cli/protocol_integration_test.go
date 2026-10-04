@@ -388,7 +388,7 @@ func TestLogsProtocolFollowsThenSaysWhyItEnded(t *testing.T) {
 	app, out := newCreateApp(t)
 	c := newRawClient(t, app)
 
-	id := create(t, app, out, "/bin/sh", "-c", "echo up; sleep 600")
+	id := runDetached(t, app, out, "/bin/sh", "-c", "echo up; sleep 600")
 	t.Cleanup(func() { cleanUp(t, app, id) })
 
 	conn, _, err := websocket.Dial(t.Context(), "ws://shard/v0/sandboxes/"+id+"/logs?follow=true", &websocket.DialOptions{HTTPClient: c.http}) //nolint:bodyclose // a 101 has no body to close

@@ -43,14 +43,23 @@ with `docs/mac.md`, and read `docs/provider-vz.md` for the contract.
 
 ```
 shard daemon
-shard create --name lab python:3.12 python -c 'print(1)'
+shard run --name lab python:3.12 python -c 'print(1)'
 shard exec lab python --version
+shard create --name idle python:3.12
 ```
 
 Shard flags precede the image or sandbox reference. The command and its arguments follow the reference.
-An optional `--` before the command still works. The command after the image is the only one that
-starts: the image's own ENTRYPOINT and CMD never run. With no command, only `shard-init` runs, and the
-sandbox stays up for `shard exec`.
+An optional `--` before the command still works.
+
+`shard run` creates a sandbox and starts the command after the image as its app. The image's own
+ENTRYPOINT and CMD never run. Run prints what the app writes, stdout and stderr interleaved, until
+the restart policy ends, and then exits with the app's last code, or 128 plus the signal that ended
+it. It exits 125 when shard itself fails. `-d` prints the id once the app starts and returns.
+Ctrl+C stops the app and cancels its restarts, a second Ctrl+C kills it, and a third leaves with 130.
+Before the sandbox is up, run waits for it, then stops the app, or kills it after a second Ctrl+C,
+and exits 130. The sandbox stays `running` through all of it, until `shard stop`.
+
+`shard create` takes no command. Only `shard-init` runs, and the sandbox stays up for `shard exec`.
 
 `shard daemon` runs first, in a terminal of its own or as the systemd unit in `packaging/systemd`.
 It owns the state. Every other verb is a client of its socket and fails fast when the daemon is not
@@ -65,15 +74,15 @@ issues, and every verb goes through the proxy to the front. `--token-file <path>
 an Intel Mac or one on macOS 13, can run shard inside a Linux VM as a workaround, as `docs/mac.md`
 describes.
 
-On create, shard pulls the image, claims the record, allocates the network, creates the sandbox and
-starts the command, if one was given. Then it prints the id and returns. It never attaches. That
-command, the entrypoint, runs as the child of `shard-init`, and the sandbox outlives it. `--env`,
-`--workdir`, `--user`, `--memory` and `--cpus` shape the workload, and they go before the image.
+On create or run, shard pulls the image, claims the record, allocates the network and creates the
+sandbox. Run then starts the app as the child of `shard-init`, and the sandbox outlives it.
+`--restart` starts the app again after it exits, and goes on `run` only. `--env`, `--workdir`,
+`--user`, `--memory` and `--cpus` shape the workload, and they go before the image.
 `--memory` and `--disk` take a whole size such as `512MiB` or `2GiB`: KiB, MiB and GiB are binary,
 KB, MB and GB decimal. Only `0` goes without a unit. The API and the record keep MiB.
 
-`--user` sets the user of the entrypoint only. The supervisor stays privileged as PID 1, so it can
-always record how the entrypoint ended.
+`--user` sets the user of the app and of every exec only. The supervisor stays privileged as PID 1,
+so it can always record how the app ended.
 
 `SHARD_INIT_PATH` names the supervisor binary and defaults to `/usr/local/bin/shard-init` on
 Linux. A Mac daemon carries its own guest build of the supervisor and installs it under `<root>/vz`.
@@ -144,7 +153,7 @@ the placeholder. `docs/secrets.md` says what this protects against and what it d
 
 ```
 shard policy create --allow api.example.com --deny any locked
-shard create --policy locked python:3.12 python agent.py
+shard run --policy locked python:3.12 python agent.py
 shard policy show locked
 shard policy rm locked
 ```

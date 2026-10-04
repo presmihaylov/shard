@@ -8,6 +8,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"math"
 	"time"
 
 	"github.com/presmihaylov/shard/models"
@@ -23,11 +24,15 @@ const (
 // LogsVersion is the logs port protocol a guest names in its state; no raw output can forge a field of the control stream.
 const LogsVersion = 1
 
-// The kinds a control message carries. The host sends the first eight; the guest answers each with done or failure, and sends the rest on its own.
+// LogsStopped is what a host sends in place of a resume or an ack once its log refuses the output, so the guest waits for no ack of it.
+const LogsStopped uint64 = math.MaxUint64
+
+// The kinds a control message carries. The host sends the first nine; the guest answers each with done or failure, and sends the rest on its own.
 const (
 	KindRun       = "run"
 	KindSignal    = "signal"
 	KindStop      = "stop"
+	KindStopApp   = "stop-app"
 	KindReaddress = "readdress"
 	KindReseed    = "reseed"
 	KindFreeze    = "freeze"
@@ -55,6 +60,8 @@ type Message struct {
 	// PID and Signal name one signal to a process shard-init started, TERM or KILL.
 	PID    int    `json:"pid,omitempty"`
 	Signal string `json:"signal,omitempty"`
+	// Force on a stop-app kills the app where it would term it.
+	Force bool `json:"force,omitempty"`
 	// Address is the new guest address after a fork restored a copy of the source.
 	Address *Address `json:"address,omitempty"`
 	// Seed is host entropy for a restored guest's crng, which woke with the key of every other restore of the same save.

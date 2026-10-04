@@ -36,7 +36,7 @@ func (s *safeBuffer) String() string {
 func TestLogsFollowsTheEgressLogLive(t *testing.T) {
 	app, out := newCreateApp(t)
 
-	id := create(t, app, out, "/bin/sleep", "600")
+	id := runDetached(t, app, out, "/bin/sleep", "600")
 	t.Cleanup(func() { cleanUp(t, app, id) })
 
 	printed := &safeBuffer{}

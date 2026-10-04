@@ -270,28 +270,42 @@ bound is fixed at create, so a sandbox that needs more memory is a new sandbox w
 
 A sandbox outlives its entrypoint, and the policy does not change that. The policy starts the
 entrypoint again inside the sandbox that is already up, and the sandbox stays `running` whatever the
-policy does. `--restart <policy>` (`"restart": {"policy"}` in the create body) takes one of three
+policy does. `shard run --restart <policy>` (`"restart": {"policy"}` in the create body) takes one of three
 values. `no` is the default. `on-failure` starts the entrypoint again after an exit other than 0, or
 after a signal. `always` starts it again after every exit. `--restart-retries` (`retries`) caps the
 starts again in one run. With no cap, `on-failure` starts the entrypoint again without end. `always`
 never gives up and takes no retries at all. `--restart-backoff` (`backoff`, in whole seconds,
 default 1) is the wait before the first start again, and it doubles each time, up to 60 s. Both
-flags need a policy. A policy other than `no` needs a command after the image, because the image's
-own ENTRYPOINT and CMD never run: the CLI refuses it naming `--restart`, and the API answers 400
-naming `restart.policy`. A run that lasts ten seconds since its last start clears the count, so a
+flags need a policy. The three flags go on `shard run` only, and `shard create` and `shard exec`
+refuse each one by name. A body with a policy other than `no` and no `command` answers 400 naming
+`restart.policy`. A run that lasts ten seconds since its last start clears the count, so a
 slow crash loop never spends a finite cap. At the cap, `on-failure` gives up and the entrypoint
 stays exited. A stop then puts its last exit in `exit_status`, as after any exit. A stop during the
 wait ends the sandbox at once and drops the start that was due.
 
+The policy ends when no start again follows an exit: any exit under `no`, a clean exit under
+`on-failure`, the give-up at the cap, or a stop of the app. `shard-init` then writes `ended`, and that
+last exit is the app's. `shard run` waits for it and exits with that code. `POST app/stop` cancels
+every start again and sends TERM to the app, or KILL with `force`, and the sandbox stays `running`
+with `shard-init` alone. A process in the sandbox does the same with `kill -USR1 1` for TERM and
+`kill -USR2 1` for KILL. A stop during the wait ends the app at once.
+
+The app leads its own process group, and every end of a run signals that group whole: `app/stop`,
+the Ctrl+C of `shard run`, a start again and an OOM kill. Once the app's own process exits,
+`shard-init` kills what is left in the group before it writes `ended` or starts again, so a child
+that ignores TERM ends too. So what the app forked ends with it, while `shard-init` and every exec
+session run on. A process that leaves the group, with `setsid`, runs until `stop`.
+
 The policy is fixed at create. `shard-init` gets it as flags in the bundle and has no control
 channel, so nothing can change it on a running sandbox. `shard-init` counts every start again in a
 file. Every second, the `restart-policy` task reads that file for every running sandbox that has a
-policy, and copies the count onto the record. The record is therefore at most a second behind, and a
-`stop` reads the count once more before it writes the stopped record. On gVisor, runc and Sysbox
+policy, and copies the count onto the record. The record is therefore at most a second behind. A
+`stop` reads the count once more before it writes the stopped record, and the wait of a run copies
+it as soon as the policy ends. On gVisor, runc and Sysbox
 that file sits under `/.shard`, where the guest can write it. The daemon therefore reads only a
 regular file of at most 4 KiB, and refuses a symbolic link, a fifo or a device.
 The record carries `restart`: `{"policy", "retries", "backoff",
-"count", "last_at", "gave_up"}`, absent on a sandbox without a policy, and `retries` is omitted when
+"count", "last_at", "gave_up", "ended"}`, absent on a sandbox without a policy, and `retries` is omitted when
 the count is unlimited. `shard ls` shows it in the `RESTART` column:
 `on-failure 2` when unlimited, `on-failure 2/5` under a cap, then `on-failure 5/5 gave up`, and
 `always 7`. Each start again, and the give-up, is one line in the daemon log. The count is for one
@@ -339,6 +353,8 @@ curl --unix-socket /var/lib/shard/shard.sock http://localhost/v0/sandboxes/<id o
 curl --unix-socket /var/lib/shard/shard.sock http://localhost/v0/sandboxes/<id or name>/exec/<exec-id>
 curl --unix-socket /var/lib/shard/shard.sock -X POST -d '{"signal":"TERM"}' http://localhost/v0/sandboxes/<id or name>/exec/<exec-id>/kill
 curl --unix-socket /var/lib/shard/shard.sock -X DELETE http://localhost/v0/sandboxes/<id or name>/exec/<exec-id>
+curl --unix-socket /var/lib/shard/shard.sock http://localhost/v0/sandboxes/<id or name>/attach
+curl --unix-socket /var/lib/shard/shard.sock -X POST -d '{"force":true}' http://localhost/v0/sandboxes/<id or name>/app/stop
 curl --unix-socket /var/lib/shard/shard.sock http://localhost/v0/sandboxes/<id or name>/logs
 curl --unix-socket /var/lib/shard/shard.sock http://localhost/v0/sandboxes/<id or name>/egress-log
 curl --unix-socket /var/lib/shard/shard.sock -T ./app.conf 'http://localhost/v0/sandboxes/<id or name>/files?path=/srv/app.conf&mode=600'
@@ -399,8 +415,9 @@ curl --unix-socket /var/lib/shard/shard.sock -X POST http://localhost/v0/images/
 
 - `POST /v0/sandboxes` takes `{"image", "name", "command", "env", "workdir", "user", "secrets",
   "policy", "resources": {"memory_mib", "vcpus"}, "restart": {"policy", "retries", "backoff"}}` and
-  answers 201 with the record. `command` is the start command. The image's own ENTRYPOINT and CMD
-  never run, so a body with no `command` starts only `shard-init`, and the sandbox stays up. A
+  answers 201 with the record. `command` is the app, which `shard run` sends and `shard create`
+  does not. The image's own ENTRYPOINT and CMD never run, so a body with no `command` starts only
+  `shard-init`, and the sandbox stays up. A
   cached image needs no pull, so the create builds and starts the sandbox before it answers, and the
   record says `running`. A claim that fails at that point gives everything back, and the create
   answers 500. An uncached image makes the record `pending`, and the create answers before the
@@ -463,6 +480,16 @@ curl --unix-socket /var/lib/shard/shard.sock -X POST http://localhost/v0/images/
 - `POST /v0/sandboxes/{id}/exec/{exec-id}/resize` takes `{"rows", "cols"}` and answers 204. It
   answers 404 when the exec has no terminal, has ended or belongs to another sandbox. Only a `tty`
   exec has a terminal to resize.
+- `GET /v0/sandboxes/{id}/attach` answers 200 with how the app ended, `{"code", "signal",
+  "restarts"}`, once its restart policy ends. `code` is 128+n when a signal ended the app. With the
+  WebSocket handshake it answers 101 instead. The app's output comes on stream 1 from the start of
+  the log, stdout and stderr interleaved, then the exit on stream 3, and the daemon closes with 1000.
+  A failure comes on stream 5. Errors, before anything is on the wire: 404, 409 `no_app` for a
+  sandbox that `create` made, and 409 `sandbox_not_running`, also when the sandbox stops before the
+  app ends. `shard run` uses the WebSocket.
+- `POST /v0/sandboxes/{id}/app/stop` takes `{"force"}`, ends the app as the restart policy section
+  says, and answers 204. Errors: 404, 409 `no_app`, 409 `app_ended` once the policy ended, and 409
+  `sandbox_not_running`.
 - `GET /v0/sandboxes/{id}/logs` answers 200 `text/plain; charset=utf-8` with everything the
   entrypoint wrote. Errors: 404, and 400 for a `follow` that is not a boolean.
 - `GET /v0/sandboxes/{id}/logs?follow=true` with the WebSocket handshake answers in binary messages.
@@ -611,9 +638,11 @@ else that a refusal carries lives inside `error`, and the root never holds anyth
 | `invalid_request` | 400 | the body does not decode, a field does not validate, or a named secret, policy or image is unknown. Also the TCP front, when the request line does not parse as net/http parses it, and then the front dials nothing |
 | `body_too_large` | 413 | a JSON body over 1 MiB. The daemon reads no further, and closes the connection after the answer |
 | `not_found` | 404 | no sandbox, policy, secret, image or exec has the reference, or no route has the path |
-| `sandbox_not_running` | 409 | exec, pause or fork on a sandbox that is not running, one the substrate no longer holds, or one whose substrate process does not answer |
+| `sandbox_not_running` | 409 | exec, pause, fork, attach or app stop on a sandbox that is not running, one the substrate no longer holds, or one whose substrate process does not answer |
 | `sandbox_not_stopped` | 409 | start, clone, or rm without force on a sandbox that is up, and rm without force on a paused one, whose snapshot a resume needs |
 | `sandbox_not_paused` | 409 | resume on a sandbox that is not paused |
+| `no_app` | 409 | attach or app stop on a sandbox that `create` made, which runs no app |
+| `app_ended` | 409 | app stop once the restart policy of the app ended |
 | `sandbox_failed` | 409 | any verb except a get or an `rm` on a create that ended `failed`. The message carries the `failed_reason`, and `rm` frees the sandbox |
 | `sandbox_live` | 409 | grant, ungrant, attach or detach while the sandbox runs or is paused |
 | `no_snapshot` | 409 | resume on a paused sandbox whose record names no snapshot |
@@ -634,9 +663,9 @@ The base path is `/v0`, and `/v0` may change until launch 1. SHARD-83 freezes th
 The typed side of these routes is `services/client`, hand-written over the socket. It has
 `Version`, `ListSandboxes`, `GetSandbox`, `CreateSandbox`, `StartSandbox`, `StopSandbox`,
 `RemoveSandbox`, `PauseSandbox`, `ResumeSandbox`, `ForkSandbox`, `CloneSandbox`, `Exec`,
-`ResizeExec`, `Logs`, `ListPolicies`, `GetPolicy`, `SetPolicy`, `RemovePolicy`, `ListSecrets`,
+`ResizeExec`, `AttachApp`, `StopApp`, `Logs`, `ListPolicies`, `GetPolicy`, `SetPolicy`, `RemovePolicy`, `ListSecrets`,
 `SetSecret`, `RemoveSecret`, `ListImages`, `PullImage`, `RemoveImage` and `PruneImages`. `Exec`
-creates the exec, then opens the WebSocket over the same socket. `Logs` with follow and
+creates the exec, then opens the WebSocket over the same socket. `AttachApp`, `Logs` with follow and
 `FollowEgressLog` hold their stream open for as long as the follow lasts. A stream takes no
 deadline, but the create before it does. The CLI verbs call this client and nothing else. Each call
 that answers in full gets 30 s. The deadline is per request, not on the `http.Client`. A daemon
@@ -728,8 +757,8 @@ capabilities:
 | capability | routes |
 | --- | --- |
 | `daemon:read` | `GET /v0/version`, `GET /v0/daemon` |
-| `sandbox:read` | list, get, `logs` and `egress-log` |
-| `sandbox:write` | create, start, stop, pause, resume, fork and clone |
+| `sandbox:read` | list, get, `logs`, `egress-log` and `attach` |
+| `sandbox:write` | create, start, stop, pause, resume, fork, clone and `app/stop` |
 | `sandbox:delete` | `rm` |
 | `exec` | every `exec` route, and every `files`, `ls`, `mkdir` and `archive` route |
 | `image:*` | every `images` route |

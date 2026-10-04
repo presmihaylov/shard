@@ -45,6 +45,8 @@ type App struct {
 	// TokenFile is --token-file alone, never SHARD_TOKEN_FILE, so it beats SHARD_API_KEY; CAFile signed the certificate of the proxy in front of serve.
 	TokenFile string
 	CAFile    string
+	// Interrupts hands out the stop signals; nil, as a test builds, gives a verb none.
+	Interrupts *Interrupts
 
 	// clientTimeout bounds one daemon call. A test sets it; zero keeps the client's default.
 	clientTimeout time.Duration
@@ -96,7 +98,11 @@ func parseVerb(flags *flag.FlagSet, args []string) error {
 	err := flags.Parse(args)
 	if errors.Is(err, flag.ErrHelp) {
 		var names []string
-		flags.VisitAll(func(f *flag.Flag) { names = append(names, f.Name) })
+		flags.VisitAll(func(f *flag.Flag) {
+			if _, refused := f.Value.(refusal); !refused {
+				names = append(names, f.Name)
+			}
+		})
 
 		return printExit{text: helpText(helpKey(flags)), flags: names}
 	}
@@ -184,6 +190,7 @@ type command struct {
 func commands() []command {
 	return []command{
 		{name: "create", run: App.create},
+		{name: "run", run: App.launch},
 		{name: "exec", run: App.exec},
 		{name: "ls", run: App.ls},
 		{name: "logs", run: App.logs},
@@ -307,6 +314,9 @@ func (a App) dispatch(ctx context.Context, cmd command, args []string) error {
 // daemonFlags are the daemon's own flags, which came before the verb once and are refused there now.
 var daemonFlags = []string{"timeout", "insecure-registry", "provider"}
 
+// refusal is a flag a verb takes only to say which verb it belongs to, so its help never lists it.
+type refusal interface{ refused() }
+
 // movedFlag takes a daemon flag given before the verb, and keeps the refusal that says where it goes.
 type movedFlag struct {
 	name    string
@@ -314,6 +324,8 @@ type movedFlag struct {
 }
 
 func (m movedFlag) String() string { return "" }
+
+func (m movedFlag) refused() {}
 
 func (m movedFlag) Set(value string) error {
 	if *m.refusal == nil {
