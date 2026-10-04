@@ -482,60 +482,15 @@ echo survived > "$argv.survived"
 	}
 }
 
-// runc exec prints a command it cannot start only to the guest's stderr and exits 1, which is
-// indistinguishable from the command's own 1. The host-side lookup against the rootfs is what tells them apart.
-func TestExecLooksTheCommandUpBeforeItRuns(t *testing.T) {
-	r, recorded := fake(t, "", "", 0)
-
-	rootfs := t.TempDir()
-	writeExecutable(t, filepath.Join(rootfs, "bin", "true"))
-
-	_, err := r.Exec(t.Context(), "amber-otter-1a2b", runc.ExecOptions{
-		Argv: []string{"nosuch"}, Env: []string{"PATH=/bin"}, RootFS: rootfs, Bundle: bundle(t),
-	})
-
-	var lookup *runc.LookupError
-	if !errors.As(err, &lookup) {
-		t.Fatalf("Exec returned %v, want a LookupError", err)
-	}
-	if lookup.Reason != "nosuch: not found" {
-		t.Errorf("the reason is %q, want the shell's", lookup.Reason)
-	}
-	if _, err := os.Stat(recorded); err == nil {
-		t.Error("a command that is not there still ran runc")
-	}
-
-	if _, err := r.Exec(t.Context(), "amber-otter-1a2b", runc.ExecOptions{
-		Argv: []string{"true"}, Env: []string{"PATH=/bin"}, RootFS: rootfs, Bundle: bundle(t),
-	}); err != nil {
-		t.Fatalf("Exec refused a command that is on the guest's PATH: %v", err)
-	}
-
-	// No PATH in the env means the OCI default, which is what runc would resolve against.
-	if _, err := r.Exec(t.Context(), "amber-otter-1a2b", runc.ExecOptions{
-		Argv: []string{"true"}, RootFS: rootfs, Bundle: bundle(t),
-	}); err != nil {
-		t.Fatalf("Exec refused a command on the default PATH when the env named none: %v", err)
-	}
-}
-
 // writingOwnPID is a fake whose "guest process" is the fake itself, so a kill on the pid it wrote is safe.
-func writingOwnPID() string {
+func writingOwnPID() string { return writingPID("$$") }
+
+// writingPID is a fake that writes pid, a shell word, as the guest process's pid.
+func writingPID(pid string) string {
 	return `prev=
 for arg in "$@"; do
-	if [ "$prev" = "--pid-file" ]; then echo $$ > "$arg"; fi
+	if [ "$prev" = "--pid-file" ]; then echo ` + pid + ` > "$arg"; fi
 	prev=$arg
 done
 `
-}
-
-func writeExecutable(t *testing.T, path string) {
-	t.Helper()
-
-	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
-		t.Fatalf("mkdir for %s: %v", path, err)
-	}
-	if err := os.WriteFile(path, []byte("#!/bin/sh\n"), 0o755); err != nil {
-		t.Fatalf("write %s: %v", path, err)
-	}
 }

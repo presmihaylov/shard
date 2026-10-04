@@ -148,6 +148,23 @@ func TestSetPolicyRefusesANameThatDoesNotResolve(t *testing.T) {
 	}
 }
 
+// A malformed name is the caller's mistake, so show and rm answer it as SetPolicy does, never as an internal failure (SHARD-517).
+func TestPolicyShowAndPolicyRemoveRefuseAMalformedNameAsABadRequest(t *testing.T) {
+	stores, policies := heldBy(t, nil)
+
+	_, showErr := stores.Policy("Bad")
+	removeErr := stores.RemovePolicy("Bad")
+
+	for verb, err := range map[string]error{"Policy": showErr, "RemovePolicy": removeErr} {
+		if _, ok := errors.AsType[*sandbox.RequestError](err); !ok {
+			t.Errorf("%s(%q) = %v, want a RequestError", verb, "Bad", err)
+		}
+	}
+	if policies.removed != "" {
+		t.Errorf("the refusal still removed policy %q", policies.removed)
+	}
+}
+
 // Nothing stores whether a policy resolves, so the view computes it and show and create agree.
 func TestPolicyViewSaysWhetherDNSIsOpen(t *testing.T) {
 	for _, tc := range []struct {
