@@ -516,7 +516,7 @@ SNAPSHOT_DISK=$(shard snapshot inspect "${SNAPSHOT_ID}" | grep -o '"disk_mib": *
 CODE=0
 REFUSAL=$(shard create --disk "$((SNAPSHOT_DISK + 64))MiB" --snapshot "${SNAPSHOT_ID}" 2>&1) || CODE=$?
 [ "${CODE}" != "0" ] || fail "create --snapshot took a --disk the snapshot's disk does not have"
-echo "${REFUSAL}" | grep -q -- "--disk" || fail "create --snapshot --disk said '${REFUSAL}', want it to name --disk"
+grep -q -- "--disk" <<<"${REFUSAL}" || fail "create --snapshot --disk said '${REFUSAL}', want it to name --disk"
 say "firecracker refused the other disk size by name"
 
 step "stop and remove the seeded microVMs and the snapshot"

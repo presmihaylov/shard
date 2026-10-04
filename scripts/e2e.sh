@@ -2285,7 +2285,7 @@ step "refuse to snapshot a running sandbox"
 CODE=0
 REFUSAL=$(shard snapshot create "$1" 2>&1) || CODE=$?
 [ "${CODE}" != "0" ] || fail "snapshot create copied the running sandbox $1"
-echo "${REFUSAL}" | grep -q "stop it first" || fail "snapshot create said '${REFUSAL}', want it to say stop it first"
+grep -q "stop it first" <<<"${REFUSAL}" || fail "snapshot create said '${REFUSAL}', want it to say stop it first"
 say "snapshot create refused the running sandbox and named the stop"
 
 step "stop and remove the seeded sandboxes and the snapshot"
