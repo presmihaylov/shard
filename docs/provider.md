@@ -84,6 +84,7 @@ runs on. The two differ when that daemon was started with `--provider`.
 
 ```
 $ shard info
+FIELD      VALUE
 provider   firecracker
 reason     /dev/kvm opens
 ```
@@ -181,7 +182,7 @@ flag. They are `CheckResources`, `Create`, `Start`, `Stop`, `Remove`, `Snapshot`
 `CheckResources` answers whether the substrate can run under a bound before the orchestrator writes
 a record, so a refusal leaves nothing in `list`. Only vz and Firecracker refuse anything. A VM's
 memory is real memory, so both refuse `--memory 0` and a bound under 128 MiB by name, and a `--disk`
-whose last block group cannot hold its own metadata. Firecracker also refuses a `--cpus` above 32
+whose last block group cannot hold its own metadata. Firecracker also refuses a `--vcpus` above 32
 and a `--disk` under 11 MiB. gVisor, Sysbox and runc take every bound. `Create` checks its spec
 again, so a create from a snapshot or a fork is held to the same rule.
 
@@ -452,14 +453,14 @@ killer runs first on every workload, and the daemon hears an OOM instead of a de
 
 ## What a cpu bound means
 
-`--cpus` bounds a sandbox to a share of the host CPUs, the same way on every substrate. `--cpus 0`,
+`--vcpus` bounds a sandbox to a share of the host CPUs, the same way on every substrate. `--vcpus 0`,
 the default, sets no bound. `cpu.max` stays `max`, and the sandbox runs on every host CPU. A
 positive `N` caps it at `N` CPUs of run time, as a `cpu.max` quota of `N * 100000` over a `100000`
 period. `shard create` refuses a negative value with an error, because a bound below zero is not a
 way to write unbounded. It refuses by name a value above the CPUs the daemon may run on, because
 such a quota never binds, and a large enough one overflows to no bound at all. It refuses a fraction
 such as `0.5` with an error that names it, because a VM gets whole CPUs and a rounded bound is not
-the one that was asked for. On `vz` the count is the VM's virtual CPUs and not a quota. `--cpus 0`
+the one that was asked for. On `vz` the count is the VM's virtual CPUs and not a quota. `--vcpus 0`
 gives the VM one virtual CPU per host CPU, held inside the framework's ceiling. A positive `N` gives
 it `N`, and a value outside the host's range is refused.
 

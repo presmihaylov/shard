@@ -72,7 +72,7 @@ func parsePolicyCreate(args []string) (string, []client.RuleText, error) {
 		return "", nil, errors.New("policy create takes its flags before the name: shard policy create --allow <rule> <name>")
 	}
 	if len(rest) != 1 {
-		return "", nil, fmt.Errorf("policy create takes one name, got %d", len(rest))
+		return "", nil, fmt.Errorf("policy create takes one name, got %s", gotArgs(rest))
 	}
 
 	return rest[0], rules, nil
@@ -84,7 +84,7 @@ func (a App) policyShow(ctx context.Context, args []string) error {
 		return err
 	}
 	if len(rest) != 1 {
-		return fmt.Errorf("policy show takes one name, got %d", len(rest))
+		return fmt.Errorf("policy show takes one name, got %s", gotArgs(rest))
 	}
 	c, err := a.client()
 	if err != nil {
@@ -108,7 +108,7 @@ func (a App) policyList(ctx context.Context, args []string) error {
 		return err
 	}
 	if len(rest) != 0 {
-		return fmt.Errorf("policy list takes no arguments, got %d", len(rest))
+		return fmt.Errorf("policy list takes no arguments, got %s", gotArgs(rest))
 	}
 	c, err := a.client()
 	if err != nil {
@@ -161,7 +161,7 @@ func parsePolicyRemove(args []string) (string, error) {
 		return "", err
 	}
 	if len(rest) != 1 {
-		return "", fmt.Errorf("policy remove takes one name, got %d", len(rest))
+		return "", fmt.Errorf("policy remove takes one name, got %s", gotArgs(rest))
 	}
 
 	return rest[0], nil
@@ -236,7 +236,7 @@ func policyArgs(verb string, args []string, want int, usage string) ([]string, e
 		return nil, fmt.Errorf("policy %s takes no flags: %s", verb, usage)
 	}
 	if len(rest) != want {
-		return nil, fmt.Errorf("policy %s takes %d arguments, got %d: %s", verb, want, len(rest), usage)
+		return nil, fmt.Errorf("policy %s takes %d arguments, got %s: %s", verb, want, gotArgs(rest), usage)
 	}
 
 	return rest, nil

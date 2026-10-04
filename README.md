@@ -76,7 +76,7 @@ workaround, as `docs/mac.md` describes.
 On create or run, shard pulls the image, claims the record, allocates the network and creates the
 sandbox. Run then starts the app as the child of `shard-init`, and the sandbox outlives it.
 `--restart` starts the app again after it exits, and goes on `run` only. `--env`, `--workdir`,
-`--user`, `--memory` and `--cpus` shape the workload, and they go before the image.
+`--user`, `--memory` and `--vcpus` shape the workload, and they go before the image.
 `--memory` and `--disk` take a whole size such as `512MiB` or `2GiB`: KiB, MiB and GiB are binary,
 KB, MB and GB decimal. Only `0` goes without a unit. The API and the record keep MiB.
 
@@ -149,7 +149,7 @@ trip that these do not, so they compare the mechanism rather than the product.
 ## Secrets
 
 ```
-printf '%s' "$TOKEN" | shard secret set --to api.example.com API_TOKEN
+printf '%s' "$TOKEN" | shard secret set --destination api.example.com API_TOKEN
 shard secret list
 shard secret remove API_TOKEN
 ```

@@ -25,7 +25,7 @@ func (a App) tokensMint(_ context.Context, args []string) error {
 		return err
 	}
 	if flags.NArg() != 0 {
-		return fmt.Errorf("tokens mint takes no arguments, got %d", flags.NArg())
+		return fmt.Errorf("tokens mint takes no arguments, got %s", gotArgs(flags.Args()))
 	}
 	if *name == "" {
 		return errors.New("tokens mint needs --name: it is the subject of the token")
@@ -70,7 +70,7 @@ func (a App) tokensList(_ context.Context, args []string) error {
 		return err
 	}
 	if flags.NArg() != 0 {
-		return fmt.Errorf("tokens list takes no arguments, got %d", flags.NArg())
+		return fmt.Errorf("tokens list takes no arguments, got %s", gotArgs(flags.Args()))
 	}
 	path, err := a.ledgerPath(*signingKeyFile)
 	if err != nil {
@@ -147,7 +147,7 @@ func (a App) tokensScopes(ctx context.Context, args []string) error {
 		return err
 	}
 	if flags.NArg() != 0 {
-		return fmt.Errorf("tokens scopes takes no arguments, got %d", flags.NArg())
+		return fmt.Errorf("tokens scopes takes no arguments, got %s", gotArgs(flags.Args()))
 	}
 	c, err := a.client()
 	if err != nil {

@@ -432,7 +432,7 @@ func CanonicalHost(host string) string {
 }
 
 // validDestination phrases its refusals about subject, which a caller with several destinations
-// makes an ordinal. A mistyped --to hands the value as one, so no refusal here echoes what it refused.
+// makes an ordinal. A mistyped --destination hands the value as one, so no refusal here echoes what it refused.
 func validDestination(subject, dest string) (string, error) {
 	canonical := CanonicalHost(dest)
 

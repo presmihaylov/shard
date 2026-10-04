@@ -9,7 +9,7 @@ the granted host never sends the value back. See the caution under the grant.
 ## The three parts
 
 ```
-printf '%s' "$OPENAI_API_KEY" | shard secret set --to api.openai.com OPENAI_API_KEY
+printf '%s' "$OPENAI_API_KEY" | shard secret set --destination api.openai.com OPENAI_API_KEY
 shard run --secret OPENAI_API_KEY python:3.12 python agent.py
 ```
 
@@ -87,7 +87,7 @@ decides whether the connection is allowed at all.
 `mock-NAME`. For such an SDK, `--placeholder` gives the guest a string of the right shape:
 
 ```
-shard secret set --to api.stripe.com --placeholder sk_test_placeholder01 STRIPE_KEY
+shard secret set --destination api.stripe.com --placeholder sk_test_placeholder01 STRIPE_KEY
 ```
 
 A chosen placeholder uses only letters, digits, `_`, `-` and `.`, so no URL, JSON or base64 encoder
@@ -150,7 +150,7 @@ nothing can tell whether the secret is free.
 
 ## A grant may name a wildcard
 
-`secret set --to '*.github.com' NAME` grants the value to every host under the apex. The `*` may only
+`secret set --destination '*.github.com' NAME` grants the value to every host under the apex. The `*` may only
 be the leftmost label, and it must stand over a registrable domain. So `*.github.com` and
 `*.openai.com` are accepted, but `*.*`, `*.com`, `api.github.*`, a bare `*` and a public suffix like
 `*.co.uk` or `*.github.io` are refused, because the value must bind to a domain the owner controls.

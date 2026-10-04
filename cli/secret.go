@@ -112,7 +112,7 @@ func readSecretValue(in io.Reader) (string, error) {
 
 	value := strings.TrimSuffix(string(blob), "\n")
 	if value == "" {
-		return "", errors.New("the secret value is empty: pipe it into stdin, as in printf '%s' \"$TOKEN\" | shard secret set --to <host> NAME")
+		return "", errors.New("the secret value is empty: pipe it into stdin, as in printf '%s' \"$TOKEN\" | shard secret set --destination <host> NAME")
 	}
 
 	return value, nil
@@ -122,7 +122,8 @@ func parseSecretSet(args []string) (secretSetOptions, error) {
 	var opts secretSetOptions
 
 	flags := newFlags("secret set")
-	flags.Var((*hostList)(&opts.destinations), "to", "")
+	flags.Var((*hostList)(&opts.destinations), "destination", "")
+	flags.Var((*hostList)(&opts.destinations), "dest", "")
 	flags.StringVar(&opts.placeholder, "placeholder", "", "")
 
 	if err := parseVerb(flags, args); err != nil {
@@ -139,9 +140,10 @@ func parseSecretSet(args []string) (secretSetOptions, error) {
 	}
 	// A value that starts with - needs a -- before it, so anything else that does is a misplaced flag.
 	if strings.HasPrefix(rest[0], "-") || (len(rest) > 2 && strings.HasPrefix(rest[1], "-")) {
-		return secretSetOptions{}, errors.New("secret set takes its flags before the name: shard secret set --to <host> [--placeholder <string>] <NAME> [VALUE], with -- before a value that starts with -")
+		return secretSetOptions{}, errors.New("secret set takes its flags before the name: shard secret set --destination <host> [--placeholder <string>] <NAME> [VALUE], with -- before a value that starts with -")
 	}
 	if len(rest) > 2 {
+		// A count, never the arguments: one of them is the secret value.
 		return secretSetOptions{}, fmt.Errorf("secret set takes a name and an optional value, got %d arguments", len(rest))
 	}
 
@@ -163,7 +165,7 @@ func (a App) secretList(ctx context.Context, args []string) error {
 		return err
 	}
 	if len(rest) != 0 {
-		return fmt.Errorf("secret list takes no arguments, got %d", len(rest))
+		return fmt.Errorf("secret list takes no arguments, got %s", gotArgs(rest))
 	}
 	c, err := a.client()
 	if err != nil {
@@ -245,7 +247,7 @@ func parseSecretRemove(args []string) (secretRemoveOptions, error) {
 		return secretRemoveOptions{}, errors.New("secret remove takes its flags before the name: shard secret remove --force <NAME>")
 	}
 	if len(rest) != 1 {
-		return secretRemoveOptions{}, fmt.Errorf("secret remove takes one name, got %d", len(rest))
+		return secretRemoveOptions{}, fmt.Errorf("secret remove takes one name, got %s", gotArgs(rest))
 	}
 
 	opts.name = rest[0]
@@ -302,7 +304,7 @@ func parseGrant(verb string, args []string) (string, string, error) {
 		return "", "", fmt.Errorf("secret %s takes no flags: shard secret %s <id|name> <NAME>", verb, verb)
 	}
 	if len(rest) != 2 {
-		return "", "", fmt.Errorf("secret %s takes a sandbox and a secret name, got %d arguments", verb, len(rest))
+		return "", "", fmt.Errorf("secret %s takes a sandbox and a secret name, got %s", verb, gotArgs(rest))
 	}
 
 	return rest[0], rest[1], nil
