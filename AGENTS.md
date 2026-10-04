@@ -36,6 +36,7 @@ make lint-fix                apply the fixes golangci-lint can make
 make fmt                     apply formatting
 make check                   the same gates as CI; must pass before every commit
 make vuln                    govulncheck
+make sdk-ts-check            the TypeScript SDK's typecheck, unit tests and build; needs Node 22
 ```
 
 ## Layout
@@ -91,6 +92,7 @@ packaging/launchd/         the LaunchDaemon for the native Mac daemon
 packaging/kernel/          the guest kernel build: pinned image, config per arch, release tag helper
 services/kernel/           the guest kernel fetch: release URL, checksum, the dev override
 third_party/vz/            Code-Hex/vz as upstream wrote it, bar the one patch its UPSTREAM file names
+sdks/typescript/           useshards, the TypeScript SDK over the daemon's API
 docs/
 ```
 
