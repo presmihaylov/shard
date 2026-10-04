@@ -17,6 +17,7 @@ import (
 
 	"golang.org/x/net/publicsuffix"
 
+	"github.com/presmihaylov/shard/models"
 	"github.com/presmihaylov/shard/pkg/store"
 )
 
@@ -51,6 +52,31 @@ type HeldError struct {
 
 func (e *HeldError) Error() string {
 	return fmt.Sprintf("secret %s changes its placeholder and sandbox %s still holds it: ungrant it first", e.Name, strings.Join(e.Holders, ", "))
+}
+
+func (e *HeldError) Public() string { return e.Error() }
+
+// InvalidError is a set refused for what the caller sent, never for a store that could not be read or written.
+type InvalidError struct {
+	Err error
+}
+
+func (e *InvalidError) Error() string { return e.Err.Error() }
+
+func (e *InvalidError) Unwrap() error { return e.Err }
+
+// UnreadableError is one secret whose file List could not read, so the rest still come back.
+type UnreadableError struct {
+	Name string
+	Err  error
+}
+
+func (e *UnreadableError) Error() string { return e.Err.Error() }
+
+func (e *UnreadableError) Unwrap() error { return e.Err }
+
+func (e *UnreadableError) Public() string {
+	return fmt.Sprintf("secret %s: its record cannot be read", e.Name)
 }
 
 // record is the file on disk. It is the only place the value is written.
@@ -91,14 +117,14 @@ func New(dir string, holders Holders) (*Store, error) {
 // caches a value, so a live sandbox uses the new one on its next request.
 func (s *Store) Set(name, value string, destinations []string, placeholder string) (Secret, error) {
 	if err := ValidName(name); err != nil {
-		return Secret{}, err
+		return Secret{}, &InvalidError{Err: err}
 	}
 
 	if value == "" {
-		return Secret{}, fmt.Errorf("secret %s has an empty value", name)
+		return Secret{}, &InvalidError{Err: fmt.Errorf("secret %s has an empty value", name)}
 	}
 	if strings.ContainsRune(value, 0) {
-		return Secret{}, fmt.Errorf("secret %s holds a NUL byte, which no request header carries", name)
+		return Secret{}, &InvalidError{Err: fmt.Errorf("secret %s holds a NUL byte, which no request header carries", name)}
 	}
 
 	// A rotation names the value and nothing else: the grant and the placeholder it had stay.
@@ -116,7 +142,7 @@ func (s *Store) Set(name, value string, destinations []string, placeholder strin
 		destinations = existing.Destinations
 	}
 	if len(destinations) == 0 {
-		return Secret{}, fmt.Errorf("secret %s has no destination: a secret is granted to a host, never to a sandbox alone", name)
+		return Secret{}, &InvalidError{Err: fmt.Errorf("secret %s has no destination: a secret is granted to a host, never to a sandbox alone", name)}
 	}
 
 	bound := make([]string, 0, len(destinations))
@@ -124,7 +150,7 @@ func (s *Store) Set(name, value string, destinations []string, placeholder strin
 		// The refusal names the position and never the value, so a list of destinations still says which one.
 		canonical, err := validSecretDestination(ordinal(i+1)+" destination", dest)
 		if err != nil {
-			return Secret{}, err
+			return Secret{}, &InvalidError{Err: err}
 		}
 		if !slices.Contains(bound, canonical) {
 			bound = append(bound, canonical)
@@ -157,14 +183,14 @@ func (s *Store) placeholder(name, value, chosen string, existing record) (string
 
 	// A guest that held the value would need no proxy, so this rule holds for the default too.
 	if strings.Contains(value, chosen) {
-		return "", fmt.Errorf("the placeholder of secret %s is inside its value, and the guest must never hold the value", name)
+		return "", &InvalidError{Err: fmt.Errorf("the placeholder of secret %s is inside its value, and the guest must never hold the value", name)}
 	}
 
 	// Only what this call named is shaped: a rotation must never be blocked by the placeholder it carries
 	// forward, and the default is exempt too, so a short NAME still gets a placeholder.
 	if named != "" && named != DefaultPlaceholder(name) {
 		if err := shapedPlaceholder(name, named); err != nil {
-			return "", err
+			return "", &InvalidError{Err: err}
 		}
 	}
 
@@ -214,7 +240,7 @@ func (s *Store) freePlaceholder(name, chosen string) error {
 			continue
 		}
 		if chosen == other.Placeholder || chosen == DefaultPlaceholder(other.Name) {
-			return fmt.Errorf("the placeholder of secret %s is the placeholder of secret %s", name, other.Name)
+			return &InvalidError{Err: fmt.Errorf("the placeholder of secret %s is the placeholder of secret %s", name, other.Name)}
 		}
 	}
 
@@ -225,7 +251,7 @@ func (s *Store) freePlaceholder(name, chosen string) error {
 // when no sandbox holds a grant on the secret.
 func (s *Store) placeholderMoved(name string) error {
 	if s.holders == nil {
-		return fmt.Errorf("secret %s changes its placeholder and the store cannot tell which sandboxes hold it: ungrant it first", name)
+		return &InvalidError{Err: fmt.Errorf("secret %s changes its placeholder and the store cannot tell which sandboxes hold it: ungrant it first", name)}
 	}
 
 	holders, err := s.holders(name)
@@ -277,7 +303,7 @@ func (s *Store) List() ([]Secret, error) {
 		rec, err := s.read(entry.Name())
 		if err != nil {
 			// One broken file must not hide the rest, so the readable ones come back with the error.
-			errs = errors.Join(errs, err)
+			errs = errors.Join(errs, &UnreadableError{Name: entry.Name(), Err: err})
 
 			continue
 		}
@@ -286,6 +312,39 @@ func (s *Store) List() ([]Secret, error) {
 	}
 
 	return secrets, errs
+}
+
+// Redact puts the name in place of every value in text, read at each call so a set or a rotation since the start is covered.
+func (s *Store) Redact(text string) (string, error) {
+	entries, err := os.ReadDir(s.dir)
+	if err != nil {
+		return "", fmt.Errorf("read %s: %w", s.dir, err)
+	}
+
+	type named struct{ name, value string }
+	var values []named
+	for _, entry := range entries {
+		if entry.IsDir() || ValidName(entry.Name()) != nil {
+			continue
+		}
+
+		rec, err := s.read(entry.Name())
+		if errors.Is(err, ErrNotFound) {
+			continue
+		}
+		if err != nil {
+			return "", err
+		}
+		values = append(values, named{entry.Name(), rec.Value})
+	}
+
+	// The longest goes first, so a value inside another never leaves the rest of the longer one behind.
+	slices.SortFunc(values, func(a, b named) int { return len(b.value) - len(a.value) })
+	for _, v := range values {
+		text = strings.ReplaceAll(text, v.value, "<secret "+v.name+">")
+	}
+
+	return text, nil
 }
 
 // Remove deletes the secret. It is idempotent: the store holding no such secret is the outcome asked for.
@@ -308,7 +367,7 @@ func (s *Store) read(name string) (record, error) {
 
 	blob, err := os.ReadFile(s.path(name))
 	if errors.Is(err, fs.ErrNotExist) {
-		return record{}, fmt.Errorf("%w: %s", ErrNotFound, name)
+		return record{}, &models.NotFoundError{Err: fmt.Errorf("%w: %s", ErrNotFound, name)}
 	}
 	if err != nil {
 		return record{}, fmt.Errorf("read secret %s: %w", name, err)

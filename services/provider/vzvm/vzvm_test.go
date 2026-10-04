@@ -25,6 +25,7 @@ import (
 
 	"github.com/presmihaylov/shard/models"
 	"github.com/presmihaylov/shard/pkg/ext4"
+	"github.com/presmihaylov/shard/pkg/pidpin/pidpintest"
 	"github.com/presmihaylov/shard/pkg/vz"
 	"github.com/presmihaylov/shard/services/bundle"
 	"github.com/presmihaylov/shard/services/provider/conformance"
@@ -1489,6 +1490,7 @@ func TestANewProviderFindsASandboxWhoseShimIsGoneStopped(t *testing.T) {
 
 // A shim that takes the dial and never answers still ends on a stop, held or adopted after a restart: the provider kills it by the pid behind its socket (SHARD-349).
 func TestStopEndsASandboxWhoseShimIsTooFrozenToAnswer(t *testing.T) {
+	pidpintest.Require(t)
 	for _, restart := range []bool{false, true} {
 		t.Run(fmt.Sprintf("restart=%t", restart), func(t *testing.T) {
 			stopsAFrozenShim(t, restart)
@@ -1566,6 +1568,7 @@ func TestAnAdoptedShimTooFrozenToAnswerReadsUnresponsiveUntilItAnswers(t *testin
 
 // A stop kills a frozen shim an adopt left unresponsive by its pid after one short probe, with no grace (SHARD-422).
 func TestStopKillsAnAdoptedShimTooFrozenToAnswerAtOnce(t *testing.T) {
+	pidpintest.Require(t)
 	h, spec, shim := frozenShim(t, true)
 	if status, err := h.provider.Status(t.Context(), spec.ID); err != nil || status.State != models.StateUnresponsive {
 		t.Fatalf("Status over a frozen shim after a restart = %+v, %v; want unresponsive", status, err)
@@ -1656,6 +1659,7 @@ func settledLines(t *testing.T, path string) int {
 
 // A held shim too frozen to answer reads unresponsive with its pid and is never killed for it: verbs refuse it by name, a thaw makes it running again, and a stop kills it at once (SHARD-421).
 func TestAHeldShimTooFrozenToAnswerReadsUnresponsiveUntilItAnswers(t *testing.T) {
+	pidpintest.Require(t)
 	h, spec, shim := frozenShim(t, false)
 	pid := fmt.Sprintf("pid %d", shim)
 
@@ -1718,6 +1722,7 @@ func TestAHeldShimTooFrozenToAnswerReadsUnresponsiveUntilItAnswers(t *testing.T)
 }
 
 func TestStopEndsAShimFrozenLongerThanItsSocketQueueHolds(t *testing.T) {
+	pidpintest.Require(t)
 	h, spec, shim := frozenShim(t, false)
 	// A frozen shim accepts nothing; once its socket queue holds 128, a macOS dial reads refused, as if no shim were there.
 	for range 200 {
@@ -2042,6 +2047,7 @@ func TestRemoveEndsAFrozenShimWhoseSocketQueueIsFull(t *testing.T) {
 	if runtime.GOOS != "darwin" {
 		t.Skip("only darwin refuses a dial into a full queue; linux makes it wait")
 	}
+	pidpintest.Require(t)
 	cases := []struct {
 		name              string
 		restart, recorded bool
@@ -2082,6 +2088,7 @@ func TestARetriedPauseEndsALeftoverShimWhoseSocketQueueIsFull(t *testing.T) {
 	if runtime.GOOS != "darwin" {
 		t.Skip("only darwin refuses a dial into a full queue; linux makes it wait")
 	}
+	pidpintest.Require(t)
 	h, spec, shim := frozenShim(t, true)
 	dir, err := h.stateDir(spec.ID)
 	if err != nil {
@@ -2258,6 +2265,7 @@ func TestAFailedBootKillsAShimWhoseSocketQueueIsFull(t *testing.T) {
 	if runtime.GOOS != "darwin" {
 		t.Skip("only darwin refuses a dial into a full queue; linux makes it wait")
 	}
+	pidpintest.Require(t)
 	dir, err := os.MkdirTemp("", "vzq") //nolint:usetesting // t.TempDir is too long for a socket path
 	if err != nil {
 		t.Fatal(err)

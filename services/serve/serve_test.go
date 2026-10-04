@@ -726,7 +726,7 @@ func realDaemon(t *testing.T) liveDaemon {
 
 	d := liveDaemon{root: root, process: countingProcess{calls: &atomic.Int64{}}, dispatched: make(chan string, 8), hungUp: make(chan struct{})}
 	hangUp := sync.OnceFunc(func() { close(d.hungUp) })
-	mux := api.NewHandler("v-test", d.process, nil, nil, nil, nil, nil, io.Discard)
+	mux := api.NewHandler("v-test", d.process, nil, nil, nil, nil, nil, nil, io.Discard)
 	server := &http.Server{
 		ReadHeaderTimeout: time.Second,
 		Handler: http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {

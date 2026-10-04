@@ -163,8 +163,8 @@ func TestGrantSecretRefusesANameTheGuestHoldsAndWritesNothing(t *testing.T) {
 	before := config(t, b)
 
 	_, err := svc.GrantSecret(context.Background(), "sandbox1", "TOKEN")
-	if err == nil {
-		t.Fatal("the grant took a name the guest environment already holds")
+	if _, ok := errors.AsType[*sandbox.RequestError](err); !ok {
+		t.Fatalf("grant = %v, want a request error for a name the guest environment already holds", err)
 	}
 
 	if config(t, b) != before {
@@ -176,6 +176,23 @@ func TestGrantSecretRefusesANameTheGuestHoldsAndWritesNothing(t *testing.T) {
 	}
 	if len(l.repo.sb.Secrets) != 0 {
 		t.Errorf("the record holds %v after a refused grant", l.repo.sb.Secrets)
+	}
+}
+
+// An environment the daemon cannot read is its own fault, so the answer is a 500 that names no host path.
+func TestGrantSecretOverAnUnreadableEnvironmentIsNoBadRequest(t *testing.T) {
+	svc, _, b := granted(t, &recorder{}, stopped())
+	if err := os.WriteFile(filepath.Join(b.Dir, "config.json"), []byte("{"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	_, err := svc.GrantSecret(context.Background(), "sandbox1", "TOKEN")
+	var request *sandbox.RequestError
+	if err == nil || errors.As(err, &request) {
+		t.Fatalf("grant = %v, want a failure that is not the request's fault", err)
+	}
+	if public, ok := sandbox.PublicText(err); ok {
+		t.Errorf("public text = %q, want none for a host failure", public)
 	}
 }
 

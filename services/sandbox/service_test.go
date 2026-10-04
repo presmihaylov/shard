@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"net/netip"
+	"os"
 	"slices"
 	"strings"
 	"testing"
@@ -159,10 +160,25 @@ func withDisks(d *diskProvider) func(*sandbox.Config) {
 	}
 }
 
+// A root the admission could not read is the daemon's fault, so the create is no bad request.
+func TestCreateWhoseRootCannotBeReadIsNoBadRequest(t *testing.T) {
+	disks := &diskProvider{refuse: fmt.Errorf("statfs /var/lib/shard: %w", os.ErrPermission)}
+	svc, _ := newService(t, &recorder{}, models.Sandbox{}, withDisks(disks))
+
+	_, err := svc.Create(t.Context(), alpine())
+	var request *sandbox.RequestError
+	if err == nil || errors.As(err, &request) {
+		t.Fatalf("create = %v, want a failure that is not the request's fault", err)
+	}
+	if public, ok := sandbox.PublicText(err); ok {
+		t.Errorf("public text = %q, want none for a host failure", public)
+	}
+}
+
 // A disk the root has no room for is refused before the record, so no verb ever sees the sandbox (SHARD-393).
 func TestCreateRefusedByTheDiskAdmissionLeavesNoRecord(t *testing.T) {
 	r := &recorder{}
-	disks := &diskProvider{refuse: errors.New("a 4096 MiB disk does not fit on the root")}
+	disks := &diskProvider{refuse: &bundle.NoRoomError{Bound: 4096 << 20}}
 	svc, l := newService(t, r, models.Sandbox{}, withDisks(disks))
 
 	_, err := svc.Create(t.Context(), alpine())

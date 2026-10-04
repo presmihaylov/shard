@@ -21,7 +21,7 @@ func (h *Handler) attachApp(w http.ResponseWriter, r *http.Request) {
 
 	exit, err := h.lifecycle.WaitApp(r.Context(), r.PathValue("id"))
 	if err != nil {
-		h.writeError(w, err)
+		h.writeError(w, r, err)
 
 		return
 	}
@@ -57,7 +57,7 @@ func (h *Handler) streamApp(w http.ResponseWriter, r *http.Request) {
 
 	// Nothing was said on the wire yet, so the refusal is a status and a JSON body like every other route.
 	if !answered {
-		h.writeError(w, err)
+		h.writeError(w, r, err)
 
 		return
 	}
@@ -74,7 +74,7 @@ func (h *Handler) streamApp(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if err != nil {
-		f.send(StreamFailure, failureOf(err))
+		f.send(StreamFailure, h.failureOf(r, err))
 
 		return
 	}

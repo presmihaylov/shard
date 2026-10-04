@@ -172,6 +172,8 @@ func createArgs(id, bundle string, noNewKeyring bool) []string {
 // ExecOptions is one process in a container that already runs. It is never the entrypoint, so it has
 // no supervisor and its exit ends nothing.
 type ExecOptions struct {
+	// Bundle is the directory create was given. Its config.json process is what the exec starts from, as runc's own flags would.
+	Bundle  string
 	Argv    []string
 	Env     []string
 	WorkDir string
@@ -201,6 +203,9 @@ func (r *Runner) Exec(ctx context.Context, id string, opts ExecOptions) (code in
 	if len(opts.Argv) == 0 {
 		return 0, fmt.Errorf("no command: %s exec has nothing to run", r.name())
 	}
+	if opts.Bundle == "" {
+		return 0, fmt.Errorf("no bundle: %s exec has no process to start from", r.name())
+	}
 
 	if opts.RootFS != "" {
 		if err := LookPath(opts.RootFS, opts.Binds, opts.WorkDir, pathOf(opts.Env), opts.Argv[0]); err != nil {
@@ -215,8 +220,12 @@ func (r *Runner) Exec(ctx context.Context, id string, opts ExecOptions) (code in
 	defer func() { err = errors.Join(err, os.RemoveAll(dir)) }()
 
 	pidFile := filepath.Join(dir, "pid")
+	processFile := filepath.Join(dir, "process.json")
+	if err := writeProcess(processFile, opts); err != nil {
+		return 0, fmt.Errorf("%s exec %s: %w", r.name(), id, err)
+	}
 
-	cmd := r.command(ctx, execArgs(id, pidFile, opts)...)
+	cmd := r.command(ctx, execArgs(id, pidFile, processFile)...)
 	cmd.Stdin, cmd.Stdout, cmd.Stderr = opts.Stdin, opts.Stdout, opts.Stderr
 
 	// The driver dies with the daemon, so a restart orphans no runc exec; the guest process is reparented inside the container and outlives both.
@@ -258,27 +267,9 @@ func (r *Runner) Exec(ctx context.Context, id string, opts ExecOptions) (code in
 	return 0, nil
 }
 
-// execArgs spells one runc exec. The flags precede the id, and everything after it is the command.
-func execArgs(id, pidFile string, opts ExecOptions) []string {
-	args := []string{"exec", "--pid-file", pidFile}
-
-	if opts.WorkDir != "" {
-		args = append(args, "--cwd", opts.WorkDir)
-	}
-	if opts.User != "" {
-		args = append(args, "--user", opts.User)
-		for _, gid := range opts.Groups {
-			args = append(args, "--additional-gids", strconv.FormatUint(uint64(gid), 10))
-		}
-	}
-	for _, entry := range opts.Env {
-		args = append(args, "--env", entry)
-	}
-	if opts.TTY {
-		args = append(args, "--tty")
-	}
-
-	return append(append(args, id), opts.Argv...)
+// execArgs spells one runc exec. The process file holds the whole command, so nothing follows the id.
+func execArgs(id, pidFile, processFile string) []string {
+	return []string{"exec", "--pid-file", pidFile, "--process", processFile, id}
 }
 
 // defaultPath is the OCI image spec default, what runc itself resolves against when the
