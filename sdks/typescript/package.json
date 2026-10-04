@@ -3,6 +3,14 @@
   "version": "0.1.0",
   "description": "The TypeScript SDK for shard, the sandbox manager.",
   "license": "Apache-2.0",
+  "keywords": [
+    "shard",
+    "sandbox",
+    "gvisor",
+    "firecracker"
+  ],
+  "homepage": "https://github.com/presmihaylov/shard/tree/main/sdks/typescript#readme",
+  "bugs": "https://github.com/presmihaylov/shard/issues",
   "repository": {
     "type": "git",
     "url": "git+https://github.com/presmihaylov/shard.git",
@@ -18,14 +26,20 @@
   "files": [
     "dist"
   ],
+  "sideEffects": false,
   "engines": {
     "node": ">=20.3"
+  },
+  "publishConfig": {
+    "access": "public",
+    "provenance": true
   },
   "scripts": {
     "build": "tsc -p tsconfig.build.json",
     "typecheck": "tsc -p tsconfig.json",
     "suite": "npm run build && tsx suite/main.ts",
-    "test": "tsx --test \"test/**/*.test.ts\""
+    "test": "tsx --test \"test/**/*.test.ts\"",
+    "prepack": "node -e \"require('node:fs').rmSync('dist', { recursive: true, force: true })\" && npm run build"
   },
   "devDependencies": {
     "@types/node": "20.19.43",
