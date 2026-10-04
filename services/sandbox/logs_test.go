@@ -3,6 +3,7 @@ package sandbox_test
 import (
 	"bytes"
 	"context"
+	"errors"
 	"os"
 	"path/filepath"
 	"slices"
@@ -167,4 +168,113 @@ func TestFollowReportsASubstrateItCannotAsk(t *testing.T) {
 	if _, err := svc.FollowLogs(t.Context(), "sandbox1", &out); err == nil {
 		t.Fatal("FollowLogs returned no error for a substrate it could not ask")
 	}
+}
+
+func pending() models.Sandbox {
+	return models.Sandbox{ID: "sandbox1", State: models.StatePending}
+}
+
+// settles moves the record to what the create ended in at the first poll after the follow began.
+func settles(l layers, end func(*models.Sandbox)) {
+	gets := 0
+	l.repo.onGet = func() {
+		gets++
+		if gets == 2 {
+			end(&l.repo.sb)
+		}
+	}
+}
+
+func failedCreate(sb *models.Sandbox) {
+	sb.State = models.StateFailed
+	sb.FailedPublic = `resolve the user "nobody2": no such entry in the image`
+}
+
+func refusedAsFailed(t *testing.T, err error) {
+	t.Helper()
+
+	refused, ok := errors.AsType[*sandbox.StateError](err)
+	if !ok || refused.Code != models.CodeSandboxFailed || !strings.Contains(refused.Public(), "nobody2") {
+		t.Errorf("the follow returned %v, want sandbox_failed with the create's reason", err)
+	}
+}
+
+// A create still pulling has no output yet, so logs answers what a created sandbox that never ran does.
+func TestLogsOfAPendingSandboxAnswersEmpty(t *testing.T) {
+	var out bytes.Buffer
+
+	r := &recorder{}
+	svc, _ := newService(t, r, pending())
+
+	if err := svc.Logs(t.Context(), "sandbox1", &out); err != nil {
+		t.Fatalf("Logs of a pending sandbox: %v", err)
+	}
+	if out.Len() != 0 || slices.Contains(r.calls, "provider.LogPath") {
+		t.Errorf("Logs printed %q after %v, want nothing and no output file asked for", out.String(), r.calls)
+	}
+}
+
+func TestFollowOfAPendingSandboxFollowsOnceItRuns(t *testing.T) {
+	var out bytes.Buffer
+
+	svc, l, _ := logsOf(t, &recorder{}, pending(), "up\n")
+	settles(l, func(sb *models.Sandbox) { sb.State = models.StateRunning })
+	l.provider.exits = func() {}
+
+	reason, err := svc.FollowLogs(t.Context(), "sandbox1", &out)
+	if err != nil {
+		t.Fatalf("FollowLogs: %v", err)
+	}
+	if out.String() != "up\n" || reason != sandbox.LogsStopped {
+		t.Errorf("FollowLogs printed %q and ended with %q, want the line and %s", out.String(), reason, sandbox.LogsStopped)
+	}
+}
+
+func TestFollowOfAPendingSandboxEndsWhenTheCreateFails(t *testing.T) {
+	var out bytes.Buffer
+
+	svc, l := newService(t, &recorder{}, pending())
+	settles(l, failedCreate)
+
+	_, err := svc.FollowLogs(t.Context(), "sandbox1", &out)
+	refusedAsFailed(t, err)
+}
+
+func TestFollowOfAPendingSandboxSaysWhenItWasRemoved(t *testing.T) {
+	var out bytes.Buffer
+
+	svc, l := newService(t, &recorder{}, pending())
+	settles(l, func(*models.Sandbox) { l.repo.missing = true })
+
+	reason, err := svc.FollowLogs(t.Context(), "sandbox1", &out)
+	if err != nil || reason != sandbox.LogsRemoved {
+		t.Errorf("FollowLogs ended with %q, %v, want %s", reason, err, sandbox.LogsRemoved)
+	}
+}
+
+func TestFollowOfAPendingSandboxLeavesOnAnInterrupt(t *testing.T) {
+	var out bytes.Buffer
+
+	svc, _ := newService(t, &recorder{}, pending())
+
+	ctx, cancel := context.WithCancel(t.Context())
+	cancel()
+
+	reason, err := svc.FollowLogs(ctx, "sandbox1", &out)
+	if err != nil || reason != "" {
+		t.Errorf("FollowLogs ended with %q, %v, want no reason and no error", reason, err)
+	}
+}
+
+// A start that fails under the follow fails the record, and the follow ends with what a new logs call answers.
+func TestFollowEndsWithTheRefusalWhenTheSandboxFailsUnderIt(t *testing.T) {
+	var out bytes.Buffer
+
+	created := running()
+	created.State = models.StateCreated
+	svc, l, _ := logsOf(t, &recorder{}, created, "")
+	l.provider.exits = func() { failedCreate(&l.repo.sb) }
+
+	_, err := svc.FollowLogs(t.Context(), "sandbox1", &out)
+	refusedAsFailed(t, err)
 }

@@ -4,6 +4,7 @@ package cli
 
 import (
 	"context"
+	"errors"
 	"os"
 	"path/filepath"
 	"slices"
@@ -151,19 +152,17 @@ func TestCreateThatFailsLeavesOnlyAFailedRecord(t *testing.T) {
 	}
 }
 
-// runsc starts a missing entrypoint fine, as the root process is the supervisor; the handshake fails the run and frees all but the failed record.
-func TestCreateWhoseEntrypointDoesNotStartLeavesOnlyAFailedRecord(t *testing.T) {
+// A missing entrypoint is the caller's command_not_started, and the refused create gives back everything, the record too (SHARD-497).
+func TestCreateWhoseEntrypointDoesNotStartLeavesNothing(t *testing.T) {
 	app, out := newCreateApp(t)
 
 	before := holdings(t, app)
 
 	creating, _ := ownStderr(app)
 	err := creating.Run(t.Context(), runArgs(testImage, "/no/such/entrypoint"))
-	if err == nil {
-		t.Fatal("create reported success for an entrypoint the image does not hold")
-	}
-	if !strings.Contains(err.Error(), "did not start") {
-		t.Errorf("create failed with %v, want it to say the entrypoint did not start", err)
+	exit, ok := errors.AsType[*ExitError](err)
+	if !ok || exit.Code != models.CommandNotFoundExitCode || !strings.Contains(err.Error(), "could not run") {
+		t.Fatalf("create failed with %v, want command_not_started with exit code %d", err, models.CommandNotFoundExitCode)
 	}
 
 	// A create that failed prints no id.
@@ -171,22 +170,10 @@ func TestCreateWhoseEntrypointDoesNotStartLeavesOnlyAFailedRecord(t *testing.T) 
 		t.Errorf("the failed create printed %q, want nothing", got)
 	}
 
-	added := addedHoldings(before, holdings(t, app))
-	if len(added) != 1 || !strings.HasPrefix(added[0], "record:") {
-		t.Fatalf("the failed create left %v beyond a single failed record", added)
+	if got := holdings(t, app); !slices.Equal(got, before) {
+		t.Errorf("the refused create left the host holding %v, want the %v it held before", got, before)
 	}
 	assertNoSandboxMounts(t, app.Root)
-
-	id := strings.TrimPrefix(added[0], "record:")
-	if got := record(t, app, id); got.State != models.StateFailed {
-		t.Errorf("the leftover record is %q, want failed", got.State)
-	}
-
-	// remove frees the failed record and the host is back to what it held before the create.
-	cleanUp(t, app, id)
-	if got := holdings(t, app); !slices.Equal(got, before) {
-		t.Errorf("after remove the host holds %v, want the %v it held before", got, before)
-	}
 }
 
 // TestCreateFinishesWhenTheClientGivesUpWaiting: an uncached create runs in the daemon under its own run

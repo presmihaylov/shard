@@ -596,6 +596,8 @@ export interface components {
         };
         ErrorObject: {
             code: string;
+            /** Format: int64 */
+            exit_code?: number;
             holders?: string[];
             message: string;
         };
