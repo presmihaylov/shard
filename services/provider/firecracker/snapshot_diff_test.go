@@ -119,6 +119,27 @@ func TestAPauseOfAnAdoptedVMMTakesAFull(t *testing.T) {
 	}
 }
 
+// A live fork's capture is a snapshot of the source, which may clear its log, so the source's next pause takes a Full (SHARD-462).
+func TestAPauseAfterALiveForkTakesAFull(t *testing.T) {
+	h := newHarness(t)
+	requireReflink(t, h.root)
+	spec := h.runSnapshotted(t)
+	if err := h.provider.Fork(t.Context(), spec.ID, h.forkSpec(t)); err != nil {
+		t.Fatalf("Fork: %v", err)
+	}
+	dir := t.TempDir()
+
+	if err := h.provider.Pause(t.Context(), spec.ID, dir); err != nil {
+		t.Fatalf("Pause after the fork: %v", err)
+	}
+	if got, want := snapshots(t, spec.StateDir), []string{"Diff onto 0", "Full onto 0"}; !slices.Equal(got, want) {
+		t.Fatalf("the vmm took %q, want %q", got, want)
+	}
+	if got := memoryOf(t, dir); got != "Full\n" {
+		t.Fatalf("the snapshot memory = %q, want the one Full", got)
+	}
+}
+
 // A create the vmm refused may have read the log already, so the next pause of that restored vmm takes a Full over no seed (SHARD-458).
 func TestAPauseAfterARefusedSnapshotTakesAFull(t *testing.T) {
 	h := newHarness(t)

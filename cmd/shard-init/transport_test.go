@@ -956,7 +956,7 @@ func TestTransportFreezeAndThawReplayOnTheNextHost(t *testing.T) {
 
 	c := attach(false)
 	for range 2 {
-		if err := c.Freeze(t.Context()); err != nil {
+		if err := c.Freeze(t.Context(), models.VerbPause); err != nil {
 			t.Fatalf("freeze: %v", err)
 		}
 	}
@@ -972,7 +972,7 @@ func TestTransportFreezeAndThawReplayOnTheNextHost(t *testing.T) {
 	if err := c.Run(t.Context(), supervisor.RunSpec{Argv: childArgv("sleep:60000")}); err != nil {
 		t.Fatalf("run: %v", err)
 	}
-	if err := c.Freeze(t.Context()); err != nil {
+	if err := c.Freeze(t.Context(), models.VerbPause); err != nil {
 		t.Fatalf("freeze: %v", err)
 	}
 	if err := c.Stop(t.Context()); err != nil {
@@ -1070,24 +1070,100 @@ func TestAnswerStaysOnTheConnectionThatAsked(t *testing.T) {
 // A freeze whose host was replaced before the answer is undone, since the new host's replay may have read the root before it froze.
 func TestAFreezeNoHostHeardIsUndone(t *testing.T) {
 	_, oldGuest := net.Pipe()
-	newHost, newGuest := net.Pipe()
+	newHost, nextGuest := net.Pipe()
 	defer oldGuest.Close()
 	defer newHost.Close()
-	tr := &transport{control: newGuest}
+	tr := &transport{control: nextGuest}
+	tr.g = newGuest(tr, restartPolicy{})
+	serveCommands(t, tr.g)
 
-	tr.freeze(oldGuest, 1)
-	if tr.frozen.Load() {
+	tr.freeze(oldGuest, 1, models.VerbFork)
+	if tr.g.frozen.Load() != nil {
 		t.Fatal("the root stays frozen after a freeze no host heard")
 	}
 
-	go tr.freeze(newGuest, 2)
+	go tr.freeze(nextGuest, 2, models.VerbFork)
 	_ = newHost.SetReadDeadline(time.Now().Add(5 * time.Second))
 	var reply supervisor.Message
 	if err := supervisor.ReadMessage(bufio.NewReader(newHost), &reply); err != nil || reply.ID != 2 || reply.Kind != supervisor.KindDone {
 		t.Fatalf("the new host read %+v (%v), want done 2", reply, err)
 	}
-	if !tr.frozen.Load() {
-		t.Fatal("the root is not frozen after a freeze its host heard")
+	if verb := tr.g.frozen.Load(); verb == nil || *verb != models.VerbFork {
+		t.Fatal("the root is not held by the fork after a freeze its host heard")
+	}
+}
+
+// serveCommands runs a guest's commands as its loop does, for a test that drives the transport without a supervise.
+func serveCommands(t *testing.T, g *guest) {
+	t.Helper()
+	stop := make(chan struct{})
+	t.Cleanup(func() { close(stop) })
+	go func() {
+		for {
+			select {
+			case command := <-g.commands:
+				command()
+			case <-stop:
+				return
+			}
+		}
+	}()
+}
+
+// An exec while a fork holds the guest frozen is refused by name, since a child forked into the frozen bound would hold the loop the thaw needs (SHARD-462).
+func TestTransportRefusesAnExecWhileFrozen(t *testing.T) {
+	_, dial := startTransport(t)
+	ctx := testContext(t)
+	c, err := supervisor.Connect(ctx, dial)
+	if err != nil {
+		t.Fatalf("connect: %v", err)
+	}
+	defer c.Close()
+	if err := c.Run(t.Context(), supervisor.RunSpec{Argv: childArgv("sleep:60000")}); err != nil {
+		t.Fatalf("run: %v", err)
+	}
+	if err := c.Freeze(t.Context(), models.VerbFork); err != nil {
+		t.Fatalf("freeze: %v", err)
+	}
+
+	_, err = supervisor.Exec(ctx, dial, "sb", supervisor.ExecHeader{Argv: childArgv("exit:0")}, models.ExecSpec{})
+	var notStarted *models.CommandNotStartedError
+	if !errors.As(err, &notStarted) || !strings.Contains(err.Error(), "sandbox sb could not run the command: a fork holds the sandbox frozen") {
+		t.Fatalf("exec while frozen gave %v, want the refusal that names the fork", err)
+	}
+
+	if err := c.Thaw(t.Context()); err != nil {
+		t.Fatalf("thaw: %v", err)
+	}
+	if _, err := supervisor.Exec(ctx, dial, "sb", supervisor.ExecHeader{Argv: childArgv("exit:0")}, models.ExecSpec{}); err != nil {
+		t.Fatalf("exec after the thaw: %v", err)
+	}
+}
+
+// A restart due while the guest is frozen waits for the thaw, since a refused restart would give up for good.
+func TestTransportRestartWaitsOutAFreeze(t *testing.T) {
+	_, dial := startTransport(t)
+	ctx := testContext(t)
+	c, err := supervisor.Connect(ctx, dial)
+	if err != nil {
+		t.Fatalf("connect: %v", err)
+	}
+	defer c.Close()
+	if err := c.Run(t.Context(), supervisor.RunSpec{Argv: childArgv("sleep:300"), Restart: models.RestartAlways, Backoff: 10 * time.Millisecond}); err != nil {
+		t.Fatalf("run: %v", err)
+	}
+	// Off a VM nothing really freezes, so the entrypoint exits under the freeze and its restart falls due there.
+	if err := c.Freeze(t.Context(), models.VerbFork); err != nil {
+		t.Fatalf("freeze: %v", err)
+	}
+	awaitKind(t, c, supervisor.KindExit)
+	time.Sleep(200 * time.Millisecond)
+	if err := c.Thaw(t.Context()); err != nil {
+		t.Fatalf("thaw: %v", err)
+	}
+	restarts := awaitKind(t, c, supervisor.KindRestarts)
+	if restarts.Restarts == nil || restarts.Restarts.GaveUp || restarts.Restarts.Count != 1 {
+		t.Fatalf("the restart after the thaw reported %+v, want count 1 and no give-up", restarts.Restarts)
 	}
 }
 

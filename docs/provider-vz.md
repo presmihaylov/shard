@@ -23,6 +23,12 @@ covers every framework call this substrate needs (boot loader, virtio-blk, virti
 handle, vsock, console, entropy, pause, resume, save, restore), and the spike below needed nothing
 that it lacks.
 
+The build uses a copy at `third_party/vz`, which `go.mod` names in a `replace` line. Upstream wraps
+the fd of each vsock connection in a file and closes it, but the connection object owns that fd and
+closes it again when it is destroyed. Under a burst of connects the second close hit the shim's own
+socket, and the shim stopped answering. The copy dups the fd and closes only the dup; its `UPSTREAM`
+file names the version and the patch, and `diff -r` against the module cache shows nothing else.
+
 Rejected: binding the ObjC framework directly with cgo. That saves one dependency, but it costs a
 hand-written bridge for every device type, and the binding already carries and tests those bridges.
 

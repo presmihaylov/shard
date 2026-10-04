@@ -156,7 +156,7 @@ func (m *machine) freeze(ctx context.Context) error {
 	defer m.freezing.Unlock()
 	m.pausing = true
 
-	return m.control.Load().Freeze(ctx)
+	return m.control.Load().Freeze(ctx, models.VerbPause)
 }
 
 // runAgain resumes the VM if the pause got that far, then thaws the root, which a paused guest could never answer.

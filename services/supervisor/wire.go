@@ -66,6 +66,8 @@ type Message struct {
 	Address *Address `json:"address,omitempty"`
 	// Seed is host entropy for a restored guest's crng, which woke with the key of every other restore of the same save.
 	Seed []byte `json:"seed,omitempty"`
+	// Verb on a freeze names what holds the guest frozen, which a command the guest refuses meanwhile is told.
+	Verb string `json:"verb,omitempty"`
 	// Ready says the entrypoint forked; a state replay on a new connection carries it too.
 	Ready bool `json:"ready,omitempty"`
 	// Exit is how the entrypoint last ended, and Restarts what the restart policy kept.

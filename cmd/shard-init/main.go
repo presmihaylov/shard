@@ -14,6 +14,7 @@ import (
 	"slices"
 	"strconv"
 	"strings"
+	"sync/atomic"
 	"syscall"
 	"time"
 
@@ -213,7 +214,15 @@ type guest struct {
 	bound *os.File
 	// oom says the bound took every guest process; the guest holds it until the host, with the reason on disk, says stop.
 	oom bool
+	// frozen names the verb that holds the bound frozen, nil while it runs; a child forked into it would hold this goroutine until the thaw.
+	frozen atomic.Pointer[string]
 }
+
+// errFrozen is a start refused while a verb holds the bound frozen.
+var errFrozen = errors.New("holds the sandbox frozen, and nothing starts in it until that ends: run the command again")
+
+// frozenRetry is how often a restart due while the bound is frozen looks again.
+const frozenRetry = 100 * time.Millisecond
 
 // newGuest watches for child deaths before anything forks, so no exit is ever missed.
 func newGuest(report reporter, restart restartPolicy) *guest {
@@ -262,6 +271,12 @@ func (g *guest) supervise() error {
 				return nil
 			}
 		case <-g.startAgain:
+			// A refused restart would give up for good, so a restart due under a freeze waits it out.
+			if g.frozen.Load() != nil {
+				g.startAgain = time.After(frozenRetry)
+
+				continue
+			}
 			g.startAgain = nil
 			g.runStartedAt = time.Now()
 			g.entrypointPID = g.restartEntrypoint()
@@ -705,6 +720,9 @@ func parseID(field string) (uint32, error) {
 
 // start forks a guest process into the bound, which gives up the OOM exemption it inherits from an exempt PID 1.
 func (g *guest) start(ep entrypoint, files []*os.File, tty bool) (int, error) {
+	if verb := g.frozen.Load(); verb != nil {
+		return 0, fmt.Errorf("a %s %w", *verb, errFrozen)
+	}
 	ep.expose, ep.bound = g.exempt, g.bound
 
 	return startProcess(ep, files, tty)

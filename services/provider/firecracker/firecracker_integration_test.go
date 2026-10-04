@@ -96,8 +96,8 @@ func (h *vmHarness) open(t *testing.T) *firecracker.Provider {
 	t.Helper()
 
 	p, err := firecracker.New(firecracker.Config{
-		Binary:    firecracker.Binary,
-		Jailer:    firecracker.Jailer,
+		Binary:    lookPath(t, firecracker.Binary),
+		Jailer:    lookPath(t, firecracker.Jailer),
 		JailBase:  filepath.Join(h.root, "j"),
 		Kernel:    h.kernel,
 		Init:      guestInit(t),
@@ -111,6 +111,18 @@ func (h *vmHarness) open(t *testing.T) *firecracker.Provider {
 	h.provider = p
 
 	return p
+}
+
+// lookPath resolves a binary the way the daemon does (services/daemon/deps.go), since New copies it in by path (SHARD-473).
+func lookPath(t *testing.T, binary string) string {
+	t.Helper()
+
+	path, err := exec.LookPath(binary)
+	if err != nil {
+		t.Fatalf("find %s on PATH: %v", binary, err)
+	}
+
+	return path
 }
 
 func (h *vmHarness) reopen(t *testing.T) models.Provider {
