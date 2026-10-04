@@ -480,9 +480,9 @@ class Gate:
         # An exec runs only once a client attaches, so this one stays created and is never waited on.
         call("POST", f"{box}/exec", {"command": ["true"]})
         for each in (call("GET", f"{box}/exec").json().get("execs") or [])[:3]:
-            call("GET", f"{box}/exec/{each['id']}")
+            call("GET", f"{box}/exec/{each['exec']}")
             if each.get("state") == "exited":
-                call("GET", f"{box}/exec/{each['id']}?wait=true")
+                call("GET", f"{box}/exec/{each['exec']}?wait=true")
         call("PUT", f"{box}/files?path=/tmp/gate-sweep.txt", raw=b"sweep\n")
         for method, path in (
             ("GET", f"{box}/files?path=/tmp/gate-sweep.txt"),
