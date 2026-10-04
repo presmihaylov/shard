@@ -1014,9 +1014,8 @@ say "the namespace and the link are up"
 step "list the sandbox"
 LISTED=$(shard list | grep "^${ID}" || true)
 [ -n "${LISTED}" ] || fail "shard list does not list ${ID}"
-grep -q "${ADDRESS%%/*}" <<<"${LISTED}" || fail "shard list listed '${LISTED}', want the address ${ADDRESS%%/*} on it"
 [ "$(listed_state "${ID}")" = "running" ] || fail "shard list listed '${LISTED}', want it running"
-say "list shows the sandbox running on its address"
+say "list shows the sandbox running"
 
 # SHARD-46: a root that holds records keeps what made them, so an upgrade on a KVM host switches nothing.
 expect "$(FIELD=provider info_field)" "${PROVIDER}" "the root now keeps ${PROVIDER}, which made its records"

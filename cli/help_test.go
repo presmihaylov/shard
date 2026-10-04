@@ -156,10 +156,13 @@ func TestEveryHelpListsTheFlagsItsVerbParses(t *testing.T) {
 		var listed []string
 		for _, f := range helps[path.key].flags {
 			name := flagName(f.spell)
-			if !strings.HasPrefix(f.spell, dashed(name)) {
+			if !strings.HasPrefix(longSpell(f.spell), dashed(name)) {
 				t.Errorf("the help of %s spells %q, want it to start with %s", path.key, f.spell, dashed(name))
 			}
 			listed = append(listed, name)
+			if alias, _, ok := strings.Cut(f.spell, ", "); ok {
+				listed = append(listed, strings.TrimPrefix(alias, "-"))
+			}
 		}
 
 		slices.Sort(listed)
@@ -170,7 +173,7 @@ func TestEveryHelpListsTheFlagsItsVerbParses(t *testing.T) {
 	}
 }
 
-// Every help reads on an 80-column terminal.
+// Every help reads on an 80-column terminal, bar its examples, which print whole so each pastes as one command.
 func TestNoHelpLinePassesEightyColumns(t *testing.T) {
 	texts := map[string]string{"": helpOf(t, "--help").text}
 	for _, path := range helpPaths() {
@@ -178,6 +181,7 @@ func TestNoHelpLinePassesEightyColumns(t *testing.T) {
 	}
 
 	for key, text := range texts {
+		text, _, _ = strings.Cut(text, "\n\nExample")
 		for line := range strings.SplitSeq(text, "\n") {
 			if n := utf8.RuneCountInString(line); n > helpWidth {
 				t.Errorf("the help of %q holds a line of %d columns: %q", key, n, line)
