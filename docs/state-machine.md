@@ -70,7 +70,11 @@ When the daemon restarts while a create is still in flight, it moves the `pendin
 record that holds its network, makes the record `running`. The daemon first stops a sandbox the
 start never reached, or one whose record holds no address, because no egress rule knows it. Every
 create leases its address before its start, so a `running` record with no address is such a create
-that an older daemon called running, and it ends `failed` the same way. A `created` record at a
+that an older daemon called running, and it ends `failed` the same way. So does a `running` record
+over a container whose start never ran. A `stopped` record over such a container is a start the
+daemon dropped: the daemon ends the container and the record stays `stopped`, so the next `start`
+builds a fresh one. If the daemon cannot stop a sandbox that runs with no address, it refuses to
+start, rather than serve beside a sandbox no egress rule guards. A `created` record at a
 restart is a fork the daemon dropped, so it also ends in `failed`. The daemon first stops a copy
 that still runs and tears down its substrate, because a restore that the old daemon started can
 still run where the runtime cannot see it.

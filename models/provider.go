@@ -94,6 +94,8 @@ type Status struct {
 	Reason string
 	// SupervisorFailed is the reason shard-init gave for its own death, set only on a sandbox that is not alive.
 	SupervisorFailed string
+	// Unstarted says the runtime holds a container whose start never ran; a VM replaying its adopt reads created without it.
+	Unstarted bool
 }
 
 // Alive is the assertion the keep-alive default rests on: only Stop and Pause take a sandbox out of it.

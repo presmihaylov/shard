@@ -730,6 +730,7 @@ func (p *Provider) Status(ctx context.Context, id string) (models.Status, error)
 	}
 
 	status := models.Status{Exists: true, State: stateOf(state.Status), PID: state.PID}
+	status.Unstarted = status.State == models.StateCreated
 	if !status.Alive() {
 		status.OOMKilled = p.oomKilled(id)
 	}

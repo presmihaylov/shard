@@ -688,6 +688,24 @@ func TestChainsResolveOnTheHostAndSkipWhatHasNoAddress(t *testing.T) {
 	}
 }
 
+// A skip would leave a live sandbox no rule can match open, so the compile refuses it (SHARD-565).
+func TestChainsRefuseALiveSandboxWithNoAddress(t *testing.T) {
+	s := newStore(t)
+	if err := s.Set(models.Policy{Name: "web", Rules: []models.Rule{mustRule(t, models.ActionDeny, "any")}}); err != nil {
+		t.Fatal(err)
+	}
+
+	records := fakeRecords{
+		{ID: "sandbox1", Policy: "web", State: models.StateRunning, Address: netip.MustParsePrefix("10.87.0.2/16")},
+		{ID: "sandbox2", Policy: "web", State: models.StateRunning},
+	}
+
+	chains, err := New(s, records, gateway, nameservers, fakeResolver{}).Chains(t.Context())
+	if err == nil || !strings.Contains(err.Error(), "sandbox2") {
+		t.Fatalf("Chains = %+v, %v, want an error naming sandbox2", chains, err)
+	}
+}
+
 // A stopped sandbox keeps its lease, so it keeps its chain: a rewrite while it is down must not drop it (SHARD-118).
 func TestChainsKeepAStoppedSandboxesChain(t *testing.T) {
 	s := newStore(t)

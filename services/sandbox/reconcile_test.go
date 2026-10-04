@@ -912,6 +912,10 @@ func TestReconcileFailsACreateThatNeverStarted(t *testing.T) {
 			sb:     models.Sandbox{ID: "sandbox1", State: models.StateRunning, Policy: "deny", PID: 51},
 			status: alive(51),
 		},
+		"recorded running by an older daemon over a container whose start never ran": {
+			sb:     models.Sandbox{ID: "sandbox1", State: models.StateRunning, Policy: "deny", Address: leased, PID: 51},
+			status: models.Status{Exists: true, State: models.StateCreated, PID: 51, Unstarted: true},
+		},
 	}
 	for name, c := range cases {
 		t.Run(name, func(t *testing.T) {
@@ -933,6 +937,78 @@ func TestReconcileFailsACreateThatNeverStarted(t *testing.T) {
 				t.Errorf("the host rules were re-applied %d times, want none: nothing runs", lab.net.applied)
 			}
 		})
+	}
+}
+
+// A start cut between the container create and its start leaves a stopped record over a container nothing ran (SHARD-565).
+func TestReconcileKeepsARecordThatHoldsNoRunOverAnUnstartedContainer(t *testing.T) {
+	cases := map[string]struct {
+		state   models.State
+		stopped []string
+	}{
+		"stopped, whose next start builds its own container": {state: models.StateStopped, stopped: []string{"sandbox1"}},
+		"failed, which rm tears down":                        {state: models.StateFailed},
+	}
+	for name, c := range cases {
+		t.Run(name, func(t *testing.T) {
+			sb := models.Sandbox{ID: "sandbox1", State: c.state, Policy: "deny", Address: leased}
+			provider := &recProvider{status: map[string]models.Status{"sandbox1": {Exists: true, State: models.StateCreated, PID: 51, Unstarted: true}}}
+			lab := newReconcileLab(t, provider, sb)
+
+			if err := lab.run(t); err != nil {
+				t.Fatalf("ReconcileAll: %v", err)
+			}
+			if got := lab.repo.records["sandbox1"]; got.State != c.state {
+				t.Errorf("the record says %s, want %s: no run ever started under it", got.State, c.state)
+			}
+			if !slices.Equal(provider.stopped, c.stopped) {
+				t.Errorf("Stop was asked to end %v, want %v", provider.stopped, c.stopped)
+			}
+			if lab.net.applied != 0 {
+				t.Errorf("the host rules were re-applied %d times, want none: nothing runs", lab.net.applied)
+			}
+		})
+	}
+}
+
+// A VM replaying its adopt reads created while its guest runs, and only a container says its start never ran.
+func TestReconcileKeepsARunningRecordOverACreatedVM(t *testing.T) {
+	sb := models.Sandbox{ID: "sandbox1", State: models.StateRunning, Policy: "deny", Address: leased, PID: 51}
+	provider := &recProvider{status: map[string]models.Status{"sandbox1": {Exists: true, State: models.StateCreated, PID: 51}}}
+	lab := newReconcileLab(t, provider, sb)
+
+	if err := lab.run(t); err != nil {
+		t.Fatalf("ReconcileAll: %v", err)
+	}
+	if got := lab.repo.records["sandbox1"]; got.State != models.StateRunning {
+		t.Errorf("the record says %s, want running", got.State)
+	}
+	if len(provider.stopped) != 0 {
+		t.Errorf("Stop was asked to end %v, want none", provider.stopped)
+	}
+	if lab.net.applied != 1 {
+		t.Errorf("the host rules were re-applied %d times, want once", lab.net.applied)
+	}
+}
+
+// A stop that fails leaves a live sandbox no egress rule can match, so the daemon refuses to serve beside it (SHARD-565).
+func TestReconcileRefusesALiveSandboxWithNoAddressItCouldNotStop(t *testing.T) {
+	sb := models.Sandbox{ID: "sandbox1", State: models.StateRunning, Policy: "deny", PID: 51}
+	provider := &recProvider{status: map[string]models.Status{"sandbox1": alive(51)}, stopErr: errors.New("runsc kill failed")}
+	lab := newReconcileLab(t, provider, sb)
+
+	err := lab.run(t)
+	if err == nil || !strings.Contains(err.Error(), "sandbox1") || !strings.Contains(err.Error(), "runsc kill failed") {
+		t.Fatalf("ReconcileAll = %v, want an error naming sandbox1 and the stop error", err)
+	}
+	if got := lab.repo.records["sandbox1"]; got.State != models.StateRunning {
+		t.Errorf("the record says %s, want running: the sandbox still lives", got.State)
+	}
+	if !slices.Equal(provider.stopped, []string{"sandbox1"}) {
+		t.Errorf("Stop was asked to end %v, want sandbox1", provider.stopped)
+	}
+	if lab.net.applied != 0 {
+		t.Errorf("the host rules were re-applied %d times, want none: the daemon refuses to start", lab.net.applied)
 	}
 }
 
