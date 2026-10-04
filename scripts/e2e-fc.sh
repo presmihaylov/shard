@@ -318,7 +318,12 @@ OUT=$(shard run --memory "${MEMORY}MiB" --name e2e-exited "${IMAGE}" /bin/sh -c 
 EXIT_ID=$(id_of e2e-exited)
 expect "${CODE}" "3" "run exits with the app's code"
 expect "${OUT}" "e2e-run-out" "run prints the app output once"
-grep -q '"exit_status"' "${SHARD_ROOT}/sandboxes/${EXIT_ID}/sandbox.json" || fail "the record of ${EXIT_ID} holds no exit once run returned"
+# The liveness tick writes the exit into the record, seconds after run returns (SHARD-479).
+for _ in $(seq 1 50); do
+	grep -q '"exit_status"' "${SHARD_ROOT}/sandboxes/${EXIT_ID}/sandbox.json" && break
+	sleep 0.2
+done
+grep -q '"exit_status"' "${SHARD_ROOT}/sandboxes/${EXIT_ID}/sandbox.json" || fail "the record of ${EXIT_ID} never took the app's exit"
 expect "$(listed_state "${EXIT_ID}")" "running" "the sandbox is running after its app exited 3"
 expect_exec_in "${EXIT_ID}" "still-up" "an exec answers in a sandbox whose entrypoint is gone" /bin/echo still-up
 shard stop "${EXIT_ID}" >/dev/null
