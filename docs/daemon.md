@@ -481,7 +481,7 @@ curl --unix-socket /var/lib/shard/shard.sock -X POST http://localhost/v0/images/
   (`DefaultPauseBudget`) before it cuts it. A pause that the substrate lost after its checkpoint
   began, including a cut one, answers 500 and leaves the record `failed` with the reason.
 - `POST /v0/sandboxes/{id}/resume` takes no body and answers 200 with the running record. Errors:
-  404, and 409 when the sandbox is not paused, when its record names no checkpoint, or for an
+  404, and 409 when the sandbox is not paused, when it has no saved state to resume, or for an
   unclaimed verb.
 - `POST /v0/sandboxes/{id}/fork` takes `{"name"}` and answers 201 with the new record, which runs
   from a capture of the running source; the source runs on as it was (SHARD-457). Errors: 400 for a
@@ -731,7 +731,7 @@ else that a refusal carries lives inside `error`, and the root never holds anyth
 | `app_ended` | 409 | app stop once the restart policy of the app ended |
 | `sandbox_failed` | 409 | any verb except a get or a `remove` on a create that ended `failed`. The message carries the public `failed_reason`, and `remove` frees the sandbox |
 | `sandbox_live` | 409 | grant, ungrant, attach or detach while the sandbox runs or is paused |
-| `no_checkpoint` | 409 | resume on a paused sandbox whose record names no checkpoint |
+| `no_checkpoint` | 409 | resume on a paused sandbox that has no saved state to resume |
 | `unsupported` | 409 | the provider does not claim the verb |
 | `in_use` | 409 | delete a policy, secret or image that sandboxes hold, delete an image that snapshots hold, or move the placeholder of a secret sandboxes hold. `error` then adds `"holders": [ids]`. Also a second attach of an exec, without holders |
 | `name_taken` | 409 | a create whose `name` another sandbox already holds, or a snapshot create whose `name` another snapshot holds |

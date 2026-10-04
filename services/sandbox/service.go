@@ -457,11 +457,11 @@ func (s *Service) Prepare(ctx context.Context, req CreateRequest) (models.Sandbo
 	}
 	// A bound past the host's memory never binds: the host runs out of memory first.
 	if s.cfg.HostMemoryMiB > 0 && res.MemoryMiB > s.cfg.HostMemoryMiB {
-		return models.Sandbox{}, &RequestError{Err: fmt.Errorf("--memory %dMiB is more than the %d MiB of memory this host has", res.MemoryMiB, s.cfg.HostMemoryMiB)}
+		return models.Sandbox{}, &RequestError{Err: fmt.Errorf("resources.memory_mib is %d MiB, more than the %d MiB of memory on this host; set it to %d MiB or less", res.MemoryMiB, s.cfg.HostMemoryMiB, s.cfg.HostMemoryMiB)}
 	}
 	// A quota past the host's CPUs never binds, and a large enough one overflows the quota to no bound at all.
 	if s.cfg.HostCPUs > 0 && res.VCPUs > s.cfg.HostCPUs {
-		return models.Sandbox{}, &RequestError{Err: fmt.Errorf("--cpus %d is more than the %d CPUs this host has", res.VCPUs, s.cfg.HostCPUs)}
+		return models.Sandbox{}, &RequestError{Err: fmt.Errorf("resources.vcpus is %d, more than the %d CPUs on this host; set it to %d or less", res.VCPUs, s.cfg.HostCPUs, s.cfg.HostCPUs)}
 	}
 	// Record the disk bound the sandbox will actually run under, so inspect shows the enforced value, not a bare 0.
 	res.DiskMiB = bundle.DiskBound(res)
@@ -790,7 +790,7 @@ func validate(req CreateRequest) error {
 		return &RequestError{Err: errors.New("the request names both an image and a snapshot: a snapshot already names its image")}
 	}
 	if req.Snapshot != "" && (len(req.Command) != 0 || req.Restart != nil) {
-		return &RequestError{Err: errors.New("a sandbox from a snapshot runs shard-init alone, so it takes no command and no restart policy")}
+		return &RequestError{Err: errors.New("a sandbox from a snapshot cannot take command or restart; omit both fields")}
 	}
 
 	if req.Name != "" {

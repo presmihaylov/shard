@@ -41,10 +41,15 @@ const (
 )
 
 // unauthorized is the whole answer to a request with no valid token: the socket is never dialed for it.
-const unauthorized = `{"error":{"code":"unauthorized","message":"the request carries no valid bearer token"}}`
+const unauthorized = `{"error":{"code":"unauthorized","message":"the bearer token is missing or invalid; send a valid token in Authorization: Bearer TOKEN"}}`
 
-// forbidden is the answer to a valid token whose scopes do not reach the route: the socket is never dialed for it.
-const forbidden = `{"error":{"code":"forbidden","message":"the token does not carry a scope for this route"}}`
+// unrouted is the answer to a route no scope reaches, an unknown one or a local one: the socket is never dialed for it.
+const unrouted = `{"error":{"code":"forbidden","message":"no token scope reaches this route over the network; check the method and the path"}}`
+
+// forbidden is the answer to a valid token whose scopes do not reach need: the socket is never dialed for it.
+func forbidden(need api.Scope) string {
+	return fmt.Sprintf(`{"error":{"code":"forbidden","message":"the token lacks %s; use a token with %s"}}`, need, need)
+}
 
 // badRequestLine is the answer to a request line net/http would not parse, so the front never checks a route the daemon reads otherwise.
 const badRequestLine = `{"error":{"code":"invalid_request","message":"the request line does not parse"}}`
@@ -273,7 +278,7 @@ func (s *Server) handle(ctx context.Context, conn net.Conn, leave func()) {
 	sub, scopes, ok, forbid, reason := s.authorize(head, method, target)
 	if !ok {
 		if forbid {
-			s.forbid(conn, sub)
+			s.forbid(conn, sub, api.Scope(reason))
 
 			return
 		}
@@ -350,7 +355,7 @@ func readHead(r io.Reader) ([]byte, error) {
 
 // authorize verifies the token, checks the ledger holds its id and has not revoked it, and checks its scopes
 // reach the route; nothing is dialed without all three. It answers the subject, whether the request is
-// authorized, whether an unauthorized one is a 403 rather than a 401, and the reason a 401 carries.
+// authorized, whether an unauthorized one is a 403 rather than a 401, and the cause a 401 logs or the scope a 403 needs.
 func (s *Server) authorize(head []byte, method string, target *url.URL) (string, []string, bool, bool, string) {
 	fields, ok := headerFields(head)
 	if !ok {
@@ -382,7 +387,7 @@ func (s *Server) authorize(head []byte, method string, target *url.URL) (string,
 
 	need, known := s.caps.scope(method, target)
 	if !known || !covers(scopes, need) {
-		return sub, nil, false, true, ""
+		return sub, nil, false, true, string(need)
 	}
 
 	return sub, scopes, true, false, ""
@@ -440,10 +445,16 @@ func (s *Server) refuse(conn net.Conn, reason string) {
 	s.answer(conn, "401 Unauthorized", unauthorized)
 }
 
-// forbid answers 403 and closes. The token is valid but carries no scope for this route, so nothing is dialed.
-func (s *Server) forbid(conn net.Conn, sub string) {
-	s.log.Printf("forbade %s as %s: no scope for the route", conn.RemoteAddr(), sub)
-	s.answer(conn, "403 Forbidden", forbidden)
+// forbid answers 403 and closes. The token is valid but lacks need, or no scope reaches the route, so nothing is dialed.
+func (s *Server) forbid(conn net.Conn, sub string, need api.Scope) {
+	if need == "" {
+		s.log.Printf("forbade %s as %s: no scope reaches the route", conn.RemoteAddr(), sub)
+		s.answer(conn, "403 Forbidden", unrouted)
+
+		return
+	}
+	s.log.Printf("forbade %s as %s: the route needs %s", conn.RemoteAddr(), sub, need)
+	s.answer(conn, "403 Forbidden", forbidden(need))
 }
 
 func (s *Server) answer(conn net.Conn, status, body string) {

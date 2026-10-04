@@ -174,7 +174,7 @@ func (s *Service) readSeed(id string, req CreateRequest) (seeded, error) {
 	}
 	// A microVM substrate grows the copy of the disk file, and a shrink could cut off blocks the snapshot's files sit on.
 	if _, grows := s.cfg.Provider.(diskAdmitter); grows && req.Resources.DiskMiB < snap.DiskMiB {
-		return seeded{}, &RequestError{Err: fmt.Errorf("--disk %dMiB is smaller than the %d MiB disk of snapshot %s, and a disk only grows: drop --disk, or ask for %d MiB or more", req.Resources.DiskMiB, snap.DiskMiB, id, snap.DiskMiB)}
+		return seeded{}, &RequestError{Err: fmt.Errorf("resources.disk_mib is %d MiB, smaller than the %d MiB disk of snapshot %s, and a disk only grows; omit it or set it to %d MiB or more", req.Resources.DiskMiB, snap.DiskMiB, id, snap.DiskMiB)}
 	}
 
 	files, err := s.cfg.Snapshots.Files(id)

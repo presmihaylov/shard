@@ -1160,7 +1160,7 @@ expect "${OVER_TCP}" "${OVER_SOCKET}" "the front answers a request byte for byte
 CODE=$(front_curl "${SERVE_PORT}" "wrong-${TOKEN}" /v0/sandboxes -o /dev/null -w '%{http_code}')
 expect "${CODE}" "401" "a wrong token is refused"
 BODY=$(front_curl "${SERVE_PORT}" "wrong-${TOKEN}" /v0/sandboxes)
-expect "${BODY}" '{"error":{"code":"unauthorized","message":"the request carries no valid bearer token"}}' \
+expect "${BODY}" '{"error":{"code":"unauthorized","message":"the bearer token is missing or invalid; send a valid token in Authorization: Bearer TOKEN"}}' \
 	"the refusal carries a code like every other error body"
 CODE=$(front_curl "${SERVE_PORT}" "" /v0/sandboxes -o /dev/null -w '%{http_code}')
 expect "${CODE}" "401" "no token at all is refused"
@@ -1231,7 +1231,7 @@ expect "${CODE}" "200" "a sandbox:read token lists the sandboxes"
 CODE=$(front_curl "${SERVE_PORT}" "${READONLY}" /v0/sandboxes -X POST -o /dev/null -w '%{http_code}')
 expect "${CODE}" "403" "a sandbox:read token is refused a create"
 BODY=$(front_curl "${SERVE_PORT}" "${READONLY}" /v0/sandboxes -X POST)
-expect "${BODY}" '{"error":{"code":"forbidden","message":"the token does not carry a scope for this route"}}' \
+expect "${BODY}" '{"error":{"code":"forbidden","message":"the token lacks sandbox:write; use a token with sandbox:write"}}' \
 	"the refusal carries the forbidden code"
 
 step "a revoked token is refused on the next request, with no restart"

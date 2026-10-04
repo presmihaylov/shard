@@ -126,7 +126,7 @@ func (h *Handler) putSecret(_ context.Context, in *nameBody[sandbox.SecretReques
 
 type removeSecretInput struct {
 	Name  string `path:"name"`
-	Force bool   `query:"force" doc:"Remove the secret while a sandbox record still names it."`
+	Force bool   `query:"force" doc:"Remove the secret even when a sandbox still has a grant on it."`
 }
 
 func (h *Handler) removeSecret(_ context.Context, in *removeSecretInput) (*struct{}, error) {
