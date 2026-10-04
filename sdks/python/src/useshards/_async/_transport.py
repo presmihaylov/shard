@@ -1,0 +1,52 @@
+"""The one HTTPX client every call rides, and every non-2xx answer raised as an APIError."""
+
+from __future__ import annotations
+
+from typing import Any
+
+import httpx
+
+from .._config import Settings
+from .._version import __version__
+from .._wire import connection_error
+from ..errors import api_error
+
+DEFAULT_TIMEOUT = 60.0
+
+
+class AsyncTransport:
+    def __init__(self, settings: Settings, timeout: float | None) -> None:
+        self.timeout = timeout
+        self.http = httpx.AsyncClient(
+            base_url=settings.base_url,
+            headers={"Authorization": f"Bearer {settings.api_key}", "User-Agent": f"useshards-python/{__version__}"},
+            verify=settings.verify,
+            timeout=timeout,
+        )
+
+    def read_bound(self, read: float | None) -> httpx.Timeout:
+        """The client's timeout with its read bound replaced, for a call that waits on the guest."""
+        return httpx.Timeout(self.timeout, read=read)
+
+    async def call(
+        self,
+        method: str,
+        path: str,
+        *,
+        json: Any = None,
+        params: dict[str, str] | None = None,
+        timeout: httpx.Timeout | None = None,
+    ) -> httpx.Response:
+        request = self.http.build_request(
+            method, path, json=json, params=params, timeout=timeout if timeout is not None else self.http.timeout
+        )
+        try:
+            response = await self.http.send(request)
+        except httpx.TransportError as e:
+            raise connection_error(request, e) from e
+        if response.is_success:
+            return response
+        raise api_error(response.status_code, response.content)
+
+    async def aclose(self) -> None:
+        await self.http.aclose()
