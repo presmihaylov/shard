@@ -474,13 +474,7 @@ func TestAFailedRecordAnswersOnlyItsPublicReason(t *testing.T) {
 
 	for _, c := range []struct{ ref, want string }{{"old", sandbox.FailedGeneric}, {"new", "the image ref is not valid"}} {
 		for _, path := range []string{"/v0/sandboxes/" + c.ref, "/v0/sandboxes/" + c.ref + "?wait=true"} {
-			status, body := get(t, s.server, path)
-			if status != http.StatusOK || body["failed_reason"] != c.want {
-				t.Errorf("GET %s answered %d with failed_reason %v, want %q", path, status, body["failed_reason"], c.want)
-			}
-			if _, ok := body["failed_public"]; ok {
-				t.Errorf("GET %s carries the state key failed_public: %v", path, body)
-			}
+			wantPublicReason(t, s, path, c.want)
 		}
 
 		// The logs route repeats the guard every lifecycle verb runs, so its 409 stands for theirs.
@@ -500,6 +494,19 @@ func TestAFailedRecordAnswersOnlyItsPublicReason(t *testing.T) {
 	}
 	if !strings.Contains(s.log.String(), failedCause) {
 		t.Errorf("the daemon log %q lacks the raw cause of the 409", s.log.String())
+	}
+}
+
+// wantPublicReason asserts a read of a failed record answers want as failed_reason and never the state key failed_public.
+func wantPublicReason(t *testing.T, s seeded, path, want string) {
+	t.Helper()
+
+	status, body := get(t, s.server, path)
+	if status != http.StatusOK || body["failed_reason"] != want {
+		t.Errorf("GET %s answered %d with failed_reason %v, want %q", path, status, body["failed_reason"], want)
+	}
+	if _, ok := body["failed_public"]; ok {
+		t.Errorf("GET %s carries the state key failed_public: %v", path, body)
 	}
 }
 
