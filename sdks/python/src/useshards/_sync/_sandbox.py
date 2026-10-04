@@ -9,6 +9,7 @@ from typing import Any, Literal, overload
 
 import httpx
 
+from .._capture import DEFAULT_OUTPUT_LIMIT
 from .._types import (
     AppExit,
     AppInfo,
@@ -29,8 +30,6 @@ from ._command import Command, run_command, start_command
 from ._files import Files
 from ._follow import Follow, log_chunk, network_log_entry
 from ._transport import Transport
-
-DEFAULT_OUTPUT_LIMIT = 8 << 20
 
 
 class Sandbox:

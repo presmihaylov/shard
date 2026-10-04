@@ -8,6 +8,7 @@ from typing import Any, Literal, overload
 
 import httpx
 
+from .._capture import DEFAULT_OUTPUT_LIMIT
 from .._types import (
     AppExit,
     AppInfo,
@@ -28,8 +29,6 @@ from ._command import AsyncCommand, run_command, start_command
 from ._files import AsyncFiles
 from ._follow import AsyncFollow, log_chunk, network_log_entry
 from ._transport import AsyncTransport
-
-DEFAULT_OUTPUT_LIMIT = 8 << 20
 
 
 class AsyncSandbox:
