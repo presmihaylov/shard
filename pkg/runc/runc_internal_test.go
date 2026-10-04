@@ -3,14 +3,37 @@ package runc
 import (
 	"slices"
 	"testing"
+
+	"github.com/opencontainers/runtime-spec/specs-go"
 )
 
-// A tty exec needs a real pty on stdin to fork at all, so the flag is checked on the argv builder alone.
-func TestExecArgsAsksForATTY(t *testing.T) {
-	args := execArgs("amber-otter-1a2b", "/tmp/pid", ExecOptions{Argv: []string{"/bin/sh"}, TTY: true})
+// runc passes --additional-gids only beside --user, so an exec with no user keeps the bundle's whole user.
+func TestExecProcessKeepsTheBundleUserWhenTheExecNamesNone(t *testing.T) {
+	base := specs.Process{User: specs.User{UID: 1000, GID: 1000, AdditionalGids: []uint32{4}}, Cwd: "/home"}
 
-	if !slices.Equal(args, []string{"exec", "--pid-file", "/tmp/pid", "--tty", "amber-otter-1a2b", "/bin/sh"}) {
-		t.Errorf("got argv %q, want --tty before the id and nothing else", args)
+	process, err := execProcess(base, ExecOptions{Argv: []string{"/bin/true"}, Groups: []uint32{10}})
+	if err != nil {
+		t.Fatalf("execProcess: %v", err)
+	}
+	if process.User.UID != 1000 || process.User.GID != 1000 || !slices.Equal(process.User.AdditionalGids, []uint32{4}) || process.Cwd != "/home" {
+		t.Errorf("got %+v in %s, want the bundle's user and cwd", process.User, process.Cwd)
+	}
+}
+
+// runc's --user 65534 changes the uid alone, so the bundle's gid stays.
+func TestExecProcessSetsTheGIDOnlyWhenTheUserNamesOne(t *testing.T) {
+	base := specs.Process{User: specs.User{UID: 1000, GID: 1000}}
+
+	process, err := execProcess(base, ExecOptions{Argv: []string{"/bin/true"}, User: "65534"})
+	if err != nil {
+		t.Fatalf("execProcess: %v", err)
+	}
+	if process.User.UID != 65534 || process.User.GID != 1000 {
+		t.Errorf("got %+v, want uid 65534 and the bundle's gid", process.User)
+	}
+
+	if _, err := execProcess(base, ExecOptions{Argv: []string{"/bin/true"}, User: "nobody"}); err == nil {
+		t.Error("execProcess took a user name, which only the guest's passwd can resolve")
 	}
 }
 
