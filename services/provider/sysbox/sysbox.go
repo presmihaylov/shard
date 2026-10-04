@@ -573,7 +573,7 @@ func (p *Provider) Exec(ctx context.Context, id string, spec models.ExecSpec) (m
 	return models.ExitStatus{Code: code}, nil
 }
 
-// Signal sends one signal to a running exec by the host pid the driver reported for it.
+// Signal passes back the handle the driver reported for this sandbox's exec.
 func (p *Provider) Signal(ctx context.Context, id string, pid int, signal string) error {
 	if err := p.runner.Signal(ctx, id, pid, signal); err != nil {
 		return fmt.Errorf("sandbox %s: %w", id, err)

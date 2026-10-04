@@ -251,6 +251,20 @@ func (c *Channel) Kill() error {
 	return c.kill()
 }
 
+// Signal shares the pin opened under the trace, so it never resolves a saved pid again.
+func (c *Channel) Signal(sig syscall.Signal) error {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if c.pidfd < 0 {
+		return os.ErrProcessDone
+	}
+	if err := unix.PidfdSendSignal(c.pidfd, sig, nil, 0); err != nil {
+		return fmt.Errorf("signal the launched command: %w", err)
+	}
+
+	return nil
+}
+
 func (c *Channel) kill() error {
 	if err := unix.PidfdSendSignal(c.pidfd, unix.SIGKILL, nil, 0); err != nil && !errors.Is(err, unix.ESRCH) {
 		return fmt.Errorf("kill the launch shim: %w", err)
