@@ -79,15 +79,15 @@ a dash is a verb with no `--format`.
 | `list` | `--all --format` | table | the sandboxes |
 | `logs <ref>` | `-f/--follow --egress` | - | the entrypoint's output, or the egress decisions |
 | `inspect <ref>` | `--format` | json | the record |
-| `stop <ref>` | | - | nothing |
-| `start <ref>` | | - | nothing |
-| `remove <ref>` | `--force` | - | nothing |
-| `pause <ref>` | | - | nothing |
-| `resume <ref>` | | - | nothing |
+| `stop <ref>` | | - | the id |
+| `start <ref>` | | - | the id |
+| `remove <ref>` | `--force` | - | the id |
+| `pause <ref>` | | - | the id |
+| `resume <ref>` | | - | the id |
 | `fork <ref>` | `--name` | - | the new id |
 | `cp <src> <ref>:<path>`, `cp <ref>:<path> <dst>` | `--user` | - | nothing |
 
-`<ref>` is a sandbox id or its `--name`.
+`<ref>` is a sandbox id or its `--name`. A verb that prints the id prints the id even when it was given the name.
 
 **An exec that a pause keeps from starting exits 1** with this line on stderr, and runs nothing:
 
@@ -101,23 +101,23 @@ shard: sandbox <id> is paused: resume it with shard resume <id>
 | --- | --- | --- | --- |
 | `pull <image>` | | - | the reference and the digest |
 | `image list` | `--format` | table | the images |
-| `image remove <image>` | `--force` | - | nothing |
+| `image remove <image>` | `--force` | - | the reference |
 | `image prune` | | - | each reference it removed |
 | `snapshot create <ref>` | `--name` | - | the snapshot id. Not implemented yet (SHARD-457a) |
 | `snapshot list` | `--format` | table | the snapshots. Not implemented yet (SHARD-457a) |
 | `snapshot inspect <snap>` | `--format` | json | the record. Not implemented yet (SHARD-457a) |
-| `snapshot remove <snap>` | | - | nothing. Not implemented yet (SHARD-457a) |
-| `secret set <NAME> [VALUE]` | `--to --placeholder` | - | nothing |
+| `snapshot remove <snap>` | | - | the `<snap>` it was given. Not implemented yet (SHARD-457a) |
+| `secret set <NAME> [VALUE]` | `--to --placeholder` | - | the name |
 | `secret list` | `--format` | table | the secrets, never a value |
-| `secret remove <NAME>` | `--force` | - | nothing |
-| `secret grant <ref> <NAME>` | | - | nothing |
-| `secret ungrant <ref> <NAME>` | | - | nothing |
-| `policy create <name>` | `--allow --deny` | - | nothing |
+| `secret remove <NAME>` | `--force` | - | the name |
+| `secret grant <ref> <NAME>` | | - | the sandbox id |
+| `secret ungrant <ref> <NAME>` | | - | the sandbox id |
+| `policy create <name>` | `--allow --deny` | - | the name |
 | `policy show <name>` | `--format` | json | the policy and its holders |
 | `policy list` | `--format` | table | the policies |
-| `policy remove <name>` | | - | nothing |
-| `policy attach <ref> <policy>` | | - | nothing |
-| `policy detach <ref>` | | - | nothing |
+| `policy remove <name>` | | - | the name |
+| `policy attach <ref> <policy>` | | - | the sandbox id |
+| `policy detach <ref>` | | - | the sandbox id |
 
 `<snap>` is a snapshot id or its `--name`.
 
@@ -125,13 +125,13 @@ shard: sandbox <id> is paused: resume it with shard resume <id>
 
 | verb | flags | format | stdout |
 | --- | --- | --- | --- |
-| `daemon` | `--provider --timeout --insecure-registry --log` | - | nothing; the daemon logs to stderr, or to `--log` on a Mac |
+| `daemon` | `--provider --timeout --insecure-registry --log` | - | its log; `--log` on a Mac sends stdout and stderr to that file |
 | `daemon status` | `--format` | table | the daemon's state and its tasks |
 | `info` | `--format` | table | the provider a daemon would pick, and why |
-| `serve` | `--listen --signing-key-file --tokens-file` | - | nothing |
+| `serve` | `--listen --signing-key-file --tokens-file` | - | its log |
 | `tokens mint` | `--name --signing-key-file --duration --scopes --tokens-file --format` | json | the token record |
 | `tokens list` | `--signing-key-file --tokens-file --format` | table | the ledger |
-| `tokens revoke <id>` | `--name --signing-key-file --tokens-file` | - | nothing |
+| `tokens revoke <id>` | `--name --signing-key-file --tokens-file` | - | `revoked token <id>`, or `revoked <n> tokens of <sub>` with `--name` |
 | `version` | `--format` | table | the client and daemon versions |
 
 ## Output formats
@@ -144,7 +144,7 @@ The format each verb does not default to is not implemented yet (SHARD-467): `--
 `version`, and `--format table` on `inspect`, `policy show` and `tokens mint`. The snapshot verbs
 wait on SHARD-457a for both.
 
-**Stdout holds one value or nothing.** JSON is one value, indented by two spaces, and a list verb
+**A `--format json` call writes one value or nothing.** JSON is one value, indented by two spaces, and a list verb
 prints an array. A failure to parse, to reach the daemon, or to encode writes nothing to stdout. A
 list with warnings, or a `daemon status` with a task in backoff, still writes the whole value, then
 the warnings or the error on stderr, and exits 1. `version --format json` with no daemon writes
@@ -154,8 +154,92 @@ nothing and fails.
 
 The values are synthetic.
 
-`list` prints an array of the records `inspect` prints. `snapshot list` prints an array of snapshot
-records, below.
+`list` prints an array of sandbox records. `id`, `image`, `provider`, `state`, `pid`, `netns_path`,
+`address`, `host_interface`, `resources` and `created_at` are always present:
+
+```json
+[
+  {
+    "id": "misty-otter-81c0",
+    "name": "web",
+    "image": "python:3.12",
+    "provider": "gvisor",
+    "state": "running",
+    "pid": 41207,
+    "netns_path": "/var/run/netns/misty-otter-81c0",
+    "address": "10.87.0.2/16",
+    "host_interface": "shardv2",
+    "resources": {"memory_mib": 512, "vcpus": 1, "disk_mib": 2048},
+    "command": ["python", "-m", "http.server"],
+    "restart": {"policy": "on-failure", "retries": 3, "backoff": 1, "count": 0, "gave_up": false, "ended": false},
+    "secrets": ["API_TOKEN"],
+    "policy": "api-only",
+    "started_at": "2026-10-01T09:31:00Z",
+    "created_at": "2026-10-01T09:30:00Z"
+  }
+]
+```
+
+`state` is `pending`, `created`, `running`, `paused`, `unresponsive`, `stopped` or `failed`. `pid` is
+0 when nothing runs. `resources` holds `memory_mib`, `vcpus` and `disk_mib`. Every other field is
+absent when empty:
+
+| field | present when |
+| --- | --- |
+| `name` | the sandbox has a `--name` |
+| `kernel` | a microVM provider booted it; the guest kernel release tag |
+| `exit_status` | the entrypoint exited at least once: `{"code": 0, "signal": 0}` |
+| `exit_channel` | the daemon no longer reads the entrypoint exit from the guest, and why |
+| `stopped_reason` | shard stopped it with no operator, or `shard-init` died on a stop |
+| `failed_reason` | `state` is `failed` |
+| `unresponsive_reason` | `state` is `unresponsive` |
+| `snapshot` | a pause wrote a checkpoint; the directory |
+| `pausing` | `true`, during a pause |
+| `command` | `run` made it; the app's argv |
+| `restart` | it has a restart policy |
+| `secrets` | it holds a placeholder; the secret names |
+| `policy` | it holds a policy |
+| `started_at` | the daemon started it at least once |
+
+`restart.policy` is `no`, `on-failure` or `always`. `retries` is absent for no cap, `backoff` is the
+first wait in seconds, `count` is the starts again on this run, and `last_at` is absent before the
+first one.
+
+`inspect` prints one sandbox record, and adds `egress` when the record names a policy:
+
+```json
+{
+  "id": "misty-otter-81c0",
+  "image": "python:3.12",
+  "provider": "gvisor",
+  "state": "stopped",
+  "exit_status": {"code": 0, "signal": 0},
+  "pid": 0,
+  "netns_path": "/var/run/netns/misty-otter-81c0",
+  "address": "10.87.0.2/16",
+  "host_interface": "shardv2",
+  "resources": {"memory_mib": 512, "vcpus": 1, "disk_mib": 2048},
+  "policy": "api-only",
+  "created_at": "2026-10-01T09:30:00Z",
+  "egress": {
+    "policy": "api-only",
+    "rules": [
+      {"action": "allow", "destination": {"kind": "cidr", "value": "10.87.0.1"}, "protocol": "udp", "ports": [53], "id": "1", "implied": "dns"},
+      {"action": "allow", "destination": {"kind": "cidr", "value": "10.87.0.1"}, "protocol": "tcp", "ports": [53], "id": "2", "implied": "dns"},
+      {"action": "allow", "destination": {"kind": "domain", "value": "api.example.com"}, "protocol": "tcp", "ports": [80, 443], "id": "3"}
+    ]
+  }
+}
+```
+
+`egress.rules` is the order the host and the proxy enforce. `id` is the place of a rule in it, from
+`"1"`. `action` is `allow` or `deny`, and `destination.kind` is `cidr`, `domain`, `domain-suffix` or
+`group`. `protocol` and `ports` are absent for a rule over every protocol. `implied` is present on a
+rule the policy did not write: `dns` when a name rule opened DNS, `dns rule` when a `dns` rule did.
+When the store no longer holds the policy, `egress` is `{"policy": "<name>", "missing": true, "rules":
+null}` and the sandbox reaches nothing.
+
+`snapshot list` prints an array of snapshot records, below.
 
 `image list`. `digest` is the full digest, `size` is bytes, and `broken` is absent when empty:
 

@@ -5,6 +5,7 @@ import (
 	"errors"
 	"net/netip"
 	"reflect"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -71,8 +72,13 @@ func TestAStubRefusesABadUsageBeforeItExitsThree(t *testing.T) {
 		{"snapshot", "list", "extra"},
 		{"snapshot", "inspect"},
 		{"snapshot", "remove"},
+		{"snapshot", "create", "--name", "bad/name", "web"},
+		{"snapshot", "create", "--name", "", "web"},
 		{"list", "--format", "yaml"},
 		{"create", "--snapshot", "base", "alpine:3.20"},
+		{"tokens", "mint", "--format", "table"},
+		{"tokens", "mint", "--name", "ci", "--duration", "-1h", "--format", "table"},
+		{"tokens", "mint", "--name", "ci", "--scopes", "nope", "--format", "table"},
 	} {
 		err := newApp(t, &bytes.Buffer{}).Run(t.Context(), args)
 
@@ -86,17 +92,21 @@ func TestAStubRefusesABadUsageBeforeItExitsThree(t *testing.T) {
 // An alias is a second spelling of its primary, so it prints the primary's help.
 func TestEachAliasPrintsItsPrimarysHelp(t *testing.T) {
 	for _, cmd := range commands() {
-		for _, alias := range cmd.aliases {
-			if helpOf(t, alias, "--help").text != helpOf(t, cmd.name, "--help").text {
-				t.Errorf("shard %s --help differs from shard %s --help", alias, cmd.name)
-			}
-		}
+		checkAliasHelp(t, nil, cmd)
 		for _, sub := range cmd.subs {
-			for _, alias := range sub.aliases {
-				if helpOf(t, cmd.name, alias, "--help").text != helpOf(t, cmd.name, sub.name, "--help").text {
-					t.Errorf("shard %s %s --help differs from shard %s %s --help", cmd.name, alias, cmd.name, sub.name)
-				}
-			}
+			checkAliasHelp(t, []string{cmd.name}, sub)
+		}
+	}
+}
+
+func checkAliasHelp(t *testing.T, parent []string, cmd command) {
+	t.Helper()
+
+	primary := append(slices.Clone(parent), cmd.name)
+	for _, alias := range cmd.aliases {
+		spelled := append(slices.Clone(parent), alias)
+		if helpOf(t, append(spelled, "--help")...).text != helpOf(t, append(slices.Clone(primary), "--help")...).text {
+			t.Errorf("shard %s --help differs from shard %s --help", strings.Join(spelled, " "), strings.Join(primary, " "))
 		}
 	}
 }
