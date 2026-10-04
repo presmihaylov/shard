@@ -420,6 +420,23 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/v0/scopes": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** List the scopes a token can carry */
+        get: operations["list-scopes"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/v0/secrets": {
         parameters: {
             query?: never;
@@ -782,6 +799,13 @@ export interface components {
             next: string | null;
             sandboxes: components["schemas"]["Sandbox"][];
             warnings?: string[];
+        };
+        Scope: {
+            description: string;
+            name: string;
+        };
+        ScopesResponse: {
+            scopes: components["schemas"]["Scope"][];
         };
         Secret: {
             destinations: string[];
@@ -2105,6 +2129,35 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["Sandbox"];
+                };
+            };
+            /** @description Error */
+            default: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+        };
+    };
+    "list-scopes": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description OK */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ScopesResponse"];
                 };
             };
             /** @description Error */
