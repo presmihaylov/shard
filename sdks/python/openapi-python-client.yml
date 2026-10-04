@@ -1,0 +1,9 @@
+# make sdk-py reads this; CI fails when the committed client drifts from docs/openapi.json.
+package_name_override: _generated
+content_type_overrides:
+  # The archive ops carry a tar, which the generator only knows as a binary body.
+  application/x-tar: application/octet-stream
+# Isolated, so the locked ruff formats it the same everywhere and the project's exclude of _generated does not apply.
+post_hooks:
+  - ruff check --isolated --no-cache --fix-only --select I --quiet .
+  - ruff format --isolated --no-cache --quiet .
