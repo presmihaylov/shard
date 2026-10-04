@@ -1126,8 +1126,8 @@ func (s *Service) stop(ctx context.Context, id string, force bool) error {
 		case err != nil:
 			return err
 		case sb.State == models.StateStopped && !status.Alive():
-			// A second stop changes nothing; only a start that failed after the substrate came up makes a stopped record lie.
-			return nil
+			// A second stop changes nothing but the checkpoint, which an earlier stop's failed drop leaves behind (SHARD-592).
+			return s.dropCheckpoint(id)
 		}
 	}
 
