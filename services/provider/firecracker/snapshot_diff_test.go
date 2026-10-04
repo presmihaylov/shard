@@ -16,7 +16,6 @@ import (
 // A pause takes a Diff over the log the boot turned on, which is the whole image of a guest that booted fresh: its holes are pages it never wrote (SHARD-450, SHARD-458).
 func TestAPauseOfABootedVMMWritesAWholeDiff(t *testing.T) {
 	h := newHarness(t)
-	requireReflink(t, h.root)
 	spec := h.runSnapshotted(t)
 	dir := t.TempDir()
 
@@ -34,7 +33,6 @@ func TestAPauseOfABootedVMMWritesAWholeDiff(t *testing.T) {
 // Each load turns the log on again, and each pause after a resume merges its Diff into a copy of the memory the vmm loaded, so a chain keeps every earlier page (SHARD-450, SHARD-451, SHARD-458).
 func TestAChainOfPausesAndResumesKeepsWhatEachPauseWrote(t *testing.T) {
 	h := newHarness(t)
-	requireReflink(t, h.root)
 	spec := h.runSnapshotted(t)
 	dir := t.TempDir()
 	if err := h.provider.Pause(t.Context(), spec.ID, dir); err != nil {
@@ -60,7 +58,6 @@ func TestAChainOfPausesAndResumesKeepsWhatEachPauseWrote(t *testing.T) {
 // A fork of a resumed sandbox loads its snapshot, so the fork's own pause merges onto that memory too (SHARD-450).
 func TestAPauseOfAForkMergesOntoTheSnapshotItLoaded(t *testing.T) {
 	h := newHarness(t)
-	requireReflink(t, h.root)
 	spec := h.runSnapshotted(t)
 	dir := t.TempDir()
 	if err := h.provider.Pause(t.Context(), spec.ID, dir); err != nil {
@@ -96,7 +93,6 @@ func TestAPauseOfAForkMergesOntoTheSnapshotItLoaded(t *testing.T) {
 // A vmm this daemon did not boot or load may have a log a snapshot already cleared, so its pause takes a Full, and the chain goes on from it (SHARD-458).
 func TestAPauseOfAnAdoptedVMMTakesAFull(t *testing.T) {
 	h := newHarness(t)
-	requireReflink(t, h.root)
 	spec := h.runSnapshotted(t)
 	dir := t.TempDir()
 	h.reopen(t)
@@ -122,7 +118,6 @@ func TestAPauseOfAnAdoptedVMMTakesAFull(t *testing.T) {
 // A live fork's capture is a snapshot of the source, which may clear its log, so the source's next pause takes a Full (SHARD-462).
 func TestAPauseAfterALiveForkTakesAFull(t *testing.T) {
 	h := newHarness(t)
-	requireReflink(t, h.root)
 	spec := h.runSnapshotted(t)
 	if err := h.provider.Fork(t.Context(), spec.ID, h.forkSpec(t)); err != nil {
 		t.Fatalf("Fork: %v", err)
@@ -143,7 +138,6 @@ func TestAPauseAfterALiveForkTakesAFull(t *testing.T) {
 // A create the vmm refused may have read the log already, so the next pause of that restored vmm takes a Full over no seed (SHARD-458).
 func TestAPauseAfterARefusedSnapshotTakesAFull(t *testing.T) {
 	h := newHarness(t)
-	requireReflink(t, h.root)
 	spec := h.runSnapshotted(t)
 	dir := t.TempDir()
 	if err := h.provider.Pause(t.Context(), spec.ID, dir); err != nil {
@@ -182,7 +176,6 @@ func TestAPauseAfterARefusedSnapshotTakesAFull(t *testing.T) {
 // A pause that failed after its create left the log cleared, so the next pause of that vmm takes a Full (SHARD-458).
 func TestAPauseAfterOneThatFailedPastItsSnapshotTakesAFull(t *testing.T) {
 	h := newHarness(t)
-	requireReflink(t, h.root)
 	spec := h.runSnapshotted(t)
 	dir := t.TempDir()
 	// The vmm holds no handle on the overlay, so moving it aside breaks the copy after the create.
@@ -212,7 +205,6 @@ func TestAPauseAfterOneThatFailedPastItsSnapshotTakesAFull(t *testing.T) {
 // A pause refuses a vmm whose cgroup it cannot hold at no swap, by the cgroup's name, before it freezes the guest (SHARD-450).
 func TestAPauseNeedsTheVMMsCgroupToSwapNothing(t *testing.T) {
 	h := newHarness(t)
-	requireReflink(t, h.root)
 	spec := h.runSnapshotted(t)
 	root := t.TempDir()
 	cgroup, err := firecracker.BoundVMM(root, spec.ID, spec.Resources)
@@ -258,7 +250,6 @@ func TestAPauseNeedsTheVMMsCgroupToSwapNothing(t *testing.T) {
 // A pause writes 0 to memory.swap.max and reads it back; a fifo answers that read with "max", as a kernel that ignored the write would, and the pause is refused by the cgroup's name (SHARD-450).
 func TestAPauseRefusesACgroupWhoseSwapDoesNotReadBackZero(t *testing.T) {
 	h := newHarness(t)
-	requireReflink(t, h.root)
 	spec := h.runSnapshotted(t)
 	root := t.TempDir()
 	cgroup, err := firecracker.BoundVMM(root, spec.ID, spec.Resources)

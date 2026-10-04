@@ -38,13 +38,14 @@ class AsyncFiles:
         self._sandbox = sandbox
 
     async def read(self, path: str) -> bytes:
-        """The whole file at path, in memory; download() streams a large one to disk instead."""
+        """copy a file out of a running sandbox"""
         file = await self._transport.answer(
             File, lambda: read_file.asyncio_detailed(self._sandbox, client=self._transport.api, path=path)
         )
         return file.payload.read()
 
     async def read_text(self, path: str, encoding: str = "utf-8") -> str:
+        """copy a file out of a running sandbox"""
         return (await self.read(path)).decode(encoding)
 
     async def write(
@@ -57,7 +58,7 @@ class AsyncFiles:
         parents: bool = False,
         user: str | None = None,
     ) -> None:
-        """Write data as the whole file at path; a stream that cannot seek needs size, since the length goes first."""
+        """copy a file into a running sandbox"""
         if isinstance(data, str):
             data = data.encode()
         if isinstance(data, bytes):
@@ -128,7 +129,7 @@ class AsyncFiles:
         parents: bool = False,
         user: str | None = None,
     ) -> None:
-        """Stream a local file to remote with its length up front; the mode defaults to the local file's."""
+        """copy a file into a running sandbox"""
         source = os.fspath(local)
         with await _backend.offload(functools.partial(_reader, source)) as f:
             info = os.fstat(f.fileno())
@@ -139,7 +140,7 @@ class AsyncFiles:
             await self._put(remote, content, info.st_size, mode=mode, parents=parents, user=user)
 
     async def download(self, remote: str, local: LocalPath) -> None:
-        """Stream the file at remote to local through a temp name beside it, so a cut never leaves half a file."""
+        """copy a file out of a running sandbox"""
         target = os.fspath(local)
         fd, tmp = tempfile.mkstemp(prefix=f".{os.path.basename(target)}.useshards-", dir=os.path.dirname(target) or ".")
         try:
@@ -155,7 +156,7 @@ class AsyncFiles:
             raise
 
     async def upload_dir(self, local: LocalPath, remote: str, *, user: str | None = None) -> None:
-        """Send a local directory as a tar the sandbox unpacks as remote, which names the directory itself."""
+        """copy a directory into a running sandbox"""
         source = os.fspath(local)
         parent, name = _split(remote)
         if not os.path.isdir(source):
@@ -172,7 +173,7 @@ class AsyncFiles:
             await self._transport.put(self._route("archive"), params, content, size)
 
     async def download_dir(self, remote: str, local: LocalPath) -> None:
-        """Land the directory at remote as local, which names the directory itself; nothing lands outside local."""
+        """copy a directory out of a running sandbox"""
         _, name = _split(remote)
         target = os.path.abspath(local)
         # The whole tar is in before the unpack starts, so a cut never lands half a tree.

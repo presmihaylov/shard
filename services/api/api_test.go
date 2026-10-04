@@ -531,8 +531,8 @@ func TestGetCarriesWhatTheHostEnforces(t *testing.T) {
 	}
 
 	enforced, ok := body["egress"].(map[string]any)
-	if !ok || enforced["policy"] != "deny-all" {
-		t.Errorf("the record carries the egress %v, want the policy deny-all", body["egress"])
+	if _, named := enforced["policy"]; !ok || named || body["policy"] != "deny-all" {
+		t.Errorf("the record carries the policy %v and the egress %v, want the policy deny-all named once, at the top", body["policy"], body["egress"])
 	}
 	if rules, ok := enforced["rules"].([]any); !ok || len(rules) != 1 {
 		t.Errorf("the egress holds the rules %v, want the one deny", enforced["rules"])

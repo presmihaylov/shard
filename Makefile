@@ -5,7 +5,10 @@ VZ_INIT_BIN := pkg/vzshim/shim/shard-init
 PKG      := github.com/presmihaylov/shard
 # Only a v tag names a release; the kernel tags share the repo, so any other build names its commit.
 VERSION  ?= $(or $(shell git describe --tags --match 'v[0-9]*' --dirty 2>/dev/null),$(addprefix dev-,$(shell git describe --always --dirty --exclude '*' 2>/dev/null)),dev)
-LDFLAGS  := -X main.version=$(VERSION)
+# RELEASE=1 drops the symbol table, DWARF and the build paths; a panic still prints its stack.
+STRIP    := $(if $(RELEASE),-s -w)
+TRIM     := $(if $(RELEASE),-trimpath)
+LDFLAGS  := -X main.version=$(VERSION) $(STRIP)
 
 GOVULNCHECK := golang.org/x/vuln/cmd/govulncheck@v1.1.4
 
@@ -31,32 +34,32 @@ KERNEL_IMAGE := packaging-kernel-builder
 all: check build
 
 build:
-	go build -ldflags "$(LDFLAGS)" -o $(BIN) ./cmd/shard
+	go build $(TRIM) -ldflags "$(LDFLAGS)" -o $(BIN) ./cmd/shard
 
 # shard is a Linux-only server tool; the dev Mac cross-compiles and scps the binary.
 build-linux:
-	GOOS=linux GOARCH=amd64 go build -ldflags "$(LDFLAGS)" -o $(BIN)-linux-amd64 ./cmd/shard
+	GOOS=linux GOARCH=amd64 go build $(TRIM) -ldflags "$(LDFLAGS)" -o $(BIN)-linux-amd64 ./cmd/shard
 
 # The supervisor is PID 1 in the guest, so it is static: the image may be musl or have no libc.
 build-shard-init:
-	CGO_ENABLED=0 go build -o $(SHARD_INIT_BIN) ./cmd/shard-init
+	CGO_ENABLED=0 go build $(TRIM) -ldflags "$(STRIP)" -o $(SHARD_INIT_BIN) ./cmd/shard-init
 
 # The guest arch must match the box that runs the sandbox, so this one ships beside shard.
 build-shard-init-linux:
-	CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -o $(SHARD_INIT_BIN)-linux-amd64 ./cmd/shard-init
+	CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build $(TRIM) -ldflags "$(STRIP)" -o $(SHARD_INIT_BIN)-linux-amd64 ./cmd/shard-init
 
 # The shim holds one Virtualization.framework VM. It lands where pkg/vzshim embeds it, signed, so a direct run works too.
 build-shard-vz-shim:
-	CGO_ENABLED=1 GOOS=darwin GOARCH=$(DARWIN_ARCH) go build -o $(VZ_SHIM_BIN) ./cmd/shard-vz-shim
+	CGO_ENABLED=1 GOOS=darwin GOARCH=$(DARWIN_ARCH) go build $(TRIM) -ldflags "$(STRIP)" -o $(VZ_SHIM_BIN) ./cmd/shard-vz-shim
 	codesign --sign - --force --entitlements pkg/vzshim/shim/entitlements.plist $(VZ_SHIM_BIN)
 
 # A VM boots the host's arch, so the guest init is linux on this Mac's arch, and it lands where pkg/vzshim embeds it.
 build-shard-vz-init:
-	CGO_ENABLED=0 GOOS=linux GOARCH=$(DARWIN_ARCH) go build -o $(VZ_INIT_BIN) ./cmd/shard-init
+	CGO_ENABLED=0 GOOS=linux GOARCH=$(DARWIN_ARCH) go build $(TRIM) -ldflags "$(STRIP)" -o $(VZ_INIT_BIN) ./cmd/shard-init
 
 # The Mac build: cgo over the framework never cross-compiles, and the daemon carries the shim and the guest init it will install.
 build-darwin: build-shard-vz-shim build-shard-vz-init
-	CGO_ENABLED=1 GOOS=darwin GOARCH=$(DARWIN_ARCH) go build -ldflags "$(LDFLAGS)" -o $(BIN)-darwin-$(DARWIN_ARCH) ./cmd/shard
+	CGO_ENABLED=1 GOOS=darwin GOARCH=$(DARWIN_ARCH) go build $(TRIM) -ldflags "$(LDFLAGS)" -o $(BIN)-darwin-$(DARWIN_ARCH) ./cmd/shard
 
 test:
 	go test ./...

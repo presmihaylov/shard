@@ -1,7 +1,7 @@
 // A log as it arrives, over one WebSocket that the end of the log, a fault, a break or an abort lets go of.
-import { ConnectionError, ProtocolError, failureError } from "./errors.js";
+import { ProtocolError, ShardConnectionError, failureError } from "./errors.js";
 import { closeNormal, opBinary, opText, type Message } from "./frames.js";
-import { networkLogRecord, type NetworkLogRecord } from "./records.js";
+import { egressDecision, type EgressDecision } from "./records.js";
 import type { Transport } from "./transport.js";
 import * as wire from "./wire.js";
 import { WebSocket } from "./ws.js";
@@ -43,7 +43,7 @@ export async function* follow<T>(transport: Transport, route: string, what: stri
 function ended(ws: WebSocket, what: string): void {
   const close = ws.peerClose;
   if (!close) {
-    throw new ConnectionError(`${what}: the stream to the daemon dropped`);
+    throw new ShardConnectionError(`${what}: the stream to the daemon dropped`);
   }
   if (close.code !== closeNormal) {
     throw failureError("internal", `${what}: ${close.reason || `closed with ${close.code}`}`);
@@ -64,7 +64,7 @@ export function logChunk(message: Message, what: string): Uint8Array | undefined
   throw new ProtocolError(`${what}: the daemon sent a message the SDK cannot read`);
 }
 
-export function networkLogEntry(message: Message, what: string): NetworkLogRecord {
+export function egressLogEntry(message: Message, what: string): EgressDecision {
   if (message.opcode !== opText) {
     throw new ProtocolError(`${what}: the daemon sent a binary message where a record belongs`);
   }
@@ -75,5 +75,5 @@ export function networkLogEntry(message: Message, what: string): NetworkLogRecor
     throw new ProtocolError(`${what}: the daemon sent a record that is not JSON`);
   }
 
-  return networkLogRecord(record);
+  return egressDecision(record);
 }
