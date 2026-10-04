@@ -2,6 +2,7 @@ package bundle_test
 
 import (
 	"errors"
+	"net"
 	"os"
 	"path/filepath"
 	"slices"
@@ -180,6 +181,37 @@ func TestResolveUserRefusesAPasswdThatIsADirectory(t *testing.T) {
 		t.Fatal("ResolveUser read a passwd that is a directory")
 	}
 	requireGuestRefusal(t, err, rootfs, "/etc/passwd is a d")
+}
+
+// A socket, like a device with no driver, fails the open itself, so the file type check after it never runs.
+func TestResolveUserRefusesAPasswdThatIsASocket(t *testing.T) {
+	rootfs, err := os.MkdirTemp("", "u") //nolint:usetesting // t.TempDir is too long for a socket path
+	if err != nil {
+		t.Fatalf("create the rootfs: %v", err)
+	}
+	t.Cleanup(func() {
+		if err := os.RemoveAll(rootfs); err != nil {
+			t.Errorf("remove the rootfs: %v", err)
+		}
+	})
+	if err := os.Mkdir(filepath.Join(rootfs, "etc"), 0o755); err != nil {
+		t.Fatalf("create etc: %v", err)
+	}
+	listener, err := net.Listen("unix", filepath.Join(rootfs, "etc/passwd"))
+	if err != nil {
+		t.Fatalf("make the passwd socket: %v", err)
+	}
+	t.Cleanup(func() {
+		if err := listener.Close(); err != nil {
+			t.Errorf("close the passwd socket: %v", err)
+		}
+	})
+
+	_, err = bundle.ResolveUser(rootfs, "root")
+	if err == nil {
+		t.Fatal("ResolveUser read a passwd that is a socket")
+	}
+	requireGuestRefusal(t, err, rootfs, "/etc/passwd is a S")
 }
 
 // requireGuestRefusal holds a database refusal to what a public route may answer: the guest's path, never where the host keeps the tree (SHARD-648).

@@ -256,7 +256,7 @@ func scanDatabase(rootfs, rel string, minFields int, visit func(fields []string)
 		return fmt.Errorf("stat %s: %w", full, err)
 	}
 	if !info.Mode().IsRegular() {
-		return &UserDatabaseError{Err: fmt.Errorf("/%s is a %s, and a user database must be a regular file", rel, info.Mode().Type())}
+		return notRegular(rel, info.Mode())
 	}
 
 	scanner := bufio.NewScanner(f)
@@ -282,9 +282,10 @@ func scanDatabase(rootfs, rel string, minFields int, visit func(fields []string)
 	return nil
 }
 
-// openFailed names a link on the way as the guest's own, since os.Root follows one in the tree and refuses one that leaves it with no error that says so.
+// openFailed names a link on the way, or a last part that is no regular file, as the guest's own, since a failed open says neither.
 func openFailed(root *os.Root, rel, full string, err error) error {
 	prefix := ""
+	var mode fs.FileMode
 	for part := range strings.SplitSeq(rel, "/") {
 		prefix = filepath.Join(prefix, part)
 		info, lstatErr := root.Lstat(prefix)
@@ -294,7 +295,16 @@ func openFailed(root *os.Root, rel, full string, err error) error {
 		if info.Mode()&fs.ModeSymlink != 0 {
 			return &UserDatabaseError{Err: fmt.Errorf("/%s is a symbolic link, and a user database must be a file in the same tree", prefix)}
 		}
+		mode = info.Mode()
+	}
+	// A socket, or a device with no driver behind it, fails the open itself (ENXIO).
+	if !mode.IsRegular() {
+		return notRegular(rel, mode)
 	}
 
 	return fmt.Errorf("open %s: %w", full, err)
+}
+
+func notRegular(rel string, mode fs.FileMode) error {
+	return &UserDatabaseError{Err: fmt.Errorf("/%s is a %s, and a user database must be a regular file", rel, mode.Type())}
 }
