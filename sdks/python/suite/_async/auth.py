@@ -41,7 +41,7 @@ async def explicit_overrides(ctx: AsyncContext) -> None:
 
 
 async def no_key(ctx: AsyncContext) -> None:
-    with env(SHARD_API_KEY=None, SHARD_TOKEN_FILE=None):
+    with env(SHARD_API_KEY=None):
         await rejects(ConfigurationError, listed)
 
 

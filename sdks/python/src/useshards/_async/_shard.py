@@ -3,12 +3,13 @@
 from __future__ import annotations
 
 import builtins
+import warnings
 from collections.abc import Mapping, Sequence
 from types import TracebackType
 from typing import Self
 
 from .. import _types
-from .._config import StrPath, resolve
+from .._config import PLAIN_WARNING, StrPath, resolve
 from .._types import Capabilities, Policy, PolicyRule, Restart, SandboxInfo, SecretInfo, Snapshot, Version
 from .._wire import create_body, json_of, path
 from ._sandbox import AsyncApp, AsyncSandbox, listed
@@ -25,11 +26,13 @@ class AsyncShard:
         remote: str | None = None,
         api_key: str | None = None,
         *,
-        token_file: StrPath | None = None,
         ca_file: StrPath | None = None,
         timeout: float | None = DEFAULT_TIMEOUT,
     ) -> None:
-        self._transport = AsyncTransport(resolve(remote, api_key, token_file, ca_file), timeout)
+        settings = resolve(remote, api_key, ca_file)
+        if settings.plain:
+            warnings.warn(PLAIN_WARNING, stacklevel=2)
+        self._transport = AsyncTransport(settings, timeout)
         self.policies = AsyncPolicies(self._transport)
         self.secrets = AsyncSecrets(self._transport)
         self.snapshots = AsyncSnapshots(self._transport)

@@ -42,7 +42,7 @@ def explicit_overrides(ctx: Context) -> None:
 
 
 def no_key(ctx: Context) -> None:
-    with env(SHARD_API_KEY=None, SHARD_TOKEN_FILE=None):
+    with env(SHARD_API_KEY=None):
         rejects(ConfigurationError, listed)
 
 
