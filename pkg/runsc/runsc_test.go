@@ -596,6 +596,22 @@ func TestACancelledExecKillsTheGuestProcessAlone(t *testing.T) {
 	}
 }
 
+// SHARD-497: a command that ends inside one poll still launched, and the create waits on that report.
+func TestExecReportsThePIDOfACommandThatEndsAtOnce(t *testing.T) {
+	r, _ := fakeBinary(t, writingPID(4242))
+
+	var got []int
+	if _, err := r.Exec(t.Context(), "amber-otter-1a2b", runsc.ExecOptions{
+		Argv: []string{"/bin/true"}, Report: func(pid int) { got = append(got, pid) },
+	}); err != nil {
+		t.Fatalf("Exec: %v", err)
+	}
+
+	if !slices.Equal(got, []int{4242}) {
+		t.Errorf("Exec reported %v by its return, want the one pid 4242", got)
+	}
+}
+
 // runsc answers a command that never ran with its own 128, and says why only in its log and on the
 // guest's stderr. The log is the copy shard can read, and the missing pid file is what proves it.
 func TestExecReportsWhyACommandNeverStarted(t *testing.T) {

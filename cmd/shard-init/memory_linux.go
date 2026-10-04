@@ -10,7 +10,6 @@ import (
 	"slices"
 	"strconv"
 	"strings"
-	"syscall"
 	"time"
 
 	"golang.org/x/sys/unix"
@@ -27,8 +26,7 @@ const memoryHeadroom int64 = 32 << 20
 // initCgroup is PID 1's own, beside the sandbox cgroup: a freeze of the guest's processes leaves the supervisor running to answer.
 const initCgroup = "init"
 
-// boundMemory makes the sandbox cgroup and moves PID 1 into it, so the cgroup namespace confine makes is rooted there.
-// PID 1 itself is exempt from the OOM killer, so a group kill takes the guest's processes and leaves the supervisor to report it.
+// The kernel spares global init, so children need no inherited OOM exemption.
 func boundMemory() error {
 	if err := cgroup.Delegate(cgroupRoot, "memory"); err != nil {
 		return fmt.Errorf("enable the memory controller: %w", err)
@@ -58,9 +56,6 @@ func boundMemory() error {
 	}
 	if err := cgroup.Add(dir, os.Getpid()); err != nil {
 		return fmt.Errorf("move PID 1 into the sandbox cgroup: %w", err)
-	}
-	if err := os.WriteFile("/proc/self/oom_score_adj", []byte("-1000"), 0o600); err != nil {
-		return fmt.Errorf("exempt PID 1 from the OOM killer: %w", err)
 	}
 
 	return nil
@@ -183,16 +178,4 @@ func oomKilledGuest() (bool, error) {
 	}
 
 	return events.OOM > 0, nil
-}
-
-// exposeFlag is the child's own first argument: a re-exec of shard-init that runs before the workload.
-const exposeFlag = "-expose"
-
-// expose gives up the OOM exemption inherited from PID 1 and execs the workload in its place; it returns only on a failure.
-func expose(binary string, argv []string) error {
-	if err := os.WriteFile("/proc/self/oom_score_adj", []byte("0"), 0o600); err != nil {
-		return fmt.Errorf("expose %q to the OOM killer: %w", argv[0], err)
-	}
-
-	return fmt.Errorf("exec %q: %w", argv[0], syscall.Exec(binary, argv, os.Environ()))
 }

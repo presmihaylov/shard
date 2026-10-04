@@ -428,9 +428,9 @@ itself, with `memory.oom.group=1` and `memory.swap.max=0`. `shard-init` unshares
 rooted at that cgroup, then moves itself to a sibling, `init`. That way a pause can freeze every
 guest process and leave the supervisor free to answer. Each process the supervisor starts is born
 into the bounded cgroup by `CLONE_INTO_CGROUP`. So everything a guest starts, a Docker daemon and
-its containers included, lands under the bound. `shard-init` alone is exempt from the killer,
-through `oom_score_adj=-1000`. Each child it forks runs `shard-init -expose` first, which gives the
-exemption up before the workload can fork. When the killer takes the group, `shard-init` reads
+its containers included, lands under the bound. The kernel never picks the global init, so
+`shard-init` survives the killer with no `oom_score_adj` exemption, and a child has none to
+inherit. When the killer takes the group, `shard-init` reads
 `memory.events.local` and reports the kill over vsock instead of an exit. The guest then holds
 that state and does not power off on its own. The host writes the `oom` marker first, and only then
 sends the stop. So a daemon that dies between the report and the marker finds the kill again in the

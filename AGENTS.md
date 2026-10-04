@@ -37,6 +37,8 @@ make fmt                     apply formatting
 make check                   the same gates as CI; must pass before every commit
 make vuln                    govulncheck
 make openapi                 write docs/openapi.json from the routes; make test fails while it differs (SHARD-489)
+make sdk-py                  generate the Python SDK's private client from docs/openapi.json, and its sync twins (SHARD-492)
+make sdk-py-check            the Python SDK's lint, types, generated-code check and unit tests; needs uv
 ```
 
 ## Layout
@@ -93,6 +95,8 @@ packaging/launchd/         the LaunchDaemon for the native Mac daemon
 packaging/kernel/          the guest kernel build: pinned image, config per arch, release tag helper
 services/kernel/           the guest kernel fetch: release URL, checksum, the dev override
 third_party/vz/            Code-Hex/vz as upstream wrote it, bar the one patch its UPSTREAM file names
+sdks/python/               the useshards Python SDK: an async client, and the sync one generated from it
+sdks/suite/                the check names every SDK's live suite runs, so the SDKs stay alike
 docs/
 ```
 

@@ -7,6 +7,7 @@ import (
 	"io"
 	"time"
 
+	"github.com/presmihaylov/shard/models"
 	"github.com/presmihaylov/shard/services/sandboxstate"
 )
 
@@ -21,7 +22,17 @@ const (
 
 // Logs writes what the entrypoint wrote into w: the rotated file the daemon keeps, then the log, so a stopped sandbox still answers.
 func (s *Service) Logs(_ context.Context, ref string, w io.Writer) (err error) {
-	_, t, err := s.openLogs(ref)
+	id, sb, err := s.logged(ref)
+	if err != nil {
+		return err
+	}
+
+	// A create still pulling has written nothing, so it answers what a created sandbox that never ran does.
+	if sb.State == models.StatePending {
+		return nil
+	}
+
+	t, err := s.openLogs(id)
 	if err != nil {
 		return err
 	}
@@ -32,7 +43,32 @@ func (s *Service) Logs(_ context.Context, ref string, w io.Writer) (err error) {
 
 // FollowLogs writes the output as it grows and answers why that ended, or nothing when the caller left first.
 func (s *Service) FollowLogs(ctx context.Context, ref string, w io.Writer) (reason string, err error) {
-	id, t, err := s.openLogs(ref)
+	id, sb, err := s.logged(ref)
+	if err != nil {
+		return "", err
+	}
+
+	// The output appears with the substrate, so a follow of a pending create waits on the record until the create ends.
+	for sb.State == models.StatePending {
+		select {
+		case <-ctx.Done():
+			return "", nil
+		case <-time.After(followInterval):
+		}
+
+		sb, err = s.cfg.Repo.Get(id)
+		if errors.Is(err, sandboxstate.ErrNotFound) {
+			return LogsRemoved, nil
+		}
+		if err != nil {
+			return "", err
+		}
+		if err := FailedGuard(id, sb); err != nil {
+			return "", err
+		}
+	}
+
+	t, err := s.openLogs(id)
 	if err != nil {
 		return "", err
 	}
@@ -41,33 +77,37 @@ func (s *Service) FollowLogs(ctx context.Context, ref string, w io.Writer) (reas
 	return s.follow(ctx, w, t, id)
 }
 
-// openLogs asks the record before the provider, so an id nobody ever created is refused as one.
-func (s *Service) openLogs(ref string) (string, *tail, error) {
+// logged asks the record before the provider, so an id nobody ever created is refused as one.
+func (s *Service) logged(ref string) (string, models.Sandbox, error) {
 	id, err := s.cfg.Repo.Resolve(ref)
 	if err != nil {
-		return "", nil, err
+		return "", models.Sandbox{}, err
 	}
 
 	sb, err := s.cfg.Repo.Get(id)
 	if err != nil {
-		return "", nil, err
+		return "", models.Sandbox{}, err
 	}
 
 	if err := FailedGuard(id, sb); err != nil {
-		return "", nil, err
+		return "", models.Sandbox{}, err
 	}
 
+	return id, sb, nil
+}
+
+func (s *Service) openLogs(id string) (*tail, error) {
 	path, err := s.cfg.Provider.LogPath(id)
 	if err != nil {
-		return "", nil, err
+		return nil, err
 	}
 
 	t, err := openTail(path)
 	if err != nil {
-		return "", nil, fmt.Errorf("open the output of sandbox %s: %w", id, err)
+		return nil, fmt.Errorf("open the output of sandbox %s: %w", id, err)
 	}
 
-	return id, t, nil
+	return t, nil
 }
 
 // follow asks the substrate, not the record, because a record saying running outlives an OOM kill.
@@ -98,11 +138,16 @@ func (s *Service) follow(ctx context.Context, w io.Writer, t *tail, id string) (
 
 // logsEnd tells a stop from a rm: the substrate forgets both, and only the record outlives a stop.
 func (s *Service) logsEnd(id string) (string, error) {
-	_, err := s.cfg.Repo.Get(id)
+	sb, err := s.cfg.Repo.Get(id)
 	if errors.Is(err, sandboxstate.ErrNotFound) {
 		return LogsRemoved, nil
 	}
 	if err != nil {
+		return "", err
+	}
+
+	// A sandbox that failed under the follow ends it with the refusal a new logs call would answer.
+	if err := FailedGuard(id, sb); err != nil {
 		return "", err
 	}
 

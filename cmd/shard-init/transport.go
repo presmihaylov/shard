@@ -94,7 +94,7 @@ func serveTransport(name string, boot guestBoot) error {
 	t.g.bound = bound
 	// Only a VM has the bound and a crng of its own; a test on a Linux host runs unconfined and would read its own cgroup.
 	if boot.set() {
-		t.g.oomProbe, t.g.exempt = oomKilledGuest, true
+		t.g.oomProbe = oomKilledGuest
 		t.rekey = reseed
 	}
 	go t.acceptControl(listeners[0])

@@ -136,11 +136,16 @@ type fakeRepo struct {
 	// checkpointDir and stateDir replace the fixed paths when a test needs the directory to exist on disk.
 	checkpointDir string
 	stateDir      string
+	// onGet runs inside every Get, so a test moves the record on the goroutine that polls it.
+	onGet func()
 }
 
 func (f *fakeRepo) Get(id string) (models.Sandbox, error) {
 	if err := f.r.record("repo.Get"); err != nil {
 		return models.Sandbox{}, err
+	}
+	if f.onGet != nil {
+		f.onGet()
 	}
 	if f.made != nil && id == f.made.ID {
 		return *f.made, nil
@@ -331,6 +336,8 @@ type fakeProvider struct {
 
 	// refuse is what CheckResources answers, the way vz refuses a --memory it cannot boot under.
 	refuse error
+	// startErr is what Start answers once it recorded the call, as a substrate whose app never started does.
+	startErr error
 	// spec is what Create was handed, so a test says what reached the substrate.
 	spec    models.SandboxSpec
 	grace   time.Duration
@@ -593,6 +600,9 @@ func (f *fakeProvider) Start(ctx context.Context, id string) error {
 	}
 	if err := f.r.record("provider.Start"); err != nil {
 		return err
+	}
+	if f.startErr != nil {
+		return f.startErr
 	}
 	f.started = true
 	f.status = models.Status{Exists: true, State: models.StateRunning, PID: 7}
