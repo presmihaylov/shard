@@ -585,16 +585,10 @@ export interface components {
             action: "allow" | "deny";
             destination: components["schemas"]["Destination"];
             id: string;
-            /**
-             * @description Set on a rule the policy did not write: dns when a name rule opened DNS, dns-rule when a dns rule did.
-             * @enum {string}
-             */
+            /** @description Set on a rule the policy did not write: dns when a name rule opened DNS, dns-rule when a dns rule did. @enum {string} */
             implied?: "dns" | "dns-rule";
             ports?: number[];
-            /**
-             * @description Absent for a rule over every protocol.
-             * @enum {string}
-             */
+            /** @description Absent for a rule over every protocol. @enum {string} */
             protocol?: "tcp" | "udp";
         };
         EgressDecision: {
@@ -640,10 +634,7 @@ export interface components {
             layers?: number;
             present?: boolean;
             reference?: string;
-            /**
-             * @description cached and pulled carry reference and digest; pulling adds layers and bytes, the whole download; layer carries one layer's digest, bytes and present; unpacking carries reference, digest and layers; unpacked carries one layer's digest, layer and layers; building carries nothing more.
-             * @enum {string}
-             */
+            /** @description cached and pulled carry reference and digest; pulling adds layers and bytes, the whole download; layer carries one layer's digest, bytes and present; unpacking carries reference, digest and layers; unpacked carries one layer's digest, layer and layers; building carries nothing more. @enum {string} */
             status: "cached" | "pulling" | "layer" | "unpacking" | "unpacked" | "building" | "pulled";
         };
         Exec: {
@@ -676,22 +667,13 @@ export interface components {
             next: string | null;
         };
         ExitMessage: {
-            /**
-             * Format: int64
-             * @description The exit code, or the code a command that never started ends with.
-             */
+            /** @description The exit code, or the code a command that never started ends with (int64). */
             code: number;
             /** @description Why the command never started; absent when it started. */
             error?: string;
-            /**
-             * Format: int64
-             * @description The output bytes the buffer dropped before this client read them; absent when it dropped none.
-             */
+            /** @description The output bytes the buffer dropped before this client read them; absent when it dropped none (int64). */
             lost_bytes?: number;
-            /**
-             * Format: int64
-             * @description The signal that ended the command, or 0.
-             */
+            /** @description The signal that ended the command, or 0 (int64). */
             signal: number;
         };
         ExitStatus: {
@@ -711,18 +693,12 @@ export interface components {
         FileEntry: {
             /** Format: int32 */
             gid: number;
-            /**
-             * Format: int32
-             * @description The permission bits with setuid, setgid and sticky as a number, at most 0o7777 (4095); the type is in type.
-             */
+            /** @description The permission bits with setuid, setgid and sticky as a number, at most 0o7777 (4095); the type is in type (int32). */
             mode: number;
             /** Format: date-time */
             mtime: string;
             name: string;
-            /**
-             * Format: int64
-             * @description The logical size in bytes.
-             */
+            /** @description The logical size in bytes (int64). */
             size: number;
             /** @enum {string} */
             type: "file" | "dir" | "symlink" | "other";
@@ -802,10 +778,7 @@ export interface components {
             vcpus: number;
         };
         Restart: {
-            /**
-             * Format: int64
-             * @description The first wait before a start again, in seconds; 0 or absent is 1. It doubles after each start again, up to 60.
-             */
+            /** @description The first wait before a start again, in seconds; 0 or absent is 1. It doubles after each start again, up to 60 (int64). */
             backoff?: number;
             /** Format: int64 */
             count: number;
@@ -815,24 +788,15 @@ export interface components {
             last_at?: string;
             /** @enum {string} */
             policy: "no" | "on-failure" | "always";
-            /**
-             * Format: int64
-             * @description The starts again in a row before the policy gives up; 0 or absent is unlimited, and always takes none.
-             */
+            /** @description The starts again in a row before the policy gives up; 0 or absent is unlimited, and always takes none (int64). */
             retries?: number;
         };
         RestartSpec: {
-            /**
-             * Format: int64
-             * @description The first wait before a start again, in seconds; 0 or absent is 1. It doubles after each start again, up to 60.
-             */
+            /** @description The first wait before a start again, in seconds; 0 or absent is 1. It doubles after each start again, up to 60 (int64). */
             backoff?: number;
             /** @enum {string} */
             policy: "no" | "on-failure" | "always";
-            /**
-             * Format: int64
-             * @description The starts again in a row before the policy gives up; 0 or absent is unlimited, and always takes none.
-             */
+            /** @description The starts again in a row before the policy gives up; 0 or absent is unlimited, and always takes none (int64). */
             retries?: number;
         };
         Rule: {
@@ -840,10 +804,7 @@ export interface components {
             action: "allow" | "deny";
             destination: components["schemas"]["Destination"];
             ports?: number[];
-            /**
-             * @description Absent for a rule over every protocol.
-             * @enum {string}
-             */
+            /** @description Absent for a rule over every protocol. @enum {string} */
             protocol?: "tcp" | "udp";
         };
         RuleText: {
@@ -915,10 +876,7 @@ export interface components {
             memory_mib: number;
             name?: string;
             provider: string;
-            /**
-             * Format: int64
-             * @description The storage bytes the copy takes on the host, which is neither disk_mib nor the logical size of its files.
-             */
+            /** @description The storage bytes the copy takes on the host, which is neither disk_mib nor the logical size of its files (int64). */
             size: number;
             source: string;
             source_name?: string;
