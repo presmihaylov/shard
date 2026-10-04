@@ -116,15 +116,9 @@ func TestPeerDropEndsABlockedWrite(t *testing.T) {
 		t.Run(direction, func(t *testing.T) {
 			server, client := net.Pipe()
 			host, guest := net.Pipe()
+			closePeersOnCleanup(t, server, client, host, guest)
 			done := make(chan error, 1)
 			go func() { done <- spliceWithin(server, host, 50*time.Millisecond) }()
-			t.Cleanup(func() {
-				for _, conn := range []net.Conn{server, client, host, guest} {
-					if err := conn.Close(); !quiet(err) {
-						t.Error(err)
-					}
-				}
-			})
 			peer := client
 			if direction == "guest to client" {
 				peer = guest
@@ -150,13 +144,7 @@ func TestPeerDropEndsABlockedWrite(t *testing.T) {
 func TestStreamWritesResetTheirBoundAfterIdleReads(t *testing.T) {
 	server, client := net.Pipe()
 	host, guest := net.Pipe()
-	t.Cleanup(func() {
-		for _, conn := range []net.Conn{server, client, host, guest} {
-			if err := conn.Close(); !quiet(err) {
-				t.Error(err)
-			}
-		}
-	})
+	closePeersOnCleanup(t, server, client, host, guest)
 	bound := 50 * time.Millisecond
 	done := make(chan error, 1)
 	go func() { done <- spliceWithin(server, host, bound) }()
@@ -184,4 +172,15 @@ func TestStreamWritesResetTheirBoundAfterIdleReads(t *testing.T) {
 	case <-time.After(time.Second):
 		t.Fatal("the guest close left the stream open")
 	}
+}
+
+func closePeersOnCleanup(t *testing.T, peers ...net.Conn) {
+	t.Helper()
+	t.Cleanup(func() {
+		for _, peer := range peers {
+			if err := peer.Close(); !quiet(err) {
+				t.Error(err)
+			}
+		}
+	})
 }
