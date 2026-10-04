@@ -295,7 +295,7 @@ func (d *testDaemon) stop() error {
 		errs = append(errs, fmt.Errorf("the socket %s outlived the daemon: %w", socket, err))
 	}
 
-	// RemoveAll takes the records, the only handle on what an rm missed, and trips over a mount a failed create left.
+	// RemoveAll takes the records, the only handle on what a remove missed, and trips over a mount a failed create left.
 	errs = append(errs, hostclean.Release(d.root))
 
 	return errors.Join(append(errs, os.RemoveAll(d.root), os.Remove(d.log))...)

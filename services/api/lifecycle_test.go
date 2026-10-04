@@ -691,7 +691,7 @@ func TestTheStatusAndTheCodeFollowTheError(t *testing.T) {
 		{"not paused", &sandbox.StateError{ID: "sandbox1", State: models.StateRunning, Fix: "resume takes a paused sandbox", Code: models.CodeSandboxNotPaused}, http.StatusConflict, "sandbox_not_paused", "resume takes a paused sandbox"},
 		{"live", &sandbox.StateError{ID: "sandbox1", State: models.StateRunning, Fix: "stop it first", Code: models.CodeSandboxLive}, http.StatusConflict, "sandbox_live", "stop it first"},
 		{"no snapshot", &sandbox.StateError{ID: "sandbox1", State: models.StatePaused, Fix: "its record names no snapshot to resume from", Code: models.CodeNoSnapshot}, http.StatusConflict, "no_snapshot", "no snapshot"},
-		{"gone from the substrate", &sandbox.UnavailableError{ID: "sandbox1", Why: "is gone from gvisor", Fix: "remove it with shard rm sandbox1 and create another"}, http.StatusConflict, "sandbox_not_running", "gone from gvisor"},
+		{"gone from the substrate", &sandbox.UnavailableError{ID: "sandbox1", Why: "is gone from gvisor", Fix: "remove it with shard remove sandbox1 and create another"}, http.StatusConflict, "sandbox_not_running", "gone from gvisor"},
 		{"an unclaimed verb", models.Unsupported("gvisor", "fork"), http.StatusConflict, "unsupported", "provider gvisor does not support fork on this host"},
 		{"anything else", errors.New("runsc: boom"), http.StatusInternalServerError, "internal", "boom"},
 	}

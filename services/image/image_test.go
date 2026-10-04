@@ -582,7 +582,7 @@ func TestClaimKeepsTheRootFSUntilTheRecordIsWritten(t *testing.T) {
 	removed := make(chan error, 1)
 	var rootfs string
 	_, err := svc.Claim(t.Context(), ref, func(img image.Image) error {
-		// free stands for the check image rm and prune both run over the sandbox records.
+		// free stands for the check image remove and prune both run over the sandbox records.
 		go func() { removed <- svc.Remove(context.Background(), ref, func() error { return nil }) }()
 
 		select {

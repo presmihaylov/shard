@@ -51,15 +51,15 @@ func TestTokensMintPrintsARecordTheFrontAccepts(t *testing.T) {
 	flags[3] = tokenPath
 
 	out.Reset()
-	if err := app.Run(t.Context(), append(flags, "ls")); err != nil {
-		t.Fatalf("ls with the minted record: %v", err)
+	if err := app.Run(t.Context(), append(flags, "list")); err != nil {
+		t.Fatalf("list with the minted record: %v", err)
 	}
 	if !strings.Contains(out.String(), "up-1") {
-		t.Errorf("ls with the minted record printed %q, want the sandbox the daemon holds", out.String())
+		t.Errorf("list with the minted record printed %q, want the sandbox the daemon holds", out.String())
 	}
 }
 
-// tokens ls lists a minted token as active and never-expiring, and tokens revoke by id flips it to revoked.
+// tokens list lists a minted token as active and never-expiring, and tokens revoke by id flips it to revoked.
 func TestTokensListAndRevokeByID(t *testing.T) {
 	var out bytes.Buffer
 
@@ -75,12 +75,12 @@ func TestTokensListAndRevokeByID(t *testing.T) {
 	}
 
 	out.Reset()
-	if err := app.Run(t.Context(), []string{"tokens", "ls", "--signing-key-file", secret}); err != nil {
-		t.Fatalf("ls: %v", err)
+	if err := app.Run(t.Context(), []string{"tokens", "list", "--signing-key-file", secret}); err != nil {
+		t.Fatalf("list: %v", err)
 	}
 	listing := out.String()
 	if !strings.Contains(listing, "active") || !strings.Contains(listing, "never") {
-		t.Errorf("ls listed %q, want the ci token as active and never-expiring", listing)
+		t.Errorf("list listed %q, want the ci token as active and never-expiring", listing)
 	}
 
 	// Pull the id from the listing, then revoke that one id; the flags come before the id.
@@ -91,11 +91,11 @@ func TestTokensListAndRevokeByID(t *testing.T) {
 	}
 
 	out.Reset()
-	if err := app.Run(t.Context(), []string{"tokens", "ls", "--signing-key-file", secret}); err != nil {
-		t.Fatalf("ls after revoke: %v", err)
+	if err := app.Run(t.Context(), []string{"tokens", "list", "--signing-key-file", secret}); err != nil {
+		t.Fatalf("list after revoke: %v", err)
 	}
 	if !strings.Contains(out.String(), "revoked") {
-		t.Errorf("ls after revoke listed %q, want the ci token as revoked", out.String())
+		t.Errorf("list after revoke listed %q, want the ci token as revoked", out.String())
 	}
 }
 
@@ -120,7 +120,7 @@ func TestTokensRevokeRefusesAnUnknownID(t *testing.T) {
 // mint with no key flag creates the default key, and a front started with no key flag checks tokens over the same one.
 func TestTokensMintAndServeShareTheDefaultSigningKey(t *testing.T) {
 	var out bytes.Buffer
-	app := newLsApp(t, &out, listed(), nil)
+	app := newListApp(t, &out, listed(), nil)
 
 	if err := app.Run(t.Context(), []string{"tokens", "mint", "--name", "build-agent", "--duration", "24h"}); err != nil {
 		t.Fatalf("mint with no key flag: %v", err)
@@ -136,33 +136,33 @@ func TestTokensMintAndServeShareTheDefaultSigningKey(t *testing.T) {
 	address, cert := startFront(t, serve.Config{Listen: "127.0.0.1:0", Root: app.Root, Out: io.Discard})
 
 	out.Reset()
-	if err := app.Run(t.Context(), []string{"--remote", "https://" + address, "--token-file", tokenPath, "--ca-file", cert, "ls"}); err != nil {
-		t.Fatalf("ls through the front with the minted token: %v", err)
+	if err := app.Run(t.Context(), []string{"--remote", "https://" + address, "--token-file", tokenPath, "--ca-file", cert, "list"}); err != nil {
+		t.Fatalf("list through the front with the minted token: %v", err)
 	}
 	if !strings.Contains(out.String(), "up-1") {
-		t.Errorf("ls through the front printed %q, want the sandbox the daemon holds", out.String())
+		t.Errorf("list through the front printed %q, want the sandbox the daemon holds", out.String())
 	}
 
 	out.Reset()
-	if err := app.Run(t.Context(), []string{"tokens", "ls"}); err != nil {
-		t.Fatalf("tokens ls with no flag: %v", err)
+	if err := app.Run(t.Context(), []string{"tokens", "list"}); err != nil {
+		t.Fatalf("tokens list with no flag: %v", err)
 	}
 	if !strings.Contains(out.String(), "build-agent") {
-		t.Errorf("tokens ls with no flag listed %q, want the token mint recorded", out.String())
+		t.Errorf("tokens list with no flag listed %q, want the token mint recorded", out.String())
 	}
 }
 
-// ls and revoke need only the ledger, so on a root with no key they report an empty ledger and create nothing.
-func TestTokensLsAndRevokeCreateNoSigningKey(t *testing.T) {
+// list and revoke need only the ledger, so on a root with no key they report an empty ledger and create nothing.
+func TestTokensListAndRevokeCreateNoSigningKey(t *testing.T) {
 	var out bytes.Buffer
 	dir := t.TempDir()
 	app := App{Version: "test", Root: dir, Out: &out}
 
-	if err := app.Run(t.Context(), []string{"tokens", "ls"}); err != nil {
-		t.Fatalf("ls: %v", err)
+	if err := app.Run(t.Context(), []string{"tokens", "list"}); err != nil {
+		t.Fatalf("list: %v", err)
 	}
 	if lines := strings.Split(strings.TrimSpace(out.String()), "\n"); len(lines) != 1 || !strings.HasPrefix(lines[0], "ID") {
-		t.Errorf("ls printed %q, want the header alone", out.String())
+		t.Errorf("list printed %q, want the header alone", out.String())
 	}
 	err := app.Run(t.Context(), []string{"tokens", "revoke", "some-id"})
 	if err == nil || !strings.Contains(err.Error(), "no token with id some-id") {
@@ -172,7 +172,7 @@ func TestTokensLsAndRevokeCreateNoSigningKey(t *testing.T) {
 		t.Errorf("revoke --name: %v", err)
 	}
 	if _, err := os.Stat(filepath.Join(dir, "auth")); !errors.Is(err, fs.ErrNotExist) {
-		t.Errorf("ls or revoke created %s/auth: %v", dir, err)
+		t.Errorf("list or revoke created %s/auth: %v", dir, err)
 	}
 }
 
@@ -184,7 +184,7 @@ func TestTokensRefuseAMissingSigningKeyFile(t *testing.T) {
 
 	for _, args := range [][]string{
 		{"tokens", "mint", "--name", "ci", "--signing-key-file", missing},
-		{"tokens", "ls", "--signing-key-file", missing},
+		{"tokens", "list", "--signing-key-file", missing},
 		{"tokens", "revoke", "--signing-key-file", missing, "some-id"},
 	} {
 		err := app.Run(t.Context(), args)
@@ -199,7 +199,7 @@ func TestTokensRefuseAMissingSigningKeyFile(t *testing.T) {
 	}
 }
 
-// tokenID pulls the id column out of a tokens ls listing for the row whose name matches.
+// tokenID pulls the id column out of a tokens list listing for the row whose name matches.
 func tokenID(t *testing.T, listing, name string) string {
 	t.Helper()
 

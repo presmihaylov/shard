@@ -28,7 +28,7 @@ func TestStopTakesAName(t *testing.T) {
 	}
 }
 
-func TestRmTakesAName(t *testing.T) {
+func TestRemoveTakesAName(t *testing.T) {
 	var out bytes.Buffer
 
 	sb := running()
@@ -37,12 +37,12 @@ func TestRmTakesAName(t *testing.T) {
 
 	app, _ := newClientApp(t, &out, sb)
 
-	if err := app.Run(context.Background(), []string{"rm", "builder"}); err != nil {
-		t.Fatalf("rm by name: %v", err)
+	if err := app.Run(context.Background(), []string{"remove", "builder"}); err != nil {
+		t.Fatalf("remove by name: %v", err)
 	}
 
 	if got := strings.TrimSpace(out.String()); got != sb.ID {
-		t.Fatalf("rm printed %q, want the id %q", got, sb.ID)
+		t.Fatalf("remove printed %q, want the id %q", got, sb.ID)
 	}
 }
 
