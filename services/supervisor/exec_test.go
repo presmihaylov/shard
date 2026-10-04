@@ -112,3 +112,21 @@ func unreadDialer(t *testing.T) supervisor.Dialer {
 		return host, nil
 	}
 }
+
+// A cancel the guest never reads leaves the command running there, so the exec says so rather than end as a plain cancel (SHARD-562).
+func TestACancelTheGuestNeverReadsIsReported(t *testing.T) {
+	dial := guestDialer(t, func(guest net.Conn) error {
+		return supervisor.WriteJSONFrame(guest, supervisor.StreamStarted, supervisor.StartedFrame{PID: 42})
+	})
+
+	ctx, cancel := context.WithCancel(t.Context())
+	defer cancel()
+	began := time.Now()
+	_, err := supervisor.Exec(ctx, dial, "sb", supervisor.ExecHeader{Argv: []string{"sleep"}}, models.ExecSpec{Report: func(int) { cancel() }})
+	if !errors.Is(err, context.Canceled) || !errors.Is(err, os.ErrDeadlineExceeded) || !strings.Contains(err.Error(), "the command may run on") {
+		t.Fatalf("exec gave %v, want the cancel's own failure beside the context's", err)
+	}
+	if took := time.Since(began); took > 5*time.Second {
+		t.Errorf("exec took %s to give up a cancel bounded by a second", took)
+	}
+}
