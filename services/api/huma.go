@@ -27,17 +27,17 @@ func init() {
 type apiError struct {
 	Object ErrorObject `json:"error"`
 	status int
+	// cause is what the message left out, which only the daemon log reads.
+	cause error
 }
 
 func (e *apiError) Error() string { return e.Object.Message }
 
 func (e *apiError) GetStatus() int { return e.status }
 
-// fail is the error a typed handler returns, which Huma answers with the status and the code its type says.
+// fail is the error a typed handler returns, which Huma answers with the status and the code its type says; every typed route is public.
 func fail(err error) error {
-	body := errorBody(err)
-
-	return &body
+	return refusal(err, false)
 }
 
 // newError answers Huma's own refusals in the daemon's shape: a bad request is invalid_request whatever status Huma picked.
@@ -46,7 +46,7 @@ func newError(status int, msg string, errs ...error) huma.StatusError {
 		return &apiError{status: status, Object: ErrorObject{Code: models.CodeBodyTooLarge, Message: "decode the request body: http: request body too large"}}
 	}
 	if status >= http.StatusInternalServerError {
-		return &apiError{status: status, Object: ErrorObject{Code: models.CodeInternal, Message: withDetails(msg, errs)}}
+		return &apiError{status: status, Object: ErrorObject{Code: models.CodeInternal, Message: internalText}, cause: errors.New(withDetails(msg, errs))}
 	}
 
 	return &apiError{status: http.StatusBadRequest, Object: ErrorObject{Code: models.CodeInvalidRequest, Message: withDetails(msg, errs)}}
@@ -116,8 +116,18 @@ func (h *Handler) config() huma.Config {
 			Security: []map[string][]string{{"bearer": {}}},
 		},
 		Formats:       map[string]huma.Format{"application/json": h.format()},
+		Transformers:  []huma.Transformer{h.logRefusal},
 		DefaultFormat: "application/json",
 	}
+}
+
+// logRefusal keeps the cause a typed route's public text left out, as errorBody does for a raw one.
+func (h *Handler) logRefusal(ctx huma.Context, _ string, v any) (any, error) {
+	if refused, ok := v.(*apiError); ok {
+		h.logCause(ctx.Method()+" "+ctx.URL().Path, refused.cause)
+	}
+
+	return v, nil
 }
 
 // schemaName keeps Huma's names, less the one an SDK would otherwise read as ApiError.
@@ -241,7 +251,7 @@ func (h *Handler) register(mux *http.ServeMux) huma.API {
 
 	for _, e := range h.routeTable() {
 		if e.Class == Local {
-			mux.HandleFunc(e.Method+" "+e.Pattern, e.handler)
+			mux.HandleFunc(e.Method+" "+e.Pattern, markLocal(e.handler))
 
 			continue
 		}

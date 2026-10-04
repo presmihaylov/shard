@@ -392,6 +392,9 @@ curl --unix-socket /var/lib/shard/shard.sock -X POST http://localhost/v0/images/
 - Every route that answers a sandbox answers the record without its host side, which stays in the
   daemon's state. In the `egress` of a record, an implied DNS rule names the group `dns` in place of
   the bridge gateway, and keeps its `id`.
+- No public error body, `failed_reason`, list warning or stream error frame names a host path, a
+  pid or the root. Each says what its error type made public, and the daemon log keeps the whole
+  cause. A record from before this answers `the sandbox failed; the daemon log has the cause`.
 - `GET /v0/version` answers `{"version": "...", "api_version": "v0"}`. `shard version` prints the
   `version` as its `daemon` line, under the `client` line of the binary that asked. `shard
   --version` prints only the `client` line, touches no socket, and never fails, like `docker
@@ -717,7 +720,7 @@ else that a refusal carries lives inside `error`, and the root never holds anyth
 | `sandbox_not_paused` | 409 | resume on a sandbox that is not paused |
 | `no_app` | 409 | attach or app stop on a sandbox that `create` made, which runs no app |
 | `app_ended` | 409 | app stop once the restart policy of the app ended |
-| `sandbox_failed` | 409 | any verb except a get or a `remove` on a create that ended `failed`. The message carries the `failed_reason`, and `remove` frees the sandbox |
+| `sandbox_failed` | 409 | any verb except a get or a `remove` on a create that ended `failed`. The message carries the public `failed_reason`, and `remove` frees the sandbox |
 | `sandbox_live` | 409 | grant, ungrant, attach or detach while the sandbox runs or is paused |
 | `no_checkpoint` | 409 | resume on a paused sandbox whose record names no checkpoint |
 | `unsupported` | 409 | the provider does not claim the verb |
@@ -726,7 +729,7 @@ else that a refusal carries lives inside `error`, and the root never holds anyth
 | `unauthorized` | 401 | the TCP front, when the request carries no valid bearer token, and then the front dials nothing |
 | `forbidden` | 403 | the TCP front, when the token is valid but its scopes do not reach the route, and then the front dials nothing. Also the daemon, on a create that names a secret without `secret:*` or a policy without `policy:*` |
 | `substrate_timeout` | 504 | a stop, remove or restart whose substrate status call did not answer within the budget. Retry it once the runtime frees. On gVisor, rm --force reclaims through the wedge instead. It SIGKILLs the sandbox's own runsc processes, which it finds by the sandbox's cgroup and by the sandbox id on their command line, then finishes the teardown. It answers this code only when that kill fails too |
-| `internal` | 500 | anything else, and the message says what the daemon got back |
+| `internal` | 500 | anything else. A local route answers what the daemon got back. A public route answers only `the daemon could not complete the request; its log has the cause`, and the daemon log keeps the cause |
 
 `services/client` decodes only that object into `*client.APIError`, with `Status`, `Code`,
 `Message` and `Holders`. A caller therefore matches on the code with `errors.As`, never on the
