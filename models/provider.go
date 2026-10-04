@@ -31,8 +31,7 @@ type Provider interface {
 	Stop(ctx context.Context, id string, grace time.Duration) error
 	// Remove deletes the substrate's own state, not the shard record and not a checkpoint.
 	Remove(ctx context.Context, id string) error
-	// Snapshot copies the files the stopped sourceID kept into dir, which Create reads back as a Seed.
-	// It refuses a source that is alive, and it writes nothing of the source.
+	// Snapshot refuses a live source, which could change the files during the copy.
 	Snapshot(ctx context.Context, sourceID, dir string) error
 
 	// Exec runs a command in a sandbox that already runs and returns how that command ended. It is
@@ -63,9 +62,7 @@ type Provider interface {
 	// HeldLogs names the log files a process outside the daemon appends to, which the daemon bounds by copy and truncate.
 	HeldLogs(id string) ([]string, error)
 
-	// Pause writes a complete checkpoint into dir, frees the memory and ends the sandbox on the substrate,
-	// so Status reports it stopped; a pause over a dir that holds one leaves it holding one. Optional,
-	// see Capabilities.
+	// A checkpoint replaces the runtime, so Status reports a stopped substrate. Optional.
 	Pause(ctx context.Context, id string, dir string) error
 	// Resume brings the sandbox back from the checkpoint in dir and does not consume it. Optional.
 	Resume(ctx context.Context, id string, dir string) error

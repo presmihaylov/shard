@@ -783,8 +783,7 @@ func (s *Service) grantSecrets(req CreateRequest) ([]string, error) {
 	return env, nil
 }
 
-// pull fetches the image the pending record already references. The record exists before the pull, so
-// a prune keyed on that reference cannot delete the rootfs the create runs.
+// The pending record prevents prune from removing the rootfs during the pull.
 func (s *Service) pull(ctx context.Context, req CreateRequest) (image.Image, error) {
 	// A registry that accepts the connection and then stalls would otherwise pin the create forever.
 	if s.cfg.PullTimeout > 0 {

@@ -11,8 +11,7 @@ import (
 	"github.com/presmihaylov/shard/models"
 )
 
-// One snapshot seeds two live sandboxes at once, each over its own copy of the files, and the source
-// stays stopped with its layer as it was.
+// Each sandbox needs a separate layer copy to keep its writes private.
 func TestOneSnapshotSeedsTwoIndependentSandboxes(t *testing.T) {
 	h := newNetworkedHarness(t)
 	source := h.start(t, "/bin/sh", "-c", "while true; do sleep 0.2; done")
