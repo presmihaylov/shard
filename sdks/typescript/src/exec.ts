@@ -171,14 +171,13 @@ export class Session {
   private async connect(signal?: AbortSignal): Promise<WebSocket> {
     const deadline = Date.now() + reattachBoundMs;
     for (;;) {
-      try {
-        return await WebSocket.connect(this.transport, this.path(), this.what, { signal });
-      } catch (err) {
-        if (!(err instanceof ConflictError) || err.code !== "in_use" || Date.now() >= deadline) {
-          throw err;
-        }
+      const ws = await WebSocket.connect(this.transport, this.path(), this.what, { signal }).catch((err: unknown) => stillHeld(err, deadline));
+      if (ws) {
+        return ws;
       }
-      await sleep(reattachPauseMs, undefined, { signal });
+      await sleep(reattachPauseMs, undefined, { signal }).catch((err: unknown) => {
+        throw signal?.aborted ? signal.reason : err;
+      });
     }
   }
 
@@ -287,6 +286,14 @@ export class Session {
   private get params(): { path: { id: string; exec: string } } {
     return { path: { id: this.sandboxId, exec: this.id } };
   }
+}
+
+/** stillHeld lets connect try again on an in_use refusal inside the bound, and rethrows anything else. */
+function stillHeld(err: unknown, deadline: number): undefined {
+  if (err instanceof ConflictError && err.code === "in_use" && Date.now() < deadline) {
+    return undefined;
+  }
+  throw err;
 }
 
 function message(stream: number, payload: Uint8Array): Buffer {

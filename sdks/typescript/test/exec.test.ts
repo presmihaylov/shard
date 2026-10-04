@@ -178,6 +178,24 @@ test("an attach the daemon still holds past the retry bound rejects as in_use", 
   await assert.rejects(session.wait(), (err: unknown) => err instanceof ConflictError && err.code === "in_use");
 });
 
+test("an abort while an attach waits out the daemon's hold rejects with the caller's reason", async () => {
+  const session = await start();
+  const first = await daemon.peer(0);
+  const caller = new AbortController();
+  const reason = new Error("the caller gave up");
+  let refused = 0;
+  daemon.upgrade = () => {
+    refused += 1;
+    setTimeout(() => caller.abort(reason), 20);
+
+    return inUse;
+  };
+  session.disconnect();
+  first.close();
+  await assert.rejects(session.wait(caller.signal), (err: unknown) => err === reason);
+  assert.equal(refused, 1, "no attach after the abort");
+});
+
 test("an attach refused for any other conflict is not retried", async () => {
   const session = new Session(transport, "sb_1", "ex_1", new OutputCapture(1024), {});
   daemon.upgrade = () => ({ status: 409, json: { error: { code: "sandbox_not_running", message: "sandbox sb_1 is stopped" } } });
