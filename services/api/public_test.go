@@ -2,7 +2,6 @@ package api_test
 
 import (
 	"net/http"
-	"net/netip"
 	"slices"
 	"testing"
 
@@ -11,9 +10,6 @@ import (
 	"github.com/presmihaylov/shard/services/egress"
 	"github.com/presmihaylov/shard/services/image"
 )
-
-// hostKeys name the host side of a record, which only the socket may answer.
-var hostKeys = []string{"pid", "netns_path", "host_interface", "address", "checkpoint", "pausing", "exit_channel", "unresponsive_reason"}
 
 // The front forwards public routes only, so a route with no class would be neither served remotely nor refused on purpose.
 func TestEveryRouteIsPublicOrLocalAndTheLocalOnesAreTheHostOnes(t *testing.T) {
@@ -33,106 +29,12 @@ func TestEveryRouteIsPublicOrLocalAndTheLocalOnesAreTheHostOnes(t *testing.T) {
 		"POST /v0/images/pull",
 		"POST /v0/images/prune",
 		"DELETE /v0/images/{ref...}",
-		"GET /v0/local/sandboxes",
-		"GET /v0/local/sandboxes/{id}",
 	}
 	slices.Sort(local)
 	slices.Sort(want)
 	if !slices.Equal(local, want) {
 		t.Errorf("the local routes are %v, want %v", local, want)
 	}
-}
-
-// hostSide is a running sandbox with every host field set, so a public answer that drops one proves it.
-func hostSide(t *testing.T, s seeded) models.Sandbox {
-	t.Helper()
-
-	sb, err := s.repo.Create(models.Sandbox{
-		Image:              "docker.io/library/alpine:3.20",
-		Provider:           "gvisor",
-		State:              models.StateRunning,
-		ExitChannel:        "the exit pipe closed",
-		UnresponsiveReason: "the guest missed two pings",
-		Checkpoint:         "/var/lib/shard/checkpoints/sb",
-		Pausing:            true,
-		PID:                4242,
-		NetnsPath:          "/run/netns/shard-sb",
-		Address:            netip.MustParsePrefix("10.88.0.9/24"),
-		HostInterface:      "shv-sb",
-	})
-	if err != nil {
-		t.Fatalf("Create: %v", err)
-	}
-
-	return sb
-}
-
-func TestThePublicRecordLeavesOutTheHostSideAndTheLocalOneKeepsIt(t *testing.T) {
-	s := seed(t)
-	sb := hostSide(t, s)
-
-	_, list := get(t, s.server, "/v0/sandboxes")
-	_, one := get(t, s.server, "/v0/sandboxes/"+sb.ID)
-	for path, record := range map[string]map[string]any{"/v0/sandboxes": rowOf(t, list, sb.ID), "/v0/sandboxes/{id}": one} {
-		if record["id"] != sb.ID {
-			t.Fatalf("GET %s answered %v, want the record of %s", path, record, sb.ID)
-		}
-		checkNoHostKeys(t, "GET "+path, record)
-	}
-
-	_, localList := get(t, s.server, "/v0/local/sandboxes")
-	_, localOne := get(t, s.server, "/v0/local/sandboxes/"+sb.ID)
-	for path, record := range map[string]map[string]any{"/v0/local/sandboxes": rowOf(t, localList, sb.ID), "/v0/local/sandboxes/{id}": localOne} {
-		checkHostKeys(t, "GET "+path, record)
-	}
-}
-
-// checkNoHostKeys fails for each host field the record carries.
-func checkNoHostKeys(t *testing.T, label string, record map[string]any) {
-	t.Helper()
-
-	for _, key := range hostKeys {
-		if _, ok := record[key]; ok {
-			t.Errorf("%s answered %s, a host field", label, key)
-		}
-	}
-}
-
-// checkHostKeys fails for each host field the record leaves out.
-func checkHostKeys(t *testing.T, label string, record map[string]any) {
-	t.Helper()
-
-	for _, key := range hostKeys {
-		if _, ok := record[key]; !ok {
-			t.Errorf("%s left out %s, which the socket answers", label, key)
-		}
-	}
-}
-
-// rowOf is the row of id in a list body.
-func rowOf(t *testing.T, body map[string]any, id string) map[string]any {
-	t.Helper()
-
-	rows, _ := body["sandboxes"].([]any)
-	for _, row := range rows {
-		if record, ok := row.(map[string]any); ok && record["id"] == id {
-			return record
-		}
-	}
-	t.Fatalf("the list %v holds no row for %s", body, id)
-
-	return nil
-}
-
-// A write verb answers the public record too, so a token that may start a sandbox never reads its pid.
-func TestAWriteVerbAnswersThePublicRecord(t *testing.T) {
-	s := seed(t)
-
-	status, body := send(t, s.server, http.MethodPost, "/v0/sandboxes/"+s.running.ID+"/start", "")
-	if status != http.StatusOK || body["state"] != string(models.StateRunning) {
-		t.Fatalf("POST start answered %d %v", status, body)
-	}
-	checkNoHostKeys(t, "POST start", body)
 }
 
 // The implied rules open DNS to the bridge gateway, so the public egress names the dns group and keeps each id.
@@ -149,13 +51,9 @@ func TestThePublicEgressNamesTheImpliedRulesAsTheDNSGroup(t *testing.T) {
 		t.Fatalf("Create: %v", err)
 	}
 
-	for path, want := range map[string]string{
-		"/v0/sandboxes/" + sb.ID:       egress.GroupDNS,
-		"/v0/local/sandboxes/" + sb.ID: "10.87.0.1",
-	} {
-		_, body := get(t, s.server, path)
-		checkImpliedRules(t, path, body, want)
-	}
+	path := "/v0/sandboxes/" + sb.ID
+	_, body := get(t, s.server, path)
+	checkImpliedRules(t, path, body, egress.GroupDNS)
 }
 
 // checkImpliedRules fails unless the record's egress leads with the two implied dns rules, ids 1 and 2, each naming want.
@@ -199,7 +97,7 @@ func TestCapabilitiesNameEveryVerbTheProviderRefuses(t *testing.T) {
 }
 
 // A create is public, so its pull progress never names the host path the image lands at.
-func TestTheCreateStreamLeavesOutThePathAndTheHostSide(t *testing.T) {
+func TestTheCreateStreamLeavesOutThePath(t *testing.T) {
 	s := seed(t)
 	s.verbs.createdID = s.running.ID
 	s.verbs.pulled = []image.Event{{Status: image.StatusPulled, Reference: "docker.io/library/alpine:3.20", Path: "/var/lib/shard/images/alpine"}}
@@ -211,6 +109,4 @@ func TestTheCreateStreamLeavesOutThePathAndTheHostSide(t *testing.T) {
 	if event, _ := lines[0]["event"].(map[string]any); event["path"] != nil || event["reference"] == nil {
 		t.Errorf("the event reads %v, want the reference and no path", lines[0])
 	}
-	sb, _ := lines[1]["sandbox"].(map[string]any)
-	checkNoHostKeys(t, "the streamed record", sb)
 }

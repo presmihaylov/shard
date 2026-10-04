@@ -340,8 +340,6 @@ The routes:
 curl --unix-socket /var/lib/shard/shard.sock http://localhost/v0/version
 curl --unix-socket /var/lib/shard/shard.sock http://localhost/v0/capabilities
 curl --unix-socket /var/lib/shard/shard.sock http://localhost/v0/daemon
-curl --unix-socket /var/lib/shard/shard.sock http://localhost/v0/local/sandboxes
-curl --unix-socket /var/lib/shard/shard.sock http://localhost/v0/local/sandboxes/<id or name>
 curl --unix-socket /var/lib/shard/shard.sock http://localhost/v0/sandboxes
 curl --unix-socket /var/lib/shard/shard.sock 'http://localhost/v0/sandboxes?all=true'
 curl --unix-socket /var/lib/shard/shard.sock 'http://localhost/v0/sandboxes?limit=20&cursor=<id>'
@@ -389,14 +387,11 @@ curl --unix-socket /var/lib/shard/shard.sock -X POST http://localhost/v0/images/
 ```
 
 - Every route is public or local. A local route answers on the socket only, and `shard serve`
-  refuses it with the same `403` as an unknown route. The local routes are `GET /v0/daemon`, the
-  four `images` routes, `GET /v0/local/sandboxes` and `GET /v0/local/sandboxes/{id}`. The CLI on the
-  daemon host reads its sandboxes through the two local ones.
-- A public route answers the sandbox record without its host side: `pid`, `netns_path`,
-  `host_interface`, `address`, `checkpoint`, `pausing`, `exit_channel` and `unresponsive_reason`.
-  `GET /v0/local/sandboxes` and `GET /v0/local/sandboxes/{id}` take the same query as the public
-  routes and answer the whole record. In the public `egress` of a record, an implied DNS rule names
-  the group `dns` in place of the bridge gateway, and keeps its `id`.
+  refuses it with the same `403` as an unknown route. The local routes are `GET /v0/daemon` and the
+  four `images` routes.
+- Every route that answers a sandbox answers the record without its host side, which stays in the
+  daemon's state. In the `egress` of a record, an implied DNS rule names the group `dns` in place of
+  the bridge gateway, and keeps its `id`.
 - `GET /v0/version` answers `{"version": "...", "api_version": "v0"}`. `shard version` prints the
   `version` as its `daemon` line, under the `client` line of the binary that asked. `shard
   --version` prints only the `client` line, touches no socket, and never fails, like `docker
