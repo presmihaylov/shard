@@ -6,8 +6,8 @@ import httpx
 
 from ... import errors
 from ...client import AuthenticatedClient, Client
+from ...models.egress_decision import EgressDecision
 from ...models.error import Error
-from ...models.record import Record
 from ...types import UNSET, Response, Unset
 
 
@@ -35,7 +35,7 @@ def _get_kwargs(
 
 def _parse_response(
     *, client: AuthenticatedClient | Client, response: httpx.Response
-) -> Any | Error | list[Record]:
+) -> Any | Error | list[EgressDecision]:
     if response.status_code == 101:
         response_101 = cast(Any, None)
         return response_101
@@ -44,7 +44,7 @@ def _parse_response(
         response_200 = []
         _response_200 = response.json()
         for response_200_item_data in _response_200:
-            response_200_item = Record.from_dict(response_200_item_data)
+            response_200_item = EgressDecision.from_dict(response_200_item_data)
 
             response_200.append(response_200_item)
 
@@ -57,7 +57,7 @@ def _parse_response(
 
 def _build_response(
     *, client: AuthenticatedClient | Client, response: httpx.Response
-) -> Response[Any | Error | list[Record]]:
+) -> Response[Any | Error | list[EgressDecision]]:
     return Response(
         status_code=HTTPStatus(response.status_code),
         content=response.content,
@@ -71,7 +71,7 @@ def sync_detailed(
     *,
     client: AuthenticatedClient | Client,
     follow: bool | Unset = UNSET,
-) -> Response[Any | Error | list[Record]]:
+) -> Response[Any | Error | list[EgressDecision]]:
     """Read or follow the egress decisions of a sandbox"""
 
     kwargs = _get_kwargs(
@@ -91,7 +91,7 @@ def sync(
     *,
     client: AuthenticatedClient | Client,
     follow: bool | Unset = UNSET,
-) -> Any | Error | list[Record] | None:
+) -> Any | Error | list[EgressDecision] | None:
     """Read or follow the egress decisions of a sandbox"""
 
     return sync_detailed(
@@ -106,7 +106,7 @@ async def asyncio_detailed(
     *,
     client: AuthenticatedClient | Client,
     follow: bool | Unset = UNSET,
-) -> Response[Any | Error | list[Record]]:
+) -> Response[Any | Error | list[EgressDecision]]:
     """Read or follow the egress decisions of a sandbox"""
 
     kwargs = _get_kwargs(
@@ -124,7 +124,7 @@ async def asyncio(
     *,
     client: AuthenticatedClient | Client,
     follow: bool | Unset = UNSET,
-) -> Any | Error | list[Record] | None:
+) -> Any | Error | list[EgressDecision] | None:
     """Read or follow the egress decisions of a sandbox"""
 
     return (

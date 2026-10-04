@@ -29,20 +29,20 @@ from .._types import (
     AppInfo,
     CommandInfo,
     CommandResult,
-    NetworkLogRecord,
+    EgressDecision,
     OutputCallback,
     SandboxInfo,
     TerminalSize,
     app_exit,
     command_info,
-    network_log_record,
+    egress_decision,
     sandbox_info,
 )
 from .._wire import AsyncCall, path
 from ..errors import ProtocolError, ShardConnectionError
 from ._command import AsyncCommand, run_command, start_command
 from ._files import AsyncFiles
-from ._follow import AsyncFollow, log_chunk, network_log_entry
+from ._follow import AsyncFollow, egress_log_entry, log_chunk
 from ._transport import AsyncTransport
 
 
@@ -119,7 +119,7 @@ class AsyncSandbox:
         on_stdout: OutputCallback | None = None,
         on_stderr: OutputCallback | None = None,
     ) -> CommandResult | AsyncCommand:
-        """A cancel or a dropped connection leaves the remote command running."""
+        """execute a command in a running sandbox"""
         if background:
             if stdin is not None and not isinstance(stdin, bool):
                 raise TypeError("a background command takes its input through write_stdin(), so stdin is a bool")
@@ -153,19 +153,23 @@ class AsyncSandbox:
         )
 
     async def stop(self) -> None:
+        """stop a sandbox and preserve its files"""
         await self._verb(lambda: stop_sandbox.asyncio_detailed(self.id, client=self._transport.api))
 
     async def start(self) -> None:
+        """start a stopped sandbox with its saved files"""
         await self._verb(lambda: start_sandbox.asyncio_detailed(self.id, client=self._transport.api))
 
     async def pause(self) -> None:
+        """save a sandbox's state and suspend it"""
         await self._verb(lambda: pause_sandbox.asyncio_detailed(self.id, client=self._transport.api))
 
     async def resume(self) -> None:
+        """resume a paused sandbox from its saved state"""
         await self._verb(lambda: resume_sandbox.asyncio_detailed(self.id, client=self._transport.api))
 
     async def fork(self, *, name: str | None = None) -> AsyncSandbox:
-        """A running copy of this sandbox, memory and all; the source runs on."""
+        """create a sandbox from a running sandbox's memory and files"""
         body = models.CopyRequest(name=name or UNSET)
         record = await self._transport.answer(
             models.Sandbox,
@@ -175,7 +179,7 @@ class AsyncSandbox:
         return AsyncSandbox(self._transport, sandbox_info(record))
 
     async def remove(self, *, force: bool = False) -> None:
-        """Remove a stopped sandbox; force stops a running one first."""
+        """delete a sandbox and its files"""
         await self._transport.send(
             lambda: remove_sandbox.asyncio_detailed(self.id, client=self._transport.api, force=force or UNSET),
             self._transport.read_bound(None),
@@ -193,19 +197,19 @@ class AsyncSandbox:
             self._transport, path("sandboxes", self.id, "logs"), f"the logs of sandbox {self.id}", log_chunk
         )
 
-    async def network_logs(self) -> builtins.list[NetworkLogRecord]:
+    async def egress_log(self) -> builtins.list[EgressDecision]:
         """Every egress decision the daemon still holds, oldest first."""
         records = await self._transport.answer(
             builtins.list, lambda: get_sandbox_egress_log.asyncio_detailed(self.id, client=self._transport.api)
         )
-        return [network_log_record(record) for record in records]
+        return [egress_decision(record) for record in records]
 
-    def follow_network_logs(self) -> AsyncFollow[NetworkLogRecord]:
+    def follow_egress_log(self) -> AsyncFollow[EgressDecision]:
         return AsyncFollow(
             self._transport,
             path("sandboxes", self.id, "egress-log"),
-            f"the network log of sandbox {self.id}",
-            network_log_entry,
+            f"the egress log of sandbox {self.id}",
+            egress_log_entry,
         )
 
     async def _verb(self, call: AsyncCall) -> None:

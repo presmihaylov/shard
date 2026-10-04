@@ -101,25 +101,25 @@ func recordExpiry(c claims) *time.Time {
 	return &exp
 }
 
-// verify checks the token is HS256 over the secret, carries a subject, an issued-at and a jti, and enforces an exp when present, then answers the subject, the scopes and the jti.
-func verify(secret []byte, token string) (string, []string, string, error) {
+// The verified expiry also bounds a connection after its first request.
+func verify(secret []byte, token string) (claims, error) {
 	var c claims
 
 	keyFunc := func(*jwt.Token) (any, error) { return secret, nil }
 	if _, err := jwt.ParseWithClaims(token, &c, keyFunc,
 		jwt.WithValidMethods([]string{"HS256"})); err != nil {
-		return "", nil, "", fmt.Errorf("verify the token: %w", err)
+		return claims{}, fmt.Errorf("verify the token: %w", err)
 	}
 
 	if c.Subject == "" {
-		return "", nil, "", errors.New("the token carries no subject")
+		return claims{}, errors.New("the token carries no subject")
 	}
 	if c.IssuedAt == nil {
-		return "", nil, "", errors.New("the token carries no issued-at")
+		return claims{}, errors.New("the token carries no issued-at")
 	}
 	if c.ID == "" {
-		return "", nil, "", errors.New("the token carries no id")
+		return claims{}, errors.New("the token carries no id")
 	}
 
-	return c.Subject, c.Scopes, c.ID, nil
+	return c, nil
 }

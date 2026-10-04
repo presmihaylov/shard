@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { afterEach, beforeEach, test } from "node:test";
 import { App } from "../src/app.js";
-import { ConnectionError, NotFoundError, ProtocolError, ServerError } from "../src/errors.js";
+import { NotFoundError, ProtocolError, ServerError, ShardConnectionError } from "../src/errors.js";
 import { opClose } from "../src/frames.js";
 import { sandboxInfo } from "../src/records.js";
 import { Sandbox } from "../src/sandbox.js";
@@ -100,13 +100,13 @@ test("a failure on a log follow throws the daemon's error", async () => {
   await assert.rejects(chunks, NotFoundError);
 });
 
-test("a follow the daemon closes with an error throws it, and a dropped one throws ConnectionError", async () => {
+test("a follow the daemon closes with an error throws it, and a dropped one throws ShardConnectionError", async () => {
   const failed = collect(sandbox.followLogs());
   (await daemon.peer(0)).close(1011, "tail broke");
   await assert.rejects(failed, (err: unknown) => err instanceof ServerError && err.message.includes("tail broke"));
   const dropped = collect(sandbox.followLogs());
   (await daemon.peer(1)).socket.destroy();
-  await assert.rejects(dropped, ConnectionError);
+  await assert.rejects(dropped, ShardConnectionError);
 });
 
 test("a break out of a follow lets go of the stream", async () => {
@@ -133,17 +133,17 @@ test("an abort ends a follow with the caller's reason", async () => {
   assert.equal((await peer.next())?.opcode, opClose, "the client says goodbye");
 });
 
-test("a network log answers its records, and none as null", async () => {
+test("an egress log answers its records, and none as null", async () => {
   routes.set("GET /v0/sandboxes/sb_1/egress-log", () => ({ status: 200, json: [egress] }));
-  const [record] = await sandbox.networkLogs();
+  const [record] = await sandbox.egressLog();
   assert.equal(record?.host, "example.com");
   assert.equal(record?.port, 443);
   routes.set("GET /v0/sandboxes/sb_1/egress-log", () => ({ status: 200, json: null }));
-  assert.deepEqual(await sandbox.networkLogs(), []);
+  assert.deepEqual(await sandbox.egressLog(), []);
 });
 
-test("a network log follow yields each record until a normal close", async () => {
-  const records = collect(sandbox.followNetworkLogs());
+test("an egress log follow yields each record until a normal close", async () => {
+  const records = collect(sandbox.followEgressLog());
   const peer = await daemon.peer(0);
   assert.equal(peer.path, "/v0/sandboxes/sb_1/egress-log");
   peer.text(JSON.stringify(egress));
@@ -158,11 +158,11 @@ test("a network log follow yields each record until a normal close", async () =>
   );
 });
 
-test("a network log follow refuses what is not a JSON record", async () => {
-  const binary = collect(sandbox.followNetworkLogs());
+test("an egress log follow refuses what is not a JSON record", async () => {
+  const binary = collect(sandbox.followEgressLog());
   (await daemon.peer(0)).send(1, "raw");
   await assert.rejects(binary, ProtocolError);
-  const garbled = collect(sandbox.followNetworkLogs());
+  const garbled = collect(sandbox.followEgressLog());
   (await daemon.peer(1)).text("{");
   await assert.rejects(garbled, ProtocolError);
 });

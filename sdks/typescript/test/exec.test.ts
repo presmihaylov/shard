@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { afterEach, beforeEach, test } from "node:test";
 import { OutputCapture } from "../src/capture.js";
-import { CommandNotStartedError, ConnectionError, NotFoundError, ProtocolError, UnsupportedError } from "../src/errors.js";
+import { CommandNotStartedError, NotFoundError, ProtocolError, ShardConnectionError, UnsupportedError } from "../src/errors.js";
 import { Session } from "../src/exec.js";
 import { opBinary, opClose } from "../src/frames.js";
 import { Transport } from "../src/transport.js";
@@ -112,7 +112,7 @@ test("a stream cut before the exit names the command's state and the bytes lost"
   routes.set(`GET ${execPath}`, () => ({ status: 200, json: record({ state: "running", lost_bytes: 42 }) }));
   const session = await start();
   (await daemon.peer(0)).socket.destroy();
-  await assert.rejects(session.wait(), (err: unknown) => err instanceof ConnectionError && /the command is running, with 42 bytes of output lost$/.test(err.message));
+  await assert.rejects(session.wait(), (err: unknown) => err instanceof ShardConnectionError && /the command is running, with 42 bytes of output lost$/.test(err.message));
 });
 
 test("a cut whose record cannot be read is still a cut", async () => {
@@ -120,7 +120,7 @@ test("a cut whose record cannot be read is still a cut", async () => {
   (await daemon.peer(0)).socket.destroy();
   await assert.rejects(
     session.wait(),
-    (err: unknown) => err instanceof ConnectionError && /ended without an exit status$/.test(err.message) && err.cause instanceof NotFoundError,
+    (err: unknown) => err instanceof ShardConnectionError && /ended without an exit status$/.test(err.message) && err.cause instanceof NotFoundError,
   );
 });
 
@@ -205,7 +205,7 @@ test("stdin goes in order, in pieces the daemon reads, and its close is one mess
 test("stdin to a command no stream holds is refused", async () => {
   const session = await start();
   session.disconnect();
-  await assert.rejects(session.writeStdin("x"), (err: unknown) => err instanceof ConnectionError && /is not attached$/.test(err.message));
+  await assert.rejects(session.writeStdin("x"), (err: unknown) => err instanceof ShardConnectionError && /is not attached$/.test(err.message));
 });
 
 test("kill, resize and inspect reach their routes", async () => {

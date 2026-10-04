@@ -66,12 +66,12 @@ export class Shard {
     this.snapshots = new Snapshots(this.transport);
   }
 
-  /** create answers a running sandbox with no app, or one whose state is failed; exec() runs in it. */
+  /** create a sandbox */
   async create(options: CreateOptions = {}): Promise<Sandbox> {
     return new Sandbox(this.transport, await this.made(createBody(options, undefined, undefined)));
   }
 
-  /** run answers the app command starts as in a new sandbox. The sandbox outlives the app; remove() it when done. */
+  /** create a sandbox and start its command */
   async run(image: string, command: string | string[], options: RunOptions = {}): Promise<App> {
     const { restart, ...rest } = options;
     const sandbox = new Sandbox(this.transport, await this.made(createBody({ ...rest, image }, command, restart)));
@@ -86,7 +86,7 @@ export class Shard {
     return new Sandbox(this.transport, records.sandboxInfo(data));
   }
 
-  /** list answers the running sandboxes, or with all every sandbox the daemon holds a record of. */
+  /** list active sandboxes */
   async list(options: { all?: boolean } = {}): Promise<Sandbox[]> {
     const all = options.all || undefined;
     const rows = await listed("/v0/sandboxes", "sandboxes", (cursor) => this.transport.api.GET("/v0/sandboxes", { params: { query: { all, cursor } } }));
@@ -118,7 +118,7 @@ export class Shard {
 export class Policies {
   constructor(private readonly transport: Transport) {}
 
-  /** set makes the policy, or replaces every rule of it; a sandbox it is assigned to enforces the new rules. */
+  /** set makes the policy, or replaces every rule of it; a sandbox it is attached to enforces the new rules. */
   async set(name: string, rules: PolicyRule[]): Promise<Policy> {
     const body = { rules: rules.map(({ action, rule }) => ({ action, rule })) };
 
@@ -142,13 +142,13 @@ export class Policies {
     await this.transport.api.DELETE("/v0/policies/{name}", { params: { path: { name } } });
   }
 
-  /** assign makes the sandbox enforce the policy from its next request on; the sandbox must not be running. */
-  assign(sandbox: SandboxRef, name: string): Promise<SandboxInfo> {
+  /** attach makes the sandbox enforce the policy from its next request on; the sandbox must not be running. */
+  attach(sandbox: SandboxRef, name: string): Promise<SandboxInfo> {
     return changed(sandbox, (id) => this.transport.api.PUT("/v0/sandboxes/{id}/policy", { params: { path: { id } }, body: { policy: name } }));
   }
 
-  /** clear takes the sandbox's policy away, which leaves it the daemon's default. */
-  clear(sandbox: SandboxRef): Promise<SandboxInfo> {
+  /** detach takes the sandbox's policy away, which leaves it the daemon's default. */
+  detach(sandbox: SandboxRef): Promise<SandboxInfo> {
     return changed(sandbox, (id) => this.transport.api.DELETE("/v0/sandboxes/{id}/policy", { params: { path: { id } } }));
   }
 }
@@ -181,7 +181,7 @@ export class Secrets {
     return changed(sandbox, (id) => this.transport.api.POST("/v0/sandboxes/{id}/secrets/{name}", { params: { path: { id, name } } }));
   }
 
-  revoke(sandbox: SandboxRef, name: string): Promise<SandboxInfo> {
+  ungrant(sandbox: SandboxRef, name: string): Promise<SandboxInfo> {
     return changed(sandbox, (id) => this.transport.api.DELETE("/v0/sandboxes/{id}/secrets/{name}", { params: { path: { id, name } } }));
   }
 }

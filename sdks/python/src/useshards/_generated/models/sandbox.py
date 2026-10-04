@@ -7,6 +7,7 @@ from typing import TYPE_CHECKING, Any, BinaryIO, Generator, TextIO, TypeVar, cas
 from attrs import define as _attrs_define
 from attrs import field as _attrs_field
 
+from ..models.sandbox_state import SandboxState
 from ..types import UNSET, Unset
 
 if TYPE_CHECKING:
@@ -25,7 +26,7 @@ class Sandbox:
     image: str
     provider: str
     resources: Resources
-    state: str
+    state: SandboxState
     command: list[str] | Unset = UNSET
     digest: str | Unset = UNSET
     exit_status: ExitStatus | Unset = UNSET
@@ -54,7 +55,7 @@ class Sandbox:
 
         resources = self.resources.to_dict()
 
-        state = self.state
+        state = self.state.value
 
         command: list[str] | Unset = UNSET
         if not isinstance(self.command, Unset):
@@ -146,7 +147,7 @@ class Sandbox:
 
         resources = Resources.from_dict(d.pop("resources"))
 
-        state = d.pop("state")
+        state = SandboxState(d.pop("state"))
 
         command = cast(list[str], d.pop("command", UNSET))
 

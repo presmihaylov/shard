@@ -65,7 +65,10 @@ type getExecInput struct {
 // describeGetExec names the three answers of getExec, the attach as a 101 whose frames lead with their stream.
 func describeGetExec(registry huma.Registry, op *huma.Operation) {
 	op.Responses["200"] = response("The exec as it stands, or with wait once it ends.", "application/json", schemaOf[models.Exec](registry))
-	op.Responses["101"] = upgrade("A WebSocket attach. Each binary message leads with its stream byte: 0 stdin and 4 stdin closed from the client; 1 stdout, 2 stderr, 3 the ExitMessage and 5 a FailureMessage from the daemon.")
+	op.Responses["101"] = upgrade("A WebSocket attach. Each binary message leads with its stream byte: 0 stdin and 4 stdin closed from the client; 1 stdout, 2 stderr, 3 the ExitMessage and 5 a FailureMessage from the daemon.", map[string]*huma.Schema{
+		"3": schemaOf[ExitMessage](registry),
+		"5": schemaOf[FailureMessage](registry),
+	})
 }
 
 // getExec answers one exec three ways: a WebSocket upgrade attaches, ?wait=true blocks until it ends,
@@ -107,9 +110,9 @@ func (h *Handler) getExec(w http.ResponseWriter, r *http.Request) {
 	h.writeJSON(w, http.StatusOK, exec)
 }
 
-// killRequest names the signal a kill sends. An empty signal is TERM.
+// killRequest names the signal a kill sends. A doc, not an enum: Huma would refuse the empty signal the daemon takes as TERM.
 type killRequest struct {
-	Signal string `json:"signal,omitempty"`
+	Signal string `json:"signal,omitempty" doc:"TERM or KILL, in capitals; absent or empty is TERM."`
 }
 
 // killExec sends one signal to a running exec.
@@ -328,9 +331,12 @@ func (h *Handler) resizeExec(ctx context.Context, in *execBody[sandbox.TerminalS
 }
 
 // describeLogs names the two answers of sandboxLogs: the output as text, or with follow over a WebSocket.
-func describeLogs(_ huma.Registry, op *huma.Operation) {
+func describeLogs(registry huma.Registry, op *huma.Operation) {
 	op.Responses["200"] = response("The entrypoint's output as it was written; with follow the body streams until the sandbox stops.", "text/plain", text())
-	op.Responses["101"] = upgrade("A WebSocket follow. Each binary message leads with its stream byte: 1 the output, 3 an EndMessage naming why the follow ended, 5 a FailureMessage.")
+	op.Responses["101"] = upgrade("A WebSocket follow. Each binary message leads with its stream byte: 1 the output, 3 an EndMessage naming why the follow ended, 5 a FailureMessage.", map[string]*huma.Schema{
+		"3": schemaOf[EndMessage](registry),
+		"5": schemaOf[FailureMessage](registry),
+	})
 }
 
 func (h *Handler) sandboxLogs(w http.ResponseWriter, r *http.Request) {

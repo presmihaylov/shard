@@ -1,6 +1,6 @@
 // One WebSocket to the daemon, on a connection the transport opened and upgraded.
 import type { Duplex } from "node:stream";
-import { ConnectionError, ProtocolError } from "./errors.js";
+import { ProtocolError, ShardConnectionError } from "./errors.js";
 import {
   MessageReader,
   acceptFor,
@@ -31,8 +31,8 @@ export function endedStream(err: unknown): boolean {
 }
 
 /** streamEnd is the error of a write that found its stream gone. */
-export function streamEnd(message: string, options?: ErrorOptions): ConnectionError {
-  const err = new ConnectionError(message, options);
+export function streamEnd(message: string, options?: ErrorOptions): ShardConnectionError {
+  const err = new ShardConnectionError(message, options);
   streamEnds.add(err);
 
   return err;
@@ -56,7 +56,7 @@ export class WebSocket {
     socket.on("data", (data: Buffer) => this.received(data));
     socket.on("end", () => this.drop(undefined));
     socket.on("close", () => this.drop(undefined));
-    socket.on("error", (err) => this.drop(new ConnectionError(`${what}: the stream to the daemon dropped`, { cause: err })));
+    socket.on("error", (err) => this.drop(new ShardConnectionError(`${what}: the stream to the daemon dropped`, { cause: err })));
   }
 
   static async connect(transport: Transport, path: string, what: string, options: Pick<CallOptions, "query" | "signal"> = {}): Promise<WebSocket> {
