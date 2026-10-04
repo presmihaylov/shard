@@ -16,6 +16,19 @@ func LastGroupFits(size int64) bool {
 	return blocks <= blocksPerGroup || tail == 0 || tail > 2+tableBlocks
 }
 
+// ErrNeedsRecovery is an image whose journal a mount left to replay, which Grow cannot extend.
+var ErrNeedsRecovery = errors.New("the journal needs recovery: the image was not unmounted or frozen clean")
+
+// DescriptorTakenError is a grow past the descriptor blocks a mount left free; Max is the largest size the image still grows to.
+type DescriptorTakenError struct {
+	Block uint32
+	Max   int64
+}
+
+func (e *DescriptorTakenError) Error() string {
+	return fmt.Sprintf("descriptor block %d is in use: the image was mounted since it was written, and grows to at most %d bytes", e.Block, e.Max)
+}
+
 // Grow extends an unmounted image from Write to size bytes, adding empty block groups, and gives it a journal if it has none.
 func Grow(path string, size int64) (err error) {
 	if size%BlockSize != 0 {
@@ -48,6 +61,10 @@ func Grow(path string, size int64) (err error) {
 	}
 	if newBlocks == oldBlocks && sb.FeatureCompat&CompatHasJournal != 0 {
 		return nil
+	}
+	// The replay would write the old block counts back over the new groups.
+	if sb.FeatureIncompat&IncompatRecover != 0 {
+		return fmt.Errorf("ext4: grow %s: %w", path, ErrNeedsRecovery)
 	}
 
 	if newBlocks > oldBlocks {
@@ -93,6 +110,20 @@ func addGroups(f *os.File, path string, sb *SuperBlock, size int64) error {
 	if newGroups > oldGroups && !LastGroupFits(size) {
 		return fmt.Errorf("ext4: grow %s: the last group holds %d blocks, under its %d of metadata", path, newBlocks%blocksPerGroup, 2+tableBlocks)
 	}
+	// The writer leaves the descriptor blocks it did not fill free; claim the ones the new groups need, before anything else changes.
+	oldGdBlocks := (oldGroups-1)/groupsPerDescriptorBlock + 1
+	newGdBlocks := (newGroups-1)/groupsPerDescriptorBlock + 1
+	if newGdBlocks > oldGdBlocks {
+		taken, err := claimBlocks(f, gd.BlockBitmapLow, 1+oldGdBlocks, 1+newGdBlocks)
+		if err != nil {
+			return fmt.Errorf("ext4: grow %s: %w", path, err)
+		}
+		gd.FreeBlocksCountLow -= taken
+		if err := writeAt(f, descriptorOffset(0), &gd); err != nil {
+			return fmt.Errorf("ext4: grow %s: write descriptor 0: %w", path, err)
+		}
+		sb.FreeBlocksCountLow -= uint32(taken)
+	}
 	if err := f.Truncate(size); err != nil {
 		return fmt.Errorf("ext4: grow %s: %w", path, err)
 	}
@@ -110,24 +141,6 @@ func addGroups(f *os.File, path string, sb *SuperBlock, size int64) error {
 		return fmt.Errorf("ext4: grow %s: write descriptor %d: %w", path, oldGroups-1, err)
 	}
 	sb.FreeBlocksCountLow += uint32(freed)
-
-	// The writer leaves the descriptor blocks it did not fill free; claim the ones the new groups need.
-	oldGdBlocks := (oldGroups-1)/groupsPerDescriptorBlock + 1
-	newGdBlocks := (newGroups-1)/groupsPerDescriptorBlock + 1
-	if newGdBlocks > oldGdBlocks {
-		if err := readAt(f, descriptorOffset(0), &gd); err != nil {
-			return fmt.Errorf("ext4: grow %s: read descriptor 0: %w", path, err)
-		}
-		taken, err := claimBlocks(f, gd.BlockBitmapLow, 1+oldGdBlocks, 1+newGdBlocks)
-		if err != nil {
-			return fmt.Errorf("ext4: grow %s: %w", path, err)
-		}
-		gd.FreeBlocksCountLow -= taken
-		if err := writeAt(f, descriptorOffset(0), &gd); err != nil {
-			return fmt.Errorf("ext4: grow %s: write descriptor 0: %w", path, err)
-		}
-		sb.FreeBlocksCountLow -= uint32(taken)
-	}
 
 	// A new group carries its own bitmaps and inode table at its start; the table stays a hole of zeros.
 	for g := oldGroups; g < newGroups; g++ {
@@ -185,7 +198,7 @@ func claimBlocks(f *os.File, bitmapBlock, first, end uint32) (uint16, error) {
 	}
 	for j := first; j < end; j++ {
 		if bitmap[j/8]&(1<<(j%8)) != 0 {
-			return 0, fmt.Errorf("descriptor block %d is in use: the image was mounted since it was written", j)
+			return 0, &DescriptorTakenError{Block: j, Max: int64(j-1) * groupsPerDescriptorBlock * blocksPerGroup * BlockSize}
 		}
 		bitmap[j/8] |= 1 << (j % 8)
 	}

@@ -46,7 +46,7 @@ func (p *Provider) Create(ctx context.Context, spec models.SandboxSpec) error {
 	return p.launch(ctx, spec.ID, spec.StateDir, r, false)
 }
 
-// writeOverlay lays down an empty overlay, or a reflink of the seed's, which keeps the size the service checked against the bound.
+// writeOverlay lays down an empty overlay, or a reflink of the seed's grown to the bound.
 func writeOverlay(spec models.SandboxSpec) error {
 	to := filepath.Join(spec.StateDir, bundle.OverlayDiskFile)
 	if spec.Seed == "" {
@@ -55,7 +55,7 @@ func writeOverlay(spec models.SandboxSpec) error {
 
 	from := filepath.Join(spec.Seed, bundle.OverlayDiskFile)
 
-	return bundle.AdmitCopy(from, to, func() error { return bundle.Reflink(from, to) })
+	return bundle.GrowSeed(to, spec.Resources, func() error { return bundle.Reflink(from, to) })
 }
 
 // launch records the sandbox, boots its VM, and runs the entrypoint when asked.

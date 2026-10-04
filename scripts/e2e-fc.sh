@@ -511,13 +511,25 @@ shard exec "$2" /bin/cat /root/seeded-only >/dev/null 2>&1 || CODE=$?
 grep -q '"state": *"stopped"' "${RECORD}" || fail "the seeded microVMs changed the source's state"
 say "the seeded microVMs share nothing with each other or with the source, which is still stopped"
 
-step "refuse a --disk that differs from the snapshot's"
+step "grow a larger --disk from the snapshot, and refuse a smaller one by name"
 SNAPSHOT_DISK=$(shard snapshot inspect "${SNAPSHOT_ID}" | grep -o '"disk_mib": *[0-9]*' | grep -o '[0-9]*$')
 CODE=0
-REFUSAL=$(shard create --disk "$((SNAPSHOT_DISK + 64))MiB" --snapshot "${SNAPSHOT_ID}" 2>&1) || CODE=$?
-[ "${CODE}" != "0" ] || fail "create --snapshot took a --disk the snapshot's disk does not have"
-grep -q -- "--disk" <<<"${REFUSAL}" || fail "create --snapshot --disk said '${REFUSAL}', want it to name --disk"
-say "firecracker refused the other disk size by name"
+REFUSAL=$(shard create --disk "$((SNAPSHOT_DISK - 128))MiB" --snapshot "${SNAPSHOT_ID}" 2>&1) || CODE=$?
+[ "${CODE}" != "0" ] || fail "create --snapshot took a --disk under the snapshot's disk"
+grep -q -- "a disk only grows" <<<"${REFUSAL}" || fail "create --snapshot --disk said '${REFUSAL}', want it to say a disk only grows"
+say "firecracker refused the smaller disk by name"
+GROWN_DISK=$((SNAPSHOT_DISK + 1024))
+GROWN_ID=$(shard create --name e2e-seeded-grown --disk "${GROWN_DISK}MiB" --snapshot "${SNAPSHOT_ID}")
+SEEDED_IDS="${SEEDED_IDS} ${GROWN_ID}"
+SEEDED_LINKS="${SEEDED_LINKS} $(record_field "${GROWN_ID}" host_interface)"
+expect "$(grep -o '"disk_mib": *[0-9]*' "${SHARD_ROOT}/sandboxes/${GROWN_ID}/sandbox.json" | grep -o '[0-9]*$')" "${GROWN_DISK}" "the record carries the ${GROWN_DISK} MiB disk"
+expect_exec_in "${GROWN_ID}" "kept" "the grown disk holds the file the source wrote before the stop" /bin/cat /root/kept
+GUEST_MIB=$(shard exec "${GROWN_ID}" /bin/df -m /root | awk 'NR == 2 { print $2 }')
+# The filesystem's own metadata takes a few percent of the disk.
+[ "$((GUEST_MIB * 10))" -ge "$((GROWN_DISK * 9))" ] || fail "the guest sees ${GUEST_MIB} MiB on /root, want most of ${GROWN_DISK}"
+# shellcheck disable=SC2086 # the seeded list is meant to split
+set -- ${SEEDED_IDS}
+say "the guest sees ${GUEST_MIB} MiB on a disk the snapshot made at ${SNAPSHOT_DISK} MiB"
 
 step "stop and remove the seeded microVMs and the snapshot"
 for SEEDED_ID in "$@"; do

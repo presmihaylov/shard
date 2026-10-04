@@ -112,6 +112,9 @@ type RoCompatFeature uint32
 const (
 	CompatHasJournal CompatFeature = 0x4
 
+	// IncompatRecover is a journal a mount left to replay: the filesystem was neither unmounted nor frozen.
+	IncompatRecover IncompatFeature = 0x4
+
 	RoCompatReadonly RoCompatFeature = 0x1000
 )
 

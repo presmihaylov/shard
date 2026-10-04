@@ -102,6 +102,9 @@ func serveTransport(name string, boot guestBoot) error {
 		return t.fail(fmt.Errorf("%w: %w", errSupervisor, err))
 	}
 
+	if err := sealRoot(t.root, freezeRoot); err != nil {
+		return t.fail(fmt.Errorf("%w: %w", errSupervisor, err))
+	}
 	// The stop is done, so the VM has nothing left to run; a guest that went is what the host waits for.
 	if err := powerOff(boot.Reboot); err != nil {
 		return t.fail(fmt.Errorf("%w: %w", errSupervisor, err))
@@ -112,6 +115,24 @@ func serveTransport(name string, boot guestBoot) error {
 
 // A host that dials while the guest boots is at most this far from attaching, so a death waits this long for it.
 var failureGrace = 10 * time.Second
+
+// A freeze that outlasts this has a disk it cannot settle, and the stop goes on without it rather than hang.
+var sealGrace = 5 * time.Second
+
+// sealRoot flushes, then freezes the root last of all, so a clean stop leaves a disk with no journal to replay that a host can grow (SHARD-476).
+func sealRoot(root *os.File, freeze func(*os.File) error) error {
+	if err := syncDisk(); err != nil {
+		return err
+	}
+	frozen := make(chan error, 1)
+	go func() { frozen <- freeze(root) }()
+	select {
+	case err := <-frozen:
+		return err
+	case <-time.After(sealGrace):
+		return fmt.Errorf("freeze the root: no answer within %s", sealGrace)
+	}
+}
 
 // fail carries the supervisor's own death to the host before the exit 125 halts the VM, where runsc wait would read the code on gVisor.
 func (t *transport) fail(err error) error {

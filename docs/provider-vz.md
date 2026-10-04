@@ -131,7 +131,9 @@ Every sandbox gets an APFS clone of the base (`clonefile(2)`: instant, and the b
 until written). The clone is grown to the sandbox's `--disk` bound and attached as virtio-blk, and
 it is the writable layer. `bundle.CloneRootDisk` does both the clone and the grow, and it reports
 whether the blocks are shared. On a volume that is not APFS it falls back to a copy, and the
-provider says so once in the log (SHARD-215, the wiring and the log line in SHARD-218).
+provider says so once in the log (SHARD-215, the wiring and the log line in SHARD-218). A create
+from a snapshot clones the snapshot's disk the same way and grows it to a larger `--disk`, by the
+rules in `docs/provider.md` (SHARD-476).
 
 Rejected: a virtiofs share of an unpacked directory. It is the simplest to build, but it has no
 consistent point-in-time copy. A saved VM state and a directory that keeps changing under it cannot

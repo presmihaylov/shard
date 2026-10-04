@@ -240,8 +240,9 @@ static `shard-init` at `SHARD_INIT_PATH`, which the daemon writes once under `<r
 the guest over vsock alone, through the socket that firecracker proxies it on, so `exec`, `logs`
 and the exit arrive the way they do on `vz`. The vmm has no stop of its own. A stop tells
 `shard-init` to end the entrypoint and reboot, because a reboot is the one guest exit that makes
-firecracker end its process (a power off leaves it running). When the 30 s grace runs out, the
-stop kills the process. A guest that the host can no longer reach over vsock is still a running VM.
+firecracker end its process (a power off leaves it running). Before the reboot `shard-init` syncs
+and freezes the root, so a clean stop leaves a disk with no journal to replay. A forced stop does
+not freeze. When the 30 s grace runs out, the stop kills the process. A guest that the host can no longer reach over vsock is still a running VM.
 `inspect` says so, and `stop` kills it without waiting out a grace that the guest could not hear. A
 daemon restart adopts a running vmm by its socket. It also resumes a vmm that an interrupted `pause`
 left paused, because that stopped guest would answer no handshake. A vmm that does not answer that
@@ -351,6 +352,14 @@ it is, and a `resume` of such a checkpoint loads its saved drive. A `stop` and a
 fresh vmm with `Writeback`, which gives that sandbox a durable `fsync`. The daemon never stops a
 sandbox to make that switch.
 
+A create from a snapshot on Firecracker or `vz` clones the snapshot's disk. A larger `--disk` grows
+the clone and its ext4 to the new bound before the boot, and a smaller one is refused before the
+record exists, as a disk only grows (SHARD-476). The grow needs a journal with nothing to replay,
+which only the freeze of a clean stop leaves. A snapshot of a sandbox that a forced stop ended
+cannot grow, and the refusal says to start that sandbox, stop it without `--force` and snapshot it
+again. A guest mount can take the metadata room that a larger disk needs, and then the refusal
+names the largest `--disk` that still grows.
+
 `scripts/e2e-fc.sh`, behind `make e2e-firecracker`, drives the whole lifecycle on this provider. It
 starts the daemon over a root that it turns into an XFS image, and runs `create` with `--memory`. It
 checks the vmm's jail, uid and seccomp filter, its host cgroup and its bounds, then `logs`, `exec`
@@ -358,8 +367,8 @@ and an entrypoint that exits. One guest outgrows its memory and stops with its r
 starts it again, and `start` brings it back over its kept files. The run then checks the policy and
 the proxy on the vmm's link, a daemon restart that adopts the vmm, and a vmm lost while the daemon
 was down. After that come a `fork` that is refused by name, `pause`, `resume`, `stop` with the
-cgroup kept empty, a snapshot by reflink, two sandboxes from it, a refused `--disk` that differs
-from the snapshot's, `start` back into that cgroup, and `rm`. The last check is a host with no link,
+cgroup kept empty, a snapshot by reflink, two sandboxes from it, a smaller `--disk` refused by
+name, a larger one that the guest sees grown, `start` back into that cgroup, and `rm`. The last check is a host with no link,
 no namespace, no vmm, no jail, no cgroup, no image and no fstab line left. It runs on demand only.
 It needs `/dev/kvm`, which no CI runner and no cloud devbox has, so CI, `make check`, `make e2e` and
 `make devbox-e2e` never call it. To run it, rent a bare-metal KVM box, run

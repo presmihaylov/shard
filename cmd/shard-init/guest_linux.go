@@ -463,8 +463,7 @@ func powerOff(reboot bool) error {
 	if os.Getpid() != 1 {
 		return nil
 	}
-	// The reboot call flushes nothing, and a snapshot reads the disk: what the guest wrote must reach it first.
-	unix.Sync()
+	// The reboot call flushes nothing; sealRoot already put what the guest wrote on the disk.
 	cmd := unix.LINUX_REBOOT_CMD_POWER_OFF
 	if reboot {
 		cmd = unix.LINUX_REBOOT_CMD_RESTART

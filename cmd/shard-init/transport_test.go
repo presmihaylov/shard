@@ -1252,3 +1252,26 @@ func TestABootFailureGivesUpOnAHostThatNeverHangsUp(t *testing.T) {
 		t.Fatalf("failBoot returned %v, want the supervisor error and the wait that ran out", err)
 	}
 }
+
+func TestSealRootCarriesTheFreezeError(t *testing.T) {
+	refused := errors.New("freeze the root: operation not supported")
+	if err := sealRoot(nil, func(*os.File) error { return refused }); !errors.Is(err, refused) {
+		t.Fatalf("sealRoot returned %v, want the freeze error", err)
+	}
+	if err := sealRoot(nil, func(*os.File) error { return nil }); err != nil {
+		t.Fatalf("sealRoot returned %v, want nil", err)
+	}
+}
+
+func TestSealRootGivesUpOnAFreezeThatHangs(t *testing.T) {
+	old := sealGrace
+	sealGrace = 50 * time.Millisecond
+	t.Cleanup(func() { sealGrace = old })
+
+	hung := make(chan struct{})
+	t.Cleanup(func() { close(hung) })
+	err := sealRoot(nil, func(*os.File) error { <-hung; return nil })
+	if err == nil || !strings.Contains(err.Error(), "no answer within") {
+		t.Fatalf("sealRoot returned %v, want the freeze bound", err)
+	}
+}
