@@ -260,6 +260,23 @@ func TestDaemonStatusJSONWritesTheValueThenFailsOnABackoff(t *testing.T) {
 	}
 }
 
+// The CLI writes the object the route answers, so a script reads the same keys either way.
+func TestCapabilitiesJSONIsTheObjectTheRouteAnswers(t *testing.T) {
+	var out bytes.Buffer
+
+	app, f := newClientApp(t, &out, models.Sandbox{})
+	f.providerSvc = &fakeLifecycleProvider{r: &recorder{}, noPause: true, noResume: true}
+	if err := app.Run(t.Context(), []string{"capabilities", "--format", "json"}); err != nil {
+		t.Fatalf("capabilities --format json: %v", err)
+	}
+
+	want := `{"create":true,"start":true,"stop":true,"remove":true,"pause":false,"resume":false,"fork":true,"snapshot":true}`
+	var got bytes.Buffer
+	if err := json.Compact(&got, out.Bytes()); err != nil || got.String() != want {
+		t.Errorf("capabilities --format json wrote %s (%v), want %s", out.String(), err, want)
+	}
+}
+
 func TestVersionJSONNamesBothVersions(t *testing.T) {
 	var out bytes.Buffer
 
