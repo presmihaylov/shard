@@ -496,7 +496,7 @@ check "two patterns on two different lines are a miss" "$?" "1"
 printf '/dev/loop7\n' | has_line '^/dev/loop'
 check "one pattern over a command's output" "$?" "0"
 
-echo "== no grep -q in the e2e scripts reads a pipe from more than a first echo or printf (SHARD-456)"
+echo "== no grep -q in the e2e scripts reads a pipe (SHARD-456)"
 # shell_pipelines prints file:line, a tab and each pipeline, with quoted text cut to Q, comments dropped and continued lines joined.
 shell_pipelines() {
 	awk '
@@ -562,7 +562,6 @@ quiet_grep_hazards() {
 		ns = split($2, st, "|")
 		for (k = 2; k <= ns; k++) {
 			if (!quiet_grep(st[k])) continue
-			if (k == 2 && bare(st[1]) ~ /^(echo|printf)([ \t]|$)/) continue
 			print $1
 		}
 	}'
@@ -604,7 +603,23 @@ shard exec "${ID}" /bin/sh -c '
 '
 ip link | grep -q shard0
 EOF
-check "the scan names each one in a fixture" "$(quiet_grep_hazards "${SCAN_FIXTURE}" | sed 's/.*://' | tr '\n' ' ')" "9 10 11 12 13 16 20 "
+check "the scan names each one in a fixture" "$(quiet_grep_hazards "${SCAN_FIXTURE}" | sed 's/.*://' | tr '\n' ' ')" "1 2 6 9 10 11 12 13 16 20 "
+# The needle is on the first line, so grep -q quits after one read and the echo dies writing the rest.
+BIG_FIXTURE="${STUB_GREP_DIR}/big.sh"
+cat >"${BIG_FIXTURE}" <<'EOF'
+set -o pipefail
+BIG=$(printf 'needle\n'; head -c 1048576 /dev/zero | tr '\0' x)
+echo "${BIG}" 2>/dev/null | grep -q needle
+EOF
+bash "${BIG_FIXTURE}"
+BIG_STATUS=$?
+check "an echo of 1 MiB into grep -q is a miss though the needle is there" "$([ "${BIG_STATUS}" -ne 0 ] && echo miss)" "miss"
+check "the scan names that echo" "$(quiet_grep_hazards "${BIG_FIXTURE}" | sed 's/.*://')" "3"
+HERE_FIXTURE="${STUB_GREP_DIR}/here.sh"
+sed '3s/.*/grep -q needle <<<"${BIG}"/' "${BIG_FIXTURE}" >"${HERE_FIXTURE}"
+bash "${HERE_FIXTURE}"
+check "the same body in a here-string is a match" "$?" "0"
+check "the scan passes the here-string" "$(quiet_grep_hazards "${HERE_FIXTURE}")" ""
 check "the scan finds none in e2e.sh or e2e-fc.sh" "$(quiet_grep_hazards "${HERE}/e2e.sh" "${HERE}/e2e-fc.sh")" ""
 rm -rf "${STUB_GREP_DIR}"
 
