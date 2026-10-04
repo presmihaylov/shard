@@ -6,11 +6,11 @@ The TypeScript SDK for [shard](https://github.com/presmihaylov/shard), the sandb
 npm install useshards
 ```
 
-Node 20.3 or later. The package has no runtime dependencies.
+Node 20.3 or later. The one runtime dependency is `openapi-fetch`.
 
 ## Connect
 
-The SDK talks to `shard serve` over HTTPS. Mint a key on the host with `shard tokens mint`, then:
+The SDK talks to `shard serve` over `https`, or `http`, which sends the key unencrypted. Mint a key on the host with `shard tokens mint`, then:
 
 ```
 export SHARD_REMOTE=https://shard.example.com
@@ -18,7 +18,8 @@ export SHARD_API_KEY=<the token>
 ```
 
 An option beats the environment: `new Shard({ remote, apiKey })`. `caFile` (or `SHARD_CA_FILE`) trusts
-a private CA.
+a private CA, and an `http` remote refuses one. Each client on an `http` remote emits one Node warning,
+in the CLI's words.
 
 ## Quickstart
 

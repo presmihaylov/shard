@@ -133,12 +133,17 @@ export class Commands {
 
   /** list answers every command the daemon still holds for the sandbox, running or ended. */
   async list(): Promise<CommandInfo[]> {
-    return (await listed(this.transport, this.path(), "execs")).map(commandInfo);
+    const path = { id: this.sandboxId };
+    const route = "/v0/sandboxes/{id}/exec";
+    const rows = await listed(route, "execs", (cursor) => this.transport.api.GET(route, { params: { path, query: { cursor } } }));
+
+    return rows.map(commandInfo);
   }
 
   /** get answers a handle to a command any client started; its output comes when it attaches. */
   async get(id: string, options: OutputOptions = {}): Promise<Command> {
-    const info = commandInfo(await this.transport.call("GET", wire.path("sandboxes", this.sandboxId, "exec", id)));
+    const params = { path: { id: this.sandboxId, exec: id } };
+    const info = commandInfo((await this.transport.api.GET("/v0/sandboxes/{id}/exec/{exec}", { params })).data);
     const capture = new OutputCapture(options.outputLimitBytes ?? defaultOutputLimit);
 
     return new Command(new Session(this.transport, this.sandboxId, info.id, capture, handlers(options)), capture);
@@ -152,10 +157,6 @@ export class Commands {
     const session = await Session.start(this.transport, this.sandboxId, request, capture, handlers(options), options.signal);
 
     return { session, capture, input };
-  }
-
-  private path(): string {
-    return wire.path("sandboxes", this.sandboxId, "exec");
   }
 }
 

@@ -15,7 +15,7 @@ let daemon: FakeDaemon;
 let shard: Shard;
 let routes: Map<string, (request: Request) => Answer>;
 
-// A Shard takes only an https remote, so the fake daemon serves TLS under a CA the test trusts.
+// The fake daemon serves TLS under a CA the test trusts, so the calls ride https as a real remote does.
 before(() => {
   dir = mkdtempSync(join(tmpdir(), "useshards-shard-"));
   caFile = join(dir, "ca.pem");
@@ -115,6 +115,33 @@ test("list reads every page", async () => {
     ["sb_1", "sb_2"],
   );
   assert.equal(sent("GET", "/v0/sandboxes", 1).url.searchParams.get("all"), "true");
+});
+
+test("an http remote warns once per client, in the CLI's words, and answers as https does", async () => {
+  const plain = await FakeDaemon.start();
+  plain.route = () => ({ status: 200, json: { version: "0.9.0", api_version: "v0" } });
+  const warnings: Error[] = [];
+  const listen = (warning: Error): void => {
+    warnings.push(warning);
+  };
+  process.on("warning", listen);
+  const clients = [new Shard({ remote: plain.url, apiKey: "test-key" }), new Shard({ remote: plain.url, apiKey: "test-key" })];
+  try {
+    for (const client of clients) {
+      assert.deepEqual(await client.version(), { version: "0.9.0", apiVersion: "v0" });
+      await client.version();
+    }
+    await new Promise((resolve) => setImmediate(resolve));
+    const cli = "Warning: HTTP does not encrypt this connection. Use it only on localhost or through a trusted encrypted network.";
+    assert.deepEqual(
+      warnings.map((warning) => `${warning.name}: ${warning.message}`),
+      [cli, cli],
+    );
+  } finally {
+    process.off("warning", listen);
+    clients.forEach((client) => client.close());
+    await plain.close();
+  }
 });
 
 test("version and capabilities read the daemon's records", async () => {

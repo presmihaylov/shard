@@ -39,11 +39,16 @@
     "typecheck": "tsc -p tsconfig.json",
     "suite": "npm run build && tsx suite/main.ts",
     "test": "tsx --test \"test/**/*.test.ts\"",
+    "generate": "node scripts/generate.mjs",
     "prepack": "node -e \"require('node:fs').rmSync('dist', { recursive: true, force: true })\" && npm run build"
   },
   "devDependencies": {
     "@types/node": "20.19.43",
+    "openapi-typescript": "7.13.0",
     "tsx": "4.23.15",
     "typescript": "5.9.3"
+  },
+  "dependencies": {
+    "openapi-fetch": "0.17.0"
   }
 }

@@ -90,11 +90,13 @@ export class Files {
 
   async mkdir(path: string, options: WriteOptions = {}): Promise<void> {
     const { mode, parents, user } = options;
-    await this.transport.call("POST", this.route("mkdir"), { json: { path, mode: mode?.toString(8), parents, user } });
+    const body = { path, mode: mode?.toString(8), parents, user };
+    await this.transport.api.POST("/v0/sandboxes/{id}/mkdir", { params: { path: { id: this.sandboxId } }, body });
   }
 
   async remove(path: string, options: { recursive?: boolean } = {}): Promise<void> {
-    await this.transport.call("DELETE", this.route("files"), { query: wire.query({ path, recursive: options.recursive }) });
+    const params = { path: { id: this.sandboxId }, query: { path, recursive: options.recursive || undefined } };
+    await this.transport.api.DELETE("/v0/sandboxes/{id}/files", { params });
   }
 
   /** upload streams a local file to remote with its length up front; the mode defaults to the local file's. */
@@ -134,7 +136,7 @@ export class Files {
       throw notADirectory(`upload ${local}: not a directory`, local);
     }
     // The daemon streams the tar into the guest as it arrives, so it goes chunked; the guest's unpack may outlast any bound.
-    await this.transport.call("PUT", this.route("archive"), {
+    await this.transport.fetch("PUT", this.route("archive"), {
       query: wire.query({ path: parent, user: options.user }),
       body: pack(local, name),
       timeoutMs: 0,
@@ -163,7 +165,7 @@ export class Files {
 
   private async put(path: string, body: Uint8Array | AsyncIterable<Uint8Array>, length: number, options: WriteOptions): Promise<void> {
     const { mode, parents, user } = options;
-    await this.transport.call("PUT", this.route("files"), {
+    await this.transport.fetch("PUT", this.route("files"), {
       query: wire.query({ path, mode: mode?.toString(8), parents, user }),
       body,
       length,

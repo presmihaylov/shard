@@ -3,7 +3,6 @@ import { ProtocolError } from "./errors.js";
 import { appExit, type AppExit, type AppInfo } from "./records.js";
 import type { Sandbox } from "./sandbox.js";
 import type { Transport } from "./transport.js";
-import * as wire from "./wire.js";
 
 export class App {
   constructor(
@@ -22,9 +21,10 @@ export class App {
 
   /** wait answers how the app ended once its restart policy starts it no more; an abort ends the wait, never the app. */
   async wait(options: { signal?: AbortSignal } = {}): Promise<AppExit> {
-    const route = wire.path("sandboxes", this.sandbox.id, "attach");
+    const params = { path: { id: this.sandbox.id } };
+    const { data } = await this.transport.api.GET("/v0/sandboxes/{id}/attach", { params, signal: options.signal, fetch: this.transport.waiting });
 
-    return appExit(await this.transport.call("GET", route, { signal: options.signal, timeoutMs: 0 }));
+    return appExit(data);
   }
 
   /** logs answers the app's output so far; the daemon keeps a bounded log, so a long run may hold only its end. */
@@ -34,7 +34,8 @@ export class App {
 
   /** stop ends the app with TERM, or KILL with force, and cancels its restart policy; the sandbox keeps running. */
   async stop(options: { force?: boolean } = {}): Promise<void> {
-    const route = wire.path("sandboxes", this.sandbox.id, "app", "stop");
-    await this.transport.call("POST", route, { json: options.force ? { force: true } : undefined, timeoutMs: 0 });
+    const params = { path: { id: this.sandbox.id } };
+    const body = options.force ? { force: true } : undefined;
+    await this.transport.api.POST("/v0/sandboxes/{id}/app/stop", { params, body, fetch: this.transport.waiting });
   }
 }

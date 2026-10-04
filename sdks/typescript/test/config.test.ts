@@ -12,7 +12,7 @@ after(() => rmSync(dir, { recursive: true, force: true }));
 
 const remote = "https://shard.example.com";
 
-function file(name: string, content: string): string {
+function file(name: string, content: string | Buffer): string {
   const path = join(dir, name);
   writeFileSync(path, content);
 
@@ -50,16 +50,17 @@ test("a key with a control character is refused, and the message never holds the
   );
 });
 
-test("the remote is an https url that names only a host and a port", () => {
+test("the remote is an http or https url that names only a host and a port", () => {
   const apiKey = "key";
   refused(() => resolve({ apiKey }, {}), /^no remote: pass remote or set SHARD_REMOTE/);
-  refused(() => resolve({ apiKey, remote: "http://shard.example.com" }), /^remote must be an https url/);
-  refused(() => resolve({ apiKey, remote: "shard.example.com" }), /^remote must be an https url/);
-  refused(() => resolve({ apiKey }, { SHARD_REMOTE: "ftp://x" }), /^SHARD_REMOTE must be an https url/);
+  refused(() => resolve({ apiKey, remote: "shard.example.com" }), /^remote must be an http or https url/);
+  refused(() => resolve({ apiKey }, { SHARD_REMOTE: "ftp://x" }), /^SHARD_REMOTE must be an http or https url/);
   for (const remote of ["https://u:p@h.example.com", "https://h.example.com/v0", "https://h.example.com?a=1", "https://h.example.com#x"]) {
     refused(() => resolve({ apiKey, remote }), /^remote must name only a scheme, a host and a port/);
   }
   assert.equal(resolve({ apiKey, remote: "https://h.example.com/" }).baseUrl, "https://h.example.com:443");
+  assert.equal(resolve({ apiKey, remote: "http://h.example.com" }).baseUrl, "http://h.example.com:80");
+  assert.equal(resolve({ apiKey, remote: "http://h.example.com:8080" }).baseUrl, "http://h.example.com:8080");
 });
 
 test("a CA file must hold a certificate", () => {
@@ -68,4 +69,12 @@ test("a CA file must hold a certificate", () => {
   assert.deepEqual(resolve({ apiKey: "key" }, { SHARD_REMOTE: remote, SHARD_CA_FILE: file("env-ca.pem", pem) }).ca, pem);
   refused(() => resolve({ remote, apiKey: "key", caFile: file("junk.pem", "not a certificate") }), /holds no certificate/);
   refused(() => resolve({ remote, apiKey: "key", caFile: join(dir, "no-ca.pem") }), /^caFile: read the CA file/);
+});
+
+test("a CA file with an http remote is refused before it is read", () => {
+  const plain = "http://shard.example.com";
+  const missing = join(dir, "never-read.pem");
+  const words = (source: string) => new RegExp(`^${source} is set, and the remote http://shard.example.com:80 is http: a CA certificate verifies an https remote only$`);
+  refused(() => resolve({ remote: plain, apiKey: "key", caFile: missing }), words("caFile"));
+  refused(() => resolve({ apiKey: "key" }, { SHARD_REMOTE: plain, SHARD_CA_FILE: missing }), words("SHARD_CA_FILE"));
 });

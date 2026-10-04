@@ -44,7 +44,7 @@ jobs:
         working-directory: sdks/typescript
         run: npm pack
 
-      # The tarball must install and import with no dependencies of its own.
+      # A clean project proves the tarball installs and imports with only the dependencies it declares.
       - name: install the tarball into a clean project
         run: |
           mkdir /tmp/clean

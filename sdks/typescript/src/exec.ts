@@ -58,7 +58,8 @@ export class Session {
     handlers: Handlers,
     signal?: AbortSignal,
   ): Promise<Session> {
-    const record = commandInfo(await transport.call("POST", wire.path("sandboxes", sandboxId, "exec"), { json: request, signal }));
+    const { data } = await transport.api.POST("/v0/sandboxes/{id}/exec", { params: { path: { id: sandboxId } }, body: request, signal });
+    const record = commandInfo(data);
     const session = new Session(transport, sandboxId, record.id, capture, handlers);
     await session.attach(signal);
 
@@ -148,15 +149,15 @@ export class Session {
   }
 
   async inspect(): Promise<CommandInfo> {
-    return commandInfo(await this.transport.call("GET", this.path()));
+    return commandInfo((await this.transport.api.GET("/v0/sandboxes/{id}/exec/{exec}", { params: this.params })).data);
   }
 
   async kill(signal = ""): Promise<void> {
-    await this.transport.call("POST", `${this.path()}/kill`, { json: signal ? { signal } : {} });
+    await this.transport.api.POST("/v0/sandboxes/{id}/exec/{exec}/kill", { params: this.params, body: signal ? { signal } : {} });
   }
 
   async resize(size: wire.TerminalSize): Promise<void> {
-    await this.transport.call("POST", `${this.path()}/resize`, { json: size });
+    await this.transport.api.POST("/v0/sandboxes/{id}/exec/{exec}/resize", { params: this.params, body: size });
   }
 
   /** writeStdin sends data in order, split into the most the daemon reads in one message. */
@@ -256,6 +257,10 @@ export class Session {
 
   private path(): string {
     return wire.path("sandboxes", this.sandboxId, "exec", this.id);
+  }
+
+  private get params(): { path: { id: string; exec: string } } {
+    return { path: { id: this.sandboxId, exec: this.id } };
   }
 }
 

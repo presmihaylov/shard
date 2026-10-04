@@ -1,5 +1,6 @@
 // What every call shares on the wire: paths, the command stream ids, and the messages that end a stream.
 import { CommandNotStartedError, ProtocolError, failureError, isObject, type APIError } from "./errors.js";
+import type { components } from "./generated/schema.js";
 
 // The stream a command message carries in its first byte: the client sends stdin and stdin closed, the daemon the rest.
 export const stdin = 0;
@@ -37,16 +38,7 @@ export interface TerminalSize {
 }
 
 /** ExecRequest is what a command start says, as the daemon reads it. */
-export interface ExecRequest {
-  command: string[];
-  env?: string[];
-  workdir?: string;
-  user?: string;
-  stdin: boolean;
-  tty: boolean;
-  size?: TerminalSize;
-  attach: boolean;
-}
+export type ExecRequest = components["schemas"]["ExecRequest"];
 
 export interface ExecSettings {
   env?: Record<string, string>;

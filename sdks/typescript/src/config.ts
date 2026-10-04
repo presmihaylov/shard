@@ -7,13 +7,16 @@ export const remoteEnv = "SHARD_REMOTE";
 export const apiKeyEnv = "SHARD_API_KEY";
 export const caFileEnv = "SHARD_CA_FILE";
 
+/** plainWarning is the CLI's line for an http remote; Node prints the warning's name, Warning, before it. */
+export const plainWarning = "HTTP does not encrypt this connection. Use it only on localhost or through a trusted encrypted network.";
+
 /** ShardOptions are the connection settings; each one left out is read from its environment variable. */
 export interface ShardOptions {
-  /** The https url of `shard serve`, as https://shard.example.com. The default is SHARD_REMOTE. */
+  /** The url of `shard serve`, as https://shard.example.com; http sends the key unencrypted. The default is SHARD_REMOTE. */
   remote?: string;
   /** The API key, as `shard tokens mint` prints it. The default is SHARD_API_KEY. */
   apiKey?: string;
-  /** A PEM file of the CA that signed the server's certificate. The default is SHARD_CA_FILE, then the system's CAs. */
+  /** A PEM file of the CA that signed the server's certificate, for https only. The default is SHARD_CA_FILE, then the system's CAs. */
   caFile?: string;
 }
 
@@ -27,11 +30,9 @@ export interface Settings {
 type Env = Readonly<Record<string, string | undefined>>;
 
 export function resolve(options: ShardOptions, env: Env = process.env): Settings {
-  return {
-    baseUrl: baseUrl(options.remote, env),
-    apiKey: apiKey(options, env),
-    ca: ca(options.caFile, env),
-  };
+  const remote = baseUrl(options.remote, env);
+
+  return { baseUrl: remote, apiKey: apiKey(options, env), ca: ca(options.caFile, env, remote) };
 }
 
 const example = "as https://shard.example.com";
@@ -46,16 +47,16 @@ function baseUrl(remote: string | undefined, env: Env): string {
   try {
     url = new URL(value);
   } catch {
-    throw new ConfigurationError(`${source} must be an https url with a host, ${example}`);
+    throw new ConfigurationError(`${source} must be an http or https url with a host, ${example}`);
   }
-  if (url.protocol !== "https:" || !url.hostname) {
-    throw new ConfigurationError(`${source} must be an https url with a host, ${example}`);
+  if ((url.protocol !== "https:" && url.protocol !== "http:") || !url.hostname) {
+    throw new ConfigurationError(`${source} must be an http or https url with a host, ${example}`);
   }
   if (url.username || url.password || url.search || url.hash || url.pathname !== "/") {
     throw new ConfigurationError(`${source} must name only a scheme, a host and a port, ${example}`);
   }
 
-  return `https://${url.hostname}:${url.port || "443"}`;
+  return `${url.protocol}//${url.hostname}:${url.port || (url.protocol === "http:" ? "80" : "443")}`;
 }
 
 function apiKey(options: ShardOptions, env: Env): string {
@@ -81,11 +82,14 @@ function checked(token: string, source: string): string {
   return token;
 }
 
-function ca(caFile: string | undefined, env: Env): Buffer | undefined {
+function ca(caFile: string | undefined, env: Env, remote: string): Buffer | undefined {
   const source = caFile ? "caFile" : caFileEnv;
   const path = caFile || env[caFileEnv] || "";
   if (!path) {
     return undefined;
+  }
+  if (remote.startsWith("http:")) {
+    throw new ConfigurationError(`${source} is set, and the remote ${remote} is http: a CA certificate verifies an https remote only`);
   }
   let pem: Buffer;
   try {

@@ -2,14 +2,17 @@
 import * as http from "node:http";
 import * as https from "node:https";
 import { Readable, type Duplex, pipeline } from "node:stream";
+import createClient, { type Client } from "openapi-fetch";
 import type { Settings } from "./config.js";
 import { ConnectionError, ProtocolError, apiError, statusError } from "./errors.js";
+import type { paths } from "./generated/schema.js";
 import { version } from "./version.js";
 
 export const defaultTimeoutMs = 60_000;
 
+const json = "application/json";
+
 export interface CallOptions {
-  json?: unknown;
   query?: Record<string, string>;
   signal?: AbortSignal | undefined;
   /** How long the daemon may take to answer; 0 is no bound, for a call that waits on the guest. */
@@ -20,13 +23,21 @@ export interface SendOptions extends CallOptions {
   /** A raw body: bytes go with their length, an iterable goes chunked unless length names its size. */
   body?: Uint8Array | AsyncIterable<Uint8Array>;
   length?: number;
+  /** The raw body's type; left out, application/octet-stream. */
+  type?: string;
 }
 
-/** Answer is a 2xx: its headers and its whole body. */
+/** Answer is a 2xx: its status, its headers and its whole body. */
 export interface Answer {
+  status: number;
   headers: http.IncomingHttpHeaders;
   body: Buffer;
 }
+
+/** Api is the generated client of the public routes. Its types stay private to the SDK. */
+export type Api = Client<paths>;
+
+export type Fetch = (request: Request) => Promise<Response>;
 
 /** Opened is a 2xx whose body the caller reads as it arrives, or cancels to let go of it unread. */
 export interface Opened {
@@ -42,10 +53,13 @@ export interface Upgraded {
 }
 
 export class Transport {
+  /** api sends every JSON route over this pool, bounded by the transport's timeout. */
+  readonly api: Api;
+  /** waiting is the fetch a call passes to api when it waits on the guest, so no bound cuts it. */
+  readonly waiting: Fetch;
   private readonly agent: http.Agent;
   private readonly base: URL;
 
-  // An http base is for the unit tests' fake daemon; resolve() lets nothing but https through.
   constructor(
     private readonly settings: Pick<Settings, "baseUrl" | "apiKey" | "ca">,
     private readonly timeoutMs = defaultTimeoutMs,
@@ -53,19 +67,30 @@ export class Transport {
     this.base = new URL(settings.baseUrl);
     this.agent =
       this.base.protocol === "https:" ? new https.Agent({ keepAlive: true, ca: settings.ca }) : new http.Agent({ keepAlive: true });
+    // Accept lets the fetcher refuse an answer that is not JSON before the generated client parses it.
+    this.api = createClient<paths>({ baseUrl: this.base.origin, fetch: this.fetcher(this.timeoutMs), headers: { Accept: json } });
+    this.waiting = this.fetcher(0);
   }
 
-  /** call sends one request and answers its JSON body, or undefined for an empty one. */
-  async call(method: string, path: string, options: SendOptions = {}): Promise<unknown> {
-    const { body } = await this.fetch(method, path, options);
-    if (body.length === 0) {
-      return undefined;
-    }
-    try {
-      return JSON.parse(body.toString("utf8"));
-    } catch {
-      throw new ProtocolError(`${method} ${path} answered a body that is not JSON`);
-    }
+  /** fetcher is the fetch the generated client rides: this pool and key, and a refusal thrown as an APIError. */
+  private fetcher(timeoutMs: number): Fetch {
+    return async (request) => {
+      const url = new URL(request.url);
+      const path = url.pathname + url.search;
+      const body = request.body ? new Uint8Array(await request.arrayBuffer()) : undefined;
+      const type = request.headers.get("Content-Type") ?? undefined;
+      const answer = await this.fetch(request.method, path, { body, type, signal: request.signal, timeoutMs });
+      if (answer.body.length > 0 && request.headers.get("Accept") === json) {
+        try {
+          JSON.parse(answer.body.toString("utf8"));
+        } catch {
+          throw new ProtocolError(`${request.method} ${url.pathname} answered a body that is not JSON`);
+        }
+      }
+      const empty = answer.status === 204 || answer.status === 205 || answer.status === 304;
+
+      return new Response(empty ? null : answer.body, { status: answer.status, headers: headersOf(answer.headers) });
+    };
   }
 
   /** fetch answers a 2xx with its whole body. */
@@ -78,7 +103,7 @@ export class Transport {
       throw apiError(status, body);
     }
 
-    return { headers: res.headers, body };
+    return { status, headers: res.headers, body };
   }
 
   /** open answers a 2xx once its headers arrive; a refusal is read whole and thrown. */
@@ -179,21 +204,27 @@ export class Transport {
 }
 
 function encode(options: SendOptions): { headers: http.OutgoingHttpHeaders; body: Uint8Array | AsyncIterable<Uint8Array> | undefined } {
-  if (options.json !== undefined) {
-    const body = Buffer.from(JSON.stringify(options.json));
-
-    return { headers: { "Content-Type": "application/json", "Content-Length": body.length }, body };
-  }
   if (options.body === undefined) {
     return { headers: {}, body: undefined };
   }
   const length = options.body instanceof Uint8Array ? options.body.length : options.length;
-  const headers: http.OutgoingHttpHeaders = { "Content-Type": "application/octet-stream" };
+  const headers: http.OutgoingHttpHeaders = { "Content-Type": options.type ?? "application/octet-stream" };
   if (length !== undefined) {
     headers["Content-Length"] = length;
   }
 
   return { headers, body: options.body };
+}
+
+function headersOf(incoming: http.IncomingHttpHeaders): Headers {
+  const headers = new Headers();
+  for (const [key, value] of Object.entries(incoming)) {
+    for (const item of Array.isArray(value) ? value : [value ?? ""]) {
+      headers.append(key, item);
+    }
+  }
+
+  return headers;
 }
 
 function ok(status: number): boolean {

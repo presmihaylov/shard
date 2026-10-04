@@ -1,12 +1,14 @@
 // The client: one connection pool to `shard serve`, the sandboxes on it, and the policies, secrets and snapshots they share.
 import { App } from "./app.js";
-import { resolve, type ShardOptions } from "./config.js";
+import { plainWarning, resolve, type ShardOptions } from "./config.js";
+import type { components } from "./generated/schema.js";
 import { listed } from "./pages.js";
 import * as records from "./records.js";
 import type { Capabilities, Policy, PolicyRule, Restart, SandboxInfo, SecretInfo, Snapshot, Version } from "./records.js";
 import { Sandbox, refresh } from "./sandbox.js";
 import { Transport } from "./transport.js";
-import * as wire from "./wire.js";
+
+type CreateRequest = components["schemas"]["CreateRequest"];
 
 /** SandboxRef is a sandbox handle, or its id, id prefix or name. */
 export type SandboxRef = Sandbox | string;
@@ -54,7 +56,11 @@ export class Shard {
 
   /** Each option left out is read from its environment variable, as SHARD_REMOTE and SHARD_API_KEY. */
   constructor(options: ShardOptions = {}) {
-    this.transport = new Transport(resolve(options));
+    const settings = resolve(options);
+    if (settings.baseUrl.startsWith("http:")) {
+      process.emitWarning(plainWarning);
+    }
+    this.transport = new Transport(settings);
     this.policies = new Policies(this.transport);
     this.secrets = new Secrets(this.transport);
     this.snapshots = new Snapshots(this.transport);
@@ -75,22 +81,25 @@ export class Shard {
 
   /** get answers a sandbox by id, id prefix or name. */
   async get(ref: string): Promise<Sandbox> {
-    return new Sandbox(this.transport, records.sandboxInfo(await this.transport.call("GET", wire.path("sandboxes", ref))));
+    const { data } = await this.transport.api.GET("/v0/sandboxes/{id}", { params: { path: { id: ref } } });
+
+    return new Sandbox(this.transport, records.sandboxInfo(data));
   }
 
   /** list answers the running sandboxes, or with all every sandbox the daemon holds a record of. */
   async list(options: { all?: boolean } = {}): Promise<Sandbox[]> {
-    const rows = await listed(this.transport, wire.path("sandboxes"), "sandboxes", wire.query({ all: options.all }));
+    const all = options.all || undefined;
+    const rows = await listed("/v0/sandboxes", "sandboxes", (cursor) => this.transport.api.GET("/v0/sandboxes", { params: { query: { all, cursor } } }));
 
     return rows.map((row) => new Sandbox(this.transport, records.sandboxInfo(row)));
   }
 
   async version(): Promise<Version> {
-    return records.version(await this.transport.call("GET", wire.path("version")));
+    return records.version((await this.transport.api.GET("/v0/version")).data);
   }
 
   async capabilities(): Promise<Capabilities> {
-    return records.capabilities(await this.transport.call("GET", wire.path("capabilities")));
+    return records.capabilities((await this.transport.api.GET("/v0/capabilities")).data);
   }
 
   /** close lets go of the pooled connections, so the process can exit. */
@@ -98,11 +107,11 @@ export class Shard {
     this.transport.close();
   }
 
-  private async made(body: CreateBody): Promise<SandboxInfo> {
+  private async made(body: CreateRequest): Promise<SandboxInfo> {
     // wait=true answers once the sandbox is running or failed, which an image pull may take minutes to reach.
-    const answer = await this.transport.call("POST", wire.path("sandboxes"), { json: body, query: { wait: "true" }, timeoutMs: 0 });
+    const { data } = await this.transport.api.POST("/v0/sandboxes", { params: { query: { wait: true } }, body, fetch: this.transport.waiting });
 
-    return records.sandboxInfo(answer);
+    return records.sandboxInfo(data);
   }
 }
 
@@ -113,30 +122,34 @@ export class Policies {
   async set(name: string, rules: PolicyRule[]): Promise<Policy> {
     const body = { rules: rules.map(({ action, rule }) => ({ action, rule })) };
 
-    return records.policy(await this.transport.call("PUT", wire.path("policies", name), { json: body }));
+    const { data } = await this.transport.api.PUT("/v0/policies/{name}", { params: { path: { name } }, body });
+
+    return records.policy(data);
   }
 
   async get(name: string): Promise<Policy> {
-    return records.policy(await this.transport.call("GET", wire.path("policies", name)));
+    return records.policy((await this.transport.api.GET("/v0/policies/{name}", { params: { path: { name } } })).data);
   }
 
   async list(): Promise<Policy[]> {
-    return (await listed(this.transport, wire.path("policies"), "policies")).map(records.policy);
+    const rows = await listed("/v0/policies", "policies", (cursor) => this.transport.api.GET("/v0/policies", { params: { query: { cursor } } }));
+
+    return rows.map(records.policy);
   }
 
   /** remove deletes a policy no sandbox holds. */
   async remove(name: string): Promise<void> {
-    await this.transport.call("DELETE", wire.path("policies", name));
+    await this.transport.api.DELETE("/v0/policies/{name}", { params: { path: { name } } });
   }
 
   /** assign makes the sandbox enforce the policy from its next request on. */
   assign(sandbox: SandboxRef, name: string): Promise<SandboxInfo> {
-    return changed(this.transport, sandbox, "PUT", ["policy"], { policy: name });
+    return changed(sandbox, (id) => this.transport.api.PUT("/v0/sandboxes/{id}/policy", { params: { path: { id } }, body: { policy: name } }));
   }
 
   /** clear takes the sandbox's policy away, which leaves it the daemon's default. */
   clear(sandbox: SandboxRef): Promise<SandboxInfo> {
-    return changed(this.transport, sandbox, "DELETE", ["policy"]);
+    return changed(sandbox, (id) => this.transport.api.DELETE("/v0/sandboxes/{id}/policy", { params: { path: { id } } }));
   }
 }
 
@@ -147,26 +160,29 @@ export class Secrets {
   async set(name: string, options: SecretOptions): Promise<SecretInfo> {
     const { value, destinations, placeholder } = options;
     const body = { value, destinations, placeholder };
+    const { data } = await this.transport.api.PUT("/v0/secrets/{name}", { params: { path: { name } }, body });
 
-    return records.secretInfo(await this.transport.call("PUT", wire.path("secrets", name), { json: body }));
+    return records.secretInfo(data);
   }
 
   async list(): Promise<SecretInfo[]> {
-    return (await listed(this.transport, wire.path("secrets"), "secrets")).map(records.secretInfo);
+    const rows = await listed("/v0/secrets", "secrets", (cursor) => this.transport.api.GET("/v0/secrets", { params: { query: { cursor } } }));
+
+    return rows.map(records.secretInfo);
   }
 
   /** remove deletes a secret no sandbox holds; force takes it from every sandbox first. */
   async remove(name: string, options: { force?: boolean } = {}): Promise<void> {
-    await this.transport.call("DELETE", wire.path("secrets", name), { query: wire.query({ force: options.force }) });
+    await this.transport.api.DELETE("/v0/secrets/{name}", { params: { path: { name }, query: { force: options.force || undefined } } });
   }
 
   /** grant lets the sandbox send the secret to its destinations; the sandbox must not be running. */
   grant(sandbox: SandboxRef, name: string): Promise<SandboxInfo> {
-    return changed(this.transport, sandbox, "POST", ["secrets", name]);
+    return changed(sandbox, (id) => this.transport.api.POST("/v0/sandboxes/{id}/secrets/{name}", { params: { path: { id, name } } }));
   }
 
   revoke(sandbox: SandboxRef, name: string): Promise<SandboxInfo> {
-    return changed(this.transport, sandbox, "DELETE", ["secrets", name]);
+    return changed(sandbox, (id) => this.transport.api.DELETE("/v0/sandboxes/{id}/secrets/{name}", { params: { path: { id, name } } }));
   }
 }
 
@@ -177,43 +193,33 @@ export class Snapshots {
   async create(sandbox: SandboxRef, options: { name?: string } = {}): Promise<Snapshot> {
     const body = { sandbox: idOf(sandbox), name: options.name || undefined };
 
-    return records.snapshot(await this.transport.call("POST", wire.path("snapshots"), { json: body, timeoutMs: 0 }));
+    const { data } = await this.transport.api.POST("/v0/snapshots", { body, fetch: this.transport.waiting });
+
+    return records.snapshot(data);
   }
 
   async list(): Promise<Snapshot[]> {
-    return (await listed(this.transport, wire.path("snapshots"), "snapshots")).map(records.snapshot);
+    const rows = await listed("/v0/snapshots", "snapshots", (cursor) => this.transport.api.GET("/v0/snapshots", { params: { query: { cursor } } }));
+
+    return rows.map(records.snapshot);
   }
 
   /** inspect answers a snapshot by id, id prefix or name. */
   async inspect(ref: string): Promise<Snapshot> {
-    return records.snapshot(await this.transport.call("GET", wire.path("snapshots", ref)));
+    return records.snapshot((await this.transport.api.GET("/v0/snapshots/{ref}", { params: { path: { ref } } })).data);
   }
 
   async remove(ref: string): Promise<void> {
-    await this.transport.call("DELETE", wire.path("snapshots", ref));
+    await this.transport.api.DELETE("/v0/snapshots/{ref}", { params: { path: { ref } } });
   }
 }
 
-interface CreateBody {
-  image?: string;
-  snapshot?: string;
-  name?: string;
-  command?: string[];
-  env?: string[];
-  workdir?: string;
-  user?: string;
-  secrets?: string[];
-  policy?: string;
-  resources: { memory_mib?: number; vcpus: number; disk_mib: number };
-  restart?: { policy: Restart["policy"]; retries?: number; backoff: number };
-}
-
-function createBody(options: CreateOptions, command: string | string[] | undefined, restart: Restart | undefined): CreateBody {
+function createBody(options: CreateOptions, command: string | string[] | undefined, restart: Restart | undefined): CreateRequest {
   const { image, snapshot, name, env, workdir, user, secrets, policy, memoryMiB, vcpus, diskMiB } = options;
   if ((image === undefined) === (snapshot === undefined)) {
     throw new TypeError("a sandbox is made from an image or a snapshot, exactly one of them");
   }
-  const body: CreateBody = {
+  const body: CreateRequest = {
     image,
     snapshot,
     name: name || undefined,
@@ -251,8 +257,8 @@ function idOf(sandbox: SandboxRef): string {
 }
 
 /** changed sends a change to a sandbox's record, and keeps a handle's info current with the answer. */
-async function changed(transport: Transport, sandbox: SandboxRef, method: string, route: string[], json?: unknown): Promise<SandboxInfo> {
-  const info = records.sandboxInfo(await transport.call(method, wire.path("sandboxes", idOf(sandbox), ...route), { json }));
+async function changed(sandbox: SandboxRef, send: (id: string) => Promise<{ data?: unknown }>): Promise<SandboxInfo> {
+  const info = records.sandboxInfo((await send(idOf(sandbox))).data);
   if (typeof sandbox !== "string") {
     sandbox[refresh](info);
   }
