@@ -983,6 +983,37 @@
         ],
         "type": "object"
       },
+      "Scope": {
+        "additionalProperties": false,
+        "properties": {
+          "description": {
+            "type": "string"
+          },
+          "name": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "name",
+          "description"
+        ],
+        "type": "object"
+      },
+      "ScopesResponse": {
+        "additionalProperties": false,
+        "properties": {
+          "scopes": {
+            "items": {
+              "$ref": "#/components/schemas/Scope"
+            },
+            "type": "array"
+          }
+        },
+        "required": [
+          "scopes"
+        ],
+        "type": "object"
+      },
       "Secret": {
         "additionalProperties": false,
         "properties": {
@@ -3114,6 +3145,38 @@
           "sandboxes"
         ],
         "x-shard-scope": "sandbox:write"
+      }
+    },
+    "/v0/scopes": {
+      "get": {
+        "operationId": "list-scopes",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ScopesResponse"
+                }
+              }
+            },
+            "description": "OK"
+          },
+          "default": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Error"
+          }
+        },
+        "summary": "List the scopes a token can carry",
+        "tags": [
+          "meta"
+        ],
+        "x-shard-scope": "any"
       }
     },
     "/v0/secrets": {

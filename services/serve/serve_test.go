@@ -623,9 +623,9 @@ func TestALocalRouteIs403ForEveryTokenAndNothingIsDialed(t *testing.T) {
 	env := newTokenEnv(t)
 	address := front(t, up.root, env.secret)
 
-	tokens := map[string]string{"no scopes": mint(t, env, "root"), "star": mintScoped(t, env, "root", "*")}
-	for _, scope := range api.Scopes {
-		tokens[string(scope)] = mintScoped(t, env, "scoped", string(scope))
+	tokens := map[string]string{"no scopes": mint(t, env, "root")}
+	for _, scope := range models.Scopes {
+		tokens[scope.Name] = mintScoped(t, env, "scoped", scope.Name)
 	}
 
 	var locals []api.Route
@@ -667,14 +667,14 @@ func checkLocalRoutesRefused(t *testing.T, address, name, token string, locals [
 	}
 }
 
-// The SDK handshake works for every token, so version and capabilities need no scope a token could lack.
-func TestVersionAndCapabilitiesAnswerAnyValidToken(t *testing.T) {
+// The SDK handshake and scope discovery work for every token, so they need no scope a token could lack.
+func TestDiscoveryAnswersAnyValidToken(t *testing.T) {
 	up := fakeDaemon(t)
 	env := newTokenEnv(t)
 	address := front(t, up.root, env.secret)
 	token := mintScoped(t, env, "secrets", "secret:*")
 
-	for _, path := range []string{"/v0/version", "/v0/capabilities"} {
+	for _, path := range []string{"/v0/version", "/v0/capabilities", "/v0/scopes"} {
 		if resp := askRoute(t, address, token, http.MethodGet, path); resp.StatusCode != http.StatusOK { //nolint:bodyclose // askRoute closes the body in a cleanup
 			t.Errorf("a secret:* token got %d on GET %s, want 200", resp.StatusCode, path)
 		}
@@ -704,8 +704,17 @@ func (p countingProcess) Daemon() (api.Daemon, error) {
 	return api.Daemon{Provider: "gvisor"}, nil
 }
 
+// liveDaemon is the daemon's own api mux on a socket under root, and what a test reads of it.
+type liveDaemon struct {
+	root       string
+	process    countingProcess
+	dispatched chan string
+	// hungUp closes once the daemon has closed a connection, after which that connection dispatches nothing more.
+	hungUp chan struct{}
+}
+
 // realDaemon serves the daemon's own api mux on a socket under a root, and records the path of each request the mux dispatched.
-func realDaemon(t *testing.T) (string, countingProcess, chan string) {
+func realDaemon(t *testing.T) liveDaemon {
 	t.Helper()
 
 	root := shortRoot(t)
@@ -715,27 +724,79 @@ func realDaemon(t *testing.T) (string, countingProcess, chan string) {
 	}
 	t.Cleanup(func() { listener.Close() })
 
-	process := countingProcess{calls: &atomic.Int64{}}
-	dispatched := make(chan string, 8)
-	mux := api.NewHandler("v-test", process, nil, nil, nil, nil, nil, nil, io.Discard)
+	d := liveDaemon{root: root, process: countingProcess{calls: &atomic.Int64{}}, dispatched: make(chan string, 8), hungUp: make(chan struct{})}
+	hangUp := sync.OnceFunc(func() { close(d.hungUp) })
+	mux := api.NewHandler("v-test", d.process, nil, nil, nil, nil, nil, nil, io.Discard)
 	server := &http.Server{
 		ReadHeaderTimeout: time.Second,
 		Handler: http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-			dispatched <- r.Method + " " + r.URL.Path
+			d.dispatched <- r.Method + " " + r.URL.Path
 			mux.ServeHTTP(w, r)
 		}),
+		ConnState: func(_ net.Conn, state http.ConnState) {
+			if state == http.StateClosed {
+				hangUp()
+			}
+		},
 	}
 	go server.Serve(listener)
 	t.Cleanup(func() { server.Close() })
 
-	return root, process, dispatched
+	return d
+}
+
+// noticeListener hands out connections that call notice once the front has closed one.
+type noticeListener struct {
+	net.Listener
+
+	notice func()
+}
+
+func (l noticeListener) Accept() (net.Conn, error) {
+	conn, err := l.Listener.Accept()
+	if err != nil {
+		return nil, err
+	}
+	tcp, ok := conn.(*net.TCPConn)
+	if !ok {
+		return nil, fmt.Errorf("the front accepted a %T, want a TCP connection", conn)
+	}
+
+	return noticedConn{TCPConn: tcp, notice: l.notice}, nil
+}
+
+// noticedConn keeps the CloseWrite the front half-closes with, and calls notice after Close returns.
+type noticedConn struct {
+	*net.TCPConn
+
+	notice func()
+}
+
+func (c noticedConn) Close() error {
+	defer c.notice()
+
+	return c.TCPConn.Close()
+}
+
+// await fails t unless done closes within the bound every read of these tests has.
+func await(t *testing.T, done <-chan struct{}, what string) {
+	t.Helper()
+
+	select {
+	case <-done:
+	case <-time.After(5 * time.Second):
+		t.Fatalf("%s within 5s", what)
+	}
 }
 
 // A local route pipelined behind a public request is never dispatched: the front forwards the bytes, and the daemon answers one request per connection.
 func TestAPipelinedLocalRouteIsNeverDispatched(t *testing.T) {
-	root, process, dispatched := realDaemon(t)
+	d := realDaemon(t)
 	env := newTokenEnv(t)
-	address := front(t, root, env.secret)
+	frontClosed := make(chan struct{})
+	address := frontWith(t, d.root, env.secret, func(_ *Server, listener net.Listener) net.Listener {
+		return noticeListener{Listener: listener, notice: sync.OnceFunc(func() { close(frontClosed) })}
+	})
 	token := mintScoped(t, env, "root", "*")
 
 	conn, err := net.Dial("tcp", address)
@@ -754,8 +815,8 @@ func TestAPipelinedLocalRouteIsNeverDispatched(t *testing.T) {
 		t.Fatalf("write the pipelined requests: %v", err)
 	}
 
-	// A front that closes with the pipelined request unread sends a reset, and by now it would have destroyed the answer.
-	time.Sleep(200 * time.Millisecond)
+	// A close over the unread pipelined request is a reset, so the read starts only after the front's close, where one would have destroyed the answer.
+	await(t, frontClosed, "the front did not close the connection")
 
 	reader := bufio.NewReader(conn)
 	resp, err := http.ReadResponse(reader, nil)
@@ -774,10 +835,15 @@ func TestAPipelinedLocalRouteIsNeverDispatched(t *testing.T) {
 		t.Errorf("the front sent %q after the first answer, want EOF", rest)
 	}
 
-	if got := drain(dispatched); !slices.Equal(got, []string{"GET /v0/version"}) {
+	await(t, d.hungUp, "the daemon did not close its connection")
+	got := make([]string, 0, len(d.dispatched))
+	for range len(d.dispatched) {
+		got = append(got, <-d.dispatched)
+	}
+	if !slices.Equal(got, []string{"GET /v0/version"}) {
 		t.Errorf("the daemon dispatched %v, want only the public request", got)
 	}
-	if calls := process.calls.Load(); calls != 0 {
+	if calls := d.process.calls.Load(); calls != 0 {
 		t.Errorf("the local GET /v0/daemon handler ran %d times, want none", calls)
 	}
 }
@@ -799,7 +865,7 @@ func TestEveryPublicRouteAndNoOtherNeedsAScopeATokenCanCarry(t *testing.T) {
 	covered := 0
 	for _, r := range api.Routes() {
 		covered++
-		if r.Class == api.Public && r.Scope != api.AnyToken && !slices.Contains(api.Scopes, r.Scope) {
+		if r.Class == api.Public && r.Scope != api.AnyToken && (r.Scope == models.ScopeAll || CheckScopes([]string{string(r.Scope)}) != nil) {
 			t.Errorf("public route %s %s needs %q, which mint refuses as a scope", r.Method, r.Pattern, r.Scope)
 		}
 		if r.Class == api.Local && r.Scope != "" {
@@ -1225,7 +1291,7 @@ func newTokenEnv(t *testing.T) tokenEnv {
 
 	secret := secretFile(t, testSecret)
 
-	return tokenEnv{secret: secret, tokens: TokensPath(secret, "")}
+	return tokenEnv{secret: secret, tokens: TokensPath(secret)}
 }
 
 // mint issues a valid token for sub over the test secret, records it in env's ledger, and answers it.
@@ -1281,4 +1347,20 @@ func shortRoot(t *testing.T) string {
 	t.Cleanup(func() { os.RemoveAll(root) })
 
 	return root
+}
+
+// A listed scope that no public route needs would be an admin scope a remote token could carry and never use.
+func TestEveryListedScopeOpensAPublicRoute(t *testing.T) {
+	for _, scope := range models.Scopes {
+		if scope.Name == models.ScopeAll {
+			continue
+		}
+		opens := false
+		for _, r := range api.Routes() {
+			opens = opens || (r.Class == api.Public && string(r.Scope) == scope.Name)
+		}
+		if !opens {
+			t.Errorf("scope %s opens no public route", scope.Name)
+		}
+	}
 }
