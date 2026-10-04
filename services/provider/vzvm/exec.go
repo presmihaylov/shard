@@ -108,3 +108,16 @@ func (p *Provider) Signal(ctx context.Context, id string, pid int, signal string
 
 	return nil
 }
+
+// StopApp asks the guest supervisor to cancel every start again and term the app, or kill it with force.
+func (p *Provider) StopApp(ctx context.Context, id string, force bool) error {
+	m, _, err := p.running(ctx, id)
+	if err != nil {
+		return err
+	}
+	if err := m.control.Load().StopApp(ctx, force); err != nil {
+		return fmt.Errorf("sandbox %s: stop the app: %w", id, err)
+	}
+
+	return nil
+}

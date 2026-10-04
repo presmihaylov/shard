@@ -91,8 +91,8 @@ reason     /dev/kvm opens
 ### systemd is not a sandbox's init
 
 **systemd cannot run as a sandbox's PID 1, on any provider.** `shard-init` is PID 1 in every
-sandbox and starts the command given at create as its child (`cmd/shard-init` uses `ForkExec`), so
-the entrypoint is never PID 1. The image's own ENTRYPOINT and CMD never run, and with no command
+sandbox and starts the command given to `shard run` as its child (`cmd/shard-init` uses `ForkExec`), so
+the entrypoint is never PID 1. The image's own ENTRYPOINT and CMD never run, and after `shard create`
 `shard-init` runs alone. systemd refuses the system-manager role when it is not PID 1. It prints
 "Explicit --user argument required to run as user manager." and exits. `systemctl is-system-running`
 then reports `offline`, and the record stays `running` because a sandbox outlives its entrypoint.

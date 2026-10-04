@@ -807,7 +807,7 @@ func TestTheForksOfOneSaveShareNoDrawPastTheFirstTheyDifferOn(t *testing.T) {
 	}
 }
 
-// A clone boots from the disk alone, so a pause freezes the root under a writer in mid-loop: the clone holds every count the writer printed, and the source and a fork write again after (SHARD-296).
+// A pause freezes the root under a writer in mid-loop, so its disk boots alone with every count the writer printed, and the source and a fork write again after (SHARD-296).
 func TestAPauseFreezesTheRootUnderALoopingWriter(t *testing.T) {
 	h := newVMHarness(t)
 	if !h.provider.Capabilities().Pause {
@@ -837,18 +837,20 @@ func TestAPauseFreezesTheRootUnderALoopingWriter(t *testing.T) {
 		t.Fatalf("the writer printed no count before the pause: %v", err)
 	}
 
-	clone := h.newSpec(t)
-	if err := h.provider.Clone(t.Context(), spec.ID, clone); err != nil {
+	// The checkpoint keeps its disk as disk.img, so a seed of it boots that disk without the memory.
+	seeded := h.newSpec(t)
+	seeded.Seed = snap
+	if err := h.provider.Create(t.Context(), seeded); err != nil {
 		t.Fatal(err)
 	}
-	onDisk, err := strconv.Atoi(execIn(t, h, clone.ID, `awk 'NR != $1 { print "a gap at line " NR ": " $0; exit 1 } END { print NR }' /root/log`))
+	onDisk, err := strconv.Atoi(execIn(t, h, seeded.ID, `awk 'NR != $1 { print "a gap at line " NR ": " $0; exit 1 } END { print NR }' /root/log`))
 	if err != nil {
 		t.Fatal(err)
 	}
 	if onDisk < printed {
-		t.Fatalf("the clone's log ends at %d, and the source printed %d before its pause", onDisk, printed)
+		t.Fatalf("the paused disk's log ends at %d, and the source printed %d before its pause", onDisk, printed)
 	}
-	t.Logf("the source printed %d before its pause, and the clone holds %d", printed, onDisk)
+	t.Logf("the source printed %d before its pause, and its paused disk holds %d", printed, onDisk)
 
 	fork := h.newSpec(t)
 	if err := h.provider.ForkSnapshot(t.Context(), snap, fork); err != nil {

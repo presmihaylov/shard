@@ -11,10 +11,11 @@ import (
 	"time"
 
 	"github.com/presmihaylov/shard/models"
+	"github.com/presmihaylov/shard/services/client"
 	"github.com/presmihaylov/shard/services/sandbox"
 )
 
-// create asks the daemon for a sandbox and prints the id; the pull and start happen there, so the wait has no bound.
+// create asks the daemon for a sandbox that runs only shard-init, and prints the id; the pull and start happen there, so the wait has no bound.
 func (a App) create(ctx context.Context, args []string) error {
 	req, err := parseCreate(args)
 	if err != nil {
@@ -26,24 +27,61 @@ func (a App) create(ctx context.Context, args []string) error {
 		return err
 	}
 
-	// The daemon creates in the background; the CLI blocks, so an operator sees the pull, then a ready sandbox or the reason it failed.
-	sb, err := c.CreateSandboxAndWait(ctx, req, a.pullProgress())
+	sb, err := a.createAndWait(ctx, c, req)
 	if err != nil {
 		return err
-	}
-	if sb.State == models.StateFailed {
-		return fmt.Errorf("sandbox %s failed to start: %s", sb.ID, sb.FailedReason)
 	}
 
 	return a.print(sb.ID)
 }
 
-// parseCreate splits the flags, the image and the argv, and refuses a typo before the daemon is asked.
+// createAndWait blocks while the daemon creates in the background, so an operator sees the pull, then a ready sandbox or the reason it failed.
+func (a App) createAndWait(ctx context.Context, c *client.Client, req sandbox.CreateRequest) (models.Sandbox, error) {
+	sb, err := c.CreateSandboxAndWait(ctx, req, a.pullProgress())
+	if err != nil {
+		return models.Sandbox{}, err
+	}
+	if sb.State == models.StateFailed {
+		return models.Sandbox{}, fmt.Errorf("sandbox %s failed to start: %s", sb.ID, sb.FailedReason)
+	}
+
+	return sb, nil
+}
+
+// parseCreate splits the flags and the image, and refuses a typo before the daemon is asked.
 func parseCreate(args []string) (sandbox.CreateRequest, error) {
 	var req sandbox.CreateRequest
-	var err error
 
 	flags := newFlags("create")
+	sandboxFlags(flags, &req)
+	var refused error
+	runFlags(flags, &refused)
+
+	if err := parseVerb(flags, args); err != nil {
+		return sandbox.CreateRequest{}, err
+	}
+	if refused != nil {
+		return sandbox.CreateRequest{}, refused
+	}
+	if err := checkSandbox(flags, req); err != nil {
+		return sandbox.CreateRequest{}, err
+	}
+
+	rest := flags.Args()
+	if len(rest) == 0 {
+		return sandbox.CreateRequest{}, errors.New("create takes one image reference, got none")
+	}
+	if len(rest) > 1 {
+		return sandbox.CreateRequest{}, errors.New("create takes no command: shard run [flags] <image> <command> [args...]")
+	}
+
+	req.Image = rest[0]
+
+	return req, nil
+}
+
+// sandboxFlags are the flags create and run share: everything about the sandbox, nothing about an app.
+func sandboxFlags(flags *flag.FlagSet, req *sandbox.CreateRequest) {
 	flags.StringVar(&req.Name, "name", "", "")
 	flags.Var((*envList)(&req.Env), "env", "")
 	flags.Var((*secretList)(&req.Secrets), "secret", "")
@@ -53,40 +91,31 @@ func parseCreate(args []string) (sandbox.CreateRequest, error) {
 	flags.Var(sizeMiB{&req.Resources.MemoryMiB}, "memory", "")
 	flags.Var((*cpuCount)(&req.Resources.VCPUs), "cpus", "")
 	flags.Var(sizeMiB{&req.Resources.DiskMiB}, "disk", "")
-	var restart restartFlags
-	flags.StringVar(&restart.policy, "restart", "", "")
-	flags.IntVar(&restart.retries, "restart-retries", 0, "")
-	flags.DurationVar(&restart.backoff, "restart-backoff", 0, "")
+}
 
-	if err := parseVerb(flags, args); err != nil {
-		return sandbox.CreateRequest{}, err
-	}
-
-	if req.Restart, err = restart.request(); err != nil {
-		return sandbox.CreateRequest{}, err
-	}
-
+// checkSandbox refuses what sandboxFlags parsed and the daemon would refuse only after a pull.
+func checkSandbox(flags *flag.FlagSet, req sandbox.CreateRequest) error {
 	// The spelling is checked here, so a name no verb could take back never costs the operator a pull.
 	if named(flags) {
 		if err := sandbox.ValidName(req.Name); err != nil {
-			return sandbox.CreateRequest{}, err
+			return err
 		}
 	}
 
 	// A bound this large overflows the byte count it is turned into, and an overflow reads as unbounded.
 	if req.Resources.MemoryMiB > sandbox.MaxMemoryMiB {
-		return sandbox.CreateRequest{}, fmt.Errorf("--memory is a bound in MiB and no host holds that much, got %d", req.Resources.MemoryMiB)
+		return fmt.Errorf("--memory is a bound in MiB and no host holds that much, got %d", req.Resources.MemoryMiB)
 	}
 	if req.Resources.VCPUs < 0 {
-		return sandbox.CreateRequest{}, fmt.Errorf("--cpus is a bound and cannot be negative, got %d", req.Resources.VCPUs)
+		return fmt.Errorf("--cpus is a bound and cannot be negative, got %d", req.Resources.VCPUs)
 	}
 	if req.Resources.DiskMiB > sandbox.MaxDiskMiB {
-		return sandbox.CreateRequest{}, fmt.Errorf("--disk is a bound in MiB and no host holds that much, got %d", req.Resources.DiskMiB)
+		return fmt.Errorf("--disk is a bound in MiB and no host holds that much, got %d", req.Resources.DiskMiB)
 	}
 
 	if req.Policy != "" {
 		if err := sandbox.ValidPolicyName(req.Policy); err != nil {
-			return sandbox.CreateRequest{}, err
+			return err
 		}
 	}
 
@@ -94,35 +123,39 @@ func parseCreate(args []string) (sandbox.CreateRequest, error) {
 	for _, entry := range req.Env {
 		key, _, _ := strings.Cut(entry, "=")
 		if slices.Contains(req.Secrets, key) {
-			return sandbox.CreateRequest{}, fmt.Errorf("--secret %s and --env %s name the same variable: the guest gets the placeholder as $%s, so drop the --env", key, key, key)
+			return fmt.Errorf("--secret %s and --env %s name the same variable: the guest gets the placeholder as $%s, so drop the --env", key, key, key)
 		}
 	}
 
-	rest := flags.Args()
-	if len(rest) == 0 {
-		return sandbox.CreateRequest{}, errors.New("create takes one image reference, got none")
+	return nil
+}
+
+// restartFlagNames are the flags of the restart policy, which only run takes, because only a run has an app.
+var restartFlagNames = []string{"restart", "restart-retries", "restart-backoff"}
+
+// runFlags takes the restart flags on a verb that has no app, and keeps the refusal that points to run.
+func runFlags(flags *flag.FlagSet, refused *error) {
+	for _, name := range restartFlagNames {
+		flags.Var(runFlag{name: name, refusal: refused}, name, "")
+	}
+}
+
+// runFlag is one restart flag given to create or exec.
+type runFlag struct {
+	name    string
+	refusal *error
+}
+
+func (r runFlag) String() string { return "" }
+
+func (r runFlag) refused() {}
+
+func (r runFlag) Set(value string) error {
+	if *r.refusal == nil {
+		*r.refusal = fmt.Errorf("--%s is a run flag: shard run --%s %s <image> <command>", r.name, r.name, value)
 	}
 
-	req.Image, rest = rest[0], rest[1:]
-	if len(rest) == 0 {
-		// The image's own command never runs, so with none there is nothing to start again.
-		if req.Restart != nil && req.Restart.Set() {
-			return sandbox.CreateRequest{}, errors.New("--restart needs a command after the image; the image's own ENTRYPOINT and CMD never run")
-		}
-
-		return req, nil
-	}
-
-	if rest[0] == "--" {
-		rest = rest[1:]
-	}
-
-	req.Command = rest
-	if len(req.Command) == 0 {
-		return sandbox.CreateRequest{}, errors.New("-- takes the command to run, and nothing followed it")
-	}
-
-	return req, nil
+	return nil
 }
 
 // restartFlags is the policy as the flags spell it, before the daemon's seconds.

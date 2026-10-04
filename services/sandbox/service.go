@@ -452,6 +452,7 @@ func (s *Service) Prepare(ctx context.Context, req CreateRequest) (models.Sandbo
 		Resources: req.Resources,
 		Secrets:   req.Secrets,
 		Policy:    req.Policy,
+		Command:   slices.Clone(req.Command),
 		Restart:   withRestartDefaults(req.Restart),
 		CreatedAt: time.Now().UTC(),
 	}, admit...)
@@ -674,6 +675,8 @@ func failed(cause error) func(*models.Sandbox) error {
 
 // ValidName, ValidSecretName and ValidPolicyName let a client refuse a spelling before it asks the daemon.
 func ValidName(name string) error { return sandboxstate.ValidName(name) }
+
+func ValidSnapshotName(name string) error { return sandboxstate.ValidSnapshotName(name) }
 
 func ValidSecretName(name string) error { return secret.ValidName(name) }
 

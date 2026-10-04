@@ -4,8 +4,10 @@ import (
 	"bufio"
 	"bytes"
 	"context"
+	"encoding/binary"
 	"errors"
 	"fmt"
+	"io"
 	"net"
 	"os"
 	"os/exec"
@@ -471,6 +473,174 @@ func TestTransportLogsFollowTheEntrypoint(t *testing.T) {
 	}
 }
 
+// A fake pump takes the app's last output and acks it late, the way a host still writing its log file would; the end waits for that ack.
+func TestTransportEndWaitsForTheHostToLandTheLastOutput(t *testing.T) {
+	_, dial := startTransport(t)
+	ctx := testContext(t)
+	c, err := supervisor.Connect(ctx, dial)
+	if err != nil {
+		t.Fatalf("connect: %v", err)
+	}
+	defer c.Close()
+
+	pump, held := openLogs(ctx, t, dial)
+	defer pump.Close()
+	if err := binary.Write(pump, binary.BigEndian, held[0]); err != nil {
+		t.Fatalf("resume the logs: %v", err)
+	}
+
+	if err := c.Run(t.Context(), supervisor.RunSpec{Argv: childArgv("say:last words")}); err != nil {
+		t.Fatalf("run: %v", err)
+	}
+	tail := make([]byte, len("last words\n"))
+	if _, err := io.ReadFull(pump, tail); err != nil || string(tail) != "last words\n" {
+		t.Fatalf("the pump read %q and %v, want the app's last line", tail, err)
+	}
+	select {
+	case <-ended(c):
+		t.Fatal("the guest reported the end before the host acked the app's last output")
+	case <-time.After(500 * time.Millisecond):
+	}
+
+	// A host that attaches meanwhile hears the policy still going, so its run waits for the same ack.
+	again, err := supervisor.Connect(ctx, dial)
+	if err != nil {
+		t.Fatalf("connect again: %v", err)
+	}
+	defer again.Close()
+	state, err := again.Next()
+	if err != nil {
+		t.Fatalf("read the state: %v", err)
+	}
+	if state.Exit == nil || state.Restarts == nil || state.Restarts.Ended {
+		t.Fatalf("state = %+v with restarts %+v, want the exit and the policy not yet ended", state, state.Restarts)
+	}
+
+	if err := binary.Write(pump, binary.BigEndian, held[0]+uint64(len(tail))); err != nil {
+		t.Fatalf("ack the last output: %v", err)
+	}
+	if restarts := awaitKind(t, again, supervisor.KindRestarts); restarts.Restarts == nil || !restarts.Restarts.Ended {
+		t.Fatalf("restarts = %+v, want the app ended once its output landed", restarts.Restarts)
+	}
+}
+
+// A host that comes back already holding the last output has no write to ack, so its resume is what lets the end go.
+func TestTransportEndFollowsAHostThatResumesPastTheLastOutput(t *testing.T) {
+	_, dial := startTransport(t)
+	ctx := testContext(t)
+	c, err := supervisor.Connect(ctx, dial)
+	if err != nil {
+		t.Fatalf("connect: %v", err)
+	}
+	defer c.Close()
+
+	first, held := openLogs(ctx, t, dial)
+	if err := binary.Write(first, binary.BigEndian, held[0]); err != nil {
+		t.Fatalf("resume the logs: %v", err)
+	}
+	if err := c.Run(t.Context(), supervisor.RunSpec{Argv: childArgv("say:last words")}); err != nil {
+		t.Fatalf("run: %v", err)
+	}
+	tail := make([]byte, len("last words\n"))
+	if _, err := io.ReadFull(first, tail); err != nil {
+		t.Fatalf("read the app's last line: %v", err)
+	}
+	end := ended(c)
+	// The host lands the line and dies before its ack.
+	if err := first.Close(); err != nil {
+		t.Fatalf("close the first logs connection: %v", err)
+	}
+
+	second, held := openLogs(ctx, t, dial)
+	defer second.Close()
+	if held[1]-held[0] != uint64(len(tail)) {
+		t.Fatalf("the guest holds %v, want the %d bytes of the unacked line", held, len(tail))
+	}
+	if err := binary.Write(second, binary.BigEndian, held[1]); err != nil {
+		t.Fatalf("resume the logs past the line: %v", err)
+	}
+	select {
+	case <-end:
+	case <-time.After(5 * time.Second):
+		t.Fatal("the guest never reported the end to a host that resumed past the last output")
+	}
+}
+
+// A host whose log refuses the output acks nothing more and says so, so the end goes without that ack and the guest hangs up.
+func TestTransportEndFollowsAHostWhoseLogStopped(t *testing.T) {
+	_, dial := startTransport(t)
+	ctx := testContext(t)
+	c, err := supervisor.Connect(ctx, dial)
+	if err != nil {
+		t.Fatalf("connect: %v", err)
+	}
+	defer c.Close()
+
+	pump, held := openLogs(ctx, t, dial)
+	defer pump.Close()
+	if err := binary.Write(pump, binary.BigEndian, held[0]); err != nil {
+		t.Fatalf("resume the logs: %v", err)
+	}
+	if err := c.Run(t.Context(), supervisor.RunSpec{Argv: childArgv("say:last words")}); err != nil {
+		t.Fatalf("run: %v", err)
+	}
+	tail := make([]byte, len("last words\n"))
+	if _, err := io.ReadFull(pump, tail); err != nil {
+		t.Fatalf("read the app's last line: %v", err)
+	}
+	end := ended(c)
+	if err := binary.Write(pump, binary.BigEndian, supervisor.LogsStopped); err != nil {
+		t.Fatalf("say the log stopped: %v", err)
+	}
+	select {
+	case <-end:
+	case <-time.After(5 * time.Second):
+		t.Fatal("the guest never reported the end after the host said its log stopped")
+	}
+	if err := pump.SetReadDeadline(time.Now().Add(5 * time.Second)); err != nil {
+		t.Fatalf("bound the read: %v", err)
+	}
+	if _, err := io.Copy(io.Discard, pump); err != nil {
+		t.Fatalf("the guest kept the logs connection open after the stop: %v", err)
+	}
+}
+
+// openLogs dials the logs port as a host does and reads the output bytes [from, to) the guest holds.
+func openLogs(ctx context.Context, t *testing.T, dial supervisor.Dialer) (net.Conn, [2]uint64) {
+	t.Helper()
+
+	conn, err := dial(ctx, supervisor.LogsPort)
+	if err != nil {
+		t.Fatalf("open the logs connection: %v", err)
+	}
+	var held [2]uint64
+	if err := binary.Read(conn, binary.BigEndian, &held); err != nil {
+		t.Fatalf("read the output the guest holds: %v", err)
+	}
+
+	return conn, held
+}
+
+// ended closes once c hears the policy end.
+func ended(c *supervisor.Control) <-chan struct{} {
+	done := make(chan struct{})
+	go func() {
+		for {
+			m, err := c.Next()
+			if err != nil {
+				return
+			}
+			if m.Kind == supervisor.KindRestarts && m.Restarts != nil && m.Restarts.Ended {
+				close(done)
+
+				return
+			}
+		}
+	}()
+
+	return done
+}
+
 func TestTransportStopEndsTheSupervisor(t *testing.T) {
 	cmd, dial := startTransport(t)
 	ctx := testContext(t)
@@ -529,6 +699,198 @@ func TestTransportKillForcesTheEntrypointDown(t *testing.T) {
 	case <-ctx.Done():
 		t.Fatal("the supervisor did not exit after the kill")
 	}
+}
+
+// A VM's run stops its app over the control channel: the stop terms it, ends the policy, and the guest stays up.
+func TestTransportStopAppEndsTheAppAndKeepsTheGuest(t *testing.T) {
+	cmd, dial := startTransport(t)
+	ctx := testContext(t)
+	c, err := supervisor.Connect(ctx, dial)
+	if err != nil {
+		t.Fatalf("connect: %v", err)
+	}
+	defer c.Close()
+	if err := c.Run(t.Context(), supervisor.RunSpec{Argv: childArgv("sleep:60000"), Restart: models.RestartAlways, Backoff: time.Millisecond}); err != nil {
+		t.Fatalf("run: %v", err)
+	}
+	awaitKind(t, c, supervisor.KindReady)
+
+	if err := c.StopApp(t.Context(), false); err != nil {
+		t.Fatalf("stop the app: %v", err)
+	}
+	exit := awaitKind(t, c, supervisor.KindExit)
+	if exit.Exit == nil || exit.Exit.Signal != int(syscall.SIGTERM) {
+		t.Fatalf("exit = %+v, want signal SIGTERM", exit.Exit)
+	}
+	restarts := awaitKind(t, c, supervisor.KindRestarts)
+	if restarts.Restarts == nil || !restarts.Restarts.Ended || restarts.Restarts.Count != 0 {
+		t.Fatalf("restarts = %+v, want the app ended with no start again", restarts.Restarts)
+	}
+	if err := cmd.Process.Signal(syscall.Signal(0)); err != nil {
+		t.Fatalf("the guest ended with its app: %v", err)
+	}
+}
+
+// treeArgv is sh -c 'sleep 600 & wait', which leaves its sleep behind on a TERM, and writes the sleep's pid to pidFile.
+func treeArgv(pidFile, then string) []string {
+	return []string{"/bin/sh", "-c", `sleep 600 & echo $! >>"$1"; ` + then, "sh", pidFile}
+}
+
+// forkedPIDs reads the sleeps a tree app forked, one per run, once n of them are there.
+func forkedPIDs(t *testing.T, pidFile string, n int) []int {
+	t.Helper()
+
+	var pids []int
+	waitFor(t, 10*time.Second, fmt.Sprintf("%d forked sleeps", n), func() bool {
+		raw, err := os.ReadFile(pidFile)
+		if errors.Is(err, os.ErrNotExist) {
+			return false
+		}
+		if err != nil {
+			t.Fatalf("read the forked pids: %v", err)
+		}
+		pids = pids[:0]
+		for field := range strings.FieldsSeq(string(raw)) {
+			pid, err := strconv.Atoi(field)
+			if err != nil {
+				return false
+			}
+			pids = append(pids, pid)
+		}
+
+		return len(pids) >= n
+	})
+
+	return pids
+}
+
+// gone says a pid ended: no such process, or a zombie its new parent has yet to reap.
+func gone(pid int) bool {
+	if errors.Is(syscall.Kill(pid, 0), syscall.ESRCH) {
+		return true
+	}
+	stat, err := os.ReadFile(fmt.Sprintf("/proc/%d/stat", pid))
+
+	return err == nil && strings.Contains(string(stat), ") Z ")
+}
+
+// app/stop signals the app's whole group, so what it forked ends too, while PID 1 and an exec session run on.
+func TestTransportStopAppEndsWhatTheAppForked(t *testing.T) {
+	for _, force := range []bool{false, true} {
+		t.Run(fmt.Sprintf("force=%v", force), func(t *testing.T) {
+			cmd, dial := startTransport(t)
+			ctx := testContext(t)
+			c, err := supervisor.Connect(ctx, dial)
+			if err != nil {
+				t.Fatalf("connect: %v", err)
+			}
+			defer c.Close()
+			pidFile := filepath.Join(shortDir(t), "forked")
+			if err := c.Run(t.Context(), supervisor.RunSpec{Argv: treeArgv(pidFile, "wait"), Env: os.Environ()}); err != nil {
+				t.Fatalf("run: %v", err)
+			}
+			forked := forkedPIDs(t, pidFile, 1)[0]
+			t.Cleanup(func() { _ = syscall.Kill(forked, syscall.SIGKILL) })
+
+			execCtx, cancel := context.WithCancel(ctx)
+			defer cancel()
+			started := make(chan int, 1)
+			execDone := make(chan error, 1)
+			go func() {
+				_, err := supervisor.Exec(execCtx, dial, "sb", supervisor.ExecHeader{Argv: childArgv("sleep:60000")}, models.ExecSpec{Report: func(p int) { started <- p }})
+				execDone <- err
+			}()
+			execPID := <-started
+
+			if err := c.StopApp(t.Context(), force); err != nil {
+				t.Fatalf("stop the app: %v", err)
+			}
+			if restarts := awaitKind(t, c, supervisor.KindRestarts); restarts.Restarts == nil || !restarts.Restarts.Ended {
+				t.Fatalf("restarts = %+v, want the app ended", restarts.Restarts)
+			}
+			waitFor(t, 10*time.Second, fmt.Sprintf("the sleep the app forked, pid %d, to end", forked), func() bool { return gone(forked) })
+
+			if err := cmd.Process.Signal(syscall.Signal(0)); err != nil {
+				t.Fatalf("the guest ended with its app: %v", err)
+			}
+			if err := syscall.Kill(execPID, 0); err != nil {
+				t.Fatalf("the exec session's pid %d ended with the app: %v", execPID, err)
+			}
+			select {
+			case err := <-execDone:
+				t.Fatalf("the exec session ended with %v, want it attached", err)
+			default:
+			}
+		})
+	}
+}
+
+// An app that ends leaves nothing in its group, even a child that ignored the TERM, so no verb has to reach it after the end.
+func TestTransportAnEndedAppLeavesNothingInItsGroup(t *testing.T) {
+	cases := []struct {
+		name string
+		argv func(pidFile string) []string
+		stop bool
+	}{
+		{name: "exit", argv: func(pidFile string) []string { return treeArgv(pidFile, "exit 0") }},
+		{name: "stop", stop: true, argv: func(pidFile string) []string {
+			return []string{"/bin/sh", "-c", `(trap "" TERM; exec sleep 600) & echo $! >>"$1"; wait`, "sh", pidFile}
+		}},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			_, dial := startTransport(t)
+			ctx := testContext(t)
+			c, err := supervisor.Connect(ctx, dial)
+			if err != nil {
+				t.Fatalf("connect: %v", err)
+			}
+			defer c.Close()
+			pidFile := filepath.Join(shortDir(t), "forked")
+			if err := c.Run(t.Context(), supervisor.RunSpec{Argv: tc.argv(pidFile), Env: os.Environ()}); err != nil {
+				t.Fatalf("run: %v", err)
+			}
+			forked := forkedPIDs(t, pidFile, 1)[0]
+			t.Cleanup(func() { _ = syscall.Kill(forked, syscall.SIGKILL) })
+			end := ended(c)
+
+			if tc.stop {
+				if err := c.StopApp(t.Context(), false); err != nil {
+					t.Fatalf("stop the app: %v", err)
+				}
+			}
+			select {
+			case <-end:
+			case <-time.After(10 * time.Second):
+				t.Fatal("the app never ended")
+			}
+			waitFor(t, 10*time.Second, fmt.Sprintf("the child the app left, pid %d, to end", forked), func() bool { return gone(forked) })
+		})
+	}
+}
+
+// A start again never runs beside what the last run left behind, so a restart kills the last run's group.
+func TestTransportARestartEndsWhatTheLastRunForked(t *testing.T) {
+	_, dial := startTransport(t)
+	ctx := testContext(t)
+	c, err := supervisor.Connect(ctx, dial)
+	if err != nil {
+		t.Fatalf("connect: %v", err)
+	}
+	defer c.Close()
+	pidFile := filepath.Join(shortDir(t), "forked")
+	spec := supervisor.RunSpec{Argv: treeArgv(pidFile, "exit 1"), Env: os.Environ(), Restart: models.RestartOnFailure, Retries: 1, Backoff: time.Millisecond}
+	if err := c.Run(t.Context(), spec); err != nil {
+		t.Fatalf("run: %v", err)
+	}
+	forked := forkedPIDs(t, pidFile, 2)
+	t.Cleanup(func() {
+		for _, pid := range forked {
+			_ = syscall.Kill(pid, syscall.SIGKILL)
+		}
+	})
+
+	waitFor(t, 10*time.Second, fmt.Sprintf("the first run's sleep, pid %d, to end", forked[0]), func() bool { return gone(forked[0]) })
 }
 
 // A kill of a guest whose entrypoint already exited ends nothing, so a host lost before the cut must read the freeze off the replay and thaw it (SHARD-344).

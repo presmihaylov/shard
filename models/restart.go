@@ -34,10 +34,20 @@ type RestartCount struct {
 	LastAt time.Time `json:"last_at,omitzero"`
 	// GaveUp says an exit asked for a start again after the retries were spent.
 	GaveUp bool `json:"gave_up"`
+	// Ended says no start again follows the last exit: the policy is over, and that exit is the app's last.
+	Ended bool `json:"ended"`
 }
 
 // Restart is the record's view: the policy, and what shard-init did with it on the current run.
 type Restart struct {
 	RestartSpec
 	RestartCount
+}
+
+// AppExit is how a run's app ended once its restart policy was over: the last exit and the starts again before it.
+type AppExit struct {
+	Code   int `json:"code"`
+	Signal int `json:"signal"`
+	// Restarts is the count shard-init kept, which a run that lasted the reset window starts over.
+	Restarts int `json:"restarts"`
 }

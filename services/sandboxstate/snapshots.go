@@ -57,7 +57,7 @@ func (s *Snapshots) dir(id string) string {
 
 // Files is the directory a provider filled for this snapshot, which a create names as its Seed.
 func (s *Snapshots) Files(id string) (string, error) {
-	if err := validSnapshotID(id); err != nil {
+	if err := ValidSnapshotID(id); err != nil {
 		return "", err
 	}
 
@@ -147,7 +147,7 @@ func (s *Snapshots) Resolve(ref string) (string, error) {
 
 // Get returns the record, or ErrSnapshotNotFound.
 func (s *Snapshots) Get(id string) (models.Snapshot, error) {
-	if err := validSnapshotID(id); err != nil {
+	if err := ValidSnapshotID(id); err != nil {
 		return models.Snapshot{}, err
 	}
 
@@ -183,7 +183,7 @@ func (s *Snapshots) List() ([]models.Snapshot, error) {
 	var unreadable error
 
 	for _, entry := range entries {
-		if !entry.IsDir() || validSnapshotID(entry.Name()) != nil {
+		if !entry.IsDir() || ValidSnapshotID(entry.Name()) != nil {
 			continue
 		}
 
@@ -242,7 +242,7 @@ func (s *Snapshots) Sweep(report func(string)) error {
 
 	swept := 0
 	for _, entry := range entries {
-		if !entry.IsDir() || validSnapshotID(entry.Name()) != nil {
+		if !entry.IsDir() || ValidSnapshotID(entry.Name()) != nil {
 			continue
 		}
 
@@ -275,7 +275,8 @@ func (s *Snapshots) Sweep(report func(string)) error {
 // ValidSnapshotName refuses a snapshot name no verb could take back, as ValidName does for a sandbox.
 func ValidSnapshotName(name string) error { return validName("snapshot", name) }
 
-func validSnapshotID(id string) error { return plainComponent("snapshot", "id", id) }
+// ValidSnapshotID refuses an id that is not one plain path component.
+func ValidSnapshotID(id string) error { return plainComponent("snapshot", "id", id) }
 
 // allocated is what the tree holds on the host, by blocks: a sparse disk counts what it filled, and a hard link counts once.
 func allocated(dir string) (int64, error) {

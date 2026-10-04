@@ -650,6 +650,19 @@ func (p *Provider) Signal(ctx context.Context, id string, pid int, signal string
 	return nil
 }
 
+// StopApp signals shard-init, PID 1: USR1 terms the app and USR2 kills it, and both cancel every start again.
+func (p *Provider) StopApp(ctx context.Context, id string, force bool) error {
+	signal := "USR1"
+	if force {
+		signal = "USR2"
+	}
+	if err := p.runsc.Kill(ctx, id, signal, false); err != nil {
+		return fmt.Errorf("sandbox %s: stop the app: %w", id, err)
+	}
+
+	return nil
+}
+
 // notStarted gives a command runsc refused to start a name the cli can answer with a shell's own
 // exit code, because runsc reports every one of them as its internal 128.
 func notStarted(id string, err error) error {

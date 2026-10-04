@@ -75,6 +75,14 @@ func (f fakeImages) Pull(ctx context.Context, ref string) (image.Image, error) {
 	return image.Image{Reference: ref, RootFS: "/images/alpine"}, nil
 }
 
+func (f fakeImages) Lookup(ref string) (image.Image, bool, error) {
+	if err := f.r.record("images.Lookup"); err != nil {
+		return image.Image{}, false, err
+	}
+
+	return image.Image{Reference: ref, RootFS: "/images/alpine", Digest: "sha256:alpine"}, true, nil
+}
+
 // fakeLifecycleRepo answers for one sandbox, so a test says what the record held before the verb ran.
 type fakeLifecycleRepo struct {
 	r  *recorder
@@ -235,9 +243,8 @@ type fakeLifecycleProvider struct {
 	snapshot string
 	forked   models.SandboxSpec
 	created  models.SandboxSpec
-	// clonedFrom and cloned are the source id and the spec Clone was handed.
-	clonedFrom string
-	cloned     models.SandboxSpec
+	// snapshotFrom is the source Snapshot copied.
+	snapshotFrom string
 	// noPause, noResume and noFork take a verb out of what the provider claims.
 	noPause, noResume, noFork bool
 	// logPath is the file logs reads, which a test writes into.
@@ -253,6 +260,62 @@ type fakeLifecycleProvider struct {
 	execID string
 	// serve stands in for the guest end of an exec, as a files exec needs.
 	serve func(spec models.ExecSpec) (models.ExitStatus, error)
+
+	// appMu guards the app's files, which a run's attach polls while its stop writes them.
+	appMu    sync.Mutex
+	restarts models.RestartCount
+	appExit  *models.ExitStatus
+	// stopApps is the force of every StopApp, in order; endOnStop is the exit a stop leaves, nil to leave the app running.
+	stopApps  []bool
+	endOnStop *models.ExitStatus
+	// startGate holds Start until it closes and ignores the caller, as the daemon's background create does.
+	startGate chan struct{}
+}
+
+func (f *fakeLifecycleProvider) Restarts(context.Context, string) (models.RestartCount, error) {
+	f.appMu.Lock()
+	defer f.appMu.Unlock()
+
+	return f.restarts, nil
+}
+
+func (f *fakeLifecycleProvider) ExitStatus(context.Context, string) (*models.ExitStatus, error) {
+	f.appMu.Lock()
+	defer f.appMu.Unlock()
+
+	return f.appExit, nil
+}
+
+func (f *fakeLifecycleProvider) StopApp(_ context.Context, _ string, force bool) error {
+	if err := f.r.record("provider.StopApp"); err != nil {
+		return err
+	}
+
+	f.appMu.Lock()
+	defer f.appMu.Unlock()
+	f.stopApps = append(f.stopApps, force)
+	if f.endOnStop != nil {
+		f.appExit = f.endOnStop
+		f.restarts.Ended = true
+	}
+
+	return nil
+}
+
+// endApp is shard-init writing the app's last exit and ending its restart policy.
+func (f *fakeLifecycleProvider) endApp(exit models.ExitStatus, restarts int) {
+	f.appMu.Lock()
+	defer f.appMu.Unlock()
+
+	f.appExit = &exit
+	f.restarts = models.RestartCount{Count: restarts, Ended: true}
+}
+
+func (f *fakeLifecycleProvider) stops() []bool {
+	f.appMu.Lock()
+	defer f.appMu.Unlock()
+
+	return slices.Clone(f.stopApps)
 }
 
 func (f *fakeLifecycleProvider) Exec(_ context.Context, id string, spec models.ExecSpec) (models.ExitStatus, error) {
@@ -326,6 +389,9 @@ func (f *fakeLifecycleProvider) Start(context.Context, string) error {
 	if err := f.r.record("provider.Start"); err != nil {
 		return err
 	}
+	if f.startGate != nil {
+		<-f.startGate
+	}
 	f.started = true
 	f.status = models.Status{Exists: true, State: models.StateRunning, PID: 7}
 
@@ -365,14 +431,11 @@ func (f *fakeLifecycleProvider) Fork(_ context.Context, dir string, spec models.
 	return nil
 }
 
-// Clone records the source and the spec, so a test says what the new sandbox was started over.
-func (f *fakeLifecycleProvider) Clone(_ context.Context, sourceID string, spec models.SandboxSpec) error {
-	if err := f.r.record("provider.Clone"); err != nil {
+func (f *fakeLifecycleProvider) Snapshot(_ context.Context, sourceID, _ string) error {
+	if err := f.r.record("provider.Snapshot"); err != nil {
 		return err
 	}
-	f.clonedFrom = sourceID
-	f.cloned = spec
-	f.status = models.Status{Exists: true, State: models.StateRunning, PID: 11}
+	f.snapshotFrom = sourceID
 
 	return nil
 }
@@ -470,7 +533,7 @@ func stopped() models.Sandbox {
 
 // paused is the record of a sandbox that holds a snapshot, which is what resume is given.
 func paused() models.Sandbox {
-	return models.Sandbox{ID: "sandbox1", Name: "web", State: models.StatePaused, Snapshot: "/snapshots/sandbox1"}
+	return models.Sandbox{ID: "sandbox1", Name: "web", State: models.StatePaused, Checkpoint: "/checkpoints/sandbox1"}
 }
 
 // keep filters the calls down to the named ones, in the order they happened.

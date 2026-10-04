@@ -23,7 +23,7 @@ import (
 func TestCreateLeavesTheSandboxRunning(t *testing.T) {
 	app, out := newCreateApp(t)
 
-	id := create(t, app, out, "/bin/sleep", "600")
+	id := printedID(t, app, out, createArgs(testImage))
 	t.Cleanup(func() { cleanUp(t, app, id) })
 
 	if strings.ContainsAny(id, " \t") {
@@ -55,7 +55,7 @@ func TestCreateLeavesTheSandboxRunning(t *testing.T) {
 func TestCreateOutlivesAnEntrypointThatExits(t *testing.T) {
 	app, out := newCreateApp(t)
 
-	id := create(t, app, out, "/bin/true")
+	id := runDetached(t, app, out, "/bin/true")
 	t.Cleanup(func() { cleanUp(t, app, id) })
 
 	if status := awaitEntrypoint(t, app, id); status.Code != 0 {
@@ -75,7 +75,7 @@ func TestCreateOutlivesAnEntrypointThatExits(t *testing.T) {
 func TestCreateRunsTheEntrypointAsANonRootUser(t *testing.T) {
 	app, out := newCreateApp(t)
 
-	id := createWith(t, app, out, "--user", "nobody", testImage, "/bin/sh", "-c", "id -u")
+	id := runDetachedWith(t, app, out, "--user", "nobody", testImage, "/bin/sh", "-c", "id -u")
 	t.Cleanup(func() { cleanUp(t, app, id) })
 
 	// The exit status is the assertion: a supervisor that dropped too could never write it.
@@ -94,7 +94,7 @@ func TestCreateRunsTheEntrypointAsANonRootUser(t *testing.T) {
 func TestCreateKeepsTheCapabilitiesOfANonRootEntrypoint(t *testing.T) {
 	app, out := newCreateApp(t)
 
-	id := createWith(t, app, out, "--user", "nobody", testImage, "/bin/sh", "-c", "grep CapEff /proc/self/status")
+	id := runDetachedWith(t, app, out, "--user", "nobody", testImage, "/bin/sh", "-c", "grep CapEff /proc/self/status")
 	t.Cleanup(func() { cleanUp(t, app, id) })
 
 	if status := awaitEntrypoint(t, app, id); status.Code != 0 {
@@ -115,7 +115,7 @@ func TestCreateThatFailsLeavesOnlyAFailedRecord(t *testing.T) {
 	absent := filepath.Join(t.TempDir(), "absent")
 	app, _ := ownDaemon(t, InitPathEnv+"="+absent)
 
-	err := app.Run(t.Context(), createArgs(testImage, "/bin/true"))
+	err := app.Run(t.Context(), createArgs(testImage))
 	if err == nil {
 		t.Fatal("a missing supervisor returned no error")
 	}
@@ -151,16 +151,14 @@ func TestCreateThatFailsLeavesOnlyAFailedRecord(t *testing.T) {
 	}
 }
 
-// TestCreateWhoseEntrypointDoesNotStartLeavesOnlyAFailedRecord: runsc create and start both succeed
-// for a missing entrypoint, because the root process is the supervisor. The handshake catches it, so
-// create fails, prints no id, frees the lease, namespace, link and mount, and leaves a failed record.
+// runsc starts a missing entrypoint fine, as the root process is the supervisor; the handshake fails the run and frees all but the failed record.
 func TestCreateWhoseEntrypointDoesNotStartLeavesOnlyAFailedRecord(t *testing.T) {
 	app, out := newCreateApp(t)
 
 	before := holdings(t, app)
 
 	creating, _ := ownStderr(app)
-	err := creating.Run(t.Context(), createArgs(testImage, "/no/such/entrypoint"))
+	err := creating.Run(t.Context(), runArgs(testImage, "/no/such/entrypoint"))
 	if err == nil {
 		t.Fatal("create reported success for an entrypoint the image does not hold")
 	}

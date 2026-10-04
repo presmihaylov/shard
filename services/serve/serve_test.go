@@ -566,6 +566,25 @@ func TestAScopedTokenReachesOnlyItsRoutes(t *testing.T) {
 	}
 }
 
+// A snapshot copies a sandbox's files, so making one takes sandbox:write and removing one sandbox:delete.
+func TestASandboxReadTokenListsSnapshotsAndNeitherMakesNorRemovesOne(t *testing.T) {
+	up := fakeDaemon(t)
+	env := newTokenEnv(t)
+	address := front(t, up.root, env.secret)
+	token := mintScoped(t, env, "reader", "sandbox:read")
+
+	for _, path := range []string{"/v0/snapshots", "/v0/snapshots/base"} {
+		if resp := askRoute(t, address, token, http.MethodGet, path); resp.StatusCode != http.StatusOK { //nolint:bodyclose // askRoute closes the body in a cleanup
+			t.Errorf("a sandbox:read token got %d on GET %s, want 200", resp.StatusCode, path)
+		}
+	}
+	for _, d := range []struct{ method, path string }{{http.MethodPost, "/v0/snapshots"}, {http.MethodDelete, "/v0/snapshots/base"}} {
+		if resp := askRoute(t, address, token, d.method, d.path); resp.StatusCode != http.StatusForbidden { //nolint:bodyclose // askRoute closes the body in a cleanup
+			t.Errorf("a sandbox:read token got %d on %s %s, want 403", resp.StatusCode, d.method, d.path)
+		}
+	}
+}
+
 // A token with no scopes and a token with a "*" scope both reach a write route.
 func TestAFullTokenReachesAWriteRoute(t *testing.T) {
 	up := fakeDaemon(t)

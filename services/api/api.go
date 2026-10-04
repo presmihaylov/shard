@@ -32,7 +32,10 @@ type Lifecycle interface {
 	Pause(ctx context.Context, ref string) (models.Sandbox, error)
 	Resume(ctx context.Context, ref string) (models.Sandbox, error)
 	Fork(ctx context.Context, ref string, req sandbox.CopyRequest) (models.Sandbox, error)
-	Clone(ctx context.Context, ref string, req sandbox.CopyRequest) (models.Sandbox, error)
+	CreateSnapshot(ctx context.Context, req sandbox.SnapshotRequest) (models.Snapshot, error)
+	ListSnapshots(ctx context.Context) ([]models.Snapshot, error)
+	InspectSnapshot(ctx context.Context, ref string) (models.Snapshot, error)
+	RemoveSnapshot(ctx context.Context, ref string) error
 	CreateExec(ctx context.Context, ref string, req sandbox.ExecRequest) (models.Exec, error)
 	Attach(ctx context.Context, ref, execID string, streams sandbox.Streams) (sandbox.Attached, error)
 	ListExecs(ctx context.Context, ref string) ([]models.Exec, error)
@@ -51,6 +54,9 @@ type Lifecycle interface {
 	WriteArchive(ctx context.Context, ref string, req sandbox.ArchiveWrite, src io.Reader) error
 	Logs(ctx context.Context, ref string, w io.Writer) error
 	FollowLogs(ctx context.Context, ref string, w io.Writer) (string, error)
+	AttachApp(ctx context.Context, ref string, open func() (io.Writer, error)) (models.AppExit, error)
+	WaitApp(ctx context.Context, ref string) (models.AppExit, error)
+	StopApp(ctx context.Context, ref string, force bool) error
 	GrantSecret(ctx context.Context, ref, name string) (models.Sandbox, error)
 	UngrantSecret(ctx context.Context, ref, name string) (models.Sandbox, error)
 	AttachPolicy(ctx context.Context, ref, name string) (models.Sandbox, error)
@@ -162,7 +168,6 @@ func (h *Handler) routeTable() []routeEntry {
 		{Route{"POST", "/v0/sandboxes/{id}/pause"}, h.pauseSandbox},
 		{Route{"POST", "/v0/sandboxes/{id}/resume"}, h.resumeSandbox},
 		{Route{"POST", "/v0/sandboxes/{id}/fork"}, h.forkSandbox},
-		{Route{"POST", "/v0/sandboxes/{id}/clone"}, h.cloneSandbox},
 		{Route{"POST", "/v0/sandboxes/{id}/exec"}, h.createExec},
 		{Route{"GET", "/v0/sandboxes/{id}/exec"}, h.listExecs},
 		{Route{"GET", "/v0/sandboxes/{id}/exec/{exec}"}, h.getExec},
@@ -179,11 +184,17 @@ func (h *Handler) routeTable() []routeEntry {
 		{Route{"PUT", "/v0/sandboxes/{id}/archive"}, h.putArchive},
 		{Route{"GET", "/v0/sandboxes/{id}/archive"}, h.getArchive},
 		{Route{"GET", "/v0/sandboxes/{id}/logs"}, h.sandboxLogs},
+		{Route{"GET", "/v0/sandboxes/{id}/attach"}, h.attachApp},
+		{Route{"POST", "/v0/sandboxes/{id}/app/stop"}, h.stopApp},
 		{Route{"GET", "/v0/sandboxes/{id}/egress-log"}, h.sandboxEgressLog},
 		{Route{"POST", "/v0/sandboxes/{id}/secrets/{name}"}, h.grantSecret},
 		{Route{"DELETE", "/v0/sandboxes/{id}/secrets/{name}"}, h.ungrantSecret},
 		{Route{"PUT", "/v0/sandboxes/{id}/policy"}, h.attachPolicy},
 		{Route{"DELETE", "/v0/sandboxes/{id}/policy"}, h.detachPolicy},
+		{Route{"POST", "/v0/snapshots"}, h.createSnapshot},
+		{Route{"GET", "/v0/snapshots"}, h.listSnapshots},
+		{Route{"GET", "/v0/snapshots/{ref}"}, h.getSnapshot},
+		{Route{"DELETE", "/v0/snapshots/{ref}"}, h.removeSnapshot},
 		{Route{"GET", "/v0/policies"}, h.listPolicies},
 		{Route{"GET", "/v0/policies/{name}"}, h.getPolicy},
 		{Route{"PUT", "/v0/policies/{name}"}, h.putPolicy},
@@ -614,15 +625,6 @@ func (h *Handler) resumeSandbox(w http.ResponseWriter, r *http.Request) {
 }
 
 func (h *Handler) forkSandbox(w http.ResponseWriter, r *http.Request) {
-	h.copySandbox(w, r, h.lifecycle.Fork)
-}
-
-func (h *Handler) cloneSandbox(w http.ResponseWriter, r *http.Request) {
-	h.copySandbox(w, r, h.lifecycle.Clone)
-}
-
-// copySandbox is the body a fork and a clone share: both name the new sandbox and answer its record.
-func (h *Handler) copySandbox(w http.ResponseWriter, r *http.Request, verb func(context.Context, string, sandbox.CopyRequest) (models.Sandbox, error)) {
 	var req sandbox.CopyRequest
 	if err := decode(w, r, &req); err != nil {
 		h.writeError(w, err)
@@ -630,7 +632,7 @@ func (h *Handler) copySandbox(w http.ResponseWriter, r *http.Request, verb func(
 		return
 	}
 
-	sb, err := verb(r.Context(), r.PathValue("id"), req)
+	sb, err := h.lifecycle.Fork(r.Context(), r.PathValue("id"), req)
 	if err != nil {
 		h.writeError(w, err)
 
@@ -663,7 +665,7 @@ func classify(err error) (int, models.Code) {
 		return http.StatusRequestEntityTooLarge, models.CodeBodyTooLarge
 	case errors.As(err, &invalid), errors.As(err, &request), errors.Is(err, image.ErrBadReference):
 		return http.StatusBadRequest, models.CodeInvalidRequest
-	case errors.Is(err, sandboxstate.ErrNotFound), errors.Is(err, egress.ErrNotFound),
+	case errors.Is(err, sandboxstate.ErrNotFound), errors.Is(err, sandboxstate.ErrSnapshotNotFound), errors.Is(err, egress.ErrNotFound),
 		errors.Is(err, secret.ErrNotFound), errors.Is(err, image.ErrNotFound), errors.As(err, &fileNotFound):
 		return http.StatusNotFound, models.CodeNotFound
 	case errors.As(err, &nameTaken):

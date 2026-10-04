@@ -60,7 +60,7 @@ shard pull "${IMAGE}" >/dev/null
 
 echo "# shard on a box with no /dev/kvm: pause, resume and fork on gVisor"
 
-show shard create --name web "${IMAGE}" /bin/sh -c 'i=0; while true; do i=$((i+1)); echo tick $i; sleep 1; done'
+show shard run -d --name web "${IMAGE}" /bin/sh -c 'i=0; while true; do i=$((i+1)); echo tick $i; sleep 1; done'
 sleep 2
 show shard exec web /bin/sh -c 'echo hello > /root/state'
 show shard logs web

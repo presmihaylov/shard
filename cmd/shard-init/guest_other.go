@@ -11,6 +11,9 @@ import (
 
 var errNotLinux = errors.New("a root disk needs Linux")
 
+// fionread is FIONREAD on Darwin, _IOR('f', 127, int), which x/sys/unix leaves out.
+const fionread = 0x4004667f
+
 func bootGuest(guestBoot) error { return errNotLinux }
 
 func confine() (*os.File, error) { return nil, nil }

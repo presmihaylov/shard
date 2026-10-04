@@ -268,7 +268,7 @@ func packPath(path string) (served, error) {
 	return out, nil
 }
 
-// unpackInto lands the host's tar under dir, then drains stdin, so the host's end of the archive is what ends the op; the sync is for a clone, which reads the disk.
+// unpackInto lands the host's tar under dir, then drains stdin, so the host's end of the archive is what ends the op; the sync is for a snapshot, which reads the disk.
 func unpackInto(r io.Reader, dir string) error {
 	info, err := os.Stat(dir)
 	if err != nil {

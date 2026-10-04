@@ -31,8 +31,9 @@ type fakeLifecycle struct {
 	// hold is how long Create takes, and heldErr what its context said at the end of it.
 	hold    time.Duration
 	heldErr error
-	// copied is the body a fork or a clone sent.
-	copied sandbox.CopyRequest
+	// copied is the body a fork sent, and snapshotted the body a snapshot create sent.
+	copied      sandbox.CopyRequest
+	snapshotted sandbox.SnapshotRequest
 	ref    string
 	// waited is the ref a get with ?wait blocked on.
 	waited string
@@ -79,6 +80,11 @@ type fakeLifecycle struct {
 	ended chan struct{}
 	// pulled is what a create reports to the progress on its context.
 	pulled []image.Event
+
+	// appExit is how an attach or a wait says the app ended, appErr how it failed after the 101, and stoppedApp what an app/stop asked.
+	appExit    models.AppExit
+	appErr     error
+	stoppedApp bool
 
 	// file is what a put named and landed, and stat and content what a stat or a get answers.
 	file      sandbox.FileWrite
@@ -311,10 +317,26 @@ func (f *fakeLifecycle) Fork(_ context.Context, ref string, req sandbox.CopyRequ
 	return models.Sandbox{ID: "sandbox2", Name: req.Name, State: models.StateRunning}, f.err
 }
 
-func (f *fakeLifecycle) Clone(_ context.Context, ref string, req sandbox.CopyRequest) (models.Sandbox, error) {
-	f.ref, f.copied = ref, req
+func (f *fakeLifecycle) CreateSnapshot(_ context.Context, req sandbox.SnapshotRequest) (models.Snapshot, error) {
+	f.snapshotted = req
 
-	return models.Sandbox{ID: "sandbox2", Name: req.Name, State: models.StateRunning}, f.err
+	return models.Snapshot{ID: "snap1", Name: req.Name, Source: req.Sandbox}, f.err
+}
+
+func (f *fakeLifecycle) ListSnapshots(context.Context) ([]models.Snapshot, error) {
+	return []models.Snapshot{{ID: "snap1"}, {ID: "snap2"}, {ID: "snap3"}}, f.err
+}
+
+func (f *fakeLifecycle) InspectSnapshot(_ context.Context, ref string) (models.Snapshot, error) {
+	f.ref = ref
+
+	return models.Snapshot{ID: "snap1", Name: "base"}, f.err
+}
+
+func (f *fakeLifecycle) RemoveSnapshot(_ context.Context, ref string) error {
+	f.ref = ref
+
+	return f.err
 }
 
 // CreateExec starts the exec the way the orchestrator does, running from the moment it returns.
@@ -479,6 +501,50 @@ func (f *fakeLifecycle) FollowLogs(ctx context.Context, ref string, w io.Writer)
 	return f.reason, nil
 }
 
+// AttachApp refuses before the 101 on err; otherwise it writes the lines and ends like the app did, or on the client.
+func (f *fakeLifecycle) AttachApp(ctx context.Context, ref string, open func() (io.Writer, error)) (models.AppExit, error) {
+	f.ref = ref
+
+	if f.err != nil {
+		return models.AppExit{}, f.err
+	}
+	w, err := open()
+	if err != nil {
+		return models.AppExit{}, err
+	}
+	if err := f.write(w); err != nil {
+		return models.AppExit{}, err
+	}
+
+	if f.stops != nil {
+		defer close(f.ended)
+
+		select {
+		case <-f.stops:
+		case <-ctx.Done():
+			return models.AppExit{}, ctx.Err()
+		}
+	}
+
+	return f.appExit, f.appErr
+}
+
+func (f *fakeLifecycle) WaitApp(_ context.Context, ref string) (models.AppExit, error) {
+	f.ref, f.waited = ref, ref
+
+	if f.err != nil {
+		return models.AppExit{}, f.err
+	}
+
+	return f.appExit, f.appErr
+}
+
+func (f *fakeLifecycle) StopApp(_ context.Context, ref string, force bool) error {
+	f.ref, f.stoppedApp, f.force = ref, true, force
+
+	return f.err
+}
+
 func (f *fakeLifecycle) write(w io.Writer) error {
 	for _, line := range f.lines {
 		if _, err := io.WriteString(w, line); err != nil {
@@ -636,12 +702,12 @@ func TestTheStatusAndTheCodeFollowTheError(t *testing.T) {
 		{"a body past the cap", &sandbox.RequestError{Err: fmt.Errorf("decode the request body: %w", &http.MaxBytesError{Limit: 1 << 20})}, http.StatusRequestEntityTooLarge, "body_too_large", "too large"},
 		{"a bad name", &sandboxstate.ValidationError{Reason: "the name is a slash"}, http.StatusBadRequest, "invalid_request", "slash"},
 		{"not found", fmt.Errorf("sandbox ghost: %w", sandboxstate.ErrNotFound), http.StatusNotFound, "not_found", "ghost"},
-		{"a name taken", &sandboxstate.NameTakenError{Name: "web", Holder: "quiet-heron-3f0a"}, http.StatusConflict, "name_taken", "taken by sandbox quiet-heron-3f0a"},
+		{"a name taken", &sandboxstate.NameTakenError{Noun: "sandbox", Name: "web", Holder: "quiet-heron-3f0a"}, http.StatusConflict, "name_taken", "taken by sandbox quiet-heron-3f0a"},
 		{"not running", &sandbox.StateError{ID: "sandbox1", State: models.StateStopped, Fix: "pause takes a running sandbox", Code: models.CodeSandboxNotRunning}, http.StatusConflict, "sandbox_not_running", "sandbox sandbox1 is stopped: pause takes a running sandbox"},
 		{"not stopped", &sandbox.StateError{ID: "sandbox1", State: models.StateRunning, Fix: "stop it first with shard stop sandbox1, or pass --force", Code: models.CodeSandboxNotStopped}, http.StatusConflict, "sandbox_not_stopped", "sandbox sandbox1 is running: stop it first with shard stop sandbox1, or pass --force"},
 		{"not paused", &sandbox.StateError{ID: "sandbox1", State: models.StateRunning, Fix: "resume takes a paused sandbox", Code: models.CodeSandboxNotPaused}, http.StatusConflict, "sandbox_not_paused", "resume takes a paused sandbox"},
 		{"live", &sandbox.StateError{ID: "sandbox1", State: models.StateRunning, Fix: "stop it first", Code: models.CodeSandboxLive}, http.StatusConflict, "sandbox_live", "stop it first"},
-		{"no snapshot", &sandbox.StateError{ID: "sandbox1", State: models.StatePaused, Fix: "its record names no snapshot to resume from", Code: models.CodeNoSnapshot}, http.StatusConflict, "no_snapshot", "no snapshot"},
+		{"no checkpoint", &sandbox.StateError{ID: "sandbox1", State: models.StatePaused, Fix: "its record names no checkpoint to resume from", Code: models.CodeNoCheckpoint}, http.StatusConflict, "no_checkpoint", "no checkpoint"},
 		{"gone from the substrate", &sandbox.UnavailableError{ID: "sandbox1", Why: "is gone from gvisor", Fix: "remove it with shard rm sandbox1 and create another"}, http.StatusConflict, "sandbox_not_running", "gone from gvisor"},
 		{"an unclaimed verb", models.Unsupported("gvisor", "fork"), http.StatusConflict, "unsupported", "provider gvisor does not support fork on this host"},
 		{"anything else", errors.New("runsc: boom"), http.StatusInternalServerError, "internal", "boom"},
@@ -660,7 +726,9 @@ func TestTheStatusAndTheCodeFollowTheError(t *testing.T) {
 				{http.MethodPost, "/v0/sandboxes/sandbox1/pause", ""},
 				{http.MethodPost, "/v0/sandboxes/sandbox1/resume", ""},
 				{http.MethodPost, "/v0/sandboxes/sandbox1/fork", `{"name":"web-2"}`},
-				{http.MethodPost, "/v0/sandboxes/sandbox1/clone", `{"name":"web-2"}`},
+				{http.MethodPost, "/v0/snapshots", `{"sandbox":"sandbox1"}`},
+				{http.MethodGet, "/v0/snapshots/base", ""},
+				{http.MethodDelete, "/v0/snapshots/base", ""},
 				{http.MethodPost, "/v0/sandboxes/sandbox1/secrets/TOKEN", ""},
 				{http.MethodDelete, "/v0/sandboxes/sandbox1/secrets/TOKEN", ""},
 				{http.MethodPut, "/v0/sandboxes/sandbox1/policy", `{"policy":"locked"}`},
@@ -777,37 +845,33 @@ func TestPauseAndResumeAnswerTheRecord(t *testing.T) {
 	}
 }
 
-// A fork and a clone make a sandbox, so each answers 201 with the new record and never the source's.
-func TestForkAndCloneAnswer201WithTheNewRecord(t *testing.T) {
-	for _, verb := range []string{"fork", "clone"} {
-		s := seed(t)
+// A fork makes a sandbox, so it answers 201 with the new record and never the source's.
+func TestForkAnswers201WithTheNewRecord(t *testing.T) {
+	s := seed(t)
 
-		status, got := send(t, s.server, http.MethodPost, "/v0/sandboxes/sandbox1/"+verb, `{"name":"web-2"}`)
-		if status != http.StatusCreated || got["id"] != "sandbox2" || got["name"] != "web-2" {
-			t.Errorf("POST %s answered %d %v, want 201 with the new record", verb, status, got)
-		}
-		if s.verbs.ref != "sandbox1" || s.verbs.copied.Name != "web-2" {
-			t.Errorf("the orchestrator got ref=%q name=%q, want sandbox1 and web-2", s.verbs.ref, s.verbs.copied.Name)
-		}
+	status, got := send(t, s.server, http.MethodPost, "/v0/sandboxes/sandbox1/fork", `{"name":"web-2"}`)
+	if status != http.StatusCreated || got["id"] != "sandbox2" || got["name"] != "web-2" {
+		t.Errorf("POST fork answered %d %v, want 201 with the new record", status, got)
+	}
+	if s.verbs.ref != "sandbox1" || s.verbs.copied.Name != "web-2" {
+		t.Errorf("the orchestrator got ref=%q name=%q, want sandbox1 and web-2", s.verbs.ref, s.verbs.copied.Name)
+	}
 
-		// A copy with no name is the common one, and an empty body is how the CLI sends it.
-		if _, _ = send(t, s.server, http.MethodPost, "/v0/sandboxes/sandbox1/"+verb, ""); s.verbs.copied.Name != "" {
-			t.Errorf("an empty body gave the name %q, want none", s.verbs.copied.Name)
-		}
+	// A fork with no name is the common one, and an empty body is how the CLI sends it.
+	if _, _ = send(t, s.server, http.MethodPost, "/v0/sandboxes/sandbox1/fork", ""); s.verbs.copied.Name != "" {
+		t.Errorf("an empty body gave the name %q, want none", s.verbs.copied.Name)
 	}
 }
 
-func TestForkAndCloneAre400ForABodyTheyCannotDecode(t *testing.T) {
-	for _, verb := range []string{"fork", "clone"} {
-		s := seed(t)
+func TestForkIs400ForABodyItCannotDecode(t *testing.T) {
+	s := seed(t)
 
-		status, got := send(t, s.server, http.MethodPost, "/v0/sandboxes/sandbox1/"+verb, `{"named":"web-2"}`)
-		if status != http.StatusBadRequest || errorOf(t, got).code != "invalid_request" {
-			t.Errorf("POST %s with an unknown field answered %d %v, want 400", verb, status, got)
-		}
-		if s.verbs.ref != "" {
-			t.Errorf("a body that did not decode still reached the orchestrator for %s", verb)
-		}
+	status, got := send(t, s.server, http.MethodPost, "/v0/sandboxes/sandbox1/fork", `{"named":"web-2"}`)
+	if status != http.StatusBadRequest || errorOf(t, got).code != "invalid_request" {
+		t.Errorf("POST fork with an unknown field answered %d %v, want 400", status, got)
+	}
+	if s.verbs.ref != "" {
+		t.Error("a body that did not decode still reached the orchestrator")
 	}
 }
 
