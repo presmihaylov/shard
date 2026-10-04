@@ -110,7 +110,7 @@ func progress[L, T any](ctx context.Context, c *Client, path string, in any, rep
 
 		// The answer is already a 2xx, so a failure after the first event has a code and no status.
 		if failure != nil {
-			return zero, &APIError{Code: failure.Code, Message: failure.Message, Holders: failure.Holders}
+			return zero, &APIError{Code: failure.Code, Message: failure.Message, Holders: failure.Holders, ExitCode: failure.ExitCode}
 		}
 
 		if result == nil {

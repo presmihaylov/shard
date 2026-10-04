@@ -249,6 +249,10 @@
           "code": {
             "type": "string"
           },
+          "exit_code": {
+            "format": "int64",
+            "type": "integer"
+          },
           "holders": {
             "items": {
               "type": "string"

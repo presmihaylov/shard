@@ -3,6 +3,7 @@ package models
 import (
 	"errors"
 	"fmt"
+	"strconv"
 )
 
 // ErrUnsupported is the sentinel behind every refused verb. Match it with errors.Is.
@@ -25,14 +26,24 @@ var ErrExecLost = errors.New("the substrate lost its wait on the command")
 // command: it never ran. Code is what a shell answers for the same refusal.
 type CommandNotStartedError struct {
 	Sandbox string
+	// Command is the program as the caller named it, argv[0]; empty where only the reason reached this side.
+	Command string
 	// Reason is the substrate's own words for why the command did not start.
 	Reason string
 	Code   int
 }
 
 func (e *CommandNotStartedError) Error() string {
-	return fmt.Sprintf("sandbox %s could not run the command: %s", e.Sandbox, e.Reason)
+	command := "the command"
+	if e.Command != "" {
+		command = strconv.Quote(e.Command)
+	}
+
+	return fmt.Sprintf("sandbox %s could not run %s: %s", e.Sandbox, command, e.Reason)
 }
+
+// Public answers the whole text, which names the caller's command and the kernel's or runtime's reason, never a host path.
+func (e *CommandNotStartedError) Public() string { return e.Error() }
 
 // The optional verbs, spelled once here so a refusal and the conformance suite cannot drift apart.
 const (
@@ -100,4 +111,20 @@ func (e *LostError) Unwrap() error { return e.Err }
 
 func (e *LostError) Public() string {
 	return fmt.Sprintf("sandbox %s is lost; remove it and create another sandbox", e.Sandbox)
+}
+
+// EntrypointNotStartedError is a sandbox whose entrypoint never ran; Err quotes the sandbox log, which can name a host path.
+type EntrypointNotStartedError struct {
+	Sandbox string
+	Err     error
+}
+
+func (e *EntrypointNotStartedError) Error() string {
+	return fmt.Sprintf("the entrypoint of sandbox %s did not start: %v", e.Sandbox, e.Err)
+}
+
+func (e *EntrypointNotStartedError) Unwrap() error { return e.Err }
+
+func (e *EntrypointNotStartedError) Public() string {
+	return fmt.Sprintf("the entrypoint of sandbox %s did not start; the daemon log has the cause", e.Sandbox)
 }

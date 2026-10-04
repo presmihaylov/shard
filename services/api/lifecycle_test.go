@@ -675,6 +675,72 @@ func TestCreateWithWaitSurfacesAFailedCreate(t *testing.T) {
 	}
 }
 
+// An app that never started is refused with the code a shell answers, on a plain create and a waited one alike.
+func TestCreateRefusesAnAppThatNeverStarted(t *testing.T) {
+	for _, path := range []string{"/v0/sandboxes", "/v0/sandboxes?wait=true"} {
+		s := seed(t)
+		refused := &models.CommandNotStartedError{Sandbox: "sandbox1", Command: "/no/such/app", Reason: "no such file or directory", Code: models.CommandNotFoundExitCode}
+		s.verbs.err = refused
+
+		status, got := send(t, s.server, http.MethodPost, path, `{"image":"alpine"}`)
+		refusal := errorOf(t, got)
+		if status != http.StatusUnprocessableEntity || refusal.code != string(models.CodeCommandNotStarted) || exitCodeOf(got) != models.CommandNotFoundExitCode {
+			t.Errorf("POST %s answered %d %v, want 422 command_not_started with exit_code 127", path, status, got)
+		}
+		if refusal.message != refused.Error() {
+			t.Errorf("POST %s answered the message %q, want %q, which names the command", path, refusal.message, refused.Error())
+		}
+	}
+}
+
+// The streamed create carries the same refusal as its last line, after the pull it already streamed.
+func TestCreateStreamsTheRefusalOfAnAppThatNeverStarted(t *testing.T) {
+	s := seed(t)
+	s.verbs.pulled = []image.Event{{Status: image.StatusCached, Reference: "docker.io/library/alpine:3.20", Path: "/images/alpine"}}
+	refused := &models.CommandNotStartedError{Sandbox: "sandbox1", Command: "/srv/app", Reason: "permission denied", Code: models.CommandNotExecutableExitCode}
+	s.verbs.err = refused
+
+	status, _, lines := sendStreamed(t, s.server, "/v0/sandboxes?wait=true", `{"image":"alpine:3.20"}`)
+	if status != http.StatusCreated || len(lines) != 2 {
+		t.Fatalf("the create answered %d with %v, want 201, the event and the refusal", status, lines)
+	}
+	refusal := errorOf(t, lines[1])
+	if refusal.code != string(models.CodeCommandNotStarted) || exitCodeOf(lines[1]) != models.CommandNotExecutableExitCode {
+		t.Errorf("the last line is %v, want command_not_started with exit_code 126", lines[1])
+	}
+	if refusal.message != refused.Error() {
+		t.Errorf("the last line carries the message %q, want %q, which names the command", refusal.message, refused.Error())
+	}
+}
+
+// The wait query picks the waited create, the only one that removes a refused sandbox.
+func TestCreatePassesTheWaitToTheOrchestrator(t *testing.T) {
+	for path, want := range map[string]bool{"/v0/sandboxes": false, "/v0/sandboxes?wait=true": true} {
+		s := seed(t)
+		s.verbs.createdID = s.running.ID
+
+		if status, got := send(t, s.server, http.MethodPost, path, `{"image":"alpine"}`); status != http.StatusCreated {
+			t.Fatalf("POST %s answered %d %v, want 201", path, status, got)
+		}
+		if waited := s.verbs.waited != ""; waited != want {
+			t.Errorf("POST %s waited %t, want %t", path, waited, want)
+		}
+	}
+}
+
+func exitCodeOf(body map[string]any) int {
+	object, ok := body["error"].(map[string]any)
+	if !ok {
+		return 0
+	}
+	code, ok := object["exit_code"].(float64)
+	if !ok {
+		return 0
+	}
+
+	return int(code)
+}
+
 // The plain create answers at once with the pending record and never blocks on the state leaving pending.
 func TestCreateWithoutWaitDoesNotBlock(t *testing.T) {
 	s := seed(t)
