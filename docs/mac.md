@@ -138,7 +138,7 @@ again, so to leave the Mac clean, run `shard stop` on each sandbox first.
 
 ## If it does not start
 
-- `provider vz does not support pause on this host`: the Mac runs macOS 13, or it is an Intel Mac.
+- `provider vz does not support pause on this host; use a server that supports pause`: the Mac runs macOS 13, or it is an Intel Mac.
   The verb needs Apple silicon on 14.
 - `kernel checksum mismatch`: the release no longer serves the bytes this build expects, or the
   `SHARD_KERNEL` file changed. A file under `<root>/kernel/` that was cut short is fetched again on

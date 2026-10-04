@@ -463,10 +463,10 @@ func TestCreateRefusesAMemoryBoundBelowTheMinimum(t *testing.T) {
 		t.Fatalf("Create = %v, want a refusal that names the sandbox and the minimum", err)
 	}
 
-	// Zero is unbounded on Linux; a VM has no unbounded memory, so the refusal names the provider and the flag instead of a default.
+	// Zero is unbounded on Linux; a VM has no unbounded memory, so the refusal names the provider and the field instead of a default.
 	spec.Resources.MemoryMiB = 0
 	err = h.provider.Create(t.Context(), spec)
-	for _, want := range []string{spec.ID, "provider firecracker", "--memory 0", "--memory 128MiB"} {
+	for _, want := range []string{spec.ID, "provider firecracker", "needs resources.memory_mib", "set it to 128 MiB or more"} {
 		if err == nil || !strings.Contains(err.Error(), want) {
 			t.Fatalf("Create with --memory 0 = %v, want %q named", err, want)
 		}
@@ -491,7 +491,7 @@ func TestCheckResourcesRefusesWhatCreateRefuses(t *testing.T) {
 	if err := h.provider.CheckResources(models.Resources{MemoryMiB: 128, VCPUs: 32}); err != nil {
 		t.Fatalf("CheckResources(128, 32) = %v, want nil", err)
 	}
-	for disk, want := range map[int64]string{1: "at least 11 MiB of disk", 10: "at least 11 MiB of disk", 129: "use 128 or 131 MiB"} {
+	for disk, want := range map[int64]string{1: "under the 11 MiB provider firecracker needs", 10: "under the 11 MiB provider firecracker needs", 129: "set resources.disk_mib to 128 MiB or 131 MiB"} {
 		err := h.provider.CheckResources(models.Resources{MemoryMiB: 128, DiskMiB: disk})
 		if err == nil || !strings.Contains(err.Error(), want) {
 			t.Fatalf("CheckResources(--disk %d) = %v, want %q", disk, err, want)

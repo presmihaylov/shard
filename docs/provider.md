@@ -108,7 +108,7 @@ init.
 **Sysbox has no pause, no resume and no fork.** `sysbox-runc` dropped upstream `runc`'s
 `checkpoint` and `restore` (nestybox/sysbox#715, open since 2023), so there is no memory image to
 take. The provider claims `{Pause: false, Resume: false, Fork: false}`, and each verb refuses by
-name, for example `provider sysbox does not support pause on this host`. Nothing is emulated. A
+name, for example `provider sysbox does not support pause on this host; use a server that supports pause`. Nothing is emulated. A
 `pause` on Sysbox is a refusal and not a stop, and the sandbox keeps running. `snapshot create`
 still works, because it copies files and needs no memory image.
 

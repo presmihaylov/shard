@@ -9,12 +9,12 @@ from ...client import AuthenticatedClient, Client
 from ...models.error import Error
 from ...models.snapshot import Snapshot
 from ...models.snapshot_request import SnapshotRequest
-from ...types import UNSET, Response, Unset
+from ...types import UNSET, Response
 
 
 def _get_kwargs(
     *,
-    body: SnapshotRequest | Unset = UNSET,
+    body: SnapshotRequest,
 ) -> dict[str, Any]:
     headers: dict[str, Any] = {}
 
@@ -23,8 +23,7 @@ def _get_kwargs(
         "url": "/v0/snapshots",
     }
 
-    if not isinstance(body, Unset):
-        _kwargs["json"] = body.to_dict()
+    _kwargs["json"] = body.to_dict()
 
     headers["Content-Type"] = "application/json"
 
@@ -59,7 +58,7 @@ def _build_response(
 def sync_detailed(
     *,
     client: AuthenticatedClient | Client,
-    body: SnapshotRequest | Unset = UNSET,
+    body: SnapshotRequest,
 ) -> Response[Error | Snapshot]:
     """Snapshot a sandbox"""
 
@@ -77,7 +76,7 @@ def sync_detailed(
 def sync(
     *,
     client: AuthenticatedClient | Client,
-    body: SnapshotRequest | Unset = UNSET,
+    body: SnapshotRequest,
 ) -> Error | Snapshot | None:
     """Snapshot a sandbox"""
 
@@ -90,7 +89,7 @@ def sync(
 async def asyncio_detailed(
     *,
     client: AuthenticatedClient | Client,
-    body: SnapshotRequest | Unset = UNSET,
+    body: SnapshotRequest,
 ) -> Response[Error | Snapshot]:
     """Snapshot a sandbox"""
 
@@ -106,7 +105,7 @@ async def asyncio_detailed(
 async def asyncio(
     *,
     client: AuthenticatedClient | Client,
-    body: SnapshotRequest | Unset = UNSET,
+    body: SnapshotRequest,
 ) -> Error | Snapshot | None:
     """Snapshot a sandbox"""
 

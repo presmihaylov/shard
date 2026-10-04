@@ -15,15 +15,17 @@ T = TypeVar("T", bound="Restart")
 
 @_attrs_define
 class Restart:
+    backoff: int
     count: int
     ended: bool
     gave_up: bool
     policy: RestartPolicy
-    backoff: int | Unset = UNSET
     last_at: datetime.datetime | Unset = UNSET
     retries: int | Unset = UNSET
 
     def to_dict(self) -> dict[str, Any]:
+        backoff = self.backoff
+
         count = self.count
 
         ended = self.ended
@@ -31,8 +33,6 @@ class Restart:
         gave_up = self.gave_up
 
         policy = self.policy.value
-
-        backoff = self.backoff
 
         last_at: str | Unset = UNSET
         if not isinstance(self.last_at, Unset):
@@ -44,14 +44,13 @@ class Restart:
 
         field_dict.update(
             {
+                "backoff": backoff,
                 "count": count,
                 "ended": ended,
                 "gave_up": gave_up,
                 "policy": policy,
             }
         )
-        if backoff is not UNSET:
-            field_dict["backoff"] = backoff
         if last_at is not UNSET:
             field_dict["last_at"] = last_at
         if retries is not UNSET:
@@ -62,6 +61,8 @@ class Restart:
     @classmethod
     def from_dict(cls: type[T], src_dict: Mapping[str, Any]) -> T:
         d = dict(src_dict)
+        backoff = d.pop("backoff")
+
         count = d.pop("count")
 
         ended = d.pop("ended")
@@ -69,8 +70,6 @@ class Restart:
         gave_up = d.pop("gave_up")
 
         policy = RestartPolicy(d.pop("policy"))
-
-        backoff = d.pop("backoff", UNSET)
 
         _last_at = d.pop("last_at", UNSET)
         last_at: datetime.datetime | Unset
@@ -82,11 +81,11 @@ class Restart:
         retries = d.pop("retries", UNSET)
 
         restart = cls(
+            backoff=backoff,
             count=count,
             ended=ended,
             gave_up=gave_up,
             policy=policy,
-            backoff=backoff,
             last_at=last_at,
             retries=retries,
         )
