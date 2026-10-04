@@ -3,7 +3,7 @@
 // A body that is not the daemon's JSON, such as a proxy page, is quoted only this far.
 const rawBodyLimit = 512;
 
-/** ShardError is the base of every error the SDK throws. */
+/** ShardError is the base of every SDK error; a bad local argument throws the native error instead. */
 export class ShardError extends Error {
   constructor(message: string, options?: ErrorOptions) {
     super(message, options);
@@ -11,7 +11,7 @@ export class ShardError extends Error {
   }
 }
 
-/** ConfigurationError is a setting that is missing or refused. The message names the setting, never its value. */
+/** ConfigurationError is a setting that is missing or refused. The message never shows the API key; it names a CA path or remote to fix. */
 export class ConfigurationError extends ShardError {}
 
 /** ShardConnectionError is a daemon that could not be reached, or a stream that ended before it said how the command ended. */

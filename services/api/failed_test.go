@@ -16,6 +16,13 @@ var getAndRm = map[string]bool{
 	"DELETE /v0/sandboxes/{id}": true,
 }
 
+// bodies are the least each body route takes past Huma's own checks, so the failed guard is what answers.
+var bodies = map[string]string{
+	"POST /v0/sandboxes/{id}/exec":  `{"command":["true"]}`,
+	"POST /v0/sandboxes/{id}/mkdir": `{"path":"/x"}`,
+	"PUT /v0/sandboxes/{id}/policy": `{"policy":"p"}`,
+}
+
 // The walk reads api.Routes, so a route added to the daemon is covered here without an edit to this test.
 func TestEveryVerbButGetAndRmIs409OnAFailedSandbox(t *testing.T) {
 	s := seed(t)
@@ -30,10 +37,8 @@ func TestEveryVerbButGetAndRmIs409OnAFailedSandbox(t *testing.T) {
 		}
 		walked++
 
-		path := subst.Replace(route.Pattern)
-		if strings.HasSuffix(path, "/files") || strings.HasSuffix(path, "/ls") || strings.HasSuffix(path, "/archive") {
-			path += "?path=/srv/test"
-		}
+		// The file and archive routes require a path; the others ignore it.
+		path := subst.Replace(route.Pattern) + "?path=/x"
 		// A HEAD answer carries no body, so its status is all there is to check.
 		if route.Method == http.MethodHead {
 			if status := head(t, s.server, path); status != http.StatusConflict {
@@ -42,7 +47,7 @@ func TestEveryVerbButGetAndRmIs409OnAFailedSandbox(t *testing.T) {
 
 			continue
 		}
-		status, body := send(t, s.server, route.Method, path, "")
+		status, body := send(t, s.server, route.Method, path, bodies[route.Method+" "+route.Pattern])
 		if status != http.StatusConflict {
 			t.Errorf("%s %s on a failed sandbox answered %d, want 409", route.Method, route.Pattern, status)
 

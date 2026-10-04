@@ -11,6 +11,12 @@ type sandboxBody[B any] struct {
 	Body *B
 }
 
+// sandboxRequest is a body the verb refuses to go without; a value Body makes Huma refuse an empty one and the spec require it.
+type sandboxRequest[B any] struct {
+	ID   string `path:"id" doc:"The sandbox id or name."`
+	Body B
+}
+
 type execPath struct {
 	ID   string `path:"id" doc:"The sandbox id or name."`
 	Exec string `path:"exec" doc:"The exec id."`
@@ -31,12 +37,17 @@ type nameBody[B any] struct {
 	Body *B
 }
 
+type nameRequest[B any] struct {
+	Name string `path:"name"`
+	Body B
+}
+
 type refPath struct {
 	Ref string `path:"ref" doc:"The snapshot id or name."`
 }
 
-type bodyInput[B any] struct {
-	Body *B
+type bodyRequest[B any] struct {
+	Body B
 }
 
 type filePath struct {
@@ -46,5 +57,5 @@ type filePath struct {
 
 type followInput struct {
 	ID     string `path:"id" doc:"The sandbox id or name."`
-	Follow bool   `query:"follow" doc:"Keep the stream open; a WebSocket upgrade requires follow=true."`
+	Follow bool   `query:"follow" doc:"Keep the stream open until the sandbox stops or is removed; a WebSocket upgrade requires follow=true."`
 }

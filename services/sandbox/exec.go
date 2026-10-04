@@ -39,7 +39,7 @@ const execIDLen = 16
 
 // ExecRequest is one command to run in a sandbox that already runs. It is the body of POST /v0/sandboxes/{id}/exec.
 type ExecRequest struct {
-	Command []string `json:"command"`
+	Command []string `json:"command" minItems:"1"`
 	Env     []string `json:"env,omitempty"`
 	WorkDir string   `json:"workdir,omitempty"`
 	User    string   `json:"user,omitempty"`
@@ -55,8 +55,8 @@ type ExecRequest struct {
 
 // TerminalSize is a terminal window in character cells. It is the body of the resize route too.
 type TerminalSize struct {
-	Rows uint16 `json:"rows" required:"false"`
-	Cols uint16 `json:"cols" required:"false"`
+	Rows uint16 `json:"rows" required:"false" maximum:"65535"`
+	Cols uint16 `json:"cols" required:"false" maximum:"65535"`
 }
 
 // Streams is where one attach's stdio goes. The caller owns them: a nil Stdin is a client that types nothing.
@@ -1340,7 +1340,7 @@ func (s *Service) readyForExec(ctx context.Context, ref string) (string, error) 
 	// The exit file records a 137 for this, which is what a plain kill -9 records too, so the reason
 	// is named here or an operator never learns it.
 	if status.OOMKilled {
-		return "", &UnavailableError{ID: id, Why: OOMKilledReason, Fix: fmt.Sprintf("start it again with shard start %s, over the files it kept; a larger --memory needs a new sandbox", id)}
+		return "", &UnavailableError{ID: id, Why: OOMKilledReason, Fix: fmt.Sprintf("start it again with shard start %s, over the files it kept; more memory needs a new sandbox with a larger resources.memory_mib", id)}
 	}
 
 	if !status.Exists {
