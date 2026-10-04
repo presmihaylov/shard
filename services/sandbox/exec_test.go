@@ -262,6 +262,37 @@ func TestExecRefusesASandboxTheRecordDoesNotHold(t *testing.T) {
 }
 
 // A record that says stopped outranks the oom count the cgroup kept: the user stopped this one.
+// A stop that tore the runtime down under an in-flight exec answers sandbox_not_running, never a 500 internal (SHARD-563).
+func TestExecThatRacesAStopAnswersSandboxNotRunning(t *testing.T) {
+	r := &recorder{}
+	svc, l := newService(t, r, running())
+	l.provider.serve = func(models.ExecSpec) (models.ExitStatus, error) {
+		l.repo.sb.State = models.StateStopped
+		return models.ExitStatus{}, errors.New("the runtime ended before the launch shim was ready")
+	}
+
+	_, err := svc.CreateExec(t.Context(), "sandbox1", sandbox.ExecRequest{Command: []string{"echo", "hi"}})
+	var state *sandbox.StateError
+	if !errors.As(err, &state) || state.Code != models.CodeSandboxNotRunning {
+		t.Fatalf("CreateExec answered %v, want a StateError with code %s", err, models.CodeSandboxNotRunning)
+	}
+}
+
+// A remove that deleted the record under an in-flight exec answers not_found, never a 500 internal (SHARD-563).
+func TestExecThatRacesARemoveAnswersNotFound(t *testing.T) {
+	r := &recorder{}
+	svc, l := newService(t, r, running())
+	l.provider.serve = func(models.ExecSpec) (models.ExitStatus, error) {
+		l.repo.missing = true
+		return models.ExitStatus{}, errors.New("connecting to control server")
+	}
+
+	_, err := svc.CreateExec(t.Context(), "sandbox1", sandbox.ExecRequest{Command: []string{"echo", "hi"}})
+	if !errors.Is(err, sandboxstate.ErrNotFound) {
+		t.Fatalf("CreateExec answered %v, want a not-found error", err)
+	}
+}
+
 func TestExecRefusesAStoppedSandboxWithoutTheProvider(t *testing.T) {
 	r := &recorder{}
 	sb := running()
