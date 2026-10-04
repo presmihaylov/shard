@@ -475,7 +475,7 @@ class Gate:
         if sid not in self.sandboxes:
             self.sandboxes.append(sid)
         box = f"/v0/sandboxes/{sid}"
-        for path in ("/v0/version", "/v0/capabilities", "/v0/sandboxes", box):
+        for path in ("/v0/version", "/v0/capabilities", "/v0/scopes", "/v0/sandboxes", box):
             call("GET", path)
         # An exec runs only once a client attaches, so this one stays created and is never waited on.
         call("POST", f"{box}/exec", {"command": ["true"]})
