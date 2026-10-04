@@ -186,6 +186,21 @@ func TestAMicroVMBootsAndRunsTheEntrypoint(t *testing.T) {
 	}
 }
 
+// A kill while the exec's execve still opens the command is no launch, so the exec says the command never started (SHARD-505).
+func TestAMicroVMExecKilledBeforeItsCommandStartsIsNoLaunch(t *testing.T) {
+	h := newVMHarness(t)
+
+	spec := h.newSpec(t, "/bin/true")
+	if err := h.provider.Create(t.Context(), spec); err != nil {
+		t.Fatal(err)
+	}
+	if err := h.provider.Start(t.Context(), spec.ID); err != nil {
+		t.Fatal(err)
+	}
+
+	conformance.RequireAKillBeforeTheCommandIsNoLaunch(t, h.provider, spec.ID)
+}
+
 // A tap on the test bridge, leased the way the daemon leases one for a microVM; the bridge and the tables go with the test.
 func newTapNetwork(t *testing.T) *network.Service {
 	t.Helper()

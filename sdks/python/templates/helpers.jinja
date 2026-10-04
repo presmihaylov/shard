@@ -1,0 +1,7 @@
+{# A generated docstring keeps only its first paragraph, on one line, and never a bare Args: or Attributes: section. #}
+{% macro docstring(content) %}
+{% set head = (content | trim).split("\n\n")[0].split() | join(" ") %}
+{% if head and head.split(" ")[0] not in ["Args:", "Attributes:", "Example:", "Raises:", "Returns:"] %}
+""" {{ head }} """
+{%- endif -%}
+{% endmacro %}
