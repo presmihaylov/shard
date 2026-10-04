@@ -102,6 +102,12 @@ func (s *Service) recordRestarts(ctx context.Context, id string, report func(str
 	if err != nil {
 		return err
 	}
+
+	return s.writeRestarts(ctx, id, sb, report)
+}
+
+// writeRestarts copies the supervisor's count onto a record read under the lock its caller holds.
+func (s *Service) writeRestarts(ctx context.Context, id string, sb models.Sandbox, report func(string)) error {
 	if !UnderRestartPolicy(sb) {
 		return nil
 	}

@@ -73,7 +73,7 @@ func TestCreateFromAnUncachedImageIsPendingThenRunning(t *testing.T) {
 
 // TestCreateFromAnUnpullableImageEndsFailed is the failed path and its guard: the create answers
 // pending, the background pull fails, the record lands failed with the reason, every verb but a get
-// and an rm is refused with sandbox_failed, and rm frees it.
+// and a remove is refused with sandbox_failed, and remove frees it.
 func TestCreateFromAnUnpullableImageEndsFailed(t *testing.T) {
 	app, _ := newCreateApp(t)
 
@@ -105,7 +105,7 @@ func TestCreateFromAnUnpullableImageEndsFailed(t *testing.T) {
 		t.Errorf("the record holds the failed_reason %q, want one non-empty line", final.FailedReason)
 	}
 
-	// Every verb but a get and an rm is refused, and the code names the state.
+	// Every verb but a get and a remove is refused, and the code names the state.
 	_, err = daemonClient(app).StartSandbox(t.Context(), sb.ID)
 	var apiErr *client.APIError
 	if !errors.As(err, &apiErr) || apiErr.Code != models.CodeSandboxFailed {
@@ -118,14 +118,14 @@ func TestCreateFromAnUnpullableImageEndsFailed(t *testing.T) {
 		t.Errorf("logs of a failed sandbox = %v, want 409 %s", err, models.CodeSandboxFailed)
 	}
 
-	// rm frees it without force: a failed create holds no live process, so the record and everything under it goes.
+	// remove frees it without force: a failed create holds no live process, so the record and everything under it goes.
 	if err := daemonClient(app).RemoveSandbox(t.Context(), sb.ID, false); err != nil {
-		t.Fatalf("rm of a failed sandbox: %v", err)
+		t.Fatalf("remove of a failed sandbox: %v", err)
 	}
 
 	_, err = daemonClient(app).GetSandbox(t.Context(), sb.ID)
 	var missing *client.NotFoundError
 	if !errors.As(err, &missing) {
-		t.Errorf("get after rm = %v, want not found", err)
+		t.Errorf("get after remove = %v, want not found", err)
 	}
 }

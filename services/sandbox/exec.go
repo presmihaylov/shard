@@ -1211,7 +1211,7 @@ func (s *Service) readyForExec(ctx context.Context, ref string) (string, error) 
 	}
 
 	if !status.Exists {
-		return "", &UnavailableError{ID: id, Why: "is gone from " + s.cfg.Provider.Name(), Fix: fmt.Sprintf("remove it with shard rm %s and create another", id)}
+		return "", &UnavailableError{ID: id, Why: "is gone from " + s.cfg.Provider.Name(), Fix: fmt.Sprintf("remove it with shard remove %s and create another", id)}
 	}
 
 	return "", &StateError{ID: id, State: status.State, Fix: "start it again with shard start " + id, Code: models.CodeSandboxNotRunning}

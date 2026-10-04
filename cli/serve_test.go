@@ -39,7 +39,7 @@ func newFrontApp(t *testing.T, out *bytes.Buffer) (App, []string, string) {
 func newLoggedFrontApp(t *testing.T, out *bytes.Buffer, frontLog io.Writer) (App, []string, string) {
 	t.Helper()
 
-	app := newLsApp(t, out, listed(), nil)
+	app := newListApp(t, out, listed(), nil)
 
 	dir := t.TempDir()
 	secret := filepath.Join(dir, "signing-key")
@@ -105,11 +105,11 @@ func TestTheRemoteEnvReachesTheFront(t *testing.T) {
 	t.Setenv(client.TokenFileEnv, flags[3])
 	t.Setenv(client.CAFileEnv, flags[5])
 
-	if err := app.Run(t.Context(), []string{"ls"}); err != nil {
-		t.Fatalf("ls through the front from the env: %v", err)
+	if err := app.Run(t.Context(), []string{"list"}); err != nil {
+		t.Fatalf("list through the front from the env: %v", err)
 	}
 	if !strings.Contains(out.String(), "up-1") {
-		t.Errorf("ls from the env printed %q, want the sandbox the daemon holds", out.String())
+		t.Errorf("list from the env printed %q, want the sandbox the daemon holds", out.String())
 	}
 }
 
@@ -118,12 +118,12 @@ func TestAVerbReachesTheDaemonThroughTheFront(t *testing.T) {
 
 	app, flags, _ := newFrontApp(t, &out)
 
-	if err := app.Run(t.Context(), append(flags, "ls")); err != nil {
-		t.Fatalf("ls through the front: %v", err)
+	if err := app.Run(t.Context(), append(flags, "list")); err != nil {
+		t.Fatalf("list through the front: %v", err)
 	}
 
 	if !strings.Contains(out.String(), "up-1") {
-		t.Errorf("ls through the front printed %q, want the sandbox the daemon holds", out.String())
+		t.Errorf("list through the front printed %q, want the sandbox the daemon holds", out.String())
 	}
 }
 
@@ -138,12 +138,12 @@ func TestAVerbWithTheWrongTokenIsRefusedByTheFront(t *testing.T) {
 	}
 	flags[3] = wrong
 
-	err := app.Run(t.Context(), append(flags, "ls"))
+	err := app.Run(t.Context(), append(flags, "list"))
 	if err == nil {
-		t.Fatal("ls with the wrong token answered")
+		t.Fatal("list with the wrong token answered")
 	}
 	if !strings.Contains(err.Error(), "no valid bearer token") {
-		t.Errorf("ls with the wrong token returned %v, want the refusal of the front", err)
+		t.Errorf("list with the wrong token returned %v, want the refusal of the front", err)
 	}
 }
 
@@ -153,7 +153,7 @@ func TestAHostThatIsNotHTTPSIsRefused(t *testing.T) {
 	app, flags, _ := newFrontApp(t, &out)
 	flags[1] = "http://127.0.0.1:2376"
 
-	err := app.Run(t.Context(), append(flags, "ls"))
+	err := app.Run(t.Context(), append(flags, "list"))
 	if err == nil || !strings.Contains(err.Error(), "https url") {
 		t.Errorf("a plain http host returned %v, want a refusal", err)
 	}
@@ -166,7 +166,7 @@ func TestAHostWithNoTokenIsRefused(t *testing.T) {
 	app, flags, _ := newFrontApp(t, &out)
 	noRemoteEnv(t)
 
-	err := app.Run(t.Context(), []string{flags[0], flags[1], "ls"})
+	err := app.Run(t.Context(), []string{flags[0], flags[1], "list"})
 	if err == nil {
 		t.Fatal("a host with no token answered")
 	}
@@ -189,11 +189,11 @@ func TestTheAPIKeyAloneReachesTheFront(t *testing.T) {
 	t.Setenv(client.APIKeyEnv, key)
 	t.Setenv(client.CAFileEnv, flags[5])
 
-	if err := app.Run(t.Context(), []string{"ls"}); err != nil {
-		t.Fatalf("ls with SHARD_API_KEY alone: %v", err)
+	if err := app.Run(t.Context(), []string{"list"}); err != nil {
+		t.Fatalf("list with SHARD_API_KEY alone: %v", err)
 	}
 	if !strings.Contains(out.String(), "up-1") {
-		t.Errorf("ls with SHARD_API_KEY printed %q, want the sandbox the daemon holds", out.String())
+		t.Errorf("list with SHARD_API_KEY printed %q, want the sandbox the daemon holds", out.String())
 	}
 	if logged := frontLog.String(); !strings.Contains(logged, "authorized") || strings.Contains(logged, key) {
 		t.Errorf("the front logged %q, want the authorization and never the key", logged)
@@ -234,9 +234,9 @@ func TestAKeyTheFrontDoesNotHonourIsRefusedByTheFront(t *testing.T) {
 			t.Setenv(client.APIKeyEnv, key)
 			t.Setenv(client.CAFileEnv, flags[5])
 
-			err := app.Run(t.Context(), []string{"ls"})
+			err := app.Run(t.Context(), []string{"list"})
 			if err == nil || !strings.Contains(err.Error(), "no valid bearer token") || strings.Contains(err.Error(), key) {
-				t.Errorf("ls with %s returned %v, want the refusal of the front and never the key", name, err)
+				t.Errorf("list with %s returned %v, want the refusal of the front and never the key", name, err)
 			}
 			if strings.Contains(frontLog.String(), key) {
 				t.Errorf("the front logged the key: %q", frontLog.String())
@@ -283,12 +283,12 @@ func TestTheTokenOrderReachesTheFront(t *testing.T) {
 				args = append(args, "--token-file", tc.flag)
 			}
 
-			err := app.Run(t.Context(), append(args, "ls"))
+			err := app.Run(t.Context(), append(args, "list"))
 			if tc.ok && err != nil {
-				t.Errorf("ls returned %v, want the answer of the daemon", err)
+				t.Errorf("list returned %v, want the answer of the daemon", err)
 			}
 			if !tc.ok && (err == nil || !strings.Contains(err.Error(), "no valid bearer token")) {
-				t.Errorf("ls returned %v, want the refusal of the front", err)
+				t.Errorf("list returned %v, want the refusal of the front", err)
 			}
 		})
 	}

@@ -246,7 +246,7 @@ func TestDetachPolicyPutsTheRecordBackWhenTheHostRefusesTheRules(t *testing.T) {
 	}
 }
 
-// policy rm and the POLICY column read the record, so an attach is enough to make them follow.
+// policy remove and the POLICY column read the record, so an attach is enough to make them follow.
 func TestPolicyHoldersFollowsAnAttach(t *testing.T) {
 	svc, l, _ := attachable(t, &recorder{}, stopped())
 

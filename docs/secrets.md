@@ -14,8 +14,8 @@ shard run --secret OPENAI_API_KEY python:3.12 python agent.py
 ```
 
 **The store.** `shard secret set` writes the value to `<root>/secrets/<NAME>`, with mode 0600, in a
-directory of mode 0700. That file is the only place the value is written. `shard secret ls` prints
-names, destinations and placeholders, and never a value. `shard secret rm` refuses while a sandbox
+directory of mode 0700. That file is the only place the value is written. `shard secret list` prints
+names, destinations and placeholders, and never a value. `shard secret remove` refuses while a sandbox
 record names the secret, and `--force` overrides that. The name is the environment variable the guest
 reads, so it has the same form: uppercase letters, digits and `_`.
 
@@ -60,7 +60,7 @@ Both verbs are safe to run again, because a grant the record already names chang
 A grant is refused when the guest environment already holds that name, and a refused grant writes
 nothing at all. A secret named after a trust variable, such as `SSL_CERT_FILE` or `CURL_CA_BUNDLE`,
 is refused at create and at a grant, because the proxy points those variables at the trust store.
-`shard secret rm` refuses while any sandbox holds a grant, and names the holders. To remove the
+`shard secret remove` refuses while any sandbox holds a grant, and names the holders. To remove the
 secret, ungrant it first, remove those sandboxes, or pass `--force`.
 
 **The substitution.** The placeholder is `mock-NAME` by default. A sandbox that holds a secret is
@@ -97,7 +97,7 @@ owns it as its own placeholder or as its default. The default `mock-NAME` is exe
 first, so a short name still gets one. Only a placeholder that this call names is checked for shape,
 so the placeholder the record carries forward never blocks a rotation. Changing the placeholder of a
 secret that a sandbox holds is refused, because that guest already holds the old one. Ungrant it
-first. `shard secret ls` prints the placeholder.
+first. `shard secret list` prints the placeholder.
 
 **The value.** `shard secret set` takes the value in one of three ways. It reads stdin when the value
 is `-` or when stdin is a pipe. Use stdin in a script, because the value then lands in no shell

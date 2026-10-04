@@ -8,15 +8,15 @@ import (
 	"github.com/presmihaylov/shard/services/client"
 )
 
-// rmOptions is one parsed shard rm invocation.
-type rmOptions struct {
+// removeOptions is one parsed shard remove invocation.
+type removeOptions struct {
 	id    string
 	force bool
 }
 
 // remove reads the record before the delete, because a delete answers no record and the id printed is the resolved one.
 func (a App) remove(ctx context.Context, args []string) error {
-	opts, err := parseRm(args)
+	opts, err := parseRemove(args)
 	if err != nil {
 		return err
 	}
@@ -36,7 +36,7 @@ func (a App) remove(ctx context.Context, args []string) error {
 		return err
 	}
 
-	// An rm that waited on another rm finds the same nothing.
+	// A remove that waited on another remove finds the same nothing.
 	err = c.RemoveSandbox(ctx, sb.ID, opts.force)
 	if errors.As(err, &missing) {
 		return a.removeMissing(opts, err)
@@ -48,8 +48,8 @@ func (a App) remove(ctx context.Context, args []string) error {
 	return a.print(sb.ID)
 }
 
-// removeMissing fails a plain rm of an id with no record, and lets --force pass it with a warning, as rm -f does.
-func (a App) removeMissing(opts rmOptions, err error) error {
+// removeMissing fails a plain remove of an id with no record, and lets --force pass it with a warning, as rm -f does.
+func (a App) removeMissing(opts removeOptions, err error) error {
 	if !opts.force {
 		return err
 	}
@@ -60,19 +60,19 @@ func (a App) removeMissing(opts rmOptions, err error) error {
 	return nil
 }
 
-func parseRm(args []string) (rmOptions, error) {
-	var opts rmOptions
+func parseRemove(args []string) (removeOptions, error) {
+	var opts removeOptions
 
-	flags := newFlags("rm")
+	flags := newFlags("remove")
 	flags.BoolVar(&opts.force, "force", false, "")
 
 	if err := parseVerb(flags, args); err != nil {
-		return rmOptions{}, err
+		return removeOptions{}, err
 	}
 
 	rest := flags.Args()
 	if len(rest) != 1 {
-		return rmOptions{}, fmt.Errorf("rm takes one sandbox id, got %d", len(rest))
+		return removeOptions{}, fmt.Errorf("remove takes one sandbox id, got %d", len(rest))
 	}
 
 	opts.id = rest[0]

@@ -11,6 +11,7 @@ import (
 	"net"
 	"os"
 	"os/exec"
+	"os/signal"
 	"path/filepath"
 	"strconv"
 	"strings"
@@ -933,6 +934,71 @@ func TestTransportKillReplaysFrozenOnTheNextHost(t *testing.T) {
 		}
 	case <-ctx.Done():
 		t.Fatal("the supervisor did not exit after the stop")
+	}
+}
+
+// writeWatch says when the guest starts a write, which net.Pipe then holds until the host reads.
+type writeWatch struct {
+	net.Conn
+	writing chan struct{}
+}
+
+func (w *writeWatch) Write(b []byte) (int, error) {
+	select {
+	case w.writing <- struct{}{}:
+	default:
+	}
+
+	return w.Conn.Write(b)
+}
+
+// A guest with nothing to forward a stop to goes at once, so the host must hold its answer first (SHARD-483).
+func TestTransportAnswersAStopBeforeTheGuestActsOnIt(t *testing.T) {
+	ctx := testContext(t)
+	host, conn := net.Pipe()
+	t.Cleanup(func() { _ = host.Close() })
+	guest := &writeWatch{Conn: conn, writing: make(chan struct{}, 1)}
+	tr := &transport{attached: make(chan struct{}, 1), control: guest}
+	tr.g = newGuest(tr, restartPolicy{})
+	go tr.serveControl(guest)
+
+	if err := supervisor.WriteMessage(host, supervisor.Message{Kind: supervisor.KindStop, ID: 1}); err != nil {
+		t.Fatalf("send the stop: %v", err)
+	}
+	select {
+	case <-guest.writing:
+	case <-ctx.Done():
+		t.Fatal("the guest never started its answer to the stop")
+	}
+	// The runtime hands on a pending SIGTERM before a later, higher SIGWINCH, so any stop the guest signalled itself is in by now.
+	fence := make(chan os.Signal, 1)
+	signal.Notify(fence, syscall.SIGWINCH)
+	t.Cleanup(func() { signal.Stop(fence) })
+	if err := syscall.Kill(os.Getpid(), syscall.SIGWINCH); err != nil {
+		t.Fatalf("send the fence: %v", err)
+	}
+	select {
+	case <-fence:
+	case <-ctx.Done():
+		t.Fatal("the fence signal never arrived")
+	}
+	select {
+	case <-tr.g.stopSignals:
+		t.Fatal("the stop reached the guest while the host had not read its answer")
+	default:
+	}
+
+	var answer supervisor.Message
+	if err := supervisor.ReadMessage(bufio.NewReader(host), &answer); err != nil {
+		t.Fatalf("read the answer: %v", err)
+	}
+	if answer.Kind != supervisor.KindDone || answer.ID != 1 {
+		t.Fatalf("answer = %+v, want done for request 1", answer)
+	}
+	select {
+	case <-tr.g.stopSignals:
+	case <-ctx.Done():
+		t.Fatal("the guest never acted on the stop it answered")
 	}
 }
 
