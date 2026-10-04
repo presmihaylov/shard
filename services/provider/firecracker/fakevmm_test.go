@@ -43,6 +43,9 @@ const (
 // jailerFile is written beside the chroot with what the fake jailer was run with.
 const jailerFile = "jailer.json"
 
+// sessionsFile beside the jail base takes the pid of every vmm the fake jailer starts, which leads the session its whole guest stays in.
+const sessionsFile = "vmm-sessions"
+
 // Files a test puts in the state directory: controlsFile takes one line per reseed, freeze and thaw the guest reads, and an attach per control stream the host opens.
 const (
 	controlsFile = "controls"
@@ -184,6 +187,9 @@ func fakeJailer() error {
 	if err := vmm.Start(); err != nil {
 		return err
 	}
+	if err := note(filepath.Join(filepath.Dir(*base), sessionsFile), strconv.Itoa(vmm.Process.Pid)); err != nil {
+		return err
+	}
 	pidFile, err := os.OpenFile(filepath.Join(chroot, filepath.Base(*execFile)+".pid"), os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0o600)
 	if err != nil {
 		return err
@@ -193,6 +199,51 @@ func fakeJailer() error {
 	}
 
 	return pidFile.Close()
+}
+
+// endSessions SIGKILLs what is left in every vmm session the file names: a VM's death ends its guest, but a kill of the vmm alone, or of its group, misses the guest here, whose entrypoint leads a group of its own.
+func endSessions(t *testing.T, path string) {
+	t.Helper()
+
+	blob, err := os.ReadFile(path)
+	if err != nil {
+		t.Errorf("read the vmm sessions: %v", err)
+
+		return
+	}
+	sids := map[int]bool{}
+	for field := range strings.FieldsSeq(string(blob)) {
+		sid, err := strconv.Atoi(field)
+		if err != nil {
+			t.Errorf("read the vmm sessions: %v", err)
+
+			return
+		}
+		sids[sid] = true
+	}
+	for deadline := time.Now().Add(stopGrace); ; time.Sleep(20 * time.Millisecond) {
+		left, err := inSessions(sids)
+		if err != nil {
+			t.Errorf("list the vmm sessions: %v", err)
+
+			return
+		}
+		if len(left) == 0 {
+			return
+		}
+		if time.Now().After(deadline) {
+			t.Errorf("processes %v are left in the vmm sessions %s after SIGKILL", left, stopGrace)
+
+			return
+		}
+		for _, pid := range left {
+			if err := syscall.Kill(pid, syscall.SIGKILL); err != nil && !errors.Is(err, syscall.ESRCH) {
+				t.Errorf("end process %d of a vmm session: %v", pid, err)
+
+				return
+			}
+		}
+	}
 }
 
 // inJail is where a path the fake vmm is told lives on the host, the way a chroot resolves it.

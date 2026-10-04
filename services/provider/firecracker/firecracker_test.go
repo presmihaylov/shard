@@ -52,6 +52,12 @@ func newHarness(t *testing.T) *harness {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { os.RemoveAll(root) })
+	sessions := filepath.Join(root, sessionsFile)
+	if err := os.WriteFile(sessions, nil, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	// Registered after the RemoveAll, so it runs before it and after every spec's stop.
+	t.Cleanup(func() { endSessions(t, sessions) })
 
 	// The fake vmm opens the image the way firecracker does, and never mounts it, so any file is an image.
 	erofs := filepath.Join(root, "base.erofs")
@@ -2312,8 +2318,11 @@ func (h *harness) leaveUnloaded(t *testing.T, spec models.SandboxSpec, binary, j
 		vmm.Wait()
 		close(exited)
 	}()
-	// Best effort: a pass has ended it already.
-	t.Cleanup(func() { vmm.Process.Kill() })
+	// Best effort: a pass has ended it already; the receive waits out the reap.
+	t.Cleanup(func() {
+		vmm.Process.Kill()
+		<-exited
+	})
 
 	deadline := time.Now().Add(stopGrace)
 	for !unloaded(socket) {
