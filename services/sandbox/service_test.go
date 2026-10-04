@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io/fs"
 	"net/netip"
 	"os"
 	"slices"
@@ -1589,5 +1590,70 @@ func TestRemoveNamesTheRulesItLeft(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), "host rules") {
 		t.Errorf("rm failed with %v, want it to name the host rules it left behind", err)
+	}
+}
+
+// goneImage is what a substrate answers over an image rootfs an image rm deleted while a sandbox still stacks over it.
+func goneImage() error {
+	return fmt.Errorf("sandbox sandbox1: the image at /var/lib/shard/rootfs/sha256-0a1b is gone: %w: %w", models.ErrImageGone,
+		&fs.PathError{Op: "stat", Path: "/var/lib/shard/rootfs/sha256-0a1b", Err: fs.ErrNotExist})
+}
+
+// withImage is sb as a pull of alpine:3.20 left it, so a gone image has a reference to name.
+func withImage(sb models.Sandbox) models.Sandbox {
+	sb.Image, sb.Digest = "index.docker.io/library/alpine:3.20", fakeDigest
+
+	return sb
+}
+
+// imageGone checks err names the pinned pull and the verb to run again, and never the host path behind it.
+func imageGone(t *testing.T, err error, verb string) {
+	t.Helper()
+
+	if _, ok := errors.AsType[*sandbox.ImageGoneError](err); !ok {
+		t.Fatalf("%s over a gone image = %v, want an ImageGoneError", verb, err)
+	}
+	want := "sandbox sandbox1: its image index.docker.io/library/alpine@" + fakeDigest +
+		" is no longer on this host; pull that image, then " + verb + " the sandbox again"
+	if public, ok := sandbox.PublicText(err); !ok || public != want {
+		t.Errorf("the public text is %q, want %q", public, want)
+	}
+}
+
+// A start over an image an rm deleted names the pull that brings it back, and the record stays stopped (SHARD-585).
+func TestStartOverAGoneImageNamesThePullThatBringsItBack(t *testing.T) {
+	svc, l := newService(t, &recorder{fail: []string{"provider.Start"}, cause: goneImage()}, withImage(stopped()))
+
+	_, err := svc.Start(t.Context(), "sandbox1")
+
+	imageGone(t, err, "start")
+	if l.repo.sb.State != models.StateStopped {
+		t.Errorf("the record is %s after the refused start, want stopped", l.repo.sb.State)
+	}
+}
+
+// A create whose image left the host between the create and the start of its holder names the pull too (SHARD-585).
+func TestCreateWhoseStartFindsTheImageGoneNamesThePull(t *testing.T) {
+	svc, l := newService(t, &recorder{fail: []string{"provider.Start"}, cause: goneImage()}, models.Sandbox{})
+
+	_, err := svc.Create(t.Context(), alpine())
+
+	imageGone(t, err, "create")
+	public, _ := sandbox.PublicText(err)
+	if l.repo.sb.State != models.StateFailed || l.repo.sb.FailedPublic != public {
+		t.Errorf("the record is %s with public reason %q, want failed with %q", l.repo.sb.State, l.repo.sb.FailedPublic, public)
+	}
+}
+
+// A create whose image an rm deleted after the pull fails with the same public reason it answers (SHARD-585).
+func TestCreateOverAGoneImageNamesThePullThatBringsItBack(t *testing.T) {
+	svc, l := newService(t, &recorder{fail: []string{"provider.Create"}, cause: goneImage()}, models.Sandbox{})
+
+	_, err := svc.Create(t.Context(), alpine())
+
+	imageGone(t, err, "create")
+	public, _ := sandbox.PublicText(err)
+	if l.repo.sb.State != models.StateFailed || l.repo.sb.FailedPublic != public {
+		t.Errorf("the record is %s with public reason %q, want failed with %q", l.repo.sb.State, l.repo.sb.FailedPublic, public)
 	}
 }

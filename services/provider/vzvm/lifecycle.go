@@ -51,6 +51,9 @@ func (p *Provider) Create(ctx context.Context, spec models.SandboxSpec) error {
 func writeDisk(spec models.SandboxSpec) error {
 	to := filepath.Join(spec.StateDir, diskFile)
 	if spec.Seed == "" {
+		if err := bundle.CheckImage(spec.RootDisk); err != nil {
+			return err
+		}
 		_, err := bundle.CloneRootDisk(spec.RootDisk, to, spec.Resources)
 
 		return err

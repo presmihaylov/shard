@@ -214,6 +214,34 @@ func TestTheLifecycleVerbsTurnA404IntoNotFound(t *testing.T) {
 	}
 }
 
+// A sandbox still there whose image left the host answers not_found too, and keeps the daemon's line with the pull to run (SHARD-585).
+func TestAGoneImageKeepsTheDaemonsLineOverNotFound(t *testing.T) {
+	const line = "sandbox dg: its image docker.io/library/alpine@sha256:0a1b is no longer on this host; pull that image, then start the sandbox again"
+	c := serve(t, shortRoot(t), func(w http.ResponseWriter, r *http.Request) {
+		if r.Method == http.MethodGet {
+			answer(http.StatusOK, `{"id":"sb_1","name":"dg"}`)(w, r)
+
+			return
+		}
+		answer(http.StatusNotFound, `{"error":{"code":"not_found","message":"`+line+`"}}`)(w, r)
+	})
+
+	calls := map[string]func() error{
+		"start":  func() error { _, err := c.StartSandbox(t.Context(), "dg"); return err },
+		"resume": func() error { _, err := c.ResumeSandbox(t.Context(), "dg"); return err },
+		"fork":   func() error { _, err := c.ForkSandbox(t.Context(), "dg", sandbox.CopyRequest{}); return err },
+	}
+
+	for verb, call := range calls {
+		err := call()
+
+		var refusal *client.APIError
+		if !errors.As(err, &refusal) || refusal.Code != models.CodeNotFound || err.Error() != line {
+			t.Errorf("%s = %v, want the daemon's not_found line as it came", verb, err)
+		}
+	}
+}
+
 // A refusal is an APIError a caller can errors.As on: the code and the holders ride with the daemon's line.
 func TestARefusalDecodesIntoAnAPIErrorWithItsCode(t *testing.T) {
 	c := serve(t, shortRoot(t), answer(http.StatusConflict, `{"error":{"code":"in_use","message":"secret openai is granted to sandbox quiet-heron-3f0a: remove the sandbox first, or pass --force","holders":["quiet-heron-3f0a"]}}`))

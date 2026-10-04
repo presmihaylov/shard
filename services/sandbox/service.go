@@ -224,6 +224,44 @@ func (e *StateError) Public() string {
 	return fmt.Sprintf("sandbox %s is %s: %s", e.ID, e.State, e.Fix)
 }
 
+// ImageGoneError is a verb that found the sandbox's image files gone from the host; a pull of Image brings them back.
+type ImageGoneError struct {
+	ID string
+	// Image is the record's reference pinned to its digest, so the pull restores the files the sandbox stacks over.
+	Image string
+	Verb  string
+	Err   error
+}
+
+func (e *ImageGoneError) Error() string { return e.Public() + ": " + e.Err.Error() }
+
+func (e *ImageGoneError) Unwrap() error { return e.Err }
+
+// Public names the image and the verb to run again, never the host path the substrate found empty.
+func (e *ImageGoneError) Public() string {
+	return fmt.Sprintf("sandbox %s: its image %s is no longer on this host; pull that image, then %s the sandbox again", e.ID, e.Image, e.Verb)
+}
+
+// imageGone types a substrate's gone image so a public route names the pull; any other error passes through.
+func imageGone(id, ref, digest, verb string, err error) error {
+	if !errors.Is(err, models.ErrImageGone) {
+		return err
+	}
+	gone := &ImageGoneError{ID: id, Image: ref, Verb: verb, Err: err}
+	if digest == "" {
+		return gone
+	}
+	pinned, pinErr := image.Pinned(ref, digest)
+	if pinErr != nil {
+		gone.Err = errors.Join(err, pinErr)
+
+		return gone
+	}
+	gone.Image = pinned
+
+	return gone
+}
+
 // wrongState refuses a verb on the record's state, and names why an unresponsive one is silent, as docs/state-machine.md promises.
 func wrongState(id string, sb models.Sandbox, fix string, code models.Code) *StateError {
 	refused := &StateError{ID: id, State: sb.State, Fix: fix, Code: code}
@@ -693,7 +731,7 @@ func (s *Service) Complete(ctx context.Context, id string, req CreateRequest) (e
 	td.Push(func(ctx context.Context) error { return s.cfg.Provider.Remove(ctx, id) })
 
 	if err := s.cfg.Provider.Create(ctx, spec); err != nil {
-		return userRefused(err)
+		return imageGone(id, sb.Image, img.Digest, "create", userRefused(err))
 	}
 
 	if err := s.recordCreated(ctx, spec, img.Digest); err != nil {
@@ -716,7 +754,7 @@ func (s *Service) Complete(ctx context.Context, id string, req CreateRequest) (e
 			return fmt.Errorf("the start of sandbox %s was interrupted, so it may be running and it stays on the host: %w", id, err)
 		}
 
-		return nameCommand(err, spec.Entrypoint)
+		return imageGone(id, sb.Image, img.Digest, "create", nameCommand(err, spec.Entrypoint))
 	}
 
 	// The commit point. The entrypoint is live, so nothing below this line gives anything back: only
@@ -1019,7 +1057,7 @@ func (s *Service) Start(ctx context.Context, ref string) (models.Sandbox, error)
 	}
 
 	if err := s.start(ctx, id); err != nil {
-		return models.Sandbox{}, err
+		return models.Sandbox{}, imageGone(id, sb.Image, sb.Digest, "start", err)
 	}
 
 	return s.record(id)

@@ -452,6 +452,42 @@ func TestCreateRefusesAnImageWithoutAnErofsImage(t *testing.T) {
 	}
 }
 
+// An image an rm deleted before the create leaves no disk to boot from, and the refusal carries the sentinel a route answers (SHARD-585).
+func TestCreateRefusesAnImageGoneFromTheHost(t *testing.T) {
+	h := newHarness(t)
+	spec := h.newSpec(t, "/bin/sh", "-c", "exit 0")
+	spec.BaseDisk = filepath.Join(t.TempDir(), "gone.erofs")
+
+	if err := h.provider.Create(t.Context(), spec); !errors.Is(err, models.ErrImageGone) {
+		t.Fatalf("Create over a gone image = %v, want models.ErrImageGone", err)
+	}
+}
+
+// Every boot puts the image in a new jail, so a start after an rm deleted it is refused by the same sentinel (SHARD-585).
+func TestStartRefusesAnImageGoneFromTheHost(t *testing.T) {
+	h := newHarness(t)
+	spec := h.newSpec(t, "/bin/sh", "-c", "exit 0")
+	if err := h.provider.Create(t.Context(), spec); err != nil {
+		t.Fatal(err)
+	}
+	if err := h.provider.Start(t.Context(), spec.ID); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := h.provider.Wait(t.Context(), spec.ID); err != nil {
+		t.Fatal(err)
+	}
+	if err := h.provider.Stop(t.Context(), spec.ID, stopGrace); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Remove(h.erofs); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := h.provider.Start(t.Context(), spec.ID); !errors.Is(err, models.ErrImageGone) {
+		t.Fatalf("Start over a gone image = %v, want models.ErrImageGone", err)
+	}
+}
+
 // The bound needs room under the 32 MiB headroom, so a VM too small for one is refused by name.
 func TestCreateRefusesAMemoryBoundBelowTheMinimum(t *testing.T) {
 	h := newHarness(t)

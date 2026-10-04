@@ -209,6 +209,20 @@ func TestCreateRefusesAnImageWithoutARootDisk(t *testing.T) {
 	}
 }
 
+// A pruned image disk is refused by the sentinel the API answers with 404 and the pull hint, not a bare stat error.
+func TestCreateOverAGoneImageDiskNamesTheImage(t *testing.T) {
+	h := newHarness(t)
+	spec := h.newSpec(t, "/bin/sh", "-c", "exit 0")
+	if err := os.Remove(spec.RootDisk); err != nil {
+		t.Fatal(err)
+	}
+
+	err := h.provider.Create(t.Context(), spec)
+	if !errors.Is(err, models.ErrImageGone) || !strings.Contains(err.Error(), spec.ID) {
+		t.Fatalf("Create = %v, want models.ErrImageGone and the sandbox named", err)
+	}
+}
+
 // The bound needs room under the 32 MiB headroom, so a VM too small for one is refused by name.
 func TestCreateRefusesAMemoryBoundBelowTheMinimum(t *testing.T) {
 	h := newHarness(t)

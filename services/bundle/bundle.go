@@ -4,6 +4,7 @@ package bundle
 import (
 	"errors"
 	"fmt"
+	"io/fs"
 	"os"
 	"path"
 	"path/filepath"
@@ -89,6 +90,9 @@ func (s *Service) Build(spec models.SandboxSpec) (Bundle, error) {
 	if err := validate(spec); err != nil {
 		return Bundle{}, err
 	}
+	if err := CheckImage(spec.RootFS); err != nil {
+		return Bundle{}, fmt.Errorf("sandbox %s: %w", spec.ID, err)
+	}
 
 	b, err := newBundle(spec.StateDir)
 	if err != nil {
@@ -168,6 +172,19 @@ func (b Bundle) Runtime() (Runtime, error) {
 		User:      supervisorFlag(spec.Process.Args, "-user"),
 		Groups:    groups,
 	}, nil
+}
+
+// CheckImage refuses an image file or tree that left the host, by the sentinel a public route names.
+func CheckImage(path string) error {
+	_, err := os.Stat(path)
+	if errors.Is(err, fs.ErrNotExist) {
+		return fmt.Errorf("the image at %s is gone: %w: %w", path, models.ErrImageGone, err)
+	}
+	if err != nil {
+		return fmt.Errorf("stat the image at %s: %w", path, err)
+	}
+
+	return nil
 }
 
 // supervisorFlag reads back a flag the supervisor was given. Its own process user is root, so the
