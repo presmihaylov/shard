@@ -22,6 +22,6 @@ const (
 	CodeAppEnded          Code = "app_ended"
 	CodeUnauthorized      Code = "unauthorized"
 	CodeForbidden         Code = "forbidden"
-	CodeSubstrateTimeout  Code = "substrate_timeout"
+	CodeTimeout           Code = "timeout"
 	CodeInternal          Code = "internal"
 )

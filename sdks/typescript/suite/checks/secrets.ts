@@ -28,7 +28,7 @@ export const checks: Check[] = [
     },
   },
   {
-    name: "secrets.grant_revoke",
+    name: "secrets.grant_ungrant",
     run: async (ctx) => {
       const name = ctx.variable("grant");
       const value = `suite-value-${randomBytes(8).toString("hex")}`;

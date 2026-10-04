@@ -167,9 +167,6 @@
           "missing": {
             "type": "boolean"
           },
-          "policy": {
-            "type": "string"
-          },
           "rules": {
             "items": {
               "$ref": "#/components/schemas/EffectiveRule"
@@ -178,7 +175,6 @@
           }
         },
         "required": [
-          "policy",
           "rules"
         ],
         "type": "object"

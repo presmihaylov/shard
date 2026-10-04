@@ -74,9 +74,8 @@ func dialNameservers(nameservers []netip.Addr) func(ctx context.Context, network
 	}
 }
 
-// Effective is what the host enforces for one sandbox: the policy's own rules, and the DNS they need.
+// Effective is what the host enforces for one sandbox: the policy's own rules, and the DNS they need. The record names the policy.
 type Effective struct {
-	Policy string `json:"policy"`
 	// Missing is set when the record names a policy the store no longer holds: then everything is dropped.
 	Missing bool            `json:"missing,omitempty"`
 	Rules   []EffectiveRule `json:"rules"`
@@ -99,7 +98,7 @@ func (s *Service) Effective(sb models.Sandbox) (Effective, error) {
 
 	policy, err := s.policies.Get(sb.Policy)
 	if errors.Is(err, ErrNotFound) {
-		return Effective{Policy: sb.Policy, Missing: true}, nil
+		return Effective{Missing: true}, nil
 	}
 	if err != nil {
 		return Effective{}, err
@@ -136,7 +135,7 @@ func (s *Service) Effective(sb models.Sandbox) (Effective, error) {
 		rules[i].ID = strconv.Itoa(i + 1)
 	}
 
-	return Effective{Policy: sb.Policy, Rules: rules}, nil
+	return Effective{Rules: rules}, nil
 }
 
 // Fronted says the sandbox's web traffic goes through the proxy, which a policy or a secret asks for.

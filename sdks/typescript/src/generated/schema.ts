@@ -577,7 +577,6 @@ export interface components {
         };
         Effective: {
             missing?: boolean;
-            policy: string;
             rules: components["schemas"]["EffectiveRule"][];
         };
         EffectiveRule: {

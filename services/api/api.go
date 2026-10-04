@@ -708,7 +708,7 @@ func classify(err error) (int, models.Code) {
 	case errors.Is(err, models.ErrUnsupported):
 		return http.StatusConflict, models.CodeUnsupported
 	case errors.As(err, &substrateTimeout):
-		return http.StatusGatewayTimeout, models.CodeSubstrateTimeout
+		return http.StatusGatewayTimeout, models.CodeTimeout
 	default:
 		return http.StatusInternalServerError, models.CodeInternal
 	}

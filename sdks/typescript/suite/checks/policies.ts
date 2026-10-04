@@ -28,7 +28,7 @@ export const checks: Check[] = [
     },
   },
   {
-    name: "policies.assign_clear",
+    name: "policies.attach_detach",
     run: async (ctx) => {
       const name = ctx.name("policy");
       await ctx.policy(name, rules);

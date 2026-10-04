@@ -106,14 +106,14 @@ func TestGetSandboxReadsTheRecordAndItsEgress(t *testing.T) {
 
 			return
 		}
-		answer(http.StatusOK, `{"id":"up-1","name":"web","state":"running","policy":"deny-all","egress":{"policy":"deny-all","rules":[]}}`)(w, r)
+		answer(http.StatusOK, `{"id":"up-1","name":"web","state":"running","policy":"deny-all","egress":{"rules":[]}}`)(w, r)
 	})
 
 	got, err := c.GetSandbox(t.Context(), "web")
 	if err != nil {
 		t.Fatalf("GetSandbox: %v", err)
 	}
-	if got.ID != "up-1" || got.Egress == nil || got.Egress.Policy != "deny-all" {
+	if got.ID != "up-1" || got.Policy != "deny-all" || got.Egress == nil {
 		t.Errorf("GetSandbox = %+v, want up-1 with its egress", got)
 	}
 }

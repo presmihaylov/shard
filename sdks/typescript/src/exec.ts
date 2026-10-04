@@ -1,7 +1,7 @@
 // One command in a sandbox over the daemon's stream: its start, its attaches, and how it ended.
 import type { OutputCapture } from "./capture.js";
 import { date, isStrings } from "./decode.js";
-import { ConnectionError, ProtocolError, isObject } from "./errors.js";
+import { ProtocolError, ShardConnectionError, isObject } from "./errors.js";
 import { opBinary } from "./frames.js";
 import type { Transport } from "./transport.js";
 import * as wire from "./wire.js";
@@ -113,7 +113,7 @@ export class Session {
       signal?.throwIfAborted();
     }
     if (!exit) {
-      throw new ConnectionError(`${this.what}: the stream was let go before the command ended`);
+      throw new ShardConnectionError(`${this.what}: the stream was let go before the command ended`);
     }
     this.exited = exit;
 
@@ -208,7 +208,7 @@ export class Session {
     if (released) {
       return undefined;
     }
-    if (failed !== undefined && !(failed instanceof ConnectionError)) {
+    if (failed !== undefined && !(failed instanceof ShardConnectionError)) {
       throw failed;
     }
     throw await this.cut(failed);
@@ -244,14 +244,14 @@ export class Session {
   }
 
   /** cut names a stream that ended before its exit, with the record's word on why; the record is best effort, as the CLI's. */
-  private async cut(dropped: unknown): Promise<ConnectionError> {
+  private async cut(dropped: unknown): Promise<ShardConnectionError> {
     const ended = `${this.what}: the stream ended without an exit status`;
     try {
       const record = await this.inspect();
 
-      return new ConnectionError(`${ended}; the command is ${record.state}, with ${record.lostBytes} bytes of output lost`, { cause: dropped });
+      return new ShardConnectionError(`${ended}; the command is ${record.state}, with ${record.lostBytes} bytes of output lost`, { cause: dropped });
     } catch (err) {
-      return new ConnectionError(ended, { cause: dropped ?? err });
+      return new ShardConnectionError(ended, { cause: dropped ?? err });
     }
   }
 

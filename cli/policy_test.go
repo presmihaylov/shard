@@ -165,7 +165,7 @@ func TestInspectPrintsWhatTheHostEnforces(t *testing.T) {
 	if err := json.Unmarshal(out.Bytes(), &got); err != nil {
 		t.Fatalf("inspect printed something that is not JSON: %v\n%s", err, out.String())
 	}
-	if got.ID != "sandbox1" || got.Egress == nil || got.Egress.Policy != "web" || len(got.Egress.Rules) != 1 {
+	if got.ID != "sandbox1" || got.Policy != "web" || got.Egress == nil || len(got.Egress.Rules) != 1 {
 		t.Errorf("inspect printed %s", out.String())
 	}
 }

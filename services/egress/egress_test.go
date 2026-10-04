@@ -598,7 +598,7 @@ func TestEffectiveIsThePolicysRulesAndTheDNSTheyNeed(t *testing.T) {
 	}
 
 	svc = New(newStore(t), nil, gateway, nameservers, fakeResolver{})
-	if got, err := svc.Effective(models.Sandbox{ID: "sandbox2"}); err != nil || got.Policy != "" || got.Rules != nil {
+	if got, err := svc.Effective(models.Sandbox{ID: "sandbox2"}); err != nil || got.Missing || got.Rules != nil {
 		t.Errorf("a sandbox with no policy got %+v, %v", got, err)
 	}
 	if got, err := svc.Effective(models.Sandbox{ID: "sandbox3", Policy: "gone"}); err != nil || !got.Missing {

@@ -234,7 +234,7 @@ class PolicyRule:
 
 @attrs.frozen
 class Policy:
-    """A named policy. holders are the sandboxes it is assigned to, dns "open" or "closed"; a list leaves both None."""
+    """A named policy. holders are the sandboxes it is attached to, dns "open" or "closed"; a list leaves both None."""
 
     name: str
     rules: tuple[PolicyRule, ...]
@@ -268,7 +268,7 @@ class Snapshot:
 
 
 @attrs.frozen
-class NetworkLogRecord:
+class EgressLogRecord:
     """One egress decision. rule is the id of the rule that decided it, rule_text that rule as the CLI spells it."""
 
     time: datetime.datetime
@@ -374,8 +374,8 @@ def snapshot(record: models.Snapshot) -> Snapshot:
     )
 
 
-def network_log_record(record: models.Record) -> NetworkLogRecord:
-    return NetworkLogRecord(
+def egress_log_record(record: models.Record) -> EgressLogRecord:
+    return EgressLogRecord(
         time=record.time,
         source=record.source,
         verdict=record.verdict,

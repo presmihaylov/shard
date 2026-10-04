@@ -728,7 +728,7 @@ else that a refusal carries lives inside `error`, and the root never holds anyth
 | `name_taken` | 409 | a create whose `name` another sandbox already holds, or a snapshot create whose `name` another snapshot holds |
 | `unauthorized` | 401 | the TCP front, when the request carries no valid bearer token, and then the front dials nothing |
 | `forbidden` | 403 | the TCP front, when the token is valid but its scopes do not reach the route, and then the front dials nothing. Also the daemon, on a create that names a secret without `secret:*` or a policy without `policy:*` |
-| `substrate_timeout` | 504 | a stop, remove or restart whose substrate status call did not answer within the budget. Retry it once the runtime frees. On gVisor, rm --force reclaims through the wedge instead. It SIGKILLs the sandbox's own runsc processes, which it finds by the sandbox's cgroup and by the sandbox id on their command line, then finishes the teardown. It answers this code only when that kill fails too |
+| `timeout` | 504 | a stop, remove or restart whose substrate status call did not answer within the budget. Retry it once the runtime frees. On gVisor, rm --force reclaims through the wedge instead. It SIGKILLs the sandbox's own runsc processes, which it finds by the sandbox's cgroup and by the sandbox id on their command line, then finishes the teardown. It answers this code only when that kill fails too |
 | `internal` | 500 | anything else. A local route answers what the daemon got back. A public route answers only `the daemon could not complete the request; its log has the cause`, and the daemon log keeps the cause |
 
 `services/client` decodes only that object into `*client.APIError`, with `Status`, `Code`,

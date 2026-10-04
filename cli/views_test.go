@@ -111,8 +111,8 @@ func TestPolicyShowTableIsTheFieldsThenTheRules(t *testing.T) {
 func TestInspectTableIsTheRecordThenTheRules(t *testing.T) {
 	rule := models.Rule{Action: models.ActionDeny, Destination: models.Destination{Kind: models.DestinationCIDR, Value: "10.0.0.0/8"}}
 	insp := client.Inspection{
-		Sandbox: client.Sandbox{ID: "s-1", Image: "python:3.12", State: models.StateRunning, Resources: models.Resources{MemoryMiB: 512}},
-		Egress:  &egress.Effective{Policy: "web", Rules: []egress.EffectiveRule{{Rule: rule, ID: "r1", Implied: "private ranges"}}},
+		Sandbox: client.Sandbox{ID: "s-1", Image: "python:3.12", State: models.StateRunning, Resources: models.Resources{MemoryMiB: 512}, Policy: "web"},
+		Egress:  &egress.Effective{Rules: []egress.EffectiveRule{{Rule: rule, ID: "r1", Implied: "private ranges"}}},
 	}
 
 	sections, err := inspectSections(insp)
