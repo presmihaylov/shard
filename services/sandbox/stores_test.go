@@ -104,8 +104,8 @@ func TestPolicyShowAndPolicyRemoveAgreeOnWhoHoldsIt(t *testing.T) {
 	}
 }
 
-// A record that does not read back may name the policy, so show refuses rather than print a short list.
-func TestPolicyShowFailsWhenARecordDoesNotReadBack(t *testing.T) {
+// A scan that fails outright cannot name the holders, so show refuses rather than print a short list.
+func TestPolicyShowFailsWhenTheRecordsCannotBeListed(t *testing.T) {
 	policies := &fakePolicies{policy: models.Policy{Name: "web"}}
 	repo := &fakeRepo{r: &recorder{fail: []string{"repo.List"}}}
 	stores := sandbox.NewStores(sandbox.StoresConfig{Repo: repo, Policies: policies})
@@ -142,6 +142,27 @@ func TestPolicyRemoveRefusesWhileARecordDoesNotReadBack(t *testing.T) {
 	}
 	if policies.removed != "" {
 		t.Errorf("the refusal still removed policy %q", policies.removed)
+	}
+}
+
+// A record that does not read back may name the policy, so show lists it beside the readable holders, as rm refuses over (SHARD-597).
+func TestPolicyShowNamesTheRecordsThatDoNotReadBack(t *testing.T) {
+	policies := &fakePolicies{policy: models.Policy{Name: "web"}}
+	left := []models.Sandbox{{ID: "sb-1", Policy: "web"}, {ID: "sb-2", Policy: "db"}}
+	repo := &fakeRepo{r: &recorder{}, left: left, listErr: unreadable("broken-1")}
+	stores := sandbox.NewStores(sandbox.StoresConfig{Repo: repo, Policies: policies})
+
+	view, err := stores.Policy("web")
+	if err != nil {
+		t.Fatalf("Policy: %v", err)
+	}
+	if !slices.Equal(view.Holders, []string{"sb-1", "broken-1"}) {
+		t.Errorf("show prints holders %v, want the holder and the record it could not read", view.Holders)
+	}
+
+	err = stores.RemovePolicy("web")
+	if held, ok := errors.AsType[*sandbox.HeldError](err); !ok || !slices.Equal(held.Users, view.Holders) {
+		t.Errorf("rm answers %v and show prints %v", err, view.Holders)
 	}
 }
 

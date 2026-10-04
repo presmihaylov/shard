@@ -186,6 +186,10 @@ func (s *Stores) Policy(name string) (PolicyView, error) {
 	}
 
 	holders, err := PolicyHolders(s.cfg.Repo, name)
+	// The same list rm refuses over, so show never answers 500 over a record that does not read back (SHARD-597).
+	if ids := unreadableHolders(err); ids != nil {
+		return PolicyView{Policy: policy, Holders: append(holders, ids...), DNS: dnsState(policy)}, nil
+	}
 	if err != nil {
 		return PolicyView{}, err
 	}

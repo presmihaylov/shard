@@ -676,8 +676,9 @@ and `image prune` leaves it.
   is paused.
 
 - `GET /v0/policies` answers `{"policies": [...], "next"}`, and `GET /v0/policies/{name}` answers one
-  policy with `holders`, the sandboxes whose record names it. The field is omitted when no sandbox
-  names the policy. That is what `shard policy
+  policy with `holders`, the sandboxes whose record names it, plus the id of every sandbox whose
+  record cannot be read, since that record may name it. The field is omitted when no sandbox names
+  the policy. That is what `shard policy
   list` and `shard policy show` print. Errors: 404 when the host holds no such policy.
 - `PUT /v0/policies/{name}` takes `{"rules": [{"action": "allow"|"deny", "rule": "<destination>"}]}`
   with the rules in the order they were given. It compiles them, stores the policy and re-applies it
