@@ -163,7 +163,6 @@ jobs:
     runs-on: ubuntu-latest
     env:
       SHARD_REMOTE: https://127.0.0.1:8443
-      SHARD_CA_FILE: ${{ runner.temp }}/front/cert.pem
       SHARD_GATE_HOST_PATHS: /mnt/reflink
     steps:
       - uses: actions/checkout@v4
@@ -223,6 +222,7 @@ jobs:
             -addext subjectAltName=IP:127.0.0.1 -keyout "$dir/key.pem" -out "$dir/cert.pem" 2>/dev/null
           socat "OPENSSL-LISTEN:8443,bind=127.0.0.1,reuseaddr,fork,cert=$dir/cert.pem,key=$dir/key.pem,verify=0" TCP:127.0.0.1:2377 &
           echo $! >"$dir/socat.pid"
+          echo "SHARD_CA_FILE=$dir/cert.pem" >>"$GITHUB_ENV"
           timeout 30 sh -c 'until curl -fsS --cacert "$0" https://127.0.0.1:8443/v0/version >/dev/null; do sleep 0.2; done' "$dir/cert.pem"
 
       - name: gate
