@@ -215,10 +215,15 @@ type ExitReport struct {
 	Kind   string `json:"kind"`
 	Code   int    `json:"code"`
 	Signal int    `json:"signal"`
+	// Errno is the guest errno of an entrypoint whose exec failed, on a NotStartedReportKind record only.
+	Errno int `json:"errno,omitempty"`
 }
 
-// ExitReportKind is the only Kind an exit report carries, so a reader rejects anything else.
+// ExitReportKind marks the entrypoint's exit, so an exit reader rejects every other line.
 const ExitReportKind = "exit"
+
+// NotStartedReportKind is the record shard-init leaves on its exit channel when the entrypoint's exec failed.
+const NotStartedReportKind = "not-started"
 
 // ExitChannelSize is the sealed memfd a sysbox PID 1 reports on: shard-init fills it from offset 0, the record then NULs.
 const ExitChannelSize = 4096

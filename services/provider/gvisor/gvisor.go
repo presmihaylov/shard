@@ -405,6 +405,13 @@ func (p *Provider) neverStarted(id string, b bundle.Bundle) error {
 	if started {
 		return nil
 	}
+	refused, err := bundle.ReadNotStarted(id, b.ExitFile)
+	if err != nil {
+		return err
+	}
+	if refused != nil {
+		return refused
+	}
 
 	path, err := p.LogPath(id)
 	if err != nil {

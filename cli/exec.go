@@ -208,6 +208,11 @@ func (r *resizes) stop() {
 // shellCode answers a command that never ran the way a shell does, because runsc reports every one
 // of those as its own 128, which nothing outside runsc means anything by.
 func shellCode(err error) error {
+	var refused *client.APIError
+	if errors.As(err, &refused) && refused.Code == models.CodeCommandNotStarted {
+		return &ExitError{Code: refused.ExitCode, Message: refused.Message}
+	}
+
 	var notStarted *models.CommandNotStartedError
 	if !errors.As(err, &notStarted) {
 		return err

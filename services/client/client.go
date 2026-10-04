@@ -104,12 +104,13 @@ type NotFoundError struct {
 
 func (e *NotFoundError) Error() string { return "no sandbox " + e.Ref }
 
-// APIError is a refusal the daemon answered: its line, its code, and the holders an in_use names.
+// APIError is a refusal the daemon answered: its line, its code, the holders an in_use names, and a command_not_started's shell code.
 type APIError struct {
-	Status  int
-	Code    models.Code
-	Message string
-	Holders []string
+	Status   int
+	Code     models.Code
+	Message  string
+	Holders  []string
+	ExitCode int
 }
 
 func (e *APIError) Error() string { return e.Message }
@@ -541,16 +542,17 @@ func unquoted(err error) error {
 func decodeError(status int, body []byte) error {
 	var answer struct {
 		Error struct {
-			Code    models.Code `json:"code"`
-			Message string      `json:"message"`
-			Holders []string    `json:"holders"`
+			Code     models.Code `json:"code"`
+			Message  string      `json:"message"`
+			Holders  []string    `json:"holders"`
+			ExitCode int         `json:"exit_code"`
 		} `json:"error"`
 	}
 	if err := json.Unmarshal(body, &answer); err != nil || answer.Error.Message == "" {
 		return &APIError{Status: status, Code: models.CodeInternal, Message: fmt.Sprintf("the daemon answered %d: %q", status, body)}
 	}
 
-	return &APIError{Status: status, Code: answer.Error.Code, Message: answer.Error.Message, Holders: answer.Error.Holders}
+	return &APIError{Status: status, Code: answer.Error.Code, Message: answer.Error.Message, Holders: answer.Error.Holders, ExitCode: answer.Error.ExitCode}
 }
 
 // EgressLog prints one decision per line, oldest first, as the daemon merged the proxy's and the host's, and says on errOut when the daemon left older ones out.

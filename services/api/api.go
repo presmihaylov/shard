@@ -309,11 +309,12 @@ type sandboxesResponse struct {
 	Warnings []string `json:"warnings,omitempty"`
 }
 
-// ErrorObject is a code for a program, a line for a human, and the holders an in_use names.
+// ErrorObject is a code for a program, a line for a human, the holders an in_use names, and the shell code a command_not_started carries.
 type ErrorObject struct {
-	Code    models.Code `json:"code" doc:"What a program matches on: invalid_request, body_too_large, not_found, sandbox_not_running, sandbox_not_stopped, sandbox_not_paused, sandbox_live, sandbox_failed, no_checkpoint, unsupported, in_use, name_taken, exec_exited, exec_running, no_app, app_ended, unauthorized, forbidden, timeout or internal. A later daemon may add a code, so a client must take one it does not know."`
-	Message string      `json:"message"`
-	Holders []string    `json:"holders,omitempty"`
+	Code     models.Code `json:"code" doc:"What a program matches on: invalid_request, body_too_large, not_found, sandbox_not_running, sandbox_not_stopped, sandbox_not_paused, sandbox_live, sandbox_failed, no_checkpoint, unsupported, in_use, name_taken, exec_exited, exec_running, no_app, app_ended, unauthorized, forbidden, timeout, command_not_started or internal. A later daemon may add a code, so a client must take one it does not know."`
+	Message  string      `json:"message"`
+	Holders  []string    `json:"holders,omitempty"`
+	ExitCode int         `json:"exit_code,omitempty"`
 }
 
 func (h *Handler) getVersion(context.Context, *struct{}) (*reply[versionResponse], error) {
@@ -667,6 +668,7 @@ func classify(err error) (int, models.Code) {
 	var tooLarge *http.MaxBytesError
 	var scope *scopeError
 	var fileNotFound *sandbox.FileNotFoundError
+	var notStarted *models.CommandNotStartedError
 	var fileInvalid *sandbox.FileInvalidError
 
 	switch {
@@ -695,6 +697,8 @@ func classify(err error) (int, models.Code) {
 		return http.StatusConflict, models.CodeUnsupported
 	case errors.As(err, &substrateTimeout):
 		return http.StatusGatewayTimeout, models.CodeTimeout
+	case errors.As(err, &notStarted):
+		return http.StatusUnprocessableEntity, models.CodeCommandNotStarted
 	default:
 		return http.StatusInternalServerError, models.CodeInternal
 	}
@@ -805,6 +809,11 @@ func refusal(err error, local bool) *apiError {
 	var held *sandbox.HeldError
 	if errors.As(err, &held) {
 		body.Object.Holders = held.Users
+	}
+
+	var notStarted *models.CommandNotStartedError
+	if errors.As(err, &notStarted) {
+		body.Object.ExitCode = notStarted.Code
 	}
 
 	return body

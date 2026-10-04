@@ -336,6 +336,8 @@ type fakeProvider struct {
 
 	// refuse is what CheckResources answers, the way vz refuses a --memory it cannot boot under.
 	refuse error
+	// startErr is what Start answers once it recorded the call, as a substrate whose app never started does.
+	startErr error
 	// spec is what Create was handed, so a test says what reached the substrate.
 	spec    models.SandboxSpec
 	grace   time.Duration
@@ -598,6 +600,9 @@ func (f *fakeProvider) Start(ctx context.Context, id string) error {
 	}
 	if err := f.r.record("provider.Start"); err != nil {
 		return err
+	}
+	if f.startErr != nil {
+		return f.startErr
 	}
 	f.started = true
 	f.status = models.Status{Exists: true, State: models.StateRunning, PID: 7}

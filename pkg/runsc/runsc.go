@@ -16,6 +16,7 @@ import (
 	"runtime"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 )
 
@@ -273,9 +274,17 @@ func (r *Runner) Exec(ctx context.Context, id string, opts ExecOptions) (code in
 
 	// The pid lets the caller signal this exec while it runs; the watch ends when the command does.
 	if opts.Report != nil {
+		var once sync.Once
+		report := func(pid int) { once.Do(func() { opts.Report(pid) }) }
 		reportCtx, stop := context.WithCancel(ctx)
 		defer stop()
-		go reportPID(reportCtx, pidFile, opts.Report)
+		go reportPID(reportCtx, pidFile, report)
+		// A command that ends inside one poll still forked, and the caller must hear it before Exec returns.
+		defer func() {
+			if pid, perr := readPID(pidFile); perr == nil {
+				report(pid)
+			}
+		}()
 	}
 
 	if err := cmd.Run(); err != nil {

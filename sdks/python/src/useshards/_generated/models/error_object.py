@@ -15,12 +15,15 @@ T = TypeVar("T", bound="ErrorObject")
 class ErrorObject:
     code: str
     message: str
+    exit_code: int | Unset = UNSET
     holders: list[str] | Unset = UNSET
 
     def to_dict(self) -> dict[str, Any]:
         code = self.code
 
         message = self.message
+
+        exit_code = self.exit_code
 
         holders: list[str] | Unset = UNSET
         if not isinstance(self.holders, Unset):
@@ -34,6 +37,8 @@ class ErrorObject:
                 "message": message,
             }
         )
+        if exit_code is not UNSET:
+            field_dict["exit_code"] = exit_code
         if holders is not UNSET:
             field_dict["holders"] = holders
 
@@ -46,11 +51,14 @@ class ErrorObject:
 
         message = d.pop("message")
 
+        exit_code = d.pop("exit_code", UNSET)
+
         holders = cast(list[str], d.pop("holders", UNSET))
 
         error_object = cls(
             code=code,
             message=message,
+            exit_code=exit_code,
             holders=holders,
         )
 
