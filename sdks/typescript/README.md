@@ -2,7 +2,18 @@
 
 The TypeScript SDK for [shard](https://github.com/presmihaylov/shard), the sandbox manager.
 
-`useshards` is not on npm, so install the tarball from its GitHub release:
+`useshards` is not on npm. Until its GitHub release is published, build it from a checkout of this
+repository. From the repository root:
+
+```
+cd sdks/typescript
+npm install
+npm run build
+```
+
+To use that build in another project, run `npm install /path/to/shard/sdks/typescript` there.
+
+Once the GitHub release is published, install its tarball:
 
 ```
 npm install https://github.com/presmihaylov/shard/releases/download/sdk-typescript-v0.1.0/useshards-0.1.0.tgz
