@@ -27,6 +27,15 @@ func (e *UnknownUserError) Unwrap() error { return e.Err }
 
 func (e *UnknownUserError) Public() string { return e.Err.Error() }
 
+// UserDatabaseError is a passwd or group the guest made something other than a regular file; it names the guest path, never the host's.
+type UserDatabaseError struct {
+	Err error
+}
+
+func (e *UserDatabaseError) Error() string { return e.Err.Error() }
+
+func (e *UserDatabaseError) Public() string { return e.Err.Error() }
+
 // A passwd line is name:x:uid:gid:...; a group line is name:x:gid:member,member.
 const (
 	passwdFields = 4
@@ -237,11 +246,8 @@ func scanDatabase(rootfs, rel string, minFields int, visit func(fields []string)
 	if errors.Is(err, fs.ErrNotExist) {
 		return fmt.Errorf("the image has no %s: %w", filepath.Base(rel), errNoEntry)
 	}
-	if errors.Is(err, syscall.ELOOP) {
-		return fmt.Errorf("%s is a symbolic link, and a user database must be a file in the same tree", full)
-	}
 	if err != nil {
-		return fmt.Errorf("open %s: %w", full, err)
+		return openFailed(root, rel, full, err)
 	}
 	defer f.Close()
 
@@ -250,7 +256,7 @@ func scanDatabase(rootfs, rel string, minFields int, visit func(fields []string)
 		return fmt.Errorf("stat %s: %w", full, err)
 	}
 	if !info.Mode().IsRegular() {
-		return fmt.Errorf("%s is a %s, and a user database must be a regular file", full, info.Mode().Type())
+		return &UserDatabaseError{Err: fmt.Errorf("/%s is a %s, and a user database must be a regular file", rel, info.Mode().Type())}
 	}
 
 	scanner := bufio.NewScanner(f)
@@ -274,4 +280,21 @@ func scanDatabase(rootfs, rel string, minFields int, visit func(fields []string)
 	}
 
 	return nil
+}
+
+// openFailed names a link on the way as the guest's own, since os.Root follows one in the tree and refuses one that leaves it with no error that says so.
+func openFailed(root *os.Root, rel, full string, err error) error {
+	prefix := ""
+	for part := range strings.SplitSeq(rel, "/") {
+		prefix = filepath.Join(prefix, part)
+		info, lstatErr := root.Lstat(prefix)
+		if lstatErr != nil {
+			return fmt.Errorf("open %s: %w", full, errors.Join(err, lstatErr))
+		}
+		if info.Mode()&fs.ModeSymlink != 0 {
+			return &UserDatabaseError{Err: fmt.Errorf("/%s is a symbolic link, and a user database must be a file in the same tree", prefix)}
+		}
+	}
+
+	return fmt.Errorf("open %s: %w", full, err)
 }

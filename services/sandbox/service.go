@@ -553,13 +553,25 @@ func diskRefused(err error) error {
 	return err
 }
 
-// userRefused makes the request's fault a user or group the image does not list; the substrate's wrapping says nothing the caller can fix.
+// userRefused makes the request's fault a user the guest's tree cannot resolve; the substrate's wrapping says nothing the caller can fix.
 func userRefused(err error) error {
-	if unknown, ok := errors.AsType[*bundle.UnknownUserError](err); ok {
-		return &RequestError{Err: unknown}
+	if refused, ok := userRefusal(err); ok {
+		return refused
 	}
 
 	return err
+}
+
+// userRefusal is a user or group the tree does not list, or a passwd or group the guest made other than a regular file.
+func userRefusal(err error) (*RequestError, bool) {
+	if unknown, ok := errors.AsType[*bundle.UnknownUserError](err); ok {
+		return &RequestError{Err: unknown}, true
+	}
+	if database, ok := errors.AsType[*bundle.UserDatabaseError](err); ok {
+		return &RequestError{Err: database}, true
+	}
+
+	return nil, false
 }
 
 // diskAdmitter reserves the disk of a new sandbox before its record exists; only the VM substrates hold a disk file.
