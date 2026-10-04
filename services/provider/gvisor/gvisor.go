@@ -634,7 +634,7 @@ func (p *Provider) Exec(ctx context.Context, id string, spec models.ExecSpec) (m
 
 	code, err := p.runsc.Exec(ctx, id, opts)
 	if err != nil {
-		return models.ExitStatus{}, notStarted(id, err)
+		return models.ExitStatus{}, execFailure(id, err)
 	}
 
 	// Signal stays 0: runsc reports an exec's exit code and nothing about the signal that ended it.
@@ -663,9 +663,12 @@ func (p *Provider) StopApp(ctx context.Context, id string, force bool) error {
 	return nil
 }
 
-// notStarted gives a command runsc refused to start a name the cli can answer with a shell's own
-// exit code, because runsc reports every one of them as its internal 128.
-func notStarted(id string, err error) error {
+// execFailure splits runsc's internal 128: a refused start gets a shell's own exit code, a lost wait the sentinel a pause can claim.
+func execFailure(id string, err error) error {
+	if lost, ok := errors.AsType[*runsc.ExecLostError](err); ok {
+		return fmt.Errorf("sandbox %s: %w: %s", id, models.ErrExecLost, lost.Reason)
+	}
+
 	var start *runsc.ExecStartError
 	if !errors.As(err, &start) {
 		return err
