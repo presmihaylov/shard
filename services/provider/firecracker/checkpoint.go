@@ -329,11 +329,16 @@ func (p *Provider) endLeftover(ctx context.Context, m *machine) error {
 // restoreFiles puts the checkpoint's overlay under the sandbox in place of its own, or the restored memory would meet a filesystem it never wrote.
 func restoreFiles(dir, stateDir string) error {
 	overlay := filepath.Join(stateDir, bundle.OverlayDiskFile)
-	if err := os.Remove(overlay); err != nil && !errors.Is(err, fs.ErrNotExist) {
-		return fmt.Errorf("drop the overlay: %w", err)
+	// Stage the copy, then swap, so a failed clone (ENOSPC) leaves the live overlay in place and a later resume can retry (SHARD-589).
+	staged := overlay + ".restore"
+	if err := os.Remove(staged); err != nil && !errors.Is(err, fs.ErrNotExist) {
+		return fmt.Errorf("clear the staged overlay: %w", err)
 	}
-	if err := bundle.Reflink(filepath.Join(dir, bundle.OverlayDiskFile), overlay); err != nil {
+	if err := bundle.Reflink(filepath.Join(dir, bundle.OverlayDiskFile), staged); err != nil {
 		return fmt.Errorf("restore the overlay: %w", err)
+	}
+	if err := os.Rename(staged, overlay); err != nil {
+		return errors.Join(fmt.Errorf("swap the overlay: %w", err), os.Remove(staged))
 	}
 	// A state directory from before the jail links an older checkpoint's memory, which no vmm maps now.
 	if err := os.Remove(filepath.Join(stateDir, memoryFile)); err != nil && !errors.Is(err, fs.ErrNotExist) {

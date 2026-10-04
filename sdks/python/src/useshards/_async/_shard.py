@@ -25,7 +25,18 @@ from .._generated.api.sandboxes import (
 from .._generated.api.secrets import list_secrets, put_secret, remove_secret
 from .._generated.api.snapshots import create_snapshot, get_snapshot, list_snapshots, remove_snapshot
 from .._generated.types import UNSET
-from .._types import Capabilities, Policy, PolicyRule, Restart, SandboxInfo, SecretInfo, Snapshot, Version
+from .._types import (
+    Capabilities,
+    Policy,
+    PolicyRule,
+    Restart,
+    SandboxInfo,
+    SandboxList,
+    SecretInfo,
+    SecretList,
+    Snapshot,
+    Version,
+)
 from .._wire import AsyncCall, create_body
 from ._sandbox import AsyncApp, AsyncSandbox
 from ._transport import DEFAULT_TIMEOUT, AsyncTransport
@@ -78,7 +89,7 @@ class AsyncShard:
         vcpus: int | None = None,
         disk_mib: int | None = None,
     ) -> AsyncSandbox:
-        """A running sandbox with no app, from an image or a snapshot; exec() runs in it."""
+        """create a sandbox"""
         body = create_body(
             image,
             None,
@@ -112,7 +123,7 @@ class AsyncShard:
         disk_mib: int | None = None,
         restart: Restart | None = None,
     ) -> AsyncApp:
-        """A sandbox whose app is command. The sandbox outlives the app; remove() it when done."""
+        """create a sandbox and start its command"""
         body = create_body(
             image,
             command,
@@ -137,16 +148,19 @@ class AsyncShard:
         )
         return AsyncSandbox(self._transport, _types.sandbox_info(record))
 
-    async def list(self, *, all: bool = False) -> builtins.list[AsyncSandbox]:
-        """The running sandboxes, or with all every sandbox the daemon holds a record of."""
-        records = await self._transport.listed(
+    async def list(self, *, all: bool = False) -> SandboxList[AsyncSandbox]:
+        """list active sandboxes"""
+        sandboxes: builtins.list[AsyncSandbox] = []
+        warnings: dict[str, None] = {}
+        async for page in self._transport.pages(
             models.SandboxesResponse,
             lambda cursor: list_sandboxes.asyncio_detailed(
                 client=self._transport.api, all_=all or UNSET, cursor=cursor
             ),
-            lambda page: page.sandboxes,
-        )
-        return [AsyncSandbox(self._transport, _types.sandbox_info(record)) for record in records]
+        ):
+            sandboxes.extend(AsyncSandbox(self._transport, _types.sandbox_info(record)) for record in page.sandboxes)
+            warnings.update(dict.fromkeys(_types.warning_lines(page.warnings)))
+        return SandboxList(sandboxes, builtins.list(warnings))
 
     async def version(self) -> Version:
         return _types.version(
@@ -179,7 +193,7 @@ class AsyncPolicies:
         self._transport = transport
 
     async def set(self, name: str, rules: Sequence[PolicyRule]) -> Policy:
-        """Make the policy, or replace every rule of it; a sandbox it is assigned to enforces the new rules."""
+        """Make the policy, or replace every rule of it; a sandbox it is attached to enforces the new rules."""
         body = models.PolicyRequest(
             rules=[models.RuleText(action=models.RuleTextAction(rule.action), rule=rule.rule) for rule in rules]
         )
@@ -206,7 +220,7 @@ class AsyncPolicies:
     async def remove(self, name: str) -> None:
         await self._transport.send(lambda: remove_policy.asyncio_detailed(name, client=self._transport.api))
 
-    async def assign(self, sandbox: SandboxRef, name: str) -> SandboxInfo:
+    async def attach(self, sandbox: SandboxRef, name: str) -> SandboxInfo:
         body = models.PolicyAttachRequest(policy=name)
         return await _changed(
             self._transport,
@@ -214,7 +228,7 @@ class AsyncPolicies:
             lambda: attach_policy.asyncio_detailed(_id(sandbox), client=self._transport.api, body=body),
         )
 
-    async def clear(self, sandbox: SandboxRef) -> SandboxInfo:
+    async def detach(self, sandbox: SandboxRef) -> SandboxInfo:
         return await _changed(
             self._transport, sandbox, lambda: detach_policy.asyncio_detailed(_id(sandbox), client=self._transport.api)
         )
@@ -245,16 +259,19 @@ class AsyncSecrets:
         )
         return _types.secret_info(record)
 
-    async def list(self) -> builtins.list[SecretInfo]:
-        records = await self._transport.listed(
+    async def list(self) -> SecretList:
+        secrets: builtins.list[SecretInfo] = []
+        warnings: dict[str, None] = {}
+        async for page in self._transport.pages(
             models.SecretsResponse,
             lambda cursor: list_secrets.asyncio_detailed(client=self._transport.api, cursor=cursor),
-            lambda page: page.secrets,
-        )
-        return [_types.secret_info(record) for record in records]
+        ):
+            secrets.extend(_types.secret_info(record) for record in page.secrets)
+            warnings.update(dict.fromkeys(_types.warning_lines(page.warnings)))
+        return SecretList(secrets, builtins.list(warnings))
 
     async def remove(self, name: str, *, force: bool = False) -> None:
-        """Remove a secret no sandbox is granted; force revokes it from each first."""
+        """Remove a secret no sandbox is granted; force ungrants it from each first."""
         await self._transport.send(
             lambda: remove_secret.asyncio_detailed(name, client=self._transport.api, force=force or UNSET)
         )
@@ -266,7 +283,7 @@ class AsyncSecrets:
             lambda: grant_secret.asyncio_detailed(_id(sandbox), name, client=self._transport.api),
         )
 
-    async def revoke(self, sandbox: SandboxRef, name: str) -> SandboxInfo:
+    async def ungrant(self, sandbox: SandboxRef, name: str) -> SandboxInfo:
         return await _changed(
             self._transport,
             sandbox,

@@ -15,7 +15,7 @@ def _get_kwargs(
     id: str,
     *,
     body: File,
-    path: str | Unset = UNSET,
+    path: str,
     user: str | Unset = UNSET,
 ) -> dict[str, Any]:
     headers: dict[str, Any] = {}
@@ -71,10 +71,10 @@ def sync_detailed(
     *,
     client: AuthenticatedClient | Client,
     body: File,
-    path: str | Unset = UNSET,
+    path: str,
     user: str | Unset = UNSET,
 ) -> Response[Any | Error]:
-    """Unpack a tar under a directory"""
+    """copy a directory into a running sandbox"""
 
     kwargs = _get_kwargs(
         id=id,
@@ -95,10 +95,10 @@ def sync(
     *,
     client: AuthenticatedClient | Client,
     body: File,
-    path: str | Unset = UNSET,
+    path: str,
     user: str | Unset = UNSET,
 ) -> Any | Error | None:
-    """Unpack a tar under a directory"""
+    """copy a directory into a running sandbox"""
 
     return sync_detailed(
         id=id,
@@ -114,10 +114,10 @@ async def asyncio_detailed(
     *,
     client: AuthenticatedClient | Client,
     body: File,
-    path: str | Unset = UNSET,
+    path: str,
     user: str | Unset = UNSET,
 ) -> Response[Any | Error]:
-    """Unpack a tar under a directory"""
+    """copy a directory into a running sandbox"""
 
     kwargs = _get_kwargs(
         id=id,
@@ -136,10 +136,10 @@ async def asyncio(
     *,
     client: AuthenticatedClient | Client,
     body: File,
-    path: str | Unset = UNSET,
+    path: str,
     user: str | Unset = UNSET,
 ) -> Any | Error | None:
-    """Unpack a tar under a directory"""
+    """copy a directory into a running sandbox"""
 
     return (
         await asyncio_detailed(

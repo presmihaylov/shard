@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { afterEach, test } from "node:test";
-import { ConnectionError, ProtocolError, ServerError } from "../src/errors.js";
+import { ProtocolError, ServerError, ShardConnectionError } from "../src/errors.js";
 import { Transport } from "../src/transport.js";
 import { FakeDaemon } from "./helpers/daemon.js";
 import { certificate } from "./helpers/tls.js";
@@ -55,7 +55,7 @@ test("a daemon that does not answer in time is a connection error, and the waiti
 
     return { status: 200, json: { waited: request.url.pathname } };
   };
-  const late = (err: unknown) => err instanceof ConnectionError && /did not answer in time$/.test(err.message);
+  const late = (err: unknown) => err instanceof ShardConnectionError && /did not answer in time$/.test(err.message);
   await assert.rejects(transport.api.GET("/v0/version"), late);
   const { data } = await transport.api.GET("/v0/capabilities", { fetch: transport.waiting });
   assert.deepEqual(data, { waited: "/v0/capabilities" });
@@ -75,7 +75,7 @@ test("a daemon that is not there is a connection error that names the call", asy
   const { daemon, transport } = await open();
   await daemon.close();
   opened.length = 0;
-  const named = (err: unknown) => err instanceof ConnectionError && err.message.startsWith("GET /v0/version: ");
+  const named = (err: unknown) => err instanceof ShardConnectionError && err.message.startsWith("GET /v0/version: ");
   await assert.rejects(transport.api.GET("/v0/version"), named);
   transport.close();
 });
@@ -88,7 +88,7 @@ test("https trusts the CA it is given", async () => {
   const untrusted = new Transport({ baseUrl: `https://localhost:${daemon.port}`, apiKey: "test-key", ca: undefined });
   try {
     assert.deepEqual((await trusted.api.GET("/v0/version")).data, { ok: true });
-    await assert.rejects(untrusted.api.GET("/v0/version"), ConnectionError);
+    await assert.rejects(untrusted.api.GET("/v0/version"), ShardConnectionError);
   } finally {
     trusted.close();
     untrusted.close();

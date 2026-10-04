@@ -6,6 +6,7 @@ from typing import TYPE_CHECKING, Any, BinaryIO, Generator, TextIO, TypeVar
 from attrs import define as _attrs_define
 from attrs import field as _attrs_field
 
+from ..models.event_status import EventStatus
 from ..types import UNSET, Unset
 
 T = TypeVar("T", bound="Event")
@@ -13,7 +14,7 @@ T = TypeVar("T", bound="Event")
 
 @_attrs_define
 class Event:
-    status: str
+    status: EventStatus
     bytes_: int | Unset = UNSET
     digest: str | Unset = UNSET
     layer: int | Unset = UNSET
@@ -22,7 +23,7 @@ class Event:
     reference: str | Unset = UNSET
 
     def to_dict(self) -> dict[str, Any]:
-        status = self.status
+        status = self.status.value
 
         bytes_ = self.bytes_
 
@@ -61,7 +62,7 @@ class Event:
     @classmethod
     def from_dict(cls: type[T], src_dict: Mapping[str, Any]) -> T:
         d = dict(src_dict)
-        status = d.pop("status")
+        status = EventStatus(d.pop("status"))
 
         bytes_ = d.pop("bytes", UNSET)
 

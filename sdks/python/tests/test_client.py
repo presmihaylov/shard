@@ -14,11 +14,14 @@ from useshards import (
     AppExit,
     AsyncShard,
     Capabilities,
+    ConflictError,
     NotFoundError,
     Policy,
     PolicyRule,
     ProtocolError,
     Restart,
+    SandboxList,
+    SecretList,
     ServerError,
     Shard,
     ShardConnectionError,
@@ -40,7 +43,7 @@ RULE = {
     "protocol": "tcp",
     "ports": [443],
 }
-NETWORK_RECORD = {
+EGRESS_RECORD = {
     "time": "2026-10-04T10:00:01Z",
     "source": "proxy",
     "verdict": "allow",
@@ -93,6 +96,69 @@ def test_a_policy_list_leaves_out_holders_and_dns(daemon: FakeDaemon, shard: Sha
         ("open", None, None),
     ]
     assert daemon.targets[-2:] == ["/v0/policies", "/v0/policies?cursor=c2"]
+
+
+@pytest.mark.parametrize("asynchronous", [False, True])
+@pytest.mark.parametrize("kind", ["sandboxes", "secrets"])
+def test_partial_lists_keep_each_warning_once_in_first_seen_order(
+    daemon: FakeDaemon, shard: Shard, kind: str, asynchronous: bool
+) -> None:
+    route = f"/v0/{kind}"
+    row = dict(SANDBOX)
+    if kind == "secrets":
+        row = {"name": "token", "destinations": [], "placeholder": "ph", "updated_at": "2026-10-04T10:00:00Z"}
+    query = "all=true&" if kind == "sandboxes" else ""
+    daemon.routes[("GET", route)] = (200, {kind: [], "next": "c2", "warnings": ["second", "first", "second"]})
+    daemon.routes[("GET", f"{route}?{query}cursor=c2")] = (
+        200,
+        {kind: [row], "next": "c3", "warnings": ["first", "third", "First"]},
+    )
+    daemon.routes[("GET", f"{route}?{query}cursor=c3")] = (200, {kind: [], "next": None})
+
+    async def listed() -> SandboxList[Any] | SecretList:
+        async with async_shard(daemon) as client:
+            if kind == "sandboxes":
+                return await client.list(all=True)
+            return await client.secrets.list()
+
+    result: SandboxList[Any] | SecretList
+    if asynchronous:
+        result = asyncio.run(listed())
+    if not asynchronous:
+        if kind == "sandboxes":
+            result = shard.list(all=True)
+        if kind == "secrets":
+            result = shard.secrets.list()
+    assert result.warnings == ["second", "first", "third", "First"]
+    if kind == "sandboxes":
+        assert isinstance(result, SandboxList)
+        assert [each.id for each in result.sandboxes] == ["sb"]
+    if kind == "secrets":
+        assert isinstance(result, SecretList)
+        assert [each.name for each in result.secrets] == ["token"]
+
+
+@pytest.mark.parametrize("asynchronous", [False, True])
+@pytest.mark.parametrize("holders", [None, [], ["synthetic-sandbox"]])
+def test_a_conflict_keeps_optional_holders(
+    daemon: FakeDaemon, shard: Shard, asynchronous: bool, holders: list[str] | None
+) -> None:
+    error: dict[str, Any] = {"code": "in_use", "message": "the secret has a grant"}
+    if holders is not None:
+        error["holders"] = holders
+    daemon.routes[("DELETE", "/v0/secrets/token")] = (409, {"error": error})
+
+    async def remove() -> None:
+        async with async_shard(daemon) as client:
+            await client.secrets.remove("token")
+
+    with pytest.raises(ConflictError) as raised:
+        if asynchronous:
+            asyncio.run(remove())
+        if not asynchronous:
+            shard.secrets.remove("token")
+    assert raised.value.code == "in_use"
+    assert raised.value.holders == holders
 
 
 def test_a_page_without_next_is_refused(daemon: FakeDaemon, shard: Shard) -> None:
@@ -160,7 +226,7 @@ def test_changes_keep_the_handle_current(daemon: FakeDaemon, shard: Shard) -> No
     assert repr(sandbox) == "Sandbox(id='sb', name='web', state='running')"
     shard.secrets.grant(sandbox, "TOKEN")
     assert sandbox.info.secrets == ("TOKEN",)
-    shard.policies.assign(sandbox, "web")
+    shard.policies.attach(sandbox, "web")
     assert (sandbox.info.policy, sent(daemon, "PUT", "/v0/sandboxes/sb/policy")) == ("web", {"policy": "web"})
     sandbox.stop()
     assert sandbox.info.state == "stopped"
@@ -168,12 +234,12 @@ def test_changes_keep_the_handle_current(daemon: FakeDaemon, shard: Shard) -> No
     assert daemon.targets[-1] == "/v0/sandboxes/sb?force=true"
 
 
-def test_logs_and_network_logs(daemon: FakeDaemon, shard: Shard) -> None:
+def test_logs_and_egress_log(daemon: FakeDaemon, shard: Shard) -> None:
     daemon.routes[("GET", "/v0/sandboxes/sb/logs")] = (200, b"hello \xff")
-    daemon.routes[("GET", "/v0/sandboxes/sb/egress-log")] = (200, [NETWORK_RECORD])
+    daemon.routes[("GET", "/v0/sandboxes/sb/egress-log")] = (200, [EGRESS_RECORD])
     sandbox = shard.get("sb")
     assert sandbox.logs() == "hello �"
-    assert [(each.host, each.port, each.verdict) for each in sandbox.network_logs()] == [("example.com", 443, "allow")]
+    assert [(each.host, each.port, each.verdict) for each in sandbox.egress_log()] == [("example.com", 443, "allow")]
 
 
 def test_commands_list_and_get(daemon: FakeDaemon, shard: Shard) -> None:
@@ -196,13 +262,13 @@ def test_follow_logs_to_the_end(daemon: FakeDaemon, shard: Shard) -> None:
     assert daemon.targets[-1] == "/v0/sandboxes/sb/logs?follow=true"
 
 
-def test_follow_network_logs_to_a_normal_close(daemon: FakeDaemon, shard: Shard) -> None:
+def test_follow_egress_log_to_a_normal_close(daemon: FakeDaemon, shard: Shard) -> None:
     def session(peer: Peer) -> str:
-        peer.text(NETWORK_RECORD)
+        peer.text(EGRESS_RECORD)
         return peer.close(1000)
 
     daemon.attaches = [session]
-    assert [each.host for each in shard.get("sb").follow_network_logs()] == ["example.com"]
+    assert [each.host for each in shard.get("sb").follow_egress_log()] == ["example.com"]
     assert daemon.targets[-1] == "/v0/sandboxes/sb/egress-log?follow=true"
 
 

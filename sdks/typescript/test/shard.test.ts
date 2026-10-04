@@ -104,17 +104,64 @@ test("a command_not_started with no exit code stays an APIError", async () => {
 test("list reads every page", async () => {
   routes.set("GET /v0/sandboxes", (request) => {
     if (request.url.searchParams.get("cursor") === "c2") {
-      return { status: 200, json: { sandboxes: [sandboxRecord({ id: "sb_2" })], next: null } };
+      return { status: 200, json: { sandboxes: [sandboxRecord({ id: "sb_2" })], next: null, warnings: ["second unreadable entry"] } };
     }
 
-    return { status: 200, json: { sandboxes: [sandboxRecord()], next: "c2" } };
+    return { status: 200, json: { sandboxes: [sandboxRecord()], next: "c2", warnings: ["first unreadable entry"] } };
   });
   const listed = await shard.list({ all: true });
   assert.deepEqual(
-    listed.map((each) => each.id),
+    listed.sandboxes.map((each) => each.id),
     ["sb_1", "sb_2"],
   );
+  assert.deepEqual(listed.warnings, ["first unreadable entry", "second unreadable entry"]);
   assert.equal(sent("GET", "/v0/sandboxes", 1).url.searchParams.get("all"), "true");
+});
+
+test("secret list keeps warnings from empty and readable pages", async () => {
+  routes.set("GET /v0/secrets", (request) => {
+    const cursor = request.url.searchParams.get("cursor");
+    if (cursor === "c3") {
+      return { status: 200, json: { secrets: [], next: null } };
+    }
+    if (cursor === "c2") {
+      return { status: 200, json: {
+        secrets: [{ name: "token", destinations: [], placeholder: "ph_1", updated_at: "2026-10-04T10:00:00Z" }],
+        next: "c3", warnings: ["second unreadable secret"],
+      } };
+    }
+    return { status: 200, json: { secrets: [], next: "c2", warnings: ["first unreadable secret"] } };
+  });
+  const listed = await shard.secrets.list();
+  assert.deepEqual(listed.secrets.map((each) => each.name), ["token"]);
+  assert.deepEqual(listed.warnings, ["first unreadable secret", "second unreadable secret"]);
+});
+
+test("partial lists keep each warning once in first-seen order", async () => {
+  for (const key of ["sandboxes", "secrets"] as const) {
+    routes.set(`GET /v0/${key}`, (request) => {
+      if (request.url.searchParams.has("cursor")) {
+        return { status: 200, json: { [key]: [], next: null, warnings: ["first", "third", "First"] } };
+      }
+      return { status: 200, json: { [key]: [], next: "c2", warnings: ["second", "first", "second"] } };
+    });
+    const list = key === "sandboxes" ? () => shard.list() : () => shard.secrets.list();
+    assert.deepEqual((await list()).warnings, ["second", "first", "third", "First"]);
+    assert.deepEqual((await list()).warnings, ["second", "first", "third", "First"]);
+  }
+});
+
+test("a secret removal keeps the holders on its conflict", async () => {
+  routes.set("DELETE /v0/secrets/token", () => ({ status: 409, json: {
+    error: { code: "in_use", message: "the secret has a grant", holders: ["sb_1", "sb_2"] },
+  } }));
+  await assert.rejects(shard.secrets.remove("token"), (err) => {
+    assert.ok(err instanceof APIError);
+    assert.equal(err.status, 409);
+    assert.equal(err.code, "in_use");
+    assert.deepEqual(err.holders, ["sb_1", "sb_2"]);
+    return true;
+  });
 });
 
 test("an http remote warns once per client, in the CLI's words, and answers as https does", async () => {
@@ -158,15 +205,15 @@ test("a capability that is not a boolean is a protocol error", async () => {
   await assert.rejects(shard.capabilities(), ProtocolError);
 });
 
-test("a policy assign keeps the handle's info current", async () => {
+test("a policy attach keeps the handle's info current", async () => {
   const sandbox = await shard.create({ image: "alpine" });
   routes.set("PUT /v0/sandboxes/sb_1/policy", () => ({ status: 200, json: sandboxRecord({ policy: "web" }) }));
   routes.set("DELETE /v0/sandboxes/sb_1/policy", () => ({ status: 200, json: sandboxRecord() }));
-  await shard.policies.assign(sandbox, "web");
+  await shard.policies.attach(sandbox, "web");
   assert.equal(sandbox.info.policy, "web");
   assert.deepEqual(JSON.parse(sent("PUT", "/v0/sandboxes/sb_1/policy").body), { policy: "web" });
-  assert.equal((await shard.policies.clear("sb_1")).policy, null);
-  assert.equal(sandbox.info.policy, "web", "a clear by id leaves a handle as it was");
+  assert.equal((await shard.policies.detach("sb_1")).policy, null);
+  assert.equal(sandbox.info.policy, "web", "a detach by id leaves a handle as it was");
 });
 
 test("a policy set sends the rules as written", async () => {
@@ -179,7 +226,7 @@ test("a policy set sends the rules as written", async () => {
   assert.deepEqual(set.rules, [{ action: "allow", rule: "example.com" }]);
 });
 
-test("secrets set, remove with force, grant and revoke", async () => {
+test("secrets set, remove with force, grant and ungrant", async () => {
   routes.set("PUT /v0/secrets/token", () => ({
     status: 200,
     json: { name: "token", destinations: ["api.example.com"], placeholder: "ph_1", updated_at: "2026-10-04T10:00:00Z" },
@@ -193,7 +240,7 @@ test("secrets set, remove with force, grant and revoke", async () => {
   await shard.secrets.remove("token", { force: true });
   assert.equal(sent("DELETE", "/v0/secrets/token").url.searchParams.get("force"), "true");
   assert.deepEqual((await shard.secrets.grant("sb_1", "token")).secrets, ["token"]);
-  assert.deepEqual((await shard.secrets.revoke("sb_1", "token")).secrets, []);
+  assert.deepEqual((await shard.secrets.ungrant("sb_1", "token")).secrets, []);
 });
 
 test("a snapshot create names its sandbox by id", async () => {
