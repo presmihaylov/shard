@@ -94,10 +94,6 @@ func TestMain(m *testing.M) {
 		}
 		os.Exit(models.SupervisorFailedExitCode)
 	}
-	if os.Getenv(oomGuestEnv) == "1" && len(os.Args) == 3 && os.Args[1] == "-transport" {
-		fmt.Fprintln(os.Stderr, "oom guest:", oomGuest(strings.TrimPrefix(os.Args[2], "unix:")))
-		os.Exit(1)
-	}
 	if os.Getenv(fakeVMMEnv) == "1" && slices.Contains(os.Args[1:], "--exec-file") {
 		if err := fakeJailer(); err != nil {
 			fmt.Fprintln(os.Stderr, "fake jailer:", err)

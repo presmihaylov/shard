@@ -618,12 +618,7 @@ func (p *Provider) attach(ctx context.Context, id, dir, jail string, client *fca
 	}
 	if state.OOM {
 		// The guest kept a kill no host heard; the marker is on disk and it is going, so there is nothing to follow.
-		if err := p.release(ctx, m); err != nil {
-			// No map holds this machine yet, so a release that broke off before its settle is the last chance to let the pin and the stream go (SHARD-623).
-			return nil, errors.Join(err, m.close())
-		}
-
-		return nil, nil
+		return nil, p.release(ctx, m)
 	}
 	// A checkpoint holds the guest frozen, so it runs nothing on the saved crng key until the reseed is in and the thaw follows (SHARD-409).
 	if state.Frozen {

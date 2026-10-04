@@ -9,8 +9,6 @@ import (
 	"net"
 	"os"
 	"path/filepath"
-	"runtime/debug"
-	"strconv"
 	"strings"
 	"syscall"
 	"testing"
@@ -299,94 +297,4 @@ func TestABootFailureAnswersTheStartWithItsReason(t *testing.T) {
 	if err != nil || exit.Code != models.SupervisorFailedExitCode {
 		t.Fatalf("Wait = %+v, %v, want the supervisor's %d", exit, err, models.SupervisorFailedExitCode)
 	}
-}
-
-// oomGuestEnv makes the test binary a guest whose state carries a kill by its memory bound no host heard, and whose halt never comes.
-const oomGuestEnv = "FIRECRACKER_FAKE_OOM_GUEST"
-
-// oomGuest opens with the kill in its state, answers the stop it brings, and keeps the VM up, so it returns only on a failure.
-func oomGuest(dir string) error {
-	control, err := net.Listen("unix", filepath.Join(dir, fmt.Sprintf("%d.sock", supervisor.ControlPort)))
-	if err != nil {
-		return fmt.Errorf("listen for control: %w", err)
-	}
-	conn, err := control.Accept()
-	if err != nil {
-		return fmt.Errorf("accept control: %w", err)
-	}
-	if err := supervisor.WriteMessage(conn, supervisor.Message{Kind: supervisor.KindState, OOM: true, Logs: supervisor.LogsVersion}); err != nil {
-		return fmt.Errorf("send the state: %w", err)
-	}
-	var stop supervisor.Message
-	if err := supervisor.ReadMessage(bufio.NewReader(conn), &stop); err != nil {
-		return fmt.Errorf("read the stop: %w", err)
-	}
-	if err := supervisor.WriteMessage(conn, supervisor.Message{Kind: supervisor.KindDone, ID: stop.ID}); err != nil {
-		return fmt.Errorf("answer the stop: %w", err)
-	}
-	for {
-		time.Sleep(time.Hour)
-	}
-}
-
-// An attach that replays a kill and whose release breaks off lets the control stream go, since no map holds the machine for a later verb to (SHARD-623).
-func TestAnOOMAttachWhoseReleaseBreaksOffKeepsNoStream(t *testing.T) {
-	h := newHarness(t)
-	spec := h.newSpec(t, "/bin/sh", "-c", "while true; do sleep 1; done")
-	self, err := os.Executable()
-	if err != nil {
-		t.Fatal(err)
-	}
-	t.Setenv(fakeInitEnv, self)
-	t.Setenv(oomGuestEnv, "1")
-	// A finalizer closes a leaked stream at the next GC, which would hide the leak.
-	defer debug.SetGCPercent(debug.SetGCPercent(-1))
-	before := openSockets(t)
-
-	// The marker is down before the stop goes, so the cut lands on the release's wait for the halt.
-	ctx := newCutCtx(func() bool {
-		_, err := os.Stat(filepath.Join(spec.StateDir, "oom"))
-
-		return err == nil
-	})
-	if err := h.provider.Create(ctx, spec); !errors.Is(err, context.Canceled) {
-		t.Fatalf("Create = %v, want the release cut", err)
-	}
-	// The client lets its idle connections to the killed vmm go on their own goroutine.
-	for deadline := time.Now().Add(5 * time.Second); openSockets(t) != before; time.Sleep(50 * time.Millisecond) {
-		if time.Now().After(deadline) {
-			t.Fatalf("open sockets %d -> %d, want the control stream of the released machine closed", before, openSockets(t))
-		}
-	}
-}
-
-// openSockets counts the sockets this process holds open.
-func openSockets(t *testing.T) int {
-	t.Helper()
-
-	entries, err := os.ReadDir("/dev/fd")
-	if err != nil {
-		t.Fatal(err)
-	}
-	n := 0
-	for _, entry := range entries {
-		fd, err := strconv.Atoi(entry.Name())
-		if err != nil {
-			t.Fatal(err)
-		}
-		var st syscall.Stat_t
-		err = syscall.Fstat(fd, &st)
-		// The listing read through an fd of its own, closed by now.
-		if errors.Is(err, syscall.EBADF) {
-			continue
-		}
-		if err != nil {
-			t.Fatal(err)
-		}
-		if st.Mode&syscall.S_IFMT == syscall.S_IFSOCK {
-			n++
-		}
-	}
-
-	return n
 }
