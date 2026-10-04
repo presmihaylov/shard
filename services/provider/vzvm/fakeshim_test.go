@@ -676,33 +676,38 @@ func (s *stream) Write(p []byte) (int, error) {
 		if !strings.Contains(string(p), `"kind":"`+kind+`"`) {
 			continue
 		}
-		if err := errors.Join(s.machine.setFrozen(frozen), s.machine.note(kind)); err != nil {
+		if err := s.freezeOrThaw(p, kind, frozen); err != nil {
 			return 0, err
 		}
-		if !frozen {
-			var thaw supervisor.Message
-			if err := json.Unmarshal(bytes.TrimSpace(p), &thaw); err != nil {
-				return 0, fmt.Errorf("read the thaw the host sent: %w", err)
-			}
-			s.thaw.Store(int64(thaw.ID))
-
-			continue
-		}
-		var freeze supervisor.Message
-		if err := json.Unmarshal(bytes.TrimSpace(p), &freeze); err != nil {
-			return 0, fmt.Errorf("read the freeze the host sent: %w", err)
-		}
-		if err := s.machine.appendTo(freezesFile, freeze.Verb); err != nil {
-			return 0, err
-		}
-		cut, err := s.machine.take(cutFreezeFile)
-		if err != nil {
-			return 0, err
-		}
-		s.cut.Store(cut)
 	}
 
 	return s.Conn.Write(p)
+}
+
+// freezeOrThaw records the freeze or the thaw in p: the machine's state, the thaw a done must answer, and a cut a freeze asked for.
+func (s *stream) freezeOrThaw(p []byte, kind string, frozen bool) error {
+	if err := errors.Join(s.machine.setFrozen(frozen), s.machine.note(kind)); err != nil {
+		return err
+	}
+	var sent supervisor.Message
+	if err := json.Unmarshal(bytes.TrimSpace(p), &sent); err != nil {
+		return fmt.Errorf("read the %s the host sent: %w", kind, err)
+	}
+	if !frozen {
+		s.thaw.Store(int64(sent.ID))
+
+		return nil
+	}
+	if err := s.machine.appendTo(freezesFile, sent.Verb); err != nil {
+		return err
+	}
+	cut, err := s.machine.take(cutFreezeFile)
+	if err != nil {
+		return err
+	}
+	s.cut.Store(cut)
+
+	return nil
 }
 
 func (s *stream) Read(p []byte) (int, error) {
