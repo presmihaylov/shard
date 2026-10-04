@@ -1450,7 +1450,8 @@ say "a drop that landed while the daemon was down is written at catch-up"
 
 # A follow is a tail of the one file, so both halves of the log reach it live.
 FOLLOW_LOG=$(mktemp)
-shard logs -f --egress "${ID}" >"${FOLLOW_LOG}" 2>&1 &
+# The binary, so the kill below ends the client and not only a subshell around it.
+"${PREFIX}/shard" --root "${SHARD_ROOT}" logs -f --egress "${ID}" >"${FOLLOW_LOG}" 2>&1 &
 FOLLOW_PID=$!
 
 shard exec "${ID}" /bin/sh -c "wget -S -O /dev/null http://${DENIED_HOST}/ >/dev/null 2>&1" >/dev/null 2>&1 || true
@@ -1724,7 +1725,8 @@ run_steps() {
 	step "Ctrl+C on run --restart always stops the app and leaves the sandbox running"
 	out=$(mktemp)
 	err=$(mktemp)
-	shard run --name e2e-run-int --restart always "${IMAGE}" /bin/sh -c 'while true; do echo e2e-tick; sleep 1; done' >"${out}" 2>"${err}" &
+	# The binary, not the shard function: $! of a backgrounded function is a subshell, which ignores SIGINT.
+	"${PREFIX}/shard" --root "${SHARD_ROOT}" run --name e2e-run-int --restart always "${IMAGE}" /bin/sh -c 'while true; do echo e2e-tick; sleep 1; done' >"${out}" 2>"${err}" &
 	pid=$!
 	for _ in $(seq 1 100); do
 		grep -q e2e-tick "${out}" && break
@@ -1735,6 +1737,14 @@ run_steps() {
 	track_sandbox "${id}"
 	# Go un-ignores SIGINT when it registers for it, so a background job of this shell still takes the signal.
 	kill -INT "${pid}"
+	for _ in $(seq 1 150); do
+		kill -0 "${pid}" 2>/dev/null || break
+		sleep 0.2
+	done
+	if kill -0 "${pid}" 2>/dev/null; then
+		kill -KILL "${pid}" 2>/dev/null || true
+		fail "run did not exit within 30 s of one Ctrl+C: $(cat "${err}")"
+	fi
 	code=0
 	wait "${pid}" || code=$?
 	expect "${code}" "143" "run exits with the app's TERM death after one Ctrl+C"
