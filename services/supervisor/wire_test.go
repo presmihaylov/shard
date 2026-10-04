@@ -136,6 +136,42 @@ func TestALineThatNeverEndsEndsTheControlStream(t *testing.T) {
 	}
 }
 
+// A guest that queues more events than the host reads ends its stream, and the host still reads the queued ones first (SHARD-550).
+func TestAGuestThatFloodsEventsEndsTheControlStream(t *testing.T) {
+	host, guest := net.Pipe()
+	defer host.Close()
+	defer guest.Close()
+	c := supervisor.ControlOver(host)
+
+	// A write that times out is one the stopped reader never takes.
+	const flood = 1000
+	written := 0
+	for ; written < flood; written++ {
+		if err := guest.SetWriteDeadline(time.Now().Add(time.Second)); err != nil {
+			t.Fatal(err)
+		}
+		if err := supervisor.WriteMessage(guest, supervisor.Message{Kind: supervisor.KindRestarts}); err != nil {
+			break
+		}
+	}
+	if written == flood {
+		t.Fatalf("the host queued all %d events with none read", flood)
+	}
+
+	read := 0
+	for {
+		_, err := c.Next()
+		if err != nil {
+			if !errors.Is(err, supervisor.ErrEventFlood) || read != written-1 {
+				t.Fatalf("next after %d of %d events = %v, want ErrEventFlood after all but the refused one", read, written, err)
+			}
+
+			break
+		}
+		read++
+	}
+}
+
 func TestReadHeaderLeavesTheFramesBehindIt(t *testing.T) {
 	var buf bytes.Buffer
 	if err := supervisor.WriteMessage(&buf, supervisor.ExecHeader{Argv: []string{"sh"}}); err != nil {

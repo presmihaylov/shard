@@ -18,6 +18,12 @@ import (
 // ErrEntrypointNotStarted is a run the guest refused, with the guest's own words for why behind it.
 var ErrEntrypointNotStarted = errors.New("the entrypoint did not start")
 
+// maxQueuedEvents bounds the events a guest can queue ahead of Next: the queue is daemon memory, outside the sandbox's bound (SHARD-550).
+const maxQueuedEvents = 64
+
+// ErrEventFlood ends a stream whose guest queued maxQueuedEvents events the host has not read.
+var ErrEventFlood = fmt.Errorf("the guest queued %d events the host has not read", maxQueuedEvents)
+
 // Dialer opens one connection to a guest port. pkg/vz's Client.Connect is one, over the shim socket.
 type Dialer func(ctx context.Context, port uint32) (net.Conn, error)
 
@@ -47,7 +53,7 @@ type Control struct {
 	// ended is the read error once the reader is gone, under pendingMu so a request registers or is refused, never lost.
 	ended error
 
-	// events is unbounded, so a host that reads Next late never stalls the guest's answers behind them.
+	// events never blocks the reader, so a host that reads Next late never stalls the guest's answers behind them.
 	events   []Message
 	eventsMu sync.Mutex
 	arrived  *sync.Cond
@@ -91,7 +97,11 @@ func (c *Control) read() {
 			return
 		}
 		if m.ID == 0 {
-			c.push(m)
+			if !c.push(m) {
+				c.end(ErrEventFlood)
+
+				return
+			}
 
 			continue
 		}
@@ -121,11 +131,17 @@ func (c *Control) end(err error) {
 	c.arrived.Broadcast()
 }
 
-func (c *Control) push(m Message) {
+// push queues an event, or answers false when the guest is maxQueuedEvents ahead of Next.
+func (c *Control) push(m Message) bool {
 	c.eventsMu.Lock()
+	defer c.eventsMu.Unlock()
+	if len(c.events) >= maxQueuedEvents {
+		return false
+	}
 	c.events = append(c.events, m)
-	c.eventsMu.Unlock()
 	c.arrived.Broadcast()
+
+	return true
 }
 
 // Next blocks for the guest's next event. A guest that went away reads as io.EOF once the events before it are out.
