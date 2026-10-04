@@ -29,6 +29,15 @@ command picks another root of at most 58 bytes, and needs no `sudo` at all. A bi
 fetched carries the quarantine flag, and macOS refuses to run it. `xattr -d com.apple.quarantine shard`
 clears the flag. `curl` does not set it.
 
+The `curl` answers `404` until v0.1.0 is published, and then `chmod` finds no file. To build the
+binary instead, from a checkout with Go and the Command Line Tools:
+
+```
+make build-darwin
+sudo install -d -m0755 /usr/local/bin && sudo install -m0755 bin/shard-darwin-arm64 /usr/local/bin/shard
+sudo install -d -o "$USER" /var/lib/shard
+```
+
 ## Run it
 
 ```
@@ -90,17 +99,18 @@ hour, so the daemon also caps the log itself between two runs. Past 64 MiB it mo
 says so. `__USER__` in both files stands for the account that owns the root, and `sed` puts yours in:
 
 ```
-curl -fsSLO https://raw.githubusercontent.com/presmihaylov/shard/main/packaging/launchd/shard.daemon.plist
-curl -fsSLO https://raw.githubusercontent.com/presmihaylov/shard/main/packaging/launchd/shard.newsyslog.conf
+curl -fsSLO https://github.com/presmihaylov/shard/releases/latest/download/shard.daemon.plist
+curl -fsSLO https://github.com/presmihaylov/shard/releases/latest/download/shard.newsyslog.conf
 sudo install -d -m0755 -o "$USER" /var/log/shard
 sed "s/__USER__/$USER/" shard.newsyslog.conf | sudo tee /etc/newsyslog.d/shard.conf >/dev/null
 sed "s/__USER__/$USER/" shard.daemon.plist | sudo tee /Library/LaunchDaemons/shard.daemon.plist >/dev/null
 sudo launchctl bootstrap system /Library/LaunchDaemons/shard.daemon.plist
 ```
 
-`launchctl print system/shard.daemon` shows it running, and `shard list` answers in the same terminal.
-Stop any daemon that runs in a terminal first, because two daemons on one root refuse each other over
-`daemon.lock`. To remove it:
+Both files come from the same release as the binary. A build from a checkout skips the two `curl`
+lines and runs the rest in `packaging/launchd`. `launchctl print system/shard.daemon` shows it
+running, and `shard list` answers in the same terminal. Stop any daemon that runs in a terminal
+first, because two daemons on one root refuse each other over `daemon.lock`. To remove it:
 
 ```
 sudo launchctl bootout system/shard.daemon
@@ -273,7 +283,7 @@ scopes a token carries, and how to revoke a token.
 
 ```
 limactl delete -f shard
-rm ~/.shard/token ~/.shard/ca.pem
+rm ~/.shard/ca.pem
 ```
 
 Nothing else is left on the Mac, because the images, the sandboxes and the state all lived inside the

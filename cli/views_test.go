@@ -112,8 +112,8 @@ func TestInspectTableIsTheRecordThenTheRules(t *testing.T) {
 	rule := models.Rule{Action: models.ActionDeny, Destination: models.Destination{Kind: models.DestinationCIDR, Value: "10.0.0.0/8"}}
 	created := time.Date(2026, 10, 4, 10, 0, 0, 123456789, time.FixedZone("EEST", 3*60*60))
 	insp := client.Inspection{
-		Sandbox: client.Sandbox{ID: "s-1", Image: "python:3.12", Command: []string{"echo", "2026-10-04T10:00:00.5+03:00"}, State: models.StateRunning, Resources: models.Resources{MemoryMiB: 512}, CreatedAt: created},
-		Egress:  &egress.Effective{Policy: "web", Rules: []egress.EffectiveRule{{Rule: rule, ID: "r1", Implied: "private ranges"}}},
+		Sandbox: client.Sandbox{ID: "s-1", Image: "python:3.12", Command: []string{"echo", "2026-10-04T10:00:00.5+03:00"}, State: models.StateRunning, Resources: models.Resources{MemoryMiB: 512}, Policy: "web", CreatedAt: created},
+		Egress:  &egress.Effective{Rules: []egress.EffectiveRule{{Rule: rule, ID: "r1", Implied: "private ranges"}}},
 	}
 
 	sections, err := inspectSections(insp)

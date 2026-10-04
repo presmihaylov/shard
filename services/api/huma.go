@@ -15,6 +15,7 @@ import (
 	"github.com/danielgtaylor/huma/v2/adapters/humago"
 
 	"github.com/presmihaylov/shard/models"
+	"github.com/presmihaylov/shard/services/egress"
 )
 
 func init() {
@@ -130,10 +131,13 @@ func (h *Handler) logRefusal(ctx huma.Context, _ string, v any) (any, error) {
 	return v, nil
 }
 
-// schemaName keeps Huma's names, less the one an SDK would otherwise read as ApiError.
+// schemaName keeps Huma's names, less apiError, which an SDK would read as ApiError, and egress.Record, which the API calls a decision.
 func schemaName(t reflect.Type, hint string) string {
 	if t == reflect.TypeFor[apiError]() {
 		return "Error"
+	}
+	if t == reflect.TypeFor[egress.Record]() {
+		return "EgressDecision"
 	}
 
 	return huma.DefaultSchemaNamer(t, hint)
@@ -348,9 +352,13 @@ func response(description, mediaType string, schema *huma.Schema) *huma.Response
 	return &huma.Response{Description: description, Content: map[string]*huma.MediaType{mediaType: {Schema: schema}}}
 }
 
-// upgrade is the 101 a WebSocket handshake gets, whose frames the description names.
-func upgrade(description string) *huma.Response {
-	return &huma.Response{Description: description}
+// upgrade is the 101 a WebSocket handshake gets, whose frames the description names; x-shard-messages maps a stream byte to its JSON payload.
+func upgrade(description string, messages map[string]*huma.Schema) *huma.Response {
+	if len(messages) == 0 {
+		return &huma.Response{Description: description}
+	}
+
+	return &huma.Response{Description: description, Extensions: map[string]any{"x-shard-messages": messages}}
 }
 
 func schemaOf[T any](registry huma.Registry) *huma.Schema {
@@ -367,7 +375,7 @@ func text() *huma.Schema {
 
 // statHeader documents X-Shard-Stat, the guest path's stat as JSON.
 func statHeader() map[string]*huma.Header {
-	return map[string]*huma.Header{StatHeader: {Description: "The guest path's stat as JSON: type, size, mode, uid, gid and mtime.", Schema: text()}}
+	return map[string]*huma.Header{StatHeader: {Description: "The guest path's stat as JSON: type is file, dir, symlink or other; size is the logical size in bytes; mode is the permission bits as a number, at most 0o7777; then uid, gid and mtime.", Schema: text()}}
 }
 
 // binaryBody is the request body of a raw PUT, which Huma never reads.

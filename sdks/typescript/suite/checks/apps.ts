@@ -34,7 +34,7 @@ export const checks: Check[] = [
       assert.equal(exit.exitCode, 4);
       assert.equal(exit.signal, null);
       assert.equal(exit.restarts, 0);
-      assert.deepEqual((await app.inspect()).exitStatus, { code: 4, signal: null });
+      assert.deepEqual((await app.inspect()).exitStatus, { exitCode: 4, signal: null });
       const logs = await app.logs();
       assert.ok(logs.includes("out\n") && logs.includes("err\n"), `the logs hold both streams: ${JSON.stringify(logs)}`);
       assert.equal((await app.sandbox.inspect()).state, "running", "the sandbox outlives its app");

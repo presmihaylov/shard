@@ -16,7 +16,7 @@ type Exec struct {
 	ID         string      `json:"exec"`
 	Sandbox    string      `json:"sandbox"`
 	Command    []string    `json:"command"`
-	State      ExecState   `json:"state"`
+	State      ExecState   `json:"state" enum:"running,exited"`
 	ExitStatus *ExitStatus `json:"exit_status"`
 	StartedAt  time.Time   `json:"started_at"`
 	ExitedAt   *time.Time  `json:"exited_at"`

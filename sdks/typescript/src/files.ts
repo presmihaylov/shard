@@ -50,7 +50,7 @@ export class Files {
     private readonly sandboxId: string,
   ) {}
 
-  /** read answers the whole file at path, in memory; download() streams a large one to disk instead. */
+  /** copy a file out of a running sandbox */
   read(path: string): Promise<Uint8Array>;
   read(path: string, options: { encoding: "utf8" }): Promise<string>;
   async read(path: string, options?: { encoding: "utf8" }): Promise<Uint8Array | string> {
@@ -62,7 +62,7 @@ export class Files {
     return body;
   }
 
-  /** write lands data as the whole file at path. */
+  /** copy a file into a running sandbox */
   async write(path: string, data: string | Uint8Array, options: WriteOptions = {}): Promise<void> {
     const body = typeof data === "string" ? Buffer.from(data) : data;
     await this.put(path, body, body.length, options);
@@ -99,7 +99,7 @@ export class Files {
     await this.transport.api.DELETE("/v0/sandboxes/{id}/files", { params });
   }
 
-  /** upload streams a local file to remote with its length up front; the mode defaults to the local file's. */
+  /** copy a file into a running sandbox */
   async upload(local: string, remote: string, options: WriteOptions = {}): Promise<void> {
     const handle = await fs.open(local, "r");
     try {
@@ -114,7 +114,7 @@ export class Files {
     }
   }
 
-  /** download streams the file at remote to local through a temp name beside it, so a cut never leaves half a file. */
+  /** copy a file out of a running sandbox */
   async download(remote: string, local: string): Promise<void> {
     const target = path.resolve(local);
     const temp = path.join(path.dirname(target), `.${path.basename(target)}.useshards-${randomBytes(8).toString("hex")}`);
@@ -129,7 +129,7 @@ export class Files {
     }
   }
 
-  /** uploadDir sends a local directory as a tar the sandbox unpacks as remote, which names the directory itself. */
+  /** copy a directory into a running sandbox */
   async uploadDir(local: string, remote: string, options: { user?: string } = {}): Promise<void> {
     const { parent, name } = split(remote);
     if (!(await fs.stat(local)).isDirectory()) {
@@ -143,7 +143,7 @@ export class Files {
     });
   }
 
-  /** downloadDir lands the directory at remote as local, which names the directory itself; nothing lands outside local. */
+  /** copy a directory out of a running sandbox */
   async downloadDir(remote: string, local: string): Promise<void> {
     const { clean, name } = split(remote);
     const target = path.resolve(local);

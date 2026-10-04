@@ -22,6 +22,7 @@ import (
 
 	"github.com/presmihaylov/shard/models"
 	fcapi "github.com/presmihaylov/shard/pkg/firecracker"
+	"github.com/presmihaylov/shard/pkg/pidpin/pidpintest"
 	"github.com/presmihaylov/shard/services/bundle"
 	"github.com/presmihaylov/shard/services/provider/conformance"
 	"github.com/presmihaylov/shard/services/provider/firecracker"
@@ -47,12 +48,15 @@ type harness struct {
 
 func newHarness(t *testing.T) *harness {
 	t.Helper()
+	requireProcessTable(t)
 
 	root, err := os.MkdirTemp("", "fc") //nolint:usetesting // t.TempDir is too long for a socket path
 	if err != nil {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { os.RemoveAll(root) })
+	// The daemon refuses a root that shares no blocks (services/datadir), and every boot reflinks into its jail.
+	requireReflink(t, root)
 	sessions := filepath.Join(root, sessionsFile)
 	if err := os.WriteFile(sessions, nil, 0o600); err != nil {
 		t.Fatal(err)
@@ -190,6 +194,8 @@ func (h *harness) checkpointDir(id string) (string, error) {
 
 func (h *harness) newSpec(t *testing.T, entrypoint ...string) models.SandboxSpec {
 	t.Helper()
+	// Every boot pins its vmm.
+	pidpintest.Require(t)
 
 	id := fmt.Sprintf("sb-%d", h.next.Add(1))
 	dir, _ := h.stateDir(id)
@@ -226,7 +232,6 @@ func requireReflink(t *testing.T, root string) {
 
 func TestConformance(t *testing.T) {
 	h := newHarness(t)
-	requireReflink(t, h.root)
 
 	conformance.Run(t, conformance.Subject{
 		Provider: h.provider,
@@ -347,7 +352,6 @@ func readJailer(t *testing.T, jail string) jailerArgs {
 // No two sandboxes share a uid, so neither can open the other's jail; a restart keeps the uid, and a sandbox from a snapshot gets a new one.
 func TestEverySandboxGetsAUIDOfItsOwn(t *testing.T) {
 	h := newHarness(t)
-	requireReflink(t, h.root)
 	first, _ := h.runLong(t)
 	second, _ := h.runLong(t)
 	uid := readVM(t, first.StateDir).UID
@@ -405,7 +409,6 @@ func TestCreateRefusesAUIDPastTheRange(t *testing.T) {
 // A checkpoint from before the jail names host paths a jailed vmm cannot open, so a restore refuses it.
 func TestARestoreRefusesACheckpointFromBeforeTheJail(t *testing.T) {
 	h := newHarness(t)
-	requireReflink(t, h.root)
 	spec, _ := h.runLong(t)
 	dir := t.TempDir()
 	if err := h.provider.Pause(t.Context(), spec.ID, dir); err != nil {
@@ -1038,7 +1041,6 @@ func (h *harness) unresponsive(t *testing.T, id string, pid int) models.Status {
 // A snapshot copies the overlay a stop kept, and a create seeded from it starts on that overlay over the same image.
 func TestASnapshotSeedsTheOverlayOfANewSandbox(t *testing.T) {
 	h := newHarness(t)
-	requireReflink(t, h.root)
 	source := h.newSpec(t, "/bin/sh", "-c", "exit 0")
 	if err := h.provider.Create(t.Context(), source); err != nil {
 		t.Fatal(err)
@@ -1121,7 +1123,6 @@ func TestCapabilitiesArePauseResumeAndFork(t *testing.T) {
 // A pause writes the whole checkpoint and ends the VM; the marker goes in last, and nothing of the staging is left.
 func TestPauseWritesTheCheckpointAndEndsTheVM(t *testing.T) {
 	h := newHarness(t)
-	requireReflink(t, h.root)
 	spec, _ := h.runLong(t)
 	dir := t.TempDir()
 
@@ -1145,7 +1146,6 @@ func TestPauseWritesTheCheckpointAndEndsTheVM(t *testing.T) {
 // The vmm writes vmstate and memory as its own uid and under its own umask, so Pause gives them to root and tightens them.
 func TestPauseTightensTheCheckpointFiles(t *testing.T) {
 	h := newHarness(t)
-	requireReflink(t, h.root)
 	spec, _ := h.runLong(t)
 	dir := t.TempDir()
 
@@ -1174,7 +1174,6 @@ func TestPauseTightensTheCheckpointFiles(t *testing.T) {
 // A resume brings the sandbox back over its own copy of the overlay, with a copy by reference of the memory the checkpoint keeps in its jail.
 func TestResumeBringsTheSandboxBackOverTheCheckpoint(t *testing.T) {
 	h := newHarness(t)
-	requireReflink(t, h.root)
 	spec, _ := h.runLong(t)
 	dir := t.TempDir()
 	if err := h.provider.Pause(t.Context(), spec.ID, dir); err != nil {
@@ -1253,7 +1252,6 @@ func sameFile(t *testing.T, a, b string) bool {
 // One checkpoint forks as many sandboxes as are asked of it: each takes its own overlay, and the checkpoint stays whole.
 func TestForkTakesACopyAndLeavesTheCheckpoint(t *testing.T) {
 	h := newHarness(t)
-	requireReflink(t, h.root)
 	spec, _ := h.runLong(t)
 	dir := t.TempDir()
 	if err := h.provider.Pause(t.Context(), spec.ID, dir); err != nil {
@@ -1288,7 +1286,6 @@ func TestForkTakesACopyAndLeavesTheCheckpoint(t *testing.T) {
 // A fork captures a running source live: the source runs on in the same vmm, thawed, and the capture goes once the fork is up (SHARD-462).
 func TestAForkOfARunningSandboxLeavesTheSourceRunning(t *testing.T) {
 	h := newHarness(t)
-	requireReflink(t, h.root)
 	spec, pid := h.runLong(t)
 	fork := h.forkSpec(t)
 	for _, s := range []models.SandboxSpec{spec, fork} {
@@ -1328,7 +1325,6 @@ func TestAForkOfARunningSandboxLeavesTheSourceRunning(t *testing.T) {
 // An exec that starts while a fork holds the source frozen is refused by name, and the control stream the capture reset is dialed again and thaws the source (SHARD-462).
 func TestAnExecWhileAForkHoldsTheSourceIsRefused(t *testing.T) {
 	h := newHarness(t)
-	requireReflink(t, h.root)
 	spec, pid := h.runLong(t)
 	watchControls(t, spec)
 	if err := os.WriteFile(filepath.Join(spec.StateDir, execInFreezeFile), []byte(spec.ID), 0o600); err != nil {
@@ -1404,7 +1400,6 @@ func TestASourceAFailedForkLeftFrozenThawsOnALaterStream(t *testing.T) {
 // While a fork holds the source, through the capture the vmm is busy with and the redial after it, the source reads running and an exec is refused by name, never unresponsive (SHARD-462).
 func TestASourceAForkHoldsReadsRunningAndRefusesAnExec(t *testing.T) {
 	h := newHarness(t)
-	requireReflink(t, h.root)
 	spec, pid := h.runLong(t)
 	watchControls(t, spec)
 	watchSnapshots(t, spec)
@@ -1494,7 +1489,6 @@ func awaitFile(t *testing.T, path string, forked <-chan error) {
 func (h *harness) severedFork(t *testing.T) (models.SandboxSpec, int) {
 	t.Helper()
 
-	requireReflink(t, h.root)
 	spec, pid := h.runLong(t)
 	watchControls(t, spec)
 	t.Cleanup(firecracker.SetRedialGrace(500 * time.Millisecond))
@@ -1513,7 +1507,6 @@ func (h *harness) severedFork(t *testing.T) (models.SandboxSpec, int) {
 // A fork takes a running source only: a paused one is refused by name, and the fork's directory keeps no record and no capture (SHARD-462).
 func TestAForkOfAPausedSandboxIsRefused(t *testing.T) {
 	h := newHarness(t)
-	requireReflink(t, h.root)
 	spec, _ := h.runLong(t)
 	if err := h.provider.Pause(t.Context(), spec.ID, t.TempDir()); err != nil {
 		t.Fatalf("Pause: %v", err)
@@ -1534,7 +1527,6 @@ func TestAForkOfAPausedSandboxIsRefused(t *testing.T) {
 // A capture the vmm refuses runs the source on, thawed, and leaves no marker, no capture and no fork behind (SHARD-462).
 func TestAFailedCaptureRunsTheSourceOn(t *testing.T) {
 	h := newHarness(t)
-	requireReflink(t, h.root)
 	spec, pid := h.runLong(t)
 	watchControls(t, spec)
 	if err := os.WriteFile(filepath.Join(spec.StateDir, refuseSnapshotFile), nil, 0o600); err != nil {
@@ -1563,7 +1555,6 @@ func TestAFailedCaptureRunsTheSourceOn(t *testing.T) {
 // A source the fork could not resume after its capture keeps the marker beside an older pause's checkpoint, so the next daemon runs it again, never ends it (SHARD-427, SHARD-462).
 func TestASourceTheForkCouldNotResumeRunsAgain(t *testing.T) {
 	h := newHarness(t)
-	requireReflink(t, h.root)
 	spec, pid := h.runLong(t)
 	dir, _ := h.checkpointDir(spec.ID)
 	if err := os.MkdirAll(dir, 0o700); err != nil {
@@ -1601,7 +1592,6 @@ func TestASourceTheForkCouldNotResumeRunsAgain(t *testing.T) {
 // A daemon cut inside a capture leaves the source paused and frozen beside an older pause's checkpoint; the marker has the next daemon run it again, never end it (SHARD-427, SHARD-462).
 func TestASourceACutCaptureLeftPausedRunsAgain(t *testing.T) {
 	h := newHarness(t)
-	requireReflink(t, h.root)
 	spec, _ := h.runLong(t)
 	// The checkpoint is all the SHARD-427 judge reads, and a booted source keeps the fake guest's ready, which a fake restore starts without.
 	dir, _ := h.checkpointDir(spec.ID)
@@ -1632,7 +1622,6 @@ func TestASourceACutCaptureLeftPausedRunsAgain(t *testing.T) {
 // A capture marker its fork left behind spares no pause cut after its install: the frozen VM beside the new checkpoint is still ended (SHARD-427, SHARD-462).
 func TestAStaleCaptureMarkerSparesNoCutPause(t *testing.T) {
 	h := newHarness(t)
-	requireReflink(t, h.root)
 	spec, _ := h.runLong(t)
 	dir, _ := h.checkpointDir(spec.ID)
 	if err := os.WriteFile(filepath.Join(spec.StateDir, firecracker.CaptureFile), nil, 0o600); err != nil {
@@ -1652,7 +1641,6 @@ func TestAStaleCaptureMarkerSparesNoCutPause(t *testing.T) {
 // Every restore of one checkpoint wakes with the same crng key, so the source's resume and each fork are reseeded once, and only on a restore.
 func TestEveryRestoreReseedsTheGuest(t *testing.T) {
 	h := newHarness(t)
-	requireReflink(t, h.root)
 	spec, _ := h.runLong(t)
 	forks := []models.SandboxSpec{h.forkSpec(t), h.forkSpec(t)}
 	for _, s := range append([]models.SandboxSpec{spec}, forks...) {
@@ -1685,7 +1673,6 @@ func TestEveryRestoreReseedsTheGuest(t *testing.T) {
 // A daemon cut between a restore's attach and its reseed leaves the marker, so the next daemon reseeds the guest it adopts, and the one after does not again.
 func TestADaemonCutBeforeTheReseedLeavesItToTheNext(t *testing.T) {
 	h := newHarness(t)
-	requireReflink(t, h.root)
 	spec, _ := h.runLong(t)
 	fork := h.forkSpec(t)
 	for _, s := range []models.SandboxSpec{spec, fork} {
@@ -1730,7 +1717,6 @@ func TestADaemonCutBeforeTheReseedLeavesItToTheNext(t *testing.T) {
 // A pause freezes the guest before the checkpoint, and every restore reseeds the frozen guest before the thaw lets it run on the saved key (SHARD-409).
 func TestARestoreReseedsTheFrozenGuestBeforeTheThaw(t *testing.T) {
 	h := newHarness(t)
-	requireReflink(t, h.root)
 	spec, _ := h.runLong(t)
 	fork := h.forkSpec(t)
 	for _, s := range []models.SandboxSpec{spec, fork} {
@@ -1759,7 +1745,6 @@ func TestARestoreReseedsTheFrozenGuestBeforeTheThaw(t *testing.T) {
 // A guest that cannot hold its root refuses the pause: the VM runs on, the guest is told to thaw, and nothing is written (SHARD-409).
 func TestAPauseTheGuestCannotFreezeForIsRefused(t *testing.T) {
 	h := newHarness(t)
-	requireReflink(t, h.root)
 	spec, _ := h.runLong(t)
 	watchControls(t, spec)
 	refuse := filepath.Join(spec.StateDir, refuseFreezeFile)
@@ -1796,7 +1781,6 @@ func TestAPauseTheGuestCannotFreezeForIsRefused(t *testing.T) {
 // A VM booted before the guest froze its overlay root keeps that shard-init, so its pause is refused with the restart that fixes it, and no freeze reaches the guest (SHARD-409).
 func TestAPauseOfAGuestFromBeforeTheFreezeIsRefused(t *testing.T) {
 	h := newHarness(t)
-	requireReflink(t, h.root)
 	spec, _ := h.runLong(t)
 	watchControls(t, spec)
 	old := filepath.Join(spec.StateDir, oldGuestFile)
@@ -1842,7 +1826,6 @@ func TestAPauseOfAGuestFromBeforeTheFreezeIsRefused(t *testing.T) {
 // A drop that takes the guest's answer to a freeze leaves it frozen, so the pause's undo or the stream dialed again thaws it, once, and the next pause goes through (SHARD-409).
 func TestAFreezeWhoseAnswerADropTookIsThawed(t *testing.T) {
 	h := newHarness(t)
-	requireReflink(t, h.root)
 	spec, _ := h.runLong(t)
 	watchControls(t, spec)
 	if err := os.WriteFile(filepath.Join(spec.StateDir, loseFreezeFile), nil, 0o600); err != nil {
@@ -1966,7 +1949,6 @@ func TestAnAdoptedFrozenGuestThatRefusesTheReseedIsEnded(t *testing.T) {
 // Each verb refuses the state it cannot take, and says which sandbox and which state that is.
 func TestTheCheckpointVerbsRefuseWhatTheyCannotTake(t *testing.T) {
 	h := newHarness(t)
-	requireReflink(t, h.root)
 	spec, _ := h.runLong(t)
 
 	empty := t.TempDir()
@@ -2000,7 +1982,6 @@ func TestTheCheckpointVerbsRefuseWhatTheyCannotTake(t *testing.T) {
 // A pause that cannot finish leaves the VM running and the last checkpoint whole: the new one is staged beside it.
 func TestAFailedPauseResumesTheVMAndKeepsTheLastCheckpoint(t *testing.T) {
 	h := newHarness(t)
-	requireReflink(t, h.root)
 	spec, _ := h.runLong(t)
 	dir := t.TempDir()
 	if err := h.provider.Pause(t.Context(), spec.ID, dir); err != nil {
@@ -2033,7 +2014,6 @@ func TestAFailedPauseResumesTheVMAndKeepsTheLastCheckpoint(t *testing.T) {
 // A pause over a directory that already holds a checkpoint puts the new one there in one step, and nothing of the old stays.
 func TestASecondPauseReplacesTheWholeCheckpoint(t *testing.T) {
 	h := newHarness(t)
-	requireReflink(t, h.root)
 	spec, _ := h.runLong(t)
 	dir := t.TempDir()
 	if err := h.provider.Pause(t.Context(), spec.ID, dir); err != nil {
@@ -2098,7 +2078,6 @@ func TestAPausedVMLeftByACutPauseComesBack(t *testing.T) {
 // A daemon cut after a pause installed its checkpoint leaves the guest frozen beside it; the next daemon ends that vmm and never runs the guest past it (SHARD-427).
 func TestAVMFrozenBesideItsCheckpointIsEndedNotResumed(t *testing.T) {
 	h := newHarness(t)
-	requireReflink(t, h.root)
 	spec, _ := h.runLong(t)
 	dir, _ := h.checkpointDir(spec.ID)
 	record := filepath.Join(spec.StateDir, "vm.json")
