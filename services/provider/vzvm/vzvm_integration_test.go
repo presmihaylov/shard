@@ -605,7 +605,7 @@ func TestAGuestThatOutgrowsItsBoundIsOOMKilled(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	// Only PID 1 is exempt from the killer: a guest process, and what it forks, as any user, is exposed before it runs.
+	// The kernel alone spares PID 1, so no guest process, nor what it forks, as any user, inherits an exemption.
 	out, err := os.CreateTemp(t.TempDir(), "adj")
 	if err != nil {
 		t.Fatal(err)
@@ -615,8 +615,8 @@ func TestAGuestThatOutgrowsItsBoundIsOOMKilled(t *testing.T) {
 	if _, err := h.provider.Exec(t.Context(), spec.ID, models.ExecSpec{Argv: []string{"/bin/sh", "-c", probe}, User: "nobody", Stdout: out, Stderr: out}); err != nil {
 		t.Fatalf("Exec: %v", err)
 	}
-	if read, _ := os.ReadFile(out.Name()); string(read) != "-1000\n0\n0\n" {
-		t.Fatalf("oom_score_adj of PID 1, an exec and its child = %q, want -1000, 0 and 0", read)
+	if read, _ := os.ReadFile(out.Name()); string(read) != "0\n0\n0\n" {
+		t.Fatalf("oom_score_adj of PID 1, an exec and its child = %q, want 0, 0 and 0", read)
 	}
 
 	deadline := time.Now().Add(2 * time.Minute)
