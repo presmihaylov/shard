@@ -527,6 +527,16 @@ func (e *execSession) setPID(pid int) {
 	e.pidOnce.Do(func() { close(e.pidSet) })
 }
 
+// reported says the provider gave the command's pid, so the command started.
+func (e *execSession) reported() bool {
+	select {
+	case <-e.pidSet:
+		return true
+	default:
+		return false
+	}
+}
+
 // waitPID blocks until the provider reports the pid, the exec ends, or the caller gives up.
 func (e *execSession) waitPID(ctx context.Context) (int, error) {
 	select {
@@ -744,6 +754,7 @@ func (s *Service) runPipes(ctx context.Context, id string, session *execSession,
 	spec.Stderr = errOut
 
 	exit, execErr := s.cfg.Provider.Exec(ctx, id, spec)
+	execErr = s.refusedByPause(id, session, execErr)
 
 	// Our copy of each write end keeps its pipe readable, so the output drains only after they go.
 	closeErr := errors.Join(out.Close(), errOut.Close())
@@ -777,6 +788,7 @@ func (s *Service) runTerminal(ctx context.Context, id string, session *execSessi
 	}()
 
 	exit, execErr := s.cfg.Provider.Exec(ctx, id, spec)
+	execErr = s.refusedByPause(id, session, execErr)
 
 	// Closing the replica lets the master read EOF, so the copier ends.
 	closeErr := pair.Replica.Close()
@@ -1164,7 +1176,7 @@ func (s *Service) readyForExec(ctx context.Context, ref string) (string, error) 
 
 	// The provider holds nothing of a paused sandbox, and gone is the wrong word for one a resume brings back.
 	if sb.State == models.StatePaused {
-		return "", &StateError{ID: id, State: sb.State, Fix: "resume it with shard resume " + id, Code: models.CodeSandboxNotRunning}
+		return "", pausedRefusal(id)
 	}
 
 	status, err := s.cfg.Provider.Status(ctx, id)
@@ -1189,7 +1201,7 @@ func (s *Service) readyForExec(ctx context.Context, ref string) (string, error) 
 		return "", err
 	}
 	if paused {
-		return "", &StateError{ID: id, State: models.StatePaused, Fix: "resume it with shard resume " + id, Code: models.CodeSandboxNotRunning}
+		return "", pausedRefusal(id)
 	}
 
 	// The exit file records a 137 for this, which is what a plain kill -9 records too, so the reason
@@ -1220,6 +1232,28 @@ func (s *Service) pausedMeanwhile(id string) (bool, error) {
 	}
 
 	return dir != "", nil
+}
+
+// pausedRefusal is the one text of every exec a pause refuses, whichever layer met the pause first (SHARD-482).
+func pausedRefusal(id string) *StateError {
+	return &StateError{ID: id, State: models.StatePaused, Fix: "resume it with shard resume " + id, Code: models.CodeSandboxNotRunning}
+}
+
+// refusedByPause names a command that never started inside a pause by that pause, whatever the substrate or the guest said.
+func (s *Service) refusedByPause(id string, session *execSession, err error) error {
+	if err == nil || session.reported() {
+		return err
+	}
+
+	sb, getErr := s.cfg.Repo.Get(id)
+	if getErr != nil {
+		return errors.Join(err, getErr)
+	}
+	if sb.State != models.StatePaused && !sb.Pausing {
+		return err
+	}
+
+	return pausedRefusal(id)
 }
 
 // outputPipe copies one of the guest's streams into the buffer and reports what stopped the copy.
