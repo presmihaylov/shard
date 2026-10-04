@@ -86,7 +86,7 @@ var verbGroups = []struct {
 }{
 	{"Sandboxes", []string{"create", "run", "exec", "list", "logs", "inspect", "stop", "start", "remove", "pause", "resume", "fork", "cp"}},
 	{"Images, snapshots, secrets and network policies", []string{"pull", "image", "snapshot", "secret", "policy"}},
-	{"Host and access", []string{"daemon", "info", "serve", "tokens", "version"}},
+	{"Host and access", []string{"capabilities", "daemon", "info", "serve", "tokens", "version"}},
 }
 
 // sandboxFlagHelps are the flags create and run share, as sandboxFlags parses them.
@@ -560,6 +560,17 @@ var helps = map[string]verbHelp{
 		flags:    []flagHelp{formatTableHelp},
 		notes:    []note{para("Shows the version, provider, process details and background tasks.")},
 		examples: []string{"shard daemon status", "shard daemon status --format json"},
+	},
+	"capabilities": {
+		usage:   []string{"capabilities [OPTIONS]"},
+		summary: "show the lifecycle verbs the server supports",
+		about:   "Show sandbox lifecycle capabilities supported by the connected Shard server.",
+		flags:   []flagHelp{formatTableHelp},
+		notes: []note{para(
+			"Lists all eight verbs, each true or false for the server's provider.",
+			"Token scopes and sandbox states never change the answer.",
+		)},
+		examples: []string{"shard capabilities", "shard capabilities --format json"},
 	},
 	"info": {
 		usage:   []string{"info [OPTIONS]"},

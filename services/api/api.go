@@ -192,7 +192,7 @@ func local(method, pattern string, handler http.HandlerFunc) routeEntry {
 func (h *Handler) routeTable() []routeEntry {
 	return []routeEntry{
 		public("GET", "/v0/version", AnyToken, operation("meta", "get-version", "Read the daemon and API versions", 0), typed(h.getVersion)),
-		public("GET", "/v0/capabilities", AnyToken, operation("meta", "get-capabilities", "List the optional verbs the provider refuses", 0), typed(h.getCapabilities)),
+		public("GET", "/v0/capabilities", AnyToken, operation("meta", "get-capabilities", "List the lifecycle verbs and whether this server supports each", 0), typed(h.getCapabilities)),
 		local("GET", "/v0/daemon", h.getDaemon),
 		public("GET", "/v0/sandboxes", SandboxRead, operation("sandboxes", "list-sandboxes", "List sandboxes", 0), typed(h.listSandboxes)),
 		public("GET", "/v0/sandboxes/{id}", SandboxRead, operation("sandboxes", "get-sandbox", "Read a sandbox and the egress rules the host enforces for it", 0), typed(h.getSandbox)),
@@ -266,10 +266,17 @@ type versionResponse struct {
 	APIVersion string `json:"api_version"`
 }
 
-// capabilitiesResponse names the provider and every optional verb it refuses, in the order of the verb constants.
-type capabilitiesResponse struct {
-	Provider    string   `json:"provider"`
-	Unsupported []string `json:"unsupported"`
+// Capabilities is every lifecycle verb and whether this server supports it, the same eight keys for every provider.
+type Capabilities struct {
+	Create bool `json:"create"`
+	Start  bool `json:"start"`
+	Stop   bool `json:"stop"`
+	Remove bool `json:"remove"`
+	Pause  bool `json:"pause"`
+	Resume bool `json:"resume"`
+	Fork   bool `json:"fork"`
+	// Snapshot is the copy of a stopped sandbox's files, which every provider makes.
+	Snapshot bool `json:"snapshot"`
 }
 
 // sandboxesResponse is the page: the rows, the cursor of the next page or null, and what could not be read.
@@ -291,28 +298,18 @@ func (h *Handler) getVersion(context.Context, *struct{}) (*reply[versionResponse
 	return answer(versionResponse{Version: h.version, APIVersion: APIVersion}, nil)
 }
 
-func (h *Handler) getCapabilities(context.Context, *struct{}) (*reply[capabilitiesResponse], error) {
+func (h *Handler) getCapabilities(context.Context, *struct{}) (*reply[Capabilities], error) {
 	d, err := h.process.Daemon()
 	if err != nil {
 		return nil, fail(err)
 	}
 
-	return answer(capabilitiesResponse{Provider: d.Provider, Unsupported: unsupported(d.Capabilities)}, nil)
+	return answer(capabilitiesOf(d.Capabilities), nil)
 }
 
-// unsupported is never null, so a client reads an empty list as a provider that refuses nothing.
-func unsupported(c models.Capabilities) []string {
-	verbs := []string{}
-	for _, v := range []struct {
-		name      string
-		supported bool
-	}{{models.VerbPause, c.Pause}, {models.VerbResume, c.Resume}, {models.VerbFork, c.Fork}} {
-		if !v.supported {
-			verbs = append(verbs, v.name)
-		}
-	}
-
-	return verbs
+// capabilitiesOf answers true for the verbs every provider runs, and the provider's own answer for the optional ones.
+func capabilitiesOf(c models.Capabilities) Capabilities {
+	return Capabilities{Create: true, Start: true, Stop: true, Remove: true, Pause: c.Pause, Resume: c.Resume, Fork: c.Fork, Snapshot: true}
 }
 
 func (h *Handler) getDaemon(w http.ResponseWriter, _ *http.Request) {

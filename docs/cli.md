@@ -115,6 +115,7 @@ shard: sandbox <id> is paused: resume it with shard resume <id>
 
 | verb | flags | format | stdout |
 | --- | --- | --- | --- |
+| `capabilities` | `--format` | table | the eight lifecycle verbs and whether the server supports each |
 | `daemon` | `--provider --timeout --insecure-registry --log` | - | its log; `--log` on a Mac sends stdout and stderr to that file |
 | `daemon status` | `--format` | table | the daemon's state and its tasks |
 | `info` | `--format` | table | the provider a daemon would pick, and why |
@@ -285,6 +286,12 @@ null}` and the sandbox reaches nothing.
 }
 ```
 
+`capabilities` is the body of `GET /v0/capabilities`, the same eight keys for every provider:
+
+```json
+{"create": true, "start": true, "stop": true, "remove": true, "pause": true, "resume": true, "fork": false, "snapshot": true}
+```
+
 `version`. `shim` is `embedded` or `absent` on a Mac, as the VM shim is in the binary, and absent
 elsewhere:
 
@@ -298,9 +305,10 @@ line.
 
 ### Tables
 
-`list`, `image list`, `snapshot list`, `secret list`, `policy list`, `tokens list`, `info`, `daemon
-status` and `version` print tables by default. `list` prints `ID NAME IMAGE STATE UPTIME RESTART POLICY`, and
-`snapshot list` prints `ID NAME SOURCE IMAGE SIZE CREATED`.
+`list`, `image list`, `snapshot list`, `secret list`, `policy list`, `tokens list`, `info`,
+`capabilities`, `daemon status` and `version` print tables by default. `list` prints `ID NAME IMAGE
+STATE UPTIME RESTART POLICY`, `snapshot list` prints `ID NAME SOURCE IMAGE SIZE CREATED`, and
+`capabilities` prints `CAPABILITY SUPPORTED`.
 
 The tables of the JSON verbs:
 

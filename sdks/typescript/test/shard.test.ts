@@ -3,7 +3,7 @@ import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { after, afterEach, before, beforeEach, test } from "node:test";
-import { APIError, CommandNotStartedError } from "../src/errors.js";
+import { APIError, CommandNotStartedError, ProtocolError } from "../src/errors.js";
 import { Shard } from "../src/shard.js";
 import { FakeDaemon, type Answer, type Request } from "./helpers/daemon.js";
 import { sandboxRecord } from "./helpers/records.js";
@@ -146,9 +146,16 @@ test("an http remote warns once per client, in the CLI's words, and answers as h
 
 test("version and capabilities read the daemon's records", async () => {
   routes.set("GET /v0/version", () => ({ status: 200, json: { version: "0.9.0", api_version: "v0" } }));
-  routes.set("GET /v0/capabilities", () => ({ status: 200, json: { provider: "runc", unsupported: ["pause", "fork"] } }));
+  const verbs = { create: true, start: true, stop: true, remove: true, pause: false, resume: false, fork: false, snapshot: true };
+  routes.set("GET /v0/capabilities", () => ({ status: 200, json: verbs }));
   assert.deepEqual(await shard.version(), { version: "0.9.0", apiVersion: "v0" });
-  assert.deepEqual(await shard.capabilities(), { provider: "runc", unsupported: ["pause", "fork"] });
+  assert.deepEqual(await shard.capabilities(), verbs);
+});
+
+test("a capability that is not a boolean is a protocol error", async () => {
+  const verbs = { create: true, start: true, stop: true, remove: true, pause: true, resume: true, fork: true, snapshot: "yes" };
+  routes.set("GET /v0/capabilities", () => ({ status: 200, json: verbs }));
+  await assert.rejects(shard.capabilities(), ProtocolError);
 });
 
 test("a policy assign keeps the handle's info current", async () => {

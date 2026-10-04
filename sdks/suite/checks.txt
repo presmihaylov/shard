@@ -11,6 +11,7 @@ lifecycle.pause_resume
 lifecycle.fork
 lifecycle.remove
 lifecycle.unsupported_named
+lifecycle.capabilities
 snapshots.needs_stopped
 snapshots.create_list_inspect
 snapshots.create_from
