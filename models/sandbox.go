@@ -31,8 +31,7 @@ type Sandbox struct {
 	// UnresponsiveReason says what missed its probe bound, set only in state unresponsive.
 	UnresponsiveReason string `json:"unresponsive_reason,omitempty"`
 
-	// Checkpoint is the directory the last pause wrote, empty until one happens. A resume reads it and
-	// does not consume it, so it stands until the next pause replaces it or rm removes it.
+	// A resume keeps the checkpoint until the next pause or removal.
 	Checkpoint string `json:"checkpoint,omitempty"`
 	// Pausing is set for one pause, after it removed the old checkpoint, so any checkpoint found under it is that pause's own.
 	Pausing bool `json:"pausing,omitempty"`

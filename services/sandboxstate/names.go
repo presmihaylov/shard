@@ -22,8 +22,7 @@ func (n names) path(name string) string {
 	return filepath.Join(n.dir, name)
 }
 
-// claim makes the kernel decide uniqueness a second time: symlink refuses the second claim of
-// the same name, so two creates racing for one name never both win.
+// The symlink claim makes concurrent creates choose one name owner.
 func (n names) claim(name, id string, valid func(string) error) error {
 	if name == "" {
 		return nil
@@ -44,8 +43,7 @@ func (n names) claim(name, id string, valid func(string) error) error {
 	return store.SyncDir(n.dir)
 }
 
-// holder is for the collision error only, so an unreadable link answers with a placeholder
-// rather than turning one clear refusal into two errors an operator has to read.
+// An unreadable link answers with a placeholder, so a name collision stays one clear error.
 func (n names) holder(name string) string {
 	id, err := os.Readlink(n.path(name))
 	if err != nil {
@@ -55,8 +53,7 @@ func (n names) holder(name string) string {
 	return filepath.Base(id)
 }
 
-// drop unlinks the name only while it still points at this id. A create that took the name back
-// after a half-done delete holds it now, and this record has no claim on it any more.
+// A create can take the name back after a half-done delete, so drop unlinks only a link to this id.
 func (n names) drop(name, id string) error {
 	if name == "" {
 		return nil
@@ -82,8 +79,7 @@ func (n names) drop(name, id string) error {
 	return nil
 }
 
-// exists reports whether a link spelled exactly ref is on disk. A case-insensitive filesystem lets
-// os.Readlink follow a legacy mixed-case link, so the exact directory entry is what decides (SHARD-374).
+// A case-insensitive filesystem lets os.Readlink follow a mixed-case link, so the exact entry decides (SHARD-374).
 func (n names) exists(ref string) (bool, error) {
 	entries, err := os.ReadDir(n.dir)
 	if err != nil {
