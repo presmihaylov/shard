@@ -61,7 +61,7 @@ a dash is a verb with no `--format`.
 
 | verb | flags | format | stdout |
 | --- | --- | --- | --- |
-| `create <image>` | `--name --env --secret --policy --workdir --user --memory --cpus --disk` | - | the id |
+| `create <image>` | `--name --env --secret --policy --workdir --user --memory --vcpus --disk` | - | the id |
 | `create --snapshot <ref>` | the same, in place of the image | - | the id |
 | `run <image> <command>...` | the `create` flags, `--restart --restart-retries --restart-backoff -d/--detach` | - | the app's output, or the id with `--detach` |
 | `exec <ref> <argv>...` | `-i/--interactive -t/--tty --env --workdir --user` | - | the command's output |
@@ -96,7 +96,7 @@ shard: sandbox <id> is paused: resume it with shard resume <id>
 | `snapshot list` | `--format` | table | the snapshots |
 | `snapshot inspect <snap>` | `--format` | json | the record |
 | `snapshot remove <snap>` | | - | the `<snap>` it was given |
-| `secret set <NAME> [VALUE]` | `--to --placeholder` | - | the name |
+| `secret set <NAME> [VALUE]` | `--dest/--destination --placeholder` | - | the name |
 | `secret list` | `--format` | table | the secrets, never a value |
 | `secret remove <NAME>` | `--force` | - | the name |
 | `secret grant <ref> <NAME>` | | - | the sandbox id |
@@ -313,7 +313,7 @@ IMAGE STATE UPTIME RESTART POLICY`, `snapshot list` prints `ID NAME SOURCE IMAGE
 
 The tables of the JSON verbs:
 
-- `inspect` prints `FIELD VALUE` rows, then `egress.policy`. A sandbox with a policy then gets an
+- `inspect` prints `FIELD VALUE` rows, with every time in RFC 3339 to the second in UTC. A sandbox with a policy then gets an
   `ID RULE IMPLIED` section, with each rule as `policy create` takes it, for example
   `allow suffix:example.com tcp:443`.
 - `snapshot inspect` prints `FIELD VALUE` rows.
