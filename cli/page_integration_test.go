@@ -17,7 +17,7 @@ func TestListPagesPastASandboxRemovedBetweenTwoPages(t *testing.T) {
 
 	var mine []string
 	for range 3 {
-		id := create(t, app, out, "/bin/true")
+		id := runDetached(t, app, out, "/bin/true")
 		t.Cleanup(func() { cleanUp(t, app, id) })
 		mine = append(mine, id)
 	}

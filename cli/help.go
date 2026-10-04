@@ -2,6 +2,7 @@ package cli
 
 import (
 	"fmt"
+	"slices"
 	"strconv"
 	"strings"
 	"time"
@@ -57,10 +58,26 @@ var verbGroups = []struct {
 	title string
 	verbs []string
 }{
-	{"Sandboxes", []string{"create", "exec", "ls", "logs", "inspect", "stop", "start", "rm", "pause", "resume", "fork", "clone", "cp"}},
+	{"Sandboxes", []string{"create", "run", "exec", "ls", "logs", "inspect", "stop", "start", "rm", "pause", "resume", "fork", "clone", "cp"}},
 	{"Images, secrets and egress", []string{"pull", "image", "secret", "policy"}},
 	{"Host and access", []string{"daemon", "info", "serve", "tokens", "version"}},
 }
+
+// sandboxFlagHelps are the flags create and run share, as sandboxFlags parses them.
+var sandboxFlagHelps = []flagHelp{
+	{"--name <name>", "a handle every verb takes in place of the id: lower-case letters, digits, - and _", ""},
+	{"--env KEY=VALUE", "set an environment variable, repeatable", ""},
+	{"--secret <NAME>", "give the guest a placeholder for a stored secret as $NAME, repeatable", ""},
+	{"--policy <name>", "the egress policy the host enforces; without one, the sandbox reaches the internet but nothing private", ""},
+	{"--workdir <dir>", "the directory the app and every exec start in", ""},
+	{"--user <user>", "the user the app and every exec run as", ""},
+	{"--memory <size>", "the memory bound; 0 is unbounded on gvisor, sysbox and runc, but firecracker and vz refuse it and need 128MiB or more", ""},
+	{"--cpus <n>", "the vcpu bound as a whole number; 0 is every host cpu (on vz, up to the framework's ceiling)", ""},
+	{"--disk <size>", "the disk bound for the writable layer and /tmp; 0 takes the default, and Firecracker needs at least 11MiB so its journal fits", ""},
+}
+
+// sizeNote is how create and run read a size.
+const sizeNote = "A size is a whole number with KiB, MiB or GiB (binary), or KB, MB or GB (decimal), and a part of a MiB rounds up. Only 0 goes without a unit."
 
 // helps is the one help source, keyed by the words after shard; "" is the top level.
 var helps = map[string]verbHelp{
@@ -81,34 +98,40 @@ var helps = map[string]verbHelp{
 		},
 	},
 	"create": {
-		usage:   []string{"create [flags] <image> [<argv>...]"},
-		summary: "create a sandbox, start the command after the image and print its id",
-		args: []row{
-			{"<image>", "the image to run; create pulls it first when it is not on disk"},
-			{"<argv>", "the start command; the image's own ENTRYPOINT and CMD never run"},
-		},
-		flags: []flagHelp{
-			{"--name <name>", "a handle every verb takes in place of the id: lower-case letters, digits, - and _", ""},
-			{"--env KEY=VALUE", "set an environment variable, repeatable", ""},
-			{"--secret <NAME>", "give the guest a placeholder for a stored secret as $NAME, repeatable", ""},
-			{"--policy <name>", "the egress policy the host enforces; without one, the sandbox reaches the internet but nothing private", ""},
-			{"--workdir <dir>", "the directory the entrypoint starts in", ""},
-			{"--user <user>", "the user the entrypoint runs as", ""},
-			{"--memory <size>", "the memory bound; 0 is unbounded on gvisor, sysbox and runc, but firecracker and vz refuse it and need 128MiB or more", ""},
-			{"--cpus <n>", "the vcpu bound as a whole number; 0 is every host cpu (on vz, up to the framework's ceiling)", ""},
-			{"--disk <size>", "the disk bound for the writable layer and /tmp; 0 takes the default, and Firecracker needs at least 11MiB so its journal fits", ""},
-			{"--restart <policy>", "when to start the command again inside the sandbox after it exits: no, on-failure or always; it needs a command", ""},
-			{"--restart-retries <n>", "how many restarts before giving up (default: no limit); --restart always takes none", ""},
-			{"--restart-backoff <duration>", "how long to wait before the first restart, in whole seconds; the wait doubles each time, up to " + strconv.Itoa(models.RestartBackoffCap) + "s", seconds(sandbox.DefaultRestartBackoff)},
-		},
+		usage:   []string{"create [flags] <image>"},
+		summary: "create a sandbox that runs only shard-init and print its id",
+		args:    []row{{"<image>", "the image; create pulls it first when it is not on disk"}},
+		flags:   sandboxFlagHelps,
 		notes: []string{
-			"The flags go before the image. The command follows the image; an optional -- may precede it. Pull progress goes to stderr. The id goes to stdout once the sandbox runs.",
-			"With no command only shard-init runs, and the sandbox stays up. --restart and its settings need a command.",
-			"The sandbox outlives its entrypoint: it stays running when the entrypoint exits, until shard stop. To give a sandbox a policy after create, use shard policy attach.",
+			"The flags go before the image. Pull progress goes to stderr. The id goes to stdout once the sandbox runs.",
+			"create takes no command: shard-init runs alone and the sandbox stays up until shard stop. shard run starts a sandbox with an app. To give a sandbox a policy after create, use shard policy attach.",
 			"Shard runs no health probe. To check the workload, run shard exec on your own schedule; it exits with the code of the command.",
-			"A size is a whole number with KiB, MiB or GiB (binary), or KB, MB or GB (decimal), and a part of a MiB rounds up. Only 0 goes without a unit.",
+			sizeNote,
 		},
-		example: "shard create --name web --memory 512MiB python:3.12 python -m http.server",
+		example: "shard create --name web --memory 512MiB python:3.12",
+	},
+	"run": {
+		usage:   []string{"run [flags] <image> <command> [args...]"},
+		summary: "create a sandbox, run the command as its app and wait for the app",
+		args: []row{
+			{"<image>", "the image; run pulls it first when it is not on disk"},
+			{"<command>", "the app and its arguments; the image's own ENTRYPOINT and CMD never run"},
+		},
+		flags: append(slices.Clone(sandboxFlagHelps),
+			flagHelp{"--restart <policy>", "when to start the app again inside the sandbox after it exits: no, on-failure or always", ""},
+			flagHelp{"--restart-retries <n>", "how many restarts before giving up (default: no limit); --restart always takes none", ""},
+			flagHelp{"--restart-backoff <duration>", "how long to wait before the first restart, in whole seconds; the wait doubles each time, up to " + strconv.Itoa(models.RestartBackoffCap) + "s", seconds(sandbox.DefaultRestartBackoff)},
+			flagHelp{"-d", "the same as --detach", ""},
+			flagHelp{"--detach", "print the id once the app starts, and return", ""},
+		),
+		notes: []string{
+			"The flags go before the image. The command follows the image; an optional -- may precede it.",
+			"run prints what the app writes, stdout and stderr interleaved, until the restart policy ends, then exits with the app's last code, or 128 plus the signal that ended it. It exits 125 when shard itself fails.",
+			"Ctrl+C stops the app and cancels its restarts, a second Ctrl+C kills it, and a third leaves with 130. Before the sandbox is up, run waits for it, then stops the app, or kills it after a second Ctrl+C, and exits 130. The sandbox stays running until shard stop.",
+			"A process in the sandbox ends its own restarts with kill -USR1 1, which also terms the app, or kill -USR2 1, which kills it.",
+			sizeNote,
+		},
+		example: "shard run --name web --restart on-failure python:3.12 python -m http.server",
 	},
 	"exec": {
 		usage:   []string{"exec [flags] <id|name> <argv>..."},

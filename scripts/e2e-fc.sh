@@ -243,16 +243,16 @@ say "the policy allows the probe, dns and the two echo names, and denies the res
 step "refuse a create with no memory"
 # --memory 0 is the default, which means unbounded on Linux; a microVM has no unbounded and refuses it by name.
 CODE=0
-REFUSAL=$(shard create "${IMAGE}" /bin/sleep 600 2>&1) || CODE=$?
+REFUSAL=$(shard create "${IMAGE}" 2>&1) || CODE=$?
 [ "${CODE}" != "0" ] || fail "create ran a microVM with no --memory"
 holds "memory" echo "${REFUSAL}" || fail "create said '${REFUSAL}', want it to name --memory"
 say "create refuses a microVM with no --memory: ${REFUSAL#shard: }"
 
-step "create a microVM"
-create_it() { ID=$(shard create --memory "${MEMORY}MiB" --secret E2E_TOKEN --secret E2E_SHAPED --policy e2e-policy "${IMAGE}" /bin/sh -c 'echo shard-e2e-entrypoint; exec /bin/sleep 600'); }
-timed "create" create_it
-[ -n "${ID}" ] || fail "create printed no id"
-say "create printed the id ${ID}"
+step "run a microVM detached"
+create_it() { ID=$(shard run -d --memory "${MEMORY}MiB" --secret E2E_TOKEN --secret E2E_SHAPED --policy e2e-policy "${IMAGE}" /bin/sh -c 'echo shard-e2e-entrypoint; exec /bin/sleep 600'); }
+timed "run -d" create_it
+[ -n "${ID}" ] || fail "run -d printed no id"
+say "run -d printed the id ${ID}"
 RECORD="${SHARD_ROOT}/sandboxes/${ID}/sandbox.json"
 [ -f "${RECORD}" ] || fail "there is no record at ${RECORD}"
 ADDRESS=$(record_field "${ID}" address)
@@ -312,14 +312,19 @@ expect "${CODE}" "7" "exec carries the guest's exit code"
 expect "$(printf 'over vsock\n' | shard exec -i "${ID}" /bin/cat)" "over vsock" "exec carries stdin in"
 expect_exec "1" "the entrypoint is a child of PID 1, which is shard-init" /bin/sh -c 'awk '"'"'$2 == "(sleep)" { print $4 }'"'"' /proc/[0-9]*/stat'
 
-step "a microVM outlives its entrypoint"
-EXIT_ID=$(shard create --memory "${MEMORY}MiB" --name e2e-exited "${IMAGE}" /bin/sh -c 'exit 3')
+step "run exits with the app's code, and the microVM outlives the app"
+CODE=0
+OUT=$(shard run --memory "${MEMORY}MiB" --name e2e-exited "${IMAGE}" /bin/sh -c 'echo e2e-run-out; exit 3' 2>/dev/null) || CODE=$?
+EXIT_ID=$(id_of e2e-exited)
+expect "${CODE}" "3" "run exits with the app's code"
+expect "${OUT}" "e2e-run-out" "run prints the app output once"
+# The liveness tick writes the exit into the record, seconds after run returns (SHARD-479).
 for _ in $(seq 1 50); do
 	grep -q '"exit_status"' "${SHARD_ROOT}/sandboxes/${EXIT_ID}/sandbox.json" && break
 	sleep 0.2
 done
-grep -q '"exit_status"' "${SHARD_ROOT}/sandboxes/${EXIT_ID}/sandbox.json" || fail "the record of ${EXIT_ID} never took the entrypoint's exit"
-expect "$(listed_state "${EXIT_ID}")" "running" "the sandbox is running after its entrypoint exited 3"
+grep -q '"exit_status"' "${SHARD_ROOT}/sandboxes/${EXIT_ID}/sandbox.json" || fail "the record of ${EXIT_ID} never took the app's exit"
+expect "$(listed_state "${EXIT_ID}")" "running" "the sandbox is running after its app exited 3"
 expect_exec_in "${EXIT_ID}" "still-up" "an exec answers in a sandbox whose entrypoint is gone" /bin/echo still-up
 shard stop "${EXIT_ID}" >/dev/null
 shard rm "${EXIT_ID}" >/dev/null
@@ -328,7 +333,7 @@ say "only stop ended it"
 
 step "a microVM that outgrows its memory stops with its reason, and nothing starts it again"
 # Only the first boot fills: the marker is on the overlay disk, and the sync keeps it through the stop that follows the OOM.
-OOM_ID=$(shard create --memory "${OOM_MEMORY}MiB" --name e2e-oom "${IMAGE}" /bin/sh -c \
+OOM_ID=$(shard run -d --memory "${OOM_MEMORY}MiB" --name e2e-oom "${IMAGE}" /bin/sh -c \
 	'if [ ! -e /root/ran ]; then touch /root/ran && sync && mount -o remount,size=1G /dev/shm && dd if=/dev/zero of=/dev/shm/fill bs=1M; fi; echo e2e-oom-settled; while true; do sleep 1; done')
 OOM_RECORD="${SHARD_ROOT}/sandboxes/${OOM_ID}/sandbox.json"
 for _ in $(seq 1 120); do
@@ -421,7 +426,7 @@ grep -q "with reflink" "${DAEMON_LOG}" && fail "the second daemon provisioned th
 say "the second daemon found the xfs mount and provisioned nothing"
 
 step "reconcile a microVM the host lost while the daemon was down"
-RECONCILE_ID=$(shard create --memory "${MEMORY}MiB" --name e2e-lost "${IMAGE}" /bin/sleep 600)
+RECONCILE_ID=$(shard run -d --memory "${MEMORY}MiB" --name e2e-lost "${IMAGE}" /bin/sleep 600)
 RECONCILE_LINK=$(record_field "${RECONCILE_ID}" host_interface)
 RECONCILE_PID=$(record_pid "${RECONCILE_ID}")
 stop_daemon || fail "the socket ${SOCKET} outlived the daemon"

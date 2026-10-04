@@ -123,6 +123,13 @@ func TestALogWriteThatFailsMarksTheSandboxLostInsteadOfRedialing(t *testing.T) {
 	if _, err := guest.Write([]byte("hello\n")); err != nil {
 		t.Fatal(err)
 	}
+	var word uint64
+	if err := binary.Read(guest, binary.BigEndian, &word); err != nil || word != supervisor.LogsStopped {
+		t.Fatalf("the guest read %d and %v, want the word that the log stopped", word, err)
+	}
+	if err := guest.Close(); err != nil {
+		t.Fatal(err)
+	}
 
 	select {
 	case <-done:

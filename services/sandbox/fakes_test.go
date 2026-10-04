@@ -281,6 +281,11 @@ type fakeProvider struct {
 	// restarts is what the supervisor counted on this run, and restartsErr a count file that cannot be read.
 	restarts    models.RestartCount
 	restartsErr error
+	// appEnds runs on the second Restarts, the way shard-init ends the app while a run waits on it.
+	appEnds       func()
+	restartsCalls int
+	// stopApps is the force of every StopApp, in order.
+	stopApps []bool
 	// onRemove runs inside Remove, so a test can say what the host looks like during a teardown.
 	onRemove func()
 	// onFork runs inside Fork, so a test can say what a fork that fails left on the host.
@@ -687,8 +692,21 @@ func (f *fakeProvider) Restarts(context.Context, string) (models.RestartCount, e
 	if f.restartsErr != nil {
 		return models.RestartCount{}, f.restartsErr
 	}
+	f.restartsCalls++
+	if f.appEnds != nil && f.restartsCalls == 2 {
+		f.appEnds()
+	}
 
 	return f.restarts, nil
+}
+
+func (f *fakeProvider) StopApp(_ context.Context, _ string, force bool) error {
+	if err := f.r.record("provider.StopApp"); err != nil {
+		return err
+	}
+	f.stopApps = append(f.stopApps, force)
+
+	return nil
 }
 
 func (f *fakeProvider) Wait(context.Context, string) (models.ExitStatus, error) {

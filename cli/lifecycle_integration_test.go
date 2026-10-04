@@ -23,7 +23,7 @@ var stubbornEntrypoint = []string{"/bin/sh", "-c", "trap '' TERM; while true; do
 func TestStopKeepsTheAddressAndTheRecordOnTheHost(t *testing.T) {
 	app, out := newCreateApp(t)
 
-	id := create(t, app, out, "/bin/sleep", "600")
+	id := runDetached(t, app, out, "/bin/sleep", "600")
 	t.Cleanup(func() { cleanUp(t, app, id) })
 
 	before := record(t, app, id)
@@ -70,7 +70,7 @@ func TestStopKeepsTheAddressAndTheRecordOnTheHost(t *testing.T) {
 func TestStopAndStartAgainNeverTripOverTheLinkTheOtherTook(t *testing.T) {
 	app, out := newCreateApp(t)
 
-	id := create(t, app, out, "/bin/sleep", "600")
+	id := runDetached(t, app, out, "/bin/sleep", "600")
 	t.Cleanup(func() { cleanUp(t, app, id) })
 
 	for round := range 20 {
@@ -96,7 +96,7 @@ func TestStopAndStartAgainNeverTripOverTheLinkTheOtherTook(t *testing.T) {
 func TestStopKillsAnEntrypointThatIgnoresTheSignal(t *testing.T) {
 	app, out := newCreateApp(t)
 
-	id := create(t, app, out, stubbornEntrypoint...)
+	id := runDetached(t, app, out, stubbornEntrypoint...)
 	t.Cleanup(func() { cleanUp(t, app, id) })
 
 	before := record(t, app, id)
@@ -131,7 +131,7 @@ func TestStopKillsAnEntrypointThatIgnoresTheSignal(t *testing.T) {
 func TestASecondStopChangesNothingOnTheHost(t *testing.T) {
 	app, out := newCreateApp(t)
 
-	id := create(t, app, out, "/bin/sleep", "600")
+	id := runDetached(t, app, out, "/bin/sleep", "600")
 	t.Cleanup(func() { cleanUp(t, app, id) })
 
 	if err := app.Run(t.Context(), []string{"stop", id}); err != nil {
@@ -165,7 +165,7 @@ func TestStopRefusesAnIDTheHostNeverHeld(t *testing.T) {
 func TestRmRefusesASandboxThatIsStillUp(t *testing.T) {
 	app, out := newCreateApp(t)
 
-	id := create(t, app, out, "/bin/sleep", "600")
+	id := runDetached(t, app, out, "/bin/sleep", "600")
 	t.Cleanup(func() { cleanUp(t, app, id) })
 
 	err := app.Run(t.Context(), []string{"rm", id})
@@ -190,7 +190,7 @@ func TestRmFreesEveryHolding(t *testing.T) {
 
 	before := holdings(t, app)
 
-	id := create(t, app, out, "/bin/sleep", "600")
+	id := runDetached(t, app, out, "/bin/sleep", "600")
 	// A step below that fails ends the test with the sandbox still up, and the devbox is shared.
 	t.Cleanup(func() { cleanUp(t, app, id) })
 
@@ -212,7 +212,7 @@ func TestRmForceEndsASandboxThatIsStillUp(t *testing.T) {
 
 	before := holdings(t, app)
 
-	id := create(t, app, out, "/bin/sleep", "600")
+	id := runDetached(t, app, out, "/bin/sleep", "600")
 	t.Cleanup(func() { cleanUp(t, app, id) })
 
 	sb := record(t, app, id)
@@ -230,7 +230,7 @@ func TestStopThenRmNeverRacesTheSubstrate(t *testing.T) {
 	app, out := newCreateApp(t)
 
 	for i := range 20 {
-		id := create(t, app, out, "/bin/sleep", "600")
+		id := runDetached(t, app, out, "/bin/sleep", "600")
 		t.Cleanup(func() { cleanUp(t, app, id) })
 
 		if err := app.Run(t.Context(), []string{"stop", id}); err != nil {
@@ -249,7 +249,7 @@ func TestStopThenRmNeverRacesTheSubstrate(t *testing.T) {
 func TestASecondRmFindsNothingToFree(t *testing.T) {
 	app, out := newCreateApp(t)
 
-	id := create(t, app, out, "/bin/sleep", "600")
+	id := runDetached(t, app, out, "/bin/sleep", "600")
 	t.Cleanup(func() { cleanUp(t, app, id) })
 
 	if err := app.Run(t.Context(), []string{"rm", "--force", id}); err != nil {

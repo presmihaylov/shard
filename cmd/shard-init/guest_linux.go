@@ -429,6 +429,9 @@ func rootIoctl(root *os.File, req uint) error {
 // upperEnv names the fd the first image opened on the overlay's upper disk, which the move onto the root leaves no path to.
 const upperEnv = "SHARD_INIT_UPPER_FD"
 
+// fionread is FIONREAD, which Linux names TIOCINQ.
+const fionread = unix.TIOCINQ
+
 // rootDisk opens what a freeze holds: the overlay's upper disk, as overlayfs takes no FIFREEZE, or the root disk itself.
 func rootDisk() (*os.File, error) {
 	upper := os.Getenv(upperEnv)

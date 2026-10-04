@@ -162,6 +162,11 @@ func (c *Control) Signal(ctx context.Context, pid int, signal string) error {
 // Stop asks shard-init to forward the stop to the entrypoint; the caller waits out the grace and kills the VM.
 func (c *Control) Stop(ctx context.Context) error { return c.request(ctx, Message{Kind: KindStop}) }
 
+// StopApp cancels every start again of the entrypoint and terms it, or kills it with force; the guest stays up.
+func (c *Control) StopApp(ctx context.Context, force bool) error {
+	return c.request(ctx, Message{Kind: KindStopApp, Force: force})
+}
+
 // Readdress moves a restored guest onto its own address, and returns once it answers there and nowhere else.
 func (c *Control) Readdress(ctx context.Context, a Address) error {
 	return c.request(ctx, Message{Kind: KindReaddress, Address: &a})

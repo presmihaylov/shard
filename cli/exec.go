@@ -226,9 +226,14 @@ func parseExec(args []string) (execOptions, error) {
 	flags.Var((*envList)(&opts.env), "env", "")
 	flags.StringVar(&opts.workDir, "workdir", "", "")
 	flags.StringVar(&opts.user, "user", "", "")
+	var refused error
+	runFlags(flags, &refused)
 
 	if err := parseVerb(flags, expandBundles(args, flags)); err != nil {
 		return execOptions{}, err
+	}
+	if refused != nil {
+		return execOptions{}, refused
 	}
 
 	rest := flags.Args()

@@ -54,7 +54,7 @@ fails.
 In a second terminal:
 
 ```
-shard create --memory 512MiB python:3.12 python -c 'print(1)'
+shard run -d --memory 512MiB python:3.12 python -c 'print(1)'
 shard logs <id>
 shard exec <id> uname -a
 shard pause <id>
@@ -258,7 +258,7 @@ install -d -m0700 ~/.shard
 limactl shell shard sudo cat /var/lib/caddy/.local/share/caddy/pki/authorities/local/root.crt > ~/.shard/ca.pem
 export SHARD_REMOTE=https://localhost:8443
 export SHARD_TOKEN_FILE=$HOME/.shard/token SHARD_CA_FILE=$HOME/.shard/ca.pem
-shard create alpine:3.20 sh -c 'echo hello from the VM'
+shard run -d alpine:3.20 sh -c 'echo hello from the VM'
 shard logs <id>
 shard ls
 ```

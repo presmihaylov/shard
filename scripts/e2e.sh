@@ -171,6 +171,13 @@ nap_alive() { shard exec "${ID}" /bin/sh -c 'pgrep -f "[s]leep 313" >/dev/null' 
 # listed_state reads the STATE column of shard ls for one sandbox, so the check never matches the image.
 listed_state() { shard ls --all | awk -v id="$1" '$1 == id { print $4 }'; }
 
+# id_of reads the id of a named sandbox through $(...), so the grep's early exit never SIGPIPEs inspect.
+id_of() {
+	local out
+	out=$(shard inspect "$1") || return 1
+	grep -om1 '"id": *"[^"]*"' <<<"${out}" | cut -d'"' -f4
+}
+
 # fronted reports the dnat that sends a sandbox's 80 to the proxy. The address is read fresh: a lease
 # is re-allocated across a stop and a start, so one read at the create goes stale.
 fronted() {
@@ -977,11 +984,11 @@ shard policy create --allow private e2e-bad >/dev/null 2>&1 || CODE=$?
 [ "${CODE}" != "0" ] || fail "policy create accepted a rule naming the private ranges"
 say "policy create refuses a raw-port name rule, an in-label wildcard, the old spelling and private"
 
-step "create a sandbox"
-# The entrypoint speaks once, so logs has something to show, and then holds the sandbox up.
-ID=$(shard create --secret E2E_TOKEN --secret E2E_SHAPED --policy e2e-policy "${IMAGE}" /bin/sh -c 'echo shard-e2e-entrypoint; exec /bin/sleep 600')
-[ -n "${ID}" ] || fail "create printed no id"
-say "create printed the id ${ID}"
+step "run a sandbox detached"
+# The app speaks once, so logs has something to show, and then holds the sandbox up.
+ID=$(shard run -d --secret E2E_TOKEN --secret E2E_SHAPED --policy e2e-policy "${IMAGE}" /bin/sh -c 'echo shard-e2e-entrypoint; exec /bin/sleep 600')
+[ -n "${ID}" ] || fail "run -d printed no id"
+say "run -d printed the id ${ID}"
 
 RECORD="${SHARD_ROOT}/sandboxes/${ID}/sandbox.json"
 [ -f "${RECORD}" ] || fail "there is no record at ${RECORD}"
@@ -1050,7 +1057,7 @@ wait "${EXEC_CLIENT_PID}" 2>/dev/null || true
 say "the client of that exec is gone, and no verb reattaches to it"
 
 step "reconcile a sandbox the host lost while the daemon was down"
-RECONCILE_ID=$(shard create --name e2e-lost "${IMAGE}" /bin/sleep 600)
+RECONCILE_ID=$(shard run -d --name e2e-lost "${IMAGE}" /bin/sleep 600)
 RECONCILE_RECORD="${SHARD_ROOT}/sandboxes/${RECONCILE_ID}/sandbox.json"
 RECONCILE_LINK=$(grep -o '"host_interface": *"[^"]*"' "${RECONCILE_RECORD}" | cut -d'"' -f4)
 RECONCILE_PID=$(grep -o '"pid": *[0-9]*' "${RECONCILE_RECORD}" | grep -o '[0-9]*$')
@@ -1443,7 +1450,8 @@ say "a drop that landed while the daemon was down is written at catch-up"
 
 # A follow is a tail of the one file, so both halves of the log reach it live.
 FOLLOW_LOG=$(mktemp)
-shard logs -f --egress "${ID}" >"${FOLLOW_LOG}" 2>&1 &
+# The binary, so the kill below ends the client and not only a subshell around it.
+"${PREFIX}/shard" --root "${SHARD_ROOT}" logs -f --egress "${ID}" >"${FOLLOW_LOG}" 2>&1 &
 FOLLOW_PID=$!
 
 shard exec "${ID}" /bin/sh -c "wget -S -O /dev/null http://${DENIED_HOST}/ >/dev/null 2>&1" >/dev/null 2>&1 || true
@@ -1647,18 +1655,113 @@ no_command_steps() {
 	drop_sandbox "${clone}"
 	drop_sandbox "${id}"
 
-	step "refuse --restart with no command"
-	for policy in "always" "on-failure --restart-retries 3"; do
-		code=0
-		# shellcheck disable=SC2086 # the policy and its settings are meant to split into flags
-		refusal=$(shard create --restart ${policy} "${IMAGE}" 2>&1) || code=$?
-		[ "${code}" != "0" ] || fail "create --restart ${policy} with no command made a sandbox: ${refusal}"
-		grep -q -- '--restart needs a command' <<<"${refusal}" || fail "the refusal of --restart ${policy} does not name --restart: ${refusal}"
-	done
+	step "create refuses a command, and the API refuses restart.policy with no command"
+	code=0
+	refusal=$(shard create "${IMAGE}" /bin/true 2>&1) || code=$?
+	[ "${code}" != "0" ] || fail "create took a command: ${refusal}"
+	grep -q 'create takes no command: shard run' <<<"${refusal}" || fail "the refusal of a command does not point at run: ${refusal}"
 	api_call POST "/v0/sandboxes" "{\"image\":\"${IMAGE}\",\"restart\":{\"policy\":\"always\"}}"
 	[ "${REPLY_CODE}" = "400" ] || fail "a restart policy with no command answered ${REPLY_CODE}, want 400"
 	grep -q 'restart.policy needs a command' <<<"${REPLY_BODY}" || fail "the refusal does not name restart.policy: ${REPLY_BODY}"
-	say "the CLI refuses --restart and the API refuses restart.policy with no command, 400"
+	say "create refuses a command, naming run, and the API refuses restart.policy with no command, 400"
+}
+
+# run_steps prove SHARD-454: run waits on its app and exits with its last code, -d returns once the sandbox is up, and Ctrl+C stops the app while the sandbox runs on.
+run_steps() {
+	local id out err code count pid flag before
+
+	step "run prints the app output once and exits with its code"
+	code=0
+	out=$(shard run --name e2e-run-exit "${IMAGE}" /bin/sh -c 'echo e2e-run-out; exit 3' 2>/dev/null) || code=$?
+	id=$(id_of e2e-run-exit)
+	track_sandbox "${id}"
+	expect "${code}" "3" "run exits with the app's code"
+	expect "${out}" "e2e-run-out" "run prints the app output once"
+	[ "$(listed_state "${id}")" = "running" ] || fail "the sandbox did not outlive the app of the run: $(shard ls --all)"
+	drop_sandbox "${id}"
+
+	step "run under on-failure exits with the last code once the policy gives up"
+	code=0
+	out=$(shard run --name e2e-run-retries --restart on-failure --restart-retries 2 "${IMAGE}" /bin/sh -c 'echo e2e-run-try; exit 4' 2>/dev/null) || code=$?
+	id=$(id_of e2e-run-retries)
+	track_sandbox "${id}"
+	expect "${code}" "4" "run exits with the code of the last run"
+	count=$(grep -c e2e-run-try <<<"${out}" || true)
+	expect "${count}" "3" "the app ran three times: the first run and its 2 retries"
+	holds '"count": *2' shard inspect "${id}" || fail "inspect holds no restart count of 2 when run returns: $(shard inspect "${id}")"
+	holds '"ended": *true' shard inspect "${id}" || fail "inspect does not hold the end of the policy when run returns: $(shard inspect "${id}")"
+	say "inspect holds count 2 and ended true as soon as run returns"
+	drop_sandbox "${id}"
+
+	step "run -d returns the id once the sandbox is up"
+	id=$(shard run -d "${IMAGE}" /bin/sleep 600)
+	track_sandbox "${id}"
+	[ "$(listed_state "${id}")" = "running" ] || fail "run -d returned before the sandbox was running: $(shard ls --all)"
+	say "run -d printed ${id}, and the sandbox is running"
+	drop_sandbox "${id}"
+
+	step "run refuses no command, and create and exec refuse the restart flags"
+	code=0
+	err=$(shard run "${IMAGE}" 2>&1) || code=$?
+	expect "${code}" "125" "run with no command exits 125"
+	grep -q 'run needs a command after the image' <<<"${err}" || fail "the refusal does not say run needs a command: ${err}"
+	id=$(shard create "${IMAGE}")
+	track_sandbox "${id}"
+	for flag in "--restart always" "--restart-retries 2" "--restart-backoff 2s"; do
+		code=0
+		# shellcheck disable=SC2086 # the flag and its value are meant to split
+		err=$(shard create ${flag} "${IMAGE}" 2>&1) || code=$?
+		[ "${code}" != "0" ] || fail "create took ${flag}: ${err}"
+		grep -q -- "${flag% *} is a run flag" <<<"${err}" || fail "create's refusal of ${flag} does not name it: ${err}"
+		code=0
+		# shellcheck disable=SC2086 # the flag and its value are meant to split
+		err=$(shard exec ${flag} "${id}" /bin/true 2>&1) || code=$?
+		[ "${code}" != "0" ] || fail "exec took ${flag}: ${err}"
+		grep -q -- "${flag% *} is a run flag" <<<"${err}" || fail "exec's refusal of ${flag} does not name it: ${err}"
+	done
+	say "create and exec refuse each restart flag by name"
+	drop_sandbox "${id}"
+
+	step "Ctrl+C on run --restart always stops the app and leaves the sandbox running"
+	out=$(mktemp)
+	err=$(mktemp)
+	# The binary, not the shard function: $! of a backgrounded function is a subshell, which ignores SIGINT.
+	"${PREFIX}/shard" --root "${SHARD_ROOT}" run --name e2e-run-int --restart always "${IMAGE}" /bin/sh -c 'while true; do echo e2e-tick; sleep 1; done' >"${out}" 2>"${err}" &
+	pid=$!
+	for _ in $(seq 1 100); do
+		grep -q e2e-tick "${out}" && break
+		sleep 0.2
+	done
+	grep -q e2e-tick "${out}" || fail "the attached run printed no tick: $(cat "${err}")"
+	id=$(id_of e2e-run-int)
+	track_sandbox "${id}"
+	# Go un-ignores SIGINT when it registers for it, so a background job of this shell still takes the signal.
+	kill -INT "${pid}"
+	for _ in $(seq 1 150); do
+		kill -0 "${pid}" 2>/dev/null || break
+		sleep 0.2
+	done
+	if kill -0 "${pid}" 2>/dev/null; then
+		kill -KILL "${pid}" 2>/dev/null || true
+		fail "run did not exit within 30 s of one Ctrl+C: $(cat "${err}")"
+	fi
+	code=0
+	wait "${pid}" || code=$?
+	expect "${code}" "143" "run exits with the app's TERM death after one Ctrl+C"
+	grep -q 'shard: stopping the app' "${err}" || fail "run did not say it stops the app: $(cat "${err}")"
+	before=$(shard logs "${id}" | grep -c e2e-tick || true)
+	sleep 3
+	expect "$(shard logs "${id}" | grep -c e2e-tick || true)" "${before}" "the ticks stopped: no restart followed the stop"
+	[ "$(listed_state "${id}")" = "running" ] || fail "the Ctrl+C stopped the sandbox, want it running: $(shard ls --all)"
+	expect_exec_in "${id}" "1 /.shard/init" "after the Ctrl+C, the guest holds shard-init alone" /bin/sh -c '
+		for p in /proc/[0-9]*; do
+			p=${p#/proc/}
+			if [ "$p" = "$$" ]; then continue; fi
+			a=$(tr "\000" "\n" < "/proc/$p/cmdline" 2>/dev/null | head -n 1)
+			if [ -n "$a" ]; then echo "$p $a"; fi
+		done'
+	rm -f "${out}" "${err}"
+	drop_sandbox "${id}"
 }
 
 # exec_cap_steps proves the sandbox keeps at most 32 exited execs and never evicts a running one (SHARD-163).
@@ -1853,7 +1956,7 @@ oom_stop_steps() {
 
 	step "an OOM stops the sandbox with its reason, and nothing starts it again"
 	# The bomb overruns the bound on the first run only, so the run a start brings back sleeps and can be used.
-	id=$(shard create --memory 64MiB "${IMAGE}" /bin/sh -c "if [ ! -e /ran ]; then touch /ran; ${OOM_BOMB}; fi; while true; do sleep 1; done")
+	id=$(shard run -d --memory 64MiB "${IMAGE}" /bin/sh -c "if [ ! -e /ran ]; then touch /ran; ${OOM_BOMB}; fi; while true; do sleep 1; done")
 	track_sandbox "${id}"
 	rec=$(rec_of "${id}")
 	for _ in $(seq 1 "${OOM_POLLS}"); do
@@ -1889,7 +1992,7 @@ disk_bound_steps() {
 	say "the API refuses a negative disk bound, 400"
 
 	step "a write past the disk bound fails in the guest and stops on the host"
-	id=$(shard create --disk 64MiB "${IMAGE}" /bin/sleep 600)
+	id=$(shard run -d --disk 64MiB "${IMAGE}" /bin/sleep 600)
 	track_sandbox "${id}"
 	rec=$(rec_of "${id}")
 	grep -q '"disk_mib": *64' "${rec}" || fail "the record does not carry the disk bound: $(cat "${rec}")"
@@ -1933,7 +2036,7 @@ stop_grace_steps() {
 	local id started took
 
 	step "a stop ends as soon as the entrypoint exits on SIGTERM"
-	id=$(shard create "${IMAGE}" /bin/sleep 600)
+	id=$(shard run -d "${IMAGE}" /bin/sleep 600)
 	track_sandbox "${id}"
 	started=$(date +%s.%N)
 	shard stop "${id}" >/dev/null
@@ -1951,7 +2054,7 @@ stop_grace_steps() {
 	# The kill costs the full 30 s, so gvisor proves it end to end and the provider unit tests cover the rest.
 	[ "${PROVIDER}" = "gvisor" ] || return 0
 	step "a stop kills an entrypoint that ignores SIGTERM at 30 s"
-	id=$(shard create "${IMAGE}" /bin/sh -c "trap '' TERM; echo e2e-ignores-term; while true; do sleep 1; done")
+	id=$(shard run -d "${IMAGE}" /bin/sh -c "trap '' TERM; echo e2e-ignores-term; while true; do sleep 1; done")
 	track_sandbox "${id}"
 	for _ in $(seq 1 50); do
 		holds "e2e-ignores-term" shard logs "${id}" && break
@@ -1969,6 +2072,7 @@ stop_grace_steps() {
 
 pending_and_failed_steps
 no_command_steps
+run_steps
 exec_cap_steps
 restart_policy_steps
 http_follow_steps
@@ -2002,8 +2106,8 @@ snapshot_refusals() {
 # on purpose: the sandbox already holds a cgroup of its own, and the daemon is what is under test.
 docker_steps() {
 	step "run dockerd inside a sandbox on ${PROVIDER}"
-	DIND_ID=$(shard create --name e2e-dind "${DIND_IMAGE}" /usr/local/bin/dockerd)
-	[ -n "${DIND_ID}" ] || fail "create printed no id for the dockerd sandbox"
+	DIND_ID=$(shard run -d --name e2e-dind "${DIND_IMAGE}" /usr/local/bin/dockerd)
+	[ -n "${DIND_ID}" ] || fail "run -d printed no id for the dockerd sandbox"
 	DIND_LINK=$(grep -o '"host_interface": *"[^"]*"' "${SHARD_ROOT}/sandboxes/${DIND_ID}/sandbox.json" | cut -d'"' -f4)
 	say "the dockerd sandbox is ${DIND_ID} on the link ${DIND_LINK}"
 
@@ -2208,7 +2312,7 @@ say "rm returned"
 
 step "grant a secret to a sandbox that was created without one"
 # This sandbox is created unfronted, so the grant is what plants the placeholder, the CA and the dnat.
-GRANT_ID=$(shard create "${IMAGE}" /bin/sh -c 'exec /bin/sleep 600')
+GRANT_ID=$(shard run -d "${IMAGE}" /bin/sh -c 'exec /bin/sleep 600')
 GRANT_LINK=$(grep -o '"host_interface": *"[^"]*"' "${SHARD_ROOT}/sandboxes/${GRANT_ID}/sandbox.json" | cut -d'"' -f4)
 expect_exec_in "${GRANT_ID}" "" "the guest holds no placeholder before the grant" /bin/sh -c 'echo "$E2E_TOKEN"'
 shard secret grant "${GRANT_ID}" E2E_TOKEN >/dev/null 2>&1 && fail "secret grant took a running sandbox"

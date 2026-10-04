@@ -215,12 +215,21 @@ func itestResources() models.Resources {
 
 // createArgs is the create verb over args, with the suite's bound unless args name their own.
 func createArgs(args ...string) []string {
+	return bounded("create", args)
+}
+
+// runArgs is run -d over args: the sandbox comes up with its app and the id prints once it is up.
+func runArgs(args ...string) []string {
+	return bounded("run", append([]string{"-d"}, args...))
+}
+
+func bounded(verb string, args []string) []string {
 	bound := itestResources().MemoryMiB
 	if bound == 0 || slices.Contains(args, "--memory") {
-		return append([]string{"create"}, args...)
+		return append([]string{verb}, args...)
 	}
 
-	return append([]string{"create", "--memory", strconv.FormatInt(bound, 10) + "MiB"}, args...)
+	return append([]string{verb, "--memory", strconv.FormatInt(bound, 10) + "MiB"}, args...)
 }
 
 // spawnDaemon runs the daemon over a fresh root and waits for the line that says its socket is up.
@@ -353,25 +362,31 @@ func daemonClient(app App) *client.Client {
 	return c
 }
 
-// create runs the command under test and answers with the id it printed.
-func create(t *testing.T, app App, out *bytes.Buffer, argv ...string) string {
+// runDetached runs the command under test as the app of a new sandbox and answers with the id it printed.
+func runDetached(t *testing.T, app App, out *bytes.Buffer, argv ...string) string {
 	t.Helper()
 
-	return createWith(t, app, out, append([]string{testImage, "--"}, argv...)...)
+	return runDetachedWith(t, app, out, append([]string{testImage, "--"}, argv...)...)
 }
 
-// createWith runs create with these flags and argv; the pull progress goes to stderr, so the id is stdout alone.
-func createWith(t *testing.T, app App, out *bytes.Buffer, args ...string) string {
+func runDetachedWith(t *testing.T, app App, out *bytes.Buffer, args ...string) string {
+	t.Helper()
+
+	return printedID(t, app, out, runArgs(args...))
+}
+
+// printedID runs one verb that creates a sandbox; the pull progress goes to stderr, so the id is stdout alone.
+func printedID(t *testing.T, app App, out *bytes.Buffer, argv []string) string {
 	t.Helper()
 
 	app, progress := ownStderr(app)
-	if err := app.Run(t.Context(), createArgs(args...)); err != nil {
-		t.Fatalf("create: %v\n%s", err, progress)
+	if err := app.Run(t.Context(), argv); err != nil {
+		t.Fatalf("%s: %v\n%s", argv[0], err, progress)
 	}
 
 	id := strings.TrimSpace(out.String())
 	if id == "" {
-		t.Fatal("create printed no id")
+		t.Fatalf("%s printed no id", argv[0])
 	}
 	out.Reset()
 
