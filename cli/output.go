@@ -19,31 +19,44 @@ type section struct {
 // cell keeps a value on its row: a tab or a newline inside it would split the table.
 var cell = strings.NewReplacer("\t", " ", "\n", " ")
 
-// writeSections prints the sections with a blank line between them, each aligned on its own.
+// writeSections prints the sections with a blank line between them.
 func writeSections(w io.Writer, sections ...section) error {
-	for i, s := range sections {
-		if i > 0 {
-			if _, err := fmt.Fprintln(w); err != nil {
-				return fmt.Errorf("write the output: %w", err)
-			}
-		}
-
-		tw := tabwriter.NewWriter(w, 0, 0, 3, ' ', 0)
-		fmt.Fprintln(tw, strings.Join(s.columns, "\t"))
-		for _, row := range s.rows {
-			values := make([]string, len(row))
-			for j, value := range row {
-				values[j] = cell.Replace(value)
-			}
-			fmt.Fprintln(tw, strings.Join(values, "\t"))
-		}
-
-		if err := tw.Flush(); err != nil {
+	separator := ""
+	for _, s := range sections {
+		if _, err := io.WriteString(w, separator); err != nil {
 			return fmt.Errorf("write the output: %w", err)
 		}
+		if err := writeSection(w, s); err != nil {
+			return err
+		}
+		separator = "\n"
 	}
 
 	return nil
+}
+
+// writeSection aligns one section on its own, so a wide section never stretches the next.
+func writeSection(w io.Writer, s section) error {
+	tw := tabwriter.NewWriter(w, 0, 0, 3, ' ', 0)
+	fmt.Fprintln(tw, strings.Join(s.columns, "\t"))
+	for _, row := range s.rows {
+		fmt.Fprintln(tw, rowLine(row))
+	}
+
+	if err := tw.Flush(); err != nil {
+		return fmt.Errorf("write the output: %w", err)
+	}
+
+	return nil
+}
+
+func rowLine(row []string) string {
+	values := make([]string, len(row))
+	for i, value := range row {
+		values[i] = cell.Replace(value)
+	}
+
+	return strings.Join(values, "\t")
 }
 
 // nonNil makes an empty list print as [] and never as null.
@@ -102,19 +115,10 @@ func walkFields(dec *json.Decoder, path string, rows *[][]string) error {
 
 	count := 0
 	for ; dec.More(); count++ {
-		child := fmt.Sprintf("%s[%d]", path, count)
-		if delim == '{' {
-			key, err := dec.Token()
-			if err != nil {
-				return err
-			}
-			name, ok := key.(string)
-			if !ok {
-				return errors.New("an object key is not a string")
-			}
-			child = joinField(path, name)
+		child, err := childPath(dec, delim, path, count)
+		if err != nil {
+			return err
 		}
-
 		if err := walkFields(dec, child, rows); err != nil {
 			return err
 		}
@@ -127,6 +131,24 @@ func walkFields(dec *json.Decoder, path string, rows *[][]string) error {
 	// The closing delimiter.
 	_, err = dec.Token()
 	return err
+}
+
+// childPath names the next value of an array by its index, and of an object by the key it reads first.
+func childPath(dec *json.Decoder, delim json.Delim, path string, index int) (string, error) {
+	if delim != '{' {
+		return fmt.Sprintf("%s[%d]", path, index), nil
+	}
+
+	key, err := dec.Token()
+	if err != nil {
+		return "", err
+	}
+	name, ok := key.(string)
+	if !ok {
+		return "", errors.New("an object key is not a string")
+	}
+
+	return joinField(path, name), nil
 }
 
 func joinField(path, name string) string {
