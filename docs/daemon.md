@@ -853,12 +853,12 @@ replaces a file, and the run that loses reads the key of the run that won. Both 
 default key under `--root`, so a root other than `/var/lib/shard` needs the same `--root` on both.
 
 A key that is there but unusable is refused, never replaced. The error names the path and the
-fault: a file that everyone on the host can read, a file the run cannot read, something other than
-a file, an empty file, or a key under 32 bytes, the width an HS256 key needs. No error, log line or
-output holds the key. A file that `--signing-key-file` names must exist, and `serve` and every
-`tokens` verb refuse a named file that is missing rather than create one. `openssl rand -hex 32`
-prints a key that passes. `tokens list` and `tokens revoke` never create a key or the `auth`
-directory.
+fault: a file that everyone on the host can read, write or execute, a file the run cannot read,
+something other than a file, an empty file, or a key under 32 bytes, the width an HS256 key needs.
+No error, log line or output holds the key. A file that `--signing-key-file` names must exist, and
+`serve` and every `tokens` verb refuse a named file that is missing rather than create one.
+`openssl rand -hex 32` prints a key that passes. `tokens list` and `tokens revoke` never create a
+key or the `auth` directory.
 
 The daemon never reads, creates or removes `<root>/auth`, so a daemon starts the same with or
 without one, and a host that serves no TCP never has one. One exception comes from the data dir on
@@ -954,8 +954,8 @@ The record holds the id, the subject, when the token was issued, when it expires
 whether it is revoked. The ledger sits beside the signing key file, at `serve.tokens` in the same
 directory, so the ledger of the default key is `<root>/auth/serve.tokens`. `tokens mint`, `tokens
 list`, `tokens revoke` and `serve` all use that path, and no flag moves it. `mint` creates the ledger
-`0640` when it is absent, and refuses a ledger that everyone can read. It prints no token when it
-cannot write the record.
+`0640` when it is absent, and refuses a ledger that everyone can read, write or execute. It prints
+no token when it cannot write the record.
 
 ```
 shard tokens list
