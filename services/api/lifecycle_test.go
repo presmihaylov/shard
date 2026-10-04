@@ -28,6 +28,8 @@ type fakeLifecycle struct {
 	created sandbox.CreateRequest
 	// createdID is the id Create answers, so a ?wait re-read can point at a record the test seeded.
 	createdID string
+	// repo is where a waited create reads the record it settled into.
+	repo *sandboxstate.Repository
 	// hold is how long Create takes, and heldErr what its context said at the end of it.
 	hold    time.Duration
 	heldErr error
@@ -248,6 +250,17 @@ func (f *fakeLifecycle) Create(ctx context.Context, req sandbox.CreateRequest) (
 	}
 
 	return models.Sandbox{ID: id, Name: req.Name, Image: req.Image, State: models.StatePending}, f.err
+}
+
+// CreateAndWait records the id it waited on, then answers the record the test seeded under it.
+func (f *fakeLifecycle) CreateAndWait(ctx context.Context, req sandbox.CreateRequest) (models.Sandbox, error) {
+	sb, err := f.Create(ctx, req)
+	if err != nil {
+		return models.Sandbox{}, err
+	}
+	f.waited = sb.ID
+
+	return sandbox.Get(f.repo, sb.ID)
 }
 
 // WaitState records the ref a get with ?wait blocked on, and refuses like any verb.
@@ -700,7 +713,7 @@ func TestCreateStreamsTheRefusalOfAnAppThatNeverStarted(t *testing.T) {
 	}
 }
 
-// The wait query reaches the orchestrator, which removes a refused sandbox only for a caller that waits.
+// The wait query picks the waited create, the only one that removes a refused sandbox.
 func TestCreatePassesTheWaitToTheOrchestrator(t *testing.T) {
 	for path, want := range map[string]bool{"/v0/sandboxes": false, "/v0/sandboxes?wait=true": true} {
 		s := seed(t)
@@ -709,8 +722,8 @@ func TestCreatePassesTheWaitToTheOrchestrator(t *testing.T) {
 		if status, got := send(t, s.server, http.MethodPost, path, `{"image":"alpine"}`); status != http.StatusCreated {
 			t.Fatalf("POST %s answered %d %v, want 201", path, status, got)
 		}
-		if s.verbs.created.Wait != want {
-			t.Errorf("POST %s reached the orchestrator with wait %t, want %t", path, s.verbs.created.Wait, want)
+		if waited := s.verbs.waited != ""; waited != want {
+			t.Errorf("POST %s waited %t, want %t", path, waited, want)
 		}
 	}
 }
