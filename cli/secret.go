@@ -10,6 +10,7 @@ import (
 	"text/tabwriter"
 
 	"github.com/presmihaylov/shard/pkg/pty"
+	"github.com/presmihaylov/shard/services/client"
 	"github.com/presmihaylov/shard/services/sandbox"
 )
 
@@ -164,10 +165,6 @@ func (a App) secretList(ctx context.Context, args []string) error {
 	if len(rest) != 0 {
 		return fmt.Errorf("secret list takes no arguments, got %d", len(rest))
 	}
-	if err := formatLanded("secret list", format, formatTable); err != nil {
-		return err
-	}
-
 	c, err := a.client()
 	if err != nil {
 		return err
@@ -178,20 +175,32 @@ func (a App) secretList(ctx context.Context, args []string) error {
 		return err
 	}
 
-	w := tabwriter.NewWriter(a.Out, 0, 0, 3, ' ', 0)
-	fmt.Fprintln(w, "NAME\tDESTINATIONS\tPLACEHOLDER\tUPDATED")
-
-	for _, sec := range result.Secrets {
-		fmt.Fprintf(w, "%s\t%s\t%s\t%s\n", sec.Name, strings.Join(sec.Destinations, ","), sec.Placeholder, humanAge(sec.UpdatedAt))
-	}
-
-	if err := w.Flush(); err != nil {
-		return fmt.Errorf("write the output: %w", err)
+	if err := writeSecrets(a.Out, format, result); err != nil {
+		return err
 	}
 
 	// The readable secrets are listed before the error, so one broken file does not hide the rest.
 	if len(result.Warnings) != 0 {
 		return errors.New(strings.Join(result.Warnings, "; "))
+	}
+
+	return nil
+}
+
+func writeSecrets(w io.Writer, format outputFormat, result client.SecretsResult) error {
+	if format == formatJSON {
+		return writeJSON(w, nonNil(result.Secrets))
+	}
+
+	tw := tabwriter.NewWriter(w, 0, 0, 3, ' ', 0)
+	fmt.Fprintln(tw, "NAME\tDESTINATIONS\tPLACEHOLDER\tUPDATED")
+
+	for _, sec := range result.Secrets {
+		fmt.Fprintf(tw, "%s\t%s\t%s\t%s\n", sec.Name, strings.Join(sec.Destinations, ","), sec.Placeholder, humanAge(sec.UpdatedAt))
+	}
+
+	if err := tw.Flush(); err != nil {
+		return fmt.Errorf("write the output: %w", err)
 	}
 
 	return nil

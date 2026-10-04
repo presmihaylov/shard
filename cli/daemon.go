@@ -48,9 +48,6 @@ func (a App) daemonStatus(ctx context.Context, args []string) error {
 	if len(rest) != 0 {
 		return fmt.Errorf("daemon status takes no argument, got %d", len(rest))
 	}
-	if err := formatLanded("daemon status", format, formatTable); err != nil {
-		return err
-	}
 
 	c, err := a.client()
 	if err != nil {
@@ -60,6 +57,21 @@ func (a App) daemonStatus(ctx context.Context, args []string) error {
 	d, err := c.Daemon(ctx)
 	if err != nil {
 		return err
+	}
+
+	var backoff []string
+	for _, t := range d.Tasks {
+		if t.State == daemon.TaskBackoff {
+			backoff = append(backoff, t.Name)
+		}
+	}
+
+	if format == formatJSON {
+		if err := writeJSON(a.Out, d); err != nil {
+			return err
+		}
+
+		return backoffError(backoff)
 	}
 
 	w := tabwriter.NewWriter(a.Out, 0, 0, 3, ' ', 0)
@@ -82,23 +94,23 @@ func (a App) daemonStatus(ctx context.Context, args []string) error {
 		return nil
 	}
 
-	var backoff []string
 	tw := tabwriter.NewWriter(a.Out, 0, 0, 3, ' ', 0)
 	fmt.Fprintln(tw, "\ntask\tstate\trestarts\tlast_error")
 	for _, t := range d.Tasks {
 		fmt.Fprintf(tw, "%s\t%s\t%d\t%s\n", t.Name, t.State, t.Restarts, t.LastError)
-		if t.State == daemon.TaskBackoff {
-			backoff = append(backoff, t.Name)
-		}
 	}
 	if err := tw.Flush(); err != nil {
 		return fmt.Errorf("write the output: %w", err)
 	}
 
-	// A task that restarts in a loop is an unhealthy daemon, so the exit code says so to a script.
-	if len(backoff) > 0 {
-		return fmt.Errorf("tasks in backoff: %s", strings.Join(backoff, ", "))
+	return backoffError(backoff)
+}
+
+// backoffError fails a status whose task restarts in a loop: that is an unhealthy daemon, and the exit code says so to a script.
+func backoffError(backoff []string) error {
+	if len(backoff) == 0 {
+		return nil
 	}
 
-	return nil
+	return fmt.Errorf("tasks in backoff: %s", strings.Join(backoff, ", "))
 }

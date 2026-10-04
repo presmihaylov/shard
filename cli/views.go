@@ -55,11 +55,7 @@ type tokenView struct {
 func tokenViews(infos []serve.TokenInfo) []tokenView {
 	views := make([]tokenView, 0, len(infos))
 	for _, info := range infos {
-		scopes := info.Scopes
-		if scopes == nil {
-			scopes = []string{}
-		}
-		views = append(views, tokenView{ID: info.ID, Name: info.Subject, IssuedAt: info.IssuedAt, ExpiresAt: info.ExpiresAt, Scopes: scopes, Status: info.Status})
+		views = append(views, tokenView{ID: info.ID, Name: info.Subject, IssuedAt: info.IssuedAt, ExpiresAt: info.ExpiresAt, Scopes: nonNil(info.Scopes), Status: info.Status})
 	}
 
 	return views

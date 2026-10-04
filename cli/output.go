@@ -46,6 +46,15 @@ func writeSections(w io.Writer, sections ...section) error {
 	return nil
 }
 
+// nonNil makes an empty list print as [] and never as null.
+func nonNil[T any](s []T) []T {
+	if s == nil {
+		return []T{}
+	}
+
+	return s
+}
+
 // writeJSON encodes the whole value before it writes, so a failure leaves stdout empty.
 func writeJSON(w io.Writer, v any) error {
 	blob, err := json.MarshalIndent(v, "", "  ")

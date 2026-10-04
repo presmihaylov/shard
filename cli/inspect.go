@@ -2,7 +2,6 @@ package cli
 
 import (
 	"context"
-	"encoding/json"
 	"fmt"
 )
 
@@ -15,10 +14,6 @@ func (a App) inspect(ctx context.Context, args []string) error {
 	if len(rest) != 1 {
 		return fmt.Errorf("inspect takes one sandbox id, got %d", len(rest))
 	}
-	if err := formatLanded("inspect", format, formatJSON); err != nil {
-		return err
-	}
-
 	c, err := a.client()
 	if err != nil {
 		return err
@@ -28,11 +23,14 @@ func (a App) inspect(ctx context.Context, args []string) error {
 	if err != nil {
 		return err
 	}
-
-	blob, err := json.MarshalIndent(sb, "", "  ")
-	if err != nil {
-		return fmt.Errorf("encode the record of sandbox %s: %w", sb.ID, err)
+	if format == formatJSON {
+		return writeJSON(a.Out, sb)
 	}
 
-	return a.print(string(blob))
+	sections, err := inspectSections(sb)
+	if err != nil {
+		return err
+	}
+
+	return writeSections(a.Out, sections...)
 }

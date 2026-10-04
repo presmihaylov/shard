@@ -24,10 +24,6 @@ func (a App) list(ctx context.Context, args []string) error {
 	if err != nil {
 		return err
 	}
-	if err := formatLanded("list", opts.format, formatTable); err != nil {
-		return err
-	}
-
 	c, err := a.client()
 	if err != nil {
 		return err
@@ -39,7 +35,7 @@ func (a App) list(ctx context.Context, args []string) error {
 	}
 
 	// The daemon answers with both: the sandboxes it read are printed, and the ones it could not are the exit.
-	if err := writeTable(a.Out, result.Sandboxes, time.Now()); err != nil {
+	if err := writeList(a.Out, opts.format, result.Sandboxes, time.Now()); err != nil {
 		return err
 	}
 
@@ -48,6 +44,14 @@ func (a App) list(ctx context.Context, args []string) error {
 	}
 
 	return errors.New(strings.Join(result.Warnings, "\n"))
+}
+
+func writeList(w io.Writer, format outputFormat, sandboxes []models.Sandbox, now time.Time) error {
+	if format == formatJSON {
+		return writeJSON(w, nonNil(sandboxes))
+	}
+
+	return writeTable(w, sandboxes, now)
 }
 
 func writeTable(w io.Writer, sandboxes []models.Sandbox, now time.Time) error {
