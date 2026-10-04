@@ -37,6 +37,24 @@ func TestExecProcessSetsTheGIDOnlyWhenTheUserNamesOne(t *testing.T) {
 	}
 }
 
+// A launch hands the channel over as the first preserved fd, and the supervisor's shim runs ahead of the command.
+func TestALaunchRunsTheCommandUnderTheShim(t *testing.T) {
+	opts := ExecOptions{Argv: []string{"/bin/sh", "-c", "echo hi"}, Launch: "/.shard/init"}
+
+	args := execArgs("amber-otter-1a2b", "/tmp/pid", "/tmp/process.json", opts)
+	if want := []string{"exec", "--pid-file", "/tmp/pid", "--process", "/tmp/process.json", "--preserve-fds", "1", "amber-otter-1a2b"}; !slices.Equal(args, want) {
+		t.Errorf("got argv %q, want %q", args, want)
+	}
+
+	process, err := execProcess(specs.Process{}, opts)
+	if err != nil {
+		t.Fatalf("execProcess: %v", err)
+	}
+	if want := []string{"/.shard/init", "launch", "/bin/sh", "-c", "echo hi"}; !slices.Equal(process.Args, want) {
+		t.Errorf("got args %q, want %q", process.Args, want)
+	}
+}
+
 // Without the flag runc joins a fresh session keyring per container, one key of the uid's quota each (SHARD-367).
 func TestCreateArgsSkipTheKeyringOnlyWhenAsked(t *testing.T) {
 	if args := createArgs("amber-otter-1a2b", "/b", true); !slices.Equal(args, []string{"create", "--bundle", "/b", "--no-new-keyring", "amber-otter-1a2b"}) {

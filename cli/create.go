@@ -79,7 +79,7 @@ func parseCreate(args []string) (sandbox.CreateRequest, error) {
 		return req, nil
 	}
 	if len(rest) == 0 {
-		return sandbox.CreateRequest{}, errors.New("create takes one image reference or --snapshot <id|name>, got neither")
+		return sandbox.CreateRequest{}, errors.New("create takes one image reference or --snapshot <id|name>, got none")
 	}
 
 	req.Image = rest[0]
@@ -96,7 +96,7 @@ func sandboxFlags(flags *flag.FlagSet, req *sandbox.CreateRequest) {
 	flags.StringVar(&req.WorkDir, "workdir", "", "")
 	flags.StringVar(&req.User, "user", "", "")
 	flags.Var(optionalMiB{&req.Resources.MemoryMiB}, "memory", "")
-	flags.Var((*cpuCount)(&req.Resources.VCPUs), "cpus", "")
+	flags.Var((*cpuCount)(&req.Resources.VCPUs), "vcpus", "")
 	flags.Var(sizeMiB{&req.Resources.DiskMiB}, "disk", "")
 }
 
@@ -114,7 +114,7 @@ func checkSandbox(flags *flag.FlagSet, req sandbox.CreateRequest) error {
 		return fmt.Errorf("--memory is a bound in MiB and no host holds that much, got %d", *req.Resources.MemoryMiB)
 	}
 	if req.Resources.VCPUs < 0 {
-		return fmt.Errorf("--cpus is a bound and cannot be negative, got %d", req.Resources.VCPUs)
+		return fmt.Errorf("--vcpus is a bound and cannot be negative, got %d", req.Resources.VCPUs)
 	}
 	if req.Resources.DiskMiB > sandbox.MaxDiskMiB {
 		return fmt.Errorf("--disk is a bound in MiB and no host holds that much, got %d", req.Resources.DiskMiB)

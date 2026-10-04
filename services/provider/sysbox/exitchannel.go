@@ -259,25 +259,51 @@ func replaced(why string) error {
 	return fmt.Errorf("fd 0 of PID 1 %s: %w", why, models.ErrExitChannelReplaced)
 }
 
-// readPage takes a record only from two equal reads, because a guest write can tear one, and never reads past the page.
+// readPage reads the exit record off a stable page.
 func readPage(f *os.File) (models.ExitStatus, bool, error) {
+	page, err := stablePage(f)
+	if err != nil {
+		return models.ExitStatus{}, false, err
+	}
+	exit, found := bundle.DecodeExitPage(page)
+
+	return exit, found, nil
+}
+
+// refusal reads the not-started record off the page, which the daemon still holds after PID 1 died.
+func (p *Provider) refusal(id string) (*models.CommandNotStartedError, error) {
+	ch := p.exits.get(id)
+	ch.mu.Lock()
+	defer ch.mu.Unlock()
+
+	if ch.file == nil {
+		return nil, nil
+	}
+	page, err := stablePage(ch.file)
+	if err != nil {
+		return nil, fmt.Errorf("read the exit channel of sandbox %s: %w", id, err)
+	}
+
+	return bundle.DecodeNotStartedPage(id, page), nil
+}
+
+// stablePage takes the page only from two equal reads, because a guest write can tear one, and never reads past it; nil is no stable read.
+func stablePage(f *os.File) ([]byte, error) {
 	for range pageReads {
 		first, err := pageOf(f)
 		if err != nil {
-			return models.ExitStatus{}, false, err
+			return nil, err
 		}
 		second, err := pageOf(f)
 		if err != nil {
-			return models.ExitStatus{}, false, err
+			return nil, err
 		}
 		if bytes.Equal(first, second) {
-			exit, found := bundle.DecodeExitPage(first)
-
-			return exit, found, nil
+			return first, nil
 		}
 	}
 
-	return models.ExitStatus{}, false, nil
+	return nil, nil
 }
 
 func pageOf(f *os.File) ([]byte, error) {

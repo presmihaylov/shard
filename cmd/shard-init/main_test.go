@@ -761,7 +761,7 @@ func TestSupervisorOutlivesALostExitStatus(t *testing.T) {
 
 	// A sandbox outlives its entrypoint, so the lost status is reported and the supervisor stays up.
 	reported := readLine(t, pipe)
-	if !strings.Contains(reported, "report the exit status on fd 0") {
+	if !strings.Contains(reported, "report the exit record on fd 0") {
 		t.Errorf("the supervisor reported %q, want it to name the failed report", reported)
 	}
 
@@ -794,6 +794,77 @@ func TestBrokenImageExitsSeparatelyFromABrokenSupervisor(t *testing.T) {
 	// The handshake is the host's only proof, so an entrypoint that never ran must leave none.
 	if _, err := os.Stat(readyFile); !errors.Is(err, os.ErrNotExist) {
 		t.Errorf("stat %s returned %v, want the handshake to be absent", readyFile, err)
+	}
+}
+
+// The host builds the refusal from the errno alone, so the record must carry the one execve answered.
+func TestAnEntrypointThatCannotRunLeavesItsErrnoOnFd0(t *testing.T) {
+	exe, err := os.Executable()
+	if err != nil {
+		t.Fatalf("locate the test binary: %v", err)
+	}
+	dir := t.TempDir()
+	plain := filepath.Join(dir, "plain")
+	if err := os.WriteFile(plain, []byte("#!/bin/sh\n"), 0o644); err != nil {
+		t.Fatalf("write a file with no execute bit: %v", err)
+	}
+
+	for name, c := range map[string]struct {
+		argv0 string
+		errno syscall.Errno
+	}{
+		"a path that is not there": {"/no/such/entrypoint", syscall.ENOENT},
+		"a name on no PATH entry":  {"no-such-entrypoint", syscall.ENOENT},
+		"a file with no exec bit":  {plain, syscall.EACCES},
+	} {
+		t.Run(name, func(t *testing.T) {
+			exitFile := filepath.Join(t.TempDir(), "exit.json")
+			exitW, err := os.OpenFile(exitFile, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o600)
+			if err != nil {
+				t.Fatalf("open the exit channel: %v", err)
+			}
+			defer func() {
+				if err := exitW.Close(); err != nil {
+					t.Errorf("close the exit channel: %v", err)
+				}
+			}()
+
+			cmd := exec.Command(exe, "-ready-file", filepath.Join(dir, "started"), "-restart-file", filepath.Join(dir, "restarts.json"), "--", c.argv0)
+			cmd.Env = append(os.Environ(), roleEnv+"="+roleSupervisor)
+			cmd.Stdin = exitW
+			var exit *exec.ExitError
+			if err := cmd.Run(); !errors.As(err, &exit) {
+				t.Fatalf("the supervisor returned %v, want it to exit non-zero", err)
+			}
+
+			blob, err := os.ReadFile(exitFile)
+			if err != nil {
+				t.Fatalf("read the exit channel: %v", err)
+			}
+			var report models.ExitReport
+			if err := json.Unmarshal(bytes.TrimSpace(blob), &report); err != nil {
+				t.Fatalf("decode the record %q: %v", blob, err)
+			}
+			if report.Kind != models.NotStartedReportKind || report.Errno != int(c.errno) {
+				t.Errorf("the record is %+v, want kind %s with errno %d", report, models.NotStartedReportKind, c.errno)
+			}
+		})
+	}
+}
+
+// A fork or credential failure is the supervisor's, so it must never read to the host as a command that cannot run.
+func TestExecErrnoIsZeroForAFailureThatIsNotTheCommand(t *testing.T) {
+	for name, err := range map[string]error{
+		"a setup failure":     fmt.Errorf("set up: %w", syscall.ENOENT),
+		"a fork failure":      unrunnable{fmt.Errorf("fork: %w", syscall.EAGAIN)},
+		"a credential denial": unrunnable{fmt.Errorf("setuid: %w", syscall.EPERM)},
+	} {
+		if got := execErrno(err); got != 0 {
+			t.Errorf("execErrno(%s) = %v, want zero", name, got)
+		}
+	}
+	if got := execErrno(unrunnable{fmt.Errorf("lookup: %w", exec.ErrNotFound)}); got != syscall.ENOENT {
+		t.Errorf("execErrno of a lookup miss = %v, want ENOENT", got)
 	}
 }
 
@@ -865,6 +936,50 @@ func TestRunRejectsBadArguments(t *testing.T) {
 		t.Run(name, func(t *testing.T) {
 			if err := run(args); err == nil {
 				t.Errorf("run(%q) returned no error", args)
+			}
+		})
+	}
+}
+
+// The error pipe of a fork reads EOF on a death before the exec too, so the flag the kernel clears at the exec is the proof it ran (SHARD-505).
+func TestStatExeced(t *testing.T) {
+	line := func(name string, flags uint64) string {
+		return fmt.Sprintf("42 (%s) Z 1 42 42 0 -1 %d 0 0 0 0 0 0 0 0 20 0 1 0", name, flags)
+	}
+	cases := map[string]struct {
+		stat string
+		want bool
+	}{
+		"an exec":                       {stat: line("sleep", 0x400000), want: true},
+		"a death before the exec":       {stat: line("shard-init", 0x400000|pfForkNoExec), want: false},
+		"a name that holds a stat line": {stat: line("a) Z 1 42 42 0 -1 64 (b", 0x400000), want: true},
+		"a name that holds a ')'":       {stat: line("x) S 1", 0x400000|pfForkNoExec), want: false},
+	}
+
+	for name, c := range cases {
+		t.Run(name, func(t *testing.T) {
+			got, err := statExeced(c.stat)
+			if err != nil {
+				t.Fatalf("statExeced(%q): %v", c.stat, err)
+			}
+			if got != c.want {
+				t.Errorf("statExeced(%q) = %t, want %t", c.stat, got, c.want)
+			}
+		})
+	}
+}
+
+func TestStatExecedRefusesWhatItCannotRead(t *testing.T) {
+	cases := map[string]string{
+		"no name":          "42 S 1 42 42 0 -1 0",
+		"no flags":         "42 (sleep) S 1 42 42 0",
+		"unreadable flags": "42 (sleep) S 1 42 42 0 -1 x",
+	}
+
+	for name, stat := range cases {
+		t.Run(name, func(t *testing.T) {
+			if _, err := statExeced(stat); err == nil {
+				t.Errorf("statExeced(%q) returned no error", stat)
 			}
 		})
 	}

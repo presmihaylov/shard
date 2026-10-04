@@ -270,10 +270,10 @@ func (s *Server) handle(ctx context.Context, conn net.Conn, leave func()) {
 		return
 	}
 
-	sub, scopes, ok, forbid, reason := s.authorize(head, method, target)
+	token, ok, forbid, reason := s.authorize(head, method, target)
 	if !ok {
 		if forbid {
-			s.forbid(conn, sub)
+			s.forbid(conn, token.Subject)
 
 			return
 		}
@@ -281,8 +281,11 @@ func (s *Server) handle(ctx context.Context, conn net.Conn, leave func()) {
 
 		return
 	}
-	s.log.Printf("authorized %s as %s", conn.RemoteAddr(), sub)
-	head = stampScopes(head, scopes)
+	s.log.Printf("authorized %s as %s", conn.RemoteAddr(), token.Subject)
+	head = stampScopes(head, token.Scopes)
+	ctx, stopGuard := s.guard(ctx, token)
+	defer stopGuard()
+	defer context.AfterFunc(ctx, closeConn)()
 	// A logs -f or an exec attach holds its connection for long, and a valid client must not be refused for that.
 	leave()
 
@@ -293,13 +296,15 @@ func (s *Server) handle(ctx context.Context, conn net.Conn, leave func()) {
 
 		return
 	}
-	defer func() {
+	closeUpstream := func() {
 		if err := upstream.Close(); !quiet(err) {
 			s.log.Printf("close the daemon socket for %s: %v", conn.RemoteAddr(), err)
 		}
-	}()
+	}
+	defer closeUpstream()
+	defer context.AfterFunc(ctx, closeUpstream)()
 
-	if err := s.proxy(conn, upstream, head); err != nil {
+	if err := errors.Join(s.proxy(conn, upstream, head), context.Cause(ctx)); err != nil {
 		s.log.Printf("proxy the connection from %s: %v", conn.RemoteAddr(), err)
 	}
 }
@@ -348,44 +353,42 @@ func readHead(r io.Reader) ([]byte, error) {
 	}
 }
 
-// authorize verifies the token, checks the ledger holds its id and has not revoked it, and checks its scopes
-// reach the route; nothing is dialed without all three. It answers the subject, whether the request is
-// authorized, whether an unauthorized one is a 403 rather than a 401, and the reason a 401 carries.
-func (s *Server) authorize(head []byte, method string, target *url.URL) (string, []string, bool, bool, string) {
+// No daemon connection opens until the token, ledger and route scope all permit it.
+func (s *Server) authorize(head []byte, method string, target *url.URL) (claims, bool, bool, string) {
 	fields, ok := headerFields(head)
 	if !ok {
-		return "", nil, false, false, "no valid token"
+		return claims{}, false, false, "no valid token"
 	}
 
 	scheme, token, found := strings.Cut(fields.Get("Authorization"), " ")
 	if !found || !strings.EqualFold(scheme, "Bearer") {
-		return "", nil, false, false, "no valid token"
+		return claims{}, false, false, "no valid token"
 	}
 
-	sub, scopes, jti, err := verify(s.signingKey, strings.TrimSpace(token))
+	c, err := verify(s.signingKey, strings.TrimSpace(token))
 	if err != nil {
-		return "", nil, false, false, "no valid token"
+		return claims{}, false, false, "no valid token"
 	}
 
 	if err := s.tokens.refresh(); err != nil {
 		s.log.Printf("read the ledger: %v", err)
 
-		return sub, nil, false, false, "the ledger is unavailable"
+		return c, false, false, "the ledger is unavailable"
 	}
-	entry, known := s.tokens.lookup(jti)
+	entry, known := s.tokens.lookup(c.ID)
 	if !known {
-		return sub, nil, false, false, "the token id is not in the ledger"
+		return c, false, false, "the token id is not in the ledger"
 	}
 	if entry.Revoked {
-		return sub, nil, false, false, "the token is revoked"
+		return c, false, false, "the token is revoked"
 	}
 
 	need, known := s.caps.scope(method, target)
-	if !known || !covers(scopes, need) {
-		return sub, nil, false, true, ""
+	if !known || !covers(c.Scopes, need) {
+		return c, false, true, ""
 	}
 
-	return sub, scopes, true, false, ""
+	return c, true, false, ""
 }
 
 // requestLine parses the method and the target as net/http does, on the ASCII space alone, so the front checks the route the daemon serves.

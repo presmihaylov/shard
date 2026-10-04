@@ -208,6 +208,11 @@ func (r *resizes) stop() {
 // shellCode answers a command that never ran the way a shell does, because runsc reports every one
 // of those as its own 128, which nothing outside runsc means anything by.
 func shellCode(err error) error {
+	var refused *client.APIError
+	if errors.As(err, &refused) && refused.Code == models.CodeCommandNotStarted {
+		return &ExitError{Code: refused.ExitCode, Message: refused.Message}
+	}
+
 	var notStarted *models.CommandNotStartedError
 	if !errors.As(err, &notStarted) {
 		return err
@@ -240,7 +245,7 @@ func parseExec(args []string) (execOptions, error) {
 
 	rest := flags.Args()
 	if len(rest) == 0 {
-		return execOptions{}, errors.New("exec takes one sandbox id, got none")
+		return execOptions{}, errors.New("exec takes one sandbox id or name, got none")
 	}
 	argv := rest[1:]
 	if len(argv) > 0 && argv[0] == "--" {

@@ -40,7 +40,7 @@ func parseLogs(verb string, args []string) (logsOptions, error) {
 
 	rest := flags.Args()
 	if len(rest) != 1 {
-		return logsOptions{}, fmt.Errorf("%s takes one sandbox id, got %d", verb, len(rest))
+		return logsOptions{}, fmt.Errorf("%s takes one sandbox id or name, got %s", verb, gotArgs(rest))
 	}
 
 	opts.id = rest[0]

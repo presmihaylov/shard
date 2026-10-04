@@ -2,6 +2,7 @@ package api
 
 import (
 	"slices"
+	"strings"
 	"time"
 
 	"github.com/presmihaylov/shard/models"
@@ -19,7 +20,7 @@ type Sandbox struct {
 	Snapshot      string             `json:"snapshot,omitempty"`
 	Provider      string             `json:"provider"`
 	Kernel        string             `json:"kernel,omitempty"`
-	State         models.State       `json:"state"`
+	State         models.State       `json:"state" enum:"pending,created,running,paused,unresponsive,stopped,failed"`
 	ExitStatus    *models.ExitStatus `json:"exit_status,omitempty"`
 	StoppedReason string             `json:"stopped_reason,omitempty"`
 	FailedReason  string             `json:"failed_reason,omitempty"`
@@ -40,7 +41,7 @@ type Inspection struct {
 
 // Event is one step of the pull a create runs, less the host path the image lands at.
 type Event struct {
-	Status    string `json:"status"`
+	Status    string `json:"status" enum:"cached,pulling,layer,unpacking,unpacked,building,pulled" doc:"cached and pulled carry reference and digest; pulling adds layers and bytes, the whole download; layer carries one layer's digest, bytes and present; unpacking carries reference, digest and layers; unpacked carries one layer's digest, layer and layers; building carries nothing more."`
 	Reference string `json:"reference,omitempty"`
 	Digest    string `json:"digest,omitempty"`
 	Layers    int    `json:"layers,omitempty"`
@@ -61,7 +62,7 @@ func PublicSandbox(sb models.Sandbox) Sandbox {
 		Kernel:        sb.Kernel,
 		State:         sb.State,
 		ExitStatus:    sb.ExitStatus,
-		StoppedReason: sb.StoppedReason,
+		StoppedReason: publicStoppedReason(sb.StoppedReason),
 		FailedReason:  sandbox.PublicReason(sb),
 		Resources:     sb.Resources,
 		Command:       sb.Command,
@@ -71,6 +72,19 @@ func PublicSandbox(sb models.Sandbox) Sandbox {
 		StartedAt:     sb.StartedAt,
 		CreatedAt:     sb.CreatedAt,
 	}
+}
+
+// publicStoppedReason permits only fixed diagnoses, so an old or new raw cause never reaches the wire.
+func publicStoppedReason(reason string) string {
+	switch reason {
+	case "", sandbox.OOMKilledReason, sandbox.DiedReason, sandbox.LostReason:
+		return reason
+	}
+	if reason == sandbox.SupervisorFailedReason || strings.HasPrefix(reason, sandbox.SupervisorFailedReason+":") {
+		return "the sandbox supervisor failed; remove it and create another sandbox"
+	}
+
+	return "the sandbox stopped; the daemon log has the cause"
 }
 
 func PublicInspection(insp sandbox.Inspection) Inspection {

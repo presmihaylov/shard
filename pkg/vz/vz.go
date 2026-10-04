@@ -52,7 +52,7 @@ type Range struct {
 	Max uint64
 }
 
-// DefaultCPUs is the host's count held inside the range, so --cpus 0 is every host CPU the framework can give.
+// DefaultCPUs is the host's count held inside the range, so --vcpus 0 is every host CPU the framework can give.
 func DefaultCPUs(host int, allowed Range) uint {
 	return uint(min(max(uint64(max(host, 0)), allowed.Min), allowed.Max)) //nolint:gosec // a cpu count fits
 }

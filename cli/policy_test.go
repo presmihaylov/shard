@@ -165,7 +165,7 @@ func TestInspectPrintsWhatTheHostEnforces(t *testing.T) {
 	if err := json.Unmarshal(out.Bytes(), &got); err != nil {
 		t.Fatalf("inspect printed something that is not JSON: %v\n%s", err, out.String())
 	}
-	if got.ID != "sandbox1" || got.Egress == nil || got.Egress.Policy != "web" || len(got.Egress.Rules) != 1 {
+	if got.ID != "sandbox1" || got.Policy != "web" || got.Egress == nil || len(got.Egress.Rules) != 1 {
 		t.Errorf("inspect printed %s", out.String())
 	}
 }
@@ -377,9 +377,9 @@ func TestParsePolicyLogsRefusesTheWrongArguments(t *testing.T) {
 		args []string
 		want string
 	}{
-		"no sandbox":       {nil, "takes one sandbox id, got 0"},
-		"two sandboxes":    {[]string{"sandbox1", "sandbox2"}, "takes one sandbox id, got 2"},
-		"a flag after it":  {[]string{"sandbox1", "-f"}, "takes one sandbox id, got 2"},
+		"no sandbox":       {nil, "takes one sandbox id or name, got none"},
+		"two sandboxes":    {[]string{"sandbox1", "sandbox2"}, `takes one sandbox id or name, got ["sandbox1" "sandbox2"]`},
+		"a flag after it":  {[]string{"sandbox1", "-f"}, `takes one sandbox id or name, got ["sandbox1" "-f"]`},
 		"an unknown flag":  {[]string{"--egress", "sandbox1"}, "unknown flag --egress"},
 		"a policy's flags": {[]string{"--allow", "dns", "sandbox1"}, "unknown flag --allow"},
 	} {

@@ -71,7 +71,7 @@ func TestParseCreateTakesAnImageOrASnapshot(t *testing.T) {
 
 	for args, want := range map[string]string{
 		"--snapshot web-base alpine:3.20": "create takes an image or --snapshot, never both: snapshot web-base already names its image",
-		"":                                "create takes one image reference or --snapshot <id|name>, got neither",
+		"":                                "create takes one image reference or --snapshot <id|name>, got none",
 	} {
 		if _, err := parseCreate(strings.Fields(args)); err == nil || err.Error() != want {
 			t.Errorf("parseCreate(%q) = %v, want %q", args, err, want)
@@ -90,7 +90,7 @@ func TestParseCreateFlags(t *testing.T) {
 	args := []string{
 		"--env", "A=1", "--env", "B=2",
 		"--workdir", "/srv", "--user", "nobody",
-		"--memory", "512MiB", "--cpus", "2", "--disk", "64MiB",
+		"--memory", "512MiB", "--vcpus", "2", "--disk", "64MiB",
 		"alpine:3.20",
 	}
 
@@ -257,7 +257,7 @@ func TestParseCreateRejections(t *testing.T) {
 		"a memory past the bound": {"--memory", "16385GiB", "alpine:3.20"},
 		// A bound this large wraps the byte count it is turned into, and a wrapped bound reads as unbounded.
 		"a memory that overflows": {"--memory", "17592186044416MiB", "alpine:3.20"},
-		"a negative cpu bound":    {"--cpus", "-2", "alpine:3.20"},
+		"a negative cpu bound":    {"--vcpus", "-2", "alpine:3.20"},
 		"a negative disk bound":   {"--disk", "-1", "alpine:3.20"},
 		"a disk that overflows":   {"--disk", "17592186044416MiB", "alpine:3.20"},
 	}
@@ -289,13 +289,13 @@ func TestParseRunRejections(t *testing.T) {
 
 func TestParseCreateNamesAFractionalCPUBound(t *testing.T) {
 	for _, value := range []string{"0.5", "1.0"} {
-		_, err := parseCreate([]string{"--cpus", value, "alpine:3.20"})
+		_, err := parseCreate([]string{"--vcpus", value, "alpine:3.20"})
 		if err == nil {
-			t.Fatalf("parseCreate(--cpus %s) returned no error", value)
+			t.Fatalf("parseCreate(--vcpus %s) returned no error", value)
 		}
-		for _, want := range []string{"-cpus", value, "whole number", "never rounded"} {
+		for _, want := range []string{"-vcpus", value, "whole number", "never rounded"} {
 			if !strings.Contains(err.Error(), want) {
-				t.Errorf("parseCreate(--cpus %s) = %q, want %q in it", value, err, want)
+				t.Errorf("parseCreate(--vcpus %s) = %q, want %q in it", value, err, want)
 			}
 		}
 	}

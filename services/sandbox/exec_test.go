@@ -261,6 +261,58 @@ func TestExecRefusesASandboxTheRecordDoesNotHold(t *testing.T) {
 	}
 }
 
+// A stop that tore the runtime down under an in-flight exec answers sandbox_not_running, never a 500 internal (SHARD-563).
+func TestExecThatRacesAStopAnswersSandboxNotRunning(t *testing.T) {
+	r := &recorder{}
+	svc, l := newService(t, r, running())
+	l.provider.serve = func(models.ExecSpec) (models.ExitStatus, error) {
+		l.repo.sb.State = models.StateStopped
+		return models.ExitStatus{}, errors.New("the runtime ended before the launch shim was ready")
+	}
+
+	_, err := svc.CreateExec(t.Context(), "sandbox1", sandbox.ExecRequest{Command: []string{"echo", "hi"}})
+	var state *sandbox.StateError
+	if !errors.As(err, &state) || state.Code != models.CodeSandboxNotRunning {
+		t.Fatalf("CreateExec answered %v, want a StateError with code %s", err, models.CodeSandboxNotRunning)
+	}
+}
+
+// A remove that deleted the record under an in-flight exec answers not_found, never a 500 internal (SHARD-563).
+func TestExecThatRacesARemoveAnswersNotFound(t *testing.T) {
+	r := &recorder{}
+	svc, l := newService(t, r, running())
+	l.provider.serve = func(models.ExecSpec) (models.ExitStatus, error) {
+		l.repo.missing = true
+		return models.ExitStatus{}, errors.New("connecting to control server")
+	}
+
+	_, err := svc.CreateExec(t.Context(), "sandbox1", sandbox.ExecRequest{Command: []string{"echo", "hi"}})
+	if !errors.Is(err, sandboxstate.ErrNotFound) {
+		t.Fatalf("CreateExec answered %v, want a not-found error", err)
+	}
+}
+
+// A teardown that holds the lock past the budget leaves the record unread, so the launch error is a 504 timeout, never a raw 500 (SHARD-563).
+func TestExecThatRacesAHeldTeardownAnswersTimeout(t *testing.T) {
+	r := &recorder{}
+	svc, l := newService(t, r, running(), func(cfg *sandbox.Config) { cfg.ExecStartBudget = 20 * time.Millisecond })
+	l.provider.serve = func(models.ExecSpec) (models.ExitStatus, error) {
+		return models.ExitStatus{}, errors.New("the runtime ended before the launch shim was ready")
+	}
+
+	unlock, err := svc.Hold(t.Context(), "sandbox1")
+	if err != nil {
+		t.Fatalf("Hold: %v", err)
+	}
+	defer unlock()
+
+	_, err = svc.CreateExec(t.Context(), "sandbox1", sandbox.ExecRequest{Command: []string{"echo", "hi"}})
+	timeout, ok := errors.AsType[*sandbox.SubstrateTimeoutError](err)
+	if !ok || timeout.Op != "exec" {
+		t.Fatalf("CreateExec answered %v, want a SubstrateTimeoutError for exec", err)
+	}
+}
+
 // A record that says stopped outranks the oom count the cgroup kept: the user stopped this one.
 func TestExecRefusesAStoppedSandboxWithoutTheProvider(t *testing.T) {
 	r := &recorder{}
@@ -405,9 +457,14 @@ func TestARefusalOutsideAPauseKeepsItsOwnWords(t *testing.T) {
 			l.provider.execPID = 7
 			l.provider.execNoPID, l.provider.execErr = tc.noPID, tc.execErr
 
+			want := tc.execErr.Error()
+			if notStarted, ok := errors.AsType[*models.CommandNotStartedError](tc.execErr); ok {
+				want = notStarted.Reason
+			}
+
 			_, _, _, err := execOf(t, l, svc, "sandbox1", sandbox.ExecRequest{Command: []string{"true"}}, "")
-			if err == nil || strings.Contains(err.Error(), "is paused") || !strings.Contains(err.Error(), tc.execErr.Error()) {
-				t.Fatalf("Exec returned %v, want the substrate's own %q", err, tc.execErr)
+			if err == nil || strings.Contains(err.Error(), "is paused") || !strings.Contains(err.Error(), want) {
+				t.Fatalf("Exec returned %v, want the substrate's own %q", err, want)
 			}
 		})
 	}
@@ -525,6 +582,108 @@ func TestAnExecThatCannotStartDropsTheRawError(t *testing.T) {
 	}
 	if out.Len() != 0 || errOut.Len() != 0 {
 		t.Errorf("the client saw stdout %q and stderr %q, want the raw substrate error dropped", out, errOut)
+	}
+}
+
+// A command with no launch report past its budget is cancelled and refused, and nothing holds it after.
+func TestALaunchPastItsBudgetIsCancelledAndRefused(t *testing.T) {
+	svc, l := newService(t, &recorder{}, running(), func(cfg *sandbox.Config) { cfg.ExecStartBudget = 20 * time.Millisecond })
+	l.provider.execNoPID = true
+	l.provider.execBegan = make(chan struct{})
+	l.provider.execWaits = make(chan struct{})
+
+	_, err := svc.CreateExec(t.Context(), "sandbox1", sandbox.ExecRequest{Command: []string{"sleep", "60"}})
+
+	var timeout *sandbox.SubstrateTimeoutError
+	if !errors.As(err, &timeout) {
+		t.Fatalf("CreateExec returned %v, want a substrate timeout", err)
+	}
+	if l.provider.execCtx.Err() == nil {
+		t.Error("the provider's exec was not cancelled")
+	}
+	if held := svc.ExecsHeld("sandbox1"); held != 0 {
+		t.Errorf("the service holds %d execs after the refusal, want none", held)
+	}
+}
+
+// A provider that ignores the cancel keeps its hidden exec held until it ends, so a stop still finds it.
+func TestALaunchThatIgnoresItsCancelStaysHeldUntilItEnds(t *testing.T) {
+	svc, l := newService(t, &recorder{}, running(), func(cfg *sandbox.Config) {
+		cfg.ExecStartBudget, cfg.ExecCleanupGrace = 20*time.Millisecond, 20*time.Millisecond
+	})
+	release := make(chan struct{})
+	l.provider.serve = func(models.ExecSpec) (models.ExitStatus, error) {
+		<-release
+		return models.ExitStatus{}, nil
+	}
+
+	_, err := svc.CreateExec(t.Context(), "sandbox1", sandbox.ExecRequest{Command: []string{"sleep", "60"}})
+
+	var timeout *sandbox.SubstrateTimeoutError
+	if !errors.As(err, &timeout) {
+		t.Fatalf("CreateExec returned %v, want a substrate timeout", err)
+	}
+	if held := svc.ExecsHeld("sandbox1"); held != 1 {
+		t.Errorf("the service holds %d execs while the command runs on, want 1", held)
+	}
+	if listed := waitForExecCount(t, svc, "sandbox1", 0); listed != 0 {
+		t.Errorf("%d execs are listed, want the refused one hidden", listed)
+	}
+
+	close(release)
+	deadline := time.Now().Add(2 * time.Second)
+	for svc.ExecsHeld("sandbox1") != 0 && time.Now().Before(deadline) {
+		time.Sleep(time.Millisecond)
+	}
+	if held := svc.ExecsHeld("sandbox1"); held != 0 {
+		t.Errorf("the service holds %d execs after the command ended, want none", held)
+	}
+}
+
+// A client that goes before the launch is decided never lifts its budget, so an unconfirmed command is still cancelled.
+func TestADisconnectedCreateKeepsTheLaunchBudget(t *testing.T) {
+	svc, l := newService(t, &recorder{}, running(), func(cfg *sandbox.Config) { cfg.ExecStartBudget = 500 * time.Millisecond })
+	l.provider.execNoPID = true
+	l.provider.execBegan = make(chan struct{})
+	l.provider.execWaits = make(chan struct{})
+
+	ctx, cancel := context.WithCancel(t.Context())
+	created := make(chan error, 1)
+	go func() {
+		_, err := svc.CreateExec(ctx, "sandbox1", sandbox.ExecRequest{Command: []string{"sleep", "60"}})
+		created <- err
+	}()
+	<-l.provider.execBegan
+	cancel()
+	if err := <-created; !errors.Is(err, context.Canceled) {
+		t.Fatalf("CreateExec returned %v, want the client's own cancel", err)
+	}
+
+	select {
+	case <-l.provider.execCtx.Done():
+	case <-time.After(5 * time.Second):
+		t.Fatal("the provider's exec was never cancelled after its launch budget")
+	}
+}
+
+// A client that goes after the launch leaves the command running.
+func TestADisconnectAfterTheLaunchLeavesTheCommandRunning(t *testing.T) {
+	svc, l := newService(t, &recorder{}, running(), func(cfg *sandbox.Config) { cfg.ExecStartBudget = 20 * time.Millisecond })
+	l.provider.execPID = 7
+	l.provider.execBegan = make(chan struct{})
+	l.provider.execWaits = make(chan struct{})
+	t.Cleanup(func() { close(l.provider.execWaits) })
+
+	ctx, cancel := context.WithCancel(t.Context())
+	if _, err := svc.CreateExec(ctx, "sandbox1", sandbox.ExecRequest{Command: []string{"sleep", "60"}}); err != nil {
+		t.Fatalf("CreateExec: %v", err)
+	}
+	cancel()
+	<-l.provider.execBegan
+
+	time.Sleep(100 * time.Millisecond)
+	if err := l.provider.execCtx.Err(); err != nil {
+		t.Errorf("the launched command's context ended with %v, want it running", err)
 	}
 }
 
