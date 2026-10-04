@@ -1,0 +1,250 @@
+// One command in a sandbox over the daemon's stream: its start, its attaches, and how it ended.
+import type { OutputCapture } from "./capture.js";
+import { ConnectionError, ProtocolError, isObject } from "./errors.js";
+import { opBinary } from "./frames.js";
+import type { Transport } from "./transport.js";
+import * as wire from "./wire.js";
+import { WebSocket } from "./ws.js";
+
+export interface Handlers {
+  onStdout?: ((chunk: Uint8Array) => void) | undefined;
+  onStderr?: ((chunk: Uint8Array) => void) | undefined;
+}
+
+/** ExecRecord is a command as the daemon holds it, which any client can read. */
+export interface ExecRecord {
+  id: string;
+  command: string[];
+  state: string;
+  exitStatus: { code: number; signal: number | null } | null;
+  lostBytes: number;
+}
+
+export class Session {
+  private ws: WebSocket | undefined;
+  // undefined is an attach this client let go of before the command ended.
+  private reading: Promise<wire.Exit | undefined> | undefined;
+  private closing: Promise<void> = Promise.resolve();
+  private writing: Promise<void> = Promise.resolve();
+  private exited: wire.Exit | undefined;
+  private readonly what: string;
+
+  constructor(
+    private readonly transport: Transport,
+    readonly sandboxId: string,
+    readonly id: string,
+    private readonly capture: OutputCapture,
+    private readonly handlers: Handlers,
+  ) {
+    this.what = `the command ${id} in sandbox ${sandboxId}`;
+  }
+
+  /** start runs the command and attaches at once; an abort lets go of the stream and leaves the command running. */
+  static async start(
+    transport: Transport,
+    sandboxId: string,
+    request: wire.ExecRequest,
+    capture: OutputCapture,
+    handlers: Handlers,
+    signal?: AbortSignal,
+  ): Promise<Session> {
+    const record = execRecord(await transport.call("POST", wire.path("sandboxes", sandboxId, "exec"), { json: request, signal }));
+    const session = new Session(transport, sandboxId, record.id, capture, handlers);
+    await session.attach(signal);
+
+    return session;
+  }
+
+  /** attach opens a stream. Every attach replays the daemon's buffer from its oldest byte, so the capture starts again. */
+  async attach(signal?: AbortSignal): Promise<void> {
+    this.disconnect();
+    await this.closing;
+    const ws = await WebSocket.connect(this.transport, this.path(), this.what, signal);
+    this.capture.reset();
+    this.ws = ws;
+    const reading = this.read(ws);
+    // wait() hands this rejection to the caller; the handler only keeps a command nobody waits on from ending the process.
+    reading.then(undefined, () => undefined);
+    this.reading = reading;
+    if (!signal) {
+      return;
+    }
+    const abort = (): void => {
+      if (this.ws === ws) {
+        this.disconnect();
+      }
+    };
+    signal.addEventListener("abort", abort, { once: true });
+    reading.finally(() => signal.removeEventListener("abort", abort)).then(undefined, () => undefined);
+  }
+
+  /** disconnect lets go of the stream; the command runs on, and a later attach replays what the daemon still holds. */
+  disconnect(): void {
+    const ws = this.ws;
+    if (!ws) {
+      return;
+    }
+    this.ws = undefined;
+    this.closing = ws.close();
+  }
+
+  /** wait answers how the command ended. With no stream it attaches, and the daemon replays its buffer, then the exit. */
+  async wait(signal?: AbortSignal): Promise<wire.Exit> {
+    signal?.throwIfAborted();
+    if (this.exited) {
+      return this.exited;
+    }
+    let exit = this.reading ? await this.reading : undefined;
+    signal?.throwIfAborted();
+    if (!exit) {
+      await this.attach(signal);
+      exit = await this.reading;
+      signal?.throwIfAborted();
+    }
+    if (!exit) {
+      throw new ConnectionError(`${this.what}: the stream was let go before the command ended`);
+    }
+    this.exited = exit;
+
+    return exit;
+  }
+
+  async inspect(): Promise<ExecRecord> {
+    return execRecord(await this.transport.call("GET", this.path()));
+  }
+
+  async kill(signal = ""): Promise<void> {
+    await this.transport.call("POST", `${this.path()}/kill`, { json: signal ? { signal } : {} });
+  }
+
+  async resize(size: wire.TerminalSize): Promise<void> {
+    await this.transport.call("POST", `${this.path()}/resize`, { json: size });
+  }
+
+  /** writeStdin sends data in order, split into the most the daemon reads in one message. */
+  writeStdin(data: string | Uint8Array): Promise<void> {
+    const bytes = typeof data === "string" ? Buffer.from(data) : data;
+
+    return this.send(async (ws) => {
+      for (let at = 0; at < bytes.length; at += wire.maxPayload) {
+        await ws.sendBinary(message(wire.stdin, bytes.subarray(at, at + wire.maxPayload)));
+      }
+    });
+  }
+
+  /** closeStdin tells the command its input has ended, as a guest that reads waits for that. */
+  closeStdin(): Promise<void> {
+    return this.send((ws) => ws.sendBinary(message(wire.stdinClose, new Uint8Array(0))));
+  }
+
+  /** send queues behind earlier writes, so two calls never interleave their chunks. */
+  private send(write: (ws: WebSocket) => Promise<void>): Promise<void> {
+    const ws = this.ws;
+    if (!ws) {
+      return Promise.reject(new ConnectionError(`${this.what} is not attached`));
+    }
+    const sent = this.writing.then(() => write(ws));
+    this.writing = sent.then(undefined, () => undefined);
+
+    return sent;
+  }
+
+  private async read(ws: WebSocket): Promise<wire.Exit | undefined> {
+    let exit: wire.Exit | undefined;
+    let failed: unknown;
+    try {
+      exit = await this.pump(ws);
+    } catch (err) {
+      failed = err;
+    }
+    const released = this.ws !== ws;
+    if (!released) {
+      this.ws = undefined;
+      this.closing = ws.close();
+    }
+    if (exit) {
+      return exit;
+    }
+    // A stream this client let go of ends in whatever state the release left it.
+    if (released) {
+      return undefined;
+    }
+    if (failed !== undefined && !(failed instanceof ConnectionError)) {
+      throw failed;
+    }
+    throw await this.cut(failed);
+  }
+
+  /** pump hands the output on until the exit, and answers undefined if the stream ends first. */
+  private async pump(ws: WebSocket): Promise<wire.Exit | undefined> {
+    for (let message = await ws.receive(); message; message = await ws.receive()) {
+      const stream = message.payload[0];
+      if (message.opcode !== opBinary || stream === undefined) {
+        throw new ProtocolError(`${this.what}: the daemon sent a message that names no stream`);
+      }
+      const body = message.payload.subarray(1);
+      switch (stream) {
+        case wire.stdout:
+          this.capture.add(stream, body);
+          this.handlers.onStdout?.(body);
+          break;
+        case wire.stderr:
+          this.capture.add(stream, body);
+          this.handlers.onStderr?.(body);
+          break;
+        case wire.exit:
+          return wire.exitOf(body, this.what);
+        case wire.failure:
+          throw wire.failureOf(body, this.what);
+        default:
+          throw new ProtocolError(`${this.what}: the daemon sent a message of stream ${stream}, which no daemon sends`);
+      }
+    }
+
+    return undefined;
+  }
+
+  /** cut names a stream that ended before its exit, with the record's word on why; the record is best effort, as the CLI's. */
+  private async cut(dropped: unknown): Promise<ConnectionError> {
+    const ended = `${this.what}: the stream ended without an exit status`;
+    try {
+      const record = await this.inspect();
+
+      return new ConnectionError(`${ended}; the command is ${record.state}, with ${record.lostBytes} bytes of output lost`, { cause: dropped });
+    } catch (err) {
+      return new ConnectionError(ended, { cause: dropped ?? err });
+    }
+  }
+
+  private path(): string {
+    return wire.path("sandboxes", this.sandboxId, "exec", this.id);
+  }
+}
+
+function message(stream: number, payload: Uint8Array): Buffer {
+  return Buffer.concat([Buffer.of(stream), payload]);
+}
+
+export function execRecord(value: unknown): ExecRecord {
+  const refused = new ProtocolError(`the daemon answered ${JSON.stringify(value)} as a command record`);
+  if (!isObject(value)) {
+    throw refused;
+  }
+  const { exec, command, state, exit_status: status, lost_bytes: lost = 0 } = value;
+  const statusValid = status === null || (isObject(status) && Number.isInteger(status.code) && Number.isInteger(status.signal));
+  if (typeof exec !== "string" || !isStrings(command) || typeof state !== "string" || !statusValid || !Number.isInteger(lost)) {
+    throw refused;
+  }
+
+  return {
+    id: exec,
+    command,
+    state,
+    exitStatus: isObject(status) ? { code: Number(status.code), signal: Number(status.signal) || null } : null,
+    lostBytes: Number(lost),
+  };
+}
+
+function isStrings(value: unknown): value is string[] {
+  return Array.isArray(value) && value.every((item) => typeof item === "string");
+}
