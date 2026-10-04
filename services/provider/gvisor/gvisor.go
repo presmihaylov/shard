@@ -167,8 +167,7 @@ func (p *Provider) Create(ctx context.Context, spec models.SandboxSpec) error {
 }
 
 func (p *Provider) create(ctx context.Context, spec models.SandboxSpec, b bundle.Bundle) error {
-	// A create over a state directory that already ran must not let the previous run answer a wait,
-	// a start or a restart count, and it reads config.json afresh, so those files go before anything else runs.
+	// A fresh create must not inherit the old exit, readiness, restart count, or spec-change mark.
 	for _, stale := range []string{b.ExitFile, b.ReadyFile, b.RestartFile, b.ChangedFile} {
 		if err := os.Remove(stale); err != nil && !errors.Is(err, fs.ErrNotExist) {
 			return fmt.Errorf("clear %s: %w", stale, err)
@@ -321,9 +320,7 @@ func (p *Provider) Start(ctx context.Context, id string) error {
 	return p.awaitStarted(ctx, id, b)
 }
 
-// recreate is how a stopped sandbox runs again, and how a created one reads a changed config.json: runsc
-// never starts a stopped one, so the container goes and a new one comes up over the same bundle, whose
-// writable layer and config.json stay.
+// recreate gives a stopped or changed created sandbox a fresh runtime over its preserved bundle.
 func (p *Provider) recreate(ctx context.Context, id, dir string, b bundle.Bundle, held bool) error {
 	spec, err := p.reclaim(ctx, id, dir, b, held)
 	if err != nil {
