@@ -340,6 +340,15 @@ func (l *ledger) refresh() error {
 	fresh := l.loaded && info.ModTime().Equal(l.modTime) && info.Size() == l.size
 	l.mu.RUnlock()
 	if fresh {
+		// Cached records still require read access to the ledger.
+		file, err := os.Open(l.path)
+		if err != nil {
+			return fmt.Errorf("open the ledger %s: %w", l.path, err)
+		}
+		if err := file.Close(); err != nil {
+			return fmt.Errorf("close the ledger %s: %w", l.path, err)
+		}
+
 		return nil
 	}
 
