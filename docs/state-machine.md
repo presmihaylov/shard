@@ -58,9 +58,10 @@ The CLI prints each layer on stderr, then the ready sandbox or the reason it fai
 
 An app that never started leaves no `failed` record, except on an uncached create with no wait. A
 create from a cached image or a snapshot, and every waited create, removes that sandbox and answers
-422 `command_not_started` (`docs/daemon.md`). A `stop` of a `pending` record cancels the create,
-writes `failed` with `the create was cancelled by shard stop`, and answers 409 `sandbox_failed`. A
-`remove` of a `pending` record cancels its pull and removes it.
+422 `command_not_started` (`docs/daemon.md`). When that removal fails, the sandbox stays and the
+create fails with a 500 that names the refusal and says the sandbox was not removed. A `stop` of a
+`pending` record cancels the create, writes `failed` with `the create was cancelled by shard stop`,
+and answers 409 `sandbox_failed`. A `remove` of a `pending` record cancels its pull and removes it.
 
 `created` is not where a create lands, and a create from a snapshot passes `pending` like any other.
 Only the copy of a fork passes through `created`, and it is also the status a provider reports for a
