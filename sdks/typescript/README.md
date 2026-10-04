@@ -17,8 +17,8 @@ export SHARD_REMOTE=https://shard.example.com
 export SHARD_API_KEY=<the token>
 ```
 
-An option beats the environment: `new Shard({ remote, apiKey })`. `tokenFile` (or `SHARD_TOKEN_FILE`)
-reads the key from a file that others cannot read, and `caFile` (or `SHARD_CA_FILE`) trusts a private CA.
+An option beats the environment: `new Shard({ remote, apiKey })`. `caFile` (or `SHARD_CA_FILE`) trusts
+a private CA.
 
 ## Quickstart
 

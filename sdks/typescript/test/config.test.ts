@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { chmodSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { after, test } from "node:test";
@@ -12,10 +12,9 @@ after(() => rmSync(dir, { recursive: true, force: true }));
 
 const remote = "https://shard.example.com";
 
-function file(name: string, content: string | Buffer, mode = 0o600): string {
+function file(name: string, content: string): string {
   const path = join(dir, name);
   writeFileSync(path, content);
-  chmodSync(path, mode);
 
   return path;
 }
@@ -36,30 +35,12 @@ test("an explicit option beats its variable", () => {
   assert.equal(settings.apiKey, "explicit-key");
 });
 
-test("the key comes from apiKey, tokenFile, SHARD_API_KEY, then SHARD_TOKEN_FILE", () => {
-  const optionFile = file("option-token", "option-file-key\n");
-  const envFile = file("env-token", "env-file-key");
-  const env = { SHARD_REMOTE: remote, SHARD_API_KEY: "env-key", SHARD_TOKEN_FILE: envFile };
-  assert.equal(resolve({ apiKey: "option-key", tokenFile: optionFile }, env).apiKey, "option-key");
-  assert.equal(resolve({ tokenFile: optionFile }, env).apiKey, "option-file-key");
+test("the key comes from apiKey, then SHARD_API_KEY", () => {
+  const env = { SHARD_REMOTE: remote, SHARD_API_KEY: "env-key" };
+  assert.equal(resolve({ apiKey: "option-key" }, env).apiKey, "option-key");
   assert.equal(resolve({}, env).apiKey, "env-key");
-  assert.equal(resolve({}, { ...env, SHARD_API_KEY: "  " }).apiKey, "env-file-key", "a blank key is unset");
-  refused(() => resolve({}, { SHARD_REMOTE: remote }), /^no API key: pass apiKey or tokenFile/);
-});
-
-test("a token file may hold the record tokens mint writes", () => {
-  const record = file("record", JSON.stringify({ id: "tok_1", token: "record-key", scopes: ["*"] }));
-  assert.equal(resolve({ remote, tokenFile: record }).apiKey, "record-key");
-  refused(() => resolve({ remote, tokenFile: file("no-token", '{"id":"tok_1"}') }), /holds no token/);
-  refused(() => resolve({ remote, tokenFile: file("broken", "{not json") }), /not JSON/);
-});
-
-test("a token file others can read is refused, and so is one that is not there", () => {
-  const open = file("open", "key", 0o644);
-  refused(() => resolve({ remote, tokenFile: open }), /is at mode 0644, which others can read/);
-  refused(() => resolve({ remote, tokenFile: join(dir, "missing") }), /read the token file .*missing: no such file or directory$/);
-  refused(() => resolve({ remote, tokenFile: file("empty", "\n") }), /holds no token/);
-  refused(() => resolve({ remote, tokenFile: file("binary", Buffer.from([0xff, 0xfe])) }), /not UTF-8 text/);
+  refused(() => resolve({}, { SHARD_REMOTE: remote }), /^no API key: pass apiKey or set SHARD_API_KEY$/);
+  refused(() => resolve({}, { ...env, SHARD_API_KEY: "  " }), /^no API key/);
 });
 
 test("a key with a control character is refused, and the message never holds the key", () => {

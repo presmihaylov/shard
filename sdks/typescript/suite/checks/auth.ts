@@ -58,7 +58,7 @@ export const checks: Check[] = [
   {
     name: "auth.no_key",
     run: async () => {
-      await withEnv({ SHARD_API_KEY: undefined, SHARD_TOKEN_FILE: undefined }, async () => {
+      await withEnv({ SHARD_API_KEY: undefined }, async () => {
         await rejects(ConfigurationError, async () => new Shard().list());
       });
     },
