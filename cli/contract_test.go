@@ -29,19 +29,6 @@ func TestEveryStubExitsThreeWithItsVerbAndNoStdout(t *testing.T) {
 		{[]string{"snapshot", "remove", "base"}, "snapshot remove"},
 		{[]string{"snapshot", "rm", "base"}, "snapshot remove"},
 		{[]string{"create", "--snapshot", "base"}, "create --snapshot"},
-		{[]string{"list", "--format", "json"}, "list --format json"},
-		{[]string{"ls", "--all", "--format", "json"}, "list --format json"},
-		{[]string{"inspect", "--format", "table", "web"}, "inspect --format table"},
-		{[]string{"image", "list", "--format", "json"}, "image list --format json"},
-		{[]string{"image", "ls", "--format", "json"}, "image list --format json"},
-		{[]string{"secret", "list", "--format", "json"}, "secret list --format json"},
-		{[]string{"policy", "list", "--format", "json"}, "policy list --format json"},
-		{[]string{"policy", "show", "--format", "table", "web-only"}, "policy show --format table"},
-		{[]string{"tokens", "list", "--format", "json"}, "tokens list --format json"},
-		{[]string{"tokens", "mint", "--name", "ci", "--format", "table"}, "tokens mint --format table"},
-		{[]string{"info", "--format", "json"}, "info --format json"},
-		{[]string{"daemon", "status", "--format", "json"}, "daemon status --format json"},
-		{[]string{"version", "--format", "json"}, "version --format json"},
 	}
 
 	for _, c := range cases {

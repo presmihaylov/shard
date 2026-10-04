@@ -32,9 +32,8 @@ $ echo $?
 3
 ```
 
-The line names the full verb path, and the flag and the format when they are what is missing, for
-example `shard: create --snapshot: not implemented yet` or `shard: list --format json: not
-implemented yet`. A stub never dials the daemon.
+The line names the full verb path, and the flag when it is what is missing, for example
+`shard: create --snapshot: not implemented yet`. A stub never dials the daemon.
 
 An API stub answers 501 with the code `not_implemented`. A body that does not decode is still 400.
 
@@ -138,11 +137,6 @@ shard: sandbox <id> is paused: resume it with shard resume <id>
 
 `--format` takes `json` or `table`, and any other word is a usage error. Naming the default changes
 nothing: `list --format table` prints what `list` prints.
-
-The format each verb does not default to is not implemented yet (SHARD-467): `--format json` on
-`list`, `image list`, `secret list`, `policy list`, `tokens list`, `info`, `daemon status` and
-`version`, and `--format table` on `inspect`, `policy show` and `tokens mint`. The snapshot verbs
-wait on SHARD-457a for both.
 
 **A `--format json` call writes one value or nothing.** JSON is one value, indented by two spaces, and a list verb
 prints an array. A failure to parse, to reach the daemon, or to encode writes nothing to stdout. A
@@ -310,19 +304,20 @@ null}` and the sandbox reaches nothing.
 }
 ```
 
-`version`. `shim` is the VM shim on a Mac, and absent elsewhere:
+`version`. `shim` is `embedded` or `absent` on a Mac, as the VM shim is in the binary, and absent
+elsewhere:
 
 ```json
 {"client": "v0.1.0", "daemon": "v0.1.0"}
 ```
 
-`inspect`, `policy show` and `tokens mint` print JSON today: the sandbox record, `{name, rules, dns,
-holders}`, and `{token, expires_at, scopes}` on one line.
+`inspect`, `policy show` and `tokens mint` print JSON by default: the sandbox record, `{name, rules,
+dns, holders}`, and `{token, expires_at, scopes}` on one line.
 
 ### Tables
 
 `list`, `image list`, `secret list`, `policy list`, `tokens list`, `info`, `daemon status` and
-`version` print tables today. `list` prints `ID NAME IMAGE STATE UPTIME IP RESTART POLICY`, and
+`version` print tables by default. `list` prints `ID NAME IMAGE STATE UPTIME IP RESTART POLICY`, and
 `snapshot list` will print `ID NAME SOURCE IMAGE SIZE CREATED`.
 
 The tables of the JSON verbs:

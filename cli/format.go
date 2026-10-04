@@ -50,12 +50,3 @@ func parseFormatArgs(verb string, args []string, def outputFormat) ([]string, ou
 
 	return flags.Args(), *format, nil
 }
-
-// formatLanded refuses a format the verb does not write yet (SHARD-467); built is the one it does.
-func formatLanded(verb string, format, built outputFormat) error {
-	if format == built {
-		return nil
-	}
-
-	return notImplemented(verb + " --format " + string(format))
-}
