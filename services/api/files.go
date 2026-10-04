@@ -116,7 +116,7 @@ func (h *Handler) getFile(w http.ResponseWriter, r *http.Request) {
 	flushErr := http.NewResponseController(w).Flush()
 	_, err = io.Copy(w, body)
 	if err := errors.Join(flushErr, err, body.Close()); err != nil {
-		h.log.Printf("api: get %s from sandbox %s: %v", r.URL.Query().Get("path"), r.PathValue("id"), err)
+		h.log.Printf("api: get %q from sandbox %s: %q", r.URL.Query().Get("path"), r.PathValue("id"), h.redacted(err.Error()))
 		// The 200 is out, so only a body cut before its last chunk tells the client the file is short.
 		panic(http.ErrAbortHandler)
 	}
@@ -162,7 +162,7 @@ func (h *Handler) listDir(w http.ResponseWriter, r *http.Request) {
 	w.WriteHeader(http.StatusOK)
 	// The 200 is out, so a failure now goes to the daemon's log; the body then lacks its closing bracket, which no client parses.
 	if err := writeEntries(w, listing); err != nil {
-		h.log.Printf("api: ls %s in sandbox %s: %v", r.URL.Query().Get("path"), r.PathValue("id"), err)
+		h.log.Printf("api: ls %q in sandbox %s: %q", r.URL.Query().Get("path"), r.PathValue("id"), h.redacted(err.Error()))
 	}
 }
 
