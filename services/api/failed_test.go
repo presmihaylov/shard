@@ -31,6 +31,9 @@ func TestEveryVerbButGetAndRmIs409OnAFailedSandbox(t *testing.T) {
 		walked++
 
 		path := subst.Replace(route.Pattern)
+		if strings.HasSuffix(path, "/files") || strings.HasSuffix(path, "/ls") || strings.HasSuffix(path, "/archive") {
+			path += "?path=/srv/test"
+		}
 		// A HEAD answer carries no body, so its status is all there is to check.
 		if route.Method == http.MethodHead {
 			if status := head(t, s.server, path); status != http.StatusConflict {

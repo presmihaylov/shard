@@ -15,7 +15,7 @@ def _get_kwargs(
     id: str,
     *,
     body: File,
-    path: str | Unset = UNSET,
+    path: str,
     user: str | Unset = UNSET,
 ) -> dict[str, Any]:
     headers: dict[str, Any] = {}
@@ -71,7 +71,7 @@ def sync_detailed(
     *,
     client: AuthenticatedClient | Client,
     body: File,
-    path: str | Unset = UNSET,
+    path: str,
     user: str | Unset = UNSET,
 ) -> Response[Any | Error]:
     """copy a directory into a running sandbox"""
@@ -95,7 +95,7 @@ def sync(
     *,
     client: AuthenticatedClient | Client,
     body: File,
-    path: str | Unset = UNSET,
+    path: str,
     user: str | Unset = UNSET,
 ) -> Any | Error | None:
     """copy a directory into a running sandbox"""
@@ -114,7 +114,7 @@ async def asyncio_detailed(
     *,
     client: AuthenticatedClient | Client,
     body: File,
-    path: str | Unset = UNSET,
+    path: str,
     user: str | Unset = UNSET,
 ) -> Response[Any | Error]:
     """copy a directory into a running sandbox"""
@@ -136,7 +136,7 @@ async def asyncio(
     *,
     client: AuthenticatedClient | Client,
     body: File,
-    path: str | Unset = UNSET,
+    path: str,
     user: str | Unset = UNSET,
 ) -> Any | Error | None:
     """copy a directory into a running sandbox"""
