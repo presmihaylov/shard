@@ -152,7 +152,7 @@ for binary in firecracker jailer mkfs.erofs mkfs.xfs ip ss nft iptables go curl 
 done
 say "/dev/kvm, firecracker, jailer, mkfs.erofs, mkfs.xfs, ip, ss, nft, iptables, go, curl and openssl are on the host"
 # The guest reaches the resolver and the proxy over the bridge, and a host firewall that drops INPUT eats them before shard sees them.
-if iptables -S INPUT 2>/dev/null | grep -qx -- "-P INPUT DROP" && ! iptables -C INPUT -i shard0 -j ACCEPT 2>/dev/null; then
+if iptables -S INPUT 2>/dev/null | has_line "^-P INPUT DROP$" && ! iptables -C INPUT -i shard0 -j ACCEPT 2>/dev/null; then
 	fail "the host firewall drops INPUT: run 'iptables -I INPUT -i shard0 -j ACCEPT' (ufw hosts: 'ufw allow in on shard0') and run this again"
 fi
 say "the host firewall lets the bridge reach the daemon"
@@ -213,7 +213,7 @@ start_daemon || fail "the daemon did not come up"
 [ -S "${SOCKET}" ] || fail "no socket at ${SOCKET}"
 say "the daemon logged: $(grep 'api listening on' "${DAEMON_LOG}" | sed 's/.*api/api/')"
 expect "$(findmnt -no FSTYPE "${SHARD_ROOT}")" "xfs" "the root is an xfs mount"
-findmnt -no SOURCE "${SHARD_ROOT}" | grep -q '^/dev/loop' || fail "the root is mounted from $(findmnt -no SOURCE "${SHARD_ROOT}"), want a loop device"
+findmnt -no SOURCE "${SHARD_ROOT}" | has_line '^/dev/loop' || fail "the root is mounted from $(findmnt -no SOURCE "${SHARD_ROOT}"), want a loop device"
 [ -f "${DATA_IMAGE}" ] || fail "there is no image at ${DATA_IMAGE}"
 grep -qxF -- "$(fstab_line)" /etc/fstab || fail "/etc/fstab holds no line for ${SHARD_ROOT}"
 grep -q "with reflink" "${DAEMON_LOG}" || fail "the daemon did not log the data dir bootstrap"
@@ -381,10 +381,10 @@ expect_exec "blocked" "the floor holds under the policy: the metadata address is
 EGRESS=""
 for _ in $(seq 1 30); do
 	EGRESS=$(shard logs --egress "${ID}")
-	grep '"source":"host"' <<<"${EGRESS}" | grep -q '"verdict":"deny"' && break
+	has_line '"source":"host"' '"verdict":"deny"' <<<"${EGRESS}" && break
 	sleep 0.2
 done
-grep '"source":"host"' <<<"${EGRESS}" | grep -q '"verdict":"deny"' || fail "the egress log holds no host deny: ${EGRESS}"
+has_line '"source":"host"' '"verdict":"deny"' <<<"${EGRESS}" || fail "the egress log holds no host deny: ${EGRESS}"
 say "the egress log carries the host's deny"
 
 step "front the microVM through the proxy"

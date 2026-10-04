@@ -444,6 +444,191 @@ nft() { return 1; }
 check "the end check takes a host with neither" "$?" "0"
 rm -f "${NET_CALLS}"
 
+echo "== has_line reads all of stdin, so a match early in it cuts no stage (SHARD-456)"
+STUB_GREP_DIR=$(mktemp -d)
+export STUB_REAL_GREP
+STUB_REAL_GREP=$(command -v grep)
+# The stub writes as GNU grep does into a pipe: 4096 bytes, then the rest once a grep -q has quit on them.
+cat >"${STUB_GREP_DIR}/grep" <<'EOF'
+#!/usr/bin/env bash
+for arg in "$@"; do
+	case "${arg}" in
+	--) break ;;
+	-*[qc]*) exec "${STUB_REAL_GREP}" "$@" ;;
+	esac
+done
+out="$(dirname "$0")/out.$$"
+"${STUB_REAL_GREP}" "$@" >"${out}"
+status=$?
+head -c 4096 "${out}"
+sleep 0.2
+tail -c +4097 "${out}" || exit $?
+exit "${status}"
+EOF
+chmod +x "${STUB_GREP_DIR}/grep"
+
+# Each run of lines outgrows the first write, and the line each check wants sits inside it.
+STUB_EGRESS=$(
+	for i in $(seq 1 40); do
+		rule="e2e-floor"
+		[ "${i}" -ne 1 ] || rule="local"
+		[ "${i}" -ne 2 ] || rule="ipv6"
+		printf '{"time":"2026-10-04T00:00:%02dZ","source":"host","verdict":"deny","rule":"%s","dst":"203.0.113.%d:443","proto":"tcp"}\n' "${i}" "${rule}" "${i}"
+	done
+	for i in $(seq 1 40); do
+		printf '{"time":"2026-10-04T00:01:%02dZ","source":"proxy","host":"api.example.test","verdict":"allow","rule":"e2e-policy","method":"GET","path":"/%d"}\n' "${i}" "${i}"
+	done
+)
+
+# stubbed_has_line runs has_line over the synthetic log with the stub first on PATH, under pipefail as e2e.sh runs.
+stubbed_has_line() { (PATH="${STUB_GREP_DIR}:${PATH}" && has_line "$@" <<<"${STUB_EGRESS}"); }
+
+stubbed_has_line '"source":"host"' '"rule":"ipv6"'
+check "the host drop of an IPv6 packet" "$?" "0"
+stubbed_has_line '"source":"host"' '"rule":"local"'
+check "the host drop of a packet aimed at its own address" "$?" "0"
+stubbed_has_line '"host":"api.example.test"' '"verdict":"allow"' '"rule":"[^"]+"'
+check "the proxy's allow with the rule that decided it" "$?" "0"
+stubbed_has_line '"source":"host"' '"rule":"e2e-catchup"'
+check "a rule no line holds is a miss" "$?" "1"
+stubbed_has_line '"source":"host"' '"verdict":"allow"'
+check "two patterns on two different lines are a miss" "$?" "1"
+printf '/dev/loop7\n' | has_line '^/dev/loop'
+check "one pattern over a command's output" "$?" "0"
+
+echo "== no grep -q in the e2e scripts reads a pipe (SHARD-456)"
+# shell_pipelines prints file:line, a tab and each pipeline, with quoted text cut to Q, comments dropped and continued lines joined.
+shell_pipelines() {
+	awk '
+	function trim(s) { sub(/^[ \t]+/, "", s); sub(/[ \t]+$/, "", s); return s }
+	function emit(cmd, line,   cmds, nc, c, p) {
+		gsub(/\$\{[^}]*\}/, "V", cmd)
+		gsub(/[0-9]*(>&|<&)[0-9-]*|&>/, " R ", cmd)
+		gsub(/\|\||&&|[;&(){}`]/, "\n", cmd)
+		gsub(/[ \t]+/, " ", cmd)
+		nc = split(cmd, cmds, "\n")
+		for (c = 1; c <= nc; c++) {
+			p = trim(cmds[c])
+			if (p != "") printf "%s:%d\t%s\n", FILENAME, line, p
+		}
+	}
+	BEGIN { sq = sprintf("%c", 39) }
+	FNR == 1 { quote = ""; cmd = ""; start = 0 }
+	{
+		s = $0
+		n = length(s)
+		cont = 0
+		for (i = 1; i <= n; i++) {
+			ch = substr(s, i, 1)
+			if (quote == sq && ch == sq) { quote = ""; continue }
+			if (quote == sq) continue
+			if (quote == "\"" && ch == "\\") { i++; continue }
+			if (quote == "\"" && ch == "\"") { quote = ""; continue }
+			if (quote == "\"") continue
+			if (ch == "\\" && i == n) cont = 1
+			if (ch == "\\") { i++; continue }
+			if (ch == "#" && (i == 1 || substr(s, i - 1, 1) ~ /[ \t;(]/)) break
+			if (ch == sq || ch == "\"") { quote = ch; ch = "Q" }
+			if (ch !~ /[ \t]/ && cmd !~ /[^ \t]/) start = FNR
+			cmd = cmd ch
+		}
+		if (quote != "" || cont || cmd ~ /(\||&&)[ \t]*$/) { cmd = cmd " "; next }
+		emit(cmd, start)
+		cmd = ""
+	}' "$@"
+}
+
+# quiet_grep_hazards prints file:line for each one: an early match kills the stage before it, and pipefail reads that as a miss.
+quiet_grep_hazards() {
+	shell_pipelines "$@" | awk '
+	function trim(s) { sub(/^[ \t]+/, "", s); sub(/[ \t]+$/, "", s); return s }
+	function bare(s) {
+		s = trim(s)
+		while (match(s, /^(if|then|elif|else|while|until|do|!|time)([ \t]+|$)/)) s = trim(substr(s, RLENGTH + 1))
+		return s
+	}
+	function quiet_grep(s,   w, n, k) {
+		s = bare(s)
+		if (s !~ /^grep([ \t]|$)/) return 0
+		n = split(s, w, /[ \t]+/)
+		for (k = 2; k <= n; k++) {
+			if (w[k] == "--") return 0
+			if (w[k] ~ /^--(quiet|silent)$/ || w[k] ~ /^-[A-Za-z]*q/) return 1
+		}
+		return 0
+	}
+	BEGIN { FS = "\t" }
+	{
+		ns = split($2, st, "|")
+		for (k = 2; k <= ns; k++) {
+			if (!quiet_grep(st[k])) continue
+			print $1
+		}
+	}'
+}
+
+TOKEN_FIXTURE="${STUB_GREP_DIR}/tokens.sh"
+cat >"${TOKEN_FIXTURE}" <<'EOF'
+echo "a | b" | grep -q x # c | d
+if a && b; then c; fi
+x |
+	y
+f '
+| g
+' | h
+z >&2 | w ${X}
+EOF
+check "the tokenizer cuts quotes and comments, splits commands and joins lines" "$(shell_pipelines "${TOKEN_FIXTURE}" | awk -F '\t' '{ sub(/.*:/, "", $1); print $1 " " $2 }')" "$(printf '%s\n' '1 echo Q | grep -q x' '2 if a' '2 b' '2 then c' '2 fi' '3 x | y' '5 f Q | h' '8 z R | w V')"
+
+SCAN_FIXTURE="${STUB_GREP_DIR}/fixture.sh"
+cat >"${SCAN_FIXTURE}" <<'EOF'
+echo "${X}" | grep -q y
+printf '%s' "${X}" | grep -qx y
+grep -q y "${FILE}"
+ip netns list | has_line "^${ID}"
+echo "${X}" | grep a | grep -c b >/dev/null
+echo "${X}" 2>&1 | grep -qE y
+shard exec "${ID}" /bin/sh -c 'ip a | grep a | grep -q y'
+# echo "${X}" | grep a | grep -q y
+echo "${X}" | grep a | grep -q y
+ip netns list | grep -q "^${ID}"
+grep a <<<"${X}" | grep -q y
+if iptables -S 2>/dev/null | grep -qx -- "-P INPUT DROP" && true; then :; fi
+echo "${X}" |
+	grep a |
+	grep --quiet y
+for _ in 1 2; do echo "${X}" | grep a | grep -Eq y && break; done
+shard exec "${ID}" /bin/sh -c '
+	ip a | grep a | grep -q y
+'
+ip link | grep -q shard0
+EOF
+check "the scan names each one in a fixture" "$(quiet_grep_hazards "${SCAN_FIXTURE}" | sed 's/.*://' | tr '\n' ' ')" "1 2 6 9 10 11 12 13 16 20 "
+# The needle is on the first line, so grep -q quits after one read and the echo dies writing the rest.
+BIG_FIXTURE="${STUB_GREP_DIR}/big.sh"
+cat >"${BIG_FIXTURE}" <<'EOF'
+set -o pipefail
+BIG=$(printf 'needle\n'; head -c 1048576 /dev/zero | tr '\0' x)
+echo "${BIG}" 2>/dev/null | grep -q needle
+EOF
+bash "${BIG_FIXTURE}"
+BIG_STATUS=$?
+check "an echo of 1 MiB into grep -q is a miss though the needle is there" "$([ "${BIG_STATUS}" -ne 0 ] && echo miss)" "miss"
+check "the scan names that echo" "$(quiet_grep_hazards "${BIG_FIXTURE}" | sed 's/.*://')" "3"
+HERE_FIXTURE="${STUB_GREP_DIR}/here.sh"
+sed '3s/.*/grep -q needle <<<"${BIG}"/' "${BIG_FIXTURE}" >"${HERE_FIXTURE}"
+bash "${HERE_FIXTURE}"
+check "the same body in a here-string is a match" "$?" "0"
+check "the scan passes the here-string" "$(quiet_grep_hazards "${HERE_FIXTURE}")" ""
+check "the scan finds none in e2e.sh or e2e-fc.sh" "$(quiet_grep_hazards "${HERE}/e2e.sh" "${HERE}/e2e-fc.sh")" ""
+rm -rf "${STUB_GREP_DIR}"
+
+echo "== both scripts parse"
+bash -n "${HERE}/e2e.sh"
+check "bash -n e2e.sh" "$?" "0"
+bash -n "${HERE}/e2e-fc.sh"
+check "bash -n e2e-fc.sh" "$?" "0"
+
 echo
 if [ "${FAILURES}" -ne 0 ]; then
 	echo "e2e self-test FAILED: ${FAILURES} guards broke" >&2
@@ -451,4 +636,4 @@ if [ "${FAILURES}" -ne 0 ]; then
 	exit 1
 fi
 
-echo "e2e self-test PASSED: the root guard, the provider guard, the host guard, the unmount, the teardown, the daemon wait, the timer, the failure report, the exec status, the echo digests, the entrypoint clock, the env check and the host net sweep"
+echo "e2e self-test PASSED: the root guard, the provider guard, the host guard, the unmount, the teardown, the daemon wait, the timer, the failure report, the exec status, the echo digests, the entrypoint clock, the env check, the host net sweep, the line match and the grep -q scan"
