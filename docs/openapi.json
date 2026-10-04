@@ -921,7 +921,7 @@
         "additionalProperties": false,
         "properties": {
           "backoff": {
-            "description": "The first wait before a start again, in seconds; 0 or absent is 1. It doubles after each start again, up to 60. The policy no takes none.",
+            "description": "The first wait before a start again, in seconds; 0 or absent is 1. It doubles after each start again, up to 60. Only on-failure and always take it.",
             "format": "int64",
             "maximum": 60,
             "minimum": 0,
@@ -969,7 +969,7 @@
         "additionalProperties": false,
         "properties": {
           "backoff": {
-            "description": "The first wait before a start again, in seconds; 0 or absent is 1. It doubles after each start again, up to 60. The policy no takes none.",
+            "description": "The first wait before a start again, in seconds; 0 or absent is 1. It doubles after each start again, up to 60. Only on-failure and always take it.",
             "format": "int64",
             "maximum": 60,
             "minimum": 0,
