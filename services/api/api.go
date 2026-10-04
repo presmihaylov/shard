@@ -169,11 +169,8 @@ func (h *Handler) routeTable() []routeEntry {
 		{Route{"GET", "/v0/version", Public}, h.getVersion},
 		{Route{"GET", "/v0/capabilities", Public}, h.getCapabilities},
 		{Route{"GET", "/v0/daemon", Local}, h.getDaemon},
-		{Route{"GET", "/v0/sandboxes", Public}, listSandboxes(h, PublicSandbox)},
-		{Route{"GET", "/v0/sandboxes/{id}", Public}, getSandbox(h, PublicInspection)},
-		// The CLI on the daemon host reads the whole record, the host side included, which no public route answers.
-		{Route{"GET", "/v0/local/sandboxes", Local}, listSandboxes(h, same[models.Sandbox])},
-		{Route{"GET", "/v0/local/sandboxes/{id}", Local}, getSandbox(h, same[sandbox.Inspection])},
+		{Route{"GET", "/v0/sandboxes", Public}, h.listSandboxes},
+		{Route{"GET", "/v0/sandboxes/{id}", Public}, h.getSandbox},
 		{Route{"POST", "/v0/sandboxes", Public}, h.createSandbox},
 		{Route{"POST", "/v0/sandboxes/{id}/start", Public}, h.startSandbox},
 		{Route{"POST", "/v0/sandboxes/{id}/stop", Public}, h.stopSandbox},
@@ -251,9 +248,9 @@ type capabilitiesResponse struct {
 }
 
 // listResponse is the page: the rows, the cursor of the next page or null, and what could not be read.
-type listResponse[S any] struct {
-	Sandboxes []S     `json:"sandboxes"`
-	Next      *string `json:"next"`
+type listResponse struct {
+	Sandboxes []Sandbox `json:"sandboxes"`
+	Next      *string   `json:"next"`
 	// Warnings names the records the daemon could not read, one string each, beside the ones it could.
 	Warnings []string `json:"warnings,omitempty"`
 }
@@ -312,75 +309,68 @@ func (h *Handler) getDaemon(w http.ResponseWriter, _ *http.Request) {
 	h.writeJSON(w, http.StatusOK, d)
 }
 
-// listSandboxes answers a page of records, each through project: the public view, or the whole record on the socket.
-func listSandboxes[S any](h *Handler, project func(models.Sandbox) S) http.HandlerFunc {
-	return func(w http.ResponseWriter, r *http.Request) {
-		all, err := boolQuery(r, "all")
-		if err != nil {
-			h.writeError(w, err)
+// listSandboxes answers a page of public records.
+func (h *Handler) listSandboxes(w http.ResponseWriter, r *http.Request) {
+	all, err := boolQuery(r, "all")
+	if err != nil {
+		h.writeError(w, err)
 
-			return
-		}
-
-		q, err := pageOf(r, sandboxstate.ValidID)
-		if err != nil {
-			h.writeError(w, err)
-
-			return
-		}
-
-		sandboxes, unreadable := sandbox.List(h.repo, all)
-
-		warnings, err := partial(unreadable)
-		if err != nil {
-			h.writeError(w, err)
-
-			return
-		}
-
-		sandboxes, next := page(sandboxes, q, func(sb models.Sandbox) string { return sb.ID })
-
-		rows := make([]S, 0, len(sandboxes))
-		for _, sb := range sandboxes {
-			rows = append(rows, project(sb))
-		}
-
-		h.writeJSON(w, http.StatusOK, listResponse[S]{Sandboxes: rows, Next: next, Warnings: warnings})
+		return
 	}
+
+	q, err := pageOf(r, sandboxstate.ValidID)
+	if err != nil {
+		h.writeError(w, err)
+
+		return
+	}
+
+	sandboxes, unreadable := sandbox.List(h.repo, all)
+
+	warnings, err := partial(unreadable)
+	if err != nil {
+		h.writeError(w, err)
+
+		return
+	}
+
+	sandboxes, next := page(sandboxes, q, func(sb models.Sandbox) string { return sb.ID })
+
+	rows := make([]Sandbox, 0, len(sandboxes))
+	for _, sb := range sandboxes {
+		rows = append(rows, PublicSandbox(sb))
+	}
+
+	h.writeJSON(w, http.StatusOK, listResponse{Sandboxes: rows, Next: next, Warnings: warnings})
 }
 
-// getSandbox answers the record through project two ways: ?wait=true blocks until a pending create lands, the default reads now.
-func getSandbox[I any](h *Handler, project func(sandbox.Inspection) I) http.HandlerFunc {
-	return func(w http.ResponseWriter, r *http.Request) {
-		wait, err := boolQuery(r, "wait")
-		if err != nil {
-			h.writeError(w, err)
+// getSandbox answers the public record two ways: ?wait=true blocks until a pending create lands, the default reads now.
+func (h *Handler) getSandbox(w http.ResponseWriter, r *http.Request) {
+	wait, err := boolQuery(r, "wait")
+	if err != nil {
+		h.writeError(w, err)
 
-			return
-		}
-
-		ref := r.PathValue("id")
-		if wait {
-			if err := h.lifecycle.WaitState(r.Context(), ref); err != nil {
-				h.writeError(w, err)
-
-				return
-			}
-		}
-
-		insp, err := sandbox.Inspect(h.repo, h.enforcer, ref)
-		if err != nil {
-			h.writeError(w, err)
-
-			return
-		}
-
-		h.writeJSON(w, http.StatusOK, project(insp))
+		return
 	}
-}
 
-// same is the projection of a local route, which answers the record as the daemon holds it.
-func same[T any](v T) T { return v }
+	ref := r.PathValue("id")
+	if wait {
+		if err := h.lifecycle.WaitState(r.Context(), ref); err != nil {
+			h.writeError(w, err)
+
+			return
+		}
+	}
+
+	insp, err := sandbox.Inspect(h.repo, h.enforcer, ref)
+	if err != nil {
+		h.writeError(w, err)
+
+		return
+	}
+
+	h.writeJSON(w, http.StatusOK, PublicInspection(insp))
+}
 
 func (h *Handler) sandboxEgressLog(w http.ResponseWriter, r *http.Request) {
 	id, err := h.repo.Resolve(r.PathValue("id"))

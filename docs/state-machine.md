@@ -85,8 +85,8 @@ it.** On vz the daemon probes each shim within 5 s, both a shim it holds and one
 by its socket after a restart. A shim that is silent for the whole bound makes the record
 `unresponsive`. A `SIGSTOP` can freeze a shim that way, and so can a host under load. The record
 keeps its pid and its run, and `unresponsive_reason` names the shim's pid. Nothing kills the shim,
-because a thawed shim gives back the same VM. `shard list` prints `unresponsive (its shim (pid N) did
-not answer within 5s)`, and `shard inspect` holds the state and the reason. `exec`, `start` and
+because a thawed shim gives back the same VM. `shard list` and `shard inspect` print the state, and
+the reason stays in the record. `exec`, `start` and
 `pause` refuse the sandbox with the reason, and `exec` adds `wait for it to answer, or end it with
 shard stop <id>`. An `exec` or a `pause` that finds the shim silent writes `unresponsive` at once,
 not at the next tick, and a `pause` spends one 5 s bound on it (SHARD-424). When a later probe

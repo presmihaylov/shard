@@ -6,7 +6,6 @@ import (
 
 	"github.com/presmihaylov/shard/models"
 	"github.com/presmihaylov/shard/services/client"
-	"github.com/presmihaylov/shard/services/sandbox"
 	"github.com/presmihaylov/shard/services/serve"
 )
 
@@ -74,8 +73,8 @@ type versionView struct {
 }
 
 // inspectSections is the record read down a page, then the rules the host enforces for it.
-func inspectSections(record any, insp sandbox.Inspection) ([]section, error) {
-	fields, err := fieldSection(record)
+func inspectSections(insp client.Inspection) ([]section, error) {
+	fields, err := fieldSection(insp.Sandbox)
 	if err != nil {
 		return nil, err
 	}
