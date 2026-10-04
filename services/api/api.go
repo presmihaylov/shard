@@ -27,6 +27,8 @@ import (
 // Lifecycle is the part of sandbox.Service the routes that change a sandbox call.
 type Lifecycle interface {
 	Create(ctx context.Context, req sandbox.CreateRequest) (models.Sandbox, error)
+	// CreateAndWait answers once the sandbox leaves pending, so a refusal the create meets after the pull reaches the caller.
+	CreateAndWait(ctx context.Context, req sandbox.CreateRequest) (models.Sandbox, error)
 	// WaitState blocks until the sandbox leaves pending, so a get with ?wait sees running or failed.
 	WaitState(ctx context.Context, ref string) error
 	Start(ctx context.Context, ref string) (models.Sandbox, error)
@@ -511,44 +513,28 @@ func (h *Handler) createSandbox(ctx context.Context, in *createInput) (*rawReply
 func (h *Handler) create(w http.ResponseWriter, r *http.Request, wait bool, req sandbox.CreateRequest) {
 	if wait && streamed(r) {
 		streamProgress(h, w, r, http.StatusCreated, "create", createLines, func(ctx context.Context) (CreateLine, error) {
-			sb, err := h.lifecycle.Create(ctx, req)
+			sb, err := h.lifecycle.CreateAndWait(ctx, req)
 			if err != nil {
 				return CreateLine{}, err
 			}
-
-			if err := h.lifecycle.WaitState(ctx, sb.ID); err != nil {
-				return CreateLine{}, err
-			}
-
-			sb, err = sandbox.Get(h.repo, sb.ID)
 			out := PublicSandbox(sb)
 
-			return CreateLine{Sandbox: &out}, err
+			return CreateLine{Sandbox: &out}, nil
 		})
 
 		return
 	}
 
-	sb, err := h.lifecycle.Create(r.Context(), req)
+	create := h.lifecycle.Create
+	if wait {
+		create = h.lifecycle.CreateAndWait
+	}
+
+	sb, err := create(r.Context(), req)
 	if err != nil {
 		h.writeError(w, r, err)
 
 		return
-	}
-
-	if wait {
-		if err := h.lifecycle.WaitState(r.Context(), sb.ID); err != nil {
-			h.writeError(w, r, err)
-
-			return
-		}
-
-		sb, err = sandbox.Get(h.repo, sb.ID)
-		if err != nil {
-			h.writeError(w, r, err)
-
-			return
-		}
 	}
 
 	h.writeJSON(w, http.StatusCreated, PublicSandbox(sb))

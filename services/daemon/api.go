@@ -279,9 +279,15 @@ type lifecycle struct {
 	mu  sync.Mutex
 	svc *sandbox.Service
 	// pending names each create the daemon still runs, so a wait knows when the sandbox leaves pending.
-	pending map[string]chan struct{}
+	pending map[string]*creation
 	// wg holds the background creates, so a shutdown does not leave one half-built.
 	wg sync.WaitGroup
+}
+
+// creation is one create the daemon runs in the background; err is set before done closes.
+type creation struct {
+	done chan struct{}
+	err  error
 }
 
 func (l *lifecycle) service() (*sandbox.Service, error) {
@@ -305,61 +311,97 @@ func (l *lifecycle) service() (*sandbox.Service, error) {
 // keeps its shape. An uncached image records the sandbox pending and pulls, builds and starts it in the
 // background, where it lands running or failed. A wait blocks on the record leaving pending.
 func (l *lifecycle) Create(ctx context.Context, req sandbox.CreateRequest) (models.Sandbox, error) {
-	svc, err := l.service()
+	sb, _, err := l.create(ctx, req)
+
+	return sb, err
+}
+
+// CreateAndWait holds the create it starts, so a background one the request was at fault for answers that refusal as a cached one does.
+func (l *lifecycle) CreateAndWait(ctx context.Context, req sandbox.CreateRequest) (models.Sandbox, error) {
+	sb, c, err := l.create(ctx, req)
+	if err != nil || c == nil {
+		return sb, err
+	}
+
+	select {
+	case <-c.done:
+	case <-ctx.Done():
+		return models.Sandbox{}, ctx.Err()
+	}
+
+	if _, refused := errors.AsType[*sandbox.RequestError](c.err); refused {
+		return models.Sandbox{}, c.err
+	}
+
+	repo, err := l.deps.repo()
 	if err != nil {
 		return models.Sandbox{}, err
+	}
+
+	return sandbox.Get(repo, sb.ID)
+}
+
+// create answers no creation when the create finished here, and the one it left running in the background otherwise.
+func (l *lifecycle) create(ctx context.Context, req sandbox.CreateRequest) (models.Sandbox, *creation, error) {
+	svc, err := l.service()
+	if err != nil {
+		return models.Sandbox{}, nil, err
 	}
 
 	// A create outlives the request, so it runs under base and ends with the daemon, but reports to the caller's progress.
 	detached := image.WithProgress(l.base, image.ProgressFrom(ctx))
 	// A create from a snapshot never pulls, so it has nothing to wait on in the background.
 	if req.Snapshot != "" {
-		return svc.Create(detached, req)
+		sb, err := svc.Create(detached, req)
+
+		return sb, nil, err
 	}
 
 	images, err := l.deps.images()
 	if err != nil {
-		return models.Sandbox{}, err
+		return models.Sandbox{}, nil, err
 	}
 
 	// A cached image needs no pull, so the create finishes here and lands running; only an uncached one goes async.
 	cached, err := images.Cached(req.Image)
 	if err != nil {
-		return models.Sandbox{}, err
+		return models.Sandbox{}, nil, err
 	}
 
 	if cached {
 		// A caller that hangs up never leaves its started app behind a pending record.
-		return svc.Create(detached, req)
+		sb, err := svc.Create(detached, req)
+
+		return sb, nil, err
 	}
 
 	sb, err := svc.Prepare(ctx, req)
 	if err != nil {
-		return models.Sandbox{}, err
+		return models.Sandbox{}, nil, err
 	}
 
-	done := make(chan struct{})
+	c := &creation{done: make(chan struct{})}
 	l.mu.Lock()
 	if l.pending == nil {
-		l.pending = map[string]chan struct{}{}
+		l.pending = map[string]*creation{}
 	}
-	l.pending[sb.ID] = done
+	l.pending[sb.ID] = c
 	l.mu.Unlock()
 
 	l.wg.Go(func() {
-		completeErr := svc.Complete(detached, sb.ID, req)
+		c.err = svc.Complete(detached, sb.ID, req)
 
 		l.mu.Lock()
 		delete(l.pending, sb.ID)
 		l.mu.Unlock()
-		close(done)
+		close(c.done)
 
-		if completeErr != nil {
-			l.deps.logger().Printf("create %s failed: %s", sb.ID, l.deps.redact(completeErr.Error()))
+		if c.err != nil {
+			l.deps.logger().Printf("create %s failed: %s", sb.ID, l.deps.redact(c.err.Error()))
 		}
 	})
 
-	return sb, nil
+	return sb, c, nil
 }
 
 // WaitState blocks until the sandbox leaves pending, or answers at once when no create runs behind it.
@@ -375,14 +417,14 @@ func (l *lifecycle) WaitState(ctx context.Context, ref string) error {
 	}
 
 	l.mu.Lock()
-	done, ok := l.pending[id]
+	c, ok := l.pending[id]
 	l.mu.Unlock()
 	if !ok {
 		return nil
 	}
 
 	select {
-	case <-done:
+	case <-c.done:
 		return nil
 	case <-ctx.Done():
 		return ctx.Err()
