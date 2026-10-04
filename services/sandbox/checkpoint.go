@@ -273,6 +273,9 @@ func (s *Service) Fork(ctx context.Context, ref string, req CopyRequest) (sb mod
 	if src.State != models.StateRunning {
 		return models.Sandbox{}, wrongState(source, src, "fork takes a running sandbox", models.CodeSandboxNotRunning)
 	}
+	if err := checkFork(ctx, src); err != nil {
+		return models.Sandbox{}, err
+	}
 
 	var td Teardown
 
