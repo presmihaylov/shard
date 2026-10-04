@@ -10,14 +10,14 @@ const (
 	StatePending State = "pending"
 	StateCreated State = "created"
 	StateRunning State = "running"
-	// StatePaused holds a snapshot on disk and no memory.
+	// StatePaused holds a checkpoint on disk and no memory.
 	StatePaused State = "paused"
 	// StateUnresponsive is a running sandbox whose substrate process missed its probe bound; an answer makes it running again, and only stop ends it.
 	StateUnresponsive State = "unresponsive"
 	// StateStopped keeps the writable layer, so a start can follow it. A sandbox stopped before its
 	// entrypoint ran leaves nothing on the substrate, because stopping that one is a delete there.
 	StateStopped State = "stopped"
-	// StateFailed is a create, fork or clone that never reached running, or a pause that lost the guest. It is terminal, so only rm frees it.
+	// StateFailed is a create or fork that never reached running, or a pause that lost the guest. It is terminal, so only rm frees it.
 	StateFailed State = "failed"
 )
 

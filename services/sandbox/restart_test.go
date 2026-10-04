@@ -260,7 +260,7 @@ func TestResumeKeepsTheCountOfTheRunItFroze(t *testing.T) {
 	}
 }
 
-func TestForkKeepsTheCountAndCloneStartsItOver(t *testing.T) {
+func TestForkKeepsTheCount(t *testing.T) {
 	restart := &models.Restart{
 		RestartSpec:  models.RestartSpec{Policy: models.RestartOnFailure, Retries: 5, Backoff: 1},
 		RestartCount: models.RestartCount{Count: 2},
@@ -277,14 +277,4 @@ func TestForkKeepsTheCountAndCloneStartsItOver(t *testing.T) {
 		t.Errorf("the fork holds %+v, want the source's policy and count %+v", forked.Restart, restart)
 	}
 
-	source = cloneSource()
-	source.Restart = restart
-	svc, _ = newService(t, &recorder{}, source)
-	cloned, err := svc.Clone(t.Context(), "web", sandbox.CopyRequest{Name: "web-2"})
-	if err != nil {
-		t.Fatalf("clone: %v", err)
-	}
-	if want := (&models.Restart{RestartSpec: restart.RestartSpec}); !reflect.DeepEqual(cloned.Restart, want) {
-		t.Errorf("the clone holds %+v, want the source's policy with nothing counted", cloned.Restart)
-	}
 }

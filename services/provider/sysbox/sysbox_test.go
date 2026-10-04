@@ -148,30 +148,30 @@ func TestExecTakesOnlyARunningSandbox(t *testing.T) {
 	}
 }
 
-// A clone copies the layer, so a source that still writes it is refused before anything is laid out.
-func TestCloneRefusesASourceThatIsLive(t *testing.T) {
+// A snapshot copies the layer, so a source that still writes it is refused before anything is copied.
+func TestSnapshotRefusesASourceThatIsLive(t *testing.T) {
 	p := newProviderOver(t, `echo '{"id":"amber-otter-1a2b","status":"running","pid":42}'`)
-	spec := models.SandboxSpec{ID: "amber-otter-2c3d", StateDir: t.TempDir()}
+	dir := t.TempDir()
 
-	err := p.Clone(t.Context(), "amber-otter-1a2b", spec)
+	err := p.Snapshot(t.Context(), "amber-otter-1a2b", dir)
 	if err == nil || !strings.Contains(err.Error(), "stop it first") {
-		t.Errorf("Clone of a running source returned %v, want a refusal that names the stop", err)
+		t.Errorf("Snapshot of a running source returned %v, want a refusal that names the stop", err)
 	}
-	if entries := readDir(t, spec.StateDir); len(entries) != 0 {
-		t.Errorf("Clone of a running source wrote into its state directory: %v", entries)
+	if entries := readDir(t, dir); len(entries) != 0 {
+		t.Errorf("Snapshot of a running source wrote into the snapshot: %v", entries)
 	}
 }
 
-// A source sysbox-runc never held has no config.json to run again, and the refusal comes before any write.
-func TestCloneRefusesASourceThatWasNeverBuilt(t *testing.T) {
+// A source sysbox-runc never held has no layers to copy, and the refusal comes before any write.
+func TestSnapshotRefusesASourceThatWasNeverBuilt(t *testing.T) {
 	p := newProviderOver(t, `echo '{"id":"amber-otter-1a2b","status":"stopped","pid":0}'`)
-	spec := models.SandboxSpec{ID: "amber-otter-2c3d", StateDir: t.TempDir()}
+	dir := t.TempDir()
 
-	if err := p.Clone(t.Context(), "amber-otter-1a2b", spec); err == nil {
-		t.Error("Clone of a source with no bundle returned no error")
+	if err := p.Snapshot(t.Context(), "amber-otter-1a2b", dir); err == nil {
+		t.Error("Snapshot of a source with no bundle returned no error")
 	}
-	if entries := readDir(t, spec.StateDir); len(entries) != 0 {
-		t.Errorf("Clone of an empty source wrote into its state directory: %v", entries)
+	if entries := readDir(t, dir); len(entries) != 0 {
+		t.Errorf("Snapshot of an empty source wrote into the snapshot: %v", entries)
 	}
 }
 

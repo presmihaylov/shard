@@ -63,32 +63,6 @@ func TestBuildRecordsTheDiskBoundForTheNextStart(t *testing.T) {
 	}
 }
 
-// A clone is bounded the way its source was: config.json carries the bound and the provider provisions from it.
-func TestCloneCarriesTheDiskBound(t *testing.T) {
-	source := newSpec(t)
-	source.Resources = models.Resources{DiskMiB: 64}
-	build(t, source, models.ImageConfig{})
-
-	opened, err := bundle.Open(source.StateDir)
-	if err != nil {
-		t.Fatalf("Open: %v", err)
-	}
-
-	clone := models.SandboxSpec{ID: "s-clone", StateDir: t.TempDir(), Network: models.NetworkSpec{NetnsPath: "/run/netns/s-clone"}}
-	c, err := newService(t).Clone(opened, clone)
-	if err != nil {
-		t.Fatalf("Clone: %v", err)
-	}
-
-	rt, err := c.Runtime()
-	if err != nil {
-		t.Fatalf("Runtime: %v", err)
-	}
-	if rt.Resources.DiskMiB != 64 {
-		t.Errorf("the clone read back a disk bound of %d, want the source's 64", rt.Resources.DiskMiB)
-	}
-}
-
 func TestRuntimeRefusesADiskBoundThatIsNotACount(t *testing.T) {
 	b, _ := build(t, models.SandboxSpec{Resources: models.Resources{DiskMiB: 64}}, models.ImageConfig{})
 

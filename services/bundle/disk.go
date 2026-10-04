@@ -15,7 +15,7 @@ const DefaultDiskMiB = 10240
 // diskAnnotation records the bound in config.json, the one file a start after a stop reads a bundle back from.
 const diskAnnotation = "dev.shard.disk-mib"
 
-// diskLocks holds one mutex per disk image in use: two clones of one stopped source race Mounted against Unmount without it (SHARD-251).
+// diskLocks holds one mutex per disk image in use: two snapshots of one stopped source race Mounted against Unmount without it (SHARD-251).
 var diskLocks = struct {
 	sync.Mutex
 	byImage map[string]*diskLock

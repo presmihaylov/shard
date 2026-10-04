@@ -100,6 +100,11 @@ func (s *Service) Build(spec models.SandboxSpec) (Bundle, error) {
 		return Bundle{}, err
 	}
 
+	// The seed goes first, so the network files and the trust written next are this sandbox's own.
+	if err := seed(b, spec.Seed); err != nil {
+		return Bundle{}, err
+	}
+
 	if err := writeNetworkFiles(b, spec); err != nil {
 		return Bundle{}, err
 	}
@@ -314,7 +319,7 @@ func (s *Service) runtimeSpec(spec models.SandboxSpec, b Bundle) (*specs.Spec, e
 			// Nothing else records which image tree the overlay stacks over, and a start after a stop needs it.
 			rootfsAnnotation:      spec.RootFS,
 			cpuFeaturesAnnotation: cpuFeatures,
-			// The disk is no cgroup resource, so the bound rides here for inspect, fork and clone to read back.
+			// The disk is no cgroup resource, so the bound rides here for inspect and fork to read back.
 			diskAnnotation: strconv.FormatInt(DiskBound(spec.Resources), 10),
 		},
 		Linux: &specs.Linux{

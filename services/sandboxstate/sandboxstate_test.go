@@ -81,7 +81,7 @@ func snapshotDir(t *testing.T, r *sandboxstate.Repository, id string) string {
 func TestNewCreatesTheLayout(t *testing.T) {
 	_, root := repo(t)
 
-	for _, dir := range []string{"sandboxes", "snapshots"} {
+	for _, dir := range []string{"sandboxes", "checkpoints"} {
 		info, err := os.Stat(filepath.Join(root, dir))
 		if err != nil {
 			t.Fatalf("stat %s: %v", dir, err)
@@ -588,7 +588,7 @@ func TestDeleteRemovesTheRecordAndTheSnapshot(t *testing.T) {
 
 	snapshot := snapshotDir(t, r, sb.ID)
 	if err := os.MkdirAll(snapshot, 0o750); err != nil {
-		t.Fatalf("create the snapshot directory: %v", err)
+		t.Fatalf("create the checkpoint directory: %v", err)
 	}
 
 	if err := r.Delete(sb.ID); err != nil {
@@ -614,14 +614,14 @@ func TestDeleteOfAMissingSandboxIsNotFound(t *testing.T) {
 	}
 }
 
-// A pause the daemon did not finish leaves <id>.tmp beside the snapshot, so a delete must take it too (SHARD-368).
+// A pause the daemon did not finish leaves <id>.tmp beside the checkpoint, so a delete must take it too (SHARD-368).
 func TestDeleteRemovesTheUnfinishedSnapshotTmp(t *testing.T) {
 	r, _ := repo(t)
 	sb := create(t, r)
 
 	tmp := snapshotDir(t, r, sb.ID) + ".tmp"
 	if err := os.MkdirAll(tmp, 0o750); err != nil {
-		t.Fatalf("create the unfinished snapshot directory: %v", err)
+		t.Fatalf("create the unfinished checkpoint directory: %v", err)
 	}
 	if err := os.WriteFile(filepath.Join(tmp, "checkpoint.img"), []byte("x"), 0o640); err != nil {
 		t.Fatalf("plant the checkpoint: %v", err)
@@ -643,9 +643,9 @@ func TestSweepSnapshotTmpRemovesOrphansAndKeepsRecorded(t *testing.T) {
 	held := create(t, r)
 	corrupt := create(t, r)
 
-	snapshots := filepath.Join(root, "snapshots")
-	orphan := filepath.Join(snapshots, "quiet-otter-0000.tmp")
-	invalid := filepath.Join(snapshots, "NOT A VALID ID.tmp")
+	checkpoints := filepath.Join(root, "checkpoints")
+	orphan := filepath.Join(checkpoints, "quiet-otter-0000.tmp")
+	invalid := filepath.Join(checkpoints, "NOT A VALID ID.tmp")
 	heldTmp := snapshotDir(t, r, held.ID) + ".tmp"
 	corruptTmp := snapshotDir(t, r, corrupt.ID) + ".tmp"
 	for _, dir := range []string{orphan, invalid, heldTmp, corruptTmp} {

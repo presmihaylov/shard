@@ -34,7 +34,7 @@ func (p *Provider) Create(ctx context.Context, spec models.SandboxSpec) error {
 	if err := clear(spec.StateDir); err != nil {
 		return err
 	}
-	if err := bundle.WriteOverlayDisk(filepath.Join(spec.StateDir, bundle.OverlayDiskFile), spec.Resources); err != nil {
+	if err := writeOverlay(spec); err != nil {
 		return fmt.Errorf("sandbox %s on %s: %w", spec.ID, Name, err)
 	}
 
@@ -44,6 +44,18 @@ func (p *Provider) Create(ctx context.Context, spec models.SandboxSpec) error {
 	}
 
 	return p.launch(ctx, spec.ID, spec.StateDir, r, false)
+}
+
+// writeOverlay lays down an empty overlay, or a reflink of the seed's, which keeps the size the service checked against the bound.
+func writeOverlay(spec models.SandboxSpec) error {
+	to := filepath.Join(spec.StateDir, bundle.OverlayDiskFile)
+	if spec.Seed == "" {
+		return bundle.WriteOverlayDisk(to, spec.Resources)
+	}
+
+	from := filepath.Join(spec.Seed, bundle.OverlayDiskFile)
+
+	return bundle.AdmitCopy(from, to, func() error { return bundle.Reflink(from, to) })
 }
 
 // launch records the sandbox, boots its VM, and runs the entrypoint when asked.
@@ -124,7 +136,7 @@ func recordOf(spec models.SandboxSpec) (record, error) {
 	return r, nil
 }
 
-// network takes the tap, the lease and the name from the spec, which a fresh create and a clone both give the guest.
+// network takes the tap, the lease and the name from the spec, which every create gives the guest.
 func (r *record) network(spec models.SandboxSpec) {
 	if !spec.Network.Address.IsValid() {
 		return
@@ -141,7 +153,7 @@ func (r *record) network(spec models.SandboxSpec) {
 	}
 }
 
-// trust merges the proxy CA into the image roots the way the bundle plants them on Linux; the guest writes the store at every start, so a clone's overlay carries it too.
+// trust merges the proxy CA into the image roots the way the bundle plants them on Linux; the guest writes the store at every start, so a snapshot's overlay carries it too.
 func (r *record) trust(proxyCA []byte) error {
 	trust, err := bundle.Trust(r.RootFS, r.Run.Env, proxyCA)
 	if err != nil {
@@ -379,45 +391,26 @@ func (p *Provider) Remove(ctx context.Context, id string) error {
 	return p.sweep(ctx, id)
 }
 
-// Clone boots a new VM over a copy of the source's overlay, on the same image, and runs the source's entrypoint from the beginning.
-func (p *Provider) Clone(ctx context.Context, sourceID string, spec models.SandboxSpec) error {
-	sourceDir, src, err := p.open(sourceID)
+// Snapshot reflinks the overlay a stop kept into dir; the root of a microVM always reflinks, so a full copy never happens.
+func (p *Provider) Snapshot(ctx context.Context, sourceID, dir string) error {
+	sourceDir, _, err := p.open(sourceID)
 	if err != nil {
 		return err
 	}
-	sourceStatus, err := p.Status(ctx, sourceID)
-	if err != nil {
-		return err
-	}
-	if sourceStatus.Alive() {
-		return fmt.Errorf("sandbox %s is %s on %s: stop it first, clone copies what a stop kept", sourceID, sourceStatus.State, Name)
-	}
-
-	status, err := p.Status(ctx, spec.ID)
+	status, err := p.Status(ctx, sourceID)
 	if err != nil {
 		return err
 	}
 	if status.Alive() {
-		return fmt.Errorf("sandbox %s already exists on %s and is %s", spec.ID, Name, status.State)
-	}
-	if err := checkMemory(spec); err != nil {
-		return err
+		return fmt.Errorf("sandbox %s is %s on %s: stop it first, a snapshot copies what a stop kept", sourceID, status.State, Name)
 	}
 
-	if err := clear(spec.StateDir); err != nil {
-		return err
-	}
-	// A clone shares the source's blocks or is refused: a full copy of the overlay is not what the verb promises.
-	from, to := filepath.Join(sourceDir, bundle.OverlayDiskFile), filepath.Join(spec.StateDir, bundle.OverlayDiskFile)
-	if err := bundle.AdmitCopy(from, to, func() error { return bundle.Reflink(from, to) }); err != nil {
-		return fmt.Errorf("clone the overlay of sandbox %s on %s: %w", sourceID, Name, err)
+	from, to := filepath.Join(sourceDir, bundle.OverlayDiskFile), filepath.Join(dir, bundle.OverlayDiskFile)
+	if err := bundle.Reflink(from, to); err != nil {
+		return fmt.Errorf("snapshot the overlay of sandbox %s on %s: %w", sourceID, Name, err)
 	}
 
-	// The spec names the copy alone; the image and the run are the source's, as the bundle it copies is on Linux.
-	r := record{BaseDisk: src.BaseDisk, RootFS: src.RootFS, Resources: spec.Resources, Run: src.Run}
-	r.network(spec)
-
-	return p.launch(ctx, spec.ID, spec.StateDir, r, true)
+	return nil
 }
 
 // Wait blocks until the entrypoint exits, by the file the event loop lands each exit in.

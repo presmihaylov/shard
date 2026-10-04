@@ -35,7 +35,7 @@ func (p *Provider) Create(ctx context.Context, spec models.SandboxSpec) error {
 	if err := clear(spec.StateDir); err != nil {
 		return err
 	}
-	if _, err := bundle.CloneRootDisk(spec.RootDisk, filepath.Join(spec.StateDir, diskFile), spec.Resources); err != nil {
+	if err := writeDisk(spec); err != nil {
 		return fmt.Errorf("sandbox %s on %s: %w", spec.ID, Name, err)
 	}
 
@@ -45,6 +45,18 @@ func (p *Provider) Create(ctx context.Context, spec models.SandboxSpec) error {
 	}
 
 	return p.launch(ctx, spec.ID, spec.StateDir, r, false)
+}
+
+// writeDisk clones the image's root disk grown to the bound, or the seed's disk, which keeps the size the service checked against the bound.
+func writeDisk(spec models.SandboxSpec) error {
+	to := filepath.Join(spec.StateDir, diskFile)
+	if spec.Seed == "" {
+		_, err := bundle.CloneRootDisk(spec.RootDisk, to, spec.Resources)
+
+		return err
+	}
+
+	return cloneDisk(filepath.Join(spec.Seed, diskFile), to)
 }
 
 // launch records the sandbox, boots its VM, addresses the guest, and runs the entrypoint when asked.
@@ -394,43 +406,25 @@ func (p *Provider) Remove(ctx context.Context, id string) error {
 	return nil
 }
 
-// Clone boots a new VM over a copy of the source's disk and runs the source's entrypoint from the beginning.
-func (p *Provider) Clone(ctx context.Context, sourceID string, spec models.SandboxSpec) error {
-	sourceDir, src, err := p.open(sourceID)
+// Snapshot clones the disk a stop kept into dir, sharing its blocks on APFS.
+func (p *Provider) Snapshot(ctx context.Context, sourceID, dir string) error {
+	sourceDir, _, err := p.open(sourceID)
 	if err != nil {
 		return err
 	}
-	sourceStatus, err := p.Status(ctx, sourceID)
-	if err != nil {
-		return err
-	}
-	if sourceStatus.Alive() {
-		return fmt.Errorf("sandbox %s is %s on %s: stop it first, clone copies what a stop kept", sourceID, sourceStatus.State, Name)
-	}
-
-	status, err := p.Status(ctx, spec.ID)
+	status, err := p.Status(ctx, sourceID)
 	if err != nil {
 		return err
 	}
 	if status.Alive() {
-		return fmt.Errorf("sandbox %s already exists on %s and is %s", spec.ID, Name, status.State)
-	}
-	if err := checkMemory(spec); err != nil {
-		return err
+		return fmt.Errorf("sandbox %s is %s on %s: stop it first, a snapshot copies what a stop kept", sourceID, status.State, Name)
 	}
 
-	if err := clear(spec.StateDir); err != nil {
-		return err
-	}
-	if err := cloneDisk(filepath.Join(sourceDir, diskFile), filepath.Join(spec.StateDir, diskFile)); err != nil {
-		return fmt.Errorf("copy the disk of sandbox %s on %s: %w", sourceID, Name, err)
+	if _, err := bundle.CloneFile(filepath.Join(sourceDir, diskFile), filepath.Join(dir, diskFile)); err != nil {
+		return fmt.Errorf("snapshot the disk of sandbox %s on %s: %w", sourceID, Name, err)
 	}
 
-	// The spec names the copy and its lease alone; the run is the source's, as the bundle it copies is on Linux.
-	r := record{RootFS: src.RootFS, Resources: spec.Resources, Run: src.Run}
-	r.network(spec)
-
-	return p.launch(ctx, spec.ID, spec.StateDir, r, true)
+	return nil
 }
 
 // cloneDisk copies the disk at src to dst once the root has room for all of it beside the disk of every other sandbox.

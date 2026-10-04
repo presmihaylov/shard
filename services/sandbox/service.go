@@ -51,6 +51,17 @@ type Repository interface {
 // Images is the part of image.Service a create drives.
 type Images interface {
 	Pull(ctx context.Context, ref string) (image.Image, error)
+	Lookup(ref string) (image.Image, bool, error)
+}
+
+// Snapshots is the part of sandboxstate.Snapshots the snapshot verbs drive.
+type Snapshots interface {
+	Create(snap models.Snapshot, fill func(files string) error) (models.Snapshot, error)
+	Resolve(ref string) (string, error)
+	Get(id string) (models.Snapshot, error)
+	List() ([]models.Snapshot, error)
+	Delete(id string) error
+	Files(id string) (string, error)
 }
 
 // Network is the part of network.Service the lifecycle verbs drive.
@@ -85,6 +96,7 @@ type Environments interface {
 // Config is every layer the orchestrator drives. The daemon builds each one once.
 type Config struct {
 	Repo         Repository
+	Snapshots    Snapshots
 	Images       Images
 	Network      Network
 	Provider     models.Provider
@@ -134,12 +146,14 @@ func New(cfg Config) *Service {
 
 // CreateRequest is what a create names. It is the JSON body of POST /v0/sandboxes.
 type CreateRequest struct {
-	Image   string   `json:"image"`
-	Name    string   `json:"name,omitempty"`
-	Command []string `json:"command,omitempty"`
-	Env     []string `json:"env,omitempty"`
-	WorkDir string   `json:"workdir,omitempty"`
-	User    string   `json:"user,omitempty"`
+	// Image and Snapshot are exclusive, and a create names one of them.
+	Image    string   `json:"image,omitempty"`
+	Snapshot string   `json:"snapshot,omitempty"`
+	Name     string   `json:"name,omitempty"`
+	Command  []string `json:"command,omitempty"`
+	Env      []string `json:"env,omitempty"`
+	WorkDir  string   `json:"workdir,omitempty"`
+	User     string   `json:"user,omitempty"`
 	// Secrets is what the guest gets a placeholder for, each under its own name.
 	Secrets []string `json:"secrets,omitempty"`
 	// Policy is what the host enforces for the sandbox.
@@ -367,6 +381,15 @@ func (s *Service) Prepare(ctx context.Context, req CreateRequest) (models.Sandbo
 	if err := validate(req); err != nil {
 		return models.Sandbox{}, err
 	}
+	snapshot := ""
+	if req.Snapshot != "" {
+		seed, err := s.seed(ctx, req.Snapshot, req)
+		if err != nil {
+			return models.Sandbox{}, err
+		}
+		defer seed.unlock()
+		req, snapshot = seed.req, seed.id
+	}
 	// A bound the substrate refuses is the request's fault, and it must not leave a failed record behind.
 	if err := s.cfg.Provider.CheckResources(req.Resources); err != nil {
 		return models.Sandbox{}, &RequestError{Err: err}
@@ -423,6 +446,7 @@ func (s *Service) Prepare(ctx context.Context, req CreateRequest) (models.Sandbo
 	sb, err := s.cfg.Repo.Create(models.Sandbox{
 		Name:      req.Name,
 		Image:     ref,
+		Snapshot:  snapshot,
 		Provider:  s.cfg.Provider.Name(),
 		State:     models.StatePending,
 		Resources: req.Resources,
@@ -486,6 +510,16 @@ func (s *Service) Complete(ctx context.Context, id string, req CreateRequest) (e
 		}
 	}()
 
+	// The record pins the snapshot by id, and the lock holds it until the copy out of it is done.
+	var seed seeded
+	if sb.Snapshot != "" {
+		if seed, err = s.seed(ctx, sb.Snapshot, req); err != nil {
+			return err
+		}
+		defer seed.unlock()
+		req = seed.req
+	}
+
 	env, err := s.grantSecrets(req)
 	if err != nil {
 		return err
@@ -506,8 +540,15 @@ func (s *Service) Complete(ctx context.Context, id string, req CreateRequest) (e
 		}
 	}()
 
-	// Only the pull can be cancelled: the teardown and the fail below run under ctx, which rm never ends.
-	img, dir, err := s.claim(pullCtx, id, req)
+	img := seed.img
+	if sb.Snapshot == "" {
+		// Only the pull can be cancelled: the teardown and the fail below run under ctx, which rm never ends.
+		if img, err = s.pull(pullCtx, req); err != nil {
+			return err
+		}
+	}
+
+	dir, err := s.cfg.Repo.Dir(id)
 	if err != nil {
 		return err
 	}
@@ -536,6 +577,7 @@ func (s *Service) Complete(ctx context.Context, id string, req CreateRequest) (e
 		Network:    resolvedThrough(netSpec, req.Policy),
 		Resources:  req.Resources,
 		Restart:    restartSpecOf(withRestartDefaults(req.Restart)),
+		Seed:       seed.files,
 		ProxyCA:    proxyCA,
 	}, img.Config)
 
@@ -639,8 +681,14 @@ func ValidPolicyName(name string) error { return egress.ValidName(name) }
 
 // validate refuses what no store could hold or no verb could take back, before anything is pulled.
 func validate(req CreateRequest) error {
-	if req.Image == "" {
-		return &RequestError{Err: errors.New("the request names no image")}
+	if req.Image == "" && req.Snapshot == "" {
+		return &RequestError{Err: errors.New("the request names no image and no snapshot")}
+	}
+	if req.Image != "" && req.Snapshot != "" {
+		return &RequestError{Err: errors.New("the request names both an image and a snapshot: a snapshot already names its image")}
+	}
+	if req.Snapshot != "" && (len(req.Command) != 0 || req.Restart != nil) {
+		return &RequestError{Err: errors.New("a sandbox from a snapshot runs shard-init alone, so it takes no command and no restart policy")}
 	}
 
 	if req.Name != "" {
@@ -732,9 +780,9 @@ func (s *Service) grantSecrets(req CreateRequest) ([]string, error) {
 	return env, nil
 }
 
-// claim pulls the image the pending record already references and answers the state dir. The record
-// exists before the pull, so a prune keyed on that reference cannot delete the rootfs the create runs.
-func (s *Service) claim(ctx context.Context, id string, req CreateRequest) (image.Image, string, error) {
+// pull fetches the image the pending record already references. The record exists before the pull, so
+// a prune keyed on that reference cannot delete the rootfs the create runs.
+func (s *Service) pull(ctx context.Context, req CreateRequest) (image.Image, error) {
 	// A registry that accepts the connection and then stalls would otherwise pin the create forever.
 	if s.cfg.PullTimeout > 0 {
 		var cancel context.CancelFunc
@@ -745,18 +793,13 @@ func (s *Service) claim(ctx context.Context, id string, req CreateRequest) (imag
 	img, err := s.cfg.Images.Pull(ctx, req.Image)
 	// A cached image answers even on an ended context, so a cancel that landed before the pull still fails the create.
 	if cause := context.Cause(ctx); errors.Is(cause, errCreateCancelled) {
-		return image.Image{}, "", cause
+		return image.Image{}, cause
 	}
 	if err != nil {
-		return image.Image{}, "", err
+		return image.Image{}, err
 	}
 
-	dir, err := s.cfg.Repo.Dir(id)
-	if err != nil {
-		return image.Image{}, "", err
-	}
-
-	return img, dir, nil
+	return img, nil
 }
 
 // recordCreated copies what the substrate decided into the record, so a later process can reach the

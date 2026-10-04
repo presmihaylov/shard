@@ -661,3 +661,26 @@ func TestPullWaitsForARemovalPastItsCheck(t *testing.T) {
 		t.Errorf("the pull handed out a rootfs the removal then took: %v", err)
 	}
 }
+
+// A create from a snapshot never pulls: Lookup answers from the store, and misses an image it does not hold.
+func TestLookupAnswersFromTheStoreAndNeverPulls(t *testing.T) {
+	server, ref := servedImage(t, "app:1.0", map[string]string{"etc/hostname": "box"})
+	svc := newService(t, server)
+
+	if _, found, err := svc.Lookup(ref); err != nil || found {
+		t.Fatalf("Lookup before a pull = %v, %v, want a miss", found, err)
+	}
+
+	pulled, err := svc.Pull(t.Context(), ref)
+	if err != nil {
+		t.Fatalf("Pull: %v", err)
+	}
+
+	got, found, err := svc.Lookup(ref)
+	if err != nil || !found {
+		t.Fatalf("Lookup after the pull = %v, %v, want a hit", found, err)
+	}
+	if got.Digest != pulled.Digest || got.RootFS != pulled.RootFS {
+		t.Errorf("Lookup returned %+v, want the pulled %+v", got, pulled)
+	}
+}

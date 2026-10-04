@@ -12,7 +12,7 @@ import (
 	"github.com/presmihaylov/shard/pkg/diskimage"
 )
 
-// Provision makes the disk if none exists, sized to the bound, and mounts it, so Build, Fork and Clone write the layers into it.
+// Provision makes the disk if none exists, sized to the bound, and mounts it, so Build and Fork write the layers into it.
 func (b Bundle) Provision(r models.Resources) error {
 	if err := os.MkdirAll(b.Disk, 0o750); err != nil {
 		return fmt.Errorf("create %s: %w", b.Disk, err)
@@ -25,7 +25,7 @@ func (b Bundle) Provision(r models.Resources) error {
 	return b.MountDisk()
 }
 
-// MountDisk mounts the disk alone, which a clone needs of its stopped source to copy the layers off.
+// MountDisk mounts the disk alone, which a snapshot needs of its stopped source to copy the layers off.
 func (b Bundle) MountDisk() error {
 	if _, err := os.Stat(b.Image); err != nil {
 		return fmt.Errorf("the sandbox has no disk: %w", err)

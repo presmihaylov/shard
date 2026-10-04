@@ -418,7 +418,7 @@ func TestReconcileKeepsAPausedSandboxThatHoldsItsSnapshot(t *testing.T) {
 		t.Fatalf("write the checkpoint: %v", err)
 	}
 
-	sb := models.Sandbox{ID: "sandbox1", State: models.StatePaused, Snapshot: dir}
+	sb := models.Sandbox{ID: "sandbox1", State: models.StatePaused, Checkpoint: dir}
 	lab := newReconcileLab(t, &recProvider{status: map[string]models.Status{"sandbox1": gone()}}, sb)
 
 	if err := lab.run(t); err != nil {
@@ -452,7 +452,7 @@ func TestReconcileCatchesUpARunningRecordTheSubstrateHoldsPaused(t *testing.T) {
 }
 
 func TestReconcileStopsAPausedRecordWhoseSnapshotIsGone(t *testing.T) {
-	sb := models.Sandbox{ID: "sandbox1", State: models.StatePaused, Snapshot: filepath.Join(t.TempDir(), "empty")}
+	sb := models.Sandbox{ID: "sandbox1", State: models.StatePaused, Checkpoint: filepath.Join(t.TempDir(), "empty")}
 	lab := newReconcileLab(t, &recProvider{status: map[string]models.Status{"sandbox1": gone()}}, sb)
 
 	if err := lab.run(t); err != nil {
@@ -492,7 +492,7 @@ func TestReconcilePausesAMarkedRecordWhosePauseLeftACheckpoint(t *testing.T) {
 	}
 
 	got := lab.repo.records["sandbox1"]
-	if got.State != models.StatePaused || got.PID != 0 || got.Snapshot != dir || got.Pausing || got.StoppedReason != "" {
+	if got.State != models.StatePaused || got.PID != 0 || got.Checkpoint != dir || got.Pausing || got.StoppedReason != "" {
 		t.Errorf("the record is %+v, want paused with pid 0, snapshot %s, no mark and no reason", *got, dir)
 	}
 	if len(lab.reports) != 1 || !strings.Contains(lab.reports[0], "now says paused") {
@@ -515,14 +515,14 @@ func TestReconcileKeepsThePauseADaemonCrashLeftOverASilentShimUntilTheShimDies(t
 		t.Fatalf("the restart that adopts the frozen shim: %v", err)
 	}
 	silent := *lab.repo.records[sb.ID]
-	if silent.State != models.StateUnresponsive || !silent.Pausing || silent.Snapshot != "" || silent.PID != sb.PID {
+	if silent.State != models.StateUnresponsive || !silent.Pausing || silent.Checkpoint != "" || silent.PID != sb.PID {
 		t.Fatalf("after the first restart the record is %+v, want unresponsive with its pid and the mark kept, and no snapshot: the shim may still answer", silent)
 	}
 
 	if err := lab.run(t); err != nil {
 		t.Fatalf("the restart while the shim is still silent: %v", err)
 	}
-	if still := *lab.repo.records[sb.ID]; still.State != models.StateUnresponsive || !still.Pausing || still.Snapshot != "" || still.PID != sb.PID {
+	if still := *lab.repo.records[sb.ID]; still.State != models.StateUnresponsive || !still.Pausing || still.Checkpoint != "" || still.PID != sb.PID {
 		t.Fatalf("after the second restart the record is %+v, want it unresponsive with its pid and the mark kept: the shim may still answer", still)
 	}
 
@@ -532,7 +532,7 @@ func TestReconcileKeepsThePauseADaemonCrashLeftOverASilentShimUntilTheShimDies(t
 	}
 
 	got := lab.repo.records[sb.ID]
-	if got.State != models.StatePaused || got.PID != 0 || got.Snapshot != dir || got.Pausing || got.UnresponsiveReason != "" || got.StoppedReason != "" {
+	if got.State != models.StatePaused || got.PID != 0 || got.Checkpoint != dir || got.Pausing || got.UnresponsiveReason != "" || got.StoppedReason != "" {
 		t.Errorf("after the third restart the record is %+v, want paused with pid 0, snapshot %s, no mark and no reason", *got, dir)
 	}
 	if len(lab.reports) != 2 || !strings.Contains(lab.reports[1], "said unresponsive") || !strings.Contains(lab.reports[1], "now says paused") {
@@ -564,7 +564,7 @@ func TestReconcileDropsTheMarkWhenASilentShimAnswersRunningAgain(t *testing.T) {
 		t.Fatalf("the restart after the shim died: %v", err)
 	}
 	got := lab.repo.records[sb.ID]
-	if got.State != models.StateStopped || got.Snapshot != "" {
+	if got.State != models.StateStopped || got.Checkpoint != "" {
 		t.Errorf("after the death the record is %+v, want stopped with no snapshot: the checkpoint is older than the run", *got)
 	}
 }
@@ -581,7 +581,7 @@ func TestReconcileReleasesAMarkedSandboxItsPauseLeftFrozen(t *testing.T) {
 	}
 
 	got := lab.repo.records["sandbox1"]
-	if got.State != models.StatePaused || got.PID != 0 || got.Snapshot != dir || got.Pausing {
+	if got.State != models.StatePaused || got.PID != 0 || got.Checkpoint != dir || got.Pausing {
 		t.Errorf("the record is %+v, want paused with pid 0, snapshot %s and no mark", *got, dir)
 	}
 	if len(provider.released) != 1 || provider.released[0] != dir {
@@ -611,8 +611,8 @@ func TestReconcileFreesTheMountACutPauseLeftAfterItsDelete(t *testing.T) {
 	if err := svc.ReconcileAll(t.Context(), []models.Sandbox{sb}, func(string) {}, runOnce); err != nil {
 		t.Fatalf("ReconcileAll: %v", err)
 	}
-	if got := l.repo.sb; got.State != models.StatePaused || got.Snapshot != dir || got.Pausing {
-		t.Fatalf("the record is %s with snapshot %q and mark %v, want paused with %s and no mark", got.State, got.Snapshot, got.Pausing, dir)
+	if got := l.repo.sb; got.State != models.StatePaused || got.Checkpoint != dir || got.Pausing {
+		t.Fatalf("the record is %s with checkpoint %q and mark %v, want paused with %s and no mark", got.State, got.Checkpoint, got.Pausing, dir)
 	}
 	if l.provider.mounted {
 		t.Errorf("the calls were %v, want the view released: no stop frees a view runsc does not hold", r.snapshot())
@@ -636,8 +636,8 @@ func TestReconcileKeepsTheMarkOfAFrozenSandboxTheSubstrateCannotRelease(t *testi
 		t.Fatalf("ReconcileAll: %v", err)
 	}
 
-	if got := lab.repo.records["sandbox1"]; got.Snapshot != "" || !got.Pausing {
-		t.Errorf("the record has snapshot %q and mark %v, want no snapshot and the mark", got.Snapshot, got.Pausing)
+	if got := lab.repo.records["sandbox1"]; got.Checkpoint != "" || !got.Pausing {
+		t.Errorf("the record has checkpoint %q and mark %v, want no checkpoint and the mark", got.Checkpoint, got.Pausing)
 	}
 }
 
@@ -652,8 +652,8 @@ func TestReconcileReleasesNoFrozenSandboxItsRecordNeverMarked(t *testing.T) {
 		t.Fatalf("ReconcileAll: %v", err)
 	}
 
-	if got := lab.repo.records["sandbox1"]; got.Snapshot != "" {
-		t.Errorf("the record took the snapshot %q, want none: no pause marked it", got.Snapshot)
+	if got := lab.repo.records["sandbox1"]; got.Checkpoint != "" {
+		t.Errorf("the record took the checkpoint %q, want none: no pause marked it", got.Checkpoint)
 	}
 	if len(provider.released) != 0 {
 		t.Errorf("the substrate released %v, want nothing", provider.released)
@@ -681,8 +681,8 @@ func TestReconcileReleasesNoFrozenSandboxWhosePauseLeftNoCompleteCheckpoint(t *t
 	if len(provider.released) != 0 {
 		t.Errorf("the substrate released %v, want nothing: no complete checkpoint stands beside the sentry", provider.released)
 	}
-	if got := lab.repo.records["sandbox1"]; got.Snapshot != "" || !got.Pausing {
-		t.Errorf("the record has snapshot %q and mark %v, want no snapshot and the mark", got.Snapshot, got.Pausing)
+	if got := lab.repo.records["sandbox1"]; got.Checkpoint != "" || !got.Pausing {
+		t.Errorf("the record has checkpoint %q and mark %v, want no checkpoint and the mark", got.Checkpoint, got.Pausing)
 	}
 }
 
@@ -707,8 +707,8 @@ func TestReconcileDropsTheMarkOfASandboxTheSubstrateRunsPastItsSnapshot(t *testi
 	if err := lab.run(t); err != nil {
 		t.Fatalf("ReconcileAll after the death: %v", err)
 	}
-	if got := lab.repo.records["sandbox1"]; got.State != models.StateStopped || got.Snapshot != "" {
-		t.Errorf("the record is %s with snapshot %q, want stopped with none: the run past the snapshot died", got.State, got.Snapshot)
+	if got := lab.repo.records["sandbox1"]; got.State != models.StateStopped || got.Checkpoint != "" {
+		t.Errorf("the record is %s with checkpoint %q, want stopped with none: the run past the checkpoint died", got.State, got.Checkpoint)
 	}
 }
 
@@ -730,8 +730,8 @@ func TestReconcileKeepsTheMarkOfASandboxTheSubstrateDoesNotSayRuns(t *testing.T)
 	if err := lab.run(t); err != nil {
 		t.Fatalf("ReconcileAll after the death: %v", err)
 	}
-	if got := lab.repo.records["sandbox1"]; got.State != models.StatePaused || got.Snapshot != dir {
-		t.Errorf("the record is %s with snapshot %q, want paused with %s: nothing proved the run went past it", got.State, got.Snapshot, dir)
+	if got := lab.repo.records["sandbox1"]; got.State != models.StatePaused || got.Checkpoint != dir {
+		t.Errorf("the record is %s with checkpoint %q, want paused with %s: nothing proved the run went past it", got.State, got.Checkpoint, dir)
 	}
 }
 
@@ -1052,7 +1052,7 @@ func TestReconcileReportsASnapshotItCannotRead(t *testing.T) {
 		t.Fatalf("write the file in the way: %v", err)
 	}
 
-	sb := models.Sandbox{ID: "sandbox1", State: models.StatePaused, Snapshot: blocked}
+	sb := models.Sandbox{ID: "sandbox1", State: models.StatePaused, Checkpoint: blocked}
 	lab := newReconcileLab(t, &recProvider{status: map[string]models.Status{"sandbox1": gone()}}, sb)
 
 	if err := lab.run(t); err != nil {

@@ -275,7 +275,7 @@ func reconciled(sb models.Sandbox, status models.Status) (models.State, error) {
 	}
 
 	if sb.State == models.StatePaused {
-		held, err := hasCheckpoint(sb.Snapshot)
+		held, err := hasCheckpoint(sb.Checkpoint)
 		if err != nil {
 			return "", err
 		}
