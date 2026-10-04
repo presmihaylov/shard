@@ -70,8 +70,8 @@ CAPTURE_STEP = {
     "python_async": ("py", "capture-async"),
 }
 
-# Each of Pres's checks, by name, and the lines that prove it: a gate check, or suite.<run>:<check> in all three runs.
-PRES: dict[str, list[str]] = {
+# Each release claim, by name, and the lines that prove it: a gate check, or suite:<check> in all three runs.
+CLAIMS: dict[str, list[str]] = {
     "packages build and install": ["install.typescript", "install.python"],
     "examples run": ["examples.typescript", "examples.python_sync", "examples.python_async"],
     "lifecycle": ["suite:lifecycle.*"],
@@ -284,7 +284,7 @@ class Gate:
         shutil.copy(self.tree / "sdks" / "python" / "examples" / script, copied)
         self.run([str(self.python), str(copied)], self.work, "examples")
 
-    # Suites: the shared checks of sdks/suite/checks.txt, each line kept so Pres's checks can name it.
+    # Suites: the shared checks of sdks/suite/checks.txt, each line kept so a claim can name it.
 
     def suite(self, run: str) -> str:
         if run == "typescript":
@@ -551,13 +551,13 @@ class Gate:
             self.results["gate.cleanup"] = Verdict("FAIL", f"could not remove {', '.join(left)}")
             self.say(f"FAIL gate.cleanup: {self.results['gate.cleanup'].detail}")
 
-    def pres(self) -> bool:
+    def claims(self) -> bool:
         ok = True
-        for claim, proofs in PRES.items():
+        for claim, proofs in CLAIMS.items():
             missing = [bad for proof in proofs for bad in self.unproven(proof)]
             ok = ok and not missing
             verdict = "PASS" if not missing else "FAIL"
-            self.say(f"PRES {claim}: {verdict} ({', '.join(proofs) if not missing else ', '.join(missing)})")
+            self.say(f"CLAIM {claim}: {verdict} ({', '.join(proofs) if not missing else ', '.join(missing)})")
         return ok
 
     def unproven(self, proof: str) -> Iterator[str]:
@@ -665,7 +665,7 @@ def main() -> int:
     finally:
         gate.cleanup()
 
-    proven = bool(gate.only) or gate.pres()
+    proven = bool(gate.only) or gate.claims()
     failed = [name for name, result in gate.results.items() if result.verdict == "FAIL"]
     print(f"gate: {len(gate.results)} checks, {len(failed)} failed; logs in {gate.out}", file=sys.stderr)
     return 1 if failed or not proven else 0

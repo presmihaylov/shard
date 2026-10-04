@@ -41,6 +41,7 @@ make sdk-ts                  regenerate the TypeScript SDK's private types from 
 make sdk-ts-check            the TypeScript SDK's drift check, typecheck, unit tests and build; needs Node 22
 make sdk-py                  generate the Python SDK's private client from docs/openapi.json, and its sync twins (SHARD-492)
 make sdk-py-check            the Python SDK's lint, types, generated-code check and unit tests; needs uv
+make sdk-gate                both SDKs against one daemon at SHARD_REMOTE, every release check by name; needs Node 22 and uv (SHARD-493)
 ```
 
 ## Layout
