@@ -48,9 +48,9 @@ A name matches in any letter case, with or without a trailing dot. The store kee
 no trailing dot, so `policy show` prints `example.com` for a rule typed `ExAmPlE.com.`.
 
 Ports are a comma-separated list of numbers and ranges, such as `tcp:22,8000-8100`, each port from 1
-to 65535. A rule names at most 1024 ports, and a port named twice counts twice. A rule with no protocol matches every protocol,
-ping included. An address or prefix rule with no ports opens every tcp and udp port to that
-destination, so name the ports when you want only some of them.
+to 65535. A rule names at most 1024 ports, and a port named twice counts twice. A rule with no
+protocol matches every protocol, ping included. An address or prefix rule with no ports opens every
+tcp and udp port to that destination, so name the ports when you want only some of them.
 
 A name rule covers `tcp` to ports 80 and 443 only, and covers both when it names no port. A plain name
 is enforced twice. The host table holds the addresses the name resolved to when the table was
