@@ -22,6 +22,7 @@ import (
 
 	"github.com/presmihaylov/shard/models"
 	fcapi "github.com/presmihaylov/shard/pkg/firecracker"
+	"github.com/presmihaylov/shard/pkg/pidpin/pidpintest"
 	"github.com/presmihaylov/shard/services/bundle"
 	"github.com/presmihaylov/shard/services/provider/conformance"
 	"github.com/presmihaylov/shard/services/provider/firecracker"
@@ -47,6 +48,7 @@ type harness struct {
 
 func newHarness(t *testing.T) *harness {
 	t.Helper()
+	requireProcessTable(t)
 
 	root, err := os.MkdirTemp("", "fc") //nolint:usetesting // t.TempDir is too long for a socket path
 	if err != nil {
@@ -190,6 +192,8 @@ func (h *harness) checkpointDir(id string) (string, error) {
 
 func (h *harness) newSpec(t *testing.T, entrypoint ...string) models.SandboxSpec {
 	t.Helper()
+	// Every boot pins its vmm.
+	pidpintest.Require(t)
 
 	id := fmt.Sprintf("sb-%d", h.next.Add(1))
 	dir, _ := h.stateDir(id)
