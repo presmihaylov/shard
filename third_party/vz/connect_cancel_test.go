@@ -5,8 +5,7 @@ import (
 	"testing"
 )
 
-// A dial that times out cancels, which must only mark the connect dead and never free its cgo handle.
-// A late framework completion then resolves the handle in connectionHandler instead of panicking on a freed one (SHARD-619).
+// Cancel keeps the handle valid for a late framework completion (SHARD-619).
 func TestConnectCancelKeepsHandleForLateCompletion(t *testing.T) {
 	managed := &managedConnect{fn: func(*VirtioSocketConnection, error) {
 		t.Error("fn ran for a dial the caller cancelled")
