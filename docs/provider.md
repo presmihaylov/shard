@@ -25,7 +25,7 @@ substrate lacks.
 
 | Verb | gVisor | Sysbox | runc | vz | Firecracker |
 |---|---|---|---|---|---|
-| `create`, `start`, `stop`, `rm`, `clone`, `exec`, `logs`, `inspect` | yes | yes | yes | yes | yes |
+| `create`, `start`, `stop`, `remove`, `exec`, `logs`, `inspect` | yes | yes | yes | yes | yes |
 | `pause` | yes | **no** | **no** | Apple silicon on macOS 14+, **no** on 13 or on Intel | yes |
 | `resume` | yes | **no** | **no** | Apple silicon on macOS 14+, **no** on 13 or on Intel | yes |
 | `fork` of a running sandbox | yes | **no** | **no** | **no**, until SHARD-463 | yes |
@@ -108,8 +108,7 @@ init.
 `checkpoint` and `restore` (nestybox/sysbox#715, open since 2023), so there is no memory image to
 take. The provider claims `{Pause: false, Resume: false, Fork: false}`, and each verb refuses by
 name, for example `provider sysbox does not support pause on this host`. Nothing is emulated. A
-`pause` on Sysbox is a refusal and not a stop, and the sandbox keeps running. `clone` still works,
-because it needs no snapshot.
+`pause` on Sysbox is a refusal and not a stop, and the sandbox keeps running.
 
 **Sysbox CE is single-tenant.** Sysbox CE maps every container to the same host uid range,
 `0 165536 65536`. Exclusive ranges were a Sysbox EE feature, and EE is gone. So two Sysbox
@@ -179,7 +178,7 @@ flag. They are `CheckResources`, `Create`, `Start`, `Stop`, `Remove`, `Clone`, `
 `ExitStatus`, `Status`, `Restarts`, `LogPath`, and `Capabilities` itself.
 
 `CheckResources` answers whether the substrate can run under a bound before the orchestrator writes
-a record, so a refusal leaves nothing in `ls`. Only vz and Firecracker refuse anything. A VM's
+a record, so a refusal leaves nothing in `list`. Only vz and Firecracker refuse anything. A VM's
 memory is real memory, so both refuse `--memory 0` and a bound under 128 MiB by name, and a `--disk`
 whose last block group cannot hold its own metadata. Firecracker also refuses a `--cpus` above 32
 and a `--disk` under 11 MiB. gVisor, Sysbox and runc take every bound. `Create` checks its spec
@@ -255,7 +254,7 @@ namespace. There a bridge with no address joins it to a tap that is also named `
 vmm shares no network namespace with the host (SHARD-431). The vmm opens the tap as the guest's
 `eth0`, with a MAC derived from the lease. Once the guest is up, and before the entrypoint runs,
 `shard-init` takes the address, the gateway and the resolver over vsock. The next start after a stop
-leases the same address and builds the namespace and the tap again for the new vmm. `rm` releases
+leases the same address and builds the namespace and the tap again for the new vmm. `remove` releases
 both.
 
 The daemon spawns every vmm through Firecracker's `jailer`, and never as root (SHARD-306). Each
@@ -313,7 +312,7 @@ is refused with `a fork holds the sandbox frozen, and nothing starts in it until
 command again`. Nothing queues it, so the caller runs it again once the verb returns. A restart of
 the entrypoint waits out the freeze.
 If the guest takes no new control stream within 30 s, the fork fails with an error that says the
-source stays frozen. `stop` and `rm` of that source still work, the daemon dials on until the guest
+source stays frozen. `stop` and `remove` of that source still work, the daemon dials on until the guest
 answers and thaws it, and the next daemon start thaws it from the capture marker.
 
 A `pause` takes a Firecracker Diff snapshot, which writes only the pages that the guest wrote since
@@ -356,7 +355,7 @@ and an entrypoint that exits. One guest outgrows its memory and stops with its r
 starts it again, and `start` brings it back over its kept files. The run then
 checks the policy and the proxy on the vmm's link, a daemon restart that adopts the vmm, and a vmm
 lost while the daemon was down. After that come a `fork` that is refused by name, `pause`, `resume`,
-`stop` with the cgroup kept empty, two clones by reflink, `start` back into that cgroup, and `rm`.
+`stop` with the cgroup kept empty, `start` back into that cgroup, and `remove`.
 The last check is a host with no link, no namespace, no vmm, no jail, no cgroup, no image and no
 fstab line left. It runs on demand only. It needs `/dev/kvm`, which no CI runner and no cloud devbox
 has, so CI, `make check`, `make e2e` and `make devbox-e2e` never call it. To run it, rent a
@@ -477,7 +476,7 @@ the bound less what ext4 keeps for itself.
 A stop detaches the disk and a start mounts it again, so the layer survives a stop and the next
 start. On Sysbox the disk stays mounted while `sysbox-runc` holds the stopped sandbox, because
 `sysbox-mgr` chowns the upper layer back when the container is deleted, at the next start or at
-`rm`, and it must find the layer in place. Fork and clone copy the layers into a disk of their own,
+`remove`, and it must find the layer in place. Fork and clone copy the layers into a disk of their own,
 bounded the way the source was, and config.json carries the bound for that. The record carries the
 resolved bound, so `inspect` shows the value the image enforces instead of a bare `0`.
 `shard create` refuses a negative value. On the VM providers it also refuses, before the record
@@ -524,7 +523,7 @@ record never answers for it. The two disagree on purpose in these cases:
 state. A gVisor `Pause` that breaks off after its checkpoint began loses the sandbox, because the
 sentry exits after any checkpoint, whether the checkpoint was taken or not. The provider returns
 `models.LostError`, and the record ends `failed` (SHARD-336). runsc never probes a paused sandbox,
-so `Status` reads a paused sandbox whose sentry is gone as `stopped`. `stop` and `rm --force` then
+so `Status` reads a paused sandbox whose sentry is gone as `stopped`. `stop` and `remove --force` then
 end it. The exit of the entrypoint is not a transition, and the return of `Wait` does not end
 anything. Under a restart policy, `Wait` returns the first exit of the run and not the settled one.
 The supervisor rewrites the exit file on each exit and clears nothing, so only a stopped sandbox

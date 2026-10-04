@@ -232,12 +232,12 @@ printf '%s\n' "${SECRET_VALUE}" | shard secret set --to "${ECHO_HOST}" E2E_TOKEN
 SHAPED_PLACEHOLDER="sk_test_e2eplaceholder01"
 SHAPED_VALUE="sk_live_e2e_$$_$(date +%s)"
 shard secret set --to "${ECHO_HOST}" --placeholder "${SHAPED_PLACEHOLDER}" E2E_SHAPED "${SHAPED_VALUE}" >/dev/null 2>&1
-holds "E2E_TOKEN" shard secret ls || fail "shard secret ls does not list E2E_TOKEN"
-holds "${SECRET_VALUE}" shard secret ls && fail "shard secret ls printed the value"
-say "secret ls lists the name and not the value"
+holds "E2E_TOKEN" shard secret list || fail "shard secret list does not list E2E_TOKEN"
+holds "${SECRET_VALUE}" shard secret list && fail "shard secret list printed the value"
+say "secret list lists the name and not the value"
 # The probe address is allowed on every protocol, so the ping the network checks use goes through.
 shard policy create --allow 1.1.1.1 --allow dns --allow "${ECHO_HOST}" --allow "${OTHER_HOST}" --deny any e2e-policy >/dev/null
-holds "e2e-policy" shard policy ls || fail "shard policy ls does not list e2e-policy"
+holds "e2e-policy" shard policy list || fail "shard policy list does not list e2e-policy"
 say "the policy allows the probe, dns and the two echo names, and denies the rest"
 
 step "refuse a create with no memory"
@@ -279,9 +279,9 @@ NETNS_TAP=$(ip -netns "${ID}" -details -o link show "${LINK}" 2>&1 || true)
 grep -q "tun type tap" <<<"${NETNS_TAP}" || fail "the namespace ${ID} holds no tap ${LINK}: ${NETNS_TAP}"
 grep -q "master br0" <<<"${NETNS_TAP}" || fail "the tap ${LINK} is not a port of br0 in ${ID}: ${NETNS_TAP}"
 say "the host link ${LINK} is a veth port of ${HOST_BRIDGE}, and the vmm and its tap are in the namespace ${ID}"
-[ "$(listed_state "${ID}")" = "running" ] || fail "shard ls lists the sandbox $(listed_state "${ID}"), want running"
-holds "${IMAGE%%:*}" shard image ls || fail "image ls does not list ${IMAGE}"
-say "ls shows the sandbox running, and the image is cached"
+[ "$(listed_state "${ID}")" = "running" ] || fail "shard list lists the sandbox $(listed_state "${ID}"), want running"
+holds "${IMAGE%%:*}" shard image list || fail "image list does not list ${IMAGE}"
+say "list shows the sandbox running, and the image is cached"
 
 step "bound the vmm in a host cgroup of its own"
 CGROUP="/sys/fs/cgroup/shard/${ID}"
@@ -327,7 +327,7 @@ grep -q '"exit_status"' "${SHARD_ROOT}/sandboxes/${EXIT_ID}/sandbox.json" || fai
 expect "$(listed_state "${EXIT_ID}")" "running" "the sandbox is running after its app exited 3"
 expect_exec_in "${EXIT_ID}" "still-up" "an exec answers in a sandbox whose entrypoint is gone" /bin/echo still-up
 shard stop "${EXIT_ID}" >/dev/null
-shard rm "${EXIT_ID}" >/dev/null
+shard remove "${EXIT_ID}" >/dev/null
 EXIT_ID=""
 say "only stop ended it"
 
@@ -357,7 +357,7 @@ for _ in $(seq 1 50); do
 done
 holds "e2e-oom-settled" shard logs "${OOM_ID}" || fail "the second boot of ${OOM_ID} did not get past the fill: $(shard logs "${OOM_ID}")"
 expect_exec_in "${OOM_ID}" "alive" "an exec answers in the microVM a start brought back" /bin/echo alive
-shard rm --force "${OOM_ID}" >/dev/null
+shard remove --force "${OOM_ID}" >/dev/null
 OOM_ID=""
 say "one OOM, one stop, and the boot a start brought back skipped the fill"
 
@@ -438,12 +438,12 @@ done
 kill -0 "${RECONCILE_PID}" 2>/dev/null && fail "the vmm ${RECONCILE_PID} survived the kill"
 start_daemon || fail "the daemon did not come up"
 expect "$(listed_state "${RECONCILE_ID}")" "stopped" "the daemon corrected the record of the microVM it lost"
-holds "^${RECONCILE_ID}.*daemon restarted and found no process" shard ls --all || fail "shard ls gives no reason for ${RECONCILE_ID}"
-shard rm --force "${RECONCILE_ID}" >/dev/null || fail "rm did not free the microVM the host lost"
+holds "^${RECONCILE_ID}.*daemon restarted and found no process" shard list --all || fail "shard list gives no reason for ${RECONCILE_ID}"
+shard remove --force "${RECONCILE_ID}" >/dev/null || fail "remove did not free the microVM the host lost"
 ip link delete "${RECONCILE_LINK}" >/dev/null 2>&1 || true
 RECONCILE_ID=""
 RECONCILE_LINK=""
-say "ls gives the reason, and rm freed what it left on the host"
+say "list gives the reason, and remove freed what it left on the host"
 
 snapshot_steps
 # The resume brought the microVM up in a fresh vmm, so the stop and the start below read that one.
@@ -465,52 +465,12 @@ grep -qx "${ID}" "${LEASE}" || fail "the stop dropped the address lease"
 say "the record says stopped and keeps the address and its lease"
 [ -d "${CGROUP}" ] || fail "the stop removed ${CGROUP}, which the next start boots into"
 expect "$(cat "${CGROUP}/cgroup.procs")" "" "the cgroup stays, empty, for the next start"
-holds "^${ID}" shard ls && fail "shard ls still lists the stopped sandbox"
-expect "$(listed_state "${ID}")" "stopped" "ls hides the stopped sandbox and ls --all shows it stopped"
+holds "^${ID}" shard list && fail "shard list still lists the stopped sandbox"
+expect "$(listed_state "${ID}")" "stopped" "list hides the stopped sandbox and list --all shows it stopped"
 holds "shard-e2e-entrypoint" timeout 10 "${PREFIX}/shard" --root "${SHARD_ROOT}" logs -f "${ID}" || fail "shard logs -f on a stopped sandbox did not print its output and end"
 say "logs still reads a stopped sandbox, and -f ends on its own"
 shard stop "${ID}" >/dev/null
 say "a second stop is idempotent"
-
-step "clone the stopped microVM twice, by reflink"
-timed "clone" clone_it e2e-clone-1
-timed "clone" clone_it e2e-clone-2
-# shellcheck disable=SC2086 # the clone list is meant to split
-set -- ${CLONE_IDS}
-[ "$#" = "2" ] && [ "$1" != "$2" ] && [ "$1" != "${ID}" ] && [ "$2" != "${ID}" ] || fail "clone printed '${CLONE_IDS}', want two new ids"
-N=0
-for CLONE_ID in "$@"; do
-	N=$((N + 1))
-	CLONE_ADDRESS=$(record_field "${CLONE_ID}" address)
-	CLONE_LINKS="${CLONE_LINKS} $(record_field "${CLONE_ID}" host_interface)"
-	[ "${CLONE_ADDRESS}" != "${ADDRESS}" ] || fail "clone ${CLONE_ID} got the source's address ${ADDRESS}"
-	expect "$(listed_state "${CLONE_ID}")" "running" "clone ${CLONE_ID} runs on its own address ${CLONE_ADDRESS}"
-	for _ in $(seq 1 50); do
-		[ "$(shard logs "${CLONE_ID}" | grep -c "shard-e2e-entrypoint")" -ge 1 ] && break
-		sleep 0.2
-	done
-	expect "$(shard logs "${CLONE_ID}" | grep -c "shard-e2e-entrypoint")" "1" "clone ${CLONE_ID} ran the entrypoint again, once"
-	expect_exec_in "${CLONE_ID}" "kept" "clone ${CLONE_ID} holds the file the source wrote before the stop" /bin/cat /root/kept
-	expect_exec_in "${CLONE_ID}" "e2e-clone-${N}" "clone ${CLONE_ID} carries its own hostname" /bin/hostname
-	expect_exec_in "${CLONE_ID}" "mock-E2E_TOKEN" "clone ${CLONE_ID} holds the placeholder" /bin/sh -c 'echo "$E2E_TOKEN"'
-	expect_blocked "${CLONE_ID}" "the policy holds on clone ${CLONE_ID}"
-	expect_fronted "${CLONE_ID}" "the proxy fronts clone ${CLONE_ID}"
-done
-shard exec "$1" /bin/sh -c 'echo clone-only > /root/clone-only' >/dev/null
-CODE=0
-shard exec "$2" /bin/cat /root/clone-only >/dev/null 2>&1 || CODE=$?
-[ "${CODE}" != "0" ] || fail "clone $2 sees the file clone $1 wrote"
-grep -q '"state": *"stopped"' "${RECORD}" || fail "the clones changed the source's state"
-say "the clones share nothing with each other or with the source, which is still stopped"
-
-step "stop and remove the clones"
-for CLONE_ID in "$@"; do
-	shard stop "${CLONE_ID}" >/dev/null
-	shard rm "${CLONE_ID}" >/dev/null
-done
-CLONE_IDS=""
-CLONE_LINKS=""
-absent "a clone record" "$(shard ls --all | grep e2e-clone || true)"
 
 step "start the microVM again"
 start_it() { shard start "${ID}" >/dev/null; }
@@ -529,20 +489,20 @@ shard stop "${ID}" >/dev/null
 say "stopped again"
 
 step "remove the microVM"
-shard rm "${ID}" >/dev/null
+shard remove "${ID}" >/dev/null
 absent "the record" "$([ -e "${SHARD_ROOT}/sandboxes/${ID}" ] && echo "${SHARD_ROOT}/sandboxes/${ID}" || true)"
 absent "the address lease" "$([ -e "${LEASE}" ] && echo "${LEASE}" || true)"
 absent "the host link" "$(ip link show "${LINK}" 2>/dev/null || true)"
 absent "the namespace" "$([ -e "/run/netns/${ID}" ] && echo "/run/netns/${ID}" || true)"
-absent "the ls --all line" "$(shard ls --all | grep "^${ID}" || true)"
+absent "the list --all line" "$(shard list --all | grep "^${ID}" || true)"
 absent "the egress chain" "$(nft list table inet shard | grep "chain egress_${LINK}" || true)"
 absent "the cgroup" "$([ -e "${CGROUP}" ] && echo "${CGROUP}" || true)"
 
 step "remove the secrets and the policy nothing holds any more"
-shard secret rm E2E_TOKEN >/dev/null
-shard secret rm E2E_SHAPED >/dev/null
-shard policy rm e2e-policy >/dev/null
-say "secret rm and policy rm accept what no sandbox holds"
+shard secret remove E2E_TOKEN >/dev/null
+shard secret remove E2E_SHAPED >/dev/null
+shard policy remove e2e-policy >/dev/null
+say "secret remove and policy remove accept what no sandbox holds"
 
 step "prune the image nothing references any more"
 holds "${IMAGE%%:*}" shard image prune || fail "image prune did not remove the image"
@@ -576,4 +536,4 @@ say "the root, the image, the fstab line, every cgroup of the run and the parent
 
 trap - EXIT
 echo
-echo "e2e PASSED on firecracker: install, xfs bootstrap, daemon up, create, the vmm's host cgroup, logs, exec, an entrypoint exit, an OOM stop and start, network, policy, proxy, daemon restart, reconcile, a live fork, pause, resume, stop, clone twice, start, rm, prune, daemon down, and a host with no cgroup, no bridge and no policy table left"
+echo "e2e PASSED on firecracker: install, xfs bootstrap, daemon up, create, the vmm's host cgroup, logs, exec, an entrypoint exit, an OOM stop and start, network, policy, proxy, daemon restart, reconcile, a live fork, pause, resume, stop, start, remove, prune, daemon down, and a host with no cgroup, no bridge and no policy table left"

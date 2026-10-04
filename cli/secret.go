@@ -157,12 +157,15 @@ func parseSecretSet(args []string) (secretSetOptions, error) {
 }
 
 func (a App) secretList(ctx context.Context, args []string) error {
-	rest, err := parseArgs("secret list", args)
+	rest, format, err := parseFormatArgs("secret list", args, formatTable)
 	if err != nil {
 		return err
 	}
 	if len(rest) != 0 {
 		return fmt.Errorf("secret list takes no arguments, got %d", len(rest))
+	}
+	if err := formatLanded("secret list", format, formatTable); err != nil {
+		return err
 	}
 
 	c, err := a.client()

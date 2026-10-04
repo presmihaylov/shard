@@ -186,23 +186,21 @@ func TestPauseAndResumeRunThroughTheDaemon(t *testing.T) {
 	}
 }
 
-func TestForkAndClonePrintTheNewIDTheDaemonAnswered(t *testing.T) {
-	// A fork captures a running source (SHARD-457), and a clone copies one that holds still.
-	for verb, source := range map[string]models.Sandbox{"fork": running(), "clone": paused()} {
-		var out bytes.Buffer
+func TestForkPrintsTheNewIDTheDaemonAnswered(t *testing.T) {
+	var out bytes.Buffer
 
-		app, d := newClientApp(t, &out, source)
+	source := running()
+	app, d := newClientApp(t, &out, source)
 
-		if err := app.Run(t.Context(), []string{verb, "--name", "web-2", "web"}); err != nil {
-			t.Fatalf("%s: %v", verb, err)
-		}
+	if err := app.Run(t.Context(), []string{"fork", "--name", "web-2", "sandbox1"}); err != nil {
+		t.Fatalf("fork: %v", err)
+	}
 
-		if got := strings.TrimSpace(out.String()); got != "sandbox2" {
-			t.Errorf("%s printed %q, want the new id", verb, got)
-		}
-		if got := d.repoSvc.(*fakeLifecycleRepo).created; got.Name != "web-2" || got.Image != source.Image {
-			t.Errorf("%s created %+v, want the source's image under the new name", verb, got)
-		}
+	if got := strings.TrimSpace(out.String()); got != "sandbox2" {
+		t.Errorf("fork printed %q, want the new id", got)
+	}
+	if got := d.repoSvc.(*fakeLifecycleRepo).created; got.Name != "web-2" || got.Image != source.Image {
+		t.Errorf("fork created %+v, want the source's image under the new name", got)
 	}
 }
 
@@ -243,7 +241,6 @@ func TestTheLifecycleVerbsWithNoDaemonFailFast(t *testing.T) {
 		{"pause", "sandbox1"},
 		{"resume", "sandbox1"},
 		{"fork", "sandbox1"},
-		{"clone", "sandbox1"},
 		{"cp", "sandbox1:/srv/app", "/tmp/app"},
 	} {
 		var out bytes.Buffer

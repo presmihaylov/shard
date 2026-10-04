@@ -11,12 +11,15 @@ import (
 
 // info prints the provider a daemon started now over this root with no --provider would pick, and why; it asks the host, not the socket.
 func (a App) info(_ context.Context, args []string) error {
-	rest, err := parseArgs("info", args)
+	rest, format, err := parseFormatArgs("info", args, formatTable)
 	if err != nil {
 		return err
 	}
 	if len(rest) != 0 {
 		return fmt.Errorf("info takes no argument, got %s", strings.Join(rest, " "))
+	}
+	if err := formatLanded("info", format, formatTable); err != nil {
+		return err
 	}
 
 	selected, err := daemon.SelectProvider("", a.Root)

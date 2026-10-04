@@ -14,13 +14,17 @@ import (
 
 // listOptions is one parsed shard list invocation.
 type listOptions struct {
-	all bool
+	all    bool
+	format outputFormat
 }
 
 // list asks the daemon and nothing else: the state it lists is what the last verb left in the record.
 func (a App) list(ctx context.Context, args []string) error {
 	opts, err := parseList(args)
 	if err != nil {
+		return err
+	}
+	if err := formatLanded("list", opts.format, formatTable); err != nil {
 		return err
 	}
 
@@ -138,10 +142,12 @@ func parseList(args []string) (listOptions, error) {
 
 	flags := newFlags("list")
 	flags.BoolVar(&opts.all, "all", false, "")
+	format := addFormatFlag(flags, formatTable)
 
 	if err := parseVerb(flags, args); err != nil {
 		return listOptions{}, err
 	}
+	opts.format = *format
 
 	if rest := flags.Args(); len(rest) != 0 {
 		return listOptions{}, fmt.Errorf("list takes no argument, got %d", len(rest))

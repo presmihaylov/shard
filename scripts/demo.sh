@@ -42,7 +42,7 @@ mem_available_kib() { awk '/^MemAvailable:/ { print $2 }' /proc/meminfo; }
 
 cleanup() {
 	for name in web-2 web; do
-		shard rm --force "${name}" >/dev/null 2>&1 || true
+		shard remove --force "${name}" >/dev/null 2>&1 || true
 	done
 }
 trap cleanup EXIT
@@ -84,7 +84,7 @@ echo "  the loop went on from where the pause froze it:"
 show shard logs web
 
 timed shard fork --name web-2 web
-show shard ls
+show shard list
 show shard exec web-2 cat /root/state
 show shard exec web-2 hostname
 

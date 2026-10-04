@@ -201,8 +201,13 @@ func commands() []command {
 		{name: "pause", run: App.pause},
 		{name: "resume", run: App.resume},
 		{name: "fork", run: App.fork},
-		{name: "clone", run: App.clone},
 		{name: "cp", run: App.cp},
+		{name: "snapshot", subs: []command{
+			{name: "create", run: App.snapshotCreate},
+			{name: "list", aliases: []string{"ls"}, run: App.snapshotList},
+			{name: "inspect", run: App.snapshotInspect},
+			{name: "remove", aliases: []string{"rm"}, run: App.snapshotRemove},
+		}},
 		{name: "pull", run: App.pull},
 		{name: "image", subs: []command{
 			{name: "list", aliases: []string{"ls"}, run: App.imageList},
@@ -425,12 +430,15 @@ func (a App) client() (*client.Client, error) {
 
 // version prints this binary's line first, so it is on the screen even when no daemon answers.
 func (a App) version(ctx context.Context, args []string) error {
-	rest, err := parseArgs("version", args)
+	rest, format, err := parseFormatArgs("version", args, formatTable)
 	if err != nil {
 		return err
 	}
 	if len(rest) != 0 {
 		return fmt.Errorf("version takes no argument, got %d", len(rest))
+	}
+	if err := formatLanded("version", format, formatTable); err != nil {
+		return err
 	}
 
 	if err := a.print("client " + a.Version); err != nil {

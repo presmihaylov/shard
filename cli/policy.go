@@ -80,12 +80,15 @@ func parsePolicyCreate(args []string) (string, []client.RuleText, error) {
 }
 
 func (a App) policyShow(ctx context.Context, args []string) error {
-	rest, err := parseArgs("policy show", args)
+	rest, format, err := parseFormatArgs("policy show", args, formatJSON)
 	if err != nil {
 		return err
 	}
 	if len(rest) != 1 {
 		return fmt.Errorf("policy show takes one name, got %d", len(rest))
+	}
+	if err := formatLanded("policy show", format, formatJSON); err != nil {
+		return err
 	}
 
 	c, err := a.client()
@@ -107,12 +110,15 @@ func (a App) policyShow(ctx context.Context, args []string) error {
 }
 
 func (a App) policyList(ctx context.Context, args []string) error {
-	rest, err := parseArgs("policy list", args)
+	rest, format, err := parseFormatArgs("policy list", args, formatTable)
 	if err != nil {
 		return err
 	}
 	if len(rest) != 0 {
 		return fmt.Errorf("policy list takes no arguments, got %d", len(rest))
+	}
+	if err := formatLanded("policy list", format, formatTable); err != nil {
+		return err
 	}
 
 	c, err := a.client()

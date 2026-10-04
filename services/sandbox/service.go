@@ -134,12 +134,14 @@ func New(cfg Config) *Service {
 
 // CreateRequest is what a create names. It is the JSON body of POST /v0/sandboxes.
 type CreateRequest struct {
-	Image   string   `json:"image"`
-	Name    string   `json:"name,omitempty"`
-	Command []string `json:"command,omitempty"`
-	Env     []string `json:"env,omitempty"`
-	WorkDir string   `json:"workdir,omitempty"`
-	User    string   `json:"user,omitempty"`
+	// Image and Snapshot are exclusive, and a create names one of them.
+	Image    string   `json:"image,omitempty"`
+	Snapshot string   `json:"snapshot,omitempty"`
+	Name     string   `json:"name,omitempty"`
+	Command  []string `json:"command,omitempty"`
+	Env      []string `json:"env,omitempty"`
+	WorkDir  string   `json:"workdir,omitempty"`
+	User     string   `json:"user,omitempty"`
 	// Secrets is what the guest gets a placeholder for, each under its own name.
 	Secrets []string `json:"secrets,omitempty"`
 	// Policy is what the host enforces for the sandbox.

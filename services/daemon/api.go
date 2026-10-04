@@ -469,15 +469,6 @@ func (l *lifecycle) Fork(ctx context.Context, ref string, req sandbox.CopyReques
 	return svc.Fork(ctx, ref, req)
 }
 
-func (l *lifecycle) Clone(ctx context.Context, ref string, req sandbox.CopyRequest) (models.Sandbox, error) {
-	svc, err := l.service()
-	if err != nil {
-		return models.Sandbox{}, err
-	}
-
-	return svc.Clone(ctx, ref, req)
-}
-
 func (l *lifecycle) CreateExec(ctx context.Context, ref string, req sandbox.ExecRequest) (models.Exec, error) {
 	svc, err := l.service()
 	if err != nil {

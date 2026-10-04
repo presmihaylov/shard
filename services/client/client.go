@@ -364,19 +364,10 @@ func (c *Client) ResumeSandbox(ctx context.Context, ref string) (models.Sandbox,
 	return out, nil
 }
 
-// ForkSandbox starts a second sandbox from the source's snapshot.
+// ForkSandbox starts a second sandbox from the source's checkpoint.
 func (c *Client) ForkSandbox(ctx context.Context, ref string, req sandbox.CopyRequest) (models.Sandbox, error) {
-	return c.copy(ctx, ref, "/fork", req)
-}
-
-// CloneSandbox copies a stopped or paused sandbox's disk into a new one.
-func (c *Client) CloneSandbox(ctx context.Context, ref string, req sandbox.CopyRequest) (models.Sandbox, error) {
-	return c.copy(ctx, ref, "/clone", req)
-}
-
-func (c *Client) copy(ctx context.Context, ref, verb string, req sandbox.CopyRequest) (models.Sandbox, error) {
 	var out models.Sandbox
-	if err := c.call(ctx, http.MethodPost, "/v0/sandboxes/"+url.PathEscape(ref)+verb, req, &out, 0); err != nil {
+	if err := c.call(ctx, http.MethodPost, "/v0/sandboxes/"+url.PathEscape(ref)+"/fork", req, &out, 0); err != nil {
 		return models.Sandbox{}, missing(ref, err)
 	}
 

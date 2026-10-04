@@ -20,12 +20,16 @@ func (a App) tokensMint(_ context.Context, args []string) error {
 	signingKeyFile := flags.String("signing-key-file", "", "")
 	tokensFile := flags.String("tokens-file", "", "")
 	scopes := flags.String("scopes", "", "")
+	format := addFormatFlag(flags, formatJSON)
 
 	if err := parseVerb(flags, args); err != nil {
 		return err
 	}
 	if flags.NArg() != 0 {
 		return fmt.Errorf("tokens mint takes no arguments, got %d", flags.NArg())
+	}
+	if err := formatLanded("tokens mint", *format, formatJSON); err != nil {
+		return err
 	}
 	if *name == "" {
 		return errors.New("tokens mint needs --name: it is the subject of the token")
@@ -62,12 +66,16 @@ func (a App) tokensList(_ context.Context, args []string) error {
 	flags := newFlags("tokens list")
 	signingKeyFile := flags.String("signing-key-file", "", "")
 	tokensFile := flags.String("tokens-file", "", "")
+	format := addFormatFlag(flags, formatTable)
 
 	if err := parseVerb(flags, args); err != nil {
 		return err
 	}
 	if flags.NArg() != 0 {
 		return fmt.Errorf("tokens list takes no arguments, got %d", flags.NArg())
+	}
+	if err := formatLanded("tokens list", *format, formatTable); err != nil {
+		return err
 	}
 
 	path, err := a.ledgerPath(*signingKeyFile, *tokensFile)
