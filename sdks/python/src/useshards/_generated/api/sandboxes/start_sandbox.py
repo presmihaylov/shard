@@ -53,7 +53,7 @@ def sync_detailed(
     *,
     client: AuthenticatedClient | Client,
 ) -> Response[Error | Sandbox]:
-    """Start a stopped sandbox"""
+    """start a stopped sandbox with its saved files"""
 
     kwargs = _get_kwargs(
         id=id,
@@ -71,7 +71,7 @@ def sync(
     *,
     client: AuthenticatedClient | Client,
 ) -> Error | Sandbox | None:
-    """Start a stopped sandbox"""
+    """start a stopped sandbox with its saved files"""
 
     return sync_detailed(
         id=id,
@@ -84,7 +84,7 @@ async def asyncio_detailed(
     *,
     client: AuthenticatedClient | Client,
 ) -> Response[Error | Sandbox]:
-    """Start a stopped sandbox"""
+    """start a stopped sandbox with its saved files"""
 
     kwargs = _get_kwargs(
         id=id,
@@ -100,7 +100,7 @@ async def asyncio(
     *,
     client: AuthenticatedClient | Client,
 ) -> Error | Sandbox | None:
-    """Start a stopped sandbox"""
+    """start a stopped sandbox with its saved files"""
 
     return (
         await asyncio_detailed(

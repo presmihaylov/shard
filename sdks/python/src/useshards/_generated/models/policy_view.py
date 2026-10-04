@@ -6,6 +6,7 @@ from typing import TYPE_CHECKING, Any, BinaryIO, Generator, TextIO, TypeVar, cas
 from attrs import define as _attrs_define
 from attrs import field as _attrs_field
 
+from ..models.policy_view_dns import PolicyViewDns
 from ..types import UNSET, Unset
 
 if TYPE_CHECKING:
@@ -17,7 +18,7 @@ T = TypeVar("T", bound="PolicyView")
 
 @_attrs_define
 class PolicyView:
-    dns: str
+    dns: PolicyViewDns
     name: str
     rules: list[Rule]
     holders: list[str] | Unset = UNSET
@@ -25,7 +26,7 @@ class PolicyView:
     def to_dict(self) -> dict[str, Any]:
         from ..models.rule import Rule  # noqa: PLC0415
 
-        dns = self.dns
+        dns = self.dns.value
 
         name = self.name
 
@@ -57,7 +58,7 @@ class PolicyView:
         from ..models.rule import Rule  # noqa: PLC0415
 
         d = dict(src_dict)
-        dns = d.pop("dns")
+        dns = PolicyViewDns(d.pop("dns"))
 
         name = d.pop("name")
 

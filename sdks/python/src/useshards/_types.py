@@ -234,7 +234,7 @@ class PolicyRule:
 
 @attrs.frozen
 class Policy:
-    """A named policy. holders are the sandboxes it is assigned to, dns "open" or "closed"; a list leaves both None."""
+    """A named policy. holders are the sandboxes it is attached to, dns "open" or "closed"; a list leaves both None."""
 
     name: str
     rules: tuple[PolicyRule, ...]
@@ -268,7 +268,7 @@ class Snapshot:
 
 
 @attrs.frozen
-class NetworkLogRecord:
+class EgressDecision:
     """One egress decision. rule is the id of the rule that decided it, rule_text that rule as the CLI spells it."""
 
     time: datetime.datetime
@@ -321,7 +321,7 @@ def sandbox_info(record: models.Sandbox | models.Inspection) -> SandboxInfo:
         snapshot=record.snapshot or None,
         provider=record.provider,
         kernel=record.kernel or None,
-        state=record.state,
+        state=record.state.value,
         stopped_reason=record.stopped_reason or None,
         failed_reason=record.failed_reason or None,
         resources=Resources(
@@ -345,7 +345,7 @@ def policy(record: models.Policy | models.PolicyView) -> Policy:
         name=record.name,
         rules=tuple(_policy_rule(rule) for rule in record.rules),
         holders=tuple(record.holders or ()) if isinstance(record, models.PolicyView) else None,
-        dns=record.dns if isinstance(record, models.PolicyView) else None,
+        dns=record.dns.value if isinstance(record, models.PolicyView) else None,
     )
 
 
@@ -374,11 +374,11 @@ def snapshot(record: models.Snapshot) -> Snapshot:
     )
 
 
-def network_log_record(record: models.Record) -> NetworkLogRecord:
-    return NetworkLogRecord(
+def egress_decision(record: models.EgressDecision) -> EgressDecision:
+    return EgressDecision(
         time=record.time,
-        source=record.source,
-        verdict=record.verdict,
+        source=record.source.value,
+        verdict=record.verdict.value,
         host=record.host or None,
         port=record.port or None,
         address=record.address or None,

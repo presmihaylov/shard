@@ -789,6 +789,7 @@ func TestTheStatusAndTheCodeFollowTheError(t *testing.T) {
 		{"no checkpoint", &sandbox.StateError{ID: "sandbox1", State: models.StatePaused, Fix: "its record names no checkpoint to resume from", Code: models.CodeNoCheckpoint}, http.StatusConflict, "no_checkpoint", "no checkpoint"},
 		{"gone from the substrate", &sandbox.UnavailableError{ID: "sandbox1", Why: "is gone from gvisor", Fix: "remove it with shard remove sandbox1 and create another"}, http.StatusConflict, "sandbox_not_running", "gone from gvisor"},
 		{"an unclaimed verb", models.Unsupported("gvisor", "fork"), http.StatusConflict, "unsupported", "provider gvisor does not support fork on this host"},
+		{"a status past its budget", &sandbox.SubstrateTimeoutError{ID: "sandbox1", Op: "stop", Budget: time.Second}, http.StatusGatewayTimeout, "timeout", "did not answer within 1s"},
 		{"anything else", errors.New("runsc: boom"), http.StatusInternalServerError, "internal", "its log has the cause"},
 	}
 

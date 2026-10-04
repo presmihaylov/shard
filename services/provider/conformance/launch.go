@@ -21,8 +21,8 @@ type refusal struct {
 	code int
 }
 
-// RunLaunch takes modeBindsNobody because providers give an exec different capabilities (SHARD-498).
-func RunLaunch(t *testing.T, s Subject, modeBindsNobody bool) {
+// RunLaunch drives one sandbox through the launches and refusals every provider must agree on.
+func RunLaunch(t *testing.T, s Subject) {
 	t.Helper()
 
 	spec := s.NewSpec(t)
@@ -41,9 +41,7 @@ func RunLaunch(t *testing.T, s Subject, modeBindsNobody bool) {
 		{"AFileWithNoExecuteBit", []string{launchDir + "/plain"}, "", models.CommandNotExecutableExitCode},
 		{"AnInterpreterThatIsNotThere", []string{launchDir + "/orphan"}, "", models.CommandNotFoundExitCode},
 		{"ADirectory", []string{launchDir}, "", models.CommandNotExecutableExitCode},
-	}
-	if modeBindsNobody {
-		refusals = append(refusals, refusal{"ARootFile0700ToNobody", []string{launchDir + "/private"}, "nobody", models.CommandNotExecutableExitCode})
+		{"ARootFile0700ToNobody", []string{launchDir + "/private"}, "nobody", models.CommandNotExecutableExitCode},
 	}
 
 	for _, tty := range []bool{false, true} {
@@ -137,6 +135,31 @@ func RunLaunch(t *testing.T, s Subject, modeBindsNobody bool) {
 			t.Errorf("the command exited %d, want 143 from the TERM", r.status.Code)
 		}
 	})
+
+	t.Run("NobodyHoldsNoCapability", func(t *testing.T) {
+		out := s.launched(t, id, models.ExecSpec{Argv: []string{"/bin/cat", "/proc/self/status"}, User: "nobody"}, false, 0)
+		emptyCapabilities(t, out, "CapInh", "CapPrm", "CapEff")
+	})
+
+	// An inheritable set lets a file's inheritable bits raise a capability back (CVE-2022-24769).
+	t.Run("RootInheritsNoCapability", func(t *testing.T) {
+		if s.RootHoldsEveryCapability {
+			t.Skip("the runtime gives root every capability in its user namespace, whatever the spec asks")
+		}
+		out := s.launched(t, id, models.ExecSpec{Argv: []string{"/bin/cat", "/proc/self/status"}}, false, 0)
+		emptyCapabilities(t, out, "CapInh")
+	})
+}
+
+// emptyCapabilities checks that each named set in a /proc/self/status reads all zero.
+func emptyCapabilities(t *testing.T, status string, sets ...string) {
+	t.Helper()
+
+	for _, set := range sets {
+		if !strings.Contains(status, set+":\t0000000000000000\n") {
+			t.Errorf("the exec's %s is not empty:\n%s", set, status)
+		}
+	}
 }
 
 // launched runs a command that must start: it reports one pid, and exits code.

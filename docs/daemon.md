@@ -15,12 +15,24 @@ the proxy and the front behind it (`the proxy at shard.example.com and the shard
 
 `shard daemon` itself is the one exception, because it is the daemon process rather than a client
 of one. No verb starts the daemon. A resident root process is installed on purpose, through the
-systemd unit in `packaging/systemd/shard.service`:
+systemd unit in `packaging/systemd/shard.service`. A release carries the unit beside the two Linux
+binaries, so an install needs no checkout. As root:
 
 ```
-cp packaging/systemd/shard.service /etc/systemd/system/
+base=https://github.com/presmihaylov/shard/releases/latest/download
+for f in shard-linux-amd64 shard-init-linux-amd64 shard.service SHA256SUMS; do curl -fsSLO "$base/$f"; done
+sha256sum --ignore-missing -c SHA256SUMS
+install -m0755 shard-linux-amd64 /usr/local/bin/shard
+install -m0755 shard-init-linux-amd64 /usr/local/bin/shard-init
+install -m0644 shard.service /etc/systemd/system/shard.service
+systemctl daemon-reload
 systemctl enable --now shard
 ```
+
+The daemon looks for the guest supervisor at `/usr/local/bin/shard-init`, and `SHARD_INIT_PATH`
+names another path. Install the provider's runtime first: `runsc`, `sysbox-runc` or `runc`
+(`docs/provider.md`). From a checkout, `make build-linux build-shard-init-linux` builds the same two
+binaries into `bin/`, and the unit is the file in `packaging/systemd`.
 
 On a Mac the equivalent is the LaunchDaemon in `packaging/launchd`, which `docs/mac.md` explains
 how to install.
@@ -550,7 +562,7 @@ and `image prune` leaves it.
   a request that names no command, 404, and 409 when no command can run in the sandbox. A command
   that is not there or cannot run answers 422 `command_not_started`, and the daemon keeps no record
   of it. A launch that 20 s (`DefaultExecStartBudget`) does not prove answers 504
-  `substrate_timeout`, and the daemon ends the command.
+  `timeout`, and the daemon ends the command.
 - `GET /v0/sandboxes/{id}/exec` answers `{"execs": [...], "next"}` with every exec the sandbox holds.
 - `GET /v0/sandboxes/{id}/exec/{exec-id}` answers the exec record. With `?wait=true` it holds the
   answer until the command ends, then answers the ended record. With the WebSocket handshake it
@@ -741,12 +753,14 @@ else that a refusal carries lives inside `error`, and the root never holds anyth
 | `sandbox_live` | 409 | grant, ungrant, attach or detach while the sandbox runs or is paused |
 | `no_checkpoint` | 409 | resume on a paused sandbox whose record names no checkpoint |
 | `unsupported` | 409 | the provider does not claim the verb |
+| `exec_exited` | 409 | a kill of an exec whose command already ended |
+| `exec_running` | 409 | a delete of an exec whose command still runs |
 | `in_use` | 409 | delete a policy, secret or image that sandboxes hold, delete an image that snapshots hold, or move the placeholder of a secret sandboxes hold. `error` then adds `"holders": [ids]`. Also a second attach of an exec, without holders |
 | `command_not_started` | 422 | an exec, or a create's app, whose command never started: it is not there, it cannot run, or its interpreter is not there. The message names the command and the kernel's reason, never a host path. `error` then adds `"exit_code"`, 127 for a command that is not there and 126 for one that cannot run, as a shell answers |
 | `name_taken` | 409 | a create whose `name` another sandbox already holds, or a snapshot create whose `name` another snapshot holds |
 | `unauthorized` | 401 | the TCP front, when the request carries no valid bearer token, and then the front dials nothing |
 | `forbidden` | 403 | the TCP front, when the token is valid but its scopes do not reach the route, and then the front dials nothing. Also the daemon, on a create that names a secret without `secret:*` or a policy without `policy:*` |
-| `substrate_timeout` | 504 | a stop, remove or restart whose substrate status call did not answer within the budget, or an exec whose launch the substrate did not prove within 20 s. Retry it once the runtime frees. On gVisor, rm --force reclaims through the wedge instead. It SIGKILLs the sandbox's own runsc processes, which it finds by the sandbox's cgroup and by the sandbox id on their command line, then finishes the teardown. It answers this code only when that kill fails too |
+| `timeout` | 504 | a stop, remove or restart whose substrate status call did not answer within the budget, or an exec whose launch the substrate did not prove within 20 s. Retry it once the runtime frees. On gVisor, rm --force reclaims through the wedge instead. It SIGKILLs the sandbox's own runsc processes, which it finds by the sandbox's cgroup and by the sandbox id on their command line, then finishes the teardown. It answers this code only when that kill fails too |
 | `internal` | 500 | anything else. A local route answers what the daemon got back. A public route answers only `the daemon could not complete the request; its log has the cause`, and the daemon log keeps the cause |
 
 `services/client` decodes only that object into `*client.APIError`, with `Status`, `Code`,
@@ -958,7 +972,9 @@ systemctl restart shard
 install -d -m2750 -o root -g shard /etc/shard
 openssl rand -hex 32 > /etc/shard/serve.secret
 chown root:shard /etc/shard/serve.secret && chmod 0640 /etc/shard/serve.secret
-cp packaging/systemd/shard-serve.service /etc/systemd/system/
+curl -fsSLO https://github.com/presmihaylov/shard/releases/latest/download/shard-serve.service
+install -m0644 shard-serve.service /etc/systemd/system/shard-serve.service
+systemctl daemon-reload
 systemctl enable --now shard-serve
 ```
 

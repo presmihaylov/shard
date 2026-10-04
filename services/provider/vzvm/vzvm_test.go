@@ -25,6 +25,7 @@ import (
 
 	"github.com/presmihaylov/shard/models"
 	"github.com/presmihaylov/shard/pkg/ext4"
+	"github.com/presmihaylov/shard/pkg/pgroup"
 	"github.com/presmihaylov/shard/pkg/pidpin/pidpintest"
 	"github.com/presmihaylov/shard/pkg/vz"
 	"github.com/presmihaylov/shard/services/bundle"
@@ -1800,10 +1801,13 @@ func runningShimOn(t *testing.T, h *harness) (models.SandboxSpec, int) {
 		t.Fatalf("the guest pids are %d and %d, want two real processes", entrypoint, guest)
 	}
 	t.Cleanup(func() {
-		for _, pid := range []int{-entrypoint, -guest, guest} {
-			if err := syscall.Kill(pid, syscall.SIGKILL); err != nil && !errors.Is(err, syscall.ESRCH) {
-				t.Errorf("end the fake guest %d: %v", pid, err)
+		for _, group := range []int{entrypoint, guest} {
+			if err := pgroup.Kill(group, syscall.SIGKILL); err != nil && !errors.Is(err, syscall.ESRCH) {
+				t.Errorf("end the fake guest's group %d: %v", group, err)
 			}
+		}
+		if err := syscall.Kill(guest, syscall.SIGKILL); err != nil && !errors.Is(err, syscall.ESRCH) {
+			t.Errorf("end the fake guest %d: %v", guest, err)
 		}
 	})
 
@@ -1817,7 +1821,7 @@ func runningShimOn(t *testing.T, h *harness) (models.SandboxSpec, int) {
 		t.Fatalf("Status = %+v, want the shim's pid", status)
 	}
 	t.Cleanup(func() {
-		if err := syscall.Kill(-shim, syscall.SIGKILL); err != nil && !errors.Is(err, syscall.ESRCH) {
+		if err := pgroup.Kill(shim, syscall.SIGKILL); err != nil && !errors.Is(err, syscall.ESRCH) {
 			t.Errorf("end the fake shim %d: %v", shim, err)
 		}
 	})

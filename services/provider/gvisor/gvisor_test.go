@@ -148,16 +148,26 @@ func TestAWedgedSweepAfterACheckpointEndsAtTheDeadline(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(p.ProcRoot(), "42", "cmdline"), []byte("runsc-sandbox\x00boot\x00amber-otter-1a2b\x00"), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	p.SetKillPinned(func(int, func() (bool, error)) error { return nil })
-
-	ctx, cancel := context.WithTimeout(t.Context(), 500*time.Millisecond)
+	// The deadline starts at the sweep, so a loaded host that spends it on the fake runsc never sends the pause through lose and its fresh kill grace (SHARD-511).
+	ctx, cancel := context.WithCancel(t.Context())
 	defer cancel()
-	start := time.Now()
+	var swept time.Time
+	p.SetKillPinned(func(int, func() (bool, error)) error {
+		if swept.IsZero() {
+			swept = time.Now()
+			time.AfterFunc(500*time.Millisecond, cancel)
+		}
+		return nil
+	})
+
 	err := p.Pause(ctx, "amber-otter-1a2b", filepath.Join(t.TempDir(), "snap"))
 	if err == nil {
 		t.Fatal("Pause returned nil, want the wedged sweep cut at the deadline")
 	}
-	if took := time.Since(start); took > 10*time.Second {
+	if swept.IsZero() {
+		t.Fatalf("Pause = %v before the sweep, want it to reach the wedged sweep", err)
+	}
+	if took := time.Since(swept); took > 5*time.Second {
 		t.Errorf("Pause took %s over a wedged sweep, want it ended near the 500ms deadline", took)
 	}
 }

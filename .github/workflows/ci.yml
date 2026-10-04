@@ -104,6 +104,22 @@ jobs:
       - name: format check
         run: golangci-lint fmt --diff
 
+  # useshards, the TypeScript SDK: unit tests over a fake daemon, so no box and no daemon.
+  sdk-typescript:
+    name: typescript sdk
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: sdks/typescript/package-lock.json
+
+      - name: check
+        run: make sdk-ts-check
+
   vuln:
     name: govulncheck
     runs-on: ubuntu-latest
