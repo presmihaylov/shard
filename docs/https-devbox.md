@@ -28,8 +28,17 @@ client --https:443--> Caddy --http--> shard serve 127.0.0.1:2377 --unix--> shard
 
 Once per box, in this order:
 
-1. Apply the 443 rule of `hcloud_firewall.shard` from nairi-infra:
-   `terraform plan -target=hcloud_firewall.shard`, then `terraform apply` with the same target.
+1. Apply the 443 rule of `hcloud_firewall.shard` from nairi-infra main, from a saved plan:
+
+   ```
+   cd infra
+   terraform plan -target=hcloud_firewall.shard -var-file=terraform.tfvars -var-file=secrets.tfvars -out=fw.plan
+   ```
+
+   Apply only when it says `Plan: 0 to add, 1 to change, 0 to destroy.`, and only that saved plan:
+   `terraform apply fw.plan`. Any other count changes more than the one rule, so stop and find out
+   why before anything is applied. Then commit `infra/terraform.tfstate` in a nairi-infra PR, as the
+   state lives in that repo.
 2. In nairi-infra: `make provision TARGET=shard-https`. The playbook runs only on the host with
    `slug=shard-devbox2`.
 3. In this repo: `make devbox-sync DEVBOX=devbox-shard2 DEVBOX_PREFIX=/opt/shard-https/bin`.
@@ -38,7 +47,7 @@ Once per box, in this order:
 5. Copy it to the Mac without showing it:
 
    ```
-   (umask 077; ssh devbox-shard2 sudo cat /etc/shard-https/sdk.env > ~/.shard/devbox-shard2.env)
+   (umask 077; mkdir -p ~/.shard && ssh devbox-shard2 sudo cat /etc/shard-https/sdk.env > ~/.shard/devbox-shard2.env)
    ```
 
 The token lives in those two files only. It never goes in a repo, a PR, a ticket or a chat.
