@@ -334,17 +334,34 @@ func TestProxyTerminatesTLSAndInsistsOnOneName(t *testing.T) {
 	}
 }
 
+// SHARD-629: the director's error named the host's nameserver, so the guest gets a fixed body and the log keeps the cause.
 func TestProxyAnswers502WhenTheDirectorCannotJudge(t *testing.T) {
-	h := newHarness(t, http.HandlerFunc(echoHandler))
-	h.director.fail = errors.New("no sandbox holds the address")
+	refused := "no nameserver answered: dial udp 10.9.9.9:53: connect: connection refused"
+	for name, tc := range map[string]struct {
+		fail error
+		want string
+	}{
+		"no sandbox":    {errors.New("read /var/lib/shard/sandboxes: permission denied"), `{"error":"the proxy could not judge the request","host":"api.test"}`},
+		"no such host":  {fmt.Errorf("resolve api.test: %w", &net.DNSError{Err: "no such host", Name: "api.test", Server: "10.9.9.9:53", IsNotFound: true}), `{"error":"the proxy could not judge the request","host":"api.test","reason":"no such host"}`},
+		"no nameserver": {fmt.Errorf("resolve api.test: %w", &net.DNSError{Err: refused, Name: "api.test", Server: "10.9.9.9:53"}), `{"error":"the proxy could not judge the request","host":"api.test","reason":"the lookup failed"}`},
+	} {
+		t.Run(name, func(t *testing.T) {
+			h := newHarness(t, http.HandlerFunc(echoHandler))
+			h.director.fail = tc.fail
 
-	resp, err := h.client().Get("http://api.test/")
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer resp.Body.Close()
-	if resp.StatusCode != http.StatusBadGateway {
-		t.Errorf("a director error got %d, want 502", resp.StatusCode)
+			resp, err := h.client().Get("http://api.test/")
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer resp.Body.Close()
+			body, err := io.ReadAll(resp.Body)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if resp.StatusCode != http.StatusBadGateway || string(body) != tc.want+"\n" {
+				t.Errorf("a director error got %d %s, want 502 %s", resp.StatusCode, body, tc.want)
+			}
+		})
 	}
 }
 

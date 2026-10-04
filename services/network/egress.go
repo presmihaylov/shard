@@ -152,8 +152,10 @@ func (s *Service) ruleset(chains []Chain, leases []netip.Addr) string {
 	// Every sandbox may ask the resolver, so one whose policy was detached keeps resolving; the resolver judges by source.
 	fmt.Fprintf(&b, "\t\tiifname %q ip daddr %s udp dport %d accept\n", s.cfg.Bridge, s.gateway, dns.Port)
 	fmt.Fprintf(&b, "\t\tiifname %q ip daddr %s tcp dport %d accept\n", s.cfg.Bridge, s.gateway, dns.Port)
-	// The guest reaching the host's own address is a drop like any other, so it says so in the log too.
-	fmt.Fprintf(&b, "\t\tiifname %q %s\n", s.cfg.Bridge, logStatement(RuleLocal))
+	// The guest reaching the host's own address is a drop like any other, so it says so in the log too, under its own sandbox's limit.
+	for _, address := range leases {
+		fmt.Fprintf(&b, "\t\tiifname %q ip saddr %s %s\n", s.cfg.Bridge, address, logStatement(RuleLocal))
+	}
 	fmt.Fprintf(&b, "\t\tiifname %q drop\n\t}\n\n", s.cfg.Bridge)
 
 	// The hook keeps policy accept, so a table the host also filters in is not overridden: every drop is explicit.
@@ -167,7 +169,10 @@ func (s *Service) ruleset(chains []Chain, leases []netip.Addr) string {
 	// Every match below is v4 only, so a v6 packet would fall out of this chain and be forwarded.
 	fmt.Fprintf(&b, "\t\tmeta nfproto ipv6 %s\n", logStatement(RuleIPv6))
 	fmt.Fprintf(&b, "\t\tmeta nfproto ipv6 drop\n")
-	fmt.Fprintf(&b, "\t\tip daddr { %[1]s } %[2]s\n", strings.Join(privateRanges, ", "), logStatement(RulePrivate))
+	// Each sandbox logs under its own limit, so one probing the floor never silences another's records (SHARD-628).
+	for _, address := range leases {
+		fmt.Fprintf(&b, "\t\tip saddr %s ip daddr { %s } %s\n", address, strings.Join(privateRanges, ", "), logStatement(RulePrivate))
+	}
 	fmt.Fprintf(&b, "\t\tip daddr { %s } drop\n", strings.Join(privateRanges, ", "))
 	// A routed packet arrives from the bridge, never from the port, so the address is what picks the chain.
 	for _, chain := range chains {
