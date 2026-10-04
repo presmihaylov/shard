@@ -351,6 +351,8 @@ type fakeProvider struct {
 	// exits runs on the second Status, and the sandbox is gone from that call on.
 	exits       func()
 	statusCalls int
+	// onStatus runs inside every Status, so a test lands what a verb that holds no lock against the caller writes meanwhile.
+	onStatus func()
 	// execOut and execErrOut are what the command writes on each stream, and execInput what it read.
 	execOut    string
 	execErrOut string
@@ -664,6 +666,9 @@ func (f *fakeProvider) Status(ctx context.Context, _ string) (models.Status, err
 	}
 	if err := f.r.record("provider.Status"); err != nil {
 		return models.Status{}, err
+	}
+	if f.onStatus != nil {
+		f.onStatus()
 	}
 
 	if f.stopped && f.aliveAfterStop != 0 {
