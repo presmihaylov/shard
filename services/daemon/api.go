@@ -307,9 +307,7 @@ func (l *lifecycle) service() (*sandbox.Service, error) {
 	return l.svc, nil
 }
 
-// Create runs synchronously when the image is cached and answers running, so a create off a warm cache
-// keeps its shape. An uncached image records the sandbox pending and pulls, builds and starts it in the
-// background, where it lands running or failed. A wait blocks on the record leaving pending.
+// An uncached create runs under the daemon context so a disconnected client does not cancel it.
 func (l *lifecycle) Create(ctx context.Context, req sandbox.CreateRequest) (models.Sandbox, error) {
 	sb, _, err := l.create(ctx, req, false)
 
