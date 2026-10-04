@@ -70,7 +70,7 @@ func parseCreate(args []string) (sandbox.CreateRequest, error) {
 
 	rest := flags.Args()
 	if len(rest) > 1 {
-		return sandbox.CreateRequest{}, errors.New("create takes no command: shard run [flags] <image> <command> [args...]")
+		return sandbox.CreateRequest{}, errors.New("create takes no command: shard " + helps["run"].usage[0])
 	}
 	if req.Snapshot != "" && len(rest) == 1 {
 		return sandbox.CreateRequest{}, fmt.Errorf("create takes an image or --snapshot, never both: snapshot %s already names its image", req.Snapshot)

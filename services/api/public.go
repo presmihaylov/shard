@@ -84,7 +84,7 @@ func publicEgress(e *egress.Effective) *egress.Effective {
 	}
 
 	out := *e
-	out.Rules = slices.Clone(e.Rules)
+	out.Rules = listOf(slices.Clone(e.Rules))
 	for i := range out.Rules {
 		if out.Rules[i].Implied != "" {
 			out.Rules[i].Destination = models.Destination{Kind: models.DestinationGroup, Value: egress.GroupDNS}

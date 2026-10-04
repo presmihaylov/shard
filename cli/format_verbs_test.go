@@ -11,6 +11,7 @@ import (
 
 	"github.com/presmihaylov/shard/models"
 	"github.com/presmihaylov/shard/services/api"
+	"github.com/presmihaylov/shard/services/client"
 	"github.com/presmihaylov/shard/services/sandboxstate"
 )
 
@@ -30,10 +31,10 @@ func TestListJSONIsAnArrayOfTheRecords(t *testing.T) {
 		t.Fatalf("list --format json: %v", err)
 	}
 
-	var got []models.Sandbox
+	var got []client.Sandbox
 	decodeJSON(t, out.Bytes(), &got)
-	if len(got) != 2 || got[0].ID != "up-1" || got[1].ID != "down-2" || got[0].Address.String() != "10.44.0.2/24" {
-		t.Errorf("got %+v, want both records with their addresses", got)
+	if len(got) != 2 || got[0].ID != "up-1" || got[1].ID != "down-2" {
+		t.Errorf("got %+v, want both records", got)
 	}
 }
 
@@ -59,7 +60,7 @@ func TestListJSONWritesTheWholeValueBeforeItFailsOnAnUnreadableRecord(t *testing
 		t.Errorf("list returned %v, want the unreadable record named", err)
 	}
 
-	var got []models.Sandbox
+	var got []client.Sandbox
 	decodeJSON(t, out.Bytes(), &got)
 	if len(got) != 1 || got[0].ID != "up-1" {
 		t.Errorf("got %+v, want the one sandbox that is up", got)

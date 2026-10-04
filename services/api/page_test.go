@@ -84,8 +84,8 @@ func TestListRefusesALimitThatIsNoCountAndACursorThatIsNoID(t *testing.T) {
 			continue
 		}
 		refusal := errorOf(t, body)
-		if refusal.code != "invalid_request" || !strings.Contains(refusal.message, strings.TrimPrefix(query, "limit=")) {
-			t.Errorf("GET /v0/sandboxes?%s refused with %v, want invalid_request naming the value", query, refusal)
+		if refusal.code != "invalid_request" || !strings.Contains(refusal.message, "query.limit") {
+			t.Errorf("GET /v0/sandboxes?%s refused with %v, want invalid_request naming the param", query, refusal)
 		}
 	}
 

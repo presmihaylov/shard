@@ -206,6 +206,25 @@ func (a App) policyDetach(ctx context.Context, args []string) error {
 	return a.print(sb.ID)
 }
 
+// policyLogs prints the network policy decisions made for one sandbox, as JSON lines.
+func (a App) policyLogs(ctx context.Context, args []string) error {
+	opts, err := parseLogs("policy logs", args)
+	if err != nil {
+		return err
+	}
+
+	c, err := a.client()
+	if err != nil {
+		return err
+	}
+
+	if opts.follow {
+		return c.FollowEgressLog(ctx, opts.id, a.Out, a.Err)
+	}
+
+	return c.EgressLog(ctx, opts.id, a.Out, a.Err)
+}
+
 // policyArgs parses a policy verb that takes no flags, and refuses any count but the one it wants.
 func policyArgs(verb string, args []string, want int, usage string) ([]string, error) {
 	rest, err := parseArgs("policy "+verb, args)
