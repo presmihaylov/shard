@@ -62,13 +62,13 @@ func Trust(rootfs string, env []string, proxyCA []byte) (Store, error) {
 }
 
 // plantTrust writes the merged store into layer, and says which variables point every client at it.
-func plantTrust(layer, rootfs string, env []string, proxyCA []byte) ([]string, error) {
+func plantTrust(layer, rootfs string, env []string, proxyCA []byte, shift idShift) ([]string, error) {
 	trust, err := Trust(rootfs, env, proxyCA)
 	if err != nil {
 		return nil, err
 	}
 
-	if err := writeLayer(layer, filepath.FromSlash(strings.TrimPrefix(trust.Path, "/")), trust.Roots); err != nil {
+	if err := writeLayer(layer, filepath.FromSlash(strings.TrimPrefix(trust.Path, "/")), trust.Roots, shift); err != nil {
 		return nil, err
 	}
 
@@ -138,7 +138,11 @@ func (b Bundle) TrustProxy(proxyCA []byte) error {
 		if err != nil {
 			return err
 		}
-		trust, err = plantTrust(layer, rootfs, spec.Process.Env, proxyCA)
+		shift, err := b.layerShift(spec)
+		if err != nil {
+			return err
+		}
+		trust, err = plantTrust(layer, rootfs, spec.Process.Env, proxyCA, shift)
 
 		return err
 	})

@@ -115,7 +115,7 @@ func (s *Service) Build(spec models.SandboxSpec) (Bundle, error) {
 	}
 
 	if spec.ProxyCA != nil {
-		trust, err := plantTrust(b.Upper, spec.RootFS, spec.Env, spec.ProxyCA)
+		trust, err := plantTrust(b.Upper, spec.RootFS, spec.Env, spec.ProxyCA, idShift{})
 		if err != nil {
 			return Bundle{}, err
 		}
