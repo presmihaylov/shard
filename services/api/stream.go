@@ -330,7 +330,7 @@ func (h *Handler) resizeExec(ctx context.Context, in *execBody[sandbox.TerminalS
 // describeLogs names the two answers of sandboxLogs: the output as text, or with follow over a WebSocket.
 func describeLogs(_ huma.Registry, op *huma.Operation) {
 	op.Responses["200"] = response("The entrypoint's output as it was written; with follow the body streams until the sandbox stops.", "text/plain", text())
-	op.Responses["101"] = upgrade("A WebSocket follow. Each binary message leads with its stream byte: 1 the output, 3 an EndMessage naming why the follow ended, 5 a FailureMessage.")
+	op.Responses["101"] = upgrade("A WebSocket follow with follow=true. Each binary message leads with its stream byte: 1 the output, 3 an EndMessage naming why the follow ended, 5 a FailureMessage.")
 }
 
 func (h *Handler) sandboxLogs(w http.ResponseWriter, r *http.Request) {

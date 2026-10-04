@@ -1731,6 +1731,7 @@
             "explode": false,
             "in": "query",
             "name": "path",
+            "required": true,
             "schema": {
               "description": "The absolute guest path.",
               "type": "string"
@@ -1793,6 +1794,7 @@
             "explode": false,
             "in": "query",
             "name": "path",
+            "required": true,
             "schema": {
               "description": "The absolute guest directory.",
               "type": "string"
@@ -1905,19 +1907,19 @@
             }
           },
           {
-            "description": "Keep the stream open; a WebSocket upgrade follows too.",
+            "description": "Keep the stream open; a WebSocket upgrade requires follow=true.",
             "explode": false,
             "in": "query",
             "name": "follow",
             "schema": {
-              "description": "Keep the stream open; a WebSocket upgrade follows too.",
+              "description": "Keep the stream open; a WebSocket upgrade requires follow=true.",
               "type": "boolean"
             }
           }
         ],
         "responses": {
           "101": {
-            "description": "A WebSocket follow: one egress record per text message, until the sandbox stops."
+            "description": "A WebSocket follow with follow=true: one egress record per text message, until the sandbox stops."
           },
           "200": {
             "content": {
@@ -2323,6 +2325,7 @@
             "explode": false,
             "in": "query",
             "name": "path",
+            "required": true,
             "schema": {
               "description": "The absolute guest path.",
               "type": "string"
@@ -2378,6 +2381,7 @@
             "explode": false,
             "in": "query",
             "name": "path",
+            "required": true,
             "schema": {
               "description": "The absolute guest path.",
               "type": "string"
@@ -2440,6 +2444,7 @@
             "explode": false,
             "in": "query",
             "name": "path",
+            "required": true,
             "schema": {
               "description": "The absolute guest path.",
               "type": "string"
@@ -2493,6 +2498,7 @@
             "explode": false,
             "in": "query",
             "name": "path",
+            "required": true,
             "schema": {
               "description": "The absolute guest path.",
               "type": "string"
@@ -2631,19 +2637,19 @@
             }
           },
           {
-            "description": "Keep the stream open; a WebSocket upgrade follows too.",
+            "description": "Keep the stream open; a WebSocket upgrade requires follow=true.",
             "explode": false,
             "in": "query",
             "name": "follow",
             "schema": {
-              "description": "Keep the stream open; a WebSocket upgrade follows too.",
+              "description": "Keep the stream open; a WebSocket upgrade requires follow=true.",
               "type": "boolean"
             }
           }
         ],
         "responses": {
           "101": {
-            "description": "A WebSocket follow. Each binary message leads with its stream byte: 1 the output, 3 an EndMessage naming why the follow ended, 5 a FailureMessage."
+            "description": "A WebSocket follow with follow=true. Each binary message leads with its stream byte: 1 the output, 3 an EndMessage naming why the follow ended, 5 a FailureMessage."
           },
           "200": {
             "content": {
@@ -2692,6 +2698,7 @@
             "explode": false,
             "in": "query",
             "name": "path",
+            "required": true,
             "schema": {
               "description": "The absolute guest path.",
               "type": "string"

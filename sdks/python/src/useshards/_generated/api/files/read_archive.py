@@ -8,13 +8,13 @@ import httpx
 from ... import errors
 from ...client import AuthenticatedClient, Client
 from ...models.error import Error
-from ...types import UNSET, File, FileTypes, Response, Unset
+from ...types import UNSET, File, FileTypes, Response
 
 
 def _get_kwargs(
     id: str,
     *,
-    path: str | Unset = UNSET,
+    path: str,
 ) -> dict[str, Any]:
     params: dict[str, Any] = {}
 
@@ -61,7 +61,7 @@ def sync_detailed(
     id: str,
     *,
     client: AuthenticatedClient | Client,
-    path: str | Unset = UNSET,
+    path: str,
 ) -> Response[Error | File]:
     """Read a path as a tar"""
 
@@ -81,7 +81,7 @@ def sync(
     id: str,
     *,
     client: AuthenticatedClient | Client,
-    path: str | Unset = UNSET,
+    path: str,
 ) -> Error | File | None:
     """Read a path as a tar"""
 
@@ -96,7 +96,7 @@ async def asyncio_detailed(
     id: str,
     *,
     client: AuthenticatedClient | Client,
-    path: str | Unset = UNSET,
+    path: str,
 ) -> Response[Error | File]:
     """Read a path as a tar"""
 
@@ -114,7 +114,7 @@ async def asyncio(
     id: str,
     *,
     client: AuthenticatedClient | Client,
-    path: str | Unset = UNSET,
+    path: str,
 ) -> Error | File | None:
     """Read a path as a tar"""
 

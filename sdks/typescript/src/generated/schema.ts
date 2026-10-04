@@ -1204,9 +1204,9 @@ export interface operations {
     };
     "read-archive": {
         parameters: {
-            query?: {
+            query: {
                 /** @description The absolute guest path. */
-                path?: string;
+                path: string;
             };
             header?: never;
             path: {
@@ -1241,9 +1241,9 @@ export interface operations {
     };
     "write-archive": {
         parameters: {
-            query?: {
+            query: {
                 /** @description The absolute guest directory. */
-                path?: string;
+                path: string;
                 /** @description Who unpacks and owns the files; none is the entrypoint's user. */
                 user?: string;
             };
@@ -1320,7 +1320,7 @@ export interface operations {
     "get-sandbox-egress-log": {
         parameters: {
             query?: {
-                /** @description Keep the stream open; a WebSocket upgrade follows too. */
+                /** @description Keep the stream open; a WebSocket upgrade requires follow=true. */
                 follow?: boolean;
             };
             header?: never;
@@ -1332,7 +1332,7 @@ export interface operations {
         };
         requestBody?: never;
         responses: {
-            /** @description A WebSocket follow: one egress record per text message, until the sandbox stops. */
+            /** @description A WebSocket follow with follow=true: one egress record per text message, until the sandbox stops. */
             101: {
                 headers: {
                     [name: string]: unknown;
@@ -1585,9 +1585,9 @@ export interface operations {
     };
     "read-file": {
         parameters: {
-            query?: {
+            query: {
                 /** @description The absolute guest path. */
-                path?: string;
+                path: string;
             };
             header?: never;
             path: {
@@ -1622,9 +1622,9 @@ export interface operations {
     };
     "write-file": {
         parameters: {
-            query?: {
+            query: {
                 /** @description The absolute guest path. */
-                path?: string;
+                path: string;
                 /** @description The file mode in octal; none is 0644. */
                 mode?: string;
                 /** @description Who writes and owns the file; none is the entrypoint's user. */
@@ -1665,9 +1665,9 @@ export interface operations {
     };
     "delete-file": {
         parameters: {
-            query?: {
+            query: {
                 /** @description The absolute guest path. */
-                path?: string;
+                path: string;
                 /** @description Take a directory and everything in it. */
                 recursive?: boolean;
             };
@@ -1700,9 +1700,9 @@ export interface operations {
     };
     "stat-file": {
         parameters: {
-            query?: {
+            query: {
                 /** @description The absolute guest path. */
-                path?: string;
+                path: string;
             };
             header?: never;
             path: {
@@ -1772,7 +1772,7 @@ export interface operations {
     "get-sandbox-logs": {
         parameters: {
             query?: {
-                /** @description Keep the stream open; a WebSocket upgrade follows too. */
+                /** @description Keep the stream open; a WebSocket upgrade requires follow=true. */
                 follow?: boolean;
             };
             header?: never;
@@ -1784,7 +1784,7 @@ export interface operations {
         };
         requestBody?: never;
         responses: {
-            /** @description A WebSocket follow. Each binary message leads with its stream byte: 1 the output, 3 an EndMessage naming why the follow ended, 5 a FailureMessage. */
+            /** @description A WebSocket follow with follow=true. Each binary message leads with its stream byte: 1 the output, 3 an EndMessage naming why the follow ended, 5 a FailureMessage. */
             101: {
                 headers: {
                     [name: string]: unknown;
@@ -1813,9 +1813,9 @@ export interface operations {
     };
     "list-dir": {
         parameters: {
-            query?: {
+            query: {
                 /** @description The absolute guest path. */
-                path?: string;
+                path: string;
             };
             header?: never;
             path: {
