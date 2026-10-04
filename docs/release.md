@@ -59,7 +59,5 @@ The guest kernel has its own workflow and its own release tag, which `docs/kerne
 `useshards` has its own version, in `sdks/python/src/useshards/_version.py`, and its own tag:
 `useshards-v<version>` on `main`. `release-sdk-python.yml` checks that the commit is on `main` and
 that the tag names the package version, runs `make sdk-py-check`, builds the wheel and the sdist, and
-installs the wheel into a clean venv. The upload to PyPI waits on the `pypi` environment, so it
-needs an approval in GitHub. PyPI takes it only from this workflow, as a trusted publisher, so no
-token lives in the repository. Make the trusted publisher on PyPI and the `pypi` environment, with a
-required reviewer, before the first tag.
+installs the wheel into a clean venv. It keeps the wheel and the sdist as the `useshards-dist`
+workflow artifact and uploads nothing to PyPI, because publication needs Pres's approval.
