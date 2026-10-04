@@ -76,7 +76,7 @@ func assertAttachEnds(t *testing.T, ctx context.Context, want error) {
 	provider := &Provider{cfg: Config{Log: logger}}
 	done := make(chan error, 1)
 	go func() {
-		_, err := provider.attach(ctx, "silent-state", root, record{}, vz.Open(listener.Addr().String()), vz.Info{PID: os.Getpid(), MachineID: "silent-state"}, false)
+		_, err := provider.attach(ctx, "silent-state", root, record{}, vz.Open(listener.Addr().String()), vz.Info{PID: os.Getpid(), MachineID: "silent-state"}, false, startGrace)
 		done <- err
 	}()
 	select {
