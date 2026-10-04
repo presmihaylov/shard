@@ -3,12 +3,15 @@ package sandbox_test
 import (
 	"context"
 	"errors"
+	"path/filepath"
 	"slices"
 	"strings"
 	"testing"
 
 	"github.com/presmihaylov/shard/models"
 	"github.com/presmihaylov/shard/services/sandbox"
+	"github.com/presmihaylov/shard/services/sandboxstate"
+	"github.com/presmihaylov/shard/services/secret"
 )
 
 // fakePolicies is the policy store the show and rm verbs drive.
@@ -109,6 +112,75 @@ func TestPolicyShowFailsWhenARecordDoesNotReadBack(t *testing.T) {
 
 	if _, err := stores.Policy("web"); err == nil {
 		t.Fatal("Policy answered a view over records it could not read")
+	}
+}
+
+// unreadable is what List answers while the records of ids do not decode.
+func unreadable(ids ...string) error {
+	var err error
+	for _, id := range ids {
+		err = errors.Join(err, &sandboxstate.UnreadableError{ID: id, Err: errors.New("unexpected end of JSON input")})
+	}
+
+	return err
+}
+
+// A record that does not read back may hold the policy, so rm refuses and names it rather than fail as broken (SHARD-584).
+func TestPolicyRemoveRefusesWhileARecordDoesNotReadBack(t *testing.T) {
+	policies := &fakePolicies{policy: models.Policy{Name: "web"}}
+	repo := &fakeRepo{r: &recorder{}, left: []models.Sandbox{{ID: "sb-1", Policy: "db"}}, listErr: unreadable("broken-1", "broken-2")}
+	stores := sandbox.NewStores(sandbox.StoresConfig{Repo: repo, Policies: policies})
+
+	err := stores.RemovePolicy("web")
+	var held *sandbox.HeldError
+	if !errors.As(err, &held) || !slices.Equal(held.Users, []string{"broken-1", "broken-2"}) {
+		t.Fatalf("RemovePolicy = %v, want a refusal that names the records it could not read", err)
+	}
+	if !strings.Contains(err.Error(), "cannot be read") {
+		t.Errorf("the refusal reads %q, which does not say why the holders are unknown", err.Error())
+	}
+	if policies.removed != "" {
+		t.Errorf("the refusal still removed policy %q", policies.removed)
+	}
+}
+
+// Anything else that fails the scan is no refusal, so it still answers as broken.
+func TestPolicyRemoveFailsWhenTheRecordsCannotBeListed(t *testing.T) {
+	policies := &fakePolicies{policy: models.Policy{Name: "web"}}
+	repo := &fakeRepo{r: &recorder{}, listErr: errors.Join(unreadable("broken-1"), errors.New("read sandboxes: permission denied"))}
+	stores := sandbox.NewStores(sandbox.StoresConfig{Repo: repo, Policies: policies})
+
+	err := stores.RemovePolicy("web")
+	if err == nil {
+		t.Fatal("RemovePolicy removed the policy over records it could not list")
+	}
+	if held, ok := errors.AsType[*sandbox.HeldError](err); ok {
+		t.Errorf("RemovePolicy refused as held by %v, when the scan itself failed", held.Users)
+	}
+}
+
+// A record that does not read back may grant the secret, so rm without --force refuses and names it (SHARD-584).
+func TestSecretRemoveRefusesWhileARecordDoesNotReadBack(t *testing.T) {
+	secrets, err := secret.New(filepath.Join(t.TempDir(), "secrets"), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	repo := &fakeRepo{r: &recorder{}, listErr: unreadable("broken-1")}
+	stores := sandbox.NewStores(sandbox.StoresConfig{Repo: repo, Secrets: secrets})
+	if _, err := stores.SetSecret("TOKEN", sandbox.SecretRequest{Value: "synthetic-value", Destinations: []string{"a.example.com"}}); err != nil {
+		t.Fatal(err)
+	}
+
+	err = stores.RemoveSecret("TOKEN", false)
+	var held *sandbox.HeldError
+	if !errors.As(err, &held) || !slices.Equal(held.Users, []string{"broken-1"}) {
+		t.Fatalf("RemoveSecret = %v, want a refusal that names the record it could not read", err)
+	}
+	if !strings.Contains(err.Error(), "--force") {
+		t.Errorf("the refusal reads %q, which does not offer --force", err.Error())
+	}
+	if _, err := secrets.Get("TOKEN"); err != nil {
+		t.Errorf("the refusal still removed the secret: %v", err)
 	}
 }
 

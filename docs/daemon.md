@@ -686,8 +686,9 @@ and `image prune` leaves it.
   enforce, and 500 when the store holds the new rules but the host still enforces the old ones. The
   error message says so.
 - `DELETE /v0/policies/{name}` answers 204. Errors: 404, and 409 with the name of every sandbox that
-  holds the policy. There is no force here, because a sandbox with no policy would have no egress
-  rules at all.
+  holds the policy, or with the id of every sandbox whose record cannot be read, since that record
+  may hold it. There is no force here, because a sandbox with no policy would have no egress rules
+  at all.
 - `GET /v0/secrets` answers `{"secrets": [...], "next"}` with the name, the destinations, the
   placeholder and the times of each secret, and never a value. Unreadable files come back in
   `warnings` beside the readable ones. `secret list` prints them on stderr before it exits non-zero.
@@ -696,7 +697,8 @@ and `image prune` leaves it.
   value the host refuses, and 409 with the name of every sandbox that holds the placeholder a new
   `mock` would change.
 - `DELETE /v0/secrets/{name}` answers 204. Errors: 404, and 409 with the name of every sandbox that
-  was granted the secret, unless the query has `?force=true`.
+  was granted the secret, or with the id of every sandbox whose record cannot be read, unless the
+  query has `?force=true`.
 - `GET /v0/images` answers `{"images": [...], "next"}`, with the images as `shard image list` prints
   them. An entry the daemon could not read carries its reason in `broken`.
 - `POST /v0/images/pull` takes `{"ref"}`, pulls the image and answers 200 with it. Errors: 400 for
