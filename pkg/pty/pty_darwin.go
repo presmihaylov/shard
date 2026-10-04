@@ -25,7 +25,7 @@ func open() (*Pty, error) {
 		return nil, errors.Join(err, master.Close())
 	}
 
-	return pair, nil
+	return pollableMaster(pair)
 }
 
 // replicaOf is grantpt, unlockpt and ptsname, which Darwin spells as three ioctls on the master.
