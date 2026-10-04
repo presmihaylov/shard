@@ -83,6 +83,9 @@ func (c *Channel) Close() error {
 	if err := c.host.Close(); err != nil {
 		errs = append(errs, fmt.Errorf("close the launch channel: %w", err))
 	}
+	if err := c.unpin(); err != nil {
+		errs = append(errs, err)
+	}
 
 	return errors.Join(errs...)
 }
@@ -118,7 +121,7 @@ func (c *Channel) Await(ctx context.Context, pidOf func() (int, error)) (pid int
 	case t = <-done:
 	case <-ctx.Done():
 		// The trace hears only the shim, so the kill is what ends it.
-		kerr := c.cancel()
+		kerr := c.Kill()
 		t = <-done
 		// A shim the cancel killed never had its chance to start, so the cancel is the verdict.
 		var notStarted *NotStartedError
@@ -128,7 +131,7 @@ func (c *Channel) Await(ctx context.Context, pidOf func() (int, error)) (pid int
 		t.err = errors.Join(t.err, kerr)
 	}
 
-	return t.pid, errors.Join(t.err, c.unpin())
+	return t.pid, t.err
 }
 
 func (c *Channel) hangUp() error {
@@ -219,7 +222,7 @@ func (c *Channel) trace(pid int) (int, error) {
 	return c.watch(pid)
 }
 
-// pin opens a pidfd on the shim while the trace holds it, so a cancel's kill can never reach a reuse of its pid.
+// pin opens a pidfd on the shim while the trace holds it, so a Kill until Close can never reach a reuse of its pid.
 func (c *Channel) pin(pid int) error {
 	pidfd, err := unix.PidfdOpen(pid, 0)
 	if err != nil {
@@ -236,8 +239,8 @@ func (c *Channel) pin(pid int) error {
 	return nil
 }
 
-// cancel kills the pinned shim, or has the trace kill it the moment it pins one.
-func (c *Channel) cancel() error {
+// Kill ends the pinned process, the shim or the command it became, or has the trace kill it the moment it pins one.
+func (c *Channel) Kill() error {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	c.cancelled = true

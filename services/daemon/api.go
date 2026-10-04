@@ -279,7 +279,7 @@ type lifecycle struct {
 	mu  sync.Mutex
 	svc *sandbox.Service
 	// pending names each create the daemon still runs, so a wait knows when the sandbox leaves pending.
-	pending map[string]chan struct{}
+	pending map[string]*pendingCreate
 	// wg holds the background creates, so a shutdown does not leave one half-built.
 	wg sync.WaitGroup
 }
@@ -301,9 +301,7 @@ func (l *lifecycle) service() (*sandbox.Service, error) {
 	return l.svc, nil
 }
 
-// Create runs synchronously when the image is cached and answers running, so a create off a warm cache
-// keeps its shape. An uncached image records the sandbox pending and pulls, builds and starts it in the
-// background, where it lands running or failed. A wait blocks on the record leaving pending.
+// Create answers running for a cached image, and pending for an uncached one it completes in the background, where a waited create blocks.
 func (l *lifecycle) Create(ctx context.Context, req sandbox.CreateRequest) (models.Sandbox, error) {
 	svc, err := l.service()
 	if err != nil {
@@ -338,28 +336,55 @@ func (l *lifecycle) Create(ctx context.Context, req sandbox.CreateRequest) (mode
 		return models.Sandbox{}, err
 	}
 
-	done := make(chan struct{})
+	p := &pendingCreate{done: make(chan struct{})}
 	l.mu.Lock()
 	if l.pending == nil {
-		l.pending = map[string]chan struct{}{}
+		l.pending = map[string]*pendingCreate{}
 	}
-	l.pending[sb.ID] = done
+	l.pending[sb.ID] = p
 	l.mu.Unlock()
 
 	l.wg.Go(func() {
-		completeErr := svc.Complete(detached, sb.ID, req)
+		complete := svc.Complete
+		// Only a waited create owns the refusal, so only it removes the sandbox; an unwaited one keeps the failed record to read.
+		if req.Wait {
+			complete = svc.Settle
+		}
+		p.err = complete(detached, sb.ID, req)
 
 		l.mu.Lock()
 		delete(l.pending, sb.ID)
 		l.mu.Unlock()
-		close(done)
+		close(p.done)
 
-		if completeErr != nil {
-			log.New(l.deps.cfg.Out, "", log.LstdFlags).Printf("create %s failed: %v", sb.ID, completeErr)
+		if p.err != nil {
+			log.New(l.deps.cfg.Out, "", log.LstdFlags).Printf("create %s failed: %v", sb.ID, p.err)
 		}
 	})
 
+	if !req.Wait {
+		return sb, nil
+	}
+
+	select {
+	case <-p.done:
+	case <-ctx.Done():
+		return models.Sandbox{}, ctx.Err()
+	}
+
+	// Any other failure leaves the failed record, which the caller reads.
+	var refused *models.CommandNotStartedError
+	if errors.As(p.err, &refused) {
+		return models.Sandbox{}, p.err
+	}
+
 	return sb, nil
+}
+
+// pendingCreate is one background create; err is set before done closes.
+type pendingCreate struct {
+	done chan struct{}
+	err  error
 }
 
 // WaitState blocks until the sandbox leaves pending, or answers at once when no create runs behind it.
@@ -375,14 +400,14 @@ func (l *lifecycle) WaitState(ctx context.Context, ref string) error {
 	}
 
 	l.mu.Lock()
-	done, ok := l.pending[id]
+	p, ok := l.pending[id]
 	l.mu.Unlock()
 	if !ok {
 		return nil
 	}
 
 	select {
-	case <-done:
+	case <-p.done:
 		return nil
 	case <-ctx.Done():
 		return ctx.Err()

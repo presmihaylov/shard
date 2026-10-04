@@ -397,10 +397,13 @@ echo survived > "$argv.survived"
 }
 
 // writingOwnPID is a fake whose "guest process" is the fake itself, so a kill on the pid it wrote is safe.
-func writingOwnPID() string {
+func writingOwnPID() string { return writingPID("$$") }
+
+// writingPID is a fake that writes pid, a shell word, as the guest process's pid.
+func writingPID(pid string) string {
 	return `prev=
 for arg in "$@"; do
-	if [ "$prev" = "--pid-file" ]; then echo $$ > "$arg"; fi
+	if [ "$prev" = "--pid-file" ]; then echo ` + pid + ` > "$arg"; fi
 	prev=$arg
 done
 `

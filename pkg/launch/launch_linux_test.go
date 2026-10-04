@@ -536,6 +536,36 @@ func TestACancelInsideTheTraceKillsTheShim(t *testing.T) {
 	}
 }
 
+// The pin outlives the launch, so a cancel after the exec still ends the command and nothing that reused its pid.
+func TestAKillAfterTheLaunchEndsTheCommand(t *testing.T) {
+	r := start(t, middleRole, []string{"/bin/sleep", "30"})
+
+	if _, err := r.await(t, r.pid); err != nil {
+		t.Fatalf("Await: %v", err)
+	}
+	if err := r.ch.Kill(); err != nil {
+		t.Fatalf("Kill: %v", err)
+	}
+	if code := r.exit(t); code != 128+int(unix.SIGKILL) {
+		t.Errorf("the command exited %d, want the kill", code)
+	}
+}
+
+// A Kill before the trace pins the shim is kept, so the shim dies the moment its identity is proven and never runs the command.
+func TestAKillBeforeThePinEndsTheShimUnstarted(t *testing.T) {
+	r := start(t, middleRole, []string{"/bin/sleep", "30"})
+
+	if err := r.ch.Kill(); err != nil {
+		t.Fatalf("Kill: %v", err)
+	}
+	if _, err := r.await(t, r.pid); !isNotStarted(err) {
+		t.Fatalf("Await returned %v, want a command that never started", err)
+	}
+	if code := r.exit(t); code != 128+int(unix.SIGKILL) {
+		t.Errorf("the shim exited %d, want the kill", code)
+	}
+}
+
 func TestARecordIsOneErrno(t *testing.T) {
 	for _, tc := range []struct {
 		blob string

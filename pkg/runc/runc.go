@@ -237,6 +237,10 @@ func (r *Runner) Exec(ctx context.Context, id string, opts ExecOptions) (code in
 
 	// Killing runc exec leaves the guest process running, so a cancellation has to reach into the container.
 	cmd.Cancel = func() error { return r.interrupt(cmd, id, pidFile) }
+	if ch != nil {
+		// The pid file is a bare integer a reuse can hold, so a launch kills only what its trace pinned.
+		cmd.Cancel = func() error { return errors.Join(ch.Kill(), cmd.Process.Kill()) }
+	}
 
 	// The pid lets the caller signal this exec while it runs; the watch ends when the command does.
 	if opts.Report != nil && ch == nil {
@@ -253,7 +257,7 @@ func (r *Runner) Exec(ctx context.Context, id string, opts ExecOptions) (code in
 	if ch != nil {
 		// The runtime holds its own copy now, and the shim's end must close with it for a runtime that fails to read as EOF.
 		if err := ch.CloseGuest(); err != nil {
-			return 0, errors.Join(err, r.interrupt(cmd, id, pidFile), cmd.Wait())
+			return 0, errors.Join(err, cmd.Cancel(), cmd.Wait())
 		}
 		go func() { launched <- await(ctx, ch, pidFile, opts.Report) }()
 	}

@@ -22,4 +22,6 @@ func (c *Channel) CloseGuest() error { return errUnsupported }
 
 func (c *Channel) Close() error { return errUnsupported }
 
+func (c *Channel) Kill() error { return errUnsupported }
+
 func (c *Channel) Await(context.Context, func() (int, error)) (int, error) { return 0, errUnsupported }

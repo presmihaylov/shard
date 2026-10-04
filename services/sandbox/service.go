@@ -165,6 +165,8 @@ type CreateRequest struct {
 	Resources ResourceRequest `json:"resources" required:"false"`
 	// Restart is when the supervisor starts the entrypoint again inside the sandbox, nil for never.
 	Restart *models.RestartSpec `json:"restart,omitempty"`
+	// Wait is the create's wait query, never its body: a waited create answers once the sandbox leaves pending.
+	Wait bool `json:"-"`
 }
 
 // ResourceRequest is the bounds a create asks for. A nil memory is an omitted --memory, which a snapshot fills, and 0 is no bound.
@@ -632,7 +634,7 @@ func (s *Service) Complete(ctx context.Context, id string, req CreateRequest) (e
 			return fmt.Errorf("the start of sandbox %s was interrupted, so it may be running and it stays on the host: %w", id, err)
 		}
 
-		return err
+		return nameCommand(err, spec.Entrypoint)
 	}
 
 	// The commit point. The entrypoint is live, so nothing below this line gives anything back: only
@@ -662,11 +664,46 @@ func (s *Service) Create(ctx context.Context, req CreateRequest) (models.Sandbox
 		return models.Sandbox{}, err
 	}
 
-	if err := s.Complete(ctx, sb.ID, req); err != nil {
+	if err := s.Settle(ctx, sb.ID, req); err != nil {
 		return models.Sandbox{}, err
 	}
 
 	return s.record(sb.ID)
+}
+
+// discardBudget bounds the removal of a sandbox whose app never started, on a context its caller cannot cancel.
+const discardBudget = 30 * time.Second
+
+// Settle is Complete for a caller that waits on the outcome, so an app that never started leaves no sandbox behind its refusal.
+func (s *Service) Settle(ctx context.Context, id string, req CreateRequest) error {
+	err := s.Complete(ctx, id, req)
+	var refused *models.CommandNotStartedError
+	if !errors.As(err, &refused) {
+		return err
+	}
+
+	cleanupCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), discardBudget)
+	defer cancel()
+	removeErr := s.Remove(cleanupCtx, id, true)
+	if removeErr == nil || errors.Is(removeErr, sandboxstate.ErrNotFound) {
+		return err
+	}
+
+	// The refusal promises no sandbox is left, so a sandbox that stays is a plain failure.
+	return fmt.Errorf("%s, and the sandbox was not removed: %w", err.Error(), removeErr)
+}
+
+// nameCommand gives a refused start the program it was to run, which the provider does not know.
+func nameCommand(err error, argv []string) error {
+	var refused *models.CommandNotStartedError
+	if !errors.As(err, &refused) || len(argv) == 0 {
+		return err
+	}
+
+	named := *refused
+	named.Command = argv[0]
+
+	return &named
 }
 
 // WaitState answers at once: this service's Create is synchronous, so a sandbox it holds never sits in pending.

@@ -489,6 +489,7 @@ func (h *Handler) createSandbox(ctx context.Context, in *createInput) (*rawReply
 
 // create answers the new record at once, or with wait once it leaves pending, streaming the pull when asked.
 func (h *Handler) create(w http.ResponseWriter, r *http.Request, wait bool, req sandbox.CreateRequest) {
+	req.Wait = wait
 	if wait && streamed(r) {
 		streamProgress(h, w, r, http.StatusCreated, "create", createLines, func(ctx context.Context) (CreateLine, error) {
 			sb, err := h.lifecycle.Create(ctx, req)
