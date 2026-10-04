@@ -1602,7 +1602,6 @@ func TestASourceTheForkCouldNotResumeRunsAgain(t *testing.T) {
 // A run again that fails leaves the VM paused, so the live daemon lets the machine go and the next lookup resumes it as a new daemon would (SHARD-560).
 func TestASourceTheForkCouldNotResumeRunsAgainWithoutARestart(t *testing.T) {
 	h := newHarness(t)
-	requireReflink(t, h.root)
 	spec, pid := h.runLong(t)
 	refuse := filepath.Join(spec.StateDir, refuseResumeFile)
 	if err := os.WriteFile(refuse, nil, 0o600); err != nil {
