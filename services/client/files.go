@@ -158,7 +158,7 @@ func (c *Client) fileRequest(ctx context.Context, method, ref, route string, que
 		return nil, connect
 	}
 	if err != nil {
-		return nil, fmt.Errorf("%s %s on %s: %w", method, path, c.target, err)
+		return nil, fmt.Errorf("%s %s on %s: %w", method, path, c.target, unquoted(err))
 	}
 
 	return resp, nil
