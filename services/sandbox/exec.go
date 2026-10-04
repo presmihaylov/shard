@@ -868,6 +868,7 @@ func (s *Service) runPipes(ctx context.Context, id string, session *execSession,
 
 	exit, execErr := s.cfg.Provider.Exec(ctx, id, spec)
 	execErr = s.refusedByPause(id, session, execErr)
+	execErr = s.endedUnderExec(id, session, execErr)
 
 	// Our copy of each write end keeps its pipe readable, so the output drains only after they go.
 	closeErr := errors.Join(out.Close(), errOut.Close())
@@ -902,6 +903,7 @@ func (s *Service) runTerminal(ctx context.Context, id string, session *execSessi
 
 	exit, execErr := s.cfg.Provider.Exec(ctx, id, spec)
 	execErr = s.refusedByPause(id, session, execErr)
+	execErr = s.endedUnderExec(id, session, execErr)
 
 	// Closing the replica lets the master read EOF, so the copier ends.
 	closeErr := pair.Replica.Close()
@@ -1391,6 +1393,39 @@ func (s *Service) pauseOutranks(id string, err error) error {
 	}
 
 	return pausedRefusal(id)
+}
+
+// endedUnderExec swaps a launch error for not_found or sandbox_not_running when a concurrent stop or remove tore the runtime down under the exec, so a racing rm answers a code, never a 500 (SHARD-563).
+func (s *Service) endedUnderExec(id string, session *execSession, err error) error {
+	var state *StateError
+	var notFound *models.NotFoundError
+	if err == nil || session.reported() || errors.As(err, &state) || errors.As(err, &notFound) {
+		return err
+	}
+
+	// Stop and remove hold the per-sandbox lock until the record is settled, so the read past it is deterministic, never the teardown's own half-written state.
+	budget := s.execStartBudget()
+	lockCtx, cancel := context.WithTimeout(context.Background(), budget)
+	defer cancel()
+	unlock, lockErr := s.lock(lockCtx, id)
+	// A teardown that holds the lock past the budget is the timeout itself, so name it 504, never a raw 500.
+	if lockErr != nil {
+		return &SubstrateTimeoutError{ID: id, Op: "exec", Budget: budget}
+	}
+	defer unlock()
+
+	sb, getErr := s.cfg.Repo.Get(id)
+	if errors.Is(getErr, sandboxstate.ErrNotFound) {
+		return &models.NotFoundError{Err: fmt.Errorf("exec %s of sandbox %s: %w", session.id, id, sandboxstate.ErrNotFound)}
+	}
+	if getErr != nil {
+		return errors.Join(err, getErr)
+	}
+	if sb.State != models.StateRunning {
+		return &StateError{ID: id, State: sb.State, Fix: "start it again with shard start " + id, Code: models.CodeSandboxNotRunning}
+	}
+
+	return err
 }
 
 // outputPipe copies one of the guest's streams into the buffer and reports what stopped the copy.
