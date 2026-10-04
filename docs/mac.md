@@ -117,7 +117,7 @@ again, so to leave the Mac clean, run `shard stop` on each sandbox first.
 | Isolation | a micro VM per sandbox, with a Linux kernel of its own | a user-space kernel, `runsc` |
 | Syscall cost | native, inside the VM | high on file-heavy work |
 | `pause`, `resume` | Apple silicon on macOS 14 or later | yes |
-| `fork` of a running sandbox | refused by name, until SHARD-463 | yes |
+| `fork` of a running sandbox | Apple silicon on macOS 14 or later | yes |
 | Memory | `--memory` is the VM's memory and is required, and `0` is refused by name. Past it the whole sandbox dies and stops with its reason | a cgroup limit. Past it the whole sandbox dies and stops with its reason |
 | CPUs | `--cpus 0` is one virtual CPU per host CPU, up to the framework's ceiling, and `N` is `N` of them | `--cpus 0` is every host CPU, and `N` is a quota |
 | Processes | no bound. A fork bomb stays inside the VM and runs into its memory | `4096` per sandbox |

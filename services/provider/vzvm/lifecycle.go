@@ -402,6 +402,10 @@ func (p *Provider) Remove(ctx context.Context, id string) error {
 			return fmt.Errorf("remove %s of sandbox %s: %w", name, id, err)
 		}
 	}
+	// A fork cut inside its capture leaves the save of its source here, which the daemon's start sweeps through this remove.
+	if err := os.RemoveAll(filepath.Join(dir, captureDir)); err != nil {
+		return fmt.Errorf("remove the capture of sandbox %s: %w", id, err)
+	}
 
 	return nil
 }

@@ -227,9 +227,9 @@ func (c *Client) killPinned(pid int) error {
 	return pin.Close()
 }
 
-// Connect opens one vsock connection to a guest port; the returned stream is that connection.
-func (c *Client) Connect(port uint32) (net.Conn, error) {
-	conn, _, err := c.send(context.Background(), request{Verb: "connect", Port: port})
+// Connect opens one vsock connection to a guest port within ctx; the returned stream is that connection.
+func (c *Client) Connect(ctx context.Context, port uint32) (net.Conn, error) {
+	conn, _, err := c.send(ctx, request{Verb: "connect", Port: port})
 	if err != nil {
 		return nil, err
 	}
@@ -360,11 +360,17 @@ func (c *Client) send(ctx context.Context, req request) (net.Conn, Info, error) 
 
 	var reply response
 	err = conn.SetDeadline(deadline)
+	// A cancel cuts the handshake short; stop disarms it before a stream goes back, so it never cuts one.
+	cancelled := make(chan error, 1)
+	stop := context.AfterFunc(ctx, func() { cancelled <- conn.SetDeadline(time.Now()) })
 	if err == nil {
 		err = writeFrame(conn, req)
 	}
 	if err == nil {
 		err = readFrame(conn, &reply)
+	}
+	if !stop() {
+		err = errors.Join(err, ctx.Err(), <-cancelled)
 	}
 	if err == nil {
 		err = reply.err()

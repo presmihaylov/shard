@@ -190,8 +190,9 @@ func TestConformance(t *testing.T) {
 		EmptyDir: func(t *testing.T) string { return t.TempDir() },
 		Shell:    func(script string) []string { return []string{"/bin/sh", "-c", script} },
 		// The fake guest is a host process, so the suite writes under the root; a checkpoint here proves the verbs and not the disk.
-		Scratch: h.root,
-		Reopen:  h.reopen,
+		Scratch:       h.root,
+		SharedScratch: true,
+		Reopen:        h.reopen,
 	})
 }
 
@@ -1912,7 +1913,7 @@ func cutPause(t *testing.T, recorded bool) (*harness, models.SandboxSpec, int) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	conn, err := client.Connect(supervisor.ControlPort)
+	conn, err := client.Connect(t.Context(), supervisor.ControlPort)
 	if err != nil {
 		t.Fatal(err)
 	}

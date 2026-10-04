@@ -162,6 +162,50 @@ func TestTheCallersDeadlineBoundsACallToAShimThatNeverAnswers(t *testing.T) {
 	}
 }
 
+// An exec holds admit through its dial, so a Connect its caller gave up on must not keep a fork waiting.
+func TestACancelEndsAConnectTheShimAcceptedAndNeverAnswered(t *testing.T) {
+	socket := filepath.Join(shortRoot(t), "shim.sock")
+	listener, err := net.Listen("unix", socket)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer listener.Close()
+	asked := make(chan struct{})
+	go func() {
+		conn, err := listener.Accept()
+		if err != nil {
+			return
+		}
+		defer conn.Close()
+		var first [1]byte
+		if _, err := conn.Read(first[:]); err == nil {
+			close(asked)
+		}
+		<-t.Context().Done()
+	}()
+
+	ctx, cancel := context.WithCancel(t.Context())
+	defer cancel()
+	done := make(chan error, 1)
+	go func() {
+		conn, err := (&Client{socket: socket}).Connect(ctx, 5000)
+		if err == nil {
+			err = errors.Join(errors.New("Connect opened a stream"), conn.Close())
+		}
+		done <- err
+	}()
+	<-asked
+	cancel()
+	select {
+	case err := <-done:
+		if !errors.Is(err, context.Canceled) {
+			t.Fatalf("Connect() = %v, want the cancel", err)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("Connect still waits on the shim a second after its caller cancelled")
+	}
+}
+
 // frozenShimEnv names the socket a re-run of this test binary listens on and never accepts, as a shim stopped by SIGSTOP would.
 const frozenShimEnv = "VZ_TEST_FROZEN_SHIM"
 
@@ -487,7 +531,7 @@ func TestAMachineErrorComesBackAsTheVerbsError(t *testing.T) {
 	if err == nil || !strings.Contains(err.Error(), "save: save needs a paused vm") {
 		t.Fatalf("Save() on a running vm = %v", err)
 	}
-	if _, err := client.Connect(9); err == nil || !strings.Contains(err.Error(), "nothing listens there") {
+	if _, err := client.Connect(t.Context(), 9); err == nil || !strings.Contains(err.Error(), "nothing listens there") {
 		t.Fatalf("Connect(9) = %v", err)
 	}
 }
@@ -496,7 +540,7 @@ func TestConnectSplicesTheGuestStreamOntoTheSocket(t *testing.T) {
 	machine := &fake{state: StateRunning}
 	client := serve(t, machine)
 
-	conn, err := client.Connect(5000)
+	conn, err := client.Connect(t.Context(), 5000)
 	if err != nil {
 		t.Fatal(err)
 	}

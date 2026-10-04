@@ -231,7 +231,7 @@ const resetOnPauseFile = "reset-on-pause"
 // holdDialsFile in the state directory answers every dial with a stream that ends at once, until the test removes it.
 const holdDialsFile = "hold-dials"
 
-// holdSaveFile in the state directory holds the next save, with the VM paused, until the test removes it.
+// holdSaveFile in the state directory holds the next save, with the VM paused, and every state the shim answers, until the test removes it.
 const holdSaveFile = "hold-save"
 
 // savingFile lands in the state directory when a held save began, so a test acts inside the pause.
@@ -257,6 +257,18 @@ const floodEveryFile = "flood-every-control"
 
 // dialsFile in the state directory, once a test creates it, takes one line per control stream the host dials.
 const dialsFile = "control-dials"
+
+// freezesFile in the state directory, once a test creates it, takes the verb of each freeze the guest reads.
+const freezesFile = "freeze-verbs"
+
+// resetOnSaveFile in the state directory resets every stream under each save, as a save that resets the guest's vsock would.
+const resetOnSaveFile = "reset-on-save"
+
+// refuseSaveFile in the state directory fails every save of the VM, until the test removes it.
+const refuseSaveFile = "refuse-save"
+
+// savesFile in the state directory, once a test creates it, takes one line per save the VM completed.
+const savesFile = "saves"
 
 // resetHold is longer than the entrypoint the hold test runs, so its exit lands while no stream is open.
 const resetHold = 1500 * time.Millisecond
@@ -506,6 +518,13 @@ func (m *fakeMachine) move(from, to vz.State, sig syscall.Signal) error {
 }
 
 func (m *fakeMachine) Save(path string) error {
+	refused, err := m.has(refuseSaveFile)
+	if err != nil {
+		return err
+	}
+	if refused {
+		return errors.New("the vm refuses to save")
+	}
 	if err := m.holdSave(); err != nil {
 		return err
 	}
@@ -519,8 +538,18 @@ func (m *fakeMachine) Save(path string) error {
 	if frozen {
 		saved += "\n" + frozenFile
 	}
+	if err := os.WriteFile(path, []byte(saved), 0o600); err != nil {
+		return err
+	}
+	reset, err := m.has(resetOnSaveFile)
+	if err != nil {
+		return err
+	}
+	if reset {
+		m.dropStreams()
+	}
 
-	return os.WriteFile(path, []byte(saved), 0o600)
+	return m.appendTo(savesFile, "save")
 }
 
 // holdSave says the save began and waits while the test leaves holdSaveFile in place.
@@ -529,9 +558,12 @@ func (m *fakeMachine) holdSave() error {
 	if err != nil || !held {
 		return err
 	}
-	if err := os.WriteFile(filepath.Join(filepath.Dir(m.dir), savingFile), nil, 0o600); err != nil {
+	if err := os.WriteFile(filepath.Join(filepath.Dir(m.dir), savingFile), []byte("saving\n"), 0o600); err != nil {
 		return err
 	}
+	// A shim busy with a save may leave a state request waiting, so the hold keeps the machine and no probe gets an answer.
+	m.mu.Lock()
+	defer m.mu.Unlock()
 	deadline := time.Now().Add(10 * time.Second)
 	for held {
 		if time.Now().After(deadline) {
@@ -633,6 +665,13 @@ func (s *stream) Write(p []byte) (int, error) {
 		}
 		if !frozen {
 			continue
+		}
+		var freeze supervisor.Message
+		if err := json.Unmarshal(bytes.TrimSpace(p), &freeze); err != nil {
+			return 0, fmt.Errorf("read the freeze the host sent: %w", err)
+		}
+		if err := s.machine.appendTo(freezesFile, freeze.Verb); err != nil {
+			return 0, err
 		}
 		cut, err := s.machine.take(cutFreezeFile)
 		if err != nil {

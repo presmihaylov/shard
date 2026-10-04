@@ -28,7 +28,7 @@ substrate lacks.
 | `create`, `start`, `stop`, `remove`, `snapshot create`, `exec`, `logs`, `inspect` | yes | yes | yes | yes | yes |
 | `pause` | yes | **no** | **no** | Apple silicon on macOS 14+, **no** on 13 or on Intel | yes |
 | `resume` | yes | **no** | **no** | Apple silicon on macOS 14+, **no** on 13 or on Intel | yes |
-| `fork` of a running sandbox | yes | **no** | **no** | **no**, until SHARD-463 | yes |
+| `fork` of a running sandbox | yes | **no** | **no** | Apple silicon on macOS 14+, **no** on 13 or on Intel | yes |
 
 ### What a host picks without --provider
 
@@ -199,8 +199,7 @@ Three verbs are optional: `Pause`, `Resume` and `Fork`. `Capabilities` reports o
 optional verb, and it is the only place where one substrate may differ from another. `fork` takes a
 running source and refuses any other state. It freezes the source for a moment, captures its memory
 and files, lets the same runtime run on, and restores the new sandbox from that capture, never from
-an older checkpoint (SHARD-457). gVisor and Firecracker fork this way. `vz` refuses fork by name
-until SHARD-463 brings the same live fork to it.
+an older checkpoint (SHARD-457). gVisor, Firecracker and `vz` fork this way.
 
 ### What vz does and does not do
 
@@ -219,8 +218,9 @@ NAT table sends a guest's port 80 and 443 to the proxy wherever the guest dialed
 chains do on Linux. Every other TCP or UDP flow is judged by the same compiled chains that the host
 ruleset is built from, so a policy means the same on both hosts (SHARD-246). The stack drops a
 refused flow and writes it to the sandbox's egress log, which `docs/provider-vz.md` covers. `pause`
-and `resume` are one VZ save and a restore, which macOS 14 added on Apple silicon. On 13, and on an
-Intel Mac, both refuse by name, and `fork` refuses by name on every Mac until SHARD-463. Every
+and `resume` are one VZ save and a restore, which macOS 14 added on Apple silicon. `fork` is a save
+of the running source into the fork's own directory, a restore of it as the fork, and the source
+running on in the same shim (SHARD-463). On 13, and on an Intel Mac, all three refuse by name. Every
 restore of one save wakes with the same guest crng key. So each `resume` sends the guest 32 bytes of
 host entropy, and `shard-init` rekeys from them before the verb returns (SHARD-293). The guest's
 processes are still frozen from the pause when the seed lands, and they thaw only after it, so no

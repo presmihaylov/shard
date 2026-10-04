@@ -2,6 +2,7 @@ package vzvm
 
 import (
 	"context"
+	"sync/atomic"
 	"time"
 
 	"github.com/presmihaylov/shard/models"
@@ -40,7 +41,39 @@ type failingLink struct{ err error }
 
 func (l failingLink) Close() error { return l.err }
 
-// ForkCheckpoint is the restore of a paused checkpoint into a new sandbox, which SHARD-463 builds the live fork on and the public Fork no longer offers.
+// ForkCheckpoint is the restore of a checkpoint into a new sandbox, which the live fork runs on its capture.
 func (p *Provider) ForkCheckpoint(ctx context.Context, dir string, spec models.SandboxSpec) error {
 	return p.forkCheckpoint(ctx, dir, spec)
+}
+
+// CaptureCut is a fork cut after its capture and before it ran the source on, which a test cannot cut inside Fork.
+func (p *Provider) CaptureCut(ctx context.Context, id, dir string) error {
+	_, err := p.hold(ctx, id, dir)
+
+	return err
+}
+
+// CaptureDir is where a fork stages its source's capture, in the fork's own state directory.
+const CaptureDir = captureDir
+
+// SetRedialGrace shortens the wait for the control stream a save's run dials again, which a test runs out on purpose.
+func SetRedialGrace(grace time.Duration) (restore func()) {
+	was := redialGrace
+	redialGrace = grace
+
+	return func() { redialGrace = was }
+}
+
+// HoldNextDir stops the next lookup of a sandbox's directory until release closes, and closes entered when that lookup begins.
+func (p *Provider) HoldNextDir(entered chan<- struct{}, release <-chan struct{}) {
+	dirs := p.cfg.Dirs
+	var taken atomic.Bool
+	p.cfg.Dirs = func(id string) (string, error) {
+		if taken.CompareAndSwap(false, true) {
+			close(entered)
+			<-release
+		}
+
+		return dirs(id)
+	}
 }

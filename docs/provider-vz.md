@@ -282,14 +282,26 @@ frames would need a second hop to reach the proxy anyway.
   from the same pair. When a resume's shim dies after the restore has written to the live disk, and
   the record is still paused over the same checkpoint, the next resume gets the pause-time contents
   again. The fork ticket (SHARD-215) ships that repeated-resume case, with a write after round one.
-- `fork` refuses by name until SHARD-463, because a fork now takes a running source (SHARD-457).
-  The restore below stays, and SHARD-463 builds the live fork on it. It clones the checkpoint's
+- `fork` takes a running source (SHARD-457) and runs it on (SHARD-463). It asks `shard-init` to
+  freeze the guest for a fork, pauses the VM, and writes the same pair a pause writes into
+  `<fork dir>/capture`. Then it resumes the source in the same shim and thaws it, whether the
+  capture worked or not. The source's record does not change. The fork clones the capture's
   `disk.img` and never the live disk. It starts a new shim that restores the same state file over
-  that clone and resumes. Then it sends one re-address message on
-  the control port, so the guest drops the source's address and takes its own (hypeman's issue 423
-  is a fork that answers on the old IP). A source that resumed and wrote to its disk after the pause
-  still forks from the pause-time pair. The fork ticket (SHARD-215) ships that resumed-source
-  regression case.
+  that clone and resumes. Then it sends one re-address message on the control port, so the guest
+  drops the source's address and takes its own (hypeman's issue 423 is a fork that answers on the
+  old IP). The capture then goes. A fork id that is alive is refused before any freeze.
+- A save may reset every vsock stream of the source's guest. If the thaw finds the control stream
+  gone, the daemon dials it again and thaws the guest over the new one. If the guest takes no new
+  control stream within 30 s, the fork fails with `sandbox <id> stays frozen after the fork`, and
+  the daemon dials on until the guest answers and thaws it. While the freeze holds, `inspect` reads
+  the source running, and an `exec` is refused with `a fork holds the sandbox frozen, and nothing
+  starts in it until that ends: run the command again`. An `exec` whose stream the save reset fails
+  with an error that names the fork, and its command runs on in the sandbox with no reader.
+- A daemon killed inside a fork's capture leaves the source's VM paused, or its guest frozen, under
+  a record that says running. The next daemon resumes the VM when it adopts the shim, then reseeds
+  and thaws the guest, so the fork needs no marker of its own. A completed `pause` has ended its
+  shim, so a paused record has no VM to resume. The next daemon's start also tears down the fork it
+  dropped, its capture included, and that fork's record says failed until `rm`.
 
 A restore refuses a VM whose configuration differs from the saved one, and the machine identifier
 is part of that configuration. The framework generates a fresh identifier per configuration, so the

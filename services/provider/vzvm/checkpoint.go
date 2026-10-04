@@ -8,6 +8,7 @@ import (
 	"io/fs"
 	"os"
 	"path/filepath"
+	"time"
 
 	"github.com/presmihaylov/shard/models"
 	"github.com/presmihaylov/shard/pkg/store"
@@ -28,19 +29,9 @@ func (p *Provider) Pause(ctx context.Context, id string, dir string) error {
 	if r.Paused {
 		return p.finishPause(ctx, id, stateDir, dir)
 	}
-	m, err := p.lookup(ctx, id, stateDir, r)
+	m, r, err := p.checkpointSource(ctx, id, models.VerbPause)
 	if err != nil {
 		return err
-	}
-	status := models.Status{State: models.StateStopped}
-	if m != nil {
-		status = m.status(p)
-	}
-	if status.State == models.StateUnresponsive {
-		return &models.UnresponsiveError{Sandbox: id, Provider: Name, Verb: models.VerbPause, Reason: status.Reason}
-	}
-	if status.State != models.StateRunning {
-		return fmt.Errorf("sandbox %s is %s on %s: pause takes a running sandbox", id, status.State, Name)
 	}
 
 	// Everything that can fail happens while the VM is only paused, so a failed pause resumes it and loses nothing.
@@ -58,31 +49,55 @@ func (p *Provider) Pause(ctx context.Context, id string, dir string) error {
 	// A failed pause whose resume failed too left the VM paused, and this one carries on from there; a restart resumes it before this (SHARD-375).
 	if info.State != vz.StatePaused {
 		// The disk is copied apart from the memory, so the guest's root is flushed and frozen first, and no write lands between the two.
-		if err := m.freeze(ctx); err != nil {
-			return abandon(m, tmp, fmt.Errorf("sandbox %s: freeze the guest's root before the pause: %w", id, err))
+		if err := m.freeze(ctx, models.VerbPause); err != nil {
+			return p.abandon(m, tmp, fmt.Errorf("sandbox %s: freeze the guest's root before the pause: %w", id, err))
 		}
 		if _, err := m.client.Pause(); err != nil {
-			return abandon(m, tmp, fmt.Errorf("pause sandbox %s: %w", id, err))
+			return p.abandon(m, tmp, fmt.Errorf("pause sandbox %s: %w", id, err))
 		}
 	}
-	if err := stageCheckpoint(m, r, stateDir, tmp); err != nil {
-		return abandon(m, tmp, fmt.Errorf("sandbox %s: %w", id, err))
+	if err := stageCheckpoint(m, r, models.VerbPause, stateDir, tmp); err != nil {
+		return p.abandon(m, tmp, fmt.Errorf("sandbox %s: %w", id, err))
 	}
 	// The record says paused before the swap, so a crash between the two leaves a resume that installs the staged checkpoint and ends the shim.
 	r.Paused = true
 	r.Pauses++
 	if err := writeRecord(stateDir, r); err != nil {
-		return abandon(m, tmp, err)
+		return p.abandon(m, tmp, err)
 	}
 	if err := store.SwapDir(tmp, dir); err != nil {
 		r.Paused = false
 		r.Pauses--
 
-		return abandon(m, tmp, errors.Join(fmt.Errorf("install the checkpoint of sandbox %s: %w", id, err), writeRecord(stateDir, r)))
+		return p.abandon(m, tmp, errors.Join(fmt.Errorf("install the checkpoint of sandbox %s: %w", id, err), writeRecord(stateDir, r)))
 	}
 
 	// The install left the checkpoint it replaced at tmp, which this pause owns and drops.
 	return errors.Join(os.RemoveAll(tmp), p.end(ctx, m))
+}
+
+// checkpointSource answers the shim of a running sandbox a save for verb can be taken of, and refuses any other.
+func (p *Provider) checkpointSource(ctx context.Context, id, verb string) (*machine, record, error) {
+	stateDir, r, err := p.open(id)
+	if err != nil {
+		return nil, record{}, err
+	}
+	m, err := p.lookup(ctx, id, stateDir, r)
+	if err != nil {
+		return nil, record{}, err
+	}
+	status := models.Status{State: models.StateStopped}
+	if m != nil {
+		status = m.status(p)
+	}
+	if status.State == models.StateUnresponsive {
+		return nil, record{}, &models.UnresponsiveError{Sandbox: id, Provider: Name, Verb: verb, Reason: status.Reason}
+	}
+	if status.State != models.StateRunning {
+		return nil, record{}, fmt.Errorf("sandbox %s is %s on %s: %s takes a running sandbox%s", id, status.State, Name, verb, because(status))
+	}
+
+	return m, r, nil
 }
 
 // finishPause installs what a crashed pause staged, proves a checkpoint is in place and ends the shim it left.
@@ -126,7 +141,9 @@ func (p *Provider) endLeftover(ctx context.Context, id, stateDir string) error {
 }
 
 // stageCheckpoint writes the save, the disk and the metadata into tmp and marks it complete; the VM is paused, so the disk is still.
-func stageCheckpoint(m *machine, r record, stateDir, tmp string) error {
+func stageCheckpoint(m *machine, r record, verb, stateDir, tmp string) error {
+	// A save may reset every vsock stream of the guest, so the run after it dials the control stream again should the thaw find it gone.
+	m.resetBy = verb
 	if _, err := m.client.Save(filepath.Join(tmp, checkpointState)); err != nil {
 		return fmt.Errorf("save the vm: %w", err)
 	}
@@ -146,26 +163,31 @@ func stageCheckpoint(m *machine, r record, stateDir, tmp string) error {
 }
 
 // abandon gives up a pause that could not complete: the VM and its root run on and the staging directory goes.
-func abandon(m *machine, tmp string, err error) error {
-	return errors.Join(err, runAgain(m), os.RemoveAll(tmp))
+func (p *Provider) abandon(m *machine, tmp string, err error) error {
+	return errors.Join(err, p.runAgain(m), os.RemoveAll(tmp))
 }
 
-// freeze holds the guest's root for the pause in flight, which a stream dialed again meanwhile leaves frozen.
-func (m *machine) freeze(ctx context.Context) error {
+// freeze holds the guest's root for the verb in flight, which a stream dialed again meanwhile leaves frozen.
+func (m *machine) freeze(ctx context.Context, verb string) error {
 	m.freezing.Lock()
 	defer m.freezing.Unlock()
+	m.admit.Lock()
 	m.pausing.Store(true)
+	m.holder.Store(&verb)
+	m.admit.Unlock()
 
-	return m.control.Load().Freeze(ctx, models.VerbPause)
+	return m.control.Load().Freeze(ctx, verb)
 }
 
-// runAgain resumes the VM if the pause got that far, then thaws the root, which a paused guest could never answer.
-func runAgain(m *machine) error {
+// runAgain resumes the VM if the verb got that far, then thaws the root, which a paused guest could never answer.
+func (p *Provider) runAgain(m *machine) error {
 	// A reconnect swaps and thaws under freezing too, so either this thaw lands on the stream it put in, or that reconnect thaws.
 	m.freezing.Lock()
 	defer m.freezing.Unlock()
+	defer m.holder.Store(nil)
 	m.pausing.Store(false)
-	control := m.control.Load()
+	verb := m.resetBy
+	m.resetBy = ""
 
 	info, err := m.client.State(context.Background())
 	if err != nil {
@@ -176,12 +198,37 @@ func runAgain(m *machine) error {
 			return fmt.Errorf("resume sandbox %s: %w", m.id, err)
 		}
 	}
-	// The thaw outlives the pause's caller: a guest left frozen takes no write again.
-	if err := control.Thaw(context.Background()); err != nil {
-		return fmt.Errorf("sandbox %s: thaw the guest's root: %w", m.id, err)
+	// The thaw outlives the verb's caller: a guest left frozen takes no write again.
+	thawed := m.control.Load().Thaw(context.Background())
+	if thawed == nil {
+		return nil
 	}
+	if verb == "" {
+		return fmt.Errorf("sandbox %s: thaw the guest's root: %w", m.id, thawed)
+	}
+	// A save that reset the stream fails the thaw at once, so the run dials control again and thaws over that.
+	m.kickLogs()
 
-	return nil
+	return errors.Join(m.cutExecs(verb), p.redial(m, verb))
+}
+
+// redial puts in a control stream dialed again after verb's save, whose replay has adopt thaw the guest; the caller holds freezing.
+func (p *Provider) redial(m *machine, verb string) error {
+	deadline := time.Now().Add(redialGrace)
+	for {
+		if !m.alive() {
+			return fmt.Errorf("sandbox %s stays frozen after the %s: its shim no longer runs the VM", m.id, verb)
+		}
+		adopted, err := p.dialAgain(m, time.Until(deadline))
+		if adopted {
+			return err
+		}
+		if time.Now().After(deadline) {
+			// The follower waits on the stream the reset killed, so it ends here and the follower dials on for its own grace.
+			return errors.Join(fmt.Errorf("sandbox %s stays frozen after the %s: its guest took no new control stream within %s: %w", m.id, verb, redialGrace, err), closeControl(m.control.Load()))
+		}
+		time.Sleep(max(pollInterval, m.refusals.Note(err)))
+	}
 }
 
 // installStaged finishes a pause that crashed after its record: a staged checkpoint newer than the one in dir goes in, an older one goes.
@@ -265,12 +312,69 @@ func (p *Provider) Resume(ctx context.Context, id string, dir string) error {
 // AdoptStaging keeps the checkpoint staging a cut pause left: a resume finishes it through installStaged, so dropping it would discard a saved VM (SHARD-404).
 func (p *Provider) AdoptStaging(string) error { return nil }
 
-// Fork refuses by name: the fork of a paused source is gone, and the live fork of a running one comes with SHARD-463 (SHARD-457).
-func (p *Provider) Fork(context.Context, string, models.SandboxSpec) error {
-	return models.Unsupported(Name, models.VerbFork)
+// Fork captures the running source into the new sandbox's directory, runs the source on, and restores the capture as the fork.
+func (p *Provider) Fork(ctx context.Context, source string, spec models.SandboxSpec) error {
+	if !p.cfg.SaveRestore {
+		return models.Unsupported(Name, models.VerbFork)
+	}
+	// The restore would refuse a fork id that runs only after the source was frozen for nothing.
+	status, err := p.Status(ctx, spec.ID)
+	if err != nil {
+		return err
+	}
+	if status.Alive() {
+		return fmt.Errorf("sandbox %s already exists on %s and is %s", spec.ID, Name, status.State)
+	}
+	capture := filepath.Join(spec.StateDir, captureDir)
+	// A cut fork's capture would refuse this one's save and disk clone.
+	if err := os.RemoveAll(capture); err != nil {
+		return fmt.Errorf("clear the capture directory %s: %w", capture, err)
+	}
+	if err := p.capture(ctx, source, capture); err != nil {
+		return errors.Join(err, os.RemoveAll(capture))
+	}
+
+	// The fork's disk is a clone of the capture's and its memory is restored, so the capture is spent.
+	return errors.Join(p.forkCheckpoint(ctx, capture, spec), os.RemoveAll(capture))
 }
 
-// forkCheckpoint restores the save in dir as a new sandbox under the spec's id and address, and leaves the source as it was; SHARD-463 builds the live fork on it.
+// capture stages the running source's save in dir, then runs the source on, whatever the capture came to.
+func (p *Provider) capture(ctx context.Context, id, dir string) error {
+	m, err := p.hold(ctx, id, dir)
+	if m == nil {
+		return err
+	}
+	if runErr := p.runAgain(m); runErr != nil {
+		return errors.Join(err, runErr)
+	}
+
+	return err
+}
+
+// hold stops the source over a frozen root and stages its save in dir; a machine it answers must run again, error or not.
+func (p *Provider) hold(ctx context.Context, id, dir string) (*machine, error) {
+	m, r, err := p.checkpointSource(ctx, id, models.VerbFork)
+	if err != nil {
+		return nil, err
+	}
+	if err := os.MkdirAll(dir, 0o700); err != nil {
+		return nil, fmt.Errorf("create the capture directory %s: %w", dir, err)
+	}
+	// A fork boots from the disk clone, so the guest's root is flushed and frozen first, and no write lands between the save and the clone.
+	if err := m.freeze(ctx, models.VerbFork); err != nil {
+		return m, fmt.Errorf("sandbox %s: freeze the guest's root before the capture: %w", id, err)
+	}
+	if _, err := m.client.Pause(); err != nil {
+		return m, fmt.Errorf("pause sandbox %s for the capture: %w", id, err)
+	}
+	if err := stageCheckpoint(m, r, models.VerbFork, m.dir, dir); err != nil {
+		return m, fmt.Errorf("sandbox %s: %w", id, err)
+	}
+
+	return m, nil
+}
+
+// forkCheckpoint restores the save in dir as a new sandbox under the spec's id and address, and leaves the source as it was.
 func (p *Provider) forkCheckpoint(ctx context.Context, dir string, spec models.SandboxSpec) error {
 	if !p.cfg.SaveRestore {
 		return models.Unsupported(Name, models.VerbFork)
@@ -307,7 +411,7 @@ func (p *Provider) forkCheckpoint(ctx context.Context, dir string, spec models.S
 		return errors.Join(err, os.Remove(filepath.Join(spec.StateDir, recordFile)))
 	}
 	if err := m.readdress(ctx, r); err != nil {
-		return errors.Join(err, p.end(ctx, m))
+		return errors.Join(err, p.end(ctx, m), os.Remove(filepath.Join(spec.StateDir, recordFile)))
 	}
 
 	return nil
