@@ -14,18 +14,18 @@ import (
 type capability string
 
 const (
-	capDaemonRead    capability = "daemon:read"
+	// capAnyToken is a route every valid token reaches whatever its scopes, so a client can learn what it speaks to before it acts.
+	capAnyToken      capability = ""
 	capSandboxRead   capability = "sandbox:read"
 	capSandboxWrite  capability = "sandbox:write"
 	capSandboxDelete capability = "sandbox:delete"
 	capExec          capability = "exec"
-	capImage         capability = "image:*"
 	capSecret        capability = "secret:*"
 	capPolicy        capability = "policy:*"
 )
 
-// capabilities are the eight a scope can name besides "*", in the order docs/daemon.md lists them.
-var capabilities = []capability{capDaemonRead, capSandboxRead, capSandboxWrite, capSandboxDelete, capExec, capImage, capSecret, capPolicy}
+// capabilities are the six a scope can name besides "*", in the order docs/daemon.md lists them.
+var capabilities = []capability{capSandboxRead, capSandboxWrite, capSandboxDelete, capExec, capSecret, capPolicy}
 
 // CheckScopes refuses a scope that is neither "*" nor a capability, because the front would answer 403 to every request the token makes.
 func CheckScopes(scopes []string) error {
@@ -47,10 +47,10 @@ func capabilityNames() []string {
 	return names
 }
 
-// routeCapabilities maps each daemon route to the capability it needs. Every api.Route has an entry, and the front refuses to start when one does not.
+// routeCapabilities maps each public route to the capability it needs. Every public api.Route has an entry, and the front refuses to start when one does not.
 var routeCapabilities = map[string]capability{
-	"GET /v0/version":                            capDaemonRead,
-	"GET /v0/daemon":                             capDaemonRead,
+	"GET /v0/version":                            capAnyToken,
+	"GET /v0/capabilities":                       capAnyToken,
 	"GET /v0/sandboxes":                          capSandboxRead,
 	"GET /v0/sandboxes/{id}":                     capSandboxRead,
 	"POST /v0/sandboxes":                         capSandboxWrite,
@@ -93,10 +93,6 @@ var routeCapabilities = map[string]capability{
 	"GET /v0/secrets":                            capSecret,
 	"PUT /v0/secrets/{name}":                     capSecret,
 	"DELETE /v0/secrets/{name}":                  capSecret,
-	"GET /v0/images":                             capImage,
-	"POST /v0/images/pull":                       capImage,
-	"POST /v0/images/prune":                      capImage,
-	"DELETE /v0/images/{ref...}":                 capImage,
 }
 
 // capabilityOf answers the capability a route needs, and whether the front knows the route at all.
@@ -116,10 +112,17 @@ type capHandler capability
 
 func (capHandler) ServeHTTP(http.ResponseWriter, *http.Request) {}
 
-// newCapMux registers every daemon route under its capability, and refuses when a route has none.
+// newCapMux registers every public route under its capability, and refuses when one has none. A local route stays out, so the front answers it as it answers an unknown one.
 func newCapMux() (*capMux, error) {
 	mux := http.NewServeMux()
 	for _, r := range api.Routes() {
+		if r.Class == api.Local {
+			continue
+		}
+		if r.Class != api.Public {
+			return nil, fmt.Errorf("route %s %s has no class, so the front cannot tell whether to forward it", r.Method, r.Pattern)
+		}
+
 		c, ok := capabilityOf(r)
 		if !ok {
 			return nil, fmt.Errorf("the front has no capability for route %s %s", r.Method, r.Pattern)
@@ -144,7 +147,7 @@ func (c *capMux) capability(method string, target *url.URL) (capability, bool) {
 
 // covers reports whether a token's scopes reach the capability. No scopes, or a "*" scope, reaches every one.
 func covers(scopes []string, need capability) bool {
-	if len(scopes) == 0 {
+	if len(scopes) == 0 || need == capAnyToken {
 		return true
 	}
 

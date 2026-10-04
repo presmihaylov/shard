@@ -3,6 +3,7 @@ package client_test
 import (
 	"bytes"
 	"context"
+	"encoding/pem"
 	"errors"
 	"fmt"
 	"net"
@@ -93,14 +94,14 @@ func TestListSandboxesAsksForAllOnlyWhenTold(t *testing.T) {
 		t.Fatalf("ListSandboxes with all: %v", err)
 	}
 
-	if want := []string{"/v0/sandboxes", "/v0/sandboxes?all=true"}; strings.Join(asked, " ") != strings.Join(want, " ") {
+	if want := []string{"/v0/local/sandboxes", "/v0/local/sandboxes?all=true"}; strings.Join(asked, " ") != strings.Join(want, " ") {
 		t.Errorf("the client asked %v, want %v", asked, want)
 	}
 }
 
 func TestGetSandboxReadsTheRecordAndItsEgress(t *testing.T) {
 	c := serve(t, shortRoot(t), func(w http.ResponseWriter, r *http.Request) {
-		if r.URL.Path != "/v0/sandboxes/web" {
+		if r.URL.Path != "/v0/local/sandboxes/web" {
 			answer(http.StatusNotFound, `{"error":{"code":"not_found","message":"no route"}}`)(w, r)
 
 			return
@@ -114,6 +115,43 @@ func TestGetSandboxReadsTheRecordAndItsEgress(t *testing.T) {
 	}
 	if got.ID != "up-1" || got.Egress == nil || got.Egress.Policy != "deny-all" {
 		t.Errorf("GetSandbox = %+v, want up-1 with its egress", got)
+	}
+}
+
+// A front refuses the local routes, so a remote client reads the public ones, and the socket client the full record.
+func TestARemoteClientReadsThePublicSandboxRoutes(t *testing.T) {
+	asked := make(chan string, 3)
+	server := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		asked <- r.URL.RequestURI()
+		if r.URL.Path == "/v0/sandboxes" {
+			answer(http.StatusOK, `{"sandboxes":[{"id":"up-1","state":"running"}]}`)(w, r)
+
+			return
+		}
+		answer(http.StatusOK, `{"id":"up-1","state":"running"}`)(w, r)
+	}))
+	t.Cleanup(server.Close)
+
+	ca := pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: server.Certificate().Raw})
+	c, err := client.NewRemote(server.URL, "front-token-value", ca)
+	if err != nil {
+		t.Fatalf("NewRemote: %v", err)
+	}
+
+	if _, err := c.ListSandboxes(t.Context(), false); err != nil {
+		t.Fatalf("ListSandboxes: %v", err)
+	}
+	if _, err := c.GetSandbox(t.Context(), "web"); err != nil {
+		t.Fatalf("GetSandbox: %v", err)
+	}
+	if _, err := c.WaitSandbox(t.Context(), "web"); err != nil {
+		t.Fatalf("WaitSandbox: %v", err)
+	}
+
+	for _, want := range []string{"/v0/sandboxes", "/v0/sandboxes/web", "/v0/sandboxes/web?wait=true"} {
+		if got := <-asked; got != want {
+			t.Errorf("the remote client asked %s, want %s", got, want)
+		}
 	}
 }
 
@@ -176,7 +214,7 @@ func TestADaemonThatNeverAnswersIsCutByTheDeadline(t *testing.T) {
 	if took := time.Since(start); took > 2*time.Second {
 		t.Errorf("ListSandboxes took %s to give up, want the deadline", took)
 	}
-	want := "GET /v0/sandboxes on " + filepath.Join(root, api.SocketFile) + ": no answer within 100ms"
+	want := "GET /v0/local/sandboxes on " + filepath.Join(root, api.SocketFile) + ": no answer within 100ms"
 	if err == nil || err.Error() != want {
 		t.Errorf("ListSandboxes = %v, want %q", err, want)
 	}

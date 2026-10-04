@@ -29,14 +29,18 @@ They go before the verb.
 | `--ca-file <pem>` | the CA that signed the proxy's certificate; also `SHARD_CA_FILE` |
 | `--version` | print the client version; it never fails |
 
+`pull`, `image list`, `image remove`, `image prune` and `daemon status` run on the daemon host only,
+because `shard serve` refuses their routes. With `--remote` or `SHARD_REMOTE` set, each one fails
+before it dials, and its error names the verb.
+
 ## Names and aliases
 
 A verb has one name. `list` and `remove` take `ls` and `rm` as aliases, at the top level and under
 `image`, `secret`, `policy`, `snapshot` and `tokens` (`list` only). An alias runs the same code and
 prints the same help. The help never lists an alias.
 
-`exec` takes `-i` and `--interactive`, `-t` and `--tty`, and `-it` for both. `logs` takes `-f` and
-`--follow`. `run` takes `-d` and `--detach`.
+`exec` takes `-i` and `--interactive`, `-t` and `--tty`, and `-it` for both. `logs` and
+`policy logs` take `-f` and `--follow`. `run` takes `-d` and `--detach`.
 
 ## Verbs
 
@@ -52,7 +56,7 @@ a dash is a verb with no `--format`.
 | `run <image> <command>...` | the `create` flags, `--restart --restart-retries --restart-backoff -d/--detach` | - | the app's output, or the id with `--detach` |
 | `exec <ref> <argv>...` | `-i/--interactive -t/--tty --env --workdir --user` | - | the command's output |
 | `list` | `--all --format` | table | the sandboxes |
-| `logs <ref>` | `-f/--follow --egress` | - | the entrypoint's output, or the egress decisions |
+| `logs <ref>` | `-f/--follow` | - | the entrypoint's output |
 | `inspect <ref>` | `--format` | json | the record |
 | `stop <ref>` | | - | the id |
 | `start <ref>` | | - | the id |
@@ -70,7 +74,7 @@ a dash is a verb with no `--format`.
 shard: sandbox <id> is paused: resume it with shard resume <id>
 ```
 
-### Images, snapshots, secrets and egress
+### Images, snapshots, secrets and network policies
 
 | verb | flags | format | stdout |
 | --- | --- | --- | --- |
@@ -93,6 +97,7 @@ shard: sandbox <id> is paused: resume it with shard resume <id>
 | `policy remove <name>` | | - | the name |
 | `policy attach <ref> <policy>` | | - | the sandbox id |
 | `policy detach <ref>` | | - | the sandbox id |
+| `policy logs <ref>` | `-f/--follow` | - | the egress decisions, one JSON record per line |
 
 `<snap>` is a snapshot id or its `--name`.
 
@@ -125,7 +130,10 @@ nothing and fails.
 The values are synthetic.
 
 `list` prints an array of sandbox records. `id`, `image`, `provider`, `state`, `pid`, `netns_path`,
-`address`, `host_interface`, `resources` and `created_at` are always present:
+`address`, `host_interface`, `resources` and `created_at` are always present on the daemon host. With
+`--remote`, the record leaves out `pid`, `netns_path`, `address`, `host_interface`, `checkpoint`,
+`pausing`, `exit_channel` and `unresponsive_reason`, and an implied DNS rule in `egress` names the
+group `dns`:
 
 ```json
 [

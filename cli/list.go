@@ -35,7 +35,7 @@ func (a App) list(ctx context.Context, args []string) error {
 	}
 
 	// The daemon answers with both: the sandboxes it read are printed, and the ones it could not are the exit.
-	if err := writeList(a.Out, opts.format, result.Sandboxes, time.Now()); err != nil {
+	if err := a.writeList(opts.format, result.Sandboxes, time.Now()); err != nil {
 		return err
 	}
 
@@ -46,12 +46,17 @@ func (a App) list(ctx context.Context, args []string) error {
 	return errors.New(strings.Join(result.Warnings, "\n"))
 }
 
-func writeList(w io.Writer, format outputFormat, sandboxes []models.Sandbox, now time.Time) error {
-	if format == formatJSON {
-		return writeJSON(w, nonNil(sandboxes))
+func (a App) writeList(format outputFormat, sandboxes []models.Sandbox, now time.Time) error {
+	if format != formatJSON {
+		return writeTable(a.Out, sandboxes, now)
 	}
 
-	return writeTable(w, sandboxes, now)
+	records := make([]any, 0, len(sandboxes))
+	for _, sb := range sandboxes {
+		records = append(records, a.record(sb))
+	}
+
+	return writeJSON(a.Out, records)
 }
 
 func writeTable(w io.Writer, sandboxes []models.Sandbox, now time.Time) error {

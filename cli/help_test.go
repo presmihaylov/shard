@@ -6,7 +6,6 @@ import (
 	"slices"
 	"strings"
 	"testing"
-	"unicode"
 	"unicode/utf8"
 )
 
@@ -71,13 +70,12 @@ func TestEveryCommandHasItsHelp(t *testing.T) {
 			continue
 		}
 
-		verb, _, _ := strings.Cut(path.key, " ")
-		line := topLine(top, verb)
-		if line == "" {
+		verb, sub, _ := strings.Cut(path.key, " ")
+		if topLine(top, verb) == "" {
 			t.Errorf("the top level lists no %s", verb)
 		}
-		if words := strings.FieldsFunc(line, func(r rune) bool { return !unicode.IsLetter(r) }); !slices.Contains(words, path.cmd.name) {
-			t.Errorf("the top-level line of %s does not name %s: %q", verb, path.cmd.name, line)
+		if sub != "" && topLine(helpOf(t, verb, "--help").text, sub) == "" {
+			t.Errorf("shard %s --help lists no %s", verb, sub)
 		}
 
 		for _, words := range path.words {
@@ -116,7 +114,8 @@ func TestAVerbUnderABadRemoteFailsOnTheTokenFile(t *testing.T) {
 // topLine is the line of the top level that lists one verb.
 func topLine(top, verb string) string {
 	for line := range strings.SplitSeq(top, "\n") {
-		if strings.HasPrefix(line, "  "+verb+" ") {
+		// The name column ends at two spaces, so policy does not match the policy logs row.
+		if name, _, _ := strings.Cut(strings.TrimPrefix(line, "  "), "  "); strings.HasPrefix(line, "  ") && name == verb {
 			return line
 		}
 	}
@@ -143,7 +142,7 @@ func TestEveryVerbHasOneGroup(t *testing.T) {
 		}
 	}
 	for _, name := range grouped {
-		if _, ok := find(commands(), name); !ok {
+		if _, ok := lookup(name); !ok {
 			t.Errorf("the top level lists %s, which the dispatcher does not take", name)
 		}
 	}
@@ -192,7 +191,7 @@ func TestANounNamesItsSubcommands(t *testing.T) {
 	cases := map[string]string{
 		"image":  "list, remove or prune",
 		"secret": "set, list, remove, grant or ungrant",
-		"policy": "create, show, list, remove, attach or detach",
+		"policy": "create, show, list, remove, attach, detach or logs",
 		"tokens": "mint, list or revoke",
 	}
 

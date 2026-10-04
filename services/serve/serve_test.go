@@ -1,6 +1,7 @@
 package serve
 
 import (
+	"bufio"
 	"context"
 	"crypto/rand"
 	"crypto/rsa"
@@ -616,13 +617,200 @@ func TestAnUnknownRouteIs403AndNothingIsDialed(t *testing.T) {
 	}
 }
 
-// Every route the daemon serves has a capability, so no request reaches the front without one to check.
-func TestEveryDaemonRouteHasACapability(t *testing.T) {
+// A local route reads like an unknown one to every token: the same 403 body, and the front never dials the daemon for it.
+func TestALocalRouteIs403ForEveryTokenAndNothingIsDialed(t *testing.T) {
+	up := fakeDaemon(t)
+	env := newTokenEnv(t)
+	address := front(t, up.root, env.secret)
+
+	tokens := map[string]string{"no scopes": mint(t, env, "root"), "star": mintScoped(t, env, "root", "*")}
+	for _, c := range capabilities {
+		tokens[string(c)] = mintScoped(t, env, "scoped", string(c))
+	}
+
+	var locals []api.Route
+	for _, r := range api.Routes() {
+		if r.Class == api.Local {
+			locals = append(locals, r)
+		}
+	}
+	if len(locals) < 7 {
+		t.Fatalf("the walk found %d local routes, want the daemon status, the four image routes and the two local sandbox reads", len(locals))
+	}
+
+	for name, token := range tokens {
+		checkLocalRoutesRefused(t, address, name, token, locals)
+	}
+
+	if dialed := up.dialed.Load(); dialed != 0 {
+		t.Errorf("the front dialed the socket %d times for a local route, want none", dialed)
+	}
+}
+
+// checkLocalRoutesRefused fails unless every local route answers one token the 403 and the body an unknown route gets.
+func checkLocalRoutesRefused(t *testing.T, address, name, token string, locals []api.Route) {
+	t.Helper()
+
+	unknown := readAll(t, askRoute(t, address, token, http.MethodGet, "/v0/nonesuch")) //nolint:bodyclose // askRoute closes the body in a cleanup
+	if unknown != forbidden+"\n" {
+		t.Fatalf("%s: an unknown route answered %q, want the forbidden body", name, unknown)
+	}
+	for _, r := range locals {
+		path := strings.NewReplacer("{id}", "s1", "{ref...}", "alpine").Replace(r.Pattern)
+		resp := askRoute(t, address, token, r.Method, path) //nolint:bodyclose // askRoute closes the body in a cleanup
+		if resp.StatusCode != http.StatusForbidden {
+			t.Errorf("%s: %s %s got %d, want 403", name, r.Method, path, resp.StatusCode)
+		}
+		if body := readAll(t, resp); body != unknown {
+			t.Errorf("%s: %s %s answered %q, want the unknown-route body %q", name, r.Method, path, body, unknown)
+		}
+	}
+}
+
+// The SDK handshake works for every token, so version and capabilities need no scope a token could lack.
+func TestVersionAndCapabilitiesAnswerAnyValidToken(t *testing.T) {
+	up := fakeDaemon(t)
+	env := newTokenEnv(t)
+	address := front(t, up.root, env.secret)
+	token := mintScoped(t, env, "secrets", "secret:*")
+
+	for _, path := range []string{"/v0/version", "/v0/capabilities"} {
+		if resp := askRoute(t, address, token, http.MethodGet, path); resp.StatusCode != http.StatusOK { //nolint:bodyclose // askRoute closes the body in a cleanup
+			t.Errorf("a secret:* token got %d on GET %s, want 200", resp.StatusCode, path)
+		}
+		if resp := askRoute(t, address, "", http.MethodGet, path); resp.StatusCode != http.StatusUnauthorized { //nolint:bodyclose // askRoute closes the body in a cleanup
+			t.Errorf("no token got %d on GET %s, want 401", resp.StatusCode, path)
+		}
+	}
+}
+
+// No public route needs daemon:read or image:*, so a mint naming one would hand out a scope that opens nothing.
+func TestCheckScopesRefusesTheRetiredScopes(t *testing.T) {
+	for _, scope := range []string{"daemon:read", "image:*"} {
+		if err := CheckScopes([]string{scope}); err == nil {
+			t.Errorf("CheckScopes took %q, want a refusal", scope)
+		}
+	}
+}
+
+// countingProcess answers GET /v0/daemon and counts each call, so a test sees whether that local handler ran.
+type countingProcess struct {
+	calls *atomic.Int64
+}
+
+func (p countingProcess) Daemon() (api.Daemon, error) {
+	p.calls.Add(1)
+
+	return api.Daemon{Provider: "gvisor"}, nil
+}
+
+// realDaemon serves the daemon's own api mux on a socket under a root, and records the path of each request the mux dispatched.
+func realDaemon(t *testing.T) (string, countingProcess, chan string) {
+	t.Helper()
+
+	root := shortRoot(t)
+	listener, err := net.Listen("unix", filepath.Join(root, "shard.sock"))
+	if err != nil {
+		t.Fatalf("listen on the socket: %v", err)
+	}
+	t.Cleanup(func() { listener.Close() })
+
+	process := countingProcess{calls: &atomic.Int64{}}
+	dispatched := make(chan string, 8)
+	mux := api.NewHandler("v-test", process, nil, nil, nil, nil, nil, io.Discard)
+	server := &http.Server{
+		ReadHeaderTimeout: time.Second,
+		Handler: http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			dispatched <- r.Method + " " + r.URL.Path
+			mux.ServeHTTP(w, r)
+		}),
+	}
+	go server.Serve(listener)
+	t.Cleanup(func() { server.Close() })
+
+	return root, process, dispatched
+}
+
+// A local route pipelined behind a public request is never dispatched: the front forwards the bytes, and the daemon answers one request per connection.
+func TestAPipelinedLocalRouteIsNeverDispatched(t *testing.T) {
+	root, process, dispatched := realDaemon(t)
+	env := newTokenEnv(t)
+	address := front(t, root, env.secret)
+	token := mintScoped(t, env, "root", "*")
+
+	conn, err := net.Dial("tcp", address)
+	if err != nil {
+		t.Fatalf("dial the front: %v", err)
+	}
+	defer conn.Close()
+	// A daemon that keeps the connection open never sends EOF, so the read fails here instead of hanging the run.
+	if err := conn.SetDeadline(time.Now().Add(5 * time.Second)); err != nil {
+		t.Fatalf("set the deadline: %v", err)
+	}
+
+	public := "GET /v0/version HTTP/1.1\r\nHost: box\r\nAuthorization: Bearer " + token + "\r\n\r\n"
+	local := "GET /v0/daemon HTTP/1.1\r\nHost: box\r\nAuthorization: Bearer " + token + "\r\n\r\n"
+	if _, err := io.WriteString(conn, public+local); err != nil {
+		t.Fatalf("write the pipelined requests: %v", err)
+	}
+
+	// A front that closes with the pipelined request unread sends a reset, and by now it would have destroyed the answer.
+	time.Sleep(200 * time.Millisecond)
+
+	reader := bufio.NewReader(conn)
+	resp, err := http.ReadResponse(reader, nil)
+	if err != nil {
+		t.Fatalf("read the first answer: %v", err)
+	}
+	defer resp.Body.Close()
+	if body := readAll(t, resp); resp.StatusCode != http.StatusOK || !strings.Contains(body, `"api_version"`) {
+		t.Errorf("the public request got %d %q, want the version", resp.StatusCode, body)
+	}
+	rest, err := io.ReadAll(reader)
+	if err != nil {
+		t.Fatalf("read past the first answer: %v", err)
+	}
+	if len(rest) != 0 {
+		t.Errorf("the front sent %q after the first answer, want EOF", rest)
+	}
+
+	if got := drain(dispatched); !slices.Equal(got, []string{"GET /v0/version"}) {
+		t.Errorf("the daemon dispatched %v, want only the public request", got)
+	}
+	if calls := process.calls.Load(); calls != 0 {
+		t.Errorf("the local GET /v0/daemon handler ran %d times, want none", calls)
+	}
+}
+
+// readAll answers the body of resp as a string.
+func readAll(t *testing.T, resp *http.Response) string {
+	t.Helper()
+
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		t.Fatalf("read the body: %v", err)
+	}
+
+	return string(body)
+}
+
+// Every public route has a capability, so no request reaches the front without one to check, and no other route has one the front could forward under.
+func TestEveryPublicRouteAndNoOtherHasACapability(t *testing.T) {
 	covered := 0
+	public := map[string]bool{}
 	for _, r := range api.Routes() {
 		covered++
-		if _, ok := capabilityOf(r); !ok {
-			t.Errorf("route %s %s has no capability", r.Method, r.Pattern)
+		_, ok := capabilityOf(r)
+		if r.Class == api.Public && !ok {
+			t.Errorf("public route %s %s has no capability", r.Method, r.Pattern)
+		}
+		if r.Class == api.Public {
+			public[r.Method+" "+r.Pattern] = true
+		}
+	}
+	for route := range routeCapabilities {
+		if !public[route] {
+			t.Errorf("route %s has a capability but is no public route, so the front would forward it", route)
 		}
 	}
 
@@ -1105,7 +1293,7 @@ func shortRoot(t *testing.T) string {
 // A route whose capability no scope can name would be reachable by a "*" token alone, since mint refuses the name.
 func TestEveryRouteCapabilityIsOneAScopeCanName(t *testing.T) {
 	for route, c := range routeCapabilities {
-		if !slices.Contains(capabilities, c) {
+		if c != capAnyToken && !slices.Contains(capabilities, c) {
 			t.Errorf("route %s needs %s, which mint refuses as a scope", route, c)
 		}
 	}

@@ -116,7 +116,7 @@ func TestInspectTableIsTheRecordThenTheRules(t *testing.T) {
 		Egress:  &egress.Effective{Policy: "web", Rules: []egress.EffectiveRule{{Rule: rule, ID: "r1", Implied: "private ranges"}}},
 	}
 
-	sections, err := inspectSections(insp)
+	sections, err := inspectSections(insp.Sandbox, insp)
 	if err != nil {
 		t.Fatalf("inspectSections: %v", err)
 	}
@@ -136,7 +136,7 @@ func TestInspectTableIsTheRecordThenTheRules(t *testing.T) {
 }
 
 func TestInspectTableOfASandboxWithNoPolicyHasNoRuleSection(t *testing.T) {
-	sections, err := inspectSections(sandbox.Inspection{Sandbox: models.Sandbox{ID: "s-1"}})
+	sections, err := inspectSections(models.Sandbox{ID: "s-1"}, sandbox.Inspection{Sandbox: models.Sandbox{ID: "s-1"}})
 	if err != nil {
 		t.Fatalf("inspectSections: %v", err)
 	}

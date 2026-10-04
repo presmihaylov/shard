@@ -69,9 +69,9 @@ func (a App) runApp(ctx context.Context, args []string) error {
 }
 
 // createCaught counts the interrupts that land during the create and never leaves it, as the daemon starts the app of a create its caller left.
-func (a App) createCaught(ctx context.Context, c *client.Client, req sandbox.CreateRequest, interrupts <-chan os.Signal) (models.Sandbox, int, error) {
+func (a App) createCaught(ctx context.Context, c *client.Client, req sandbox.CreateRequest, interrupts <-chan os.Signal) (client.Sandbox, int, error) {
 	type created struct {
-		sb  models.Sandbox
+		sb  client.Sandbox
 		err error
 	}
 	result := make(chan created, 1)
