@@ -16,6 +16,9 @@ var ErrNoExitStatus = errors.New("the sandbox ended before its entrypoint exited
 // ErrExitFileTooLarge is an exit file past any record shard-init writes, which only a guest that reached the file can make.
 var ErrExitFileTooLarge = errors.New("the exit file is larger than any exit record")
 
+// ErrRestartFileForged is a restart count no shard-init wrote, which only a guest that reached the file can make.
+var ErrRestartFileForged = errors.New("the restart count file is not one shard-init wrote")
+
 // ErrExitChannelReplaced is a PID 1 whose fd 0 is no longer the sealed channel create gave it, which only guest root can do.
 var ErrExitChannelReplaced = errors.New("exit channel replaced")
 

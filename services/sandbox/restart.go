@@ -151,6 +151,19 @@ func entrypointRestartReport(id string, count, retries int) string {
 	return fmt.Sprintf("sandbox %s: the entrypoint was started again, %d", id, count)
 }
 
+// stoppedRestarts keeps the record's count over one the guest forged, since a guest must never keep its sandbox from stopping (SHARD-630).
+func (s *Service) stoppedRestarts(ctx context.Context, sb models.Sandbox) (models.RestartCount, error) {
+	count, err := s.lastRestarts(ctx, sb)
+	// Log and continue, on Pres's 2026-10-03 ErrExitFileTooLarge precedent (PR 309): the substrate has already ended, and only this guest loses its own count.
+	if errors.Is(err, models.ErrRestartFileForged) {
+		s.report(fmt.Sprintf("sandbox %s: %v; the record keeps its last restart count", sb.ID, err))
+
+		return sb.Restart.RestartCount, nil
+	}
+
+	return count, err
+}
+
 // lastRestarts asks the supervisor's count for a record that has a policy, and is zero for one that has none.
 func (s *Service) lastRestarts(ctx context.Context, sb models.Sandbox) (models.RestartCount, error) {
 	if sb.Restart == nil {

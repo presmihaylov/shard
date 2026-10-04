@@ -2,6 +2,7 @@ package sandbox_test
 
 import (
 	"errors"
+	"fmt"
 	"reflect"
 	"strings"
 	"testing"
@@ -221,6 +222,43 @@ func TestStopRecordsTheLastRestartCount(t *testing.T) {
 
 	if got := l.repo.sb.Restart; got.Count != 3 || !got.GaveUp || got.Policy != models.RestartOnFailure {
 		t.Errorf("the stopped record holds %+v, want the policy with the 3 starts again and the give-up", got)
+	}
+}
+
+func TestStopKeepsTheRecordedCountOverOneTheGuestForged(t *testing.T) {
+	sb := policied()
+	sb.Restart.RestartCount = models.RestartCount{Count: 2}
+	var reports []string
+	svc, l := newService(t, &recorder{}, sb, func(cfg *sandbox.Config) {
+		cfg.Report = func(line string) { reports = append(reports, line) }
+	})
+	l.provider.restartsErr = fmt.Errorf("decode the restart count: %w", models.ErrRestartFileForged)
+
+	stopped, err := svc.Stop(t.Context(), "sandbox1")
+	if err != nil {
+		t.Fatalf("a forged count kept the sandbox from stopping: %v", err)
+	}
+
+	if stopped.State != models.StateStopped || stopped.Restart.Count != 2 {
+		t.Errorf("the record is %s with %+v, want stopped with the 2 starts again it recorded", stopped.State, stopped.Restart)
+	}
+	var logged []string
+	for _, line := range reports {
+		if strings.Contains(line, "restart count") {
+			logged = append(logged, line)
+		}
+	}
+	if len(logged) != 1 || !strings.Contains(logged[0], "sandbox1") {
+		t.Errorf("the daemon logged %q about the count, want one line naming the sandbox", logged)
+	}
+}
+
+func TestStopStillFailsOnACountItCannotRead(t *testing.T) {
+	svc, l := newService(t, &recorder{}, policied())
+	l.provider.restartsErr = errors.New("read the restart count: input/output error")
+
+	if _, err := svc.Stop(t.Context(), "sandbox1"); err == nil {
+		t.Fatal("a count that cannot be read stopped the sandbox, and only a forged one may")
 	}
 }
 

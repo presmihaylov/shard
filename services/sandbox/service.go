@@ -1152,7 +1152,7 @@ func (s *Service) stop(ctx context.Context, id string, force bool) error {
 		}
 	}
 	// The count is read once the run is over, so a start again between two ticks never goes unrecorded.
-	restarts, err := s.lastRestarts(ctx, sb)
+	restarts, err := s.stoppedRestarts(ctx, sb)
 	if err != nil {
 		return err
 	}

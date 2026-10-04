@@ -30,6 +30,18 @@ func (b Bundle) RestartCount() (models.RestartCount, error) {
 	return count, nil
 }
 
+// ClearRun drops what an earlier run left of the supervisor's files. The guest can leave a tree at two of them, so a plain remove is not enough (SHARD-635).
+func (b Bundle) ClearRun() error {
+	for _, stale := range []string{b.ExitFile, b.ReadyFile, b.RestartFile} {
+		// The guest is down here, and RemoveAll follows no link, so nothing past the tree it left goes with it.
+		if err := os.RemoveAll(stale); err != nil {
+			return fmt.Errorf("clear %s: %w", stale, err)
+		}
+	}
+
+	return nil
+}
+
 // readRestartCount takes only a small regular file, because the guest can write that path too.
 func readRestartCount(path string) (models.RestartCount, error) {
 	f, err := openRegular(path)
@@ -46,12 +58,12 @@ func readRestartCount(path string) (models.RestartCount, error) {
 		return models.RestartCount{}, fmt.Errorf("read the restart count: %w", err)
 	}
 	if len(blob) > restartFileCap {
-		return models.RestartCount{}, fmt.Errorf("the restart count %s is over %d bytes", path, restartFileCap)
+		return models.RestartCount{}, fmt.Errorf("the restart count %s is over %d bytes: %w", path, restartFileCap, models.ErrRestartFileForged)
 	}
 
 	var count models.RestartCount
 	if err := json.Unmarshal(blob, &count); err != nil {
-		return models.RestartCount{}, fmt.Errorf("decode the restart count: %w", err)
+		return models.RestartCount{}, fmt.Errorf("decode the restart count: %w: %w", err, models.ErrRestartFileForged)
 	}
 
 	return count, nil
@@ -73,7 +85,7 @@ func requireRegular(f *os.File, path string) error {
 		return fmt.Errorf("stat %s: %w", path, err)
 	}
 	if !info.Mode().IsRegular() {
-		return fmt.Errorf("%s is a %s, and it must be a regular file", path, info.Mode().Type())
+		return fmt.Errorf("%s is a %s, and it must be a regular file: %w", path, info.Mode().Type(), models.ErrRestartFileForged)
 	}
 
 	return nil

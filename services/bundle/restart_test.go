@@ -1,6 +1,7 @@
 package bundle_test
 
 import (
+	"errors"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -9,6 +10,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/presmihaylov/shard/models"
 	"github.com/presmihaylov/shard/services/bundle"
 )
 
@@ -81,6 +83,72 @@ func TestRestartCountReadsOnlyASmallRegularFile(t *testing.T) {
 				t.Fatalf("RestartCount did not answer within %s for %s", countBudget, name)
 			}
 		})
+	}
+}
+
+// A stop keeps the record's count over each of these, so none may read as a plain failed read (SHARD-630).
+func TestRestartCountNamesAFileTheGuestForged(t *testing.T) {
+	cases := map[string]func(t *testing.T, path string){
+		"a directory": func(t *testing.T, path string) {
+			if err := os.Mkdir(path, 0o700); err != nil {
+				t.Fatalf("make the directory: %v", err)
+			}
+		},
+		"a fifo": func(t *testing.T, path string) {
+			if err := syscall.Mkfifo(path, 0o600); err != nil {
+				t.Fatalf("make the fifo: %v", err)
+			}
+		},
+		"a file over the cap": func(t *testing.T, path string) {
+			write(t, path, `{"count":7}`+strings.Repeat(" ", 8<<10))
+		},
+		"junk": func(t *testing.T, path string) {
+			write(t, path, "not a count")
+		},
+	}
+
+	for name, plant := range cases {
+		t.Run(name, func(t *testing.T) {
+			path := filepath.Join(t.TempDir(), "restarts.json")
+			plant(t, path)
+
+			_, err := bundle.Bundle{RestartFile: path}.RestartCount()
+			if !errors.Is(err, models.ErrRestartFileForged) {
+				t.Errorf("RestartCount over %s answered %v, want ErrRestartFileForged", name, err)
+			}
+		})
+	}
+}
+
+func TestClearRunRemovesATreeAndFollowsNoLink(t *testing.T) {
+	dir := t.TempDir()
+	host := filepath.Join(t.TempDir(), "host.json")
+	write(t, host, `{"count":7}`)
+	b := bundle.Bundle{
+		ExitFile:    filepath.Join(dir, "exit.json"),
+		ReadyFile:   filepath.Join(dir, "started"),
+		RestartFile: filepath.Join(dir, "restarts.json"),
+	}
+	write(t, b.ExitFile, `{"code":0}`)
+	if err := os.MkdirAll(filepath.Join(b.ReadyFile, "x"), 0o700); err != nil {
+		t.Fatalf("plant the tree: %v", err)
+	}
+	symlink(t, host, b.RestartFile)
+
+	if err := b.ClearRun(); err != nil {
+		t.Fatalf("ClearRun: %v", err)
+	}
+
+	for _, path := range []string{b.ExitFile, b.ReadyFile, b.RestartFile} {
+		if _, err := os.Lstat(path); !errors.Is(err, os.ErrNotExist) {
+			t.Errorf("%s is still there after ClearRun: %v", path, err)
+		}
+	}
+	if _, err := os.Stat(host); err != nil {
+		t.Errorf("ClearRun reached the file past the link: %v", err)
+	}
+	if err := b.ClearRun(); err != nil {
+		t.Errorf("ClearRun over nothing: %v", err)
 	}
 }
 

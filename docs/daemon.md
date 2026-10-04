@@ -328,6 +328,11 @@ policy, and copies the count onto the record. The record is therefore at most a 
 it as soon as the policy ends. On gVisor, runc and Sysbox
 that file sits under `/.shard`, where the guest can write it. The daemon therefore reads only a
 regular file of at most 4 KiB, and refuses a symbolic link, a fifo or a device.
+A refused count never holds up a stop: the stopped record keeps its last count, and the daemon
+logs one line. The guest can also write `ended` there itself. `shard run` and the wait of the app
+then return early, and `POST app/stop` answers `app_ended`. That only lets a guest end its own app,
+which it can do anyway. A start clears the supervisor's files whatever their type, so a directory
+the guest leaves at one of them never fails the next start.
 The record carries `restart`: `{"policy", "retries", "backoff",
 "count", "last_at", "gave_up", "ended"}`, absent on a sandbox without a policy, and `retries` is omitted when
 the count is unlimited. `shard list` shows it in the `RESTART` column:

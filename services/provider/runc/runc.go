@@ -120,10 +120,8 @@ func (p *Provider) Create(ctx context.Context, spec models.SandboxSpec) error {
 func (p *Provider) create(ctx context.Context, spec models.SandboxSpec, b bundle.Bundle) (err error) {
 	// A create over a state directory that already ran must not let the previous run answer a wait,
 	// a start or a restart count, so the supervisor's files go before anything else runs.
-	for _, stale := range []string{b.ExitFile, b.ReadyFile, b.RestartFile} {
-		if err := os.Remove(stale); err != nil && !errors.Is(err, fs.ErrNotExist) {
-			return fmt.Errorf("clear %s: %w", stale, err)
-		}
+	if err := b.ClearRun(); err != nil {
+		return err
 	}
 
 	out, err := openLog(filepath.Join(spec.StateDir, logFile))
