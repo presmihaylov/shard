@@ -92,10 +92,13 @@ def background_wait_kill(ctx: Context) -> None:
     long = sandbox.exec(["sleep", "300"], background=True)
     equal(state(long), "running")
     long.kill()
-    equal((long.wait()).signal, 15, "kill sends TERM by default")
+    # The exit is the code alone, 128 plus the signal, on every provider (SHARD-432).
+    termed = long.wait()
+    equal((termed.exit_code, termed.signal), (143, None), "kill sends TERM by default")
     hard = sandbox.exec(["sleep", "300"], background=True)
     hard.kill("KILL")
-    equal((hard.wait()).signal, 9)
+    killed = hard.wait()
+    equal((killed.exit_code, killed.signal), (137, None))
 
 
 def list_get(ctx: Context) -> None:
@@ -116,7 +119,9 @@ def list_get(ctx: Context) -> None:
 
     wait_for("the killed command to end", 10, exited)
     ended = next((each for each in sandbox.commands.list() if each.id == command.id), None)
-    equal(ended.signal if ended is not None else None, 15)
+    if ended is None:
+        raise AssertionError("list still holds the killed command")
+    equal((ended.exit_code, ended.signal), (143, None))
 
 
 def reconnect(ctx: Context) -> None:

@@ -35,6 +35,8 @@ def assign_clear(ctx: Context) -> None:
     ctx.policy(name, RULES)
     sandbox = ctx.create()
     equal(sandbox.info.policy, None)
+    rejects(ConflictError, lambda: ctx.shard.policies.assign(sandbox, name))
+    sandbox.stop()
     ctx.shard.policies.assign(sandbox, name)
     equal((sandbox.inspect()).policy, name)
     rejects(ConflictError, lambda: ctx.shard.policies.remove(name))
