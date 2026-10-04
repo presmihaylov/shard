@@ -16,6 +16,7 @@ concurrency:
 env:
   GOLANGCI_LINT_VERSION: v2.12.2
   GOVULNCHECK_VERSION: v1.1.4
+  UV_VERSION: 0.5.9
 
 jobs:
   # No e2e here: that needs a Linux box with runsc (SHARD-9).
@@ -116,3 +117,30 @@ jobs:
 
       - name: govulncheck
         run: go run golang.org/x/vuln/cmd/govulncheck@${{ env.GOVULNCHECK_VERSION }} ./...
+
+  # Unit tests on the oldest and the newest Python the SDK supports; the shared suite needs a daemon.
+  python-sdk:
+    name: python sdk (${{ matrix.python }})
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        python: ["3.11", "3.13"]
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: astral-sh/setup-uv@v10.2.0
+        with:
+          version: ${{ env.UV_VERSION }}
+          python-version: ${{ matrix.python }}
+
+      - name: generated code is in step with its source
+        run: |
+          make sdk-py
+          if [ -n "$(git status --porcelain -- sdks/python)" ]; then
+            git status --short -- sdks/python
+            git diff -- sdks/python
+            exit 1
+          fi
+
+      - name: check
+        run: make sdk-py-check

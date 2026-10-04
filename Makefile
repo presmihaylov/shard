@@ -26,7 +26,7 @@ DARWIN_ARCH ?= $(shell go env GOARCH)
 KERNEL_OUT := bin/kernel
 KERNEL_IMAGE := packaging-kernel-builder
 
-.PHONY: all build build-linux build-shard-init build-shard-init-linux build-shard-vz-shim build-shard-vz-init build-darwin test test-integration e2e-test vet lint lint-fix fmt fmt-check vuln check clean devbox-sync devbox-test itest e2e devbox-e2e e2e-firecracker devbox-demo kernel kernel-reproducible openapi
+.PHONY: all build build-linux build-shard-init build-shard-init-linux build-shard-vz-shim build-shard-vz-init build-darwin test test-integration e2e-test vet lint lint-fix fmt fmt-check vuln check clean devbox-sync devbox-test itest e2e devbox-e2e e2e-firecracker devbox-demo kernel kernel-reproducible openapi sdk-py sdk-py-check
 
 all: check build
 
@@ -133,6 +133,21 @@ openapi:
 	go run ./cmd/shard-openapi docs/openapi.json
 
 check: fmt-check vet lint test e2e-test
+
+# The Python SDK's generated code: the private client from docs/openapi.json, then the sync twins of the async source.
+sdk-py:
+	cd sdks/python && rm -rf src/useshards/_generated && \
+		uv run --locked openapi-python-client generate --path ../../docs/openapi.json --config openapi-python-client.yml \
+			--custom-template-path templates --meta none --output-path src/useshards/_generated --fail-on-warning && \
+		uv run --locked python scripts/unasync.py
+
+# The Python SDK's gate. Its shared suite needs a daemon, so only the unit tests run here.
+sdk-py-check:
+	cd sdks/python && uv run --locked ruff check src scripts suite tests examples && \
+		uv run --locked ruff format --check src scripts suite tests examples && \
+		uv run --locked mypy && \
+		uv run --locked python scripts/unasync.py --check && \
+		uv run --locked pytest -q tests
 
 clean:
 	rm -rf bin $(VZ_SHIM_BIN) $(VZ_INIT_BIN)
