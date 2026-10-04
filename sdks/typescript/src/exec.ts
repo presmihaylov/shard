@@ -1,7 +1,8 @@
 // One command in a sandbox over the daemon's stream: its start, its attaches, and how it ended.
+import { setTimeout as sleep } from "node:timers/promises";
 import type { OutputCapture } from "./capture.js";
 import { date, isStrings } from "./decode.js";
-import { ConnectionError, ProtocolError, isObject } from "./errors.js";
+import { ConflictError, ConnectionError, ProtocolError, isObject } from "./errors.js";
 import { opBinary } from "./frames.js";
 import type { Transport } from "./transport.js";
 import * as wire from "./wire.js";
@@ -30,6 +31,10 @@ export interface CommandInfo {
   lostBytes: number;
 }
 
+// The daemon answers a goodbye before it lets go of the attach, so an attach right after one retries in_use this long.
+const reattachBoundMs = 2_000;
+const reattachPauseMs = 50;
+
 export class Session {
   private ws: WebSocket | undefined;
   // undefined is an attach this client let go of before the command ended.
@@ -45,6 +50,8 @@ export class Session {
     readonly id: string,
     private readonly capture: OutputCapture,
     private readonly handlers: Handlers,
+    // undefined is a command another client started, whose input this one cannot know.
+    private readonly readsInput?: boolean,
   ) {
     this.what = `the command ${id} in sandbox ${sandboxId}`;
   }
@@ -60,7 +67,7 @@ export class Session {
   ): Promise<Session> {
     const { data } = await transport.api.POST("/v0/sandboxes/{id}/exec", { params: { path: { id: sandboxId } }, body: request, signal });
     const record = commandInfo(data);
-    const session = new Session(transport, sandboxId, record.id, capture, handlers);
+    const session = new Session(transport, sandboxId, record.id, capture, handlers, request.stdin || request.tty);
     await session.attach(signal);
 
     return session;
@@ -70,7 +77,7 @@ export class Session {
   async attach(signal?: AbortSignal): Promise<void> {
     this.disconnect();
     await this.closing;
-    const ws = await WebSocket.connect(this.transport, this.path(), this.what, { signal });
+    const ws = await this.connect(signal);
     this.capture.reset();
     this.ws = ws;
     const reading = this.read(ws);
@@ -160,8 +167,26 @@ export class Session {
     await this.transport.api.POST("/v0/sandboxes/{id}/exec/{exec}/resize", { params: this.params, body: size });
   }
 
+  /** connect opens the stream, and waits out the attach a goodbye just let go of. */
+  private async connect(signal?: AbortSignal): Promise<WebSocket> {
+    const deadline = Date.now() + reattachBoundMs;
+    for (;;) {
+      try {
+        return await WebSocket.connect(this.transport, this.path(), this.what, { signal });
+      } catch (err) {
+        if (!(err instanceof ConflictError) || err.code !== "in_use" || Date.now() >= deadline) {
+          throw err;
+        }
+      }
+      await sleep(reattachPauseMs, undefined, { signal });
+    }
+  }
+
   /** writeStdin sends data in order, split into the most the daemon reads in one message. */
   writeStdin(data: string | Uint8Array): Promise<void> {
+    if (this.readsInput === false) {
+      return Promise.reject(new TypeError(`${this.what} started without stdin, so it reads no input`));
+    }
     const bytes = typeof data === "string" ? Buffer.from(data) : data;
 
     return this.send(async (ws) => {

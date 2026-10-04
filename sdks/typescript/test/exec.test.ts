@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { afterEach, beforeEach, test } from "node:test";
 import { OutputCapture } from "../src/capture.js";
-import { CommandNotStartedError, ConnectionError, NotFoundError, ProtocolError, UnsupportedError } from "../src/errors.js";
+import { CommandNotStartedError, ConflictError, ConnectionError, NotFoundError, ProtocolError, UnsupportedError } from "../src/errors.js";
 import { Session } from "../src/exec.js";
 import { opBinary, opClose } from "../src/frames.js";
 import { Transport } from "../src/transport.js";
@@ -45,6 +45,12 @@ afterEach(async () => {
 async function start(capture = new OutputCapture(1024), handlers = {}, signal?: AbortSignal): Promise<Session> {
   return Session.start(transport, "sb_1", execRequest("echo hi", { stdin: false }), capture, handlers, signal);
 }
+
+async function startReading(): Promise<Session> {
+  return Session.start(transport, "sb_1", execRequest("cat", { stdin: true }), new OutputCapture(1024), {});
+}
+
+const inUse: Answer = { status: 409, json: { error: { code: "in_use", message: "the command ex_1 already has a client attached" } } };
 
 test("a command starts, streams to the capture and every handler, and answers its exit", async () => {
   const capture = new OutputCapture(1024);
@@ -143,6 +149,42 @@ test("disconnect leaves the command running, and wait attaches again for the rep
   assert.ok(!daemon.requests.some((r) => r.url.pathname.endsWith("/kill")), "nothing killed the command");
 });
 
+test("an attach right after a goodbye retries while the daemon still holds the last one", async () => {
+  const session = await start();
+  const first = await daemon.peer(0);
+  let refused = 0;
+  daemon.upgrade = () => {
+    if (refused === 2) {
+      return undefined;
+    }
+    refused += 1;
+
+    return inUse;
+  };
+  session.disconnect();
+  first.close();
+  const waited = session.wait();
+  (await daemon.peer(1)).exit({ code: 0 });
+  assert.deepEqual(await waited, { exitCode: 0, signal: null, lostBytes: 0 });
+  assert.equal(refused, 2);
+});
+
+test("an attach the daemon still holds past the retry bound rejects as in_use", async () => {
+  const session = await start();
+  const first = await daemon.peer(0);
+  daemon.upgrade = () => inUse;
+  session.disconnect();
+  first.close();
+  await assert.rejects(session.wait(), (err: unknown) => err instanceof ConflictError && err.code === "in_use");
+});
+
+test("an attach refused for any other conflict is not retried", async () => {
+  const session = new Session(transport, "sb_1", "ex_1", new OutputCapture(1024), {});
+  daemon.upgrade = () => ({ status: 409, json: { error: { code: "sandbox_not_running", message: "sandbox sb_1 is stopped" } } });
+  await assert.rejects(session.wait(), (err: unknown) => err instanceof ConflictError && err.code === "sandbox_not_running");
+  assert.equal(daemon.requests.length, 1);
+});
+
 test("wait on a command no stream ever held attaches for its output and its exit", async () => {
   const capture = new OutputCapture(1024);
   const session = new Session(transport, "sb_1", "ex_1", capture, {});
@@ -184,7 +226,7 @@ test("a reattach replays from the daemon's oldest byte, so the capture starts ag
 });
 
 test("stdin goes in order, in pieces the daemon reads, and its close is one message", async () => {
-  const session = await start();
+  const session = await startReading();
   const peer = await daemon.peer(0);
   const big = Buffer.alloc(maxPayload + 10, 0x61);
   await Promise.all([session.writeStdin(big), session.writeStdin("tail"), session.closeStdin()]);
@@ -203,9 +245,26 @@ test("stdin goes in order, in pieces the daemon reads, and its close is one mess
 });
 
 test("stdin to a command no stream holds is refused", async () => {
-  const session = await start();
+  const session = await startReading();
   session.disconnect();
   await assert.rejects(session.writeStdin("x"), (err: unknown) => err instanceof ConnectionError && /is not attached$/.test(err.message));
+});
+
+test("stdin to a command started without stdin or a terminal is refused, as the daemon drops it", async () => {
+  const session = await start();
+  const peer = await daemon.peer(0);
+  await assert.rejects(session.writeStdin("x"), (err: unknown) => err instanceof TypeError && /started without stdin, so it reads no input$/.test(err.message));
+  peer.exit({ code: 0 });
+  await session.wait();
+  assert.notEqual((await peer.next())?.opcode, opBinary, "no stdin reached the daemon");
+});
+
+test("stdin to a command on a terminal reaches it without stdin set", async () => {
+  const session = await Session.start(transport, "sb_1", execRequest("sh", { stdin: false, tty: { rows: 24, cols: 80 } }), new OutputCapture(1024), {});
+  const peer = await daemon.peer(0);
+  await session.writeStdin("x");
+  const frame = await peer.next();
+  assert.deepEqual([...(frame?.payload ?? [])], [0, 0x78]);
 });
 
 test("kill, resize and inspect reach their routes", async () => {

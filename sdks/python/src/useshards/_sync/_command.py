@@ -338,7 +338,8 @@ def _start(
         transport,
         record.sandbox,
         record.id,
-        stdin=body.stdin is True,
+        # The daemon feeds a terminal whatever the client types, stdin or not.
+        stdin=body.stdin is True or body.tty is True,
         output_limit_bytes=output_limit_bytes,
         on_stdout=on_stdout,
         on_stderr=on_stderr,
