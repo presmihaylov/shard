@@ -28,11 +28,11 @@ _RAW_BODY_LIMIT = 512
 
 
 class ShardError(Exception):
-    """The base of every exception the SDK raises."""
+    """The base of every SDK exception; a bad local argument raises the native one instead."""
 
 
 class ConfigurationError(ShardError):
-    """A setting is missing or refused. The message names the setting, never its value."""
+    """A setting is missing or refused. The message never shows the API key; it names a CA path or remote to fix."""
 
 
 class ShardConnectionError(ShardError):
