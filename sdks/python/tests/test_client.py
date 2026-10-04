@@ -40,7 +40,7 @@ RULE = {
     "protocol": "tcp",
     "ports": [443],
 }
-NETWORK_RECORD = {
+EGRESS_RECORD = {
     "time": "2026-10-04T10:00:01Z",
     "source": "proxy",
     "verdict": "allow",
@@ -160,7 +160,7 @@ def test_changes_keep_the_handle_current(daemon: FakeDaemon, shard: Shard) -> No
     assert repr(sandbox) == "Sandbox(id='sb', name='web', state='running')"
     shard.secrets.grant(sandbox, "TOKEN")
     assert sandbox.info.secrets == ("TOKEN",)
-    shard.policies.assign(sandbox, "web")
+    shard.policies.attach(sandbox, "web")
     assert (sandbox.info.policy, sent(daemon, "PUT", "/v0/sandboxes/sb/policy")) == ("web", {"policy": "web"})
     sandbox.stop()
     assert sandbox.info.state == "stopped"
@@ -168,12 +168,12 @@ def test_changes_keep_the_handle_current(daemon: FakeDaemon, shard: Shard) -> No
     assert daemon.targets[-1] == "/v0/sandboxes/sb?force=true"
 
 
-def test_logs_and_network_logs(daemon: FakeDaemon, shard: Shard) -> None:
+def test_logs_and_egress_log(daemon: FakeDaemon, shard: Shard) -> None:
     daemon.routes[("GET", "/v0/sandboxes/sb/logs")] = (200, b"hello \xff")
-    daemon.routes[("GET", "/v0/sandboxes/sb/egress-log")] = (200, [NETWORK_RECORD])
+    daemon.routes[("GET", "/v0/sandboxes/sb/egress-log")] = (200, [EGRESS_RECORD])
     sandbox = shard.get("sb")
     assert sandbox.logs() == "hello �"
-    assert [(each.host, each.port, each.verdict) for each in sandbox.network_logs()] == [("example.com", 443, "allow")]
+    assert [(each.host, each.port, each.verdict) for each in sandbox.egress_log()] == [("example.com", 443, "allow")]
 
 
 def test_commands_list_and_get(daemon: FakeDaemon, shard: Shard) -> None:
@@ -196,13 +196,13 @@ def test_follow_logs_to_the_end(daemon: FakeDaemon, shard: Shard) -> None:
     assert daemon.targets[-1] == "/v0/sandboxes/sb/logs?follow=true"
 
 
-def test_follow_network_logs_to_a_normal_close(daemon: FakeDaemon, shard: Shard) -> None:
+def test_follow_egress_log_to_a_normal_close(daemon: FakeDaemon, shard: Shard) -> None:
     def session(peer: Peer) -> str:
-        peer.text(NETWORK_RECORD)
+        peer.text(EGRESS_RECORD)
         return peer.close(1000)
 
     daemon.attaches = [session]
-    assert [each.host for each in shard.get("sb").follow_network_logs()] == ["example.com"]
+    assert [each.host for each in shard.get("sb").follow_egress_log()] == ["example.com"]
     assert daemon.targets[-1] == "/v0/sandboxes/sb/egress-log?follow=true"
 
 

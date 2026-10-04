@@ -199,7 +199,6 @@ first one.
   "policy": "api-only",
   "created_at": "2026-10-01T09:30:00Z",
   "egress": {
-    "policy": "api-only",
     "rules": [
       {"action": "allow", "destination": {"kind": "group", "value": "dns"}, "protocol": "udp", "ports": [53], "id": "1", "implied": "dns"},
       {"action": "allow", "destination": {"kind": "group", "value": "dns"}, "protocol": "tcp", "ports": [53], "id": "2", "implied": "dns"},
@@ -212,9 +211,9 @@ first one.
 `egress.rules` is the order the host and the proxy enforce. `id` is the place of a rule in it, from
 `"1"`. `action` is `allow` or `deny`, and `destination.kind` is `cidr`, `domain`, `domain-suffix` or
 `group`. `protocol` and `ports` are absent for a rule over every protocol. `implied` is present on a
-rule the policy did not write: `dns` when a name rule opened DNS, `dns rule` when a `dns` rule did.
-When the store no longer holds the policy, `egress` is `{"policy": "<name>", "missing": true, "rules":
-null}` and the sandbox reaches nothing.
+rule the policy did not write: `dns` when a name rule opened DNS, `dns-rule` when a `dns` rule did.
+`policy` names the policy once, at the top. When the store no longer holds it, `egress` is
+`{"missing": true, "rules": []}` and the sandbox reaches nothing.
 
 `snapshot list` prints an array of snapshot records, below.
 
