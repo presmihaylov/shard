@@ -332,6 +332,8 @@ func TestConformanceOnVMs(t *testing.T) {
 		SnapshotDir: func(t *testing.T) string { return t.TempDir() },
 		Shell:       func(script string) []string { return []string{"/bin/sh", "-c", script} },
 		Reopen:      h.reopen,
+		// The window Firecracker measured for the same guest kernel (SHARD-414); VZ has no measure of its own yet.
+		ReseedWindow: 50 * time.Second,
 	})
 }
 

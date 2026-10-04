@@ -8,9 +8,8 @@ sandbox, Firecracker microVMs on a host with `/dev/kvm`, and Virtualization.fram
 resident `shard daemon` owns the state and serves it over a REST API on a unix socket. The CLI is a
 thin client of that socket, and each command runs one verb.
 
-**Status: pre-alpha.** Every verb runs on gVisor and Firecracker. `vz` on an Apple silicon Mac with
-macOS 14 or later runs every verb but fork, which comes to it with SHARD-463. Sysbox and runc refuse
-pause, resume and fork, and run every other verb.
+**Status: pre-alpha.** Every verb runs on gVisor, Firecracker, and `vz` on an Apple silicon Mac
+with macOS 14 or later. Sysbox and runc refuse pause, resume and fork, and run every other verb.
 Every verb talks to the daemon, so the daemon must be up. See `docs/daemon.md`.
 
 ## Providers
@@ -27,7 +26,7 @@ that made them, and `shard info` prints the pick. The table is the short form of
 | Syscall cost | high on file-heavy work | near native | near native | native, inside the VM |
 | Docker or systemd inside | no | yes | no | no |
 | pause, resume | yes | **no, refused by name** | **no, refused by name** | Apple silicon on macOS 14 or later |
-| fork of a running sandbox | yes | **no, refused by name** | **no, refused by name** | **no, refused by name** until SHARD-463 |
+| fork of a running sandbox | yes | **no, refused by name** | **no, refused by name** | Apple silicon on macOS 14 or later |
 | Tenancy | many tenants per host | **one tenant per host** | **one tenant per host**, code you trust | many tenants per host |
 
 Sysbox CE gives every container the same uid range, so two Sysbox sandboxes are isolated from the

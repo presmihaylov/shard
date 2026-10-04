@@ -48,6 +48,8 @@ const (
 	shimFile = "shim.json"
 	// supervisorFailedFile holds the reason shard-init gave for a death at boot, which the end of the shim would otherwise take with the guest.
 	supervisorFailedFile = "supervisor-failed"
+	// captureDir is where a fork stages the save of its source, in the fork's own state directory.
+	captureDir = "capture"
 )
 
 // The files a snapshot directory holds: the saved VM, its disk at the save, and what a restore must know.
@@ -73,6 +75,9 @@ const (
 	// startGrace bounds the wait for the supervisor to answer on vsock once the shim is up.
 	startGrace = 30 * time.Second
 )
+
+// redialGrace bounds the control stream a save's run dials again, past which the source is reported frozen; a test shortens it.
+var redialGrace = startGrace
 
 // SocketFiles names every socket the provider binds in a sandbox's state directory, so the daemon refuses a root they do not fit under.
 func SocketFiles() []string { return []string{socketFile} }
@@ -163,9 +168,9 @@ func (p *Provider) Close() error {
 	return errors.Join(errs...)
 }
 
-// Capabilities: pause and resume are one VZ save and one restore, so a host without them has neither; fork waits for SHARD-463.
+// Capabilities: pause, resume and fork are each a VZ save or a restore, so a host without them has none.
 func (p *Provider) Capabilities() models.Capabilities {
-	return models.Capabilities{Pause: p.cfg.SaveRestore, Resume: p.cfg.SaveRestore}
+	return models.Capabilities{Pause: p.cfg.SaveRestore, Resume: p.cfg.SaveRestore, Fork: p.cfg.SaveRestore}
 }
 
 // ReleaseRoot has nothing to give back: a VM pins nothing under the root between sandboxes.

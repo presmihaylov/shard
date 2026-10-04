@@ -190,8 +190,9 @@ func TestConformance(t *testing.T) {
 		SnapshotDir: func(t *testing.T) string { return t.TempDir() },
 		Shell:       func(script string) []string { return []string{"/bin/sh", "-c", script} },
 		// The fake guest is a host process, so the suite writes under the root; a clone here proves the verbs and not the disk.
-		Scratch: h.root,
-		Reopen:  h.reopen,
+		Scratch:       h.root,
+		SharedScratch: true,
+		Reopen:        h.reopen,
 	})
 }
 

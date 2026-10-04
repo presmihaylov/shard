@@ -40,7 +40,25 @@ type failingLink struct{ err error }
 
 func (l failingLink) Close() error { return l.err }
 
-// ForkSnapshot is the restore of a paused snapshot into a new sandbox, which SHARD-463 builds the live fork on and the public Fork no longer offers.
+// ForkSnapshot is the restore of a snapshot into a new sandbox, which the live fork runs on its capture.
 func (p *Provider) ForkSnapshot(ctx context.Context, dir string, spec models.SandboxSpec) error {
 	return p.forkSnapshot(ctx, dir, spec)
+}
+
+// CaptureCut is a fork cut after its capture and before it ran the source on, which a test cannot cut inside Fork.
+func (p *Provider) CaptureCut(ctx context.Context, id, dir string) error {
+	_, err := p.hold(ctx, id, dir)
+
+	return err
+}
+
+// CaptureDir is where a fork stages its source's capture, in the fork's own state directory.
+const CaptureDir = captureDir
+
+// SetRedialGrace shortens the wait for the control stream a save's run dials again, which a test runs out on purpose.
+func SetRedialGrace(grace time.Duration) (restore func()) {
+	was := redialGrace
+	redialGrace = grace
+
+	return func() { redialGrace = was }
 }
