@@ -32,7 +32,8 @@ func startFiles(t *testing.T) func() supervisor.FilesConn {
 		t.Fatalf("connect: %v", err)
 	}
 	t.Cleanup(func() { _ = c.Close() })
-	if err := c.Run(ctx, supervisor.RunSpec{Argv: childArgv("sleep:60000")}); err != nil {
+	// No app: the cleanup kills the supervisor, and an app would outlive it as an orphan (SHARD-481).
+	if err := c.Run(ctx, supervisor.RunSpec{}); err != nil {
 		t.Fatalf("run: %v", err)
 	}
 
