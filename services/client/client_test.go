@@ -254,7 +254,7 @@ func TestEgressLogWritesEveryRecordInOneWrite(t *testing.T) {
 	}
 }
 
-func TestEgressLogSaysOnStderrHowManyOlderRecordsTheDaemonLeftOut(t *testing.T) {
+func TestEgressLogSaysOnStderrHowManyOlderDecisionsTheDaemonLeftOut(t *testing.T) {
 	c := serve(t, shortRoot(t), func(w http.ResponseWriter, _ *http.Request) {
 		w.Header().Set(api.EgressCutHeader, "12345")
 		answer(http.StatusOK, `[{"time":"2026-01-01T00:00:00Z","source":"host","verdict":"deny","rule":"local"}]`)(w, nil)
@@ -265,8 +265,8 @@ func TestEgressLogSaysOnStderrHowManyOlderRecordsTheDaemonLeftOut(t *testing.T) 
 		t.Fatalf("EgressLog: %v", err)
 	}
 
-	if got := errOut.String(); !strings.Contains(got, "12345") || !strings.Contains(got, "web") {
-		t.Errorf("EgressLog wrote %q on stderr, want the 12345 older records of web named", got)
+	if got := errOut.String(); !strings.Contains(got, "12345 older decisions") || !strings.Contains(got, "web") {
+		t.Errorf("EgressLog wrote %q on stderr, want the 12345 older decisions of web named", got)
 	}
 	if strings.Count(out.String(), "\n") != 1 {
 		t.Errorf("EgressLog wrote %q, want the one record and nothing else", out.String())
