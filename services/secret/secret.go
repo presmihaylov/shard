@@ -431,8 +431,7 @@ func CanonicalHost(host string) string {
 	return strings.ToLower(strings.TrimSuffix(host, "."))
 }
 
-// validDestination phrases its refusals about subject, which a caller with several destinations
-// makes an ordinal. A mistyped --to hands the value as one, so no refusal here echoes what it refused.
+// A mistyped --destination can contain a secret value, so refusals never echo the destination.
 func validDestination(subject, dest string) (string, error) {
 	canonical := CanonicalHost(dest)
 

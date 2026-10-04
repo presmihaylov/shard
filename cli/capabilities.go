@@ -3,7 +3,6 @@ package cli
 import (
 	"context"
 	"fmt"
-	"strings"
 	"text/tabwriter"
 )
 
@@ -14,7 +13,7 @@ func (a App) capabilities(ctx context.Context, args []string) error {
 		return err
 	}
 	if len(rest) != 0 {
-		return fmt.Errorf("capabilities takes no argument, got %s", strings.Join(rest, " "))
+		return fmt.Errorf("capabilities takes no arguments, got %s", gotArgs(rest))
 	}
 
 	c, err := a.client()

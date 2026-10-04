@@ -72,7 +72,7 @@ func parseRemove(args []string) (removeOptions, error) {
 
 	rest := flags.Args()
 	if len(rest) != 1 {
-		return removeOptions{}, fmt.Errorf("remove takes one sandbox id, got %d", len(rest))
+		return removeOptions{}, fmt.Errorf("remove takes one sandbox id or name, got %s", gotArgs(rest))
 	}
 
 	opts.id = rest[0]
