@@ -34,14 +34,14 @@ stateDiagram-v2
 | `created` | `running` | a fork | yes |
 | `created` | `stopped` | `stop`, if any path left a sandbox in `created` | no |
 | `created` | `failed` | the daemon restarted before a fork reached `running` | yes |
-| `running` | `paused` | `pause` | yes: gVisor |
+| `running` | `paused` | `pause` | yes: gVisor, vz, Firecracker |
 | `running` | `stopped` | `stop` | yes |
 | `running` | `failed` | a `pause` that broke off after its checkpoint began | yes: gVisor |
 | `running` | `unresponsive` | the liveness tick, or an `exec` or `pause` whose probe the substrate process missed | yes: vz, Firecracker |
 | `unresponsive` | `running` | the liveness tick, when the process answers again | yes: vz, Firecracker |
 | `unresponsive` | `paused` | the liveness tick or a restart, when the process died after a marked pause wrote its checkpoint | yes: vz, Firecracker |
 | `unresponsive` | `stopped` | `stop` | yes: vz, Firecracker |
-| `paused` | `running` | `resume` | yes: gVisor |
+| `paused` | `running` | `resume` | yes: gVisor, vz, Firecracker |
 | `paused` | `stopped` | `stop` | yes |
 | `stopped` | `running` | `start` | yes |
 

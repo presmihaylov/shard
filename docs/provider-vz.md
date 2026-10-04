@@ -87,8 +87,8 @@ the daemon.
 shard ships one Linux kernel per architecture (SHARD-232, `docs/kernel.md`). It has virtio-blk,
 virtio-net, virtio-vsock, virtio-console, ext4 and overlay built in, with no modules and no initrd.
 The kernel is versioned and checksummed with the release, and shard downloads it into the shard
-root on first use. The Firecracker provider boots the amd64 build of the same kernel, and this
-substrate boots the arm64 build.
+root on first use. The Firecracker provider boots the build for its host's architecture, arm64 or
+amd64, and this substrate boots the arm64 build.
 
 Docker runs inside a VM (SHARD-247). The kernel carries everything that `dockerd` and `runc` assert
 at start: netfilter with conntrack and NAT, nf_tables and the xtables compat layer (so either

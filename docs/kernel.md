@@ -2,8 +2,8 @@
 
 A microVM substrate boots a kernel that shard ships, and never the kernel of the host. There is one
 Linux release for each shard version. It is built once per architecture, and every build of it is
-byte-identical. The VZ provider boots the arm64 kernel, and Firecracker boots the amd64 kernel
-(SHARD-232, shared with M8).
+byte-identical. Each microVM provider boots the kernel for the host's architecture: arm64 on vz,
+and arm64 or amd64 on Firecracker (SHARD-232, shared with M8).
 
 ## What is in it
 
@@ -49,7 +49,7 @@ On first use, the daemon fetches the file for the host arch into `<root>/kernel/
 the file and its directory. It hashes the file before every boot. When a release file has changed,
 for example because a host crash truncated it, the daemon fetches it again. When a `SHARD_KERNEL`
 file has changed, the daemon refuses it with `kernel checksum
-mismatch`. `shard inspect` shows the tag in `kernel` on a sandbox that booted one.
+mismatch`.
 
 ### The dev path
 
@@ -63,8 +63,8 @@ SHARD_KERNEL=/path/to/Image-arm64 SHARD_KERNEL_SHA256=<its sha256> shard daemon 
 The daemon still checks the hash, against the value given. Set both variables or neither, because
 setting just one of them is an error at start. The override is meant for a developer with a fresh
 build, and an install should not use it. Every microVM substrate takes the same override. On a KVM
-box `SHARD_KERNEL` names a `vmlinux-amd64`, and the Firecracker provider boots it the way vz boots
-an `Image-arm64`.
+host, `SHARD_KERNEL` names `vmlinux-amd64` for amd64 or `Image-arm64` for arm64. The Firecracker
+provider boots the kernel for the host's architecture, as vz does.
 
 ## Bumping it
 

@@ -275,10 +275,11 @@ systemd ranges. A counter in `<root>/firecracker/next-uid` hands out each uid on
 resume keep the uid, and a create from a snapshot gets a new one. The jailer puts itself in the
 sandbox's cgroup and network namespace. It then starts the vmm in new pid and mount namespaces,
 chrooted into `<root>/jail/firecracker/<id>/root`, with no capability and under its seccomp filter.
-The jail holds the kernel, the initrd and the image. On a restore it also holds the checkpoint's
-state and memory. Each of these is a reflinked copy that only the uid can read. The overlay is a
-hard link that the uid can write, so the guest writes where `snapshot create` and `pause` read. The
-tap goes to the uid too, so the vmm can open it with no capability. Every spawn gets a fresh jail,
+On a fresh boot, the jail holds the kernel, the initrd and the image. On a restore, the checkpoint's
+state and memory replace the kernel and the initrd. Each of these is a reflinked copy that only the
+uid can read. The overlay is a hard link that the uid can write, so the guest writes where
+`snapshot create` and `pause` read. The tap goes to the uid too, so the vmm can open it with no
+capability. Every spawn gets a fresh jail,
 and every end of a vmm removes it. The jailer makes `/dev/kvm` in the jail and runs the vmm from
 there, so at start the daemon refuses a root on a `nodev` or `noexec` mount. The jailer gets no
 `--resource-limit`. Its default of 2048 open files outlasts the vsock muxer's cap of 1023
@@ -365,8 +366,10 @@ A create from a snapshot on Firecracker or `vz` clones the snapshot's disk. A la
 the clone and its ext4 to the new bound before the boot, and a smaller one is refused before the
 record exists, as a disk only grows (SHARD-476). The grow needs a journal with nothing to replay,
 which only the freeze of a clean stop leaves. A snapshot of a sandbox that a forced stop ended
-cannot grow, and the refusal says to start that sandbox, stop it without `--force` and snapshot it
-again. A guest mount can take the metadata room that a larger disk needs, and then the refusal
+cannot grow. To make a clean snapshot, start the source sandbox and let its entrypoint exit, or
+end the entrypoint with `shard exec`. Then run `shard stop` and snapshot it again. `shard stop` has
+no `--force` flag: it forces the stop when the entrypoint does not exit within its 30 s grace.
+A guest mount can take the metadata room that a larger disk needs, and then the refusal
 names the largest `--disk` that still grows.
 
 `scripts/e2e-fc.sh`, behind `make e2e-firecracker`, drives the whole lifecycle on this provider. It
