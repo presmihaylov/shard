@@ -28,6 +28,8 @@ type fakeLifecycle struct {
 	created sandbox.CreateRequest
 	// createdID is the id Create answers, so a ?wait re-read can point at a record the test seeded.
 	createdID string
+	// repo is where a waited create reads the record it settled into.
+	repo *sandboxstate.Repository
 	// hold is how long Create takes, and heldErr what its context said at the end of it.
 	hold    time.Duration
 	heldErr error
@@ -248,6 +250,17 @@ func (f *fakeLifecycle) Create(ctx context.Context, req sandbox.CreateRequest) (
 	}
 
 	return models.Sandbox{ID: id, Name: req.Name, Image: req.Image, State: models.StatePending}, f.err
+}
+
+// CreateAndWait records the id it waited on, then answers the record the test seeded under it.
+func (f *fakeLifecycle) CreateAndWait(ctx context.Context, req sandbox.CreateRequest) (models.Sandbox, error) {
+	sb, err := f.Create(ctx, req)
+	if err != nil {
+		return models.Sandbox{}, err
+	}
+	f.waited = sb.ID
+
+	return sandbox.Get(f.repo, sb.ID)
 }
 
 // WaitState records the ref a get with ?wait blocked on, and refuses like any verb.
@@ -662,6 +675,72 @@ func TestCreateWithWaitSurfacesAFailedCreate(t *testing.T) {
 	}
 }
 
+// An app that never started is refused with the code a shell answers, on a plain create and a waited one alike.
+func TestCreateRefusesAnAppThatNeverStarted(t *testing.T) {
+	for _, path := range []string{"/v0/sandboxes", "/v0/sandboxes?wait=true"} {
+		s := seed(t)
+		refused := &models.CommandNotStartedError{Sandbox: "sandbox1", Command: "/no/such/app", Reason: "no such file or directory", Code: models.CommandNotFoundExitCode}
+		s.verbs.err = refused
+
+		status, got := send(t, s.server, http.MethodPost, path, `{"image":"alpine"}`)
+		refusal := errorOf(t, got)
+		if status != http.StatusUnprocessableEntity || refusal.code != string(models.CodeCommandNotStarted) || exitCodeOf(got) != models.CommandNotFoundExitCode {
+			t.Errorf("POST %s answered %d %v, want 422 command_not_started with exit_code 127", path, status, got)
+		}
+		if refusal.message != refused.Error() {
+			t.Errorf("POST %s answered the message %q, want %q, which names the command", path, refusal.message, refused.Error())
+		}
+	}
+}
+
+// The streamed create carries the same refusal as its last line, after the pull it already streamed.
+func TestCreateStreamsTheRefusalOfAnAppThatNeverStarted(t *testing.T) {
+	s := seed(t)
+	s.verbs.pulled = []image.Event{{Status: image.StatusCached, Reference: "docker.io/library/alpine:3.20", Path: "/images/alpine"}}
+	refused := &models.CommandNotStartedError{Sandbox: "sandbox1", Command: "/srv/app", Reason: "permission denied", Code: models.CommandNotExecutableExitCode}
+	s.verbs.err = refused
+
+	status, _, lines := sendStreamed(t, s.server, "/v0/sandboxes?wait=true", `{"image":"alpine:3.20"}`)
+	if status != http.StatusCreated || len(lines) != 2 {
+		t.Fatalf("the create answered %d with %v, want 201, the event and the refusal", status, lines)
+	}
+	refusal := errorOf(t, lines[1])
+	if refusal.code != string(models.CodeCommandNotStarted) || exitCodeOf(lines[1]) != models.CommandNotExecutableExitCode {
+		t.Errorf("the last line is %v, want command_not_started with exit_code 126", lines[1])
+	}
+	if refusal.message != refused.Error() {
+		t.Errorf("the last line carries the message %q, want %q, which names the command", refusal.message, refused.Error())
+	}
+}
+
+// The wait query picks the waited create, the only one that removes a refused sandbox.
+func TestCreatePassesTheWaitToTheOrchestrator(t *testing.T) {
+	for path, want := range map[string]bool{"/v0/sandboxes": false, "/v0/sandboxes?wait=true": true} {
+		s := seed(t)
+		s.verbs.createdID = s.running.ID
+
+		if status, got := send(t, s.server, http.MethodPost, path, `{"image":"alpine"}`); status != http.StatusCreated {
+			t.Fatalf("POST %s answered %d %v, want 201", path, status, got)
+		}
+		if waited := s.verbs.waited != ""; waited != want {
+			t.Errorf("POST %s waited %t, want %t", path, waited, want)
+		}
+	}
+}
+
+func exitCodeOf(body map[string]any) int {
+	object, ok := body["error"].(map[string]any)
+	if !ok {
+		return 0
+	}
+	code, ok := object["exit_code"].(float64)
+	if !ok {
+		return 0
+	}
+
+	return int(code)
+}
+
 // The plain create answers at once with the pending record and never blocks on the state leaving pending.
 func TestCreateWithoutWaitDoesNotBlock(t *testing.T) {
 	s := seed(t)
@@ -701,7 +780,7 @@ func TestTheStatusAndTheCodeFollowTheError(t *testing.T) {
 		{"a request error", &sandbox.RequestError{Err: errors.New("secret NOPE does not exist")}, http.StatusBadRequest, "invalid_request", "secret NOPE"},
 		{"a body past the cap", &sandbox.RequestError{Err: fmt.Errorf("decode the request body: %w", &http.MaxBytesError{Limit: 1 << 20})}, http.StatusRequestEntityTooLarge, "body_too_large", "too large"},
 		{"a bad name", &sandboxstate.ValidationError{Reason: "the name is a slash"}, http.StatusBadRequest, "invalid_request", "slash"},
-		{"not found", fmt.Errorf("sandbox ghost: %w", sandboxstate.ErrNotFound), http.StatusNotFound, "not_found", "ghost"},
+		{"not found", &models.NotFoundError{Err: fmt.Errorf("sandbox ghost: %w", sandboxstate.ErrNotFound)}, http.StatusNotFound, "not_found", "ghost"},
 		{"a name taken", &sandboxstate.NameTakenError{Noun: "sandbox", Name: "web", Holder: "quiet-heron-3f0a"}, http.StatusConflict, "name_taken", "taken by sandbox quiet-heron-3f0a"},
 		{"not running", &sandbox.StateError{ID: "sandbox1", State: models.StateStopped, Fix: "pause takes a running sandbox", Code: models.CodeSandboxNotRunning}, http.StatusConflict, "sandbox_not_running", "sandbox sandbox1 is stopped: pause takes a running sandbox"},
 		{"not stopped", &sandbox.StateError{ID: "sandbox1", State: models.StateRunning, Fix: "stop it first with shard stop sandbox1, or pass --force", Code: models.CodeSandboxNotStopped}, http.StatusConflict, "sandbox_not_stopped", "sandbox sandbox1 is running: stop it first with shard stop sandbox1, or pass --force"},
@@ -710,7 +789,7 @@ func TestTheStatusAndTheCodeFollowTheError(t *testing.T) {
 		{"no checkpoint", &sandbox.StateError{ID: "sandbox1", State: models.StatePaused, Fix: "its record names no checkpoint to resume from", Code: models.CodeNoCheckpoint}, http.StatusConflict, "no_checkpoint", "no checkpoint"},
 		{"gone from the substrate", &sandbox.UnavailableError{ID: "sandbox1", Why: "is gone from gvisor", Fix: "remove it with shard remove sandbox1 and create another"}, http.StatusConflict, "sandbox_not_running", "gone from gvisor"},
 		{"an unclaimed verb", models.Unsupported("gvisor", "fork"), http.StatusConflict, "unsupported", "provider gvisor does not support fork on this host"},
-		{"anything else", errors.New("runsc: boom"), http.StatusInternalServerError, "internal", "boom"},
+		{"anything else", errors.New("runsc: boom"), http.StatusInternalServerError, "internal", "its log has the cause"},
 	}
 
 	for _, c := range cases {
@@ -814,7 +893,7 @@ func TestAFailedStartIsLoggedOnlyWhenTheSubstrateBrokeIt(t *testing.T) {
 		s := seed(t)
 		s.verbs.err = c.err
 		var out bytes.Buffer
-		handler := api.NewHandler("v-test", fakeProcess{}, s.repo, nil, s.verbs, s.stores, s.egress, &out)
+		handler := api.NewHandler("v-test", fakeProcess{}, s.repo, nil, s.verbs, s.stores, s.egress, nil, &out)
 
 		w := httptest.NewRecorder()
 		handler.ServeHTTP(w, httptest.NewRequestWithContext(t.Context(), http.MethodPost, "/v0/sandboxes/web/start", nil))

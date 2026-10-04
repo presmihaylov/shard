@@ -204,37 +204,7 @@ func TestConcurrentExecsAllSucceed(t *testing.T) {
 func TestExecOnATerminalKeepsTheExitCodeAndTheWindow(t *testing.T) {
 	app, id := runningSandbox(t)
 
-	terminal, err := pty.Open()
-	if err != nil {
-		t.Fatalf("open a terminal for the test: %v", err)
-	}
-	defer func() {
-		if err := terminal.Close(); err != nil {
-			t.Logf("close the test terminal: %v", err)
-		}
-	}()
-
-	want := pty.Size{Rows: 40, Cols: 120}
-	if err := terminal.Resize(want); err != nil {
-		t.Fatalf("size the test terminal: %v", err)
-	}
-
-	// The chunks are collected rather than read to the end: a pty master hangs up only once every copy
-	// of the replica is gone, and this test holds one itself.
-	chunks := make(chan string, 16)
-	go func() {
-		for {
-			buf := make([]byte, 4096)
-			n, err := terminal.Master.Read(buf)
-			if n > 0 {
-				chunks <- string(buf[:n])
-			}
-			if err != nil {
-				return
-			}
-		}
-	}()
-
+	terminal, chunks := sizedTerminal(t, pty.Size{Rows: 40, Cols: 120})
 	app.Out, app.Err = terminal.Replica, terminal.Replica
 	app.in = terminal.Replica
 
@@ -258,6 +228,78 @@ func TestExecOnATerminalKeepsTheExitCodeAndTheWindow(t *testing.T) {
 			t.Fatalf("the command wrote %q to its terminal, want the window 40 120", strings.TrimSpace(out))
 		}
 	}
+}
+
+// SHARD-514: runc sized the guest's pty only after the command started, so a quick stty size read a 0x0 window.
+func TestExecOnATerminalHasItsWindowBeforeTheCommandStarts(t *testing.T) {
+	app, id := runningSandbox(t)
+
+	for i := range 20 {
+		terminal, chunks := sizedTerminal(t, pty.Size{Rows: 24, Cols: 80})
+		app.Out, app.Err, app.in = terminal.Replica, terminal.Replica, terminal.Replica
+
+		runErr := app.Run(context.Background(), []string{"exec", "-it", id, "stty", "size"})
+		if line := firstLine(t, chunks); line != "24 80" {
+			t.Fatalf("exec %d: stty size printed %q on a 24x80 terminal, want 24 80", i, line)
+		}
+		if runErr != nil {
+			t.Fatalf("exec %d on a terminal: %v", i, runErr)
+		}
+	}
+}
+
+// sizedTerminal hands back chunks, not a read to the end: the master hangs up only once every replica copy is gone.
+func sizedTerminal(t *testing.T, size pty.Size) (*pty.Pty, <-chan string) {
+	t.Helper()
+
+	terminal, err := pty.Open()
+	if err != nil {
+		t.Fatalf("open a terminal for the test: %v", err)
+	}
+	t.Cleanup(func() {
+		if err := terminal.Close(); err != nil {
+			t.Logf("close the test terminal: %v", err)
+		}
+	})
+	if err := terminal.Resize(size); err != nil {
+		t.Fatalf("size the test terminal: %v", err)
+	}
+
+	chunks := make(chan string, 16)
+	go func() {
+		for {
+			buf := make([]byte, 4096)
+			n, err := terminal.Master.Read(buf)
+			if n > 0 {
+				chunks <- string(buf[:n])
+			}
+			if err != nil {
+				return
+			}
+		}
+	}()
+
+	return terminal, chunks
+}
+
+// firstLine is the first line a command wrote to its terminal, without the line end.
+func firstLine(t *testing.T, chunks <-chan string) string {
+	t.Helper()
+
+	deadline := time.After(terminalReadBudget)
+	var out string
+	for !strings.Contains(out, "\n") {
+		select {
+		case chunk := <-chunks:
+			out += chunk
+		case <-deadline:
+			t.Fatalf("the command wrote %q to its terminal and no whole line", out)
+		}
+	}
+
+	line, _, _ := strings.Cut(out, "\n")
+
+	return strings.TrimSpace(line)
 }
 
 // runningSandbox creates one sandbox whose entrypoint has already exited, because a sandbox outlives

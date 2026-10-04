@@ -8,6 +8,8 @@ import (
 	"syscall"
 	"testing"
 	"time"
+
+	"github.com/presmihaylov/shard/pkg/pidpin/pidpintest"
 )
 
 func TestOnlyTheArgumentsStartGivesAShimServeItsSocket(t *testing.T) {
@@ -40,6 +42,7 @@ func TestOnlyTheArgumentsStartGivesAShimServeItsSocket(t *testing.T) {
 }
 
 func TestKillOfAShimInTheDaemonsGroupSignalsItAlone(t *testing.T) {
+	pidpintest.Require(t)
 	shim, waitShim := child(t, exec.Command("sleep", "60"), nil)
 	sibling, _ := child(t, exec.Command("sleep", "60"), nil)
 	pgid, err := syscall.Getpgid(shim)
@@ -67,6 +70,7 @@ func TestKillOfAShimInTheDaemonsGroupSignalsItAlone(t *testing.T) {
 
 // A check and a kill that read the pid apart would end whatever holds it by the kill, so the kill goes through the pin the check judged.
 func TestKillSignalsThePinnedShimWhenItsPidNamesAnotherAfterTheCheck(t *testing.T) {
+	pidpintest.Require(t)
 	shim, waitShim := child(t, exec.Command("sleep", "60"), nil)
 	innocent, _ := child(t, exec.Command("sleep", "60"), nil)
 	p, err := Identify(shim)

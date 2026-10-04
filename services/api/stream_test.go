@@ -365,13 +365,16 @@ func TestExecReportsACommandThatNeverRan(t *testing.T) {
 // A failure after the 101 has no status to carry it, so it is the last message and then a normal close.
 func TestExecReportsAFailureAfterThe101(t *testing.T) {
 	s := seed(t)
-	s.verbs.execErr = errors.New("runsc: boom")
+	s.verbs.execErr = fmt.Errorf("runsc exec /var/lib/shard/sandboxes/sb1 pid 4242: %w", errors.New("boom"))
 
 	conn := open(t, s, "/v0/sandboxes/"+s.running.ID+"/exec/1a2b3c4d5e6f7a8b")
 
 	got := read(t, conn)
-	if got.ended != api.StreamFailure || got.failure != (api.FailureMessage{Error: api.FailureError{Code: models.CodeInternal, Message: "runsc: boom"}}) {
-		t.Errorf("the session ended with stream %d and %+v, want the failure with the code internal", got.ended, got.failure)
+	if got.ended != api.StreamFailure || got.failure != (api.FailureMessage{Error: api.FailureError{Code: models.CodeInternal, Message: internalText}}) {
+		t.Errorf("the session ended with stream %d and %+v, want the failure with the code internal and the generic text", got.ended, got.failure)
+	}
+	if !strings.Contains(s.log.String(), "/var/lib/shard/sandboxes/sb1 pid 4242: boom") {
+		t.Errorf("the daemon log %q lacks the cause", s.log.String())
 	}
 	if status := closed(t, conn); status != websocket.StatusNormalClosure {
 		t.Errorf("the daemon closed with %d, want 1000", status)
@@ -520,13 +523,16 @@ func TestLogsFollowStreamsAndSaysWhyItEnded(t *testing.T) {
 // A failure after the 101 has no status to carry it, so it is the last message and then a normal close.
 func TestLogsFollowReportsAFailureAfterThe101(t *testing.T) {
 	s := seed(t)
-	s.verbs.err = errors.New("open the output: boom")
+	s.verbs.err = errors.New("open /var/lib/shard/sandboxes/sb1/output.log: boom")
 
 	conn := open(t, s, "/v0/sandboxes/"+s.running.ID+"/logs?follow=true")
 
 	got := read(t, conn)
-	if got.ended != api.StreamFailure || got.failure != (api.FailureMessage{Error: api.FailureError{Code: models.CodeInternal, Message: "open the output: boom"}}) {
-		t.Errorf("the follow ended with stream %d and %+v, want the failure with the code internal", got.ended, got.failure)
+	if got.ended != api.StreamFailure || got.failure != (api.FailureMessage{Error: api.FailureError{Code: models.CodeInternal, Message: internalText}}) {
+		t.Errorf("the follow ended with stream %d and %+v, want the failure with the code internal and the generic text", got.ended, got.failure)
+	}
+	if !strings.Contains(s.log.String(), "open /var/lib/shard/sandboxes/sb1/output.log: boom") {
+		t.Errorf("the daemon log %q lacks the cause", s.log.String())
 	}
 	if status := closed(t, conn); status != websocket.StatusNormalClosure {
 		t.Errorf("the daemon closed with %d, want 1000", status)
@@ -599,6 +605,26 @@ func TestEgressLogFollowStreamsTheRecordsAndSaysWhyItEnded(t *testing.T) {
 	}
 	if closeErr.Code != websocket.StatusNormalClosure || !strings.Contains(closeErr.Reason, "removed") {
 		t.Errorf("the follow ended with %d %q, want 1000 saying the sandbox was removed", closeErr.Code, closeErr.Reason)
+	}
+}
+
+// A follow the host broke closes with the generic text, since a close reason reaches the caller as it is.
+func TestEgressLogFollowThatBreaksClosesWithThePublicText(t *testing.T) {
+	s := seed(t)
+	s.egress.broke = errors.New("read /var/lib/shard/sandboxes/sb1/egress.log: pid 4242: input/output error")
+
+	conn := open(t, s, "/v0/sandboxes/"+s.running.ID+"/egress-log?follow=true")
+	if _, _, err := conn.Read(t.Context()); err != nil {
+		t.Fatalf("read the record: %v", err)
+	}
+
+	_, _, err := conn.Read(t.Context())
+	var closeErr websocket.CloseError
+	if !errors.As(err, &closeErr) || closeErr.Code != websocket.StatusInternalError || closeErr.Reason != internalText {
+		t.Errorf("the follow ended with %v, want 1011 with only the generic text", err)
+	}
+	if !strings.Contains(s.log.String(), "egress.log: pid 4242") {
+		t.Errorf("the daemon log %q lacks the cause", s.log.String())
 	}
 }
 

@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"net/netip"
+	"os"
 	"slices"
 	"strings"
 	"testing"
@@ -112,6 +113,66 @@ func TestCreateTearsDownWhatItBuilt(t *testing.T) {
 	}
 }
 
+func appNeverStarted() *models.CommandNotStartedError {
+	return &models.CommandNotStartedError{Sandbox: "sandbox1", Reason: "no such file or directory", Code: models.CommandNotFoundExitCode}
+}
+
+// A create that waits on its app gets the refusal named after the program, and no sandbox is left behind it.
+func TestCreateRemovesASandboxWhoseAppNeverStarted(t *testing.T) {
+	r := &recorder{}
+	svc, l := newService(t, r, models.Sandbox{})
+	l.provider.startErr = appNeverStarted()
+
+	_, err := svc.Create(t.Context(), alpine())
+
+	var refused *models.CommandNotStartedError
+	if !errors.As(err, &refused) || refused.Command != "echo" || refused.Code != models.CommandNotFoundExitCode {
+		t.Fatalf("create = %v, want the refusal of echo with code 127", err)
+	}
+	if !l.repo.deleted || !slices.Contains(r.calls, "provider.Remove") {
+		t.Errorf("a refused create left its sandbox: %v", r.calls)
+	}
+}
+
+// A create no one waits on keeps the failed record, so a get still reads why.
+func TestCompleteKeepsTheRecordOfAnAppThatNeverStarted(t *testing.T) {
+	r := &recorder{}
+	svc, l := newService(t, r, models.Sandbox{})
+	l.provider.startErr = appNeverStarted()
+
+	sb, err := svc.Prepare(t.Context(), alpine())
+	if err != nil {
+		t.Fatalf("prepare: %v", err)
+	}
+	err = svc.Complete(t.Context(), sb.ID, alpine())
+
+	var refused *models.CommandNotStartedError
+	if !errors.As(err, &refused) {
+		t.Fatalf("complete = %v, want the refusal", err)
+	}
+	if l.repo.deleted {
+		t.Errorf("a create no one waits on removed its record: %v", r.calls)
+	}
+	if l.repo.sb.State != models.StateFailed || !strings.Contains(l.repo.sb.FailedReason, `could not run "echo"`) {
+		t.Errorf("the record is %s reason %q, want failed with the refusal", l.repo.sb.State, l.repo.sb.FailedReason)
+	}
+}
+
+// The refusal promises no sandbox is left, so one the removal could not free is a plain failure.
+func TestCreateIsNoRefusalWhenTheSandboxStays(t *testing.T) {
+	r := &recorder{fail: []string{"repo.Delete"}}
+	svc, l := newService(t, r, models.Sandbox{})
+	l.provider.startErr = appNeverStarted()
+
+	_, err := svc.Create(t.Context(), alpine())
+
+	var refused *models.CommandNotStartedError
+	var notRemoved *sandbox.NotRemovedError
+	if !errors.As(err, &notRemoved) || errors.As(err, &refused) || !strings.Contains(err.Error(), "was not removed") {
+		t.Errorf("create = %v, want a NotRemovedError that says the sandbox was not removed", err)
+	}
+}
+
 // A bound the substrate refuses is a bad request: nothing was pulled or claimed, so no record may say failed.
 func TestCreateRefusedByTheProviderLeavesNoRecord(t *testing.T) {
 	r := &recorder{}
@@ -159,10 +220,25 @@ func withDisks(d *diskProvider) func(*sandbox.Config) {
 	}
 }
 
+// A root the admission could not read is the daemon's fault, so the create is no bad request.
+func TestCreateWhoseRootCannotBeReadIsNoBadRequest(t *testing.T) {
+	disks := &diskProvider{refuse: fmt.Errorf("statfs /var/lib/shard: %w", os.ErrPermission)}
+	svc, _ := newService(t, &recorder{}, models.Sandbox{}, withDisks(disks))
+
+	_, err := svc.Create(t.Context(), alpine())
+	var request *sandbox.RequestError
+	if err == nil || errors.As(err, &request) {
+		t.Fatalf("create = %v, want a failure that is not the request's fault", err)
+	}
+	if public, ok := sandbox.PublicText(err); ok {
+		t.Errorf("public text = %q, want none for a host failure", public)
+	}
+}
+
 // A disk the root has no room for is refused before the record, so no verb ever sees the sandbox (SHARD-393).
 func TestCreateRefusedByTheDiskAdmissionLeavesNoRecord(t *testing.T) {
 	r := &recorder{}
-	disks := &diskProvider{refuse: errors.New("a 4096 MiB disk does not fit on the root")}
+	disks := &diskProvider{refuse: &bundle.NoRoomError{Bound: 4096 << 20}}
 	svc, l := newService(t, r, models.Sandbox{}, withDisks(disks))
 
 	_, err := svc.Create(t.Context(), alpine())

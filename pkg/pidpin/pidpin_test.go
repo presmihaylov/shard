@@ -4,6 +4,7 @@ package pidpin
 
 import (
 	"errors"
+	"os"
 	"os/exec"
 	"sync"
 	"syscall"
@@ -20,6 +21,7 @@ func TestOpenRefusesAPidThatNamesNoProcessToEnd(t *testing.T) {
 }
 
 func TestKillEndsTheProcessItHolds(t *testing.T) {
+	requirePin(t)
 	pid, wait := child(t)
 	p := pinned(t, pid)
 
@@ -32,6 +34,7 @@ func TestKillEndsTheProcessItHolds(t *testing.T) {
 }
 
 func TestKillOfAProcessReapedSinceIsNoError(t *testing.T) {
+	requirePin(t)
 	pid, wait := child(t)
 	p := pinned(t, pid)
 	if err := syscall.Kill(pid, syscall.SIGKILL); err != nil {
@@ -92,6 +95,23 @@ func pinned(t *testing.T, pid int) *Process {
 	return p
 }
 
+// requirePin is pidpintest.Require for this package's own tests, which that package cannot serve without an import cycle.
+func requirePin(t *testing.T) {
+	t.Helper()
+	pinned(t, os.Getpid())
+	pid, _ := child(t)
+	p, err := Open(pid)
+	if errors.Is(err, syscall.ESRCH) {
+		t.Fatalf("a live child reads as gone: %v", err)
+	}
+	if err != nil {
+		t.Skipf("this host refuses to pin a live child, so no test can end one through its pin: %v", err)
+	}
+	if err := p.Close(); err != nil {
+		t.Fatal(err)
+	}
+}
+
 // killedBy reaps the child, which must end within 5s, and names the signal that ended it.
 func killedBy(t *testing.T, wait func() error) syscall.Signal {
 	t.Helper()
@@ -116,6 +136,7 @@ func killedBy(t *testing.T, wait func() error) syscall.Signal {
 }
 
 func TestKillAfterCloseSignalsNothing(t *testing.T) {
+	requirePin(t)
 	pid, _ := child(t)
 	p, err := Open(pid)
 	if err != nil {

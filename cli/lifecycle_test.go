@@ -270,6 +270,8 @@ type fakeLifecycleProvider struct {
 	endOnStop *models.ExitStatus
 	// startGate holds Start until it closes and ignores the caller, as the daemon's background create does.
 	startGate chan struct{}
+	// startErr is what Start answers, as a substrate whose app never ran does.
+	startErr error
 }
 
 func (f *fakeLifecycleProvider) Restarts(context.Context, string) (models.RestartCount, error) {
@@ -331,6 +333,7 @@ func (f *fakeLifecycleProvider) Exec(_ context.Context, id string, spec models.E
 	if f.execErr != nil {
 		return models.ExitStatus{}, f.execErr
 	}
+	spec.Report(42)
 
 	if f.execOut != "" {
 		if _, err := spec.Stdout.WriteString(f.execOut); err != nil {
@@ -391,6 +394,9 @@ func (f *fakeLifecycleProvider) Start(context.Context, string) error {
 	}
 	if f.startGate != nil {
 		<-f.startGate
+	}
+	if f.startErr != nil {
+		return f.startErr
 	}
 	f.started = true
 	f.status = models.Status{Exists: true, State: models.StateRunning, PID: 7}

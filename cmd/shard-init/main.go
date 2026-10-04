@@ -11,6 +11,7 @@ import (
 	"os/exec"
 	"os/signal"
 	"path/filepath"
+	"runtime"
 	"slices"
 	"strconv"
 	"strings"
@@ -19,6 +20,7 @@ import (
 	"time"
 
 	"github.com/presmihaylov/shard/models"
+	"github.com/presmihaylov/shard/pkg/launch"
 	"github.com/presmihaylov/shard/pkg/memfd"
 	"github.com/presmihaylov/shard/pkg/store"
 	"github.com/presmihaylov/shard/services/supervisor"
@@ -47,7 +49,18 @@ var errNoEntrypoint = errors.New("the entrypoint did not start")
 // errNoHost is a report with no host to take it; the kind that must land waits for the next connection's replay.
 var errNoHost = errors.New("no host attached")
 
+func init() {
+	// The host traces the launch shim's main thread alone, so the execve has to run on it.
+	if len(os.Args) > 1 && os.Args[1] == launch.Mode {
+		runtime.LockOSThread()
+	}
+}
+
 func main() {
+	// The daemon runs [/.shard/init launch <argv>] as an exec's own process, to prove the command's execve took.
+	if len(os.Args) > 1 && os.Args[1] == launch.Mode {
+		os.Exit(runLaunch(os.Args[2:]))
+	}
 	// The daemon runs [/.shard/init files] through an exec for one file operation, as the user that exec runs as.
 	if len(os.Args) == 2 && os.Args[1] == supervisor.FilesMode {
 		os.Exit(runFiles())
@@ -64,6 +77,21 @@ func main() {
 
 	fmt.Fprintln(os.Stderr, "shard-init:", err)
 	os.Exit(exitCodeFor(err))
+}
+
+// runLaunch returns only when the command did not start; the host has the errno already, so a shell's code is enough here.
+func runLaunch(argv []string) int {
+	err := launch.Shim(argv)
+	var failed *launch.NotStartedError
+	if !errors.As(err, &failed) {
+		fmt.Fprintln(os.Stderr, "shard-init:", err)
+		return models.SupervisorFailedExitCode
+	}
+	if failed.NotFound() {
+		return models.CommandNotFoundExitCode
+	}
+
+	return models.CommandNotExecutableExitCode
 }
 
 // The host reads this back with runsc wait, so a dead supervisor is diagnosable and not a mystery.
@@ -139,6 +167,9 @@ func run(args []string) error {
 
 	g := newGuest(fileReporter{readyFile: *readyFile, restartFile: *restartFile}, restart)
 	err = g.launch(entrypoint{argv: flags.Args(), env: os.Environ(), credential: credential})
+	if errors.Is(err, errNoEntrypoint) {
+		return errors.Join(err, reportNotStarted(err))
+	}
 	if err == nil {
 		err = g.supervise()
 	}
@@ -150,6 +181,48 @@ func run(args []string) error {
 	}
 
 	return nil
+}
+
+// execErrnos are what execve(2) answers for a command that cannot run; a fork or a credential failure is none of them.
+var execErrnos = []syscall.Errno{syscall.ENOENT, syscall.EACCES, syscall.ENOEXEC, syscall.ENOTDIR, syscall.ELOOP, syscall.ENAMETOOLONG, syscall.EISDIR, syscall.ETXTBSY}
+
+// unrunnable is a command the lookup or the kernel refused, apart from the supervisor's own setup failing.
+type unrunnable struct{ err error }
+
+func (u unrunnable) Error() string { return u.err.Error() }
+
+func (u unrunnable) Unwrap() error { return u.err }
+
+// reportNotStarted leaves the host the errno of an entrypoint that cannot run; any other failure is the supervisor's.
+func reportNotStarted(err error) error {
+	errno := execErrno(err)
+	if errno == 0 {
+		return nil
+	}
+
+	return writeReport(models.ExitReport{Kind: models.NotStartedReportKind, Errno: int(errno)})
+}
+
+// execErrno answers why the command could not run, or zero when what failed was not the command.
+func execErrno(err error) syscall.Errno {
+	var refused unrunnable
+	if !errors.As(err, &refused) {
+		return 0
+	}
+	if errors.Is(err, exec.ErrNotFound) {
+		return syscall.ENOENT
+	}
+
+	var errno syscall.Errno
+	// executable answers a directory or a file with no execute bit as fs.ErrPermission, which execve says as EACCES.
+	if !errors.As(err, &errno) && errors.Is(err, fs.ErrPermission) {
+		return syscall.EACCES
+	}
+	if slices.Contains(execErrnos, errno) {
+		return errno
+	}
+
+	return 0
 }
 
 // entrypoint is the process the sandbox runs, as the host resolved it.
@@ -576,12 +649,15 @@ func (fileReporter) oomKilled() error {
 	return errors.New("a file reporter has no memory bound to report a kill under")
 }
 
-// exited frames the exit record onto fd 0, the channel the host holds; the newlines let a reader take whole lines only.
 func (fileReporter) exited(exit models.ExitStatus) error {
-	report := models.ExitReport{Kind: models.ExitReportKind, Code: exit.Code, Signal: exit.Signal}
+	return writeReport(models.ExitReport{Kind: models.ExitReportKind, Code: exit.Code, Signal: exit.Signal})
+}
+
+// writeReport frames one record onto fd 0, the channel the host holds; the newlines let a reader take whole lines only.
+func writeReport(report models.ExitReport) error {
 	encoded, err := json.Marshal(report)
 	if err != nil {
-		return fmt.Errorf("marshal the exit report: %w", err)
+		return fmt.Errorf("marshal the %s report: %w", report.Kind, err)
 	}
 
 	sealed, err := memfd.Fixed(os.Stdin)
@@ -596,10 +672,10 @@ func (fileReporter) exited(exit models.ExitStatus) error {
 	cleared := os.Stdin.Truncate(0)
 	framed := append(append([]byte{'\n'}, encoded...), '\n')
 	if _, err := os.Stdin.Write(framed); err != nil {
-		return errors.Join(fmt.Errorf("report the exit status on fd 0: %w", err), cleared)
+		return errors.Join(fmt.Errorf("report the %s record on fd 0: %w", report.Kind, err), cleared)
 	}
 	if cleared != nil {
-		return fmt.Errorf("the exit status is on fd 0, but the records before it stay: %w", cleared)
+		return fmt.Errorf("the %s record is on fd 0, but the records before it stay: %w", report.Kind, cleared)
 	}
 
 	return nil
@@ -742,7 +818,7 @@ func (g *guest) start(ep entrypoint, files []*os.File, tty bool) (int, error) {
 func startProcess(ep entrypoint, files []*os.File, tty bool) (int, error) {
 	binary, err := lookPath(ep)
 	if err != nil {
-		return 0, fmt.Errorf("look up %q: %w", ep.argv[0], err)
+		return 0, fmt.Errorf("look up %q: %w", ep.argv[0], unrunnable{err})
 	}
 
 	ambient, err := inheritedCapabilities(ep.credential)
@@ -782,7 +858,7 @@ func startProcess(ep entrypoint, files []*os.File, tty bool) (int, error) {
 	// The child holds its own copy of fd 0 now, so our template is spent whichever way the fork went.
 	closeErr := devNull.Close()
 	if forkErr != nil {
-		return 0, fmt.Errorf("fork and exec %q: %w", binary, forkErr)
+		return 0, fmt.Errorf("fork and exec %q: %w", binary, unrunnable{forkErr})
 	}
 	// The fork succeeded, so a failed close of our own /dev/null copy must not end the sandbox (AGENTS.md).
 	if closeErr != nil {
