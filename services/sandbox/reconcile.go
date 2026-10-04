@@ -209,14 +209,16 @@ func (s *Service) applyReconcile(ctx context.Context, sb models.Sandbox, status 
 // failDropped ends the record of a verb the daemon dropped before it answered: it stops a copy that runs on and tears its substrate down.
 func (s *Service) failDropped(ctx context.Context, sb models.Sandbox, status models.Status, report func(string)) error {
 	reason := InterruptedReason
+	dropped := "a create the daemon dropped"
 	if sb.State == models.StateCreated {
 		reason = DroppedCopyReason
+		dropped = "a fork the daemon dropped"
 	}
 
-	// rm refuses a live sandbox and stop refuses a failed one, so a copy left running here could never be removed.
+	// rm refuses a live sandbox and stop refuses a failed one, so a sandbox left running here could never be removed.
 	if status.Alive() {
 		if err := s.cfg.Provider.Stop(ctx, sb.ID, 0); err != nil {
-			return fmt.Errorf("stop sandbox %s, a fork the daemon dropped: %w", sb.ID, err)
+			return fmt.Errorf("stop sandbox %s, %s: %w", sb.ID, dropped, err)
 		}
 		if _, err := s.awaitStopped(ctx, sb.ID); err != nil {
 			return err
@@ -260,6 +262,10 @@ func (s *Service) failDropped(ctx context.Context, sb models.Sandbox, status mod
 func reconciled(sb models.Sandbox, status models.Status) (models.State, error) {
 	// No verb rests in created, so it is a fork that never answered: its caller holds an error, not the id.
 	if sb.State == models.StateCreated {
+		return models.StateFailed, nil
+	}
+	// A create cut before its start may hold no address on record, and no egress rule guards a sandbox without one (SHARD-565).
+	if sb.State == models.StatePending && (status.State == models.StateCreated || !sb.Address.IsValid()) {
 		return models.StateFailed, nil
 	}
 

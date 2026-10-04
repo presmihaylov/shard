@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"net/netip"
 	"os"
 	"path/filepath"
 	"slices"
@@ -867,7 +868,7 @@ func TestReconcileFailsAPendingRecordWithNoProcess(t *testing.T) {
 }
 
 func TestReconcileRunsAPendingRecordWithALiveProcess(t *testing.T) {
-	sb := models.Sandbox{ID: "sandbox1", State: models.StatePending}
+	sb := models.Sandbox{ID: "sandbox1", State: models.StatePending, Address: netip.MustParsePrefix("10.0.0.2/24")}
 	lab := newReconcileLab(t, &recProvider{status: map[string]models.Status{"sandbox1": alive(51)}}, sb)
 
 	if err := lab.run(t); err != nil {
@@ -886,9 +887,51 @@ func TestReconcileRunsAPendingRecordWithALiveProcess(t *testing.T) {
 	}
 }
 
+// A daemon cut between the create and the start leaves a sandbox no egress rule knows of, so it must never read running (SHARD-565).
+func TestReconcileFailsAPendingCreateThatNeverStarted(t *testing.T) {
+	cases := map[string]struct {
+		sb     models.Sandbox
+		status models.Status
+	}{
+		"created before its record held the network": {
+			sb:     models.Sandbox{ID: "sandbox1", State: models.StatePending, Policy: "deny"},
+			status: models.Status{Exists: true, State: models.StateCreated, PID: 51},
+		},
+		"created after its record held the network": {
+			sb:     models.Sandbox{ID: "sandbox1", State: models.StatePending, Policy: "deny", Address: netip.MustParsePrefix("10.0.0.2/24")},
+			status: models.Status{Exists: true, State: models.StateCreated, PID: 51},
+		},
+		"running with no network on record": {
+			sb:     models.Sandbox{ID: "sandbox1", State: models.StatePending, Policy: "deny"},
+			status: alive(51),
+		},
+	}
+	for name, c := range cases {
+		t.Run(name, func(t *testing.T) {
+			provider := &recProvider{status: map[string]models.Status{"sandbox1": c.status}}
+			lab := newReconcileLab(t, provider, c.sb)
+
+			if err := lab.run(t); err != nil {
+				t.Fatalf("ReconcileAll: %v", err)
+			}
+
+			got := lab.repo.records["sandbox1"]
+			if got.State != models.StateFailed || got.FailedReason != sandbox.InterruptedReason {
+				t.Errorf("the record says %s for %q, want failed for %q", got.State, got.FailedReason, sandbox.InterruptedReason)
+			}
+			if !slices.Equal(provider.stopped, []string{"sandbox1"}) {
+				t.Errorf("Stop was asked to end %v, want sandbox1: rm refuses a live sandbox", provider.stopped)
+			}
+			if lab.net.applied != 0 {
+				t.Errorf("the host rules were re-applied %d times, want none: nothing runs", lab.net.applied)
+			}
+		})
+	}
+}
+
 // A full root fails the write that says running, and the live sandbox still needs its egress policy (SHARD-341).
 func TestReconcileReAppliesTheHostRulesForALiveSandboxItCannotRecord(t *testing.T) {
-	sb := models.Sandbox{ID: "sandbox1", State: models.StatePending}
+	sb := models.Sandbox{ID: "sandbox1", State: models.StatePending, Address: netip.MustParsePrefix("10.0.0.2/24")}
 	lab := newReconcileLab(t, &recProvider{status: map[string]models.Status{"sandbox1": alive(51)}}, sb)
 	lab.repo.updateErr = errors.New("write the record: no space left on device")
 
