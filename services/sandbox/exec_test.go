@@ -250,6 +250,13 @@ func TestExecAsAUserTheTreeCannotResolveIsARequestError(t *testing.T) {
 		{name: "an image with no passwd", user: "nobody", guest: func(string) error { return nil }, want: `resolve the user "nobody": the image has no passwd`},
 		{name: "a passwd that links out of the tree", user: "nobody", guest: func(passwd string) error { return os.Symlink("/etc/shadow", passwd) }, want: "/etc/passwd is a symbolic link"},
 		{name: "a numeric id over a passwd that links out", user: "65534", guest: func(passwd string) error { return os.Symlink("/etc/shadow", passwd) }, want: "/etc/passwd is a symbolic link"},
+		{name: "an etc that links out of the tree", user: "nobody", guest: func(passwd string) error {
+			etc := filepath.Dir(passwd)
+			if err := os.Remove(etc); err != nil {
+				return err
+			}
+			return os.Symlink("/etc", etc)
+		}, want: "/etc is a symbolic link"},
 		{name: "a passwd that is a fifo", user: "nobody", guest: func(passwd string) error { return syscall.Mkfifo(passwd, 0o600) }, want: "/etc/passwd is a p"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {

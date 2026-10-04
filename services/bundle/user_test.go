@@ -214,9 +214,7 @@ func TestResolveUserRefusesAPasswdReachedThroughAHostSymlink(t *testing.T) {
 	if err == nil {
 		t.Fatalf("ResolveUser read a passwd reached through a host symlink and returned %+v", got)
 	}
-	if !strings.Contains(err.Error(), filepath.Join(rootfs, "etc/passwd")) {
-		t.Errorf("the refusal is %q, and it must name the file", err)
-	}
+	requireGuestRefusal(t, err, rootfs, "/etc is a symbolic link")
 }
 
 // rootFSWith writes the two databases. An empty one is a rootfs that has no such file at all.

@@ -282,14 +282,18 @@ func scanDatabase(rootfs, rel string, minFields int, visit func(fields []string)
 	return nil
 }
 
-// openFailed names a link as the guest's own, since os.Root follows one in the tree and refuses one that leaves it with no error that says so.
+// openFailed names a link on the way as the guest's own, since os.Root follows one in the tree and refuses one that leaves it with no error that says so.
 func openFailed(root *os.Root, rel, full string, err error) error {
-	info, lstatErr := root.Lstat(rel)
-	if lstatErr != nil {
-		return fmt.Errorf("open %s: %w", full, errors.Join(err, lstatErr))
-	}
-	if info.Mode()&fs.ModeSymlink != 0 {
-		return &UserDatabaseError{Err: fmt.Errorf("/%s is a symbolic link, and a user database must be a file in the same tree", rel)}
+	prefix := ""
+	for part := range strings.SplitSeq(rel, "/") {
+		prefix = filepath.Join(prefix, part)
+		info, lstatErr := root.Lstat(prefix)
+		if lstatErr != nil {
+			return fmt.Errorf("open %s: %w", full, errors.Join(err, lstatErr))
+		}
+		if info.Mode()&fs.ModeSymlink != 0 {
+			return &UserDatabaseError{Err: fmt.Errorf("/%s is a symbolic link, and a user database must be a file in the same tree", prefix)}
+		}
 	}
 
 	return fmt.Errorf("open %s: %w", full, err)
