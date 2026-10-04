@@ -1,0 +1,137 @@
+name: sdk release
+
+# Builds one SDK under its sdk-<language>-v<version> tag on main into a draft GitHub release; nothing goes to npm or PyPI.
+on:
+  push:
+    tags: ['sdk-typescript-v*', 'sdk-python-v*']
+
+permissions:
+  contents: read
+
+env:
+  UV_VERSION: 0.5.9
+
+jobs:
+  # A tag on a feature head must release nothing, so every build waits on this.
+  on-main:
+    name: the tag is on main
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: check
+        run: git merge-base --is-ancestor "$GITHUB_SHA" origin/main || { echo "$GITHUB_SHA is not on main"; exit 1; }
+
+  typescript:
+    name: typescript
+    needs: on-main
+    if: startsWith(github.ref_name, 'sdk-typescript-v')
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: sdks/typescript/package-lock.json
+
+      - name: the tag names the package version
+        working-directory: sdks/typescript
+        run: |
+          version=$(node -p 'require("./package.json").version')
+          if [ "sdk-typescript-v$version" != "$GITHUB_REF_NAME" ]; then
+            echo "the tag is $GITHUB_REF_NAME, but the package says $version"
+            exit 1
+          fi
+
+      - name: check
+        run: make sdk-ts-check
+
+      - name: pack
+        working-directory: sdks/typescript
+        run: npm pack
+
+      # A clean project proves the tarball installs and imports with only the dependencies it declares.
+      - name: install the tarball into a clean project
+        run: |
+          mkdir /tmp/clean
+          cd /tmp/clean
+          npm init -y
+          npm install --no-audit --no-fund "$GITHUB_WORKSPACE"/sdks/typescript/useshards-*.tgz
+          node --input-type=module -e 'import { version } from "useshards"; console.log(version)'
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: sdk
+          path: sdks/typescript/useshards-*.tgz
+
+  python:
+    name: python
+    needs: on-main
+    if: startsWith(github.ref_name, 'sdk-python-v')
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: astral-sh/setup-uv@v10.2.0
+        with:
+          version: ${{ env.UV_VERSION }}
+
+      - name: the tag names the package version
+        working-directory: sdks/python
+        run: |
+          version=$(uv run --locked python -c 'import useshards; print(useshards.__version__)')
+          if [ "sdk-python-v$version" != "$GITHUB_REF_NAME" ]; then
+            echo "the tag is $GITHUB_REF_NAME, but the package says $version"
+            exit 1
+          fi
+
+      - name: check
+        run: make sdk-py-check
+
+      - name: build
+        working-directory: sdks/python
+        run: uv build
+
+      # The wheel must install and import with only its declared dependencies.
+      - name: install the wheel into a clean venv
+        working-directory: sdks/python
+        run: |
+          uv venv /tmp/clean
+          uv pip install --python /tmp/clean dist/*.whl
+          /tmp/clean/bin/python -c 'import useshards; print(useshards.__version__)'
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: sdk
+          path: sdks/python/dist/
+
+  # Only this job can write, so no package script ever runs with a token that can.
+  release:
+    name: draft the release
+    needs: [typescript, python]
+    if: ${{ !cancelled() && (needs.typescript.result == 'success' || needs.python.result == 'success') }}
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: sdk
+          path: dist
+
+      # Never the latest release: docs/mac.md downloads shard itself from releases/latest.
+      - name: draft the release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          case "$GITHUB_REF_NAME" in
+            sdk-typescript-v*) title="useshards (TypeScript) ${GITHUB_REF_NAME#sdk-typescript-v}" ;;
+            sdk-python-v*) title="useshards (Python) ${GITHUB_REF_NAME#sdk-python-v}" ;;
+          esac
+          cd dist
+          sha256sum * > SHA256SUMS
+          gh release create "$GITHUB_REF_NAME" --repo "$GITHUB_REPOSITORY" --target "$GITHUB_SHA" --title "$title" --draft --latest=false --notes "Built by sdk-release.yml from $GITHUB_SHA. Install from these assets: the SDK is on neither npm nor PyPI." *
