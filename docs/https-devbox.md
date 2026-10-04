@@ -82,9 +82,9 @@ It revokes every earlier token of the name, mints a new one and rewrites the env
 the ledger on every request, so the old token is refused at once and nothing restarts. Copy the
 file to the Mac again, as in step 5.
 
-The default name is `sdk`. Its scopes are `daemon:read`, `sandbox:read`, `sandbox:write`,
-`sandbox:delete`, `exec` and `image:*`, so it has no `secret:*` and no `policy:*`. Another name
-takes its own scopes, `sudo shard-https token ci sandbox:read`, and gets its own file.
+The default name is `sdk`. Its scopes are `sandbox:read`, `sandbox:write`, `sandbox:delete` and
+`exec`, so it has no `secret:*` and no `policy:*`. Another name takes its own scopes,
+`sudo shard-https token ci sandbox:read`, and gets its own file.
 
 ## Tear down
 
