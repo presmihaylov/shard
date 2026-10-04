@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import { ProtocolError } from "../src/errors.js";
-import { appExit, networkLogRecord, policy, records, sandboxInfo } from "../src/records.js";
+import { appExit, egressDecision, policy, records, sandboxInfo } from "../src/records.js";
 import { sandboxRecord } from "./helpers/records.js";
 
 test("a sandbox create made runs no app", () => {
@@ -22,7 +22,7 @@ test("a run's app carries its exit and its restart policy, and a signal of 0 is 
     }),
   );
   assert.deepEqual(info.app?.command, ["/bin/sh", "-c", "exit 3"]);
-  assert.deepEqual(info.app?.exitStatus, { code: 3, signal: null });
+  assert.deepEqual(info.app?.exitStatus, { exitCode: 3, signal: null });
   assert.equal(info.app?.restart?.gaveUp, true);
   assert.equal(info.app?.restart?.lastAt?.toISOString(), "2026-10-04T10:00:05.000Z");
   assert.equal(sandboxInfo(sandboxRecord({ command: ["sleep", "9"] })).app?.restart, null);
@@ -70,14 +70,14 @@ test("a listed policy has no holders and no dns", () => {
   assert.equal(read.dns, null);
 });
 
-test("a network log record with no port names none", () => {
-  const read = networkLogRecord({ time: "2026-10-04T10:00:00Z", source: "dns", verdict: "deny", host: "example.com", rule: "default" });
+test("an egress decision with no port names none", () => {
+  const read = egressDecision({ time: "2026-10-04T10:00:00Z", source: "dns", verdict: "deny", host: "example.com", rule: "default" });
   assert.equal(read.port, null);
   assert.equal(read.address, null);
   assert.equal(read.time.toISOString(), "2026-10-04T10:00:00.000Z");
 });
 
 test("an empty list may come as null, and anything else but an array is refused", () => {
-  assert.deepEqual(records(null, "the log", networkLogRecord), []);
-  assert.throws(() => records({}, "the log", networkLogRecord), ProtocolError);
+  assert.deepEqual(records(null, "the log", egressDecision), []);
+  assert.throws(() => records({}, "the log", egressDecision), ProtocolError);
 });

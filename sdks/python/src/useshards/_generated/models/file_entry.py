@@ -7,6 +7,7 @@ from typing import TYPE_CHECKING, Any, BinaryIO, Generator, TextIO, TypeVar, cas
 from attrs import define as _attrs_define
 from attrs import field as _attrs_field
 
+from ..models.file_entry_type import FileEntryType
 from ..types import UNSET, Unset
 
 T = TypeVar("T", bound="FileEntry")
@@ -19,7 +20,7 @@ class FileEntry:
     mtime: datetime.datetime
     name: str
     size: int
-    type_: str
+    type_: FileEntryType
     uid: int
 
     def to_dict(self) -> dict[str, Any]:
@@ -33,7 +34,7 @@ class FileEntry:
 
         size = self.size
 
-        type_ = self.type_
+        type_ = self.type_.value
 
         uid = self.uid
 
@@ -66,7 +67,7 @@ class FileEntry:
 
         size = d.pop("size")
 
-        type_ = d.pop("type")
+        type_ = FileEntryType(d.pop("type"))
 
         uid = d.pop("uid")
 

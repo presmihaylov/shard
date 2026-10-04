@@ -74,7 +74,7 @@ test("a stream failure takes the status its code answers with", () => {
     ["not_found", 404, NotFoundError],
     ["exec_exited", 409, ConflictError],
     ["unsupported", 409, UnsupportedError],
-    ["substrate_timeout", 504, ServerError],
+    ["timeout", 504, ServerError],
     ["body_too_large", 413, InvalidRequestError],
     ["new_code", 500, ServerError],
   ];

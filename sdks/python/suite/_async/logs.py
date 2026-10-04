@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from useshards import AsyncSandbox, NetworkLogRecord, PolicyRule
+from useshards import AsyncSandbox, EgressDecision, PolicyRule
 
 from .._shared import equal, matches, not_equal, ok
 from .harness import AsyncContext, Check, wait_for
@@ -19,7 +19,7 @@ async def request(sandbox: AsyncSandbox, host: str) -> None:
     not_equal(result.exit_code, 0, f"the policy let {host} through")
 
 
-def denied_host(records: list[NetworkLogRecord], host: str) -> NetworkLogRecord | None:
+def denied_host(records: list[EgressDecision], host: str) -> EgressDecision | None:
     return next((record for record in records if record.verdict == "deny" and record.host == host), None)
 
 
@@ -58,15 +58,15 @@ async def follow(ctx: AsyncContext) -> None:
     equal(await ended.result(), None, "a stop ends the follow without an error")
 
 
-async def network_read(ctx: AsyncContext) -> None:
+async def egress_read(ctx: AsyncContext) -> None:
     sandbox = await denied(ctx)
     host = f"{ctx.name('host')}.example"
     await request(sandbox, host)
-    records: list[NetworkLogRecord] = []
+    records: list[EgressDecision] = []
 
     async def recorded() -> bool:
         nonlocal records
-        records = await sandbox.network_logs()
+        records = await sandbox.egress_log()
         return denied_host(records, host) is not None
 
     await wait_for(f"a deny record for {host}", 10, recorded)
@@ -77,11 +77,11 @@ async def network_read(ctx: AsyncContext) -> None:
     ok(len(record.rule) > 0, "a record names the rule that decided it")
 
 
-async def network_follow(ctx: AsyncContext) -> None:
+async def egress_follow(ctx: AsyncContext) -> None:
     sandbox = await denied(ctx)
     host = f"{ctx.name('host')}.example"
-    seen: list[NetworkLogRecord] = []
-    ended = consume(sandbox.follow_network_logs(), seen.append)
+    seen: list[EgressDecision] = []
+    ended = consume(sandbox.follow_egress_log(), seen.append)
     try:
         await request(sandbox, host)
 
@@ -97,6 +97,6 @@ async def network_follow(ctx: AsyncContext) -> None:
 CHECKS = [
     Check("logs.read", read),
     Check("logs.follow", follow),
-    Check("logs.network_read", network_read),
-    Check("logs.network_follow", network_follow),
+    Check("logs.egress_read", egress_read),
+    Check("logs.egress_follow", egress_follow),
 ]

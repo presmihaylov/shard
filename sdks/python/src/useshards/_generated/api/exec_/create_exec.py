@@ -65,7 +65,7 @@ def sync_detailed(
     client: AuthenticatedClient | Client,
     body: ExecRequest | Unset = UNSET,
 ) -> Response[Error | Exec]:
-    """Create an exec, which runs once a client attaches"""
+    """execute a command in a running sandbox"""
 
     kwargs = _get_kwargs(
         id=id,
@@ -85,7 +85,7 @@ def sync(
     client: AuthenticatedClient | Client,
     body: ExecRequest | Unset = UNSET,
 ) -> Error | Exec | None:
-    """Create an exec, which runs once a client attaches"""
+    """execute a command in a running sandbox"""
 
     return sync_detailed(
         id=id,
@@ -100,7 +100,7 @@ async def asyncio_detailed(
     client: AuthenticatedClient | Client,
     body: ExecRequest | Unset = UNSET,
 ) -> Response[Error | Exec]:
-    """Create an exec, which runs once a client attaches"""
+    """execute a command in a running sandbox"""
 
     kwargs = _get_kwargs(
         id=id,
@@ -118,7 +118,7 @@ async def asyncio(
     client: AuthenticatedClient | Client,
     body: ExecRequest | Unset = UNSET,
 ) -> Error | Exec | None:
-    """Create an exec, which runs once a client attaches"""
+    """execute a command in a running sandbox"""
 
     return (
         await asyncio_detailed(

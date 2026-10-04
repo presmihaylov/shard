@@ -20,16 +20,30 @@ func guestDialer(t *testing.T, serve func(net.Conn) error) supervisor.Dialer {
 
 	return func(context.Context, uint32) (net.Conn, error) {
 		host, guest := net.Pipe()
-		t.Cleanup(func() { guest.Close() })
+		// closing silences the teardown's own close, and done makes the cleanup wait so no assertion runs after the test returns (SHARD-572).
+		closing, done := make(chan struct{}), make(chan struct{})
+		t.Cleanup(func() {
+			close(closing)
+			guest.Close()
+			<-done
+		})
+		fail := func(format string, err error) {
+			select {
+			case <-closing:
+			default:
+				t.Errorf(format, err)
+			}
+		}
 		go func() {
+			defer close(done)
 			var header supervisor.ExecHeader
 			if err := supervisor.ReadHeader(guest, &header); err != nil {
-				t.Errorf("read the header: %v", err)
+				fail("read the header: %v", err)
 
 				return
 			}
 			if err := serve(guest); err != nil {
-				t.Errorf("serve the exec: %v", err)
+				fail("serve the exec: %v", err)
 			}
 		}()
 
