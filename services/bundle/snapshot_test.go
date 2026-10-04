@@ -171,6 +171,26 @@ func TestSnapshotKeepsTheLayersAndNotTheRunFiles(t *testing.T) {
 	}
 }
 
+// A bundle that was never built has no layer to copy, and the refusal comes before any write.
+func TestSnapshotRefusesABundleThatWasNeverBuilt(t *testing.T) {
+	b, err := bundle.Open(t.TempDir())
+	if err != nil {
+		t.Fatalf("Open: %v", err)
+	}
+
+	dir := t.TempDir()
+	if err := b.Snapshot(t.Context(), dir); err == nil {
+		t.Error("Snapshot of a bundle with no layers returned no error")
+	}
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		t.Fatalf("read the snapshot: %v", err)
+	}
+	if len(entries) != 0 {
+		t.Errorf("Snapshot of a bundle with no layers wrote %v into the snapshot", entries)
+	}
+}
+
 // The copy never follows a symlink out of the tree: a link to a host path stays a link.
 func TestSnapshotKeepsASymlinkToTheHostAsALink(t *testing.T) {
 	b, _ := build(t, newSpec(t), models.ImageConfig{})

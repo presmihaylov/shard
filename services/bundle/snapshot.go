@@ -63,6 +63,12 @@ func (s *Service) Fork(snapshot string, spec models.SandboxSpec) (Bundle, error)
 func (b Bundle) Snapshot(ctx context.Context, dir string) error {
 	// The layers sit on the disk the stop detached.
 	return b.withDisk(func() error {
+		// A source that was never built has no layer, and copyTree would create the copy before cp fails.
+		for _, name := range seedLayers {
+			if _, err := os.Stat(b.layers()[name]); err != nil {
+				return fmt.Errorf("read the %s layer to snapshot: %w", name, err)
+			}
+		}
 		for _, name := range seedLayers {
 			if err := copyTree(ctx, b.layers()[name], filepath.Join(dir, name)); err != nil {
 				return err
