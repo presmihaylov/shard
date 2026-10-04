@@ -28,8 +28,10 @@ type Sandbox struct {
 	ExitChannel string `json:"exit_channel,omitempty"`
 	// StoppedReason says why shard stopped it when no operator did, or why shard-init died on a stop; empty otherwise.
 	StoppedReason string `json:"stopped_reason,omitempty"`
-	// FailedReason says why a create never reached running or a pause lost the guest, set only in state failed.
+	// FailedReason is the raw cause of a create that never reached running or a pause that lost the guest; never served on a public route.
 	FailedReason string `json:"failed_reason,omitempty"`
+	// FailedPublic is the part of FailedReason a public route may answer, empty on a record older than it.
+	FailedPublic string `json:"failed_public,omitempty"`
 	// UnresponsiveReason says what missed its probe bound, set only in state unresponsive.
 	UnresponsiveReason string `json:"unresponsive_reason,omitempty"`
 

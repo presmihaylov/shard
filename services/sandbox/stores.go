@@ -92,6 +92,8 @@ func (e *HeldError) Error() string {
 	return fmt.Sprintf("%s is %s %s %s: %s", e.Subject, e.Verb, e.Noun, strings.Join(e.Users, ", "), e.Fix)
 }
 
+func (e *HeldError) Public() string { return e.Error() }
+
 // RuleText is one --allow or --deny as the operator typed it. The daemon owns the grammar.
 type RuleText struct {
 	Action models.Action `json:"action" enum:"allow,deny"`
@@ -141,14 +143,14 @@ func (s *Stores) SetPolicy(ctx context.Context, name string, req PolicyRequest) 
 
 	users, err := PolicyHolders(s.cfg.Repo, name)
 	if err != nil {
-		return PolicyView{}, fmt.Errorf("policy %s is stored, but the host still enforces the rules it had: %w", name, err)
+		return PolicyView{}, &CauseError{Text: fmt.Sprintf("policy %s is stored, but the host still enforces the rules it had", name), Err: err}
 	}
 	if len(users) == 0 {
 		return PolicyView{Policy: policy, DNS: dnsState(policy)}, nil
 	}
 
 	if err := s.reapplyAll(ctx); err != nil {
-		return PolicyView{}, fmt.Errorf("policy %s is stored, but the host still enforces the rules it had: %w", name, err)
+		return PolicyView{}, &CauseError{Text: fmt.Sprintf("policy %s is stored, but the host still enforces the rules it had", name), Err: err}
 	}
 
 	return PolicyView{Policy: policy, DNS: dnsState(policy)}, nil
@@ -213,7 +215,7 @@ func PolicyHolders(repo Reader, name string) ([]string, error) {
 	sandboxes, unreadable := repo.List()
 	// A record that does not read back may name the policy, so nothing can say it is free.
 	if unreadable != nil {
-		return nil, fmt.Errorf("cannot tell which sandboxes hold the policy: %w", unreadable)
+		return nil, &CauseError{Text: "cannot tell which sandboxes hold the policy", Err: unreadable}
 	}
 
 	var holders []string
@@ -240,8 +242,11 @@ func (s *Stores) SetSecret(name string, req SecretRequest) (secret.Secret, error
 	if errors.As(err, &held) {
 		return secret.Secret{}, &HeldError{Subject: "secret " + name, Verb: "granted to", Noun: "sandbox", Users: held.Holders, Fix: "ungrant it first, its placeholder cannot change under a guest"}
 	}
-	if err != nil {
+	if _, ok := errors.AsType[*secret.InvalidError](err); ok {
 		return secret.Secret{}, &RequestError{Err: err}
+	}
+	if err != nil {
+		return secret.Secret{}, err
 	}
 
 	return sec, nil

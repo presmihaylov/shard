@@ -79,18 +79,27 @@ func firstNonEmpty(values ...string) string {
 	return ""
 }
 
+// UnsettableError is a variable the guest environment refuses, for its name or for one already there; never a read that failed.
+type UnsettableError struct {
+	Err error
+}
+
+func (e *UnsettableError) Error() string { return e.Err.Error() }
+
+func (e *UnsettableError) Unwrap() error { return e.Err }
+
 // Settable is the one predicate a check and a set share, so the two cannot drift.
 func Settable(env []string, name string) error {
 	if name == "" {
-		return errors.New("the environment variable has no name")
+		return &UnsettableError{Err: errors.New("the environment variable has no name")}
 	}
 	if strings.ContainsAny(name, "=\x00") {
-		return fmt.Errorf("%q is not an environment variable name", name)
+		return &UnsettableError{Err: fmt.Errorf("%q is not an environment variable name", name)}
 	}
 
 	for _, entry := range env {
 		if envKey(entry) == name {
-			return fmt.Errorf("the guest environment already holds %s, so nothing may be set over it", name)
+			return &UnsettableError{Err: fmt.Errorf("the guest environment already holds %s, so nothing may be set over it", name)}
 		}
 	}
 

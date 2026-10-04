@@ -159,7 +159,7 @@ func TestSecretSetRefusesToMoveAPlaceholderASandboxHolds(t *testing.T) {
 	app, _ = newSecretApp(t, &out, "value-654321\n", repo)
 	app.Root = root
 	err = app.Run(t.Context(), []string{"secret", "set", "--placeholder", "sk_test_moved01", "KEY"})
-	if err == nil || !strings.Contains(err.Error(), "permission") {
+	if err == nil || !strings.Contains(err.Error(), "cannot tell") {
 		t.Errorf("set that moves a placeholder with an unreadable record = %v", err)
 	}
 }

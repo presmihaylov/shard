@@ -96,9 +96,20 @@ func fits(bound, held, free int64) error {
 		return nil
 	}
 
-	return fmt.Errorf("a %d MiB disk does not fit on the root: it has %d MiB free, the disks of the other sandboxes on it are bound to %d MiB, and %d MiB stays free for the daemon; ask for a smaller --disk or remove a sandbox",
-		bound/bytesPerMiB, free/bytesPerMiB, held/bytesPerMiB, diskHeadroom/bytesPerMiB)
+	return &NoRoomError{Bound: bound, Free: free, Held: held}
 }
+
+// NoRoomError is a disk refused because the root has no room for it, the one admission failure that is the request's fault.
+type NoRoomError struct {
+	Bound, Free, Held int64
+}
+
+func (e *NoRoomError) Error() string {
+	return fmt.Sprintf("a %d MiB disk does not fit on the root: it has %d MiB free, the disks of the other sandboxes on it are bound to %d MiB, and %d MiB stays free for the daemon; ask for a smaller --disk or remove a sandbox",
+		e.Bound/bytesPerMiB, e.Free/bytesPerMiB, e.Held/bytesPerMiB, diskHeadroom/bytesPerMiB)
+}
+
+func (e *NoRoomError) Public() string { return e.Error() }
 
 // heldDisks sums the bound of the disk named name, or of the one reserved there, in every sandbox directory under sandboxes but self, in any state: a stopped one can start and write.
 func heldDisks(sandboxes, name, self string) (int64, error) {

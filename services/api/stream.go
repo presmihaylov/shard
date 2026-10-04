@@ -79,7 +79,7 @@ func (h *Handler) getExec(w http.ResponseWriter, r *http.Request) {
 
 	wait, err := boolQuery(r, "wait")
 	if err != nil {
-		h.writeError(w, err)
+		h.writeError(w, r, err)
 
 		return
 	}
@@ -87,7 +87,7 @@ func (h *Handler) getExec(w http.ResponseWriter, r *http.Request) {
 	if wait {
 		exec, err := h.lifecycle.WaitExec(r.Context(), r.PathValue("id"), r.PathValue("exec"))
 		if err != nil {
-			h.writeError(w, err)
+			h.writeError(w, r, err)
 
 			return
 		}
@@ -99,7 +99,7 @@ func (h *Handler) getExec(w http.ResponseWriter, r *http.Request) {
 
 	exec, err := h.lifecycle.GetExec(r.Context(), r.PathValue("id"), r.PathValue("exec"))
 	if err != nil {
-		h.writeError(w, err)
+		h.writeError(w, r, err)
 
 		return
 	}
@@ -129,7 +129,7 @@ func (h *Handler) attachExec(w http.ResponseWriter, r *http.Request) {
 	ctx, cancel := context.WithCancel(r.Context())
 	defer cancel()
 
-	session := &execSession{w: w, r: r, log: h.log, ctx: ctx, cancel: cancel}
+	session := &execSession{w: w, r: r, log: h.log, ctx: ctx, cancel: cancel, failure: func(err error) FailureMessage { return h.failureOf(r, err) }}
 	defer session.close()
 
 	stdin, writer := io.Pipe()
@@ -150,7 +150,7 @@ func (h *Handler) attachExec(w http.ResponseWriter, r *http.Request) {
 
 	// Nothing was said on the wire yet, so the refusal is a status and a JSON body like every other route.
 	if !session.answered {
-		h.writeError(w, err)
+		h.writeError(w, r, err)
 
 		return
 	}
@@ -204,6 +204,8 @@ type execSession struct {
 	w   http.ResponseWriter
 	r   *http.Request
 	log *log.Logger
+	// failure is the message of an error that ended the command, in the words the route may answer.
+	failure func(error) FailureMessage
 	// ctx is the attach's, so a detach also ends a write blocked on a client that stopped reading.
 	ctx    context.Context
 	cancel context.CancelFunc
@@ -278,7 +280,7 @@ func (e *execSession) finish(attached sandbox.Attached, err error) {
 	}
 
 	if err != nil {
-		e.send(StreamFailure, failureOf(err))
+		e.send(StreamFailure, e.failure(err))
 
 		return
 	}
@@ -334,7 +336,7 @@ func describeLogs(_ huma.Registry, op *huma.Operation) {
 func (h *Handler) sandboxLogs(w http.ResponseWriter, r *http.Request) {
 	follow, err := boolQuery(r, "follow")
 	if err != nil {
-		h.writeError(w, err)
+		h.writeError(w, r, err)
 
 		return
 	}
@@ -356,7 +358,7 @@ func (h *Handler) sandboxLogs(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if err != nil {
-		h.writeError(w, err)
+		h.writeError(w, r, err)
 
 		return
 	}
@@ -420,20 +422,20 @@ func (h *Handler) followLogs(w http.ResponseWriter, r *http.Request) {
 	// A reference nothing holds is refused before the 101, like every other refusal.
 	id, err := h.repo.Resolve(r.PathValue("id"))
 	if err != nil {
-		h.writeError(w, err)
+		h.writeError(w, r, err)
 
 		return
 	}
 	sb, err := h.repo.Get(id)
 	if err != nil {
-		h.writeError(w, err)
+		h.writeError(w, r, err)
 
 		return
 	}
 
 	// A failed sandbox is refused here, before the 200 or the 101, so both follow paths answer 409 like the non-follow path.
 	if err := sandbox.FailedGuard(id, sb); err != nil {
-		h.writeError(w, err)
+		h.writeError(w, r, err)
 
 		return
 	}
@@ -446,7 +448,7 @@ func (h *Handler) followLogs(w http.ResponseWriter, r *http.Request) {
 
 	f, err := h.follow(w, r, "logs of sandbox "+id)
 	if err != nil {
-		h.writeError(w, err)
+		h.writeError(w, r, err)
 
 		return
 	}
@@ -465,7 +467,7 @@ func (h *Handler) followLogs(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if err != nil {
-		f.send(StreamFailure, failureOf(err))
+		f.send(StreamFailure, h.failureOf(r, err))
 
 		return
 	}
@@ -503,7 +505,7 @@ func (h *Handler) followEgressLog(w http.ResponseWriter, r *http.Request, sb mod
 
 	f, err := h.follow(w, r, "egress log of sandbox "+sb.ID)
 	if err != nil {
-		h.writeError(w, err)
+		h.writeError(w, r, err)
 
 		return
 	}
@@ -527,12 +529,15 @@ func (h *Handler) followEgressLog(w http.ResponseWriter, r *http.Request, sb mod
 	err = endOf(ctx, err)
 
 	switch {
-	case errors.Is(err, errStopped), errors.Is(err, egress.ErrSandboxGone):
-		f.close(websocket.StatusNormalClosure, err.Error())
+	// Each end of the record is said in its sentinel's own words, which no wrapper on the way can add a host detail to.
+	case errors.Is(err, errStopped):
+		f.close(websocket.StatusNormalClosure, errStopped.Error())
+	case errors.Is(err, egress.ErrSandboxGone):
+		f.close(websocket.StatusNormalClosure, egress.ErrSandboxGone.Error())
 	case f.ctx.Err() != nil:
 		f.close(websocket.StatusNormalClosure, "")
 	case err != nil:
-		f.close(websocket.StatusInternalError, err.Error())
+		f.close(websocket.StatusInternalError, h.message(r, models.CodeInternal, err))
 	default:
 		f.close(websocket.StatusNormalClosure, "")
 	}
@@ -663,9 +668,9 @@ func sendJSON(ctx context.Context, conn *websocket.Conn, stream byte, payload an
 	return Send(ctx, conn, stream, body)
 }
 
-// failureOf is the failure message of an error, the same status and code an error body would carry.
-func failureOf(err error) FailureMessage {
+// failureOf is the failure message of an error, the same code and text an error body would carry.
+func (h *Handler) failureOf(r *http.Request, err error) FailureMessage {
 	_, code := classify(err)
 
-	return FailureMessage{Error: FailureError{Code: code, Message: err.Error()}}
+	return FailureMessage{Error: FailureError{Code: code, Message: h.message(r, code, err)}}
 }

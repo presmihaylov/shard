@@ -220,10 +220,10 @@ func TestAFileRefusalAnswersTheAPICode(t *testing.T) {
 	cases := []struct {
 		code     string
 		notFound bool
-		request  bool
+		invalid  bool
 	}{
 		{code: supervisor.FileNotFound, notFound: true},
-		{code: supervisor.FileInvalid, request: true},
+		{code: supervisor.FileInvalid, invalid: true},
 		{code: ""},
 	}
 	for _, c := range cases {
@@ -234,9 +234,9 @@ func TestAFileRefusalAnswersTheAPICode(t *testing.T) {
 
 			_, err := svc.StatFile(t.Context(), "sandbox1", "/srv/app")
 			var notFound *sandbox.FileNotFoundError
-			var request *sandbox.RequestError
-			if err == nil || errors.As(err, &notFound) != c.notFound || errors.As(err, &request) != c.request {
-				t.Fatalf("stat gave %v, want not found %v and a request error %v", err, c.notFound, c.request)
+			var invalid *sandbox.FileInvalidError
+			if err == nil || errors.As(err, &notFound) != c.notFound || errors.As(err, &invalid) != c.invalid {
+				t.Fatalf("stat gave %v, want not found %v and an invalid path %v", err, c.notFound, c.invalid)
 			}
 			if !strings.Contains(err.Error(), "refused /srv/app") {
 				t.Fatalf("stat gave %v, want the guest's words", err)

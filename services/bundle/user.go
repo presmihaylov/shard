@@ -25,6 +25,8 @@ func (e *UnknownUserError) Error() string { return e.Err.Error() }
 
 func (e *UnknownUserError) Unwrap() error { return e.Err }
 
+func (e *UnknownUserError) Public() string { return e.Err.Error() }
+
 // A passwd line is name:x:uid:gid:...; a group line is name:x:gid:member,member.
 const (
 	passwdFields = 4

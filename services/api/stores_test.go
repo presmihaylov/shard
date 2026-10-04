@@ -201,7 +201,7 @@ func TestSecretListCarriesNoValue(t *testing.T) {
 		Destinations: []string{"api.example.com"},
 		UpdatedAt:    time.Date(2026, 9, 5, 10, 0, 0, 0, time.UTC),
 	}}
-	s.stores.listErr = errors.New("secret broken.json does not decode")
+	s.stores.listErr = &secret.UnreadableError{Name: "broken", Err: errors.New("decode /var/lib/shard/secrets/broken: unexpected end of JSON input")}
 
 	status, body := get(t, s.server, "/v0/secrets")
 	if status != http.StatusOK {
@@ -221,9 +221,21 @@ func TestSecretListCarriesNoValue(t *testing.T) {
 	}
 
 	warnings, ok := body["warnings"].([]any)
-	if !ok || len(warnings) != 1 {
-		t.Errorf("the warnings are %v, want the file that does not decode", body["warnings"])
+	if !ok || len(warnings) != 1 || warnings[0] != "secret broken: its record cannot be read" {
+		t.Errorf("the warnings are %v, want the one secret that does not decode, by name alone", body["warnings"])
 	}
+	if !strings.Contains(s.log.String(), "/var/lib/shard/secrets/broken") {
+		t.Errorf("the daemon log %q lacks the cause of the warning", s.log.String())
+	}
+}
+
+// A list that failed as a whole is no warning: the store itself could not be read, so the route answers internal.
+func TestSecretListThatCannotReadTheStoreIsInternal(t *testing.T) {
+	s := seed(t)
+	s.stores.listErr = errors.New("read /var/lib/shard/secrets: permission denied")
+
+	status, body := get(t, s.server, "/v0/secrets")
+	wantInternal(t, s, status, body, "read /var/lib/shard/secrets: permission denied")
 }
 
 // The value crosses the socket on this route and on no other, and the answer carries it back nowhere.

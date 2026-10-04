@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -21,6 +22,7 @@ import (
 	"github.com/presmihaylov/shard/services/api"
 	"github.com/presmihaylov/shard/services/egress"
 	"github.com/presmihaylov/shard/services/network"
+	"github.com/presmihaylov/shard/services/sandbox"
 	"github.com/presmihaylov/shard/services/sandboxstate"
 )
 
@@ -62,7 +64,7 @@ func seed(t *testing.T) seeded {
 	verbs, stores, egressLog := &fakeLifecycle{ended: make(chan struct{})}, &fakeStores{}, &fakeEgressLog{}
 
 	logged := &lockedBuffer{}
-	handler := api.NewHandler("v-test", fakeProcess{}, repo, enforcer, verbs, stores, egressLog, logged)
+	handler := api.NewHandler("v-test", fakeProcess{}, repo, enforcer, verbs, stores, egressLog, nil, logged)
 	server := httptest.NewServer(handler)
 	t.Cleanup(server.Close)
 
@@ -117,6 +119,8 @@ type fakeEgressLog struct {
 	// holds keeps a follow open until its context ends, the way a live log does while the sandbox runs.
 	holds bool
 	cut   int
+	// broke is how a follow fails after its records, in place of the sandbox's removal.
+	broke error
 }
 
 func (f *fakeEgressLog) Read(sb models.Sandbox) ([]egress.Record, int, error) {
@@ -140,6 +144,9 @@ func (f *fakeEgressLog) Follow(ctx context.Context, sb models.Sandbox, yield fun
 		<-ctx.Done()
 
 		return ctx.Err()
+	}
+	if f.broke != nil {
+		return f.broke
 	}
 
 	return egress.ErrSandboxGone
@@ -272,12 +279,33 @@ func TestDaemonIsTheProcessRecordWithTheHandlersVersion(t *testing.T) {
 func TestDaemonIs500WhenTheProviderCannotBeBuilt(t *testing.T) {
 	s := seed(t)
 
-	server := httptest.NewServer(api.NewHandler("v-test", fakeProcess{err: errors.New("find runsc: not on this host")}, s.repo, nil, s.verbs, s.stores, &fakeEgressLog{}, io.Discard))
+	server := httptest.NewServer(api.NewHandler("v-test", fakeProcess{err: errors.New("find runsc: not on this host")}, s.repo, nil, s.verbs, s.stores, &fakeEgressLog{}, nil, io.Discard))
 	t.Cleanup(server.Close)
 
 	status, body := get(t, server, "/v0/daemon")
 	if status != http.StatusInternalServerError || errorOf(t, body).message != "find runsc: not on this host" {
 		t.Errorf("GET /v0/daemon answered %d %v, want 500 and the provider's error", status, body)
+	}
+}
+
+// The raw error goes to the log through the redactor, so a secret value in a cause never reaches the log.
+func TestTheLogLineOfARawErrorCarriesNoSecretValue(t *testing.T) {
+	s := seed(t)
+	s.verbs.err = errors.New("runsc create /var/lib/shard/sandboxes/sb1: env API_KEY=sk_live_synthetic_0001")
+	redact := func(text string) string {
+		return strings.ReplaceAll(text, "sk_live_synthetic_0001", "<secret API_KEY>")
+	}
+
+	logged := &lockedBuffer{}
+	server := httptest.NewServer(api.NewHandler("v-test", fakeProcess{}, s.repo, nil, s.verbs, s.stores, s.egress, redact, logged))
+	t.Cleanup(server.Close)
+
+	status, body := get(t, server, "/v0/sandboxes/"+s.running.ID+"?wait=true")
+	if got := errorOf(t, body); status != http.StatusInternalServerError || got.message != internalText {
+		t.Errorf("answered %d %+v, want 500 with only the generic text", status, got)
+	}
+	if line := logged.String(); !strings.Contains(line, "API_KEY=<secret API_KEY>") || strings.Contains(line, "sk_live_synthetic_0001") {
+		t.Errorf("the daemon log %q, want the secret's name and never its value", line)
 	}
 }
 
@@ -335,8 +363,11 @@ func TestListAnswersTheReadableRowsAndWarnsAboutTheRest(t *testing.T) {
 	if !ok || len(warnings) != 1 {
 		t.Fatalf("the warnings are %v, want one line for the corrupt record", body["warnings"])
 	}
-	if !strings.Contains(warnings[0].(string), broken.ID) {
-		t.Errorf("the warning %q does not name the corrupt sandbox %s", warnings[0], broken.ID)
+	if !strings.Contains(warnings[0].(string), broken.ID) || strings.Contains(warnings[0].(string), s.root) {
+		t.Errorf("the warning %q does not name the corrupt sandbox %s alone", warnings[0], broken.ID)
+	}
+	if !strings.Contains(s.log.String(), record) {
+		t.Errorf("the daemon log %q lacks the record's path", s.log.String())
 	}
 }
 
@@ -391,8 +422,91 @@ func TestGetWithWaitAnswersTheWaitFailure(t *testing.T) {
 	s.verbs.err = errors.New("the wait broke")
 
 	status, body := get(t, s.server, "/v0/sandboxes/"+s.running.ID+"?wait=true")
-	if status != http.StatusInternalServerError || !strings.Contains(errorOf(t, body).message, "the wait broke") {
-		t.Errorf("GET ?wait with a failing wait answered %d %v, want 500 carrying the reason", status, body)
+	wantInternal(t, s, status, body, "the wait broke")
+}
+
+// A public error joined with a raw cause answers its own words alone, and the raw cause goes to the log.
+func TestAPublicErrorJoinedWithARawCauseAnswersOnlyItsWords(t *testing.T) {
+	s := seed(t)
+	refusal := &sandbox.StateError{ID: "sb1", State: models.StateUnresponsive, Fix: "stop it with shard stop sb1", Code: models.CodeSandboxLive, Detail: "pid 4242 missed its probe"}
+	s.verbs.err = errors.Join(errors.New(failedCause), fmt.Errorf("probe under /var/lib/shard: %w", refusal))
+
+	status, body := get(t, s.server, "/v0/sandboxes/"+s.running.ID+"?wait=true")
+	if got := errorOf(t, body); status != http.StatusConflict || got.message != refusal.Public() {
+		t.Errorf("answered %d %+v, want 409 with %q alone", status, got, refusal.Public())
+	}
+	if !strings.Contains(s.log.String(), failedCause) || !strings.Contains(s.log.String(), "pid 4242 missed its probe") {
+		t.Errorf("the daemon log %q lacks the raw cause", s.log.String())
+	}
+}
+
+// internalText is what a public route answers for a failure no error type made public.
+const internalText = "the daemon could not complete the request; its log has the cause"
+
+// wantInternal asserts a public 500 that says only the generic text, while the daemon log keeps the cause.
+func wantInternal(t *testing.T, s seeded, status int, body map[string]any, cause string) {
+	t.Helper()
+
+	if status != http.StatusInternalServerError || errorOf(t, body).code != "internal" || errorOf(t, body).message != internalText {
+		t.Errorf("answered %d %v, want 500 internal with only the generic text", status, body)
+	}
+	if !strings.Contains(s.log.String(), cause) {
+		t.Errorf("the daemon log %q lacks the cause %q", s.log.String(), cause)
+	}
+}
+
+// failedCause is a raw cause with a host path and a pid, which a public route never answers.
+const failedCause = "runsc start: open /var/lib/shard/sandboxes/sb1/config.json: pid 4242: permission denied"
+
+// A failed record answers only its public reason on every public read; one older than failed_public answers the generic text.
+func TestAFailedRecordAnswersOnlyItsPublicReason(t *testing.T) {
+	s := seed(t)
+
+	failed := func(name, public string) {
+		t.Helper()
+		if _, err := s.repo.Create(models.Sandbox{Name: name, Image: "docker.io/library/alpine:3.20", Provider: "gvisor", State: models.StateFailed,
+			FailedReason: failedCause, FailedPublic: public}); err != nil {
+			t.Fatalf("Create: %v", err)
+		}
+	}
+	failed("old", "")
+	failed("new", "the image ref is not valid")
+
+	for _, c := range []struct{ ref, want string }{{"old", sandbox.FailedGeneric}, {"new", "the image ref is not valid"}} {
+		for _, path := range []string{"/v0/sandboxes/" + c.ref, "/v0/sandboxes/" + c.ref + "?wait=true"} {
+			wantPublicReason(t, s, path, c.want)
+		}
+
+		// The logs route repeats the guard every lifecycle verb runs, so its 409 stands for theirs.
+		status, body := get(t, s.server, "/v0/sandboxes/"+c.ref+"/logs?follow=true")
+		if refusal := errorOf(t, body); status != http.StatusConflict || refusal.code != string(models.CodeSandboxFailed) || !strings.Contains(refusal.message, c.want) {
+			t.Errorf("logs of %s answered %d %v, want 409 sandbox_failed with %q", c.ref, status, body, c.want)
+		}
+	}
+
+	_, body := get(t, s.server, "/v0/sandboxes?all=true")
+	listed, err := json.Marshal(body)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(listed), "/var/lib/shard") || strings.Contains(string(listed), "4242") {
+		t.Errorf("the list carries host detail: %s", listed)
+	}
+	if !strings.Contains(s.log.String(), failedCause) {
+		t.Errorf("the daemon log %q lacks the raw cause of the 409", s.log.String())
+	}
+}
+
+// wantPublicReason asserts a read of a failed record answers want as failed_reason and never the state key failed_public.
+func wantPublicReason(t *testing.T, s seeded, path, want string) {
+	t.Helper()
+
+	status, body := get(t, s.server, path)
+	if status != http.StatusOK || body["failed_reason"] != want {
+		t.Errorf("GET %s answered %d with failed_reason %v, want %q", path, status, body["failed_reason"], want)
+	}
+	if _, ok := body["failed_public"]; ok {
+		t.Errorf("GET %s carries the state key failed_public: %v", path, body)
 	}
 }
 
@@ -456,9 +570,7 @@ func TestGetIs500WhenTheNameLinkIsBroken(t *testing.T) {
 	}
 
 	status, body := get(t, s.server, "/v0/sandboxes/broken")
-	if status != http.StatusInternalServerError || !strings.Contains(errorOf(t, body).message, "not a sandbox id") {
-		t.Errorf("GET /v0/sandboxes/broken answered %d %v, want 500", status, body)
-	}
+	wantInternal(t, s, status, body, "not a sandbox id")
 }
 
 func TestGetIs500WhenTheRecordIsUnreadable(t *testing.T) {
@@ -470,9 +582,7 @@ func TestGetIs500WhenTheRecordIsUnreadable(t *testing.T) {
 	}
 
 	status, body := get(t, s.server, "/v0/sandboxes/"+s.running.ID)
-	if status != http.StatusInternalServerError || !strings.Contains(errorOf(t, body).message, "decode") {
-		t.Errorf("GET of a corrupt record answered %d %v, want 500", status, body)
-	}
+	wantInternal(t, s, status, body, "decode")
 }
 
 func TestAnUnknownRouteIsAJSON404(t *testing.T) {
