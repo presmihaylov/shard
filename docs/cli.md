@@ -70,11 +70,11 @@ a dash is a verb with no `--format`.
 | `inspect <ref>` | `--format` | json | the record |
 | `stop <ref>` | | - | the id |
 | `start <ref>` | | - | the id |
-| `remove <ref>` | `--force` | - | the id |
+| `remove <ref>` | `--force` | - | the id, or nothing for a missing sandbox with `--force` |
 | `pause <ref>` | | - | the id |
 | `resume <ref>` | | - | the id |
 | `fork <ref>` | `--name` | - | the new id |
-| `cp <src> <ref>:<path>`, `cp <ref>:<path> <dst>` | `--user` | - | nothing |
+| `cp <src> <ref>:<path>`, `cp <ref>:<path> <dst>` | `--user`, on a copy in only | - | nothing |
 
 `<ref>` is a sandbox id or its `--name`. A verb that prints the id prints the id even when it was given the name.
 
@@ -335,7 +335,7 @@ shard snapshot inspect web-base
 shard snapshot remove web-base
 ```
 
-`snapshot create` refuses a running or paused sandbox. `create --snapshot` takes no image and
+`snapshot create` takes a stopped sandbox only. `create --snapshot` takes no image and
 never pulls: the image must be on the host at the digest the snapshot recorded, and only the
 provider that made the snapshot starts it. With no `--memory` or `--disk`, the new sandbox takes the
 bounds its source ran under. On Firecracker and `vz` a larger `--disk` grows the snapshot's disk and

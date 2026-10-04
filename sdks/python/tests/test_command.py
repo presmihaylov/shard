@@ -224,6 +224,20 @@ def test_write_stdin_needs_stdin(daemon: FakeDaemon) -> None:
         handle.write_stdin("x")
 
 
+def test_write_stdin_on_a_terminal_needs_no_stdin(daemon: FakeDaemon) -> None:
+    def session(peer: Peer) -> list[bytes]:
+        pieces = peer.stdin()
+        peer.finish(0)
+        return pieces
+
+    daemon.attaches = [session]
+    handle = _command.start_command(transport(daemon), "sb", "sh", tty=True, output_limit_bytes=LIMIT)
+    handle.write_stdin("x")
+    handle.close_stdin()
+    handle.wait()
+    assert daemon.outcomes == [[b"x"]]
+
+
 def test_negative_limit_refused_before_the_start(daemon: FakeDaemon) -> None:
     with pytest.raises(ValueError, match="0 or more"):
         _command.run_command(transport(daemon), "sb", "true", output_limit_bytes=-1)
