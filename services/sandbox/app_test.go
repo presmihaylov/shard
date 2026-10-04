@@ -141,13 +141,15 @@ func TestWaitAppRecordsTheExitOnceTheVerbHoldingTheSandboxLetsGo(t *testing.T) {
 
 // A verb that took the sandbox first changed the run, so the app's end belongs to no record and the record stays as that verb left it.
 func TestWaitAppLeavesTheRecordOfAVerbThatLandedFirst(t *testing.T) {
-	cases := map[string]func(*models.Sandbox){
-		"a stop": func(sb *models.Sandbox) {
+	cases := map[string]func(*models.Sandbox, *fakeProvider){
+		"a stop": func(sb *models.Sandbox, _ *fakeProvider) {
 			sb.State = models.StateStopped
 			sb.ExitStatus = &models.ExitStatus{Code: 143, Signal: 15}
 		},
-		"a stop and a start": func(sb *models.Sandbox) {
+		"a stop and a start": func(sb *models.Sandbox, p *fakeProvider) {
 			sb.StartedAt = time.Now().UTC()
+			p.entrypointExit = nil
+			p.restarts = models.RestartCount{}
 		},
 	}
 	for name, land := range cases {
@@ -169,7 +171,7 @@ func TestWaitAppLeavesTheRecordOfAVerbThatLandedFirst(t *testing.T) {
 				waited <- exit
 			}()
 			waitForWaiters(t, svc, "sandbox1", 2)
-			land(&l.repo.sb)
+			land(&l.repo.sb, l.provider)
 			want := l.repo.sb
 			unlock()
 
@@ -180,6 +182,39 @@ func TestWaitAppLeavesTheRecordOfAVerbThatLandedFirst(t *testing.T) {
 				t.Errorf("the record says %s with exit %+v, want %s with %+v as %s left it", got.State, got.ExitStatus, want.State, want.ExitStatus, name)
 			}
 		})
+	}
+}
+
+// A resume starts the record's clock again but keeps the run, so the app's end still lands on it.
+func TestWaitAppRecordsTheEndAcrossAResume(t *testing.T) {
+	sb := withApp()
+	sb.Restart = &models.Restart{RestartSpec: models.RestartSpec{Policy: models.RestartOnFailure, Retries: 2, Backoff: 1}}
+	svc, l := newService(t, &recorder{}, sb)
+	l.provider.entrypointExit = &models.ExitStatus{Code: 3}
+	l.provider.restarts = models.RestartCount{Count: 2, GaveUp: true, Ended: true}
+	unlock, err := svc.Hold(t.Context(), "sandbox1")
+	if err != nil {
+		t.Fatalf("hold: %v", err)
+	}
+
+	waited := make(chan error, 1)
+	go func() {
+		_, err := svc.WaitApp(t.Context(), "sandbox1")
+		waited <- err
+	}()
+	waitForWaiters(t, svc, "sandbox1", 2)
+	l.repo.sb.StartedAt = time.Now().UTC()
+	unlock()
+
+	if err := <-waited; err != nil {
+		t.Fatalf("WaitApp: %v", err)
+	}
+	got := l.repo.sb
+	if got.ExitStatus == nil || *got.ExitStatus != (models.ExitStatus{Code: 3}) {
+		t.Errorf("the record holds exit %+v, want {code:3}", got.ExitStatus)
+	}
+	if got.Restart == nil || got.Restart.RestartCount != l.provider.restarts {
+		t.Errorf("the record holds %+v, want the count the supervisor ended on", got.Restart)
 	}
 }
 
