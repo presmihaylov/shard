@@ -76,3 +76,15 @@ The guest kernel has its own workflow and its own release tag, which `docs/kerne
 that the tag names the package version, runs `make sdk-py-check`, builds the wheel and the sdist, and
 installs the wheel into a clean venv. It keeps the wheel and the sdist as the `useshards-dist`
 workflow artifact and uploads nothing to PyPI, because publication needs Pres's approval.
+
+## The TypeScript SDK
+
+The npm package `useshards` has its own version, in `sdks/typescript/package.json`, and its own tag:
+`useshards-ts-v<version>` on `main`. `src/version.ts` holds the same version, and a unit test fails
+while the two differ, so a release bumps both. `release-sdk-typescript.yml` checks that the commit is
+on `main` and that the tag names the package version, runs `make sdk-ts-check`, packs the tarball
+with `npm pack`, and installs it into a clean project that imports it. It keeps the tarball as the
+`useshards-ts-dist` workflow artifact and publishes nothing to npm, because publication needs Pres's
+approval.
+
+Neither SDK workflow publishes. Each leaves its packages on the workflow run, for review.
