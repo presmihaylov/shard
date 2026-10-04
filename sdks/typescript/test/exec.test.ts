@@ -46,6 +46,10 @@ async function start(capture = new OutputCapture(1024), handlers = {}, signal?: 
   return Session.start(transport, "sb_1", execRequest("echo hi", { stdin: false }), capture, handlers, signal);
 }
 
+async function startReading(): Promise<Session> {
+  return Session.start(transport, "sb_1", execRequest("cat", { stdin: true }), new OutputCapture(1024), {});
+}
+
 test("a command starts, streams to the capture and every handler, and answers its exit", async () => {
   const capture = new OutputCapture(1024);
   const seen: string[] = [];
@@ -184,7 +188,7 @@ test("a reattach replays from the daemon's oldest byte, so the capture starts ag
 });
 
 test("stdin goes in order, in pieces the daemon reads, and its close is one message", async () => {
-  const session = await start();
+  const session = await startReading();
   const peer = await daemon.peer(0);
   const big = Buffer.alloc(maxPayload + 10, 0x61);
   await Promise.all([session.writeStdin(big), session.writeStdin("tail"), session.closeStdin()]);
@@ -203,9 +207,26 @@ test("stdin goes in order, in pieces the daemon reads, and its close is one mess
 });
 
 test("stdin to a command no stream holds is refused", async () => {
-  const session = await start();
+  const session = await startReading();
   session.disconnect();
   await assert.rejects(session.writeStdin("x"), (err: unknown) => err instanceof ShardConnectionError && /is not attached$/.test(err.message));
+});
+
+test("stdin to a command started without stdin or a terminal is refused, as the daemon drops it", async () => {
+  const session = await start();
+  const peer = await daemon.peer(0);
+  await assert.rejects(session.writeStdin("x"), (err: unknown) => err instanceof TypeError && /started without stdin, so it reads no input$/.test(err.message));
+  peer.exit({ code: 0 });
+  await session.wait();
+  assert.notEqual((await peer.next())?.opcode, opBinary, "no stdin reached the daemon");
+});
+
+test("stdin to a command on a terminal reaches it without stdin set", async () => {
+  const session = await Session.start(transport, "sb_1", execRequest("sh", { stdin: false, tty: { rows: 24, cols: 80 } }), new OutputCapture(1024), {});
+  const peer = await daemon.peer(0);
+  await session.writeStdin("x");
+  const frame = await peer.next();
+  assert.deepEqual([...(frame?.payload ?? [])], [0, 0x78]);
 });
 
 test("kill, resize and inspect reach their routes", async () => {

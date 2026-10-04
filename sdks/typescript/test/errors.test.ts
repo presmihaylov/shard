@@ -45,6 +45,12 @@ test("unsupported wins over its status", () => {
   assert.ok(err instanceof APIError);
 });
 
+test("holders are optional and keep an empty array", () => {
+  const empty = refused(409, Buffer.from(JSON.stringify({ error: { code: "in_use", message: "held", holders: [] } })));
+  assert.deepEqual(empty.holders, []);
+  assert.equal(refused(409, body("in_use", "held")).holders, undefined);
+});
+
 test("a status with no class is a plain APIError", () => {
   const err = apiError(418, body("teapot", "short and stout"));
   assert.equal(err.constructor, APIError);

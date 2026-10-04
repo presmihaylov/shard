@@ -220,10 +220,10 @@ func TestCreateRefusesAMemoryBoundBelowTheMinimum(t *testing.T) {
 		t.Fatalf("Create = %v, want a refusal that names the sandbox and the minimum", err)
 	}
 
-	// Zero is unbounded on Linux; a VM has no unbounded memory, so the refusal names the provider and the flag instead of a default.
+	// Zero is unbounded on Linux; a VM has no unbounded memory, so the refusal names the provider and the field instead of a default.
 	spec.Resources.MemoryMiB = 0
 	err = h.provider.Create(t.Context(), spec)
-	for _, want := range []string{spec.ID, "provider vz", "--memory 0", "--memory 128MiB"} {
+	for _, want := range []string{spec.ID, "provider vz", "needs resources.memory_mib", "set it to 128 MiB or more"} {
 		if err == nil || !strings.Contains(err.Error(), want) {
 			t.Fatalf("Create with --memory 0 = %v, want %q named", err, want)
 		}
@@ -245,7 +245,7 @@ func TestCheckResourcesRefusesWhatCreateRefuses(t *testing.T) {
 		t.Fatalf("CheckResources(128) = %v, want nil", err)
 	}
 	err := h.provider.CheckResources(models.Resources{MemoryMiB: 128, DiskMiB: 130})
-	if err == nil || !strings.Contains(err.Error(), "use 128 or 131 MiB") {
+	if err == nil || !strings.Contains(err.Error(), "set resources.disk_mib to 128 MiB or 131 MiB") {
 		t.Fatalf("CheckResources(--disk 130) = %v, want the nearest bounds", err)
 	}
 }
@@ -2373,5 +2373,25 @@ func TestAdoptStagingKeepsACutPauseStage(t *testing.T) {
 
 	if _, err := os.Stat(tmp); err != nil {
 		t.Errorf("the staging %s is gone after adopt, want vz to keep it to finish on resume: %v", tmp, err)
+	}
+}
+
+// A restore whose checkpoint disk is missing must leave the live disk in place, so a failed copy never bricks a sandbox (SHARD-589).
+func TestRestoreDiskKeepsTheLiveDiskWhenTheCopyFails(t *testing.T) {
+	stateDir, checkpoint := t.TempDir(), t.TempDir()
+	disk := filepath.Join(stateDir, vzvm.DiskFile)
+	if err := os.WriteFile(disk, []byte("live"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	// The checkpoint has no disk, so the copy fails and the swap never runs.
+	if err := vzvm.RestoreDisk("sb-1", checkpoint, disk); err == nil {
+		t.Fatal("restoreDisk with no checkpoint disk = nil, want an error")
+	}
+	got, err := os.ReadFile(disk)
+	if err != nil {
+		t.Fatalf("the live disk after a failed restore: %v, want it kept", err)
+	}
+	if string(got) != "live" {
+		t.Errorf("the live disk = %q, want it unchanged", got)
 	}
 }

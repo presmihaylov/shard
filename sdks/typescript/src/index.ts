@@ -1,4 +1,4 @@
-export { Shard, Policies, Secrets, Snapshots, type CreateOptions, type RunOptions, type SandboxRef, type SecretOptions } from "./shard.js";
+export { Shard, Policies, Secrets, Snapshots, type CreateOptions, type RunOptions, type SandboxRef, type SandboxList, type SecretList, type SecretOptions } from "./shard.js";
 export { Sandbox, type FollowOptions } from "./sandbox.js";
 export { App } from "./app.js";
 export { Files, type FileEntry, type FileInfo, type FileType, type WriteOptions } from "./files.js";
