@@ -11,6 +11,7 @@ import (
 	"github.com/presmihaylov/shard/models"
 	"github.com/presmihaylov/shard/services/egress"
 	"github.com/presmihaylov/shard/services/image"
+	"github.com/presmihaylov/shard/services/sandboxstate"
 	"github.com/presmihaylov/shard/services/secret"
 )
 
@@ -207,6 +208,9 @@ func (s *Stores) RemovePolicy(name string) error {
 	}
 
 	users, err := PolicyHolders(s.cfg.Repo, name)
+	if ids := unreadableHolders(err); ids != nil {
+		return &HeldError{Subject: "policy " + name, Verb: "possibly held by", Noun: "sandbox", Users: ids, Fix: unreadableFix}
+	}
 	if err != nil {
 		return err
 	}
@@ -215,6 +219,19 @@ func (s *Stores) RemovePolicy(name string) error {
 	}
 
 	return s.cfg.Policies.Remove(name)
+}
+
+// unreadableFix is the way past a refusal over records that do not read back, since rm cannot free a sandbox it cannot read.
+const unreadableFix = "the record of each cannot be read, so fix or delete it under the daemon root first"
+
+// unreadableHolders names the records a holder scan could not read, and nil when the scan failed for any other reason (SHARD-584).
+func unreadableHolders(err error) []string {
+	cause, ok := errors.AsType[*CauseError](err)
+	if !ok {
+		return nil
+	}
+
+	return sandboxstate.UnreadableIDs(cause.Err)
 }
 
 // PolicyHolders names the sandboxes whose record holds the policy. Every ask goes through this one, so
@@ -287,6 +304,9 @@ func (s *Stores) RemoveSecret(name string, force bool) error {
 // ungranted refuses when a record names the secret. A stopped sandbox counts: start hands it the placeholder again.
 func (s *Stores) ungranted(name string) error {
 	users, err := SecretHolders(s.cfg.Repo, name)
+	if ids := unreadableHolders(err); ids != nil {
+		return &HeldError{Subject: "secret " + name, Verb: "possibly granted to", Noun: "sandbox", Users: ids, Fix: unreadableFix + ", or pass --force"}
+	}
 	if err != nil {
 		return err
 	}
