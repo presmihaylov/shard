@@ -1,6 +1,7 @@
 package serve
 
 import (
+	"bufio"
 	"context"
 	"crypto/rand"
 	"crypto/rsa"
@@ -638,24 +639,31 @@ func TestALocalRouteIs403ForEveryTokenAndNothingIsDialed(t *testing.T) {
 	}
 
 	for name, token := range tokens {
-		unknown := readAll(t, askRoute(t, address, token, http.MethodGet, "/v0/nonesuch")) //nolint:bodyclose // askRoute closes the body in a cleanup
-		if unknown != forbidden+"\n" {
-			t.Fatalf("%s: an unknown route answered %q, want the forbidden body", name, unknown)
-		}
-		for _, r := range locals {
-			path := strings.NewReplacer("{id}", "s1", "{ref...}", "alpine").Replace(r.Pattern)
-			resp := askRoute(t, address, token, r.Method, path) //nolint:bodyclose // askRoute closes the body in a cleanup
-			if resp.StatusCode != http.StatusForbidden {
-				t.Errorf("%s: %s %s got %d, want 403", name, r.Method, path, resp.StatusCode)
-			}
-			if body := readAll(t, resp); body != unknown {
-				t.Errorf("%s: %s %s answered %q, want the unknown-route body %q", name, r.Method, path, body, unknown)
-			}
-		}
+		checkLocalRoutesRefused(t, address, name, token, locals)
 	}
 
 	if dialed := up.dialed.Load(); dialed != 0 {
 		t.Errorf("the front dialed the socket %d times for a local route, want none", dialed)
+	}
+}
+
+// checkLocalRoutesRefused fails unless every local route answers one token the 403 and the body an unknown route gets.
+func checkLocalRoutesRefused(t *testing.T, address, name, token string, locals []api.Route) {
+	t.Helper()
+
+	unknown := readAll(t, askRoute(t, address, token, http.MethodGet, "/v0/nonesuch")) //nolint:bodyclose // askRoute closes the body in a cleanup
+	if unknown != forbidden+"\n" {
+		t.Fatalf("%s: an unknown route answered %q, want the forbidden body", name, unknown)
+	}
+	for _, r := range locals {
+		path := strings.NewReplacer("{id}", "s1", "{ref...}", "alpine").Replace(r.Pattern)
+		resp := askRoute(t, address, token, r.Method, path) //nolint:bodyclose // askRoute closes the body in a cleanup
+		if resp.StatusCode != http.StatusForbidden {
+			t.Errorf("%s: %s %s got %d, want 403", name, r.Method, path, resp.StatusCode)
+		}
+		if body := readAll(t, resp); body != unknown {
+			t.Errorf("%s: %s %s answered %q, want the unknown-route body %q", name, r.Method, path, body, unknown)
+		}
 	}
 }
 
@@ -685,35 +693,92 @@ func TestCheckScopesRefusesTheRetiredScopes(t *testing.T) {
 	}
 }
 
-// A local route pipelined behind an allowed request never reaches the daemon, because the front answers one request per connection.
-func TestAPipelinedLocalRouteNeverReachesTheDaemon(t *testing.T) {
-	up := plainDaemon(t)
+// countingProcess answers GET /v0/daemon and counts each call, so a test sees whether that local handler ran.
+type countingProcess struct {
+	calls *atomic.Int64
+}
+
+func (p countingProcess) Daemon() (api.Daemon, error) {
+	p.calls.Add(1)
+
+	return api.Daemon{Provider: "gvisor"}, nil
+}
+
+// realDaemon serves the daemon's own api mux on a socket under a root, and records the path of each request the mux dispatched.
+func realDaemon(t *testing.T) (string, countingProcess, chan string) {
+	t.Helper()
+
+	root := shortRoot(t)
+	listener, err := net.Listen("unix", filepath.Join(root, "shard.sock"))
+	if err != nil {
+		t.Fatalf("listen on the socket: %v", err)
+	}
+	t.Cleanup(func() { listener.Close() })
+
+	process := countingProcess{calls: &atomic.Int64{}}
+	dispatched := make(chan string, 8)
+	mux := api.NewHandler("v-test", process, nil, nil, nil, nil, nil, io.Discard)
+	server := &http.Server{
+		ReadHeaderTimeout: time.Second,
+		Handler: http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			dispatched <- r.Method + " " + r.URL.Path
+			mux.ServeHTTP(w, r)
+		}),
+	}
+	go server.Serve(listener)
+	t.Cleanup(func() { server.Close() })
+
+	return root, process, dispatched
+}
+
+// A local route pipelined behind a public request is never dispatched: the front forwards the bytes, and the daemon answers one request per connection.
+func TestAPipelinedLocalRouteIsNeverDispatched(t *testing.T) {
+	root, process, dispatched := realDaemon(t)
 	env := newTokenEnv(t)
-	address := front(t, up.root, env.secret)
-	token := mint(t, env, "root")
+	address := front(t, root, env.secret)
+	token := mintScoped(t, env, "root", "*")
 
 	conn, err := net.Dial("tcp", address)
 	if err != nil {
 		t.Fatalf("dial the front: %v", err)
 	}
 	defer conn.Close()
+	// A daemon that keeps the connection open never sends EOF, so the read fails here instead of hanging the run.
+	if err := conn.SetDeadline(time.Now().Add(5 * time.Second)); err != nil {
+		t.Fatalf("set the deadline: %v", err)
+	}
 
-	allowed := "GET /v0/sandboxes HTTP/1.1\r\nHost: box\r\nAuthorization: Bearer " + token + "\r\n\r\n"
+	public := "GET /v0/version HTTP/1.1\r\nHost: box\r\nAuthorization: Bearer " + token + "\r\n\r\n"
 	local := "GET /v0/daemon HTTP/1.1\r\nHost: box\r\nAuthorization: Bearer " + token + "\r\n\r\n"
-	if _, err := io.WriteString(conn, allowed+local); err != nil {
+	if _, err := io.WriteString(conn, public+local); err != nil {
 		t.Fatalf("write the pipelined requests: %v", err)
 	}
 
 	// A front that closes with the pipelined request unread sends a reset, and by now it would have destroyed the answer.
 	time.Sleep(200 * time.Millisecond)
 
-	if _, err := io.ReadAll(conn); err != nil {
-		t.Fatalf("read the front's answer: %v", err)
+	reader := bufio.NewReader(conn)
+	resp, err := http.ReadResponse(reader, nil)
+	if err != nil {
+		t.Fatalf("read the first answer: %v", err)
+	}
+	defer resp.Body.Close()
+	if body := readAll(t, resp); resp.StatusCode != http.StatusOK || !strings.Contains(body, `"api_version"`) {
+		t.Errorf("the public request got %d %q, want the version", resp.StatusCode, body)
+	}
+	rest, err := io.ReadAll(reader)
+	if err != nil {
+		t.Fatalf("read past the first answer: %v", err)
+	}
+	if len(rest) != 0 {
+		t.Errorf("the front sent %q after the first answer, want EOF", rest)
 	}
 
-	got := drain(up.requests)
-	if len(got) != 1 || !strings.HasPrefix(got[0], "GET /v0/sandboxes ") {
-		t.Errorf("the daemon saw %v, want only the allowed list, never the pipelined /v0/daemon", got)
+	if got := drain(dispatched); !slices.Equal(got, []string{"GET /v0/version"}) {
+		t.Errorf("the daemon dispatched %v, want only the public request", got)
+	}
+	if calls := process.calls.Load(); calls != 0 {
+		t.Errorf("the local GET /v0/daemon handler ran %d times, want none", calls)
 	}
 }
 

@@ -77,20 +77,34 @@ func TestThePublicRecordLeavesOutTheHostSideAndTheLocalOneKeepsIt(t *testing.T) 
 		if record["id"] != sb.ID {
 			t.Fatalf("GET %s answered %v, want the record of %s", path, record, sb.ID)
 		}
-		for _, key := range hostKeys {
-			if _, ok := record[key]; ok {
-				t.Errorf("GET %s answered %s, a host field", path, key)
-			}
-		}
+		checkNoHostKeys(t, "GET "+path, record)
 	}
 
 	_, localList := get(t, s.server, "/v0/local/sandboxes")
 	_, localOne := get(t, s.server, "/v0/local/sandboxes/"+sb.ID)
 	for path, record := range map[string]map[string]any{"/v0/local/sandboxes": rowOf(t, localList, sb.ID), "/v0/local/sandboxes/{id}": localOne} {
-		for _, key := range hostKeys {
-			if _, ok := record[key]; !ok {
-				t.Errorf("GET %s left out %s, which the socket answers", path, key)
-			}
+		checkHostKeys(t, "GET "+path, record)
+	}
+}
+
+// checkNoHostKeys fails for each host field the record carries.
+func checkNoHostKeys(t *testing.T, label string, record map[string]any) {
+	t.Helper()
+
+	for _, key := range hostKeys {
+		if _, ok := record[key]; ok {
+			t.Errorf("%s answered %s, a host field", label, key)
+		}
+	}
+}
+
+// checkHostKeys fails for each host field the record leaves out.
+func checkHostKeys(t *testing.T, label string, record map[string]any) {
+	t.Helper()
+
+	for _, key := range hostKeys {
+		if _, ok := record[key]; !ok {
+			t.Errorf("%s left out %s, which the socket answers", label, key)
 		}
 	}
 }
@@ -118,11 +132,7 @@ func TestAWriteVerbAnswersThePublicRecord(t *testing.T) {
 	if status != http.StatusOK || body["state"] != string(models.StateRunning) {
 		t.Fatalf("POST start answered %d %v", status, body)
 	}
-	for _, key := range hostKeys {
-		if _, ok := body[key]; ok {
-			t.Errorf("POST start answered %s, a host field", key)
-		}
-	}
+	checkNoHostKeys(t, "POST start", body)
 }
 
 // The implied rules open DNS to the bridge gateway, so the public egress names the dns group and keeps each id.
@@ -144,17 +154,24 @@ func TestThePublicEgressNamesTheImpliedRulesAsTheDNSGroup(t *testing.T) {
 		"/v0/local/sandboxes/" + sb.ID: "10.87.0.1",
 	} {
 		_, body := get(t, s.server, path)
-		enforced, _ := body["egress"].(map[string]any)
-		rules, _ := enforced["rules"].([]any)
-		if len(rules) != 3 {
-			t.Fatalf("GET %s carries the rules %v, want the two implied dns rules and the domain", path, rules)
-		}
-		for i, rule := range rules[:2] {
-			r, _ := rule.(map[string]any)
-			destination, _ := r["destination"].(map[string]any)
-			if destination["value"] != want || r["id"] != []string{"1", "2"}[i] || r["implied"] != "dns" {
-				t.Errorf("GET %s: implied rule %d reads %v, want id %d naming %s", path, i, r, i+1, want)
-			}
+		checkImpliedRules(t, path, body, want)
+	}
+}
+
+// checkImpliedRules fails unless the record's egress leads with the two implied dns rules, ids 1 and 2, each naming want.
+func checkImpliedRules(t *testing.T, path string, body map[string]any, want string) {
+	t.Helper()
+
+	enforced, _ := body["egress"].(map[string]any)
+	rules, _ := enforced["rules"].([]any)
+	if len(rules) != 3 {
+		t.Fatalf("GET %s carries the rules %v, want the two implied dns rules and the domain", path, rules)
+	}
+	for i, rule := range rules[:2] {
+		r, _ := rule.(map[string]any)
+		destination, _ := r["destination"].(map[string]any)
+		if destination["value"] != want || r["id"] != []string{"1", "2"}[i] || r["implied"] != "dns" {
+			t.Errorf("GET %s: implied rule %d reads %v, want id %d naming %s", path, i, r, i+1, want)
 		}
 	}
 }
@@ -195,9 +212,5 @@ func TestTheCreateStreamLeavesOutThePathAndTheHostSide(t *testing.T) {
 		t.Errorf("the event reads %v, want the reference and no path", lines[0])
 	}
 	sb, _ := lines[1]["sandbox"].(map[string]any)
-	for _, key := range hostKeys {
-		if _, ok := sb[key]; ok {
-			t.Errorf("the streamed record answered %s, a host field", key)
-		}
-	}
+	checkNoHostKeys(t, "the streamed record", sb)
 }
