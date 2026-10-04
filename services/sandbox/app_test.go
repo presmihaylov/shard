@@ -4,8 +4,10 @@ import (
 	"bytes"
 	"errors"
 	"io"
+	"reflect"
 	"slices"
 	"testing"
+	"time"
 
 	"github.com/presmihaylov/shard/models"
 	"github.com/presmihaylov/shard/services/sandbox"
@@ -137,34 +139,47 @@ func TestWaitAppRecordsTheExitOnceTheVerbHoldingTheSandboxLetsGo(t *testing.T) {
 	}
 }
 
-// A stop that took the sandbox first wrote the exit it saw, and the run's write must not make the record running again.
-func TestWaitAppLeavesTheRecordOfAStopThatLandedFirst(t *testing.T) {
-	svc, l := newService(t, &recorder{}, withApp())
-	l.provider.entrypointExit = &models.ExitStatus{Code: 3}
-	l.provider.restarts = models.RestartCount{Ended: true}
-	unlock, err := svc.Hold(t.Context(), "sandbox1")
-	if err != nil {
-		t.Fatalf("hold: %v", err)
+// A verb that took the sandbox first changed the run, so the app's end belongs to no record and the record stays as that verb left it.
+func TestWaitAppLeavesTheRecordOfAVerbThatLandedFirst(t *testing.T) {
+	cases := map[string]func(*models.Sandbox){
+		"a stop": func(sb *models.Sandbox) {
+			sb.State = models.StateStopped
+			sb.ExitStatus = &models.ExitStatus{Code: 143, Signal: 15}
+		},
+		"a stop and a start": func(sb *models.Sandbox) {
+			sb.StartedAt = time.Now().UTC()
+		},
 	}
+	for name, land := range cases {
+		t.Run(name, func(t *testing.T) {
+			svc, l := newService(t, &recorder{}, withApp())
+			l.provider.entrypointExit = &models.ExitStatus{Code: 3}
+			l.provider.restarts = models.RestartCount{Ended: true}
+			unlock, err := svc.Hold(t.Context(), "sandbox1")
+			if err != nil {
+				t.Fatalf("hold: %v", err)
+			}
 
-	waited := make(chan models.AppExit, 1)
-	go func() {
-		exit, err := svc.WaitApp(t.Context(), "sandbox1")
-		if err != nil {
-			t.Errorf("WaitApp: %v", err)
-		}
-		waited <- exit
-	}()
-	waitForWaiters(t, svc, "sandbox1", 2)
-	l.repo.sb.State = models.StateStopped
-	l.repo.sb.ExitStatus = &models.ExitStatus{Code: 143, Signal: 15}
-	unlock()
+			waited := make(chan models.AppExit, 1)
+			go func() {
+				exit, err := svc.WaitApp(t.Context(), "sandbox1")
+				if err != nil {
+					t.Errorf("WaitApp: %v", err)
+				}
+				waited <- exit
+			}()
+			waitForWaiters(t, svc, "sandbox1", 2)
+			land(&l.repo.sb)
+			want := l.repo.sb
+			unlock()
 
-	if exit := <-waited; exit != (models.AppExit{Code: 3}) {
-		t.Errorf("WaitApp answered %+v, want the app's own {code:3}", exit)
-	}
-	if got := l.repo.sb; got.State != models.StateStopped || got.ExitStatus == nil || *got.ExitStatus != (models.ExitStatus{Code: 143, Signal: 15}) {
-		t.Errorf("the record says %s with exit %+v, want the stop's stopped with {code:143 signal:15}", got.State, got.ExitStatus)
+			if exit := <-waited; exit != (models.AppExit{Code: 3}) {
+				t.Errorf("WaitApp answered %+v, want the app's own {code:3}", exit)
+			}
+			if got := l.repo.sb; got.State != want.State || !reflect.DeepEqual(got.ExitStatus, want.ExitStatus) {
+				t.Errorf("the record says %s with exit %+v, want %s with %+v as %s left it", got.State, got.ExitStatus, want.State, want.ExitStatus, name)
+			}
+		})
 	}
 }
 
