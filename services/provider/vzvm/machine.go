@@ -608,21 +608,22 @@ func (m *machine) readdress(ctx context.Context, r record) error {
 func (p *Provider) follow(m *machine) {
 	defer close(m.events)
 	for {
-		event, err := m.control.Load().Next()
+		// Capture the control before Next, so a save that swaps in a replacement while Next blocks is the one reconnect detects, not redials over (SHARD-618).
+		control := m.control.Load()
+		event, err := control.Next()
 		if err == nil {
 			p.keep(m, p.record(m, event))
 
 			continue
 		}
-		if !p.reconnected(m, err) {
+		if !p.reconnected(m, control, err) {
 			return
 		}
 	}
 }
 
 // reconnected waits out a refused stream, reconnects the dropped control, and reports whether the follow loop should go on.
-func (p *Provider) reconnected(m *machine, cause error) bool {
-	dropped := m.control.Load()
+func (p *Provider) reconnected(m *machine, dropped *supervisor.Control, cause error) bool {
 	// A refused stream waits before the redial, so a guest that floods every stream cannot keep the daemon dialing (SHARD-408).
 	time.Sleep(m.refusals.Note(cause))
 	again, err := p.reconnect(m, dropped)
