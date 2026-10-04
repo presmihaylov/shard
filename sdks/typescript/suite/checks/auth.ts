@@ -41,7 +41,7 @@ export const checks: Check[] = [
     name: "auth.env_defaults",
     run: async () => {
       const shard = new Shard();
-      assert.ok(Array.isArray(await shard.list()), "a client from SHARD_REMOTE and SHARD_API_KEY lists sandboxes");
+      assert.ok(Array.isArray((await shard.list()).sandboxes), "a client from SHARD_REMOTE and SHARD_API_KEY lists sandboxes");
     },
   },
   {
@@ -50,7 +50,7 @@ export const checks: Check[] = [
       const remote = process.env.SHARD_REMOTE;
       const apiKey = process.env.SHARD_API_KEY;
       await withEnv({ SHARD_REMOTE: "https://shard.invalid", SHARD_API_KEY: "shard_not_a_key" }, async () => {
-        assert.ok(Array.isArray(await new Shard({ remote, apiKey }).list()), "explicit settings win over bad env");
+        assert.ok(Array.isArray((await new Shard({ remote, apiKey }).list()).sandboxes), "explicit settings win over bad env");
       });
       await rejects(AuthenticationError, () => new Shard({ apiKey: "shard_not_a_key" }).list());
     },

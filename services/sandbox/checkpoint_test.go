@@ -381,8 +381,8 @@ func TestResumeRefusesARecordWithNoCheckpoint(t *testing.T) {
 	svc, l := newService(t, &recorder{}, sb)
 
 	_, err := svc.Resume(t.Context(), "sandbox1")
-	if err == nil || !strings.Contains(err.Error(), "no checkpoint") {
-		t.Errorf("resume returned %v, want a refusal that says there is no checkpoint", err)
+	if err == nil || !strings.Contains(err.Error(), "no saved state to resume") {
+		t.Errorf("resume returned %v, want a refusal that says there is no saved state", err)
 	}
 	if l.net.allocated {
 		t.Error("resume built the network for a sandbox it could not resume")

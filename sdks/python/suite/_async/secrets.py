@@ -19,7 +19,7 @@ async def set_list_remove(ctx: AsyncContext) -> None:
     secret = value()
     await ctx.secret(name, secret, DESTINATIONS)
     listed = await ctx.shard.secrets.list()
-    entry = next((each for each in listed if each.name == name), None)
+    entry = next((each for each in listed.secrets if each.name == name), None)
     if entry is None:
         raise AssertionError("list holds the secret")
     equal(entry.destinations, DESTINATIONS)
@@ -27,10 +27,10 @@ async def set_list_remove(ctx: AsyncContext) -> None:
     ok(entry.updated_at.tzinfo is not None, f"updated_at {entry.updated_at} carries its zone")
     ok(secret not in repr(listed), "a list never carries a value")
     await ctx.shard.secrets.set(name, value=f"{secret}-rotated", destinations=DESTINATIONS)
-    rotated = next((each for each in await ctx.shard.secrets.list() if each.name == name), None)
+    rotated = next((each for each in (await ctx.shard.secrets.list()).secrets if each.name == name), None)
     equal(rotated.placeholder if rotated is not None else None, f"mock-{name}", "a rotation keeps the placeholder")
     await ctx.shard.secrets.remove(name)
-    ok(all(each.name != name for each in await ctx.shard.secrets.list()), "list drops the secret")
+    ok(all(each.name != name for each in (await ctx.shard.secrets.list()).secrets), "list drops the secret")
     await rejects(NotFoundError, lambda: ctx.shard.secrets.remove(name))
 
 

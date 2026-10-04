@@ -39,7 +39,7 @@ const execIDLen = 16
 
 // ExecRequest is one command to run in a sandbox that already runs. It is the body of POST /v0/sandboxes/{id}/exec.
 type ExecRequest struct {
-	Command []string `json:"command"`
+	Command []string `json:"command" minItems:"1"`
 	Env     []string `json:"env,omitempty"`
 	WorkDir string   `json:"workdir,omitempty"`
 	User    string   `json:"user,omitempty"`
@@ -55,8 +55,8 @@ type ExecRequest struct {
 
 // TerminalSize is a terminal window in character cells. It is the body of the resize route too.
 type TerminalSize struct {
-	Rows uint16 `json:"rows" required:"false"`
-	Cols uint16 `json:"cols" required:"false"`
+	Rows uint16 `json:"rows" required:"false" maximum:"65535"`
+	Cols uint16 `json:"cols" required:"false" maximum:"65535"`
 }
 
 // Streams is where one attach's stdio goes. The caller owns them: a nil Stdin is a client that types nothing.
@@ -868,6 +868,7 @@ func (s *Service) runPipes(ctx context.Context, id string, session *execSession,
 
 	exit, execErr := s.cfg.Provider.Exec(ctx, id, spec)
 	execErr = s.refusedByPause(id, session, execErr)
+	execErr = s.endedUnderExec(id, session, execErr)
 
 	// Our copy of each write end keeps its pipe readable, so the output drains only after they go.
 	closeErr := errors.Join(out.Close(), errOut.Close())
@@ -902,6 +903,7 @@ func (s *Service) runTerminal(ctx context.Context, id string, session *execSessi
 
 	exit, execErr := s.cfg.Provider.Exec(ctx, id, spec)
 	execErr = s.refusedByPause(id, session, execErr)
+	execErr = s.endedUnderExec(id, session, execErr)
 
 	// Closing the replica lets the master read EOF, so the copier ends.
 	closeErr := pair.Replica.Close()
@@ -1338,7 +1340,7 @@ func (s *Service) readyForExec(ctx context.Context, ref string) (string, error) 
 	// The exit file records a 137 for this, which is what a plain kill -9 records too, so the reason
 	// is named here or an operator never learns it.
 	if status.OOMKilled {
-		return "", &UnavailableError{ID: id, Why: OOMKilledReason, Fix: fmt.Sprintf("start it again with shard start %s, over the files it kept; a larger --memory needs a new sandbox", id)}
+		return "", &UnavailableError{ID: id, Why: OOMKilledReason, Fix: fmt.Sprintf("start it again with shard start %s, over the files it kept; more memory needs a new sandbox with a larger resources.memory_mib", id)}
 	}
 
 	if !status.Exists {
@@ -1391,6 +1393,39 @@ func (s *Service) pauseOutranks(id string, err error) error {
 	}
 
 	return pausedRefusal(id)
+}
+
+// endedUnderExec swaps a launch error for not_found or sandbox_not_running when a concurrent stop or remove tore the runtime down under the exec, so a racing rm answers a code, never a 500 (SHARD-563).
+func (s *Service) endedUnderExec(id string, session *execSession, err error) error {
+	var state *StateError
+	var notFound *models.NotFoundError
+	if err == nil || session.reported() || errors.As(err, &state) || errors.As(err, &notFound) {
+		return err
+	}
+
+	// Stop and remove hold the per-sandbox lock until the record is settled, so the read past it is deterministic, never the teardown's own half-written state.
+	budget := s.execStartBudget()
+	lockCtx, cancel := context.WithTimeout(context.Background(), budget)
+	defer cancel()
+	unlock, lockErr := s.lock(lockCtx, id)
+	// A teardown that holds the lock past the budget is the timeout itself, so name it 504, never a raw 500.
+	if lockErr != nil {
+		return &SubstrateTimeoutError{ID: id, Op: "exec", Budget: budget}
+	}
+	defer unlock()
+
+	sb, getErr := s.cfg.Repo.Get(id)
+	if errors.Is(getErr, sandboxstate.ErrNotFound) {
+		return &models.NotFoundError{Err: fmt.Errorf("exec %s of sandbox %s: %w", session.id, id, sandboxstate.ErrNotFound)}
+	}
+	if getErr != nil {
+		return errors.Join(err, getErr)
+	}
+	if sb.State != models.StateRunning {
+		return &StateError{ID: id, State: sb.State, Fix: "start it again with shard start " + id, Code: models.CodeSandboxNotRunning}
+	}
+
+	return err
 }
 
 // outputPipe copies one of the guest's streams into the buffer and reports what stopped the copy.

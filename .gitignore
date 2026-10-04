@@ -23,3 +23,6 @@ coverage.*
 # The shim and the guest init are build output; pkg/vzshim embeds them from here
 /pkg/vzshim/shim/shard-vz-shim
 /pkg/vzshim/shim/shard-init
+
+# Python bytecode, from the release gate under sdks/gate
+__pycache__/

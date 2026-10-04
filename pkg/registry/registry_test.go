@@ -542,12 +542,12 @@ func TestAFetchErrorNamesOnlyTheRegistrysAnswer(t *testing.T) {
 	store := openStoreAt(t, t.TempDir(), server)
 	missing := strings.Replace(ref, "app:1.0", "app:no-such-tag", 1)
 	_, err = store.Pull(t.Context(), missing, nil)
-	if !errors.As(err, &fetch) || fetch.Public() != missing+" is not in its registry" {
+	if !errors.As(err, &fetch) || fetch.Public() != missing+" is not in its registry; check the image name and tag" {
 		t.Errorf("pull of a missing tag = %v, want a fetch error that says the registry has no such image", err)
 	}
 
 	helper := &registry.FetchError{Ref: ref, Err: errors.New("error getting credentials: exec /home/op/.docker/bin/docker-credential-desktop: permission denied")}
-	if got := helper.Public(); strings.Contains(got, "/home/op") || got != ref+" could not be fetched from its registry" {
+	if got := helper.Public(); strings.Contains(got, "/home/op") || got != ref+" could not be fetched from its registry; check that the registry is up, then retry" {
 		t.Errorf("public text = %q, want the ref alone with no host path", got)
 	}
 }

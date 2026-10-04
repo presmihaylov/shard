@@ -553,7 +553,13 @@ func (p *Provider) attach(ctx context.Context, id, dir string, r record, client 
 	}
 	m.control.Store(control)
 
+	// A connected guest can still stay silent past the create deadline.
+	closed := make(chan error, 1)
+	stopRead := context.AfterFunc(connectCtx, func() { closed <- closeControl(control) })
 	state, err := control.Next()
+	if !stopRead() {
+		err = errors.Join(context.Cause(connectCtx), err, <-closed)
+	}
 	if err != nil {
 		return nil, errors.Join(fmt.Errorf("sandbox %s: %w: read the supervisor state: %w", id, errNoGuest, err), m.close())
 	}
