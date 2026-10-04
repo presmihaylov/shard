@@ -44,10 +44,10 @@ export const checks: Check[] = [
       assert.ok(!env.stdout.includes(value), "the guest never holds the value");
       await rejects(ConflictError, () => ctx.shard.secrets.remove(name));
       await sandbox.stop();
-      await ctx.shard.secrets.revoke(sandbox, name);
+      await ctx.shard.secrets.ungrant(sandbox, name);
       assert.deepEqual((await sandbox.inspect()).secrets, []);
       await sandbox.start();
-      assert.equal((await sandbox.exec(`printenv ${name}`)).exitCode, 1, "a revoke takes the placeholder back");
+      assert.equal((await sandbox.exec(`printenv ${name}`)).exitCode, 1, "an ungrant takes the placeholder back");
       const holder = await ctx.create({ secrets: [name] });
       assert.equal((await holder.exec(`printenv ${name}`)).stdout, `mock-${name}\n`, "a create grants it too");
     },

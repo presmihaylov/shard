@@ -94,7 +94,7 @@ const actions: readonly PolicyRule["action"][] = ["allow", "deny"];
 export interface Policy {
   name: string;
   rules: PolicyRule[];
-  /** The sandboxes the policy is assigned to; null on a list, which leaves it out. */
+  /** The sandboxes the policy is attached to; null on a list, which leaves it out. */
   holders: string[] | null;
   /** Whether the rules let the sandbox resolve names; null on a list. */
   dns: DNSMode | null;

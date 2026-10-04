@@ -6,7 +6,7 @@ import { egressLogRecord, records, sandboxInfo, type EgressLogRecord, type Sandb
 import type { Transport } from "./transport.js";
 import * as wire from "./wire.js";
 
-/** refresh hands a sandbox the record another verb answered, as a policy assign; the package does not export it. */
+/** refresh hands a sandbox the record another verb answered, as a policy attach; the package does not export it. */
 export const refresh = Symbol("refresh");
 
 export interface FollowOptions {

@@ -34,12 +34,12 @@ export const checks: Check[] = [
       await ctx.policy(name, rules);
       const sandbox = await ctx.create();
       assert.equal(sandbox.info.policy, null);
-      await rejects(ConflictError, () => ctx.shard.policies.assign(sandbox, name));
+      await rejects(ConflictError, () => ctx.shard.policies.attach(sandbox, name));
       await sandbox.stop();
-      await ctx.shard.policies.assign(sandbox, name);
+      await ctx.shard.policies.attach(sandbox, name);
       assert.equal((await sandbox.inspect()).policy, name);
       await rejects(ConflictError, () => ctx.shard.policies.remove(name));
-      await ctx.shard.policies.clear(sandbox);
+      await ctx.shard.policies.detach(sandbox);
       assert.equal((await sandbox.inspect()).policy, null);
     },
   },
