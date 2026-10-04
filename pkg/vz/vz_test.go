@@ -487,7 +487,7 @@ func TestAMachineErrorComesBackAsTheVerbsError(t *testing.T) {
 	if err == nil || !strings.Contains(err.Error(), "save: save needs a paused vm") {
 		t.Fatalf("Save() on a running vm = %v", err)
 	}
-	if _, err := client.Connect(9); err == nil || !strings.Contains(err.Error(), "nothing listens there") {
+	if _, err := client.Connect(t.Context(), 9); err == nil || !strings.Contains(err.Error(), "nothing listens there") {
 		t.Fatalf("Connect(9) = %v", err)
 	}
 }
@@ -496,7 +496,7 @@ func TestConnectSplicesTheGuestStreamOntoTheSocket(t *testing.T) {
 	machine := &fake{state: StateRunning}
 	client := serve(t, machine)
 
-	conn, err := client.Connect(5000)
+	conn, err := client.Connect(t.Context(), 5000)
 	if err != nil {
 		t.Fatal(err)
 	}

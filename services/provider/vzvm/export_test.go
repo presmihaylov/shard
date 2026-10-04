@@ -2,6 +2,7 @@ package vzvm
 
 import (
 	"context"
+	"sync/atomic"
 	"time"
 
 	"github.com/presmihaylov/shard/models"
@@ -61,4 +62,18 @@ func SetRedialGrace(grace time.Duration) (restore func()) {
 	redialGrace = grace
 
 	return func() { redialGrace = was }
+}
+
+// HoldNextDir stops the next lookup of a sandbox's directory until release closes, and closes entered when that lookup begins.
+func (p *Provider) HoldNextDir(entered chan<- struct{}, release <-chan struct{}) {
+	dirs := p.cfg.Dirs
+	var taken atomic.Bool
+	p.cfg.Dirs = func(id string) (string, error) {
+		if taken.CompareAndSwap(false, true) {
+			close(entered)
+			<-release
+		}
+
+		return dirs(id)
+	}
 }

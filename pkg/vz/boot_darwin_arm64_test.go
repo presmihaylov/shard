@@ -190,7 +190,7 @@ func sessionLocked(t *testing.T) bool {
 func guestPID(t *testing.T, client *Client) int {
 	t.Helper()
 
-	conn, err := connectWhenListening(client)
+	conn, err := connectWhenListening(t.Context(), client)
 	if err != nil {
 		t.Fatalf("Connect(%d): %v", guestPort, err)
 	}
@@ -212,11 +212,11 @@ func guestPID(t *testing.T, client *Client) int {
 }
 
 // The guest listens a moment after the vm runs, so a reset means try again, and only a timeout means failure.
-func connectWhenListening(client *Client) (net.Conn, error) {
+func connectWhenListening(ctx context.Context, client *Client) (net.Conn, error) {
 	var err error
 	for deadline := time.Now().Add(30 * time.Second); time.Now().Before(deadline); time.Sleep(100 * time.Millisecond) {
 		var conn net.Conn
-		conn, err = client.Connect(guestPort)
+		conn, err = client.Connect(ctx, guestPort)
 		if err == nil {
 			return conn, nil
 		}
@@ -299,7 +299,7 @@ func TestABurstOfConnectsKeepsTheShimAnswering(t *testing.T) {
 	for range 6 {
 		wg.Go(func() {
 			for time.Now().Before(stop) {
-				if err := askPID(client); err != nil {
+				if err := askPID(t.Context(), client); err != nil {
 					fail(err)
 				}
 			}
@@ -328,8 +328,8 @@ func TestABurstOfConnectsKeepsTheShimAnswering(t *testing.T) {
 }
 
 // askPID is one connect, one answer and one close: the churn that hands a closed fd number to the next open.
-func askPID(client *Client) error {
-	conn, err := client.Connect(guestPort)
+func askPID(ctx context.Context, client *Client) error {
+	conn, err := client.Connect(ctx, guestPort)
 	if err != nil {
 		return err
 	}

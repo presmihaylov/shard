@@ -1940,7 +1940,7 @@ func cutPause(t *testing.T, recorded bool) (*harness, models.SandboxSpec, int) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	conn, err := client.Connect(supervisor.ControlPort)
+	conn, err := client.Connect(t.Context(), supervisor.ControlPort)
 	if err != nil {
 		t.Fatal(err)
 	}

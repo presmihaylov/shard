@@ -47,6 +47,8 @@ type machine struct {
 	resetBy string
 	// holder is the verb that froze the guest, until its runAgain ends; silence from the shim then is that verb at work.
 	holder atomic.Pointer[string]
+	// admit orders an exec's dial against a freeze, so no exec stream opens once a verb holds the VM.
+	admit sync.RWMutex
 	// logsRound ends the logs stream in use, so a stream the reset killed is dialed again.
 	logsRound atomic.Pointer[context.CancelFunc]
 	// execs holds each open exec stream, with the verb that cut it, or "" while it runs.
@@ -70,8 +72,8 @@ type machine struct {
 }
 
 // dial is the supervisor's Dialer over the shim: one vsock connection per call.
-func (m *machine) dial(_ context.Context, port uint32) (net.Conn, error) {
-	return m.client.Connect(port)
+func (m *machine) dial(ctx context.Context, port uint32) (net.Conn, error) {
+	return m.client.Connect(ctx, port)
 }
 
 // lookup finds the sandbox's shim, held or adopted by its socket, and returns nil when none answers.
@@ -675,35 +677,57 @@ func (m *machine) failedAtBoot(event supervisor.Message) error {
 func (p *Provider) reconnect(m *machine, dropped *supervisor.Control) (bool, error) {
 	deadline := time.Now().Add(startGrace)
 	for {
-		m.freezing.Lock()
-		// The save's runAgain put the next stream in, so the follower moves to it and never dials beside it.
-		if m.control.Load() != dropped {
-			m.freezing.Unlock()
-
-			return true, nil
-		}
-		pausing, state := m.pausing.Load(), m.vmState()
-		// A pause still in flight leaves the root frozen on the stream this puts in, since adopt thaws none under it.
-		if state == vz.StateRunning && time.Now().Before(deadline) {
-			adopted, err := p.dialAgain(m, time.Until(deadline))
-			m.freezing.Unlock()
-			if adopted {
-				return true, err
-			}
+		next, err := p.reconnectOnce(m, dropped, deadline)
+		switch next {
+		case reconnectAdopted:
+			return true, err
+		case reconnectGone:
+			return false, nil
+		case reconnectSaving:
+			// The VM is paused for the save, so the grace runs from its end.
+			deadline = time.Now().Add(startGrace)
+			time.Sleep(pollInterval)
+		case reconnectRetry:
 			// A dial the shim answers can still land on a transport mid-reset, so a short read is one more try; a refusal waits longer.
 			time.Sleep(max(pollInterval, m.refusals.Note(err)))
-
-			continue
 		}
-		m.freezing.Unlock()
-		// A paused guest answers no dial, so a save in flight dials once it runs the VM again; anything else has nothing left to follow.
-		if !pausing || state != vz.StatePaused {
-			return false, nil
-		}
-		// The VM is paused for the save, so the grace runs from its end.
-		deadline = time.Now().Add(startGrace)
-		time.Sleep(pollInterval)
 	}
+}
+
+// reconnectStep is what one try of reconnect leaves the loop to do.
+type reconnectStep int
+
+const (
+	reconnectAdopted reconnectStep = iota
+	reconnectGone
+	reconnectSaving
+	reconnectRetry
+)
+
+// reconnectOnce is one try of reconnect under freezing, before deadline.
+func (p *Provider) reconnectOnce(m *machine, dropped *supervisor.Control, deadline time.Time) (reconnectStep, error) {
+	m.freezing.Lock()
+	defer m.freezing.Unlock()
+	// The save's runAgain put the next stream in, so the follower moves to it and never dials beside it.
+	if m.control.Load() != dropped {
+		return reconnectAdopted, nil
+	}
+	state := m.vmState()
+	// A pause still in flight leaves the root frozen on the stream this puts in, since adopt thaws none under it.
+	if state == vz.StateRunning && time.Now().Before(deadline) {
+		adopted, err := p.dialAgain(m, time.Until(deadline))
+		if adopted {
+			return reconnectAdopted, err
+		}
+
+		return reconnectRetry, err
+	}
+	// A paused guest answers no dial, so a save in flight dials once it runs the VM again; anything else has nothing left to follow.
+	if m.pausing.Load() && state == vz.StatePaused {
+		return reconnectSaving, nil
+	}
+
+	return reconnectGone, nil
 }
 
 // dialAgain dials the control stream once and takes it in once the guest replays its state there within bound; the caller holds freezing.

@@ -227,9 +227,9 @@ func (c *Client) killPinned(pid int) error {
 	return pin.Close()
 }
 
-// Connect opens one vsock connection to a guest port; the returned stream is that connection.
-func (c *Client) Connect(port uint32) (net.Conn, error) {
-	conn, _, err := c.send(context.Background(), request{Verb: "connect", Port: port})
+// Connect opens one vsock connection to a guest port within ctx; the returned stream is that connection.
+func (c *Client) Connect(ctx context.Context, port uint32) (net.Conn, error) {
+	conn, _, err := c.send(ctx, request{Verb: "connect", Port: port})
 	if err != nil {
 		return nil, err
 	}

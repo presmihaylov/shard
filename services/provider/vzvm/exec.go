@@ -20,7 +20,7 @@ func (p *Provider) Exec(ctx context.Context, id string, spec models.ExecSpec) (m
 
 	// A dial would wait on the save or a redial, or meet VZ's raw refusal of a paused VM, so the verb refuses by name, as the frozen guest does (SHARD-478).
 	if verb := p.holding(id); verb != "" {
-		return models.ExitStatus{}, &models.CommandNotStartedError{Sandbox: id, Reason: fmt.Sprintf("a %s holds the sandbox frozen, and nothing starts in it until that ends: run the command again", verb), Code: models.CommandNotExecutableExitCode}
+		return models.ExitStatus{}, holdRefusal(id, verb)
 	}
 
 	m, r, err := p.running(ctx, id)
@@ -34,7 +34,16 @@ func (p *Provider) Exec(ctx context.Context, id string, spec models.ExecSpec) (m
 	}
 
 	var conn net.Conn
+	var refused error
 	dial := func(ctx context.Context, port uint32) (net.Conn, error) {
+		// A freeze that came after the check above would leave this dial queued behind the save.
+		m.admit.RLock()
+		defer m.admit.RUnlock()
+		if verb := m.holder.Load(); verb != nil {
+			refused = holdRefusal(id, *verb)
+
+			return nil, refused
+		}
 		opened, err := m.dial(ctx, port)
 		if err != nil {
 			return nil, err
@@ -45,6 +54,9 @@ func (p *Provider) Exec(ctx context.Context, id string, spec models.ExecSpec) (m
 		return opened, nil
 	}
 	exit, err := supervisor.Exec(ctx, dial, id, header, spec)
+	if refused != nil {
+		return exit, refused
+	}
 	if conn == nil {
 		return exit, err
 	}
@@ -59,6 +71,11 @@ func (p *Provider) Exec(ctx context.Context, id string, spec models.ExecSpec) (m
 	}
 
 	return exit, err
+}
+
+// holdRefusal is the one text of an exec that verb, holding the sandbox frozen, turns away (SHARD-478).
+func holdRefusal(id, verb string) error {
+	return &models.CommandNotStartedError{Sandbox: id, Reason: fmt.Sprintf("a %s holds the sandbox frozen, and nothing starts in it until that ends: run the command again", verb), Code: models.CommandNotExecutableExitCode}
 }
 
 // openExec tracks an exec stream, so a save that resets it can end it.

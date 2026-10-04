@@ -171,8 +171,10 @@ func (p *Provider) abandon(m *machine, tmp string, err error) error {
 func (m *machine) freeze(ctx context.Context, verb string) error {
 	m.freezing.Lock()
 	defer m.freezing.Unlock()
+	m.admit.Lock()
 	m.pausing.Store(true)
 	m.holder.Store(&verb)
+	m.admit.Unlock()
 
 	return m.control.Load().Freeze(ctx, verb)
 }

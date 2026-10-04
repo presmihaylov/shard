@@ -2,6 +2,7 @@ package vzvm_test
 
 import (
 	"bytes"
+	"context"
 	"errors"
 	"fmt"
 	"io/fs"
@@ -149,6 +150,40 @@ func TestASourceAForkHoldsReadsRunningAndRefusesAnExec(t *testing.T) {
 		}
 		execOK(t, h.provider, spec.ID, "the fork")
 	})
+}
+
+// An exec past the hold check when a fork freezes is refused at its dial, and never waits on the save past its own deadline (SHARD-463).
+func TestAnExecThatRacesAForkFreezeIsRefusedAtItsDial(t *testing.T) {
+	h, spec, _ := runningShim(t)
+	mark(t, spec.StateDir, holdSaveFile)
+	unmarkAtCleanup(t, spec.StateDir, holdSaveFile)
+	entered, release := make(chan struct{}), make(chan struct{})
+	h.provider.HoldNextDir(entered, release)
+	ctx, cancel := context.WithTimeout(t.Context(), 250*time.Millisecond)
+	defer cancel()
+	executed := make(chan error, 1)
+	go func() {
+		_, err := h.provider.Exec(ctx, spec.ID, models.ExecSpec{Argv: []string{"/bin/sh", "-c", "exit 0"}})
+		executed <- err
+	}()
+
+	<-entered
+	forked := forkInBackground(t, h, spec.ID)
+	awaitFile(t, filepath.Join(spec.StateDir, savingFile), forked)
+	close(release)
+	select {
+	case err := <-executed:
+		want := fmt.Sprintf("sandbox %s could not run the command: a fork holds the sandbox frozen, and nothing starts in it until that ends: run the command again", spec.ID)
+		if err == nil || err.Error() != want {
+			t.Errorf("Exec that raced the freeze = %v, want %q", err, want)
+		}
+	case <-time.After(time.Second):
+		t.Error("Exec that raced the freeze still waits on the save a second on, past its 250ms deadline")
+	}
+	unmark(t, spec.StateDir, holdSaveFile)
+	if err := <-forked; err != nil {
+		t.Fatalf("Fork: %v", err)
+	}
 }
 
 // A source whose guest takes no control stream after the save fails the fork by name, leaves no fork, and still stops (SHARD-463).
