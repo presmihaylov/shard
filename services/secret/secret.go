@@ -185,6 +185,9 @@ func (s *Store) placeholder(name, value, chosen string, existing record) (string
 	if strings.Contains(value, chosen) {
 		return "", &InvalidError{Err: fmt.Errorf("the placeholder of secret %s is inside its value, and the guest must never hold the value", name)}
 	}
+	if strings.Contains(chosen, value) {
+		return "", &InvalidError{Err: fmt.Errorf("the value of secret %s is inside its placeholder, and the guest holds the placeholder", name)}
+	}
 
 	// Only what this call named is shaped: a rotation must never be blocked by the placeholder it carries
 	// forward, and the default is exempt too, so a short NAME still gets a placeholder.

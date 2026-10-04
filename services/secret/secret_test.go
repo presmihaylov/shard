@@ -386,6 +386,8 @@ func TestSetRefusals(t *testing.T) {
 		{"bad label", "KEY", "v-1234567", []string{"exa_mple.com"}, "", "not a host name"},
 		{"default placeholder inside the value", "KEY", "abc-mock-KEY-1", []string{"example.com"}, "", "inside its value"},
 		{"chosen placeholder inside the value", "KEY", "abc-sk_test_shaped01-1", []string{"example.com"}, "sk_test_shaped01", "inside its value"},
+		{"value inside the default placeholder", "KEY", "mock", []string{"example.com"}, "", "inside its placeholder"},
+		{"value inside the chosen placeholder", "KEY", "shaped01", []string{"example.com"}, "sk_test_shaped01", "inside its placeholder"},
 		{"placeholder too short", "KEY", "v-1234567", []string{"example.com"}, "sk_test", "shorter than"},
 		{"whitespace in the placeholder", "KEY", "v-1234567", []string{"example.com"}, "sk test shaped", "outside letters, digits"},
 		{"control character in the placeholder", "KEY", "v-1234567", []string{"example.com"}, "sk_test\x01shaped", "outside letters, digits"},

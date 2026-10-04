@@ -619,7 +619,7 @@ func (h *Handler) startSandbox(ctx context.Context, in *sandboxPath) (*reply[San
 	sb, err := h.lifecycle.Start(ctx, in.ID)
 	// A start the substrate broke, not one it refused, is named in the daemon log beside the client's answer (SHARD-416).
 	if status, _ := classify(err); err != nil && status >= http.StatusInternalServerError {
-		h.log.Printf("api: start sandbox %s: %v", in.ID, err)
+		h.logCause("start sandbox "+in.ID, err)
 	}
 
 	return publicReply(sb, err)

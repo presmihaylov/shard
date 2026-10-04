@@ -215,6 +215,24 @@ func TestGetFileThatDiesMidwayCutsTheBody(t *testing.T) {
 	}
 }
 
+// The path is the client's own text, so the log quotes it and a newline in it cannot start a line of its own (SHARD-550).
+func TestGetFileThatDiesMidwayQuotesThePathInTheLog(t *testing.T) {
+	s := seed(t)
+	s.verbs.stat = models.FileStat{Type: models.FileRegular, Size: 10}
+	s.verbs.content = "hello"
+	s.verbs.bodyErr = errors.New("the guest went away")
+
+	resp := fileRequest(t, s, http.MethodGet, "path=/srv/blob%0Aapi:%20forged", nil) //nolint:bodyclose // fileRequest closes the body in a cleanup
+	if _, err := io.ReadAll(resp.Body); !errors.Is(err, io.ErrUnexpectedEOF) {
+		t.Fatalf("reading the cut body gave %v, want io.ErrUnexpectedEOF", err)
+	}
+
+	s.server.Close()
+	if logged := s.log.String(); !strings.Contains(logged, `api: get "/srv/blob\napi: forged" from sandbox `) {
+		t.Errorf("the daemon log %q, want the path quoted on one line", logged)
+	}
+}
+
 func TestHeadFileAnswersTheStatAlone(t *testing.T) {
 	s := seed(t)
 	s.verbs.stat = models.FileStat{Type: models.FileDir, Mode: 0o1777, MTime: time.Date(2026, 10, 2, 9, 0, 0, 0, time.UTC)}
