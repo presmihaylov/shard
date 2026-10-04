@@ -6,6 +6,7 @@ import (
 	"bytes"
 	"cmp"
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io/fs"
@@ -402,16 +403,21 @@ func ownStderr(app App) (App, *bytes.Buffer) {
 	return app, stderr
 }
 
-// record is the sandbox as the daemon reports it, which is the only record a test reads.
+// record is the sandbox as the daemon stored it, host side included, which no route answers.
 func record(t *testing.T, app App, id string) models.Sandbox {
 	t.Helper()
 
-	sb, err := daemonClient(app).GetSandbox(t.Context(), id)
+	data, err := os.ReadFile(filepath.Join(app.Root, "sandboxes", id, "sandbox.json"))
 	if err != nil {
-		t.Fatalf("inspect %s: %v", id, err)
+		t.Fatalf("read the record of %s: %v", id, err)
 	}
 
-	return sb.Sandbox
+	var sb models.Sandbox
+	if err := json.Unmarshal(data, &sb); err != nil {
+		t.Fatalf("decode the record of %s: %v", id, err)
+	}
+
+	return sb
 }
 
 // cleanUp ends the sandbox a test left running, over the socket, so nothing of it outlives the test.
