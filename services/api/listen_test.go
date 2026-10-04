@@ -11,6 +11,7 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+	"syscall"
 	"testing"
 	"time"
 )
@@ -85,6 +86,86 @@ func TestListenGivesTheSocketToTheGroupAt0660(t *testing.T) {
 	path := filepath.Join(root, SocketFile)
 	if got := socketMode(t, path); got != 0o660 {
 		t.Errorf("the socket sits at %04o, want 0660", got)
+	}
+}
+
+// otherGroup is a group of the caller that dir does not have yet, so a chown to it shows; the primary group when there is none.
+func otherGroup(t *testing.T, dir string) int {
+	t.Helper()
+
+	info, err := os.Stat(dir)
+	if err != nil {
+		t.Fatalf("stat %s: %v", dir, err)
+	}
+	stat, ok := info.Sys().(*syscall.Stat_t)
+	if !ok {
+		t.Fatalf("no stat_t for %s", dir)
+	}
+	groups, err := os.Getgroups()
+	if err != nil {
+		t.Fatalf("getgroups: %v", err)
+	}
+	for _, gid := range groups {
+		if uint32(gid) != stat.Gid {
+			return gid
+		}
+	}
+
+	return os.Getgid()
+}
+
+func TestListenLetsTheGroupTraverseTheRootAndNothingMore(t *testing.T) {
+	root := shortRoot(t)
+	// Others and the group start with more than they need, so the test proves both lose it.
+	if err := os.Chmod(root, 0o755); err != nil {
+		t.Fatalf("chmod the root: %v", err)
+	}
+
+	own, err := user.LookupGroupId(strconv.Itoa(otherGroup(t, root)))
+	if err != nil {
+		t.Skipf("no name for the group: %v", err)
+	}
+
+	listener, _, _, err := listen(root, own.Name)
+	if err != nil {
+		t.Fatalf("listen: %v", err)
+	}
+	defer listener.Close()
+
+	info, err := os.Stat(root)
+	if err != nil {
+		t.Fatalf("stat the root: %v", err)
+	}
+	if got := info.Mode().Perm(); got != 0o710 {
+		t.Errorf("the root sits at %04o, want 0710: the group traverses it to the socket and lists nothing", got)
+	}
+	stat, ok := info.Sys().(*syscall.Stat_t)
+	if !ok {
+		t.Fatalf("no stat_t for %s", root)
+	}
+	if strconv.Itoa(int(stat.Gid)) != own.Gid {
+		t.Errorf("the root has the gid %d, want %s of the group %s", stat.Gid, own.Gid, own.Name)
+	}
+}
+
+func TestListenLeavesTheRootAloneWithoutTheGroup(t *testing.T) {
+	root := shortRoot(t)
+	if err := os.Chmod(root, 0o750); err != nil {
+		t.Fatalf("chmod the root: %v", err)
+	}
+
+	listener, _, _, err := listen(root, "no-such-group-on-any-host")
+	if err != nil {
+		t.Fatalf("listen: %v", err)
+	}
+	defer listener.Close()
+
+	info, err := os.Stat(root)
+	if err != nil {
+		t.Fatalf("stat the root: %v", err)
+	}
+	if got := info.Mode().Perm(); got != 0o750 {
+		t.Errorf("the root sits at %04o, want the 0750 it had", got)
 	}
 }
 
