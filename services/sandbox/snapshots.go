@@ -61,13 +61,17 @@ func (s *Service) CreateSnapshot(ctx context.Context, req SnapshotRequest) (mode
 	if !found {
 		return models.Snapshot{}, &RequestError{Err: fmt.Errorf("sandbox %s runs over %s, which this host no longer holds, so a snapshot of it could never start: run shard image pull %s first", id, sb.Image, sb.Image)}
 	}
+	// A create from the snapshot looks the tag up, so a tag that moved would mount the layer over another image.
+	if img.Digest != sb.Digest {
+		return models.Snapshot{}, &RequestError{Err: fmt.Errorf("sandbox %s runs over %s at %s, and this host now holds that tag at %s, so a snapshot of it could never start", id, sb.Image, sb.Digest, img.Digest)}
+	}
 
 	return s.cfg.Snapshots.Create(models.Snapshot{
 		Name:       req.Name,
 		Source:     id,
 		SourceName: sb.Name,
 		Image:      sb.Image,
-		Digest:     img.Digest,
+		Digest:     sb.Digest,
 		Provider:   s.cfg.Provider.Name(),
 		DiskMiB:    sb.Resources.DiskMiB,
 		MemoryMiB:  sb.Resources.MemoryMiB,
@@ -116,7 +120,7 @@ type seeded struct {
 	unlock func()
 }
 
-// seed checks the snapshot a create names and fills the request from it: its image, and its disk unless the request bounds one.
+// seed checks the snapshot a create names and fills the request from it: its image, and its disk and memory unless the request bounds them.
 func (s *Service) seed(ctx context.Context, ref string, req CreateRequest) (seeded, error) {
 	id, err := s.cfg.Snapshots.Resolve(ref)
 	if err != nil {
@@ -165,8 +169,8 @@ func (s *Service) readSeed(id string, req CreateRequest) (seeded, error) {
 	if req.Resources.DiskMiB == 0 {
 		req.Resources.DiskMiB = snap.DiskMiB
 	}
-	if req.Resources.MemoryMiB == 0 {
-		req.Resources.MemoryMiB = snap.MemoryMiB
+	if req.Resources.MemoryMiB == nil {
+		req.Resources.MemoryMiB = new(snap.MemoryMiB)
 	}
 	// A microVM substrate grows the copy of the disk file, and a shrink could cut off blocks the snapshot's files sit on.
 	if _, grows := s.cfg.Provider.(diskAdmitter); grows && req.Resources.DiskMiB < snap.DiskMiB {

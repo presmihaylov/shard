@@ -33,11 +33,11 @@ func TestTheSupervisorStartsTheEntrypointAgainUntilThePolicyGivesUp(t *testing.T
 		}
 	}
 
-	if err := app.Run(t.Context(), []string{"ls"}); err != nil {
-		t.Fatalf("ls: %v", err)
+	if err := app.Run(t.Context(), []string{"list"}); err != nil {
+		t.Fatalf("list: %v", err)
 	}
 	if !strings.Contains(out.String(), "on-failure 2/2 gave up") {
-		t.Errorf("ls printed %q, want the restart column", out.String())
+		t.Errorf("list printed %q, want the restart column", out.String())
 	}
 
 	if err := app.Run(t.Context(), []string{"stop", id}); err != nil {
@@ -63,12 +63,12 @@ func TestAlwaysStartsTheEntrypointAgainWithoutEnd(t *testing.T) {
 		t.Errorf("the record reads %s with %+v, want running with no give-up under always", sb.State, sb.Restart)
 	}
 
-	if err := app.Run(t.Context(), []string{"ls"}); err != nil {
-		t.Fatalf("ls: %v", err)
+	if err := app.Run(t.Context(), []string{"list"}); err != nil {
+		t.Fatalf("list: %v", err)
 	}
 	// always shows the count with no limit beside it and never a give-up.
 	if line := out.String(); !strings.Contains(line, "always ") || strings.Contains(line, "always 6/") || strings.Contains(line, "gave up") {
-		t.Errorf("ls printed %q, want the always count with no limit and no give-up", line)
+		t.Errorf("list printed %q, want the always count with no limit and no give-up", line)
 	}
 }
 

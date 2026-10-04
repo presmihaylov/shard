@@ -10,6 +10,7 @@ import (
 	"testing"
 
 	"github.com/presmihaylov/shard/models"
+	"github.com/presmihaylov/shard/services/sandbox"
 )
 
 func TestParseRunTheGoalCommand(t *testing.T) {
@@ -106,7 +107,7 @@ func TestParseCreateFlags(t *testing.T) {
 		t.Errorf("workdir = %q, user = %q", req.WorkDir, req.User)
 	}
 
-	if req.Resources.MemoryMiB != 512 || req.Resources.VCPUs != 2 || req.Resources.DiskMiB != 64 {
+	if memoryOf(req) != 512 || req.Resources.VCPUs != 2 || req.Resources.DiskMiB != 64 {
 		t.Errorf("resources = %+v, want 512 MiB, 2 vcpus and a 64 MiB disk", req.Resources)
 	}
 
@@ -120,16 +121,43 @@ func TestParseCreateTakesASizeWithAUnit(t *testing.T) {
 	if err != nil {
 		t.Fatalf("parseCreate: %v", err)
 	}
-	if req.Resources.MemoryMiB != 512 || req.Resources.DiskMiB != 2048 {
+	if memoryOf(req) != 512 || req.Resources.DiskMiB != 2048 {
 		t.Errorf("resources = %+v, want 512 MiB of memory and a 2048 MiB disk", req.Resources)
 	}
 
 	if req, err = parseCreate([]string{"--memory", "16384GiB", "--disk", "1KB", "alpine:3.20"}); err != nil {
 		t.Fatalf("parseCreate at the memory bound: %v", err)
 	}
-	if req.Resources.MemoryMiB != 1<<24 || req.Resources.DiskMiB != 1 {
+	if memoryOf(req) != 1<<24 || req.Resources.DiskMiB != 1 {
 		t.Errorf("resources = %+v, want the 16777216 MiB bound and a 1KB disk rounded up to 1 MiB", req.Resources)
 	}
+}
+
+// An omitted --memory stays absent for a snapshot to fill, and --memory 0 is an explicit request for no bound.
+func TestParseCreateTellsAnOmittedMemoryFromZero(t *testing.T) {
+	req, err := parseCreate([]string{"--snapshot", "base"})
+	if err != nil {
+		t.Fatalf("parseCreate: %v", err)
+	}
+	if req.Resources.MemoryMiB != nil {
+		t.Errorf("memory = %d with no --memory, want it absent", *req.Resources.MemoryMiB)
+	}
+
+	if req, err = parseCreate([]string{"--snapshot", "base", "--memory", "0"}); err != nil {
+		t.Fatalf("parseCreate: %v", err)
+	}
+	if req.Resources.MemoryMiB == nil || *req.Resources.MemoryMiB != 0 {
+		t.Errorf("memory = %v with --memory 0, want an explicit 0", req.Resources.MemoryMiB)
+	}
+}
+
+// memoryOf reads an absent --memory as -1, which no flag parses to.
+func memoryOf(req sandbox.CreateRequest) int64 {
+	if req.Resources.MemoryMiB == nil {
+		return -1
+	}
+
+	return *req.Resources.MemoryMiB
 }
 
 func TestInitPathFromEnv(t *testing.T) {

@@ -162,30 +162,30 @@ func TestStopRefusesAnIDTheHostNeverHeld(t *testing.T) {
 	}
 }
 
-func TestRmRefusesASandboxThatIsStillUp(t *testing.T) {
+func TestRemoveRefusesASandboxThatIsStillUp(t *testing.T) {
 	app, out := newCreateApp(t)
 
 	id := runDetached(t, app, out, "/bin/sleep", "600")
 	t.Cleanup(func() { cleanUp(t, app, id) })
 
-	err := app.Run(t.Context(), []string{"rm", id})
+	err := app.Run(t.Context(), []string{"remove", id})
 	if err == nil {
-		t.Fatal("the rm of a running sandbox returned no error")
+		t.Fatal("the remove of a running sandbox returned no error")
 	}
 	if !strings.Contains(err.Error(), "shard stop "+id) {
-		t.Errorf("the rm failed with %v, want it to say to stop the sandbox first", err)
+		t.Errorf("the remove failed with %v, want it to say to stop the sandbox first", err)
 	}
 
 	if sb := record(t, app, id); sb.State != models.StateRunning {
-		t.Errorf("the refused rm left the record %q, want the running sandbox it refused to touch", sb.State)
+		t.Errorf("the refused remove left the record %q, want the running sandbox it refused to touch", sb.State)
 	}
 	if got, err := runExec(t, app, "exec", id, "--", "/bin/echo", "alive"); err != nil || !strings.Contains(got, "alive") {
-		t.Errorf("an exec after the refused rm wrote %q and failed with %v, want a live sandbox", got, err)
+		t.Errorf("an exec after the refused remove wrote %q and failed with %v, want a live sandbox", got, err)
 	}
 }
 
-// TestRmFreesEveryHolding is the SHARD-24 acceptance criterion: nothing is left on the host.
-func TestRmFreesEveryHolding(t *testing.T) {
+// TestRemoveFreesEveryHolding is the SHARD-24 acceptance criterion: nothing is left on the host.
+func TestRemoveFreesEveryHolding(t *testing.T) {
 	app, out := newCreateApp(t)
 
 	before := holdings(t, app)
@@ -199,15 +199,15 @@ func TestRmFreesEveryHolding(t *testing.T) {
 	if err := app.Run(t.Context(), []string{"stop", id}); err != nil {
 		t.Fatalf("stop: %v", err)
 	}
-	if err := app.Run(t.Context(), []string{"rm", id}); err != nil {
-		t.Fatalf("rm: %v", err)
+	if err := app.Run(t.Context(), []string{"remove", id}); err != nil {
+		t.Fatalf("remove: %v", err)
 	}
 
 	assertNothingLeft(t, app, before, sb)
 }
 
-// TestRmForceEndsASandboxThatIsStillUp: --force is the shorthand for the stop the operator would type first.
-func TestRmForceEndsASandboxThatIsStillUp(t *testing.T) {
+// TestRemoveForceEndsASandboxThatIsStillUp: --force is the shorthand for the stop the operator would type first.
+func TestRemoveForceEndsASandboxThatIsStillUp(t *testing.T) {
 	app, out := newCreateApp(t)
 
 	before := holdings(t, app)
@@ -217,16 +217,16 @@ func TestRmForceEndsASandboxThatIsStillUp(t *testing.T) {
 
 	sb := record(t, app, id)
 
-	if err := app.Run(t.Context(), []string{"rm", "--force", id}); err != nil {
-		t.Fatalf("rm --force: %v", err)
+	if err := app.Run(t.Context(), []string{"remove", "--force", id}); err != nil {
+		t.Fatalf("remove --force: %v", err)
 	}
 
 	assertNothingLeft(t, app, before, sb)
 }
 
-// SHARD-137: stop returns only once the substrate reports the sandbox gone, so the rm behind it never
+// SHARD-137: stop returns only once the substrate reports the sandbox gone, so the remove behind it never
 // sees one that is still up. The race was rare, so the pair runs enough times to catch it.
-func TestStopThenRmNeverRacesTheSubstrate(t *testing.T) {
+func TestStopThenRemoveNeverRacesTheSubstrate(t *testing.T) {
 	app, out := newCreateApp(t)
 
 	for i := range 20 {
@@ -236,32 +236,32 @@ func TestStopThenRmNeverRacesTheSubstrate(t *testing.T) {
 		if err := app.Run(t.Context(), []string{"stop", id}); err != nil {
 			t.Fatalf("stop %d: %v", i, err)
 		}
-		if err := app.Run(t.Context(), []string{"rm", id}); err != nil {
-			t.Fatalf("rm %d right after the stop: %v", i, err)
+		if err := app.Run(t.Context(), []string{"remove", id}); err != nil {
+			t.Fatalf("remove %d right after the stop: %v", i, err)
 		}
 
-		// stop and rm each print the id, and the next create reads what the buffer holds.
+		// stop and remove each print the id, and the next create reads what the buffer holds.
 		out.Reset()
 	}
 }
 
-// TestASecondRmFindsNothingToFree: the record dies last, so a second rm fails on the id and a second rm --force only warns.
-func TestASecondRmFindsNothingToFree(t *testing.T) {
+// TestASecondRemoveFindsNothingToFree: the record dies last, so a second remove fails on the id and a second remove --force only warns.
+func TestASecondRemoveFindsNothingToFree(t *testing.T) {
 	app, out := newCreateApp(t)
 
 	id := runDetached(t, app, out, "/bin/sleep", "600")
 	t.Cleanup(func() { cleanUp(t, app, id) })
 
-	if err := app.Run(t.Context(), []string{"rm", "--force", id}); err != nil {
-		t.Fatalf("the first rm: %v", err)
+	if err := app.Run(t.Context(), []string{"remove", "--force", id}); err != nil {
+		t.Fatalf("the first remove: %v", err)
 	}
 
 	var missing *client.NotFoundError
-	if err := app.Run(t.Context(), []string{"rm", id}); !errors.As(err, &missing) {
-		t.Errorf("the second rm returned %v, want the id not found", err)
+	if err := app.Run(t.Context(), []string{"remove", id}); !errors.As(err, &missing) {
+		t.Errorf("the second remove returned %v, want the id not found", err)
 	}
-	if err := app.Run(t.Context(), []string{"rm", "--force", id}); err != nil {
-		t.Fatalf("the second rm --force: %v", err)
+	if err := app.Run(t.Context(), []string{"remove", "--force", id}); err != nil {
+		t.Fatalf("the second remove --force: %v", err)
 	}
 }
 
@@ -270,23 +270,23 @@ func assertNothingLeft(t *testing.T, app App, before []string, sb models.Sandbox
 	t.Helper()
 
 	if after := holdings(t, app); !slices.Equal(after, before) {
-		t.Errorf("the rm left %v, want the %v the host held before the create", after, before)
+		t.Errorf("the remove left %v, want the %v the host held before the create", after, before)
 	}
 
 	if exists, err := netns.NamespaceExists(sb.ID); err != nil || exists {
-		t.Errorf("the rm left the namespace of %s: %v", sb.ID, err)
+		t.Errorf("the remove left the namespace of %s: %v", sb.ID, err)
 	}
 	if hasLink(t, sb.HostInterface) {
-		t.Errorf("the rm left the host interface %s", sb.HostInterface)
+		t.Errorf("the remove left the host interface %s", sb.HostInterface)
 	}
 
 	// The whole root, so the null-netns runsc binds into its own root counts too.
 	if points := mountsUnder(t, app.Root); len(points) > 0 {
-		t.Errorf("the rm left the mounts %v under %s", points, app.Root)
+		t.Errorf("the remove left the mounts %v under %s", points, app.Root)
 	}
 }
 
-// mountsUnder skips the root's own mount: Firecracker makes a root off reflink the loop mount of <root>.xfs, and it outlives every rm.
+// mountsUnder skips the root's own mount: Firecracker makes a root off reflink the loop mount of <root>.xfs, and it outlives every remove.
 func mountsUnder(t *testing.T, root string) []string {
 	t.Helper()
 

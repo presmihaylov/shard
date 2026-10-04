@@ -154,7 +154,7 @@ func abandon(m *machine, tmp string, err error) error {
 func (m *machine) freeze(ctx context.Context) error {
 	m.freezing.Lock()
 	defer m.freezing.Unlock()
-	m.pausing = true
+	m.pausing.Store(true)
 
 	return m.control.Load().Freeze(ctx, models.VerbPause)
 }
@@ -164,7 +164,7 @@ func runAgain(m *machine) error {
 	// A reconnect swaps and thaws under freezing too, so either this thaw lands on the stream it put in, or that reconnect thaws.
 	m.freezing.Lock()
 	defer m.freezing.Unlock()
-	m.pausing = false
+	m.pausing.Store(false)
 	control := m.control.Load()
 
 	info, err := m.client.State(context.Background())

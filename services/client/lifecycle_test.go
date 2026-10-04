@@ -38,7 +38,7 @@ func TestCreateSandboxPostsTheRequestAndDecodesTheRecord(t *testing.T) {
 	var saw seen
 	c := serve(t, shortRoot(t), echo(http.StatusCreated, `{"id":"sandbox1","state":"running"}`, &saw))
 
-	req := sandbox.CreateRequest{Image: "alpine:3.20", Name: "web", Secrets: []string{"TOKEN"}, Resources: models.Resources{MemoryMiB: 512}}
+	req := sandbox.CreateRequest{Image: "alpine:3.20", Name: "web", Secrets: []string{"TOKEN"}, Resources: sandbox.ResourceRequest{MemoryMiB: new(int64(512))}}
 
 	sb, err := c.CreateSandbox(t.Context(), req)
 	if err != nil || sb.ID != "sandbox1" || sb.State != models.StateRunning {
@@ -53,7 +53,7 @@ func TestCreateSandboxPostsTheRequestAndDecodesTheRecord(t *testing.T) {
 	if err := json.Unmarshal(saw.body, &got); err != nil {
 		t.Fatalf("the body %s is not a request: %v", saw.body, err)
 	}
-	if got.Image != "alpine:3.20" || got.Name != "web" || got.Secrets[0] != "TOKEN" || got.Resources.MemoryMiB != 512 {
+	if got.Image != "alpine:3.20" || got.Name != "web" || got.Secrets[0] != "TOKEN" || got.Resources.MemoryMiB == nil || *got.Resources.MemoryMiB != 512 {
 		t.Errorf("the daemon got %+v, want %+v", got, req)
 	}
 }

@@ -376,6 +376,11 @@ func (t *transport) serveControl(conn net.Conn) {
 
 			continue
 		}
+		if m.Kind == supervisor.KindStop {
+			t.stop(conn, m.ID)
+
+			continue
+		}
 		t.answer(conn, m.ID, t.handle(m))
 	}
 }
@@ -431,11 +436,6 @@ func (t *transport) handle(m supervisor.Message) error {
 		}
 
 		return t.g.signal(m.PID, sig)
-	case supervisor.KindStop:
-		// A kill an earlier stop's lost cut left behind is not this stop's, so only a kill within this one skips the seal.
-		t.forced.Store(false)
-		// The stop takes the same path a Linux host's SIGTERM does, so one loop owns the grace; a frozen root would hold the entrypoint's last writes.
-		return errors.Join(t.thaw(), syscall.Kill(os.Getpid(), syscall.SIGTERM))
 	case supervisor.KindStopApp:
 		var err error
 		t.g.run(func() { err = t.g.stopApp(m.Force) })
@@ -465,6 +465,16 @@ func (t *transport) handle(m supervisor.Message) error {
 	default:
 		return fmt.Errorf("the host sent a %q message, which the guest does not take", m.Kind)
 	}
+}
+
+// stop answers before the guest acts on it: with nothing to forward to the guest goes at once, and the host would read only its EOF (SHARD-483).
+func (t *transport) stop(conn net.Conn, id int) {
+	// A kill an earlier stop's lost cut left behind is not this stop's, so only a kill within this one skips the seal.
+	t.forced.Store(false)
+	// A frozen root would hold the entrypoint's last writes.
+	t.answer(conn, id, t.thaw())
+	// The stop takes the same path a Linux host's SIGTERM does, so one loop owns the grace.
+	t.g.stopSignals <- syscall.SIGTERM
 }
 
 // freezeGuest stops the guest's processes, then holds the root: a writer the root held first would sleep where no cgroup freeze reaches it.

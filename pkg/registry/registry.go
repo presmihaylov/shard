@@ -271,7 +271,7 @@ func (s *Store) split(ref string) (matched, rest []v1.Descriptor, err error) {
 	return matched, rest, nil
 }
 
-// names matches the tag annotation, and the descriptor digest too, so image ls output feeds image rm.
+// names matches the tag annotation, and the descriptor digest too, so image list output feeds image remove.
 func names(d v1.Descriptor, parsed name.Reference) bool {
 	if d.Annotations[refAnnotation] == parsed.Name() {
 		return true

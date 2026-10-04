@@ -16,6 +16,11 @@ func (p *Provider) Exec(ctx context.Context, id string, spec models.ExecSpec) (m
 		return models.ExitStatus{}, fmt.Errorf("sandbox %s: exec has no command to run", id)
 	}
 
+	// A dial would wait on the save or meet VZ's raw refusal of a paused VM, so the pause refuses by name, as the frozen guest does (SHARD-478).
+	if p.pausing(id) {
+		return models.ExitStatus{}, &models.CommandNotStartedError{Sandbox: id, Reason: fmt.Sprintf("a %s holds the sandbox frozen, and nothing starts in it until that ends: run the command again", models.VerbPause), Code: models.CommandNotExecutableExitCode}
+	}
+
 	m, r, err := p.running(ctx, id)
 	if err != nil {
 		return models.ExitStatus{}, err
@@ -27,6 +32,15 @@ func (p *Provider) Exec(ctx context.Context, id string, spec models.ExecSpec) (m
 	}
 
 	return supervisor.Exec(ctx, m.dial, id, header, spec)
+}
+
+// pausing says a pause holds the sandbox's VM, from its freeze until it stops the VM or runs it again.
+func (p *Provider) pausing(id string) bool {
+	p.mu.Lock()
+	m, held := p.machines[id]
+	p.mu.Unlock()
+
+	return held && m.pausing.Load()
 }
 
 // running finds the sandbox's live guest, and refuses anything else by name and state, as an exec needs.

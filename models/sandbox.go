@@ -14,6 +14,8 @@ type Sandbox struct {
 	// this is empty.
 	Name  string `json:"name,omitempty"`
 	Image string `json:"image"`
+	// Digest is the image the writable layer sits over, which a snapshot records: the tag in Image can move.
+	Digest string `json:"digest,omitempty"`
 	// Snapshot is the id of the snapshot the sandbox was created from, empty for one made from an image.
 	Snapshot string `json:"snapshot,omitempty"`
 	Provider string `json:"provider"`

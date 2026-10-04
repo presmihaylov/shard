@@ -44,15 +44,15 @@ func TestTheDaemonStopsAnOOMKilledSandboxAndAStartBringsItBack(t *testing.T) {
 	if err := app.Run(t.Context(), []string{"start", id}); err != nil {
 		t.Fatalf("start after the kill: %v", err)
 	}
-	if got, err := runExec(t, app, "exec", id, "--", "/bin/ls", "/ran"); err != nil || !strings.Contains(got, "/ran") {
+	if got, err := runExec(t, app, "exec", id, "--", "/bin/list", "/ran"); err != nil || !strings.Contains(got, "/ran") {
 		t.Errorf("the run a start brought back lost the file its first run wrote: %q, %v", got, err)
 	}
 }
 
 // oomBound is the smallest --memory the suite's provider takes, so the bomb meets the bound soonest.
 func oomBound() string {
-	if bound := itestResources().MemoryMiB; bound != 0 {
-		return strconv.FormatInt(bound, 10) + "MiB"
+	if bound := itestResources().MemoryMiB; bound != nil {
+		return strconv.FormatInt(*bound, 10) + "MiB"
 	}
 
 	return "64MiB"

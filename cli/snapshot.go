@@ -41,7 +41,7 @@ func parseSnapshotCreate(args []string) (sandbox.SnapshotRequest, error) {
 	}
 	if named(flags) {
 		if err := sandbox.ValidSnapshotName(req.Name); err != nil {
-			return sandbox.SnapshotRequest{}, err
+			return sandbox.SnapshotRequest{}, fmt.Errorf("snapshot create --name: %w", err)
 		}
 	}
 	if flags.NArg() != 1 {
@@ -54,12 +54,15 @@ func parseSnapshotCreate(args []string) (sandbox.SnapshotRequest, error) {
 }
 
 func (a App) snapshotList(ctx context.Context, args []string) error {
-	rest, err := parseArgs("snapshot list", args)
+	rest, format, err := parseFormatArgs("snapshot list", args, formatTable)
 	if err != nil {
 		return err
 	}
 	if len(rest) != 0 {
 		return fmt.Errorf("snapshot list takes no arguments, got %d", len(rest))
+	}
+	if err := formatLanded("snapshot list", format, formatTable); err != nil {
+		return err
 	}
 
 	c, err := a.client()
@@ -87,12 +90,15 @@ func (a App) snapshotList(ctx context.Context, args []string) error {
 }
 
 func (a App) snapshotInspect(ctx context.Context, args []string) error {
-	rest, err := parseArgs("snapshot inspect", args)
+	rest, format, err := parseFormatArgs("snapshot inspect", args, formatJSON)
 	if err != nil {
 		return err
 	}
 	if len(rest) != 1 {
 		return fmt.Errorf("snapshot inspect takes one snapshot id, got %d", len(rest))
+	}
+	if err := formatLanded("snapshot inspect", format, formatJSON); err != nil {
+		return err
 	}
 
 	c, err := a.client()

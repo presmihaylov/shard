@@ -53,14 +53,14 @@ how to install.
   own writes in memory, and every client goes through it. The value of a secret crosses the socket
   once, on the `PUT`. The daemon writes it only to the secret store, and never logs it or lists it
   back. A create writes its sandbox record before it pulls, and a cached pull waits for any removal
-  in flight. `image rm` and `image prune` both free images by reachability over the records and the
-  snapshots, so neither of them sweeps a rootfs in the middle of a create.
-- The sandbox lifecycle verbs `create`, `start`, `stop`, `rm`, `exec`, `logs`, `pause`, `resume` and
-  `fork`, and the snapshot verbs, run inside the daemon, in `services/sandbox`. The image pull of a
-  create runs there too. The client waits for the pull with no deadline, and the daemon does not
+  in flight. `image remove` and `image prune` both free images by reachability over the records and
+  the snapshots, so neither of them sweeps a rootfs in the middle of a create.
+- The sandbox lifecycle verbs `create`, `start`, `stop`, `remove`, `exec`, `logs`, `pause`, `resume`
+  and `fork`, and the snapshot verbs, run inside the daemon, in `services/sandbox`. The image pull of
+  a create runs there too. The client waits for the pull with no deadline, and the daemon does not
   stream the pull's progress back to the client yet. The daemon serializes the verbs on one sandbox
-  with an in-process mutex per id. A stop and an rm on the same sandbox therefore run one after the
-  other, while two verbs on different sandboxes run side by side.
+  with an in-process mutex per id. A stop and a remove on the same sandbox therefore run one after
+  the other, while two verbs on different sandboxes run side by side.
 
 The daemon holds the guest side of an exec, which is its pipes and, for a `-t` exec, its pseudo
 terminal. The CLI keeps only the local terminal: raw mode, and the `SIGWINCH` it forwards.
@@ -76,7 +76,7 @@ what it missed and stream the rest. One client attaches at a time. The command w
 rather than evict output the client has not taken. A client that takes nothing for 30 s
 (`ExecStallBound`) is detached, the command keeps running, and `lost_bytes` counts what no client
 read. Once the command ends, the record holds its exit. While the command runs, `kill` signals it.
-Only an `rm` of the exec or a `stop` of the sandbox frees it. The daemon keeps at most 32 exited
+Only a `DELETE` of the exec or a `stop` of the sandbox frees it. The daemon keeps at most 32 exited
 execs per sandbox, so a new exec evicts the oldest exited one and the retained output stays bounded.
 A running exec never counts toward that limit. An evicted exec answers 404, the same as a deleted
 one.
@@ -122,7 +122,7 @@ so no verb ever reads a record that the substrate disagrees with. It corrects a 
 deletes one. It handles these cases:
 
 - A record that says `running` with no process becomes `stopped`, and its `stopped_reason` says
-  `daemon restarted and found no process`. `shard ls --all` prints the reason beside the state, and
+  `daemon restarted and found no process`. `shard list --all` prints the reason beside the state, and
   `shard inspect` carries it in the record. A `start` clears it. A vz shim that is there but does
   not answer within 5 s makes the record `unresponsive` instead, and so does a firecracker vmm that
   does not answer within 4 s. The record keeps that process's pid, and the daemon never kills the
@@ -145,7 +145,7 @@ deletes one. It handles these cases:
   frozen beside that checkpoint, so the daemon deletes the frozen sandbox first, without a thaw, as
   the pause would have done. If the daemon stopped after that delete, runsc holds nothing, but the
   rootfs is still mounted. The daemon unmounts the rootfs once the sandbox's cgroup is empty, so
-  `rm --force` still frees the record. On Firecracker the vmm can still be paused beside that
+  `remove --force` still frees the record. On Firecracker the vmm can still be paused beside that
   checkpoint, and the next daemon ends it the same way. A paused vmm beside a complete checkpoint in
   the sandbox's checkpoint directory is never resumed past that checkpoint. A substrate that cannot
   release a frozen sandbox keeps the record as it is. A marked record that the substrate says is
@@ -166,8 +166,8 @@ deletes one. It handles these cases:
 - A record that says `created` becomes `failed`, and its `failed_reason` says
   `the daemon restarted before the fork finished`. No verb leaves a record in `created`. Only the
   copy of a fork passes through that state, and the caller got an error instead of the id. The
-  daemon first stops a copy whose process still runs, because `rm` refuses a live sandbox and `stop`
-  refuses a failed one. Then it tears down the copy's substrate, as `rm` does, because a restore
+  daemon first stops a copy whose process still runs, because `remove` refuses a live sandbox and
+  `stop` refuses a failed one. Then it tears down the copy's substrate, as `remove` does, because a restore
   that the old daemon started can keep running where the runtime cannot see it. On gVisor that
   teardown first kills any `runsc restore` of the copy. Until that restore starts the sandbox, it
   runs outside the sandbox's cgroup, and the daemon lock means no new restore can start. A fork or
@@ -182,14 +182,14 @@ deletes one. It handles these cases:
   start that took effect before the daemon stopped did reach `running`. With no process behind it,
   the record becomes `failed`, and its `failed_reason` says
   `the daemon restarted before the create finished`. A create that the daemon was still running
-  when it stopped never reached `running`, so the record is terminal and only `rm` frees it.
+  when it stopped never reached `running`, so the record is terminal and only `remove` frees it.
 - Host netfilter is the policy of record, and nothing re-applied it while the daemon was down. So
   when any sandbox runs, the whole table goes back on, once.
 
 Each corrected record is one line in the journal. Sometimes the daemon cannot check a record,
 because the substrate refused the probe or a write failed on a full root. The daemon then logs one
 line that names the sandbox and the error, and leaves the record as it is. It does not refuse to
-start, because a daemon that refused could not serve the other sandboxes, nor `rm` the one that
+start, because a daemon that refused could not serve the other sandboxes, nor `remove` the one that
 fills the root (SHARD-341). A daemon that cannot list the records or put the host rules back does
 refuse to start, and systemd restarts it. A record the daemon cannot read is named in the log and
 left as it is, because shard cannot correct a record it cannot read. The vz and Firecracker
@@ -199,7 +199,7 @@ host without `runsc` still gets a daemon that answers the reads and the store ve
 
 ## A full root
 
-A daemon that cannot start on a full root cannot serve the `rm` that would free it. The daemon
+A daemon that cannot start on a full root cannot serve the `remove` that would free it. The daemon
 therefore holds 64 MiB back in `<root>/.reserve` (SHARD-351). It writes the file under the lock, as
 real blocks, and only when the root has at least four times that much free. On a fuller root the
 daemon starts without a reserve and logs a line.
@@ -217,14 +217,14 @@ deleted file, so the delete gives back less than the reserve. The log line says 
 
 Every 5 s the `liveness` task asks the substrate about every record that says `running`, and makes
 the record agree with it. It asks under a 10 s deadline and outside the per-sandbox lock. A
-substrate call that wedges therefore never pins that lock, and a `stop` or `rm` on that sandbox, or
+substrate call that wedges therefore never pins that lock, and a `stop` or `remove` on that sandbox, or
 on any other, still runs. When the substrate does not answer within the deadline, the tick logs one
 line, leaves the record untouched, and asks again on the next tick. The tick takes the lock only to
 write, and it reads the record again first. A `stop` that landed since the list therefore wins, and
 the tick leaves that sandbox alone. A tick that the substrate answers has four possible outcomes.
 
 The entrypoint exited but the sandbox is still up. The sandbox outlives its entrypoint, so the state
-stays `running`, and the tick writes the exit into `exit_status`. `shard ls` then shows `running
+stays `running`, and the tick writes the exit into `exit_status`. `shard list` then shows `running
 (exited 7)`, and `shard inspect` shows the code and the signal. An operator can therefore tell a
 clean exit from a crash without a `stop`. The exit comes from the file that `shard-init` writes, the
 same file a `stop` reads (SHARD-168 replaces the channel underneath but keeps the value). A `stop`
@@ -239,7 +239,7 @@ policy for a process that died is SHARD-188.
 the exit code 125, as `docs/provider-vz.md` describes. The tick makes the record `stopped` with
 `pid` 0, `exit_status` 125 and `stopped_reason` `shard-init failed: <reason>`, and logs one line. A
 `start` brings it back and clears both. A run whose last report never landed ends the same way, with
-the loss as the reason. Its `start`, however, answers with the loss until `rm` drops the sandbox.
+the loss as the reason. Its `start`, however, answers with the loss until `remove` drops the sandbox.
 
 The host ended it for its memory. When a sandbox overruns its `--memory` bound, the host ends the
 whole sandbox. The kernel kills every process in its cgroup, `shard-init` included, and `runsc`
@@ -309,7 +309,7 @@ that file sits under `/.shard`, where the guest can write it. The daemon therefo
 regular file of at most 4 KiB, and refuses a symbolic link, a fifo or a device.
 The record carries `restart`: `{"policy", "retries", "backoff",
 "count", "last_at", "gave_up", "ended"}`, absent on a sandbox without a policy, and `retries` is omitted when
-the count is unlimited. `shard ls` shows it in the `RESTART` column:
+the count is unlimited. `shard list` shows it in the `RESTART` column:
 `on-failure 2` when unlimited, `on-failure 2/5` under a cap, then `on-failure 5/5 gave up`, and
 `always 7`. Each start again, and the give-up, is one line in the daemon log. The count is for one
 run, and `shard-init` never clears it. A `start` of a stopped sandbox begins a new run at zero, and
@@ -405,12 +405,12 @@ curl --unix-socket /var/lib/shard/shard.sock -X POST http://localhost/v0/images/
   cursor is a position rather than an item, so a sandbox removed between two pages does not break
   the walk. Without `limit` the list is whole and `next` is `null`. With a limit, `next` is `null`
   only once nothing follows. A `limit` under 1, or a cursor that could never be a key of the list,
-  is 400 `invalid_request`. The CLI never sets a limit, so `ls` and the store lists print
+  is 400 `invalid_request`. The CLI never sets a limit, so `list` and the store lists print
   everything.
-- `GET /v0/sandboxes` answers `{"sandboxes": [...], "next"}` the way `shard ls` lists them, with
+- `GET /v0/sandboxes` answers `{"sandboxes": [...], "next"}` the way `shard list` lists them, with
   stopped sandboxes hidden unless `all=true`. When some records are unreadable, it still answers 200
   with the readable sandboxes and a `warnings` array that holds one string per unreadable record.
-  `ls` prints the table, then the warnings on stderr, and exits non-zero. The route answers 500 only
+  `list` prints the table, then the warnings on stderr, and exits non-zero. The route answers 500 only
   when the list itself failed.
 - `GET /v0/sandboxes/{id}` takes an id or a name and answers the record. When the record names a
   policy, an `egress` object sits beside it with what the host enforces, as `shard inspect` prints
@@ -423,22 +423,23 @@ curl --unix-socket /var/lib/shard/shard.sock -X POST http://localhost/v0/images/
 
 - `POST /v0/sandboxes` takes `{"image", "snapshot", "name", "command", "env", "workdir", "user",
   "secrets", "policy", "resources": {"memory_mib", "vcpus", "disk_mib"}, "restart": {"policy",
-  "retries", "backoff"}}` and answers 201 with the record. A body names `image` or `snapshot`, never
-  both, and the snapshot routes below say what a create from a snapshot does. `command` is the app,
-  which `shard run` sends and `shard create` does not. The image's own ENTRYPOINT and CMD never run,
-  so a body with no `command` starts only `shard-init`, and the sandbox stays up. A cached image
-  needs no pull, so the create builds and starts the sandbox before it answers, and the record says
-  `running`. A claim that fails at that point gives everything back, and the create answers 500. An
-  uncached image makes the record `pending`, and the create answers before the download. The daemon
-  pulls, builds and starts behind it, and the record lands on `running` or `failed` with a one-line
-  `failed_reason`. A background pull or start that fails is therefore read from the record, and does
-  not come back as an error. With `?wait=true` the create holds until the record leaves `pending`,
-  then answers the `running` or `failed` record it reached, so a caller reads the settled record
-  without a poll. The plain create answers at once. A wait that sends `Accept: application/x-ndjson`
-  streams the pull instead: one `{"event"}` line per step as it lands, then `{"sandbox"}` with the
-  settled record. The create answers 400 when the body does not decode, when a field does not
-  validate, or when the body names a secret or a policy the host does not hold. It answers 409
-  `name_taken` when another sandbox already holds the name.
+  "retries", "backoff"}}` and answers 201 with the record, which keeps the digest of the image it
+  runs over in `digest`. A `memory_mib` of 0 asks for no bound. A body names `image` or `snapshot`,
+  never both, and the snapshot routes below say what a create from a snapshot does. `command` is the
+  app, which `shard run` sends and `shard create` does not. The image's own ENTRYPOINT and CMD never
+  run, so a body with no `command` starts only `shard-init`, and the sandbox stays up. A cached
+  image needs no pull, so the create builds and starts the sandbox before it answers, and the record
+  says `running`. A claim that fails at that point gives everything back, and the create answers
+  500. An uncached image makes the record `pending`, and the create answers before the download. The
+  daemon pulls, builds and starts behind it, and the record lands on `running` or `failed` with a
+  one-line `failed_reason`. A background pull or start that fails is therefore read from the record,
+  and does not come back as an error. With `?wait=true` the create holds until the record leaves
+  `pending`, then answers the `running` or `failed` record it reached, so a caller reads the settled
+  record without a poll. The plain create answers at once. A wait that sends `Accept:
+  application/x-ndjson` streams the pull instead: one `{"event"}` line per step as it lands, then
+  `{"sandbox"}` with the settled record. The create answers 400 when the body does not decode, when
+  a field does not validate, or when the body names a secret or a policy the host does not hold. It
+  answers 409 `name_taken` when another sandbox already holds the name.
 - `POST /v0/sandboxes/{id}/start` takes no body and answers 200 with the record of the sandbox it
   started again. It answers 404 when nothing has the reference, and 409 when the sandbox is not
   stopped.
@@ -465,8 +466,8 @@ curl --unix-socket /var/lib/shard/shard.sock -X POST http://localhost/v0/images/
 A snapshot is the files a stopped sandbox kept, with no memory image. It lives under
 `<root>/snapshots/<id>`, has an id and an optional name, and outlives the sandbox it came from. A
 snapshot name is unique among snapshots, and a sandbox may hold the same name. Every route that
-takes `{ref}` takes an id or a name. A snapshot record reads like this, with the image's digest in
-`digest` and the bytes the copy holds on the host in `size`:
+takes `{ref}` takes an id or a name. A snapshot record reads like this, with the digest of the image
+the source ran over in `digest` and the bytes the copy holds on the host in `size`:
 
 ```
 {
@@ -485,11 +486,12 @@ takes `{ref}` takes an id or a name. A snapshot record reads like this, with the
 ```
 
 - `POST /v0/snapshots` takes `{"sandbox", "name"}`, where `sandbox` is an id or a name, and answers
-  201 with the snapshot record. The provider copies the source's files: gVisor, runc and Sysbox
-  copy the writable layer and `/tmp`, Firecracker reflinks the overlay disk, and `vz` makes an APFS
-  clone of the disk image. Errors: 400 for a body that does not decode, a name that does not
-  validate, or a source whose image the host no longer holds, 404, 409 `sandbox_not_stopped` when
-  the source runs or is paused, and 409 `name_taken` when another snapshot holds the name.
+  201 with the snapshot record. The provider copies the source's files: gVisor, runc and Sysbox copy
+  the writable layer and `/tmp`, Firecracker reflinks the overlay disk, and `vz` makes an APFS clone
+  of the disk image. Errors: 400 for a body that does not decode, a name that does not validate, a
+  source whose image the host no longer holds, or a source whose tag the host now holds at another
+  digest, 404, 409 `sandbox_not_stopped` when the source runs or is paused, and 409 `name_taken`
+  when another snapshot holds the name.
 - `GET /v0/snapshots` answers `{"snapshots": [...], "next"}`, ordered by id and paged like every
   other list.
 - `GET /v0/snapshots/{ref}` answers the snapshot record. Errors: 404.
@@ -504,7 +506,8 @@ record says `running` and names the snapshot's id in its `snapshot` key. It answ
 snapshot was made on another provider, or when the host no longer holds its image at the digest the
 snapshot recorded. On Firecracker and `vz` a larger `disk_mib` grows the snapshot's disk, and a
 smaller one answers 400, as a disk only grows. A body with no `disk_mib` or no `memory_mib` takes the
-snapshot's, which is the bound the source ran under. A snapshot reference that nothing has is 404.
+snapshot's, which is the bound the source ran under. A `memory_mib` of 0 is not an omitted one: it
+asks for no bound. A snapshot reference that nothing has is 404.
 An image that a snapshot names stays held: `DELETE /v0/images/{ref}` refuses it with 409 `in_use`,
 and `image prune` leaves it.
 
@@ -559,7 +562,7 @@ and `image prune` leaves it.
   JSON record each, live. A stopped or removed sandbox ends the stream with close 1000 and the reason
   as the close text. A failure of the follow is close 1011 with the error. Without the handshake the
   route answers 200 with chunked `application/x-ndjson`, one record per line as it lands, and the
-  body ends on the same stop or rm. Either way, a 404 comes before anything is on the wire.
+  body ends on the same stop or remove. Either way, a 404 comes before anything is on the wire.
 - `PUT /v0/sandboxes/{id}/files?path=&mode=&user=&parents=` streams the body into the running guest,
   and answers 204 once the body sits at `path` as one file. The guest writes to a temp name beside
   the file, syncs it and renames it over the old one, so a put that dies midway leaves the old file
@@ -625,7 +628,7 @@ and `image prune` leaves it.
 - `GET /v0/policies` answers `{"policies": [...], "next"}`, and `GET /v0/policies/{name}` answers one
   policy with `holders`, the sandboxes whose record names it. The field is omitted when no sandbox
   names the policy. That is what `shard policy
-  ls` and `shard policy show` print. Errors: 404 when the host holds no such policy.
+  list` and `shard policy show` print. Errors: 404 when the host holds no such policy.
 - `PUT /v0/policies/{name}` takes `{"rules": [{"action": "allow"|"deny", "rule": "<destination>"}]}`
   with the rules in the order they were given. It compiles them, stores the policy and re-applies it
   at once to every sandbox that names it. It answers 200 with the policy. The CLI never parses a
@@ -637,14 +640,14 @@ and `image prune` leaves it.
   rules at all.
 - `GET /v0/secrets` answers `{"secrets": [...], "next"}` with the name, the destinations, the
   placeholder and the times of each secret, and never a value. Unreadable files come back in
-  `warnings` beside the readable ones. `secret ls` prints them on stderr before it exits non-zero.
+  `warnings` beside the readable ones. `secret list` prints them on stderr before it exits non-zero.
 - `PUT /v0/secrets/{name}` takes `{"value", "destinations", "mock"}` and answers 200 with the record.
   The record carries the placeholder and no value. Errors: 400 for a name, a destination or an empty
   value the host refuses, and 409 with the name of every sandbox that holds the placeholder a new
   `mock` would change.
 - `DELETE /v0/secrets/{name}` answers 204. Errors: 404, and 409 with the name of every sandbox that
   was granted the secret, unless the query has `?force=true`.
-- `GET /v0/images` answers `{"images": [...], "next"}`, with the images as `shard image ls` prints
+- `GET /v0/images` answers `{"images": [...], "next"}`, with the images as `shard image list` prints
   them. An entry the daemon could not read carries its reason in `broken`.
 - `POST /v0/images/pull` takes `{"ref"}`, pulls the image and answers 200 with it. Errors: 400 for
   a reference that does not parse, and 500 when the registry or the unpack failed. With `Accept:
@@ -692,11 +695,11 @@ else that a refusal carries lives inside `error`, and the root never holds anyth
 | `body_too_large` | 413 | a JSON body over 1 MiB. The daemon reads no further, and closes the connection after the answer |
 | `not_found` | 404 | no sandbox, snapshot, policy, secret, image or exec has the reference, or no route has the path |
 | `sandbox_not_running` | 409 | exec, pause, fork, attach or app stop on a sandbox that is not running, one the substrate no longer holds, or one whose substrate process does not answer |
-| `sandbox_not_stopped` | 409 | start or rm without force on a sandbox that is up, rm without force on a paused one, whose checkpoint a resume needs, and snapshot create on any sandbox that is not stopped |
+| `sandbox_not_stopped` | 409 | start or remove without force on a sandbox that is up, remove without force on a paused one, whose checkpoint a resume needs, and snapshot create on any sandbox that is not stopped |
 | `sandbox_not_paused` | 409 | resume on a sandbox that is not paused |
 | `no_app` | 409 | attach or app stop on a sandbox that `create` made, which runs no app |
 | `app_ended` | 409 | app stop once the restart policy of the app ended |
-| `sandbox_failed` | 409 | any verb except a get or an `rm` on a create that ended `failed`. The message carries the `failed_reason`, and `rm` frees the sandbox |
+| `sandbox_failed` | 409 | any verb except a get or a `remove` on a create that ended `failed`. The message carries the `failed_reason`, and `remove` frees the sandbox |
 | `sandbox_live` | 409 | grant, ungrant, attach or detach while the sandbox runs or is paused |
 | `no_checkpoint` | 409 | resume on a paused sandbox whose record names no checkpoint |
 | `unsupported` | 409 | the provider does not claim the verb |
@@ -704,7 +707,7 @@ else that a refusal carries lives inside `error`, and the root never holds anyth
 | `name_taken` | 409 | a create whose `name` another sandbox already holds, or a snapshot create whose `name` another snapshot holds |
 | `unauthorized` | 401 | the TCP front, when the request carries no valid bearer token, and then the front dials nothing |
 | `forbidden` | 403 | the TCP front, when the token is valid but its scopes do not reach the route, and then the front dials nothing. Also the daemon, on a create that names a secret without `secret:*` or a policy without `policy:*` |
-| `substrate_timeout` | 504 | a stop, rm or restart whose substrate status call did not answer within the budget. Retry it once the runtime frees. On gVisor, rm --force reclaims through the wedge instead. It SIGKILLs the sandbox's own runsc processes, which it finds by the sandbox's cgroup and by the sandbox id on their command line, then finishes the teardown. It answers this code only when that kill fails too |
+| `substrate_timeout` | 504 | a stop, remove or restart whose substrate status call did not answer within the budget. Retry it once the runtime frees. On gVisor, rm --force reclaims through the wedge instead. It SIGKILLs the sandbox's own runsc processes, which it finds by the sandbox's cgroup and by the sandbox id on their command line, then finishes the teardown. It answers this code only when that kill fails too |
 | `internal` | 500 | anything else, and the message says what the daemon got back |
 
 `services/client` decodes only that object into `*client.APIError`, with `Status`, `Code`,
@@ -777,7 +780,7 @@ fault: a file that everyone on the host can read, a file the run cannot read, so
 a file, an empty file, or a key under 32 bytes, the width an HS256 key needs. No error, log line or
 output holds the key. A file that `--signing-key-file` names must exist, and `serve` and every
 `tokens` verb refuse a named file that is missing rather than create one. `openssl rand -hex 32`
-prints a key that passes. `tokens ls` and `tokens revoke` never create a key or the `auth`
+prints a key that passes. `tokens list` and `tokens revoke` never create a key or the `auth`
 directory.
 
 The daemon never reads, creates or removes `<root>/auth`, so a daemon starts the same with or
@@ -814,7 +817,7 @@ capabilities:
 | `daemon:read` | `GET /v0/version`, `GET /v0/daemon` |
 | `sandbox:read` | list, get, `logs`, `egress-log`, `attach`, `GET /v0/snapshots` and `GET /v0/snapshots/{ref}` |
 | `sandbox:write` | create, start, stop, pause, resume, fork, `app/stop` and `POST /v0/snapshots` |
-| `sandbox:delete` | `rm` and `DELETE /v0/snapshots/{ref}` |
+| `sandbox:delete` | `remove` and `DELETE /v0/snapshots/{ref}` |
 | `exec` | every `exec` route, and every `files`, `ls`, `mkdir` and `archive` route |
 | `image:*` | every `images` route |
 | `secret:*` | every `secrets` route, and the grant and ungrant on a sandbox |
@@ -876,17 +879,17 @@ Every minted token carries a random 128-bit `jti`, and `mint` appends one record
 The record holds the id, the subject, when the token was issued, when it expires, its scopes, and
 whether it is revoked. The ledger sits beside the signing key file, at `serve.tokens` in the same
 directory, so the ledger of the default key is `<root>/auth/serve.tokens`. `--tokens-file` overrides
-that path on `tokens mint`, `tokens ls`, `tokens revoke` and `serve`. `mint` creates the ledger
+that path on `tokens mint`, `tokens list`, `tokens revoke` and `serve`. `mint` creates the ledger
 `0640` when it is absent, and refuses a ledger that everyone can read. It prints no token when it
 cannot write the record.
 
 ```
-shard tokens ls
+shard tokens list
 shard tokens revoke <id>
 shard tokens revoke --name ci
 ```
 
-`tokens ls` lists every record with the status a request would see now: `active`, `revoked` or
+`tokens list` lists every record with the status a request would see now: `active`, `revoked` or
 `expired`. With no ledger yet, it prints the header alone, and `revoke` of an id reports that the
 ledger holds no such token. `revoke` marks one token by its id, or every token of a subject with
 `--name`. The next request that carries a revoked token gets a `401`. Both are local verbs, like
@@ -930,7 +933,7 @@ A script or a CI job reaches a front instead of the socket with two variables:
 ```
 export SHARD_REMOTE=https://shard.example.com
 export SHARD_API_KEY=<the token field of a shard tokens mint record>
-shard ls
+shard list
 ```
 
 `SHARD_API_KEY` is the raw credential, the `token` field of the record that `shard tokens mint`
@@ -951,8 +954,8 @@ A token file is the alternative. It holds the mint record whole or the bare toke
 refuses one that everyone on the host can read:
 
 ```
-shard --remote https://shard.example.com --token-file ~/.shard/token --ca-file ~/.shard/ca.pem ls
-SHARD_REMOTE=https://shard.example.com SHARD_TOKEN_FILE=~/.shard/token shard ls
+shard --remote https://shard.example.com --token-file ~/.shard/token --ca-file ~/.shard/ca.pem list
+SHARD_REMOTE=https://shard.example.com SHARD_TOKEN_FILE=~/.shard/token shard list
 ```
 
 An empty `SHARD_TOKEN_FILE` is unset too. With `--remote` and none of the three, the client refuses

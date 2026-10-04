@@ -20,6 +20,7 @@ const canonicalAlpine = "index.docker.io/library/alpine:3.20"
 func snapshotSource() models.Sandbox {
 	sb := stopped()
 	sb.Image = canonicalAlpine
+	sb.Digest = fakeDigest
 	sb.Resources = models.Resources{MemoryMiB: 512, DiskMiB: 2048}
 
 	return sb
@@ -112,6 +113,24 @@ func TestCreateSnapshotRefusesASandboxWhoseImageIsGone(t *testing.T) {
 	}
 }
 
+// The source's layer sits over the image it ran on, so a tag that moved since then would seed every create over another base.
+func TestCreateSnapshotRefusesATagThatMovedSinceTheSourceRan(t *testing.T) {
+	r := &recorder{}
+	source := snapshotSource()
+	source.Digest = "sha256:ffee"
+	svc, l := newService(t, r, source)
+
+	_, err := svc.CreateSnapshot(t.Context(), sandbox.SnapshotRequest{Sandbox: "web"})
+
+	var refused *sandbox.RequestError
+	if !errors.As(err, &refused) || !strings.Contains(err.Error(), "now holds that tag at "+fakeDigest) {
+		t.Errorf("a snapshot over a moved tag returned %v, want a refusal that names both digests", err)
+	}
+	if all, err := l.snapshots.List(); err != nil || len(all) != 0 {
+		t.Errorf("a refused snapshot left %+v and %v, want nothing", all, err)
+	}
+}
+
 func TestCreateSnapshotRefusesANameAnotherSnapshotHolds(t *testing.T) {
 	svc, l := newService(t, &recorder{}, snapshotSource())
 	held := storedSnapshot(t, l, baseSnapshot())
@@ -135,8 +154,8 @@ func TestCreateFromASnapshotSeedsTheLayerAndNeverPulls(t *testing.T) {
 		t.Fatalf("create: %v", err)
 	}
 
-	if sb.Snapshot != snap.ID || sb.Image != canonicalAlpine || sb.Resources.DiskMiB != 2048 || sb.Resources.MemoryMiB != 512 {
-		t.Errorf("the record holds snapshot %q, image %q, disk %d and memory %d, want %s, %s and the snapshot's 2048 and 512", sb.Snapshot, sb.Image, sb.Resources.DiskMiB, sb.Resources.MemoryMiB, snap.ID, canonicalAlpine)
+	if sb.Snapshot != snap.ID || sb.Image != canonicalAlpine || sb.Digest != fakeDigest || sb.Resources.DiskMiB != 2048 || sb.Resources.MemoryMiB != 512 {
+		t.Errorf("the record holds snapshot %q, image %q at %q, disk %d and memory %d, want %s, %s at %s and the snapshot's 2048 and 512", sb.Snapshot, sb.Image, sb.Digest, sb.Resources.DiskMiB, sb.Resources.MemoryMiB, snap.ID, canonicalAlpine, fakeDigest)
 	}
 	files, err := l.snapshots.Files(snap.ID)
 	if err != nil {
@@ -210,18 +229,20 @@ func TestCreateFromASnapshotRefusesWhatTheSnapshotCannotStartOn(t *testing.T) {
 	}
 }
 
-// Memory is not on the disk, so an explicit --memory replaces the snapshot's bound.
+// Memory is not on the disk, so an explicit --memory replaces the snapshot's bound, and an explicit 0 is no bound.
 func TestCreateFromASnapshotTakesAnExplicitMemory(t *testing.T) {
-	r := &recorder{}
-	svc, l := newService(t, r, models.Sandbox{})
-	storedSnapshot(t, l, baseSnapshot())
+	for _, memory := range []int64{1024, 0} {
+		r := &recorder{}
+		svc, l := newService(t, r, models.Sandbox{})
+		storedSnapshot(t, l, baseSnapshot())
 
-	sb, err := svc.Create(t.Context(), sandbox.CreateRequest{Snapshot: "base", Resources: models.Resources{MemoryMiB: 1024}})
-	if err != nil {
-		t.Fatalf("create: %v", err)
-	}
-	if sb.Resources.MemoryMiB != 1024 {
-		t.Errorf("the record holds memory %d, want the request's 1024 over the snapshot's 512", sb.Resources.MemoryMiB)
+		sb, err := svc.Create(t.Context(), sandbox.CreateRequest{Snapshot: "base", Resources: sandbox.ResourceRequest{MemoryMiB: new(memory)}})
+		if err != nil {
+			t.Fatalf("create with memory %d: %v", memory, err)
+		}
+		if sb.Resources.MemoryMiB != memory {
+			t.Errorf("the record holds memory %d, want the request's %d over the snapshot's 512", sb.Resources.MemoryMiB, memory)
+		}
 	}
 }
 
@@ -232,7 +253,7 @@ func TestCreateFromASnapshotOnAMicroVMOnlyGrowsTheDisk(t *testing.T) {
 	svc, l := newService(t, r, models.Sandbox{}, withDisks(disks))
 	storedSnapshot(t, l, baseSnapshot())
 
-	_, err := svc.Create(t.Context(), sandbox.CreateRequest{Snapshot: "base", Resources: models.Resources{DiskMiB: 1024}})
+	_, err := svc.Create(t.Context(), sandbox.CreateRequest{Snapshot: "base", Resources: sandbox.ResourceRequest{DiskMiB: 1024}})
 
 	var refused *sandbox.RequestError
 	if !errors.As(err, &refused) || !strings.Contains(err.Error(), "a disk only grows") || !strings.Contains(err.Error(), "2048 MiB or more") {
@@ -243,7 +264,7 @@ func TestCreateFromASnapshotOnAMicroVMOnlyGrowsTheDisk(t *testing.T) {
 	}
 
 	for _, mib := range []int64{2048, 4096} {
-		sb, err := svc.Create(t.Context(), sandbox.CreateRequest{Snapshot: "base", Resources: models.Resources{DiskMiB: mib}})
+		sb, err := svc.Create(t.Context(), sandbox.CreateRequest{Snapshot: "base", Resources: sandbox.ResourceRequest{DiskMiB: mib}})
 		if err != nil {
 			t.Fatalf("a create with --disk %dMiB returned %v", mib, err)
 		}

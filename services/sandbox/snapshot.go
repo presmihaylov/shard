@@ -282,6 +282,7 @@ func (s *Service) Fork(ctx context.Context, ref string, req CopyRequest) (sb mod
 	// The capture holds the source's run, so an entrypoint that had exited before it has in the fork too.
 	claim, err := s.claimCopy(ctx, &td, req, models.Sandbox{
 		Image:      src.Image,
+		Digest:     src.Digest,
 		Resources:  src.Resources,
 		Secrets:    slices.Clone(src.Secrets),
 		Policy:     src.Policy,
