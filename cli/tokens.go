@@ -28,9 +28,6 @@ func (a App) tokensMint(_ context.Context, args []string) error {
 	if flags.NArg() != 0 {
 		return fmt.Errorf("tokens mint takes no arguments, got %d", flags.NArg())
 	}
-	if err := formatLanded("tokens mint", *format, formatJSON); err != nil {
-		return err
-	}
 	if *name == "" {
 		return errors.New("tokens mint needs --name: it is the subject of the token")
 	}
@@ -41,6 +38,9 @@ func (a App) tokensMint(_ context.Context, args []string) error {
 	scopeList := parseScopes(*scopes)
 	if err := serve.CheckScopes(scopeList); err != nil {
 		return fmt.Errorf("tokens mint: %w", err)
+	}
+	if err := formatLanded("tokens mint", *format, formatJSON); err != nil {
+		return err
 	}
 
 	signingKey, keyPath, err := serve.SigningKey(a.Root, *signingKeyFile)

@@ -26,6 +26,12 @@ func parseSnapshotCreate(args []string) (sandbox.SnapshotRequest, error) {
 	if err := parseVerb(flags, args); err != nil {
 		return sandbox.SnapshotRequest{}, err
 	}
+	// A snapshot name is a link name under the root, as a sandbox name is, so it takes the same rules.
+	if named(flags) {
+		if err := sandbox.ValidName(req.Name); err != nil {
+			return sandbox.SnapshotRequest{}, fmt.Errorf("snapshot create --name: %w", err)
+		}
+	}
 	if flags.NArg() != 1 {
 		return sandbox.SnapshotRequest{}, fmt.Errorf("snapshot create takes one sandbox id, got %d", flags.NArg())
 	}
