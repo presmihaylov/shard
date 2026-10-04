@@ -60,7 +60,7 @@ var verbGroups = []struct {
 	verbs []string
 }{
 	{"Sandboxes", []string{"create", "run", "exec", "list", "logs", "policy logs", "inspect", "stop", "start", "remove", "pause", "resume", "fork", "cp"}},
-	{"Images, snapshots, secrets and egress", []string{"pull", "image", "snapshot", "secret", "policy"}},
+	{"Images, snapshots, secrets and network policies", []string{"pull", "image", "snapshot", "secret", "policy"}},
 	{"Host and access", []string{"daemon", "info", "serve", "tokens", "version"}},
 }
 
@@ -89,8 +89,8 @@ const sizeNote = "A size is a whole number with KiB, MiB or GiB (binary), or KB,
 // helps is the one help source, keyed by the words after shard; "" is the top level.
 var helps = map[string]verbHelp{
 	"": {
-		usage:   []string{"[global flags] <verb> [flags] [args]"},
-		summary: "shard is a single-node sandbox manager (pre-alpha).",
+		usage:   []string{"[OPTIONS] COMMAND [ARGS...]"},
+		summary: "A runtime for isolated sandboxes on your own infrastructure.",
 		flags: []flagHelp{
 			{"--root <dir>", "where shard keeps its state", DefaultRoot},
 			{"--remote <url>", "the https URL of the proxy in front of shard serve; verbs go there instead of the socket", ""},
@@ -106,7 +106,7 @@ var helps = map[string]verbHelp{
 	},
 	"create": {
 		usage:   []string{"create [flags] <image>", "create [flags] --snapshot <id|name>"},
-		summary: "create a sandbox that runs only shard-init and print its id",
+		summary: "create a sandbox and print its id",
 		args:    []row{{"<image>", "the image; create pulls it first when it is not on disk"}},
 		flags: append(slices.Clone(sandboxFlagHelps),
 			flagHelp{"--snapshot <id|name>", "start from the files of a snapshot, over the image it names, in place of an image", ""},
@@ -122,7 +122,7 @@ var helps = map[string]verbHelp{
 	},
 	"run": {
 		usage:   []string{"run [flags] <image> <command> [args...]"},
-		summary: "create a sandbox, run the command as its app and wait for the app",
+		summary: "create a sandbox and run a command in the foreground",
 		args: []row{
 			{"<image>", "the image; run pulls it first when it is not on disk"},
 			{"<command>", "the app and its arguments; the image's own ENTRYPOINT and CMD never run"},
@@ -145,7 +145,7 @@ var helps = map[string]verbHelp{
 	},
 	"exec": {
 		usage:   []string{"exec [flags] <id|name> <argv>..."},
-		summary: "run a command in a running sandbox",
+		summary: "execute a command in a running sandbox",
 		args:    []row{sandboxArg, {"<argv>", "the command to run and its arguments"}},
 		flags: []flagHelp{
 			{"-i", "the same as --interactive", ""},
@@ -161,7 +161,7 @@ var helps = map[string]verbHelp{
 	},
 	"list": {
 		usage:   []string{"list [--all] [--format <format>]"},
-		summary: "list the sandboxes; --all adds the stopped ones",
+		summary: "list active sandboxes; use --all to include stopped sandboxes",
 		flags:   []flagHelp{{"--all", "list the stopped sandboxes too", ""}, formatTableHelp},
 		notes:   []string{"The columns are ID, NAME, IMAGE, STATE, UPTIME, IP, RESTART and POLICY."},
 		example: "shard list --all",
@@ -185,7 +185,7 @@ var helps = map[string]verbHelp{
 	},
 	"stop": {
 		usage:   []string{"stop <id|name>"},
-		summary: "stop a sandbox; its files stay for start or snapshot create",
+		summary: "stop a sandbox and preserve its files",
 		args:    []row{sandboxArg},
 		notes: []string{
 			"stop sends SIGTERM to the entrypoint and returns as soon as it exits. An entrypoint still running after " + short(models.StopGrace) + " is killed. The grace is fixed.",
@@ -195,14 +195,14 @@ var helps = map[string]verbHelp{
 	},
 	"start": {
 		usage:   []string{"start <id|name>"},
-		summary: "run a stopped sandbox again with everything it kept",
+		summary: "start a stopped sandbox with its saved files",
 		args:    []row{sandboxArg},
 		notes:   []string{"The entrypoint starts from the beginning, over the files the last run wrote."},
 		example: "shard start web",
 	},
 	"remove": {
 		usage:   []string{"remove [--force] <id|name>"},
-		summary: "delete a stopped or failed sandbox and its files",
+		summary: "delete a sandbox and its files",
 		args:    []row{sandboxArg},
 		flags: []flagHelp{
 			{"--force", "stop a running or paused sandbox first, and warn rather than fail on one that does not exist", ""},
@@ -215,20 +215,20 @@ var helps = map[string]verbHelp{
 	},
 	"pause": {
 		usage:   []string{"pause <id|name>"},
-		summary: "write a checkpoint of a running sandbox and free its memory",
+		summary: "save a sandbox's state and suspend it",
 		args:    []row{sandboxArg},
 		notes:   []string{"The daemon gives up on a pause after " + short(sandbox.DefaultPauseBudget) + ". sysbox and runc refuse pause, as does vz on macOS 13 or on Intel."},
 		example: "shard pause web",
 	},
 	"resume": {
 		usage:   []string{"resume <id|name>"},
-		summary: "run a paused sandbox again from its checkpoint",
+		summary: "resume a paused sandbox from its saved state",
 		args:    []row{sandboxArg},
 		example: "shard resume web",
 	},
 	"fork": {
 		usage:   []string{"fork [--name <name>] <id|name>"},
-		summary: "copy a running sandbox, memory and files, into a new running one",
+		summary: "create a sandbox from a running sandbox's memory and files",
 		args:    []row{{"<id|name>", "the running sandbox to copy, by its id or by its --name"}},
 		flags:   []flagHelp{{"--name <name>", "a handle for the new sandbox", ""}},
 		notes:   []string{"The source must be running. Fork freezes it for a moment, captures its memory and files, and lets the same sandbox run on, then starts the new one from that capture. It prints the new id. gvisor, firecracker and vz fork; sysbox and runc refuse fork, as does vz on macOS 13 or on Intel."},
@@ -236,7 +236,7 @@ var helps = map[string]verbHelp{
 	},
 	"cp": {
 		usage:   []string{"cp [--user <user>] <src> <id|name>:<path>", "cp <id|name>:<path> <dst>"},
-		summary: "copy a file or a directory into or out of a running sandbox",
+		summary: "copy files or directories between your machine and a running sandbox",
 		args: []row{
 			{"<src>, <dst>", "a path on the host"},
 			{"<id|name>:<path>", "a path in the sandbox"},
@@ -247,14 +247,14 @@ var helps = map[string]verbHelp{
 	},
 	"pull": {
 		usage:   []string{"pull <image>"},
-		summary: "pull an image and unpack its rootfs",
+		summary: "download an image",
 		args:    []row{{"<image>", "the image reference, such as python:3.12"}},
 		notes:   []string{"Progress goes to stderr, and the reference and the digest to stdout. The daemon's --timeout bounds each pull."},
 		example: "shard pull python:3.12",
 	},
 	"image": {
 		usage:   []string{"image <subcommand> [flags] [args]"},
-		summary: "the pulled images",
+		summary: "manage downloaded images",
 	},
 	"image list": {
 		usage:   []string{"image list [--format <format>]"},
@@ -277,7 +277,7 @@ var helps = map[string]verbHelp{
 	},
 	"snapshot": {
 		usage:   []string{"snapshot <subcommand> [flags] [args]"},
-		summary: "file copies of stopped sandboxes",
+		summary: "save and manage filesystem snapshots",
 	},
 	"snapshot create": {
 		usage:   []string{"snapshot create [--name <name>] <id|name>"},
@@ -313,7 +313,7 @@ var helps = map[string]verbHelp{
 	},
 	"secret": {
 		usage:   []string{"secret <subcommand> [flags] [args]"},
-		summary: "secrets the proxy puts in requests",
+		summary: "manage secrets and sandbox access to them",
 	},
 	"secret set": {
 		usage:   []string{"secret set --to <host>... [--placeholder <string>] <NAME> [VALUE]"},
@@ -360,7 +360,7 @@ var helps = map[string]verbHelp{
 	},
 	"policy": {
 		usage:   []string{"policy <subcommand> [flags] [args]"},
-		summary: "egress policies for sandboxes",
+		summary: "manage outbound network rules and view network logs",
 	},
 	"policy create": {
 		usage:   []string{"policy create [--allow <rule>]... [--deny <rule>]... <name>"},
@@ -424,7 +424,7 @@ var helps = map[string]verbHelp{
 	},
 	"daemon": {
 		usage:   []string{"daemon [flags]", "daemon status"},
-		summary: "run the resident daemon; daemon status prints its state",
+		summary: "start the daemon or show its status",
 		flags: []flagHelp{
 			{"--provider <name>", "the provider the sandboxes run on: " + orList(daemon.Providers), ""},
 			{"--timeout <duration>", "how long one image pull may take", short(DefaultTimeout)},
@@ -447,7 +447,7 @@ var helps = map[string]verbHelp{
 	},
 	"serve": {
 		usage:   []string{"serve [flags]"},
-		summary: "expose the daemon over plain HTTP with token auth, for an HTTPS proxy in front of it",
+		summary: "start an HTTP API server with token authentication",
 		flags: []flagHelp{
 			{"--listen <addr>", "the address to listen on; any address other than loopback carries tokens in clear text", serve.DefaultListen},
 			{"--signing-key-file <path>", "the key that signs and checks every token; a named file must exist", signingKeyDefault},
@@ -463,7 +463,7 @@ var helps = map[string]verbHelp{
 	},
 	"tokens": {
 		usage:   []string{"tokens <subcommand> [flags] [args]"},
-		summary: "the tokens shard serve checks",
+		summary: "create, list and revoke API tokens",
 	},
 	"tokens mint": {
 		usage:   []string{"tokens mint --name <sub> [flags]"},
@@ -507,14 +507,14 @@ var helps = map[string]verbHelp{
 	},
 	"info": {
 		usage:   []string{"info [--format <format>]"},
-		summary: "show which provider a daemon would use on this host, and why",
+		summary: "show available providers and the default for this host",
 		flags:   []flagHelp{formatTableHelp},
 		notes:   []string{"info reads the records under the root and probes the host, as a daemon started now with no --provider would, so it works without a daemon. shard daemon status prints what the running daemon uses."},
 		example: "shard info",
 	},
 	"version": {
 		usage:   []string{"version [--format <format>]"},
-		summary: "print the client and daemon versions",
+		summary: "show the client and daemon versions",
 		flags:   []flagHelp{formatTableHelp},
 		notes:   []string{"shard --version prints the client version alone, and never fails."},
 		example: "shard version",
@@ -570,18 +570,14 @@ func helpText(key string) string {
 	return strings.Join(sections, "\n\n")
 }
 
-// topLevel is the verb groups, one line per verb; a noun names its subcommands before its summary.
+// topLevel is the verb groups, one line per verb or noun with its summary.
 func topLevel() []string {
 	var all []row
 	groups := make([][]row, 0, len(verbGroups))
 	for _, group := range verbGroups {
 		var rows []row
 		for _, name := range group.verbs {
-			text := helps[name].summary
-			if cmd, _ := lookup(name); cmd.run == nil {
-				text = strings.Join(names(cmd.subs), ", ") + ": " + text
-			}
-			rows = append(rows, row{name, text})
+			rows = append(rows, row{name, helps[name].summary})
 		}
 		groups = append(groups, rows)
 		all = append(all, rows...)
