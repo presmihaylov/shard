@@ -67,6 +67,33 @@ func TestDaemonStatusPrintsOneFieldPerLine(t *testing.T) {
 	}
 }
 
+// The table lists all eight verbs in the order of the spec, the optional ones as the provider claims them.
+func TestCapabilitiesPrintsEveryVerbAndWhetherTheProviderRunsIt(t *testing.T) {
+	var out bytes.Buffer
+
+	app, f := newClientApp(t, &out, models.Sandbox{})
+	f.providerSvc = &fakeLifecycleProvider{r: &recorder{}, noFork: true}
+
+	if err := app.Run(t.Context(), []string{"capabilities"}); err != nil {
+		t.Fatalf("capabilities: %v", err)
+	}
+
+	want := strings.Join([]string{
+		"CAPABILITY   SUPPORTED",
+		"create       true",
+		"start        true",
+		"stop         true",
+		"remove       true",
+		"pause        true",
+		"resume       true",
+		"fork         false",
+		"snapshot     true",
+	}, "\n")
+	if got := strings.TrimSpace(out.String()); got != want {
+		t.Errorf("capabilities printed\n%s\nwant\n%s", got, want)
+	}
+}
+
 func TestVersionFlagPrintsTheClientLineWithNoDaemon(t *testing.T) {
 	var out bytes.Buffer
 

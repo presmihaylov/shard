@@ -33,22 +33,43 @@
         },
         "type": "object"
       },
-      "CapabilitiesResponse": {
+      "Capabilities": {
         "additionalProperties": false,
         "properties": {
-          "provider": {
-            "type": "string"
+          "create": {
+            "type": "boolean"
           },
-          "unsupported": {
-            "items": {
-              "type": "string"
-            },
-            "type": "array"
+          "fork": {
+            "type": "boolean"
+          },
+          "pause": {
+            "type": "boolean"
+          },
+          "remove": {
+            "type": "boolean"
+          },
+          "resume": {
+            "type": "boolean"
+          },
+          "snapshot": {
+            "type": "boolean"
+          },
+          "start": {
+            "type": "boolean"
+          },
+          "stop": {
+            "type": "boolean"
           }
         },
         "required": [
-          "provider",
-          "unsupported"
+          "create",
+          "start",
+          "stop",
+          "remove",
+          "pause",
+          "resume",
+          "fork",
+          "snapshot"
         ],
         "type": "object"
       },
@@ -1189,7 +1210,7 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/CapabilitiesResponse"
+                  "$ref": "#/components/schemas/Capabilities"
                 }
               }
             },
@@ -1206,7 +1227,7 @@
             "description": "Error"
           }
         },
-        "summary": "List the optional verbs the provider refuses",
+        "summary": "List the lifecycle verbs and whether this server supports each",
         "tags": [
           "meta"
         ],
