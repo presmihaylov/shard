@@ -664,6 +664,7 @@ var copyRunState = []string{"ID", "Name", "Provider", "Kernel", "State", "ExitSt
 // withEveryPolicy sets every field a create asks for, so a field a copy drops shows up as a difference.
 func withEveryPolicy(sb models.Sandbox) models.Sandbox {
 	sb.Image = "docker.io/library/alpine:3.20"
+	sb.Digest = fakeDigest
 	sb.Resources = models.Resources{MemoryMiB: 256, VCPUs: 2, DiskMiB: 1024}
 	sb.Secrets = []string{"api-token"}
 	sb.Policy = "locked"

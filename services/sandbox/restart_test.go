@@ -103,7 +103,7 @@ func TestCreateWithNoCommandTakesNoPolicy(t *testing.T) {
 	svc, l := newService(t, &recorder{}, models.Sandbox{})
 	req := sandbox.CreateRequest{
 		Image: "alpine:3.20", Restart: &models.RestartSpec{Policy: models.RestartNo},
-		Resources: models.Resources{MemoryMiB: 64},
+		Resources: sandbox.ResourceRequest{MemoryMiB: new(int64(64))},
 	}
 
 	sb, err := svc.Create(t.Context(), req)

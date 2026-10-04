@@ -16,6 +16,7 @@ func TestASnapshotSeedsANewSandboxFromAStoppedOne(t *testing.T) {
 	source := stopped()
 	// A record holds its image normalized, as a create wrote it.
 	source.Image = "index.docker.io/library/alpine:3.20"
+	source.Digest = "sha256:alpine"
 	app, d := newClientApp(t, &out, source)
 	d.imageSvc = fakeImages{r: &recorder{}}
 

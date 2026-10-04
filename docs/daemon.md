@@ -423,22 +423,23 @@ curl --unix-socket /var/lib/shard/shard.sock -X POST http://localhost/v0/images/
 
 - `POST /v0/sandboxes` takes `{"image", "snapshot", "name", "command", "env", "workdir", "user",
   "secrets", "policy", "resources": {"memory_mib", "vcpus", "disk_mib"}, "restart": {"policy",
-  "retries", "backoff"}}` and answers 201 with the record. A body names `image` or `snapshot`, never
-  both, and the snapshot routes below say what a create from a snapshot does. `command` is the app,
-  which `shard run` sends and `shard create` does not. The image's own ENTRYPOINT and CMD never run,
-  so a body with no `command` starts only `shard-init`, and the sandbox stays up. A cached image
-  needs no pull, so the create builds and starts the sandbox before it answers, and the record says
-  `running`. A claim that fails at that point gives everything back, and the create answers 500. An
-  uncached image makes the record `pending`, and the create answers before the download. The daemon
-  pulls, builds and starts behind it, and the record lands on `running` or `failed` with a one-line
-  `failed_reason`. A background pull or start that fails is therefore read from the record, and does
-  not come back as an error. With `?wait=true` the create holds until the record leaves `pending`,
-  then answers the `running` or `failed` record it reached, so a caller reads the settled record
-  without a poll. The plain create answers at once. A wait that sends `Accept: application/x-ndjson`
-  streams the pull instead: one `{"event"}` line per step as it lands, then `{"sandbox"}` with the
-  settled record. The create answers 400 when the body does not decode, when a field does not
-  validate, or when the body names a secret or a policy the host does not hold. It answers 409
-  `name_taken` when another sandbox already holds the name.
+  "retries", "backoff"}}` and answers 201 with the record, which keeps the digest of the image it
+  runs over in `digest`. A `memory_mib` of 0 asks for no bound. A body names `image` or `snapshot`,
+  never both, and the snapshot routes below say what a create from a snapshot does. `command` is the
+  app, which `shard run` sends and `shard create` does not. The image's own ENTRYPOINT and CMD never
+  run, so a body with no `command` starts only `shard-init`, and the sandbox stays up. A cached
+  image needs no pull, so the create builds and starts the sandbox before it answers, and the record
+  says `running`. A claim that fails at that point gives everything back, and the create answers
+  500. An uncached image makes the record `pending`, and the create answers before the download. The
+  daemon pulls, builds and starts behind it, and the record lands on `running` or `failed` with a
+  one-line `failed_reason`. A background pull or start that fails is therefore read from the record,
+  and does not come back as an error. With `?wait=true` the create holds until the record leaves
+  `pending`, then answers the `running` or `failed` record it reached, so a caller reads the settled
+  record without a poll. The plain create answers at once. A wait that sends `Accept:
+  application/x-ndjson` streams the pull instead: one `{"event"}` line per step as it lands, then
+  `{"sandbox"}` with the settled record. The create answers 400 when the body does not decode, when
+  a field does not validate, or when the body names a secret or a policy the host does not hold. It
+  answers 409 `name_taken` when another sandbox already holds the name.
 - `POST /v0/sandboxes/{id}/start` takes no body and answers 200 with the record of the sandbox it
   started again. It answers 404 when nothing has the reference, and 409 when the sandbox is not
   stopped.
@@ -465,8 +466,8 @@ curl --unix-socket /var/lib/shard/shard.sock -X POST http://localhost/v0/images/
 A snapshot is the files a stopped sandbox kept, with no memory image. It lives under
 `<root>/snapshots/<id>`, has an id and an optional name, and outlives the sandbox it came from. A
 snapshot name is unique among snapshots, and a sandbox may hold the same name. Every route that
-takes `{ref}` takes an id or a name. A snapshot record reads like this, with the image's digest in
-`digest` and the bytes the copy holds on the host in `size`:
+takes `{ref}` takes an id or a name. A snapshot record reads like this, with the digest of the image
+the source ran over in `digest` and the bytes the copy holds on the host in `size`:
 
 ```
 {
@@ -485,11 +486,12 @@ takes `{ref}` takes an id or a name. A snapshot record reads like this, with the
 ```
 
 - `POST /v0/snapshots` takes `{"sandbox", "name"}`, where `sandbox` is an id or a name, and answers
-  201 with the snapshot record. The provider copies the source's files: gVisor, runc and Sysbox
-  copy the writable layer and `/tmp`, Firecracker reflinks the overlay disk, and `vz` makes an APFS
-  clone of the disk image. Errors: 400 for a body that does not decode, a name that does not
-  validate, or a source whose image the host no longer holds, 404, 409 `sandbox_not_stopped` when
-  the source runs or is paused, and 409 `name_taken` when another snapshot holds the name.
+  201 with the snapshot record. The provider copies the source's files: gVisor, runc and Sysbox copy
+  the writable layer and `/tmp`, Firecracker reflinks the overlay disk, and `vz` makes an APFS clone
+  of the disk image. Errors: 400 for a body that does not decode, a name that does not validate, a
+  source whose image the host no longer holds, or a source whose tag the host now holds at another
+  digest, 404, 409 `sandbox_not_stopped` when the source runs or is paused, and 409 `name_taken`
+  when another snapshot holds the name.
 - `GET /v0/snapshots` answers `{"snapshots": [...], "next"}`, ordered by id and paged like every
   other list.
 - `GET /v0/snapshots/{ref}` answers the snapshot record. Errors: 404.
@@ -504,7 +506,8 @@ record says `running` and names the snapshot's id in its `snapshot` key. It answ
 snapshot was made on another provider, or when the host no longer holds its image at the digest the
 snapshot recorded. Firecracker and `vz` copy the disk as it is, so on them it also answers 400 for a
 `disk_mib` that differs from the snapshot's. A body with no `disk_mib` or no `memory_mib` takes the
-snapshot's, which is the bound the source ran under. A snapshot reference that nothing has is 404.
+snapshot's, which is the bound the source ran under. A `memory_mib` of 0 is not an omitted one: it
+asks for no bound. A snapshot reference that nothing has is 404.
 An image that a snapshot names stays held: `DELETE /v0/images/{ref}` refuses it with 409 `in_use`,
 and `image prune` leaves it.
 

@@ -27,6 +27,7 @@ import (
 	"github.com/presmihaylov/shard/services/api"
 	"github.com/presmihaylov/shard/services/client"
 	"github.com/presmihaylov/shard/services/provider/firecracker"
+	"github.com/presmihaylov/shard/services/sandbox"
 )
 
 // hostInitPath is where make devbox-sync installs the supervisor.
@@ -205,12 +206,12 @@ type testDaemon struct {
 var itestProvider = cmp.Or(os.Getenv("SHARD_ITEST_PROVIDER"), "gvisor")
 
 // itestResources is the bound each create of the suite carries: firecracker refuses an unbounded guest, so a run there takes the floor it boots under.
-func itestResources() models.Resources {
+func itestResources() sandbox.ResourceRequest {
 	if itestProvider != firecracker.Name {
-		return models.Resources{}
+		return sandbox.ResourceRequest{}
 	}
 
-	return models.Resources{MemoryMiB: firecracker.MinMemoryMiB}
+	return sandbox.ResourceRequest{MemoryMiB: new(int64(firecracker.MinMemoryMiB))}
 }
 
 // createArgs is the create verb over args, with the suite's bound unless args name their own.
@@ -225,11 +226,11 @@ func runArgs(args ...string) []string {
 
 func bounded(verb string, args []string) []string {
 	bound := itestResources().MemoryMiB
-	if bound == 0 || slices.Contains(args, "--memory") {
+	if bound == nil || slices.Contains(args, "--memory") {
 		return append([]string{verb}, args...)
 	}
 
-	return append([]string{verb, "--memory", strconv.FormatInt(bound, 10) + "MiB"}, args...)
+	return append([]string{verb, "--memory", strconv.FormatInt(*bound, 10) + "MiB"}, args...)
 }
 
 // spawnDaemon runs the daemon over a fresh root and waits for the line that says its socket is up.
