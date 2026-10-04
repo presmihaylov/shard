@@ -49,3 +49,6 @@ require (
 	google.golang.org/protobuf v1.36.12-0.20260120151049-f2248ac996af // indirect
 	gotest.tools/v3 v3.5.2 // indirect
 )
+
+// Upstream closes each vsock fd twice; third_party/vz/UPSTREAM names the patch (SHARD-462).
+replace github.com/Code-Hex/vz/v3 => ./third_party/vz
