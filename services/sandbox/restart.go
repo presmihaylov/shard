@@ -19,7 +19,7 @@ func validRestart(r models.RestartSpec, command []string) error {
 		return fmt.Errorf("restart.policy is no, on-failure or always, got %q", r.Policy)
 	}
 	if r.Retries < 0 || r.Backoff < 0 {
-		return errors.New("restart.retries and backoff are counts and cannot be negative")
+		return errors.New("restart.retries must be a nonnegative count; restart.backoff must be nonnegative seconds")
 	}
 	if r.Backoff > models.RestartBackoffCap {
 		return fmt.Errorf("restart.backoff is in seconds and never grows past %d, got %d", models.RestartBackoffCap, r.Backoff)

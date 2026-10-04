@@ -244,7 +244,7 @@ func TestCheckResourcesRefusesWhatCreateRefuses(t *testing.T) {
 		t.Fatalf("CheckResources(128) = %v, want nil", err)
 	}
 	err := h.provider.CheckResources(models.Resources{MemoryMiB: 128, DiskMiB: 130})
-	if err == nil || !strings.Contains(err.Error(), "use 128 or 131 MiB") {
+	if err == nil || !strings.Contains(err.Error(), "set resources.disk_mib to 128 or 131") {
 		t.Fatalf("CheckResources(--disk 130) = %v, want the nearest bounds", err)
 	}
 }

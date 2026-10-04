@@ -256,7 +256,7 @@ func TestCreateFromASnapshotOnAMicroVMOnlyGrowsTheDisk(t *testing.T) {
 	_, err := svc.Create(t.Context(), sandbox.CreateRequest{Snapshot: "base", Resources: sandbox.ResourceRequest{DiskMiB: 1024}})
 
 	var refused *sandbox.RequestError
-	if !errors.As(err, &refused) || !strings.Contains(err.Error(), "a disk only grows") || !strings.Contains(err.Error(), "2048 MiB or more") {
+	if !errors.As(err, &refused) || !strings.Contains(err.Error(), "a disk only grows") || !strings.Contains(err.Error(), "set it to 2048 or more") {
 		t.Fatalf("create returned %v, want a refusal that names the disk that works", err)
 	}
 	if len(disks.admitted) != 0 || slices.Contains(r.calls, "repo.Create") {

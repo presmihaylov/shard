@@ -76,7 +76,7 @@ func (e *UnreadableError) Error() string { return e.Err.Error() }
 func (e *UnreadableError) Unwrap() error { return e.Err }
 
 func (e *UnreadableError) Public() string {
-	return fmt.Sprintf("secret %s: its record cannot be read", e.Name)
+	return fmt.Sprintf("secret %s cannot be read; ask the server administrator to check the daemon log", e.Name)
 }
 
 // record is the file on disk. It is the only place the value is written.

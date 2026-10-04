@@ -59,7 +59,7 @@ func newFront(accepted string) (*httptest.Server, chan string) {
 		w.Header().Set("Content-Type", "application/json")
 		if r.Header.Get("Authorization") != "Bearer "+accepted {
 			w.WriteHeader(http.StatusUnauthorized)
-			_, _ = w.Write([]byte(`{"error":{"code":"unauthorized","message":"the request carries no valid bearer token"}}`))
+			_, _ = w.Write([]byte(`{"error":{"code":"unauthorized","message":"the bearer token is missing or invalid; send a valid token in Authorization: Bearer TOKEN"}}`))
 
 			return
 		}

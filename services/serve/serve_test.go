@@ -524,7 +524,7 @@ func TestIsHandshakeNeedsAllFourHeaders(t *testing.T) {
 	}
 }
 
-// A sandbox:read token lists and inspects, and is 403 on every route it does not name; a forbidden route is never dialed.
+// A sandbox:read token lists and inspects, and is 403 on every route it does not name, which names the scope it lacks; a forbidden route is never dialed.
 func TestAScopedTokenReachesOnlyItsRoutes(t *testing.T) {
 	up := fakeDaemon(t)
 	env := newTokenEnv(t)
@@ -535,11 +535,14 @@ func TestAScopedTokenReachesOnlyItsRoutes(t *testing.T) {
 		t.Errorf("a sandbox:read token got %d on a read, want 200", resp.StatusCode)
 	}
 
-	denied := []struct{ method, path string }{
-		{http.MethodPost, "/v0/sandboxes"},
-		{http.MethodDelete, "/v0/sandboxes/s1"},
-		{http.MethodPost, "/v0/sandboxes/s1/exec"},
-		{http.MethodGet, "/v0/secrets"},
+	denied := []struct {
+		method, path string
+		need         api.Scope
+	}{
+		{http.MethodPost, "/v0/sandboxes", api.SandboxWrite},
+		{http.MethodDelete, "/v0/sandboxes/s1", api.SandboxDelete},
+		{http.MethodPost, "/v0/sandboxes/s1/exec", api.Exec},
+		{http.MethodGet, "/v0/secrets", api.Secret},
 	}
 	for _, d := range denied {
 		resp := askRoute(t, address, token, d.method, d.path) //nolint:bodyclose // askRoute closes the body in a cleanup
@@ -556,8 +559,9 @@ func TestAScopedTokenReachesOnlyItsRoutes(t *testing.T) {
 		if err := json.NewDecoder(resp.Body).Decode(&body); err != nil {
 			t.Fatalf("%s %s: decode the refusal: %v", d.method, d.path, err)
 		}
-		if body.Error.Code != models.CodeForbidden || body.Error.Message == "" {
-			t.Errorf("%s %s: the refusal reads %+v, want a line and the code forbidden", d.method, d.path, body)
+		want := fmt.Sprintf("the token lacks %s; use a token with %s", d.need, d.need)
+		if body.Error.Code != models.CodeForbidden || body.Error.Message != want {
+			t.Errorf("%s %s: the refusal reads %+v, want %q and the code forbidden", d.method, d.path, body, want)
 		}
 	}
 

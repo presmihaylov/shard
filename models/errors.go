@@ -53,7 +53,7 @@ func Unsupported(provider, verb string) error {
 }
 
 func (e *UnsupportedError) Error() string {
-	return fmt.Sprintf("provider %s does not support %s on this host", e.Provider, e.Verb)
+	return fmt.Sprintf("provider %s does not support %s on this host; use a server that supports %s", e.Provider, e.Verb, e.Verb)
 }
 
 func (e *UnsupportedError) Unwrap() error { return ErrUnsupported }
@@ -96,7 +96,9 @@ func (e *LostError) Error() string {
 
 func (e *LostError) Unwrap() error { return e.Err }
 
-func (e *LostError) Public() string { return fmt.Sprintf("sandbox %s is lost", e.Sandbox) }
+func (e *LostError) Public() string {
+	return fmt.Sprintf("sandbox %s is lost; remove it and create another sandbox", e.Sandbox)
+}
 
 // EntrypointNotStartedError is a sandbox whose entrypoint never ran; Err quotes the sandbox log, which can name a host path.
 type EntrypointNotStartedError struct {

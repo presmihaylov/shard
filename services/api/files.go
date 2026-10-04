@@ -73,7 +73,7 @@ func (b *idleBody) Read(p []byte) (int, error) {
 
 func fileWriteOf(r *http.Request) (sandbox.FileWrite, error) {
 	if r.ContentLength < 0 {
-		return sandbox.FileWrite{}, &sandbox.RequestError{Err: errors.New("a put needs a Content-Length: the guest lands exactly that many bytes")}
+		return sandbox.FileWrite{}, &sandbox.RequestError{Err: errors.New("the upload has no Content-Length; set Content-Length to the number of upload bytes")}
 	}
 
 	mode := uint64(sandbox.DefaultFileMode)

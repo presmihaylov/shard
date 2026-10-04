@@ -713,7 +713,7 @@ func decode(w http.ResponseWriter, r *http.Request, out any) error {
 		return nil
 	}
 	if err != nil {
-		return &sandbox.RequestError{Err: fmt.Errorf("decode the request body: %w", err)}
+		return decodeError(err)
 	}
 
 	// The decoder stops after one value, so the rest is read to its end and padding meets the cap before a verb runs.
@@ -722,10 +722,31 @@ func decode(w http.ResponseWriter, r *http.Request, out any) error {
 		return nil
 	}
 	if err != nil {
-		return &sandbox.RequestError{Err: fmt.Errorf("decode the request body: %w", err)}
+		return decodeError(err)
 	}
 
 	return &sandbox.RequestError{Err: errors.New("decode the request body: it holds more than one JSON value")}
+}
+
+// bodyTooLarge is the text of a JSON body past maxBody, whichever decoder read it.
+var bodyTooLarge = fmt.Sprintf("the request body exceeds %d MiB; send a smaller JSON body", maxBody>>20)
+
+// tooLargeError answers the limit and the fix, and keeps the cap error for classify.
+type tooLargeError struct {
+	err *http.MaxBytesError
+}
+
+func (e *tooLargeError) Error() string { return bodyTooLarge }
+
+func (e *tooLargeError) Unwrap() error { return e.err }
+
+// decodeError refuses a body the decoder could not read; one past the cap says the limit, not the library's text.
+func decodeError(err error) error {
+	if tooLarge, ok := errors.AsType[*http.MaxBytesError](err); ok {
+		return &sandbox.RequestError{Err: &tooLargeError{err: tooLarge}}
+	}
+
+	return &sandbox.RequestError{Err: fmt.Errorf("decode the request body: %w", err)}
 }
 
 // boolQuery reads a flag like ?all=true. An absent flag is false; a value that is not a bool is refused.

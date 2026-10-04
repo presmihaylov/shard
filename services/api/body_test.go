@@ -75,8 +75,8 @@ func TestABodyPastTheCapIs413AndAllocatesFlat(t *testing.T) {
 			conn.Close()
 			<-written
 
-			if resp.StatusCode != http.StatusRequestEntityTooLarge || errorOf(t, got).code != "body_too_large" {
-				t.Errorf("a %d byte body answered %d %v, want 413 body_too_large", size, resp.StatusCode, got)
+			if refusal := errorOf(t, got); resp.StatusCode != http.StatusRequestEntityTooLarge || refusal.code != "body_too_large" || refusal.message != "the request body exceeds 1 MiB; send a smaller JSON body" {
+				t.Errorf("a %d byte body answered %d %v, want 413 body_too_large with the limit and the fix", size, resp.StatusCode, got)
 			}
 			if grew := after.TotalAlloc - before.TotalAlloc; grew > 16<<20 {
 				t.Errorf("a %d byte body allocated %d bytes, want under 16 MiB whatever the size", size, grew)
