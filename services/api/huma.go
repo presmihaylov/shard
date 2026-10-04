@@ -120,13 +120,10 @@ func (h *Handler) config() huma.Config {
 	}
 }
 
-// schemaName keeps Huma's names, less the two an SDK would otherwise read as ApiError and ListResponseSandbox.
+// schemaName keeps Huma's names, less the one an SDK would otherwise read as ApiError.
 func schemaName(t reflect.Type, hint string) string {
-	switch t {
-	case reflect.TypeFor[apiError]():
+	if t == reflect.TypeFor[apiError]() {
 		return "Error"
-	case reflect.TypeFor[listResponse[Sandbox]]():
-		return "SandboxesResponse"
 	}
 
 	return huma.DefaultSchemaNamer(t, hint)

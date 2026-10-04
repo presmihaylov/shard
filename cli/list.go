@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/presmihaylov/shard/models"
+	"github.com/presmihaylov/shard/services/client"
 )
 
 // listOptions is one parsed shard list invocation.
@@ -46,26 +47,21 @@ func (a App) list(ctx context.Context, args []string) error {
 	return errors.New(strings.Join(result.Warnings, "\n"))
 }
 
-func (a App) writeList(format outputFormat, sandboxes []models.Sandbox, now time.Time) error {
+func (a App) writeList(format outputFormat, sandboxes []client.Sandbox, now time.Time) error {
 	if format != formatJSON {
 		return writeTable(a.Out, sandboxes, now)
 	}
 
-	records := make([]any, 0, len(sandboxes))
-	for _, sb := range sandboxes {
-		records = append(records, a.record(sb))
-	}
-
-	return writeJSON(a.Out, records)
+	return writeJSON(a.Out, sandboxes)
 }
 
-func writeTable(w io.Writer, sandboxes []models.Sandbox, now time.Time) error {
+func writeTable(w io.Writer, sandboxes []client.Sandbox, now time.Time) error {
 	tw := tabwriter.NewWriter(w, 0, 0, 3, ' ', 0)
 
-	fmt.Fprintln(tw, "ID\tNAME\tIMAGE\tSTATE\tUPTIME\tIP\tRESTART\tPOLICY")
+	fmt.Fprintln(tw, "ID\tNAME\tIMAGE\tSTATE\tUPTIME\tRESTART\tPOLICY")
 
 	for _, sb := range sandboxes {
-		fmt.Fprintf(tw, "%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n", sb.ID, orDash(sb.Name), sb.Image, state(sb), uptime(sb, now), address(sb), restart(sb), orDash(sb.Policy))
+		fmt.Fprintf(tw, "%s\t%s\t%s\t%s\t%s\t%s\t%s\n", sb.ID, orDash(sb.Name), sb.Image, state(sb), uptime(sb, now), restart(sb), orDash(sb.Policy))
 	}
 
 	if err := tw.Flush(); err != nil {
@@ -77,22 +73,19 @@ func writeTable(w io.Writer, sandboxes []models.Sandbox, now time.Time) error {
 
 // state carries the reason a sandbox nobody stopped is stopped, or the exit of an entrypoint whose
 // still-running sandbox outlived it, which is the one an operator asks about.
-func state(sb models.Sandbox) string {
+func state(sb client.Sandbox) string {
 	if sb.State == models.StateRunning && sb.ExitStatus != nil {
 		return fmt.Sprintf("%s (exited %d)", sb.State, sb.ExitStatus.Code)
 	}
 	if sb.StoppedReason != "" {
 		return fmt.Sprintf("%s (%s)", sb.State, sb.StoppedReason)
 	}
-	if sb.UnresponsiveReason != "" {
-		return fmt.Sprintf("%s (%s)", sb.State, sb.UnresponsiveReason)
-	}
 
 	return string(sb.State)
 }
 
 // restart is the entrypoint policy the sandbox asked for, and how much of its cap has been spent on it.
-func restart(sb models.Sandbox) string {
+func restart(sb client.Sandbox) string {
 	if sb.Restart == nil {
 		return "-"
 	}
@@ -116,7 +109,7 @@ func spent(policy string, count, limit int, gaveUp bool) string {
 }
 
 // uptime is how long the sandbox has run since its last start or resume; only a live one is up.
-func uptime(sb models.Sandbox, now time.Time) string {
+func uptime(sb client.Sandbox, now time.Time) string {
 	if !sb.State.Live() {
 		return "-"
 	}
@@ -128,14 +121,6 @@ func uptime(sb models.Sandbox, now time.Time) string {
 	}
 
 	return now.Sub(since).Truncate(time.Second).String()
-}
-
-func address(sb models.Sandbox) string {
-	if !sb.Address.IsValid() {
-		return "-"
-	}
-
-	return sb.Address.Addr().String()
 }
 
 func orDash(s string) string {

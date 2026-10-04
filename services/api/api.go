@@ -196,9 +196,6 @@ func (h *Handler) routeTable() []routeEntry {
 		local("GET", "/v0/daemon", h.getDaemon),
 		public("GET", "/v0/sandboxes", SandboxRead, operation("sandboxes", "list-sandboxes", "List sandboxes", 0), typed(h.listSandboxes)),
 		public("GET", "/v0/sandboxes/{id}", SandboxRead, operation("sandboxes", "get-sandbox", "Read a sandbox and the egress rules the host enforces for it", 0), typed(h.getSandbox)),
-		// The CLI on the daemon host reads the whole record, the host side included, which no public route answers.
-		local("GET", "/v0/local/sandboxes", h.listLocalSandboxes),
-		local("GET", "/v0/local/sandboxes/{id}", h.getLocalSandbox),
 		public("POST", "/v0/sandboxes", SandboxWrite, operation("sandboxes", "create-sandbox", "Create a sandbox", http.StatusCreated), documented(describeCreate, typed(h.createSandbox))),
 		public("POST", "/v0/sandboxes/{id}/start", SandboxWrite, operation("sandboxes", "start-sandbox", "Start a stopped sandbox", 0), typed(h.startSandbox)),
 		public("POST", "/v0/sandboxes/{id}/stop", SandboxWrite, operation("sandboxes", "stop-sandbox", "Stop a sandbox", 0), typed(h.stopSandbox)),
@@ -275,10 +272,10 @@ type capabilitiesResponse struct {
 	Unsupported []string `json:"unsupported"`
 }
 
-// listResponse is the page: the rows, the cursor of the next page or null, and what could not be read.
-type listResponse[S any] struct {
-	Sandboxes []S     `json:"sandboxes"`
-	Next      *string `json:"next"`
+// sandboxesResponse is the page: the rows, the cursor of the next page or null, and what could not be read.
+type sandboxesResponse struct {
+	Sandboxes []Sandbox `json:"sandboxes"`
+	Next      *string   `json:"next"`
 	// Warnings names the records the daemon could not read, one string each, beside the ones it could.
 	Warnings []string `json:"warnings,omitempty"`
 }
@@ -336,57 +333,27 @@ type listSandboxesInput struct {
 	Cursor string `query:"cursor" doc:"The next of the page before; this page starts after it."`
 }
 
-func (h *Handler) listSandboxes(_ context.Context, in *listSandboxesInput) (*reply[listResponse[Sandbox]], error) {
+func (h *Handler) listSandboxes(_ context.Context, in *listSandboxesInput) (*reply[sandboxesResponse], error) {
 	q, err := paged(in.Limit, in.Cursor, sandboxstate.ValidID)
 	if err != nil {
 		return nil, fail(err)
 	}
 
-	return answer(sandboxPage(h, in.All, q, PublicSandbox))
-}
-
-func (h *Handler) listLocalSandboxes(w http.ResponseWriter, r *http.Request) {
-	all, err := boolQuery(r, "all")
-	if err != nil {
-		h.writeError(w, err)
-
-		return
-	}
-
-	q, err := pageOf(r, sandboxstate.ValidID)
-	if err != nil {
-		h.writeError(w, err)
-
-		return
-	}
-
-	list, err := sandboxPage(h, all, q, same[models.Sandbox])
-	if err != nil {
-		h.writeError(w, err)
-
-		return
-	}
-
-	h.writeJSON(w, http.StatusOK, list)
-}
-
-// sandboxPage is a page of records, each through project: the public view, or the whole record on the socket.
-func sandboxPage[S any](h *Handler, all bool, q pageQuery, project func(models.Sandbox) S) (listResponse[S], error) {
-	sandboxes, unreadable := sandbox.List(h.repo, all)
+	sandboxes, unreadable := sandbox.List(h.repo, in.All)
 
 	warnings, err := partial(unreadable)
 	if err != nil {
-		return listResponse[S]{}, err
+		return nil, fail(err)
 	}
 
 	sandboxes, next := page(sandboxes, q, func(sb models.Sandbox) string { return sb.ID })
 
-	rows := make([]S, 0, len(sandboxes))
+	rows := make([]Sandbox, 0, len(sandboxes))
 	for _, sb := range sandboxes {
-		rows = append(rows, project(sb))
+		rows = append(rows, PublicSandbox(sb))
 	}
 
-	return listResponse[S]{Sandboxes: rows, Next: next, Warnings: warnings}, nil
+	return answer(sandboxesResponse{Sandboxes: rows, Next: next, Warnings: warnings}, nil)
 }
 
 type getSandboxInput struct {
@@ -394,47 +361,21 @@ type getSandboxInput struct {
 	Wait bool   `query:"wait" doc:"Block until a pending create lands."`
 }
 
+// getSandbox answers the public record two ways: wait blocks until a pending create lands, the default reads now.
 func (h *Handler) getSandbox(ctx context.Context, in *getSandboxInput) (*reply[Inspection], error) {
-	return answer(inspect(ctx, h, in.ID, in.Wait, PublicInspection))
-}
-
-func (h *Handler) getLocalSandbox(w http.ResponseWriter, r *http.Request) {
-	wait, err := boolQuery(r, "wait")
-	if err != nil {
-		h.writeError(w, err)
-
-		return
-	}
-
-	insp, err := inspect(r.Context(), h, r.PathValue("id"), wait, same[sandbox.Inspection])
-	if err != nil {
-		h.writeError(w, err)
-
-		return
-	}
-
-	h.writeJSON(w, http.StatusOK, insp)
-}
-
-// inspect answers the record through project two ways: wait blocks until a pending create lands, the default reads now.
-func inspect[I any](ctx context.Context, h *Handler, ref string, wait bool, project func(sandbox.Inspection) I) (I, error) {
-	var none I
-	if wait {
-		if err := h.lifecycle.WaitState(ctx, ref); err != nil {
-			return none, err
+	if in.Wait {
+		if err := h.lifecycle.WaitState(ctx, in.ID); err != nil {
+			return nil, fail(err)
 		}
 	}
 
-	insp, err := sandbox.Inspect(h.repo, h.enforcer, ref)
+	insp, err := sandbox.Inspect(h.repo, h.enforcer, in.ID)
 	if err != nil {
-		return none, err
+		return nil, fail(err)
 	}
 
-	return project(insp), nil
+	return answer(PublicInspection(insp), nil)
 }
-
-// same is the projection of a local route, which answers the record as the daemon holds it.
-func same[T any](v T) T { return v }
 
 func (h *Handler) sandboxEgressLog(w http.ResponseWriter, r *http.Request) {
 	id, err := h.repo.Resolve(r.PathValue("id"))

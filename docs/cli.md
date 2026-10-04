@@ -129,11 +129,8 @@ nothing and fails.
 
 The values are synthetic.
 
-`list` prints an array of sandbox records. `id`, `image`, `provider`, `state`, `pid`, `netns_path`,
-`address`, `host_interface`, `resources` and `created_at` are always present on the daemon host. With
-`--remote`, the record leaves out `pid`, `netns_path`, `address`, `host_interface`, `checkpoint`,
-`pausing`, `exit_channel` and `unresponsive_reason`, and an implied DNS rule in `egress` names the
-group `dns`:
+`list` prints an array of sandbox records, the same on the daemon host and with `--remote`. `id`,
+`image`, `provider`, `state`, `resources` and `created_at` are always present:
 
 ```json
 [
@@ -143,10 +140,6 @@ group `dns`:
     "image": "python:3.12",
     "provider": "gvisor",
     "state": "running",
-    "pid": 41207,
-    "netns_path": "/var/run/netns/misty-otter-81c0",
-    "address": "10.87.0.2/16",
-    "host_interface": "shardv2",
     "resources": {"memory_mib": 512, "vcpus": 1, "disk_mib": 2048},
     "command": ["python", "-m", "http.server"],
     "restart": {"policy": "on-failure", "retries": 3, "backoff": 1, "count": 0, "gave_up": false, "ended": false},
@@ -158,8 +151,8 @@ group `dns`:
 ]
 ```
 
-`state` is `pending`, `created`, `running`, `paused`, `unresponsive`, `stopped` or `failed`. `pid` is
-0 when nothing runs. `resources` holds `memory_mib`, `vcpus` and `disk_mib`. Every other field is
+`state` is `pending`, `created`, `running`, `paused`, `unresponsive`, `stopped` or `failed`.
+`resources` holds `memory_mib`, `vcpus` and `disk_mib`. Every other field is
 absent when empty:
 
 | field | present when |
@@ -167,14 +160,10 @@ absent when empty:
 | `name` | the sandbox has a `--name` |
 | `kernel` | a microVM provider booted it; the guest kernel release tag |
 | `exit_status` | the entrypoint exited at least once: `{"code": 0, "signal": 0}` |
-| `exit_channel` | the daemon no longer reads the entrypoint exit from the guest, and why |
 | `stopped_reason` | shard stopped it with no operator, or `shard-init` died on a stop |
 | `failed_reason` | `state` is `failed` |
-| `unresponsive_reason` | `state` is `unresponsive` |
 | `digest` | the substrate created it; the image digest |
 | `snapshot` | `create --snapshot` made it; the snapshot id |
-| `checkpoint` | a pause wrote a checkpoint; the directory |
-| `pausing` | `true`, during a pause |
 | `command` | `run` made it; the app's argv |
 | `restart` | it has a restart policy |
 | `secrets` | it holds a placeholder; the secret names |
@@ -194,18 +183,14 @@ first one.
   "provider": "gvisor",
   "state": "stopped",
   "exit_status": {"code": 0, "signal": 0},
-  "pid": 0,
-  "netns_path": "/var/run/netns/misty-otter-81c0",
-  "address": "10.87.0.2/16",
-  "host_interface": "shardv2",
   "resources": {"memory_mib": 512, "vcpus": 1, "disk_mib": 2048},
   "policy": "api-only",
   "created_at": "2026-10-01T09:30:00Z",
   "egress": {
     "policy": "api-only",
     "rules": [
-      {"action": "allow", "destination": {"kind": "cidr", "value": "10.87.0.1"}, "protocol": "udp", "ports": [53], "id": "1", "implied": "dns"},
-      {"action": "allow", "destination": {"kind": "cidr", "value": "10.87.0.1"}, "protocol": "tcp", "ports": [53], "id": "2", "implied": "dns"},
+      {"action": "allow", "destination": {"kind": "group", "value": "dns"}, "protocol": "udp", "ports": [53], "id": "1", "implied": "dns"},
+      {"action": "allow", "destination": {"kind": "group", "value": "dns"}, "protocol": "tcp", "ports": [53], "id": "2", "implied": "dns"},
       {"action": "allow", "destination": {"kind": "domain", "value": "api.example.com"}, "protocol": "tcp", "ports": [80, 443], "id": "3"}
     ]
   }
@@ -304,7 +289,7 @@ line.
 ### Tables
 
 `list`, `image list`, `snapshot list`, `secret list`, `policy list`, `tokens list`, `info`, `daemon
-status` and `version` print tables by default. `list` prints `ID NAME IMAGE STATE UPTIME IP RESTART POLICY`, and
+status` and `version` print tables by default. `list` prints `ID NAME IMAGE STATE UPTIME RESTART POLICY`, and
 `snapshot list` prints `ID NAME SOURCE IMAGE SIZE CREATED`.
 
 The tables of the JSON verbs:
