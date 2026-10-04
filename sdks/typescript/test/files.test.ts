@@ -102,6 +102,19 @@ test("mkdir and a recursive remove", async () => {
   assert.deepEqual(Object.fromEntries(sent("DELETE", files).url.searchParams), { path: "/srv/a", recursive: "true" });
 });
 
+test("a recursive remove outlasts the idle bound", async () => {
+  const bounded = new Transport({ baseUrl: daemon.url, apiKey: "test-key", ca: undefined }, 100);
+  daemon.route = async () => {
+    await new Promise((resolve) => setTimeout(resolve, 300));
+    return { status: 204 };
+  };
+  try {
+    await new Files(bounded, "sb_1").remove("/srv/tree", { recursive: true });
+  } finally {
+    bounded.close();
+  }
+});
+
 test("an upload streams a local file with its length and its mode", async () => {
   routes.set(`PUT ${files}`, () => ({ status: 204 }));
   const local = path.join(dir, "big.bin");
