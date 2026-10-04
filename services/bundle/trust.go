@@ -138,7 +138,7 @@ func (b Bundle) TrustProxy(proxyCA []byte) error {
 		if err != nil {
 			return err
 		}
-		shift, err := b.layerShift(spec)
+		shift, err := b.layerShift()
 		if err != nil {
 			return err
 		}

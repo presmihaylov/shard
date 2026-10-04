@@ -5,21 +5,18 @@ import (
 	"io/fs"
 	"os"
 	"path/filepath"
-	"slices"
 	"strings"
 	"syscall"
 
-	specs "github.com/opencontainers/runtime-spec/specs-go"
+	"github.com/presmihaylov/shard/pkg/netns"
 )
 
-// idShift maps guest ids to host ids in a layer sysbox-runc has chowned into the user namespace; the zero value maps nothing.
-type idShift struct {
-	uids, gids []specs.LinuxIDMapping
-}
+// idShift is the user namespace sysbox-runc has chowned a layer into; the zero value maps nothing.
+type idShift netns.IDMapping
 
 // layerShift reads the upper layer's root, because sysbox-runc chowns that layer into the namespace at create and sysbox-mgr chowns it back at delete.
-func (b Bundle) layerShift(spec *specs.Spec) (idShift, error) {
-	if spec.Linux == nil || len(spec.Linux.UIDMappings) == 0 {
+func (b Bundle) layerShift() (idShift, error) {
+	if !b.Userns.Set() {
 		return idShift{}, nil
 	}
 
@@ -31,16 +28,17 @@ func (b Bundle) layerShift(spec *specs.Spec) (idShift, error) {
 	if err != nil {
 		return idShift{}, err
 	}
-	if !mapsHost(uid, spec.Linux.UIDMappings) {
+	shift := idShift(b.Userns)
+	if !shift.mapsHost(uid) {
 		return idShift{}, nil
 	}
 
-	return idShift{uids: spec.Linux.UIDMappings, gids: spec.Linux.GIDMappings}, nil
+	return shift, nil
 }
 
 // chownIn gives each component of name the host id of its guest owner, since host root's write made it or copied it up unshifted.
 func (s idShift) chownIn(root *os.Root, name string) error {
-	if len(s.uids) == 0 {
+	if s.Size == 0 {
 		return nil
 	}
 
@@ -57,7 +55,7 @@ func (s idShift) chownIn(root *os.Root, name string) error {
 			return err
 		}
 
-		hostUID, hostGID := hostID(uid, s.uids), hostID(gid, s.gids)
+		hostUID, hostGID := s.hostID(uid), s.hostID(gid)
 		if hostUID == uid && hostGID == gid {
 			continue
 		}
@@ -70,24 +68,16 @@ func (s idShift) chownIn(root *os.Root, name string) error {
 }
 
 // hostID is where the guest's id lands, or id itself when it is a host id of the namespace already or the namespace does not map it.
-func hostID(id uint32, mappings []specs.LinuxIDMapping) uint32 {
-	if mapsHost(id, mappings) {
+func (s idShift) hostID(id uint32) uint32 {
+	if s.mapsHost(id) || id >= s.Size {
 		return id
 	}
 
-	for _, m := range mappings {
-		if id >= m.ContainerID && id-m.ContainerID < m.Size {
-			return m.HostID + id - m.ContainerID
-		}
-	}
-
-	return id
+	return s.HostID + id
 }
 
-func mapsHost(id uint32, mappings []specs.LinuxIDMapping) bool {
-	return slices.ContainsFunc(mappings, func(m specs.LinuxIDMapping) bool {
-		return id >= m.HostID && id-m.HostID < m.Size
-	})
+func (s idShift) mapsHost(id uint32) bool {
+	return id >= s.HostID && id-s.HostID < s.Size
 }
 
 func owner(info fs.FileInfo) (uint32, uint32, error) {

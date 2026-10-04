@@ -14,6 +14,7 @@ import (
 	specs "github.com/opencontainers/runtime-spec/specs-go"
 
 	"github.com/presmihaylov/shard/models"
+	"github.com/presmihaylov/shard/pkg/netns"
 	"github.com/presmihaylov/shard/pkg/runc"
 	"github.com/presmihaylov/shard/services/runspec"
 )
@@ -65,6 +66,9 @@ type Bundle struct {
 	// Disk is where Image, a sparse ext4 file sized to the bound, mounts; Upper, Work, Tmp and ShardDir live on it, so one bound covers every guest write.
 	Disk  string
 	Image string
+
+	// Userns is the namespace sysbox-runc chowns Upper into while a container holds it; the zero value is a substrate that never does.
+	Userns netns.IDMapping
 }
 
 // Service builds bundles. One per shard process, because the supervisor path never changes.

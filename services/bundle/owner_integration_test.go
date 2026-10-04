@@ -18,8 +18,7 @@ func TestWriteLayerShiftsWhatItMakesIntoTheNamespace(t *testing.T) {
 	mkdirOwned(t, filepath.Join(layer, "etc"), 165541)
 	mkdirOwned(t, filepath.Join(layer, "etc", "ssl"), 100)
 
-	shift := idShift{uids: sysboxMapping, gids: sysboxMapping}
-	if err := writeLayer(layer, filepath.Join("etc", "ssl", "certs", "ca-certificates.crt"), []byte("proxy CA\n"), shift); err != nil {
+	if err := writeLayer(layer, filepath.Join("etc", "ssl", "certs", "ca-certificates.crt"), []byte("proxy CA\n"), sysboxShift); err != nil {
 		t.Fatalf("writeLayer: %v", err)
 	}
 

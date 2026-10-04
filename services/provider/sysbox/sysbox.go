@@ -845,7 +845,14 @@ func (p *Provider) HeldLogs(id string) ([]string, error) {
 
 // Environment is the bundle: its config.json is the one record of what the entrypoint runs with.
 func (p *Provider) Environment(id string) (models.Environment, error) {
-	return bundle.Opener(p.dirs).Environment(id)
+	b, err := p.open(id)
+	if err != nil {
+		return nil, err
+	}
+	// sysbox-runc shifts the upper layer by the one mapping Sysbox CE gives, whether config.json names it or not.
+	b.Userns = Userns
+
+	return b, nil
 }
 
 // open finds the bundle of a sandbox this process did not create.
