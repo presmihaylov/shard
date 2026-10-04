@@ -18,11 +18,14 @@ import (
 // ErrEntrypointNotStarted is a run the guest refused, with the guest's own words for why behind it.
 var ErrEntrypointNotStarted = errors.New("the entrypoint did not start")
 
-// maxQueuedEvents bounds the events a guest can queue ahead of Next: the queue is daemon memory, outside the sandbox's bound (SHARD-550).
-const maxQueuedEvents = 64
+// The events a guest can queue ahead of Next, by count and by line bytes: the queue is daemon memory, outside the sandbox's bound (SHARD-550).
+const (
+	maxQueuedEvents = 1024
+	maxQueuedBytes  = 4 * MaxPayload
+)
 
-// ErrEventFlood ends a stream whose guest queued maxQueuedEvents events the host has not read.
-var ErrEventFlood = fmt.Errorf("the guest queued %d events the host has not read", maxQueuedEvents)
+// ErrEventFlood ends a stream whose guest queued events past one of those bounds before the host read them.
+var ErrEventFlood = fmt.Errorf("the guest queued more than %d events or %d bytes the host has not read", maxQueuedEvents, maxQueuedBytes)
 
 // Dialer opens one connection to a guest port. pkg/vz's Client.Connect is one, over the shim socket.
 type Dialer func(ctx context.Context, port uint32) (net.Conn, error)
@@ -54,7 +57,9 @@ type Control struct {
 	ended error
 
 	// events never blocks the reader, so a host that reads Next late never stalls the guest's answers behind them.
-	events   []Message
+	events []queuedEvent
+	// queued is the line bytes of events, which maxQueuedBytes bounds.
+	queued   int
 	eventsMu sync.Mutex
 	arrived  *sync.Cond
 	// readErr is why the reader stopped; io.EOF when the guest went away.
@@ -91,14 +96,16 @@ func (c *Control) read() {
 	r := bufio.NewReader(c.conn)
 	for {
 		var m Message
-		if err := ReadMessage(r, &m); err != nil {
+		size, err := readMessage(r, &m)
+		if err != nil {
 			c.end(err)
 
 			return
 		}
 		if m.ID == 0 {
-			if !c.push(m) {
-				c.end(ErrEventFlood)
+			if !c.push(m, size) {
+				// The close fails the guest's next write at once, and the redial gets a fresh stream.
+				c.end(errors.Join(ErrEventFlood, c.conn.Close()))
 
 				return
 			}
@@ -131,14 +138,15 @@ func (c *Control) end(err error) {
 	c.arrived.Broadcast()
 }
 
-// push queues an event, or answers false when the guest is maxQueuedEvents ahead of Next.
-func (c *Control) push(m Message) bool {
+// push queues an event of size line bytes, or answers false when it would take the queue past a bound.
+func (c *Control) push(m Message, size int) bool {
 	c.eventsMu.Lock()
 	defer c.eventsMu.Unlock()
-	if len(c.events) >= maxQueuedEvents {
+	if len(c.events) >= maxQueuedEvents || c.queued+size > maxQueuedBytes {
 		return false
 	}
-	c.events = append(c.events, m)
+	c.events = append(c.events, queuedEvent{message: m, size: size})
+	c.queued += size
 	c.arrived.Broadcast()
 
 	return true
@@ -155,10 +163,19 @@ func (c *Control) Next() (Message, error) {
 	if len(c.events) == 0 {
 		return Message{}, c.readErr
 	}
-	m := c.events[0]
+	next := c.events[0]
+	// The cleared slot lets the collector take the message while the rest still wait behind it.
+	c.events[0] = queuedEvent{}
 	c.events = c.events[1:]
+	c.queued -= next.size
 
-	return m, nil
+	return next.message, nil
+}
+
+// queuedEvent is one event Next has not taken yet, with the bytes of its line.
+type queuedEvent struct {
+	message Message
+	size    int
 }
 
 // Run sends the entrypoint and waits until the guest says it forked, or says why it could not.
