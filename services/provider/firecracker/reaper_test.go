@@ -106,6 +106,10 @@ func awaitAndEnd(alive *os.File, harnesses string) error {
 // liveSessions is every vmm session noted by a harness that still has its root.
 func liveSessions(harnesses string) (map[int]bool, error) {
 	blob, err := os.ReadFile(harnesses)
+	// A run's directory goes only once its sessions have ended.
+	if errors.Is(err, fs.ErrNotExist) {
+		return map[int]bool{}, nil
+	}
 	if err != nil {
 		return nil, err
 	}
@@ -190,6 +194,18 @@ func TestAKilledTestBinaryLeavesNoVMMSession(t *testing.T) {
 	if err := <-done; !errors.As(err, &exit) {
 		t.Fatalf("the child after SIGKILL: %v, want killed", err)
 	}
+	dirs, err := os.ReadFile(named + ".dirs")
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Registered before endSessions, so it runs after it: a root goes only once its sessions are gone.
+	t.Cleanup(func() {
+		for dir := range strings.SplitSeq(strings.TrimSpace(string(dirs)), "\n") {
+			if err := os.RemoveAll(dir); err != nil {
+				t.Error(err)
+			}
+		}
+	})
 	sids, err := sessionsIn(named)
 	if err != nil {
 		t.Fatal(err)
@@ -222,6 +238,10 @@ func TestHeldVMMOfAKilledRun(t *testing.T) {
 	_, pid := h.runLong(t)
 	// A stopped vmm ends nothing of its own, as one a frozen-vmm test leaves.
 	if err := syscall.Kill(pid, syscall.SIGSTOP); err != nil {
+		t.Fatal(err)
+	}
+	// A killed run removes neither its harness root nor its run directory, so the parent does.
+	if err := os.WriteFile(named+".dirs", []byte(h.root+"\n"+filepath.Dir(harnessesFile)+"\n"), 0o600); err != nil {
 		t.Fatal(err)
 	}
 	blob, err := os.ReadFile(filepath.Join(h.root, sessionsFile))
