@@ -193,9 +193,7 @@ type ExecOptions struct {
 	Report func(pid int)
 }
 
-// Exec runs a command in a running container and returns its exit code, which is no driver failure.
-// runc reports a command it cannot start as exit 1 with nothing in its own log, so only a launch
-// tells the two apart. The caller checks the container is running first.
+// Exec needs launch proof because runc uses exit 1 for both a command exit and a launch refusal.
 func (r *Runner) Exec(ctx context.Context, id string, opts ExecOptions) (code int, err error) {
 	if len(opts.Argv) == 0 {
 		return 0, fmt.Errorf("no command: %s exec has nothing to run", r.name())

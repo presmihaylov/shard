@@ -1,6 +1,4 @@
-// Package launch proves that a command a container runtime starts reached its own execve. The runtime
-// runs a shim with one end of a socketpair as fd 3; the host traces the shim and takes the kernel's
-// exec event as the proof, because the runtime holds its own copy of fd 3 and an EOF proves nothing.
+// Package launch uses the kernel exec event because the runtime's socket copy makes EOF inconclusive.
 package launch
 
 import (

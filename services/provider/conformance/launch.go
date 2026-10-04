@@ -21,9 +21,7 @@ type refusal struct {
 	code int
 }
 
-// RunLaunch proves an exec answers only once its command's execve took, and refuses one that did not with a
-// shell's code (SHARD-497). modeBindsNobody says nobody cannot run a root file of mode 0700, as on sysbox and on
-// runc, whose shim execs with no capability left; gvisor runs it (SHARD-498).
+// RunLaunch takes modeBindsNobody because providers give an exec different capabilities (SHARD-498).
 func RunLaunch(t *testing.T, s Subject, modeBindsNobody bool) {
 	t.Helper()
 

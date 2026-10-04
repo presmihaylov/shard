@@ -551,8 +551,7 @@ func notStarted(id string, err error) error {
 	return &models.CommandNotStartedError{Sandbox: id, Reason: failed.Reason(), Code: code}
 }
 
-// execOptions puts the exec where the entrypoint runs. config.json is the only record of that, and
-// the rootfs it resolves a user against is the sandbox's live tree, not the image's.
+// execOptions resolves users against the live sandbox because it can differ from the image.
 func execOptions(b bundle.Bundle, spec models.ExecSpec) (runccli.ExecOptions, error) {
 	runtime, err := b.Runtime()
 	if err != nil {

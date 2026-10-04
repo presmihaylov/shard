@@ -87,8 +87,7 @@ func (c *Channel) Close() error {
 	return errors.Join(errs...)
 }
 
-// Await returns the shim's host pid once the command's execve took; pidOf reads the pid the runtime wrote.
-// A cancelled ctx inside the trace kills the shim, so no traced shim outlives the wait.
+// Await confirms execve; cancellation retains ownership until the traced shim ends.
 func (c *Channel) Await(ctx context.Context, pidOf func() (int, error)) (pid int, err error) {
 	// A shim the host never let go waits for the go byte, and the runtime waits on it; the hang-up ends both.
 	defer func() { err = errors.Join(err, c.hangUp()) }()

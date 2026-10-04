@@ -444,8 +444,7 @@ func (w bufWriter) Write(p []byte) (int, error) {
 	return len(p), nil
 }
 
-// execSession is one exec from its create to its end. The command runs on execCtx, so a client that
-// drops never ends it: only stop, a delete-after-exit and a launch past its budget cancel that context.
+// execSession owns the command context so a client disconnect cannot end the command.
 type execSession struct {
 	id        string
 	sandboxID string
@@ -659,8 +658,7 @@ func (e *execSession) closeStdin() error {
 	return err
 }
 
-// CreateExec starts one command in a sandbox that is up and answers the exec record once the command launched.
-// The command runs whether or not a client attaches, and only stop or a delete after it ends forgets it.
+// CreateExec waits for launch proof so a refused command does not receive a public handle.
 func (s *Service) CreateExec(ctx context.Context, ref string, req ExecRequest) (models.Exec, error) {
 	if len(req.Command) == 0 {
 		return models.Exec{}, &RequestError{Err: errors.New("the request names no command to run")}
@@ -692,8 +690,23 @@ func (s *Service) CreateExec(ctx context.Context, ref string, req ExecRequest) (
 	return session.record(), nil
 }
 
-// awaitStart returns once the provider reports the pid, which every provider does only after the command's execve took.
+// awaitStart answers once the launch is decided, which runs apart from ctx so a client that goes cannot lift the budget.
 func (s *Service) awaitStart(ctx context.Context, session *execSession) error {
+	decided := make(chan error, 1)
+	go func() { decided <- s.superviseStart(session) }()
+
+	select {
+	case err := <-decided:
+		return err
+	case <-ctx.Done():
+		// A client that goes never ends the remote command, so it runs on as a listed exec.
+		s.showExec(session)
+		return ctx.Err()
+	}
+}
+
+// superviseStart returns once the provider reports the pid, which every provider does only after the command's execve took.
+func (s *Service) superviseStart(session *execSession) error {
 	budget := s.execStartBudget()
 	timer := time.NewTimer(budget)
 	defer timer.Stop()
@@ -703,10 +716,6 @@ func (s *Service) awaitStart(ctx context.Context, session *execSession) error {
 		return nil
 	case <-session.done:
 		return s.startOutcome(session)
-	case <-ctx.Done():
-		// A client that goes never ends the remote command, so it runs on as a listed exec.
-		s.showExec(session)
-		return ctx.Err()
 	case <-timer.C:
 	}
 	if session.reported() {
@@ -719,12 +728,12 @@ func (s *Service) awaitStart(ctx context.Context, session *execSession) error {
 
 	select {
 	case <-session.done:
-		s.dropExec(session.id)
+		s.dropHidden(session)
 	case <-grace.C:
 		// A provider that ignores the cancel keeps the hidden session until it ends, so a stop still finds it.
 		go func() {
 			<-session.done
-			s.dropExec(session.id)
+			s.dropHidden(session)
 		}()
 	}
 
@@ -737,7 +746,7 @@ func (s *Service) startOutcome(session *execSession) error {
 		return nil
 	}
 
-	s.dropExec(session.id)
+	s.dropHidden(session)
 	if _, err := session.result(); err != nil {
 		return err
 	}
@@ -1196,6 +1205,16 @@ func (s *Service) dropExec(execID string) {
 	defer s.execMu.Unlock()
 
 	delete(s.execs, execID)
+}
+
+// dropHidden forgets an exec whose create refused it, and keeps one a client left before the answer, as a listed record.
+func (s *Service) dropHidden(session *execSession) {
+	s.execMu.Lock()
+	defer s.execMu.Unlock()
+
+	if !session.shown {
+		delete(s.execs, session.id)
+	}
 }
 
 // exitedExecCap bounds the exited execs one sandbox retains, so a sandbox that runs many commands in a

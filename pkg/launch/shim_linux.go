@@ -16,8 +16,7 @@ import (
 // defaultPath is the OCI image spec default, which execvp falls back to as well when the env names no PATH.
 const defaultPath = "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
 
-// Shim is the launch mode of the guest supervisor, run as the exec's own process on its main thread. It waits
-// for the host's trace and becomes argv, so it returns only on a failure: a NotStartedError when the execve failed.
+// Shim waits for the host trace so only the kernel can confirm the command's execve.
 func Shim(argv []string) error { return shim(argv, true) }
 
 // shim is Shim, and undumpable false keeps a test that is not root able to trace it.
@@ -55,8 +54,7 @@ func shim(argv []string, undumpable bool) error {
 	return &NotStartedError{Errno: errno}
 }
 
-// execvp is execvp(3) without the shell fallback runc never had: a name with a slash is the path, any other
-// tries each PATH entry, and a match that cannot run makes the answer EACCES. It returns only on a failure.
+// execvp omits the shell fallback because runc treats an unrecognized executable as a refusal.
 func execvp(argv []string) syscall.Errno {
 	env := os.Environ()
 	name := argv[0]
