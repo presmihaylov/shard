@@ -130,3 +130,92 @@ func TestReadPasswordEndsOnCancelAndGivesTheEchoBack(t *testing.T) {
 		t.Errorf("the next reader got %q, %v, want only the next line", line, err)
 	}
 }
+
+// Ctrl-S holds the output of a terminal with IXON, and a cancelled prompt must still return before Ctrl-Q.
+func TestACancelledPromptDoesNotWaitForAPausedOutput(t *testing.T) {
+	pair := openEchoing(t)
+	fd := int(pair.Replica.Fd())
+	settings, err := unix.IoctlGetTermios(fd, getTermios)
+	if err != nil {
+		t.Fatalf("read the terminal settings: %v", err)
+	}
+	settings.Iflag |= unix.IXON
+	if err := unix.IoctlSetTermios(fd, setTermios, settings); err != nil {
+		t.Fatalf("turn IXON on: %v", err)
+	}
+
+	ctx, cancel := context.WithCancel(t.Context())
+	defer cancel()
+	done := make(chan error, 1)
+	go func() {
+		_, err := ReadPassword(ctx, pair.Replica)
+		done <- err
+	}()
+
+	for deadline := time.Now().Add(2 * time.Second); echoes(t, pair.Replica); {
+		if time.Now().After(deadline) {
+			t.Fatal("the prompt never turned the echo off")
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+	if _, err := pair.Master.WriteString("synthetic-partial\x13"); err != nil {
+		t.Fatalf("type half a line and Ctrl-S: %v", err)
+	}
+	time.Sleep(50 * time.Millisecond)
+	written := make(chan error, 1)
+	// Darwin queues this output behind the Ctrl-S, and Linux holds the write itself until the Ctrl-Q.
+	go func() {
+		_, err := pair.Replica.WriteString("queued output")
+		written <- err
+	}()
+	time.Sleep(50 * time.Millisecond)
+	cancel()
+
+	select {
+	case err := <-done:
+		if !errors.Is(err, context.Canceled) {
+			t.Errorf("a cancelled prompt returned %v, want context.Canceled", err)
+		}
+		resume(t, pair)
+	case <-time.After(time.Second):
+		t.Error("a cancelled prompt waits for the paused output to drain")
+		resume(t, pair)
+		within(t, done)
+	}
+	if err := within(t, written); err != nil {
+		t.Errorf("queue output behind the Ctrl-S: %v", err)
+	}
+	if !echoes(t, pair.Replica) {
+		t.Error("a cancelled prompt left the echo off")
+	}
+}
+
+// resume types Ctrl-Q and reads the master, so the held output drains and no goroutine of the test waits on it.
+func resume(t *testing.T, pair *Pty) {
+	t.Helper()
+
+	if _, err := pair.Master.WriteString("\x11"); err != nil {
+		t.Fatalf("type Ctrl-Q: %v", err)
+	}
+	go func() {
+		buf := make([]byte, 4096)
+		for {
+			if _, err := pair.Master.Read(buf); err != nil {
+				return
+			}
+		}
+	}()
+}
+
+func within(t *testing.T, ch <-chan error) error {
+	t.Helper()
+
+	select {
+	case err := <-ch:
+		return err
+	case <-time.After(5 * time.Second):
+		t.Fatal("the terminal still holds the output after Ctrl-Q")
+
+		return nil
+	}
+}

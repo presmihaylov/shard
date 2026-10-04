@@ -91,11 +91,12 @@ func readPassword(ctx context.Context, f *os.File) (line []byte, err error) {
 	}
 	defer func() {
 		// A prompt that ends early discards what was typed, so a half-typed secret never reaches the next reader.
-		restore := uint(setTermios)
 		if err != nil {
-			restore = flushTermios
+			if flushErr := flushInput(fd); flushErr != nil {
+				err = errors.Join(err, fmt.Errorf("discard the unread input of %s: %w", f.Name(), flushErr))
+			}
 		}
-		if restoreErr := unix.IoctlSetTermios(fd, restore, previous); restoreErr != nil {
+		if restoreErr := unix.IoctlSetTermios(fd, setTermios, previous); restoreErr != nil {
 			err = errors.Join(err, fmt.Errorf("restore the terminal settings of %s: %w", f.Name(), restoreErr))
 		}
 	}()
