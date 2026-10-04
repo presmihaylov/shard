@@ -26,7 +26,7 @@ done
 exit 1
 `)
 
-	_, err := r.Exec(t.Context(), "amber-otter-1a2b", runc.ExecOptions{Argv: []string{"/bin/true"}, Launch: "/.shard/init"})
+	_, err := r.Exec(t.Context(), "amber-otter-1a2b", runc.ExecOptions{Argv: []string{"/bin/true"}, Bundle: bundle(t), Launch: "/.shard/init"})
 	if !errors.Is(err, launch.ErrNoShim) {
 		t.Fatalf("Exec returned %v, want ErrNoShim", err)
 	}
@@ -66,7 +66,7 @@ exec sleep 30
 		waitFor(argvFile + ".ready")
 	}()
 
-	_, err := r.Exec(ctx, "amber-otter-1a2b", runc.ExecOptions{Argv: []string{"/bin/sleep", "30"}, Launch: "/.shard/init"})
+	_, err := r.Exec(ctx, "amber-otter-1a2b", runc.ExecOptions{Argv: []string{"/bin/sleep", "30"}, Bundle: bundle(t), Launch: "/.shard/init"})
 	if !errors.Is(err, context.Canceled) {
 		t.Fatalf("a cancelled Exec returned %v, want it to name the cancellation", err)
 	}

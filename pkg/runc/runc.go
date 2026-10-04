@@ -174,6 +174,8 @@ func createArgs(id, bundle string, noNewKeyring bool) []string {
 // ExecOptions is one process in a container that already runs. It is never the entrypoint, so it has
 // no supervisor and its exit ends nothing.
 type ExecOptions struct {
+	// Bundle is the directory create was given. Its config.json process is what the exec starts from, as runc's own flags would.
+	Bundle  string
 	Argv    []string
 	Env     []string
 	WorkDir string
@@ -198,6 +200,9 @@ func (r *Runner) Exec(ctx context.Context, id string, opts ExecOptions) (code in
 	if len(opts.Argv) == 0 {
 		return 0, fmt.Errorf("no command: %s exec has nothing to run", r.name())
 	}
+	if opts.Bundle == "" {
+		return 0, fmt.Errorf("no bundle: %s exec has no process to start from", r.name())
+	}
 
 	dir, err := os.MkdirTemp(r.execDir, "shard-exec-")
 	if err != nil {
@@ -207,6 +212,10 @@ func (r *Runner) Exec(ctx context.Context, id string, opts ExecOptions) (code in
 
 	pidFile := filepath.Join(dir, "pid")
 	logFile := filepath.Join(dir, "log")
+	processFile := filepath.Join(dir, "process.json")
+	if err := writeProcess(processFile, opts); err != nil {
+		return 0, fmt.Errorf("%s exec %s: %w", r.name(), id, err)
+	}
 
 	var ch *launch.Channel
 	if opts.Launch != "" {
@@ -217,7 +226,7 @@ func (r *Runner) Exec(ctx context.Context, id string, opts ExecOptions) (code in
 		defer func() { err = errors.Join(err, ch.Close()) }()
 	}
 
-	args := execArgs(id, pidFile, opts)
+	args := execArgs(id, pidFile, processFile, opts)
 	if ch != nil {
 		args = append([]string{"--log", logFile}, args...)
 	}
@@ -291,34 +300,15 @@ func (r *Runner) Exec(ctx context.Context, id string, opts ExecOptions) (code in
 	return 0, nil
 }
 
-// execArgs spells one runc exec. The flags precede the id, and everything after it is the command.
-func execArgs(id, pidFile string, opts ExecOptions) []string {
-	args := []string{"exec", "--pid-file", pidFile}
-
-	if opts.WorkDir != "" {
-		args = append(args, "--cwd", opts.WorkDir)
-	}
-	if opts.User != "" {
-		args = append(args, "--user", opts.User)
-		for _, gid := range opts.Groups {
-			args = append(args, "--additional-gids", strconv.FormatUint(uint64(gid), 10))
-		}
-	}
-	for _, entry := range opts.Env {
-		args = append(args, "--env", entry)
-	}
-	if opts.TTY {
-		args = append(args, "--tty")
-	}
-
+// execArgs spells one runc exec. The process file holds the whole command, so nothing follows the id.
+func execArgs(id, pidFile, processFile string, opts ExecOptions) []string {
+	args := []string{"exec", "--pid-file", pidFile, "--process", processFile}
 	if opts.Launch == "" {
-		return append(append(args, id), opts.Argv...)
+		return append(args, id)
 	}
 
 	// The channel is the first fd past stdio, which runc hands the shim as its fd 3.
-	args = append(args, "--preserve-fds", "1", id, opts.Launch, launch.Mode)
-
-	return append(args, opts.Argv...)
+	return append(args, "--preserve-fds", "1", id)
 }
 
 // await waits for the launch shim's verdict, and reports the pid only once the command's execve took.
