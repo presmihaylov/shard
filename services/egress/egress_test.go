@@ -946,8 +946,8 @@ func TestEffectiveOpensDNSForAnAllowDNSRuleAlone(t *testing.T) {
 		shape = append(shape, string(rule.Action)+" "+string(rule.Destination.Kind)+":"+rule.Destination.Value+" "+rule.Protocol+" "+rule.Implied)
 	}
 	want := []string{
-		"allow cidr:10.87.0.1 udp dns rule",
-		"allow cidr:10.87.0.1 tcp dns rule",
+		"allow cidr:10.87.0.1 udp dns-rule",
+		"allow cidr:10.87.0.1 tcp dns-rule",
 		"allow cidr:203.0.113.7 tcp ",
 		"allow group:dns  ",
 		"deny group:any  ",

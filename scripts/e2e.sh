@@ -1342,7 +1342,7 @@ shard policy create --allow 1.0.0.1 --allow dns --allow "${ECHO_HOST}" --deny an
 expect_exec "resolved" "the same policy with --allow dns resolves the echo name" \
 	/bin/sh -c "timeout 5 nslookup ${ECHO_HOST} >/dev/null 2>&1 && echo resolved || echo unresolved"
 holds '"dns": "open"' shard policy show e2e-policy || fail "policy show does not say dns is open"
-holds '"implied": "dns rule"' shard inspect "${ID}" || fail "inspect does not name the dns rule that opened 53"
+holds '"implied": "dns-rule"' shard inspect "${ID}" || fail "inspect does not name the dns rule that opened 53"
 say "policy show says dns is open and inspect names the rule that opened 53"
 
 CODE=0

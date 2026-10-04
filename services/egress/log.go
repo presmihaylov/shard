@@ -33,8 +33,8 @@ const (
 // Record is one egress decision, as a line of the log. It never carries a header, a body or a secret value.
 type Record struct {
 	Time    time.Time `json:"time"`
-	Source  string    `json:"source"`
-	Verdict string    `json:"verdict"`
+	Source  string    `json:"source" enum:"proxy,host,dns"`
+	Verdict string    `json:"verdict" enum:"allow,deny"`
 	Host    string    `json:"host,omitempty"`
 	Port    int       `json:"port,omitempty"`
 	Address string    `json:"address,omitempty"`

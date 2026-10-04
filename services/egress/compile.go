@@ -86,7 +86,7 @@ type EffectiveRule struct {
 	models.Rule
 	// ID is the rule's place in the effective order, so the proxy and the host name the same rule in a log.
 	ID      string `json:"id"`
-	Implied string `json:"implied,omitempty"`
+	Implied string `json:"implied,omitempty" enum:"dns,dns-rule" doc:"Set on a rule the policy did not write: dns when a name rule opened DNS, dns-rule when a dns rule did."`
 }
 
 // Effective reads what the host enforces for the sandbox. A sandbox with no policy has no rules and reaches
@@ -109,7 +109,7 @@ func (s *Service) Effective(sb models.Sandbox) (Effective, error) {
 	implied := "dns"
 	for _, rule := range policy.Rules {
 		if rule.Destination.Kind == models.DestinationGroup && rule.Destination.Value == GroupDNS {
-			implied = "dns rule"
+			implied = "dns-rule"
 		}
 		rules = append(rules, EffectiveRule{Rule: rule})
 	}
