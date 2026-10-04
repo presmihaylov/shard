@@ -179,8 +179,8 @@ provider records the 125 as the sandbox exit and the reason as its stopped reaso
 `ls` show that as `shard-init failed: <reason>` until the next start (SHARD-290). A failure at boot,
 before any listener exists, opens the control connection with the same message. A Firecracker start
 then answers with the reason and the 125 at once, instead of after the 30 second grace (SHARD-416).
-The vz provider records a failure at boot the same way (SHARD-418). After boot, it still ignores the
-event and reads the halt as the guest gone.
+The vz provider records a failure at boot the same way (SHARD-418). It records a death after boot as
+Firecracker does, and a stop returns only once that report has landed (SHARD-476).
 
 The host is the only client. The shim never listens on a host port, so a guest process that opens a
 vsock connection outward reaches nothing. The exit record travels on the control connection that

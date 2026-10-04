@@ -11,6 +11,7 @@ import (
 	"path/filepath"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"syscall"
 	"time"
 
@@ -40,6 +41,8 @@ type transport struct {
 	root *os.File
 	// endSent says the host heard the policy end, which waits for its ack of the app's last output; under controlMu.
 	endSent bool
+	// forced marks a stop the grace outran, whose disk is left as the kill left it.
+	forced atomic.Bool
 }
 
 // capbsetEnv marks the re-exec, so the second image knows the bounding set is already shrunk and the disk is the root.
@@ -102,7 +105,7 @@ func serveTransport(name string, boot guestBoot) error {
 		return t.fail(fmt.Errorf("%w: %w", errSupervisor, err))
 	}
 
-	if err := sealRoot(t.root, freezeRoot); err != nil {
+	if err := t.seal(freezeRoot); err != nil {
 		return t.fail(fmt.Errorf("%w: %w", errSupervisor, err))
 	}
 	// The stop is done, so the VM has nothing left to run; a guest that went is what the host waits for.
@@ -118,6 +121,15 @@ var failureGrace = 10 * time.Second
 
 // A freeze that outlasts this has a disk it cannot settle, and the stop goes on without it rather than hang.
 var sealGrace = 5 * time.Second
+
+// seal skips a forced stop, which never freezes, so its dirty disk is one a grow refuses by name (shard ruling 790da96b).
+func (t *transport) seal(freeze func(*os.File) error) error {
+	if t.forced.Load() {
+		return nil
+	}
+
+	return sealRoot(t.root, freeze)
+}
 
 // sealRoot flushes, then freezes the root last of all, so a clean stop leaves a disk with no journal to replay that a host can grow (SHARD-476).
 func sealRoot(root *os.File, freeze func(*os.File) error) error {
@@ -465,6 +477,7 @@ func freezeGuest(bound, root *os.File) error {
 // forceStop ends a stop the grace outran: it kills the entrypoint, freezes the rest and flushes, so the host's cut loses nothing.
 // A host replaced before the answer may have read the guest unfrozen off its replay, so the freeze is undone, as a pause's is.
 func (t *transport) forceStop(conn net.Conn, id int) {
+	t.forced.Store(true)
 	t.freezing.Lock()
 	defer t.freezing.Unlock()
 

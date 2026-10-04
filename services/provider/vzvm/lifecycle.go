@@ -311,10 +311,7 @@ func (p *Provider) Stop(ctx context.Context, id string, grace time.Duration) err
 		return err
 	}
 	if ended {
-		p.forget(m)
-		closeDown(m)
-
-		return nil
+		return p.settle(ctx, m)
 	}
 	// The grace outran the stop, so the guest flushes its disk before the cut (SHARD-344, shard ruling f4b0942e).
 	return p.endLive(ctx, m)

@@ -59,6 +59,13 @@ func TestMain(m *testing.M) {
 		}
 		os.Exit(models.SupervisorFailedExitCode)
 	}
+	if os.Getenv(failingGuestEnv) == "1" && len(os.Args) == 3 && os.Args[1] == "-transport" {
+		if err := failingGuest(strings.TrimPrefix(os.Args[2], "unix:")); err != nil {
+			fmt.Fprintln(os.Stderr, "failing guest:", err)
+			os.Exit(1)
+		}
+		os.Exit(models.SupervisorFailedExitCode)
+	}
 	if os.Getenv(fakeShimEnv) == "1" {
 		if err := fakeShim(); err != nil {
 			fmt.Fprintln(os.Stderr, "fake shim:", err)

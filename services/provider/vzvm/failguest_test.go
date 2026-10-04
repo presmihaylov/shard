@@ -1,16 +1,20 @@
 package vzvm_test
 
 import (
+	"bufio"
+	"context"
 	"fmt"
 	"io"
 	"net"
 	"os"
 	"path/filepath"
 	"strings"
+	"syscall"
 	"testing"
 	"time"
 
 	"github.com/presmihaylov/shard/models"
+	"github.com/presmihaylov/shard/services/provider/vzvm"
 	"github.com/presmihaylov/shard/services/supervisor"
 )
 
@@ -39,6 +43,142 @@ func bootFailingGuest(dir string) error {
 	}
 
 	return nil
+}
+
+// failingGuestEnv makes the test binary a guest that dies on the stop, as a shard-init whose root will not freeze does.
+const failingGuestEnv = "VZVM_FAKE_FAILING_GUEST"
+
+// guestFailure is the reason the failing guest gives, with the newline a guest may put in one.
+const guestFailure = "supervisor: freeze the root: operation not supported\nsecond line"
+
+// failingGuest speaks the control protocol as shard-init does until the stop, then reports its own death.
+func failingGuest(dir string) error {
+	control, err := net.Listen("unix", filepath.Join(dir, fmt.Sprintf("%d.sock", supervisor.ControlPort)))
+	if err != nil {
+		return fmt.Errorf("listen for control: %w", err)
+	}
+	logs, err := net.Listen("unix", filepath.Join(dir, fmt.Sprintf("%d.sock", supervisor.LogsPort)))
+	if err != nil {
+		return fmt.Errorf("listen for logs: %w", err)
+	}
+	// The host keeps a logs connection open for the life of the guest; held, so no finalizer closes it.
+	held := make(chan net.Conn, 64)
+	go func() {
+		for {
+			conn, err := logs.Accept()
+			if err != nil {
+				return
+			}
+			held <- conn
+		}
+	}()
+
+	conn, err := control.Accept()
+	if err != nil {
+		return fmt.Errorf("accept control: %w", err)
+	}
+	if err := supervisor.WriteMessage(conn, supervisor.Message{Kind: supervisor.KindState, Logs: supervisor.LogsVersion}); err != nil {
+		return fmt.Errorf("send the state: %w", err)
+	}
+	r := bufio.NewReader(conn)
+	for {
+		var m supervisor.Message
+		if err := supervisor.ReadMessage(r, &m); err != nil {
+			return fmt.Errorf("read a request: %w", err)
+		}
+		if err := supervisor.WriteMessage(conn, supervisor.Message{Kind: supervisor.KindDone, ID: m.ID}); err != nil {
+			return fmt.Errorf("answer %s: %w", m.Kind, err)
+		}
+		if m.Kind != supervisor.KindStop {
+			continue
+		}
+		report := supervisor.Message{Kind: supervisor.KindSupervisorFailed, Error: guestFailure, Exit: &models.ExitStatus{Code: models.SupervisorFailedExitCode}}
+		if err := supervisor.WriteMessage(conn, report); err != nil {
+			return fmt.Errorf("report the death: %w", err)
+		}
+
+		return nil
+	}
+}
+
+// A shard-init that dies after it answered the stop leaves its 125 and its reason, where the stop dropped the report with the guest (SHARD-476).
+func TestAShardInitThatDiesOnTheStopLeavesItsExitAndItsReason(t *testing.T) {
+	h := newHarness(t)
+	spec := h.newSpec(t, "/bin/sh", "-c", "while true; do sleep 1; done")
+	self, err := os.Executable()
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv(fakeInitEnv, self)
+	t.Setenv(failingGuestEnv, "1")
+	if err := h.provider.Create(t.Context(), spec); err != nil {
+		t.Fatal(err)
+	}
+	if err := h.provider.Start(t.Context(), spec.ID); err != nil {
+		t.Fatal(err)
+	}
+	if err := h.provider.Stop(t.Context(), spec.ID, stopGrace); err != nil {
+		t.Fatal(err)
+	}
+
+	status, err := h.provider.Status(t.Context(), spec.ID)
+	want := strings.ReplaceAll(guestFailure, "\n", " ")
+	if err != nil || status.State != models.StateStopped || status.SupervisorFailed != want {
+		t.Fatalf("Status after the death = %+v, %v, want stopped with the reason %q on one line", status, err, want)
+	}
+	exit, err := h.provider.Wait(t.Context(), spec.ID)
+	if err != nil || exit.Code != models.SupervisorFailedExitCode {
+		t.Fatalf("Wait = %+v, %v, want the supervisor's %d", exit, err, models.SupervisorFailedExitCode)
+	}
+}
+
+// A stop returns only once the guest's last report has landed, however soon the VM halts after it (SHARD-476).
+func TestAStopWaitsForTheSupervisorsReportToLand(t *testing.T) {
+	h := newHarness(t)
+	spec := h.newSpec(t, "/bin/sh", "-c", "while true; do sleep 1; done")
+	self, err := os.Executable()
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv(fakeInitEnv, self)
+	t.Setenv(failingGuestEnv, "1")
+	if err := h.provider.Create(t.Context(), spec); err != nil {
+		t.Fatal(err)
+	}
+	if err := h.provider.Start(t.Context(), spec.ID); err != nil {
+		t.Fatal(err)
+	}
+	dir, err := h.stateDir(spec.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// A fifo is a disk slower than the halt: the report's write blocks until the test reads it.
+	reason := filepath.Join(dir, vzvm.SupervisorFailedFile)
+	if err := syscall.Mkfifo(reason, 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	stopped := make(chan error, 1)
+	go func() { stopped <- h.provider.Stop(context.WithoutCancel(t.Context()), spec.ID, stopGrace) }()
+	select {
+	case err := <-stopped:
+		t.Fatalf("Stop = %v while the report was still unwritten, want it to wait for the report", err)
+	case <-time.After(time.Second):
+	}
+	got, err := os.ReadFile(reason)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// A status read would block on the fifo, so it goes before the cleanup reads one.
+	if err := os.Remove(reason); err != nil {
+		t.Fatal(err)
+	}
+	if err := <-stopped; err != nil {
+		t.Fatalf("Stop after the report landed = %v", err)
+	}
+	if want := strings.ReplaceAll(guestFailure, "\n", " "); string(got) != want {
+		t.Fatalf("the report wrote %q, want %q", got, want)
+	}
 }
 
 // A boot that fails answers the start with its reason and its 125, where the start named only the unexpected opener and recorded nothing (SHARD-418).
