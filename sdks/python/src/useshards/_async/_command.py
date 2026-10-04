@@ -177,7 +177,7 @@ class AsyncCommand:
                 # wait() raises it; nothing else waits on this task.
                 self._error = e
             await self._let_go(ws)
-        except ShardConnectionError as e:
+        except Exception as e:
             self._settle_close_error(e)
         finally:
             self._done.set()
@@ -188,7 +188,7 @@ class AsyncCommand:
             return
         await ws.release()
 
-    def _settle_close_error(self, e: ShardConnectionError) -> None:
+    def _settle_close_error(self, e: Exception) -> None:
         if self._error is None:
             self._error = e
             return
@@ -362,7 +362,7 @@ class _Sender:
             self.failure = e
             try:
                 await self._ws.release()
-            except ShardConnectionError as release_error:
+            except Exception as release_error:
                 e.add_note(f"letting go of the stream also failed: {release_error}")
 
 
@@ -376,7 +376,7 @@ async def _abandon(ws: AsyncWebSocket, sender: _Sender | None, cause: BaseExcept
         if sender is not None:
             await sender.task.cancel()
         await ws.release()
-    except ShardConnectionError as e:
+    except Exception as e:
         cause.add_note(f"letting go of the stream also failed: {e}")
     if sender is not None and sender.ended is not None:
         cause.add_note(f"writing the command's input also failed: {sender.ended}")

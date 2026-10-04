@@ -14,7 +14,7 @@ from useshards._config import Settings
 from useshards._sync import _command
 from useshards._sync._transport import Transport
 from useshards._sync._ws import WebSocket
-from useshards._wire import STDERR, STDOUT
+from useshards._wire import EXIT, STDERR, STDOUT
 from useshards.errors import CommandNotStartedError, ConflictError, ProtocolError, ShardConnectionError
 
 LIMIT = 1 << 20
@@ -270,6 +270,37 @@ def test_async_background_wait(daemon: FakeDaemon) -> None:
         return result.exit_code, result.stderr
 
     assert asyncio.run(run()) == (2, "warn")
+
+
+def bad_frame_after_the_exit(peer: Peer) -> str:
+    peer.send(EXIT, b'{"code":0}')
+    peer.recv()
+    peer.frame(0x3, b"invalid opcode")
+    return peer.until_end()
+
+
+def test_a_fault_after_the_exit_reaches_wait(daemon: FakeDaemon) -> None:
+    daemon.attaches = [bad_frame_after_the_exit]
+    handle = _command.start_command(transport(daemon), "sb", "true", output_limit_bytes=LIMIT)
+    with pytest.raises(ProtocolError, match="unknown opcode 3"):
+        handle.wait()
+    daemon.close()
+    assert daemon.outcomes == ["eof"]
+
+
+def test_async_fault_after_the_exit_reaches_wait(daemon: FakeDaemon) -> None:
+    daemon.attaches = [bad_frame_after_the_exit]
+
+    async def run() -> None:
+        client = AsyncTransport(Settings(base_url=daemon.url, api_key="k", verify=True), 5.0)
+        handle = await async_command.start_command(client, "sb", "true", output_limit_bytes=LIMIT)
+        with pytest.raises(ProtocolError, match="unknown opcode 3"):
+            await handle.wait()
+        await client.aclose()
+
+    asyncio.run(run())
+    daemon.close()
+    assert daemon.outcomes == ["eof"]
 
 
 def test_exit_wins_over_unsent_input(daemon: FakeDaemon) -> None:
