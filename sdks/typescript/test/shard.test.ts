@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { inspect } from "node:util";
 import { after, afterEach, before, beforeEach, test } from "node:test";
 import { APIError, CommandNotStartedError, ProtocolError } from "../src/errors.js";
 import { Shard } from "../src/shard.js";
@@ -141,6 +142,14 @@ test("an http remote warns once per client, in the CLI's words, and answers as h
     process.off("warning", listen);
     clients.forEach((client) => client.close());
     await plain.close();
+  }
+});
+
+test("printing a client or a sandbox never shows the API key", async () => {
+  const sandbox = await shard.create({ image: "alpine" });
+  for (const handle of [shard, sandbox]) {
+    assert.doesNotMatch(inspect(handle, { depth: Infinity, showHidden: true }), /test-key/);
+    assert.doesNotMatch(JSON.stringify(handle), /test-key/);
   }
 });
 
