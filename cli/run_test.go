@@ -89,8 +89,27 @@ func TestRunExitsWith125WhenShardFails(t *testing.T) {
 	err := app.Run(t.Context(), []string{"run", "alpine:3.20", "true"})
 
 	var exit *ExitError
-	if !errors.As(err, &exit) || exit.Code != runFailedExitCode || !strings.Contains(exit.Message, "forced failure at images.Pull") {
-		t.Fatalf("run returned %v, want 125 with the daemon's reason", err)
+	// The create route is public, so the cause stays in the daemon log.
+	if !errors.As(err, &exit) || exit.Code != runFailedExitCode || !strings.Contains(exit.Message, "its log has the cause") || strings.Contains(exit.Message, "forced failure") {
+		t.Fatalf("run returned %v, want 125 with the public text", err)
+	}
+}
+
+// A script reads an app that never ran as a shell does, 127 or 126, never as shard failing with 125.
+func TestRunExitsWithTheCodeOfAnAppThatNeverStarted(t *testing.T) {
+	var out bytes.Buffer
+
+	app, d, r := newRunApp(t, &out, "")
+	d.providerSvc.(*fakeLifecycleProvider).startErr = &models.CommandNotStartedError{Sandbox: "sandbox2", Reason: "no such file or directory", Code: models.CommandNotFoundExitCode}
+
+	err := app.Run(t.Context(), []string{"run", "alpine:3.20", "no-such-app"})
+
+	var exit *ExitError
+	if !errors.As(err, &exit) || exit.Code != models.CommandNotFoundExitCode || !strings.Contains(exit.Message, `could not run "no-such-app"`) {
+		t.Fatalf("run returned %v, want %d with the command named", err, models.CommandNotFoundExitCode)
+	}
+	if !slices.Contains(r.seen(), "provider.Remove") {
+		t.Errorf("the daemon drove %v, want the sandbox removed behind the refusal", r.seen())
 	}
 }
 
@@ -139,6 +158,8 @@ func TestRunStopsTheAppOnTheFirstInterruptAndExitsWithItsCode(t *testing.T) {
 	provider.endOnStop = &models.ExitStatus{Code: 143, Signal: 15}
 
 	signals, done := startRun(t, app, "--restart", "always", "alpine:3.20", "sleep", "60")
+	// An interrupt during the create takes cancelApp's path, which exits 130, so the press waits for the attach.
+	waitFor(t, "the attach", func() bool { return slices.Contains(r.seen(), "provider.LogPath") })
 	signals <- syscall.SIGINT
 
 	err := <-done

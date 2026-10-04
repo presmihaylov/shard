@@ -3,7 +3,8 @@ SHARD_INIT_BIN := bin/shard-init
 VZ_SHIM_BIN := pkg/vzshim/shim/shard-vz-shim
 VZ_INIT_BIN := pkg/vzshim/shim/shard-init
 PKG      := github.com/presmihaylov/shard
-VERSION  ?= $(shell git describe --tags --always --dirty 2>/dev/null || echo dev)
+# Only a v tag names a release; the kernel tags share the repo, so any other build names its commit.
+VERSION  ?= $(or $(shell git describe --tags --match 'v[0-9]*' --dirty 2>/dev/null),$(addprefix dev-,$(shell git describe --always --dirty --exclude '*' 2>/dev/null)),dev)
 LDFLAGS  := -X main.version=$(VERSION)
 
 GOVULNCHECK := golang.org/x/vuln/cmd/govulncheck@v1.1.4

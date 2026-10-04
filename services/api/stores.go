@@ -104,9 +104,9 @@ func (h *Handler) listSecrets(_ context.Context, in *pageInput) (*reply[secretsR
 
 	secrets, unreadable := h.stores.Secrets()
 
-	var warnings []string
-	if unreadable != nil {
-		warnings = []string{unreadable.Error()}
+	warnings, err := partial[*secret.UnreadableError](unreadable, h.warning)
+	if err != nil {
+		return nil, fail(err)
 	}
 
 	secrets, next := page(secrets, q, func(s secret.Secret) string { return s.Name })
@@ -143,14 +143,14 @@ func imageShape(cursor string) error {
 func (h *Handler) listImages(w http.ResponseWriter, r *http.Request) {
 	q, err := pageOf(r, imageShape)
 	if err != nil {
-		h.writeError(w, err)
+		h.writeError(w, r, err)
 
 		return
 	}
 
 	images, err := h.stores.Images()
 	if err != nil {
-		h.writeError(w, err)
+		h.writeError(w, r, err)
 
 		return
 	}
@@ -163,7 +163,7 @@ func (h *Handler) listImages(w http.ResponseWriter, r *http.Request) {
 func (h *Handler) pullImage(w http.ResponseWriter, r *http.Request) {
 	var req pullRequest
 	if err := decode(w, r, &req); err != nil {
-		h.writeError(w, err)
+		h.writeError(w, r, err)
 
 		return
 	}
@@ -180,7 +180,7 @@ func (h *Handler) pullImage(w http.ResponseWriter, r *http.Request) {
 
 	img, err := h.stores.PullImage(r.Context(), req.Ref)
 	if err != nil {
-		h.writeError(w, err)
+		h.writeError(w, r, err)
 
 		return
 	}
@@ -191,14 +191,14 @@ func (h *Handler) pullImage(w http.ResponseWriter, r *http.Request) {
 func (h *Handler) removeImage(w http.ResponseWriter, r *http.Request) {
 	force, err := boolQuery(r, "force")
 	if err != nil {
-		h.writeError(w, err)
+		h.writeError(w, r, err)
 
 		return
 	}
 
 	warnings, err := h.stores.RemoveImage(r.Context(), r.PathValue("ref"), force)
 	if err != nil {
-		h.writeError(w, err)
+		h.writeError(w, r, err)
 
 		return
 	}
@@ -209,7 +209,7 @@ func (h *Handler) removeImage(w http.ResponseWriter, r *http.Request) {
 func (h *Handler) pruneImages(w http.ResponseWriter, r *http.Request) {
 	removed, warnings, err := h.stores.PruneImages(r.Context())
 	if err != nil {
-		h.writeError(w, err)
+		h.writeError(w, r, err)
 
 		return
 	}

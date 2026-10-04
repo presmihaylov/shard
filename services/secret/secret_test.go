@@ -611,3 +611,65 @@ func TestSetNamesThePositionOfTheDestinationItRefused(t *testing.T) {
 		t.Errorf("the refusal echoes the destination it refused: %v", err)
 	}
 }
+
+func TestRedactCoversASecretSetAfterTheStoreOpened(t *testing.T) {
+	s, _ := newStore(t)
+	line := "runsc start: env API_KEY=sk_live_synthetic_0001"
+
+	if got, err := s.Redact(line); err != nil || got != line {
+		t.Fatalf("redact over an empty store = %q, %v, want the line as it was", got, err)
+	}
+
+	if _, err := s.Set("API_KEY", "sk_live_synthetic_0001", []string{"api.example.com"}, ""); err != nil {
+		t.Fatal(err)
+	}
+
+	got, err := s.Redact(line)
+	if err != nil || got != "runsc start: env API_KEY=<secret API_KEY>" {
+		t.Errorf("redact after a set = %q, %v, want the name in place of the value", got, err)
+	}
+}
+
+func TestRedactCoversARotation(t *testing.T) {
+	s, _ := newStore(t)
+
+	if _, err := s.Set("TOKEN", "first-value-1", []string{"a.example.com"}, ""); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.Set("TOKEN", "second-value-2", nil, ""); err != nil {
+		t.Fatal(err)
+	}
+
+	got, err := s.Redact("exec failed: TOKEN=second-value-2")
+	if err != nil || got != "exec failed: TOKEN=<secret TOKEN>" {
+		t.Errorf("redact after a rotation = %q, %v, want the name in place of the new value", got, err)
+	}
+}
+
+func TestRedactReplacesTheLongerValueFirst(t *testing.T) {
+	s, _ := newStore(t)
+
+	if _, err := s.Set("SHORT", "abc-value-123", []string{"a.example.com"}, ""); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.Set("LONG", "abc-value-123-and-more", []string{"b.example.com"}, ""); err != nil {
+		t.Fatal(err)
+	}
+
+	got, err := s.Redact("value abc-value-123-and-more")
+	if err != nil || got != "value <secret LONG>" {
+		t.Errorf("redact = %q, %v, want the longer secret's name and no tail of its value", got, err)
+	}
+}
+
+func TestRedactFailsOnARecordItCannotRead(t *testing.T) {
+	s, dir := newStore(t)
+
+	if err := os.WriteFile(filepath.Join(dir, "BROKEN"), []byte("{"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	if got, err := s.Redact("a line"); err == nil {
+		t.Errorf("redact over an unreadable record = %q, want an error, since that record may hold a value in the line", got)
+	}
+}

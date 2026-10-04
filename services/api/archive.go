@@ -31,7 +31,7 @@ func (h *Handler) putArchive(w http.ResponseWriter, r *http.Request) {
 	query := r.URL.Query()
 	req := sandbox.ArchiveWrite{Path: query.Get("path"), User: query.Get("user")}
 	if err := h.lifecycle.WriteArchive(r.Context(), r.PathValue("id"), req, idleBounded(w, r)); err != nil {
-		h.writeError(w, err)
+		h.writeError(w, r, err)
 
 		return
 	}
@@ -43,13 +43,13 @@ func (h *Handler) putArchive(w http.ResponseWriter, r *http.Request) {
 func (h *Handler) getArchive(w http.ResponseWriter, r *http.Request) {
 	stat, body, err := h.lifecycle.ReadArchive(r.Context(), r.PathValue("id"), r.URL.Query().Get("path"))
 	if err != nil {
-		h.writeError(w, err)
+		h.writeError(w, r, err)
 
 		return
 	}
 
 	if err := setStat(w, stat); err != nil {
-		h.writeError(w, errors.Join(err, body.Close()))
+		h.writeError(w, r, errors.Join(err, body.Close()))
 
 		return
 	}
