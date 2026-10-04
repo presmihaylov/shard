@@ -1704,8 +1704,18 @@ func TestAHeldShimTooFrozenToAnswerReadsUnresponsiveUntilItAnswers(t *testing.T)
 	if err := syscall.Kill(shim, syscall.SIGSTOP); err != nil {
 		t.Fatalf("freeze the fake shim again: %v", err)
 	}
-	if status, err := h.provider.Status(t.Context(), spec.ID); err != nil || status.State != models.StateUnresponsive {
-		t.Fatalf("Status after the second freeze = %+v, %v; want unresponsive", status, err)
+	// A shim still busy after its thaw stops only once one of its threads next runs, so a probe it answers first reads running (SHARD-609).
+	for deadline := time.Now().Add(20 * time.Second); ; time.Sleep(50 * time.Millisecond) {
+		status, err := h.provider.Status(t.Context(), spec.ID)
+		if err != nil {
+			t.Fatalf("Status after the second freeze: %v", err)
+		}
+		if status.State == models.StateUnresponsive {
+			break
+		}
+		if !time.Now().Before(deadline) {
+			t.Fatalf("Status after the second freeze = %+v, want unresponsive within 20 s", status)
+		}
 	}
 	began = time.Now()
 	if err := h.provider.Stop(t.Context(), spec.ID, stopGrace); err != nil {
