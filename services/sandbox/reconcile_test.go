@@ -342,6 +342,27 @@ func TestReconcileStopsARunningRecordTheHostEndedForMemoryWithItsReason(t *testi
 	}
 }
 
+// A restart that adopted the substrate and read shard-init's own death keeps that reason, not the lost one (SHARD-610).
+func TestReconcileStopsARunningRecordWhoseSupervisorFailedWithThatReason(t *testing.T) {
+	const why = "the exec channel closed before the entrypoint started"
+	sb := models.Sandbox{ID: "sandbox1", State: models.StateRunning, PID: 42}
+	status := models.Status{Exists: true, State: models.StateStopped, SupervisorFailed: why}
+	lab := newReconcileLab(t, &recProvider{status: map[string]models.Status{"sandbox1": status}}, sb)
+
+	if err := lab.run(t); err != nil {
+		t.Fatalf("ReconcileAll: %v", err)
+	}
+
+	want := sandbox.SupervisorFailedReason + ": " + why
+	got := lab.repo.records["sandbox1"]
+	if got.State != models.StateStopped || got.PID != 0 || got.StoppedReason != want {
+		t.Errorf("the record says %s with pid %d and the reason %q, want stopped with %q", got.State, got.PID, got.StoppedReason, want)
+	}
+	if got.StoppedReason == sandbox.LostReason {
+		t.Errorf("a failed adopt reads %q, want shard-init's own reason", sandbox.LostReason)
+	}
+}
+
 // An unresponsive record the host ended for its memory while the daemon was down keeps only the memory reason (SHARD-441).
 func TestReconcileStopsAnUnresponsiveRecordTheHostEndedForMemoryWithThatReasonAlone(t *testing.T) {
 	lab := newReconcileLab(t, &recProvider{status: map[string]models.Status{"sandbox1": oomKilled()}}, unresponsive())
