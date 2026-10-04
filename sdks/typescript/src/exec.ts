@@ -1,8 +1,7 @@
 // One command in a sandbox over the daemon's stream: its start, its attaches, and how it ended.
-import { setTimeout as sleep } from "node:timers/promises";
 import type { OutputCapture } from "./capture.js";
 import { date, isStrings } from "./decode.js";
-import { ConflictError, ProtocolError, ShardConnectionError, isObject } from "./errors.js";
+import { ProtocolError, ShardConnectionError, isObject } from "./errors.js";
 import { opBinary } from "./frames.js";
 import type { Transport } from "./transport.js";
 import * as wire from "./wire.js";
@@ -30,10 +29,6 @@ export interface CommandInfo {
   /** Output the daemon dropped before any client read it. */
   lostBytes: number;
 }
-
-// The daemon answers a goodbye before it lets go of the attach, so an attach right after one retries in_use this long.
-const reattachBoundMs = 2_000;
-const reattachPauseMs = 50;
 
 export class Session {
   private ws: WebSocket | undefined;
@@ -77,7 +72,7 @@ export class Session {
   async attach(signal?: AbortSignal): Promise<void> {
     this.disconnect();
     await this.closing;
-    const ws = await this.connect(signal);
+    const ws = await WebSocket.connect(this.transport, this.path(), this.what, { signal });
     this.capture.reset();
     this.ws = ws;
     const reading = this.read(ws);
@@ -165,20 +160,6 @@ export class Session {
 
   async resize(size: wire.TerminalSize): Promise<void> {
     await this.transport.api.POST("/v0/sandboxes/{id}/exec/{exec}/resize", { params: this.params, body: size });
-  }
-
-  /** connect opens the stream, and waits out the attach a goodbye just let go of. */
-  private async connect(signal?: AbortSignal): Promise<WebSocket> {
-    const deadline = Date.now() + reattachBoundMs;
-    for (;;) {
-      const ws = await WebSocket.connect(this.transport, this.path(), this.what, { signal }).catch((err: unknown) => stillHeld(err, deadline));
-      if (ws) {
-        return ws;
-      }
-      await sleep(reattachPauseMs, undefined, { signal }).catch((err: unknown) => {
-        throw signal?.aborted ? signal.reason : err;
-      });
-    }
   }
 
   /** writeStdin sends data in order, split into the most the daemon reads in one message. */
@@ -286,14 +267,6 @@ export class Session {
   private get params(): { path: { id: string; exec: string } } {
     return { path: { id: this.sandboxId, exec: this.id } };
   }
-}
-
-/** stillHeld lets connect try again on an in_use refusal inside the bound, and rethrows anything else. */
-function stillHeld(err: unknown, deadline: number): undefined {
-  if (err instanceof ConflictError && err.code === "in_use" && Date.now() < deadline) {
-    return undefined;
-  }
-  throw err;
 }
 
 function message(stream: number, payload: Uint8Array): Buffer {

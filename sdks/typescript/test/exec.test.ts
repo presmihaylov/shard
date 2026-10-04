@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { afterEach, beforeEach, test } from "node:test";
 import { OutputCapture } from "../src/capture.js";
-import { CommandNotStartedError, ConflictError, NotFoundError, ProtocolError, ShardConnectionError, UnsupportedError } from "../src/errors.js";
+import { CommandNotStartedError, NotFoundError, ProtocolError, ShardConnectionError, UnsupportedError } from "../src/errors.js";
 import { Session } from "../src/exec.js";
 import { opBinary, opClose } from "../src/frames.js";
 import { Transport } from "../src/transport.js";
@@ -49,8 +49,6 @@ async function start(capture = new OutputCapture(1024), handlers = {}, signal?: 
 async function startReading(): Promise<Session> {
   return Session.start(transport, "sb_1", execRequest("cat", { stdin: true }), new OutputCapture(1024), {});
 }
-
-const inUse: Answer = { status: 409, json: { error: { code: "in_use", message: "the command ex_1 already has a client attached" } } };
 
 test("a command starts, streams to the capture and every handler, and answers its exit", async () => {
   const capture = new OutputCapture(1024);
@@ -147,60 +145,6 @@ test("disconnect leaves the command running, and wait attaches again for the rep
   assert.deepEqual(await waited, { exitCode: 0, signal: null, lostBytes: 5 });
   assert.equal(capture.output().stdout.toString(), "before after");
   assert.ok(!daemon.requests.some((r) => r.url.pathname.endsWith("/kill")), "nothing killed the command");
-});
-
-test("an attach right after a goodbye retries while the daemon still holds the last one", async () => {
-  const session = await start();
-  const first = await daemon.peer(0);
-  let refused = 0;
-  daemon.upgrade = () => {
-    if (refused === 2) {
-      return undefined;
-    }
-    refused += 1;
-
-    return inUse;
-  };
-  session.disconnect();
-  first.close();
-  const waited = session.wait();
-  (await daemon.peer(1)).exit({ code: 0 });
-  assert.deepEqual(await waited, { exitCode: 0, signal: null, lostBytes: 0 });
-  assert.equal(refused, 2);
-});
-
-test("an attach the daemon still holds past the retry bound rejects as in_use", async () => {
-  const session = await start();
-  const first = await daemon.peer(0);
-  daemon.upgrade = () => inUse;
-  session.disconnect();
-  first.close();
-  await assert.rejects(session.wait(), (err: unknown) => err instanceof ConflictError && err.code === "in_use");
-});
-
-test("an abort while an attach waits out the daemon's hold rejects with the caller's reason", async () => {
-  const session = await start();
-  const first = await daemon.peer(0);
-  const caller = new AbortController();
-  const reason = new Error("the caller gave up");
-  let refused = 0;
-  daemon.upgrade = () => {
-    refused += 1;
-    setTimeout(() => caller.abort(reason), 20);
-
-    return inUse;
-  };
-  session.disconnect();
-  first.close();
-  await assert.rejects(session.wait(caller.signal), (err: unknown) => err === reason);
-  assert.equal(refused, 1, "no attach after the abort");
-});
-
-test("an attach refused for any other conflict is not retried", async () => {
-  const session = new Session(transport, "sb_1", "ex_1", new OutputCapture(1024), {});
-  daemon.upgrade = () => ({ status: 409, json: { error: { code: "sandbox_not_running", message: "sandbox sb_1 is stopped" } } });
-  await assert.rejects(session.wait(), (err: unknown) => err instanceof ConflictError && err.code === "sandbox_not_running");
-  assert.equal(daemon.requests.length, 1);
 });
 
 test("wait on a command no stream ever held attaches for its output and its exit", async () => {
