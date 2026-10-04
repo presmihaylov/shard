@@ -231,18 +231,20 @@ func (e *FetchError) Public() string {
 
 	answer, ok := errors.AsType[*transport.Error](e.Err)
 	if !ok {
-		return e.Ref + " could not be fetched from its registry"
+		return e.Ref + unreachable
 	}
 
 	switch {
 	case answer.StatusCode == http.StatusUnauthorized, answer.StatusCode == http.StatusForbidden:
-		return "the registry refused access to " + e.Ref
+		return "the registry refused access to " + e.Ref + "; ask the server administrator to check the registry credentials"
 	case answer.StatusCode == http.StatusNotFound, slices.ContainsFunc(answer.Errors, unknown):
-		return e.Ref + " is not in its registry"
+		return e.Ref + " is not in its registry; check the image name and tag"
 	}
 
-	return e.Ref + " could not be fetched from its registry"
+	return e.Ref + unreachable
 }
+
+const unreachable = " could not be fetched from its registry; check that the registry is up, then retry"
 
 func unknown(d transport.Diagnostic) bool {
 	return d.Code == transport.ManifestUnknownErrorCode || d.Code == transport.NameUnknownErrorCode

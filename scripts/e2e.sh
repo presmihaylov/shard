@@ -2118,7 +2118,7 @@ checkpoint_refusals() {
 		code=0
 		refusal=$(shard "${verb}" "${ID}" 2>&1) || code=$?
 		[ "${code}" != "0" ] || fail "shard ${verb} exited 0 on ${PROVIDER}, which holds no checkpoints"
-		expect "${refusal}" "shard: provider ${PROVIDER} does not support ${verb} on this host" "${verb} names the provider and the verb"
+		expect "${refusal}" "shard: provider ${PROVIDER} does not support ${verb} on this host; use a server that supports ${verb}" "${verb} names the provider and the verb"
 		[ "$(listed_state "${ID}")" = "running" ] || fail "the refused ${verb} left the sandbox $(listed_state "${ID}")"
 	done
 
@@ -2126,7 +2126,7 @@ checkpoint_refusals() {
 	code=0
 	refusal=$(shard fork --name e2e-fork "${ID}" 2>&1) || code=$?
 	[ "${code}" != "0" ] || fail "shard fork exited 0 on ${PROVIDER}, which holds no checkpoints"
-	expect "${refusal}" "shard: provider ${PROVIDER} does not support fork on this host" "fork names the provider and the verb"
+	expect "${refusal}" "shard: provider ${PROVIDER} does not support fork on this host; use a server that supports fork" "fork names the provider and the verb"
 	absent "a sandbox named e2e-fork" "$(shard list --all | grep e2e-fork || true)"
 	expect_exec "still-running" "the source runs on after the refusals" /bin/echo still-running
 }

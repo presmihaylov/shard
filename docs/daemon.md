@@ -713,7 +713,7 @@ ones. The two `?follow=true` routes also serve without the handshake, as a chunk
 with the sandbox, so `curl -N` follows either of them. An exec attach does not serve that way.
 
 A 409 body is the refusal as the CLI prints it: `sandbox <id> is <state>: <fix>`. A verb that the
-provider does not claim also gets a 409: `provider <name> does not support <verb> on this host`.
+provider does not claim also gets a 409: `provider <name> does not support <verb> on this host; use a server that supports <verb>`.
 
 Every error body is `{"error": {"code": "<code>", "message": "<message>"}}`. `message` is the line
 the CLI prints, and `code` is what a program matches on. The table below lists every code. Anything

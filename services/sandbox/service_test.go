@@ -122,7 +122,7 @@ func TestCreateRefusedByTheProviderLeavesNoRecord(t *testing.T) {
 	_, err := svc.Create(t.Context(), alpine())
 
 	var refused *sandbox.RequestError
-	if !errors.As(err, &refused) || !strings.Contains(err.Error(), "--memory 0") {
+	if !errors.As(err, &refused) || !strings.Contains(err.Error(), "needs resources.memory_mib") {
 		t.Fatalf("create = %v, want a request error with the provider's reason", err)
 	}
 	if slices.Contains(r.calls, "repo.Create") || slices.Contains(r.calls, "images.Pull") {

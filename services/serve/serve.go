@@ -353,9 +353,7 @@ func readHead(r io.Reader) ([]byte, error) {
 	}
 }
 
-// authorize verifies the token, checks the ledger holds its id and has not revoked it, and checks its scopes
-// reach the route; nothing is dialed without all three. It answers the subject, whether the request is
-// authorized, whether an unauthorized one is a 403 rather than a 401, and the cause a 401 logs or the scope a 403 needs.
+// No socket opens until the token, ledger, and route scope pass; reason is the cause a 401 logs or the scope a 403 needs.
 func (s *Server) authorize(head []byte, method string, target *url.URL) (string, []string, bool, bool, string) {
 	fields, ok := headerFields(head)
 	if !ok {

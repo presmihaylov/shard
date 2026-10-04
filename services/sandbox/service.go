@@ -258,7 +258,9 @@ func (e *SubstrateTimeoutError) Error() string {
 	return fmt.Sprintf("the provider did not answer within %s for sandbox %s", e.Budget, e.ID)
 }
 
-func (e *SubstrateTimeoutError) Public() string { return e.Error() }
+func (e *SubstrateTimeoutError) Public() string {
+	return e.Error() + "; retry the request when the provider answers"
+}
 
 // sandboxLock is the lock of one sandbox. It counts its holder and its waiters, so the last of them frees it.
 type sandboxLock struct {
@@ -1341,7 +1343,7 @@ func (s *Service) record(id string) (models.Sandbox, error) {
 // proxyCA is what a fronted sandbox is built to trust. A shard without one fronts nothing, and says so.
 func (s *Service) proxyCA() ([]byte, error) {
 	if s.cfg.ProxyCA == nil {
-		return nil, &RequestError{Err: errors.New("this shard has no proxy CA, so it cannot front a sandbox")}
+		return nil, &RequestError{Err: errors.New("this server needs a proxy certificate authority for policies and secrets; ask its administrator to configure one")}
 	}
 
 	return s.cfg.ProxyCA()
