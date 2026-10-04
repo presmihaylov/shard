@@ -310,7 +310,8 @@ and logs streams again after a fork, and thaws the guest over the new control st
 `exec` that runs across the capture loses its stream. It fails with an error that names the verb,
 and its command runs on in the sandbox with no reader. An `exec` that starts while the freeze holds
 is refused with `a fork holds the sandbox frozen, and nothing starts in it until that ends: run the
-command again`, and it runs once the verb returns. A restart of the entrypoint waits out the freeze.
+command again`. Nothing queues it, so the caller runs it again once the verb returns. A restart of
+the entrypoint waits out the freeze.
 If the guest takes no new control stream within 30 s, the fork fails with an error that says the
 source stays frozen. `stop` and `rm` of that source still work, the daemon dials on until the guest
 answers and thaws it, and the next daemon start thaws it from the capture marker.
