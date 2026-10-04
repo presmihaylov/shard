@@ -56,7 +56,7 @@ func TestSecretSetListRemoveRoundTrip(t *testing.T) {
 
 	app, root := newSecretApp(t, &out, "sk-live-abcdef123456\n", &fakeLifecycleRepo{r: &recorder{}})
 
-	if err := app.Run(t.Context(), []string{"secret", "set", "--to", "api.openai.com", "OPENAI_API_KEY"}); err != nil {
+	if err := app.Run(t.Context(), []string{"secret", "set", "--destination", "api.openai.com", "OPENAI_API_KEY"}); err != nil {
 		t.Fatalf("secret set: %v", err)
 	}
 	if got := strings.TrimSpace(out.String()); got != "OPENAI_API_KEY" {
@@ -120,7 +120,7 @@ func TestSecretSetRefusesAnEmptyStdinAndNoDestination(t *testing.T) {
 
 	app, _ := newSecretApp(t, &out, "\n", nil)
 
-	err := app.Run(t.Context(), []string{"secret", "set", "--to", "api.example.com", "KEY"})
+	err := app.Run(t.Context(), []string{"secret", "set", "--destination", "api.example.com", "KEY"})
 	if err == nil || !strings.Contains(err.Error(), "empty") {
 		t.Errorf("set with an empty stdin = %v", err)
 	}
@@ -129,10 +129,10 @@ func TestSecretSetRefusesAnEmptyStdinAndNoDestination(t *testing.T) {
 
 	err = app.Run(t.Context(), []string{"secret", "set", "KEY"})
 	if err == nil || !strings.Contains(err.Error(), "no destination") {
-		t.Errorf("set with no --to = %v", err)
+		t.Errorf("set with no --destination = %v", err)
 	}
 
-	err = app.Run(t.Context(), []string{"secret", "set", "KEY", "--to", "api.example.com"})
+	err = app.Run(t.Context(), []string{"secret", "set", "KEY", "--destination", "api.example.com"})
 	if err == nil || !strings.Contains(err.Error(), "before the name") {
 		t.Errorf("set with the flag after the name = %v", err)
 	}
@@ -144,7 +144,7 @@ func TestSecretSetRefusesToMoveAPlaceholderASandboxHolds(t *testing.T) {
 	repo := &fakeLifecycleRepo{r: &recorder{}, left: []models.Sandbox{{ID: "sb1", Secrets: []string{"KEY"}}}}
 	app, root := newSecretApp(t, &out, "value-654321\n", repo)
 
-	if err := app.Run(t.Context(), []string{"secret", "set", "--to", "api.example.com", "KEY"}); err != nil {
+	if err := app.Run(t.Context(), []string{"secret", "set", "--destination", "api.example.com", "KEY"}); err != nil {
 		t.Fatal(err)
 	}
 
@@ -169,7 +169,7 @@ func TestSecretSetTakesTheValueThreeWaysAndCautionsOnArgv(t *testing.T) {
 
 	app, _ := newSecretApp(t, &out, "from-stdin-1234\n", &fakeLifecycleRepo{r: &recorder{}})
 
-	if err := app.Run(t.Context(), []string{"secret", "set", "--to", "api.example.com", "KEY", "on-the-argv-12"}); err != nil {
+	if err := app.Run(t.Context(), []string{"secret", "set", "--destination", "api.example.com", "KEY", "on-the-argv-12"}); err != nil {
 		t.Fatalf("secret set: %v", err)
 	}
 	if !strings.Contains(out.String(), cautionOnArgv) {
@@ -186,7 +186,7 @@ func TestSecretSetTakesTheValueThreeWaysAndCautionsOnArgv(t *testing.T) {
 
 	// The refusal is where the caution matters most: the operator is about to retype the value.
 	out.Reset()
-	if err := app.Run(t.Context(), []string{"secret", "set", "--to", "no-dot", "KEY", "on-the-argv-12"}); err == nil || !strings.Contains(err.Error(), "dot") {
+	if err := app.Run(t.Context(), []string{"secret", "set", "--destination", "no-dot", "KEY", "on-the-argv-12"}); err == nil || !strings.Contains(err.Error(), "dot") {
 		t.Fatalf("a set with a dotless destination = %v, want a refusal that names the missing dot", err)
 	}
 	if !strings.Contains(out.String(), "caution") {
@@ -205,8 +205,8 @@ func TestSecretSetTakesTheValueThreeWaysAndCautionsOnArgv(t *testing.T) {
 // A value that starts with - takes a -- before it, after the name or before it, and a misplaced flag is still refused.
 func TestParseSecretSetTakesADashValueAfterADoubleDash(t *testing.T) {
 	for _, args := range [][]string{
-		{"--to", "api.example.com", "KEY", "--", "-v4lue"},
-		{"--to", "api.example.com", "--", "KEY", "-v4lue"},
+		{"--destination", "api.example.com", "KEY", "--", "-v4lue"},
+		{"--destination", "api.example.com", "--", "KEY", "-v4lue"},
 	} {
 		opts, err := parseSecretSet(args)
 		if err != nil || opts.name != "KEY" || opts.value != "-v4lue" {
@@ -214,8 +214,24 @@ func TestParseSecretSetTakesADashValueAfterADoubleDash(t *testing.T) {
 		}
 	}
 
-	if _, err := parseSecretSet([]string{"KEY", "--to", "api.example.com"}); err == nil || !strings.Contains(err.Error(), "flags before the name") {
+	if _, err := parseSecretSet([]string{"KEY", "--destination", "api.example.com"}); err == nil || !strings.Contains(err.Error(), "flags before the name") {
 		t.Errorf("a flag after the name returned %v, want the flag order named", err)
+	}
+}
+
+// --dest is the short spelling of --destination, and the two add to one list.
+func TestParseSecretSetTakesDestAsDestination(t *testing.T) {
+	opts, err := parseSecretSet([]string{"--dest", "api.example.com", "--destination", "uploads.example.com", "KEY"})
+	if err != nil || !slices.Equal(opts.destinations, []string{"api.example.com", "uploads.example.com"}) {
+		t.Errorf("parseSecretSet = %+v, %v, want both destinations in order", opts, err)
+	}
+}
+
+// Every other verb echoes the arguments it refused, but one of these is the secret value.
+func TestParseSecretSetCountsTooManyArgumentsWithoutTheValue(t *testing.T) {
+	_, err := parseSecretSet([]string{"--destination", "api.example.com", "KEY", "s3cr3t-value", "extra"})
+	if err == nil || strings.Contains(err.Error(), "s3cr3t-value") || !strings.Contains(err.Error(), "got 3 arguments") {
+		t.Errorf("parseSecretSet = %v, want the count of 3 and no value", err)
 	}
 }
 
@@ -225,7 +241,7 @@ func TestSecretSetRefusesAPlaceholderTheStoreWillNotTake(t *testing.T) {
 	app, _ := newSecretApp(t, &out, "value-123456\n", &fakeLifecycleRepo{r: &recorder{}})
 
 	for _, chosen := range []string{"sk_test", "sk test shaped"} {
-		err := app.Run(t.Context(), []string{"secret", "set", "--to", "api.example.com", "--placeholder", chosen, "KEY"})
+		err := app.Run(t.Context(), []string{"secret", "set", "--destination", "api.example.com", "--placeholder", chosen, "KEY"})
 		if err == nil {
 			t.Errorf("set took the placeholder %q", chosen)
 		}
@@ -237,7 +253,7 @@ func TestSecretListListsTheReadableOnesAndFails(t *testing.T) {
 
 	app, root := newSecretApp(t, &out, "value-123456\n", &fakeLifecycleRepo{r: &recorder{}})
 
-	if err := app.Run(t.Context(), []string{"secret", "set", "--to", "api.example.com", "KEY"}); err != nil {
+	if err := app.Run(t.Context(), []string{"secret", "set", "--destination", "api.example.com", "KEY"}); err != nil {
 		t.Fatal(err)
 	}
 	if err := os.WriteFile(filepath.Join(root, "secrets", "BROKEN"), []byte("{"), 0o600); err != nil {
@@ -266,7 +282,7 @@ func TestSecretRemoveRefusesWhileASandboxHoldsIt(t *testing.T) {
 	}}
 	app, root := newSecretApp(t, &out, "value-123456\n", repo)
 
-	if err := app.Run(t.Context(), []string{"secret", "set", "--to", "api.example.com", "KEY"}); err != nil {
+	if err := app.Run(t.Context(), []string{"secret", "set", "--destination", "api.example.com", "KEY"}); err != nil {
 		t.Fatal(err)
 	}
 
@@ -292,7 +308,7 @@ func TestSecretRemoveRefusesWhenARecordIsUnreadable(t *testing.T) {
 	repo := &fakeLifecycleRepo{r: &recorder{}, unreadable: os.ErrPermission}
 	app, _ := newSecretApp(t, &out, "value-123456\n", repo)
 
-	if err := app.Run(t.Context(), []string{"secret", "set", "--to", "api.example.com", "KEY"}); err != nil {
+	if err := app.Run(t.Context(), []string{"secret", "set", "--destination", "api.example.com", "KEY"}); err != nil {
 		t.Fatal(err)
 	}
 
@@ -445,7 +461,7 @@ func TestSecretSetRefusesABadNameBeforeItAsksTheDaemon(t *testing.T) {
 	app, root := newSecretApp(t, &out, "value-123456\n", &fakeLifecycleRepo{r: &recorder{}})
 
 	// A mistyped set hands the value as the name, so the refusal must not echo it and must write nothing.
-	err := app.Run(t.Context(), []string{"secret", "set", "--to", "api.example.com", "sk-live-abcdef123456"})
+	err := app.Run(t.Context(), []string{"secret", "set", "--destination", "api.example.com", "sk-live-abcdef123456"})
 	if err == nil || !strings.Contains(err.Error(), "environment variable name") {
 		t.Fatalf("set with a bad name = %v", err)
 	}

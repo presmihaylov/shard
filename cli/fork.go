@@ -43,7 +43,7 @@ func parseFork(args []string) (string, sandbox.CopyRequest, error) {
 		}
 	}
 	if flags.NArg() != 1 {
-		return "", sandbox.CopyRequest{}, fmt.Errorf("fork takes one sandbox id, got %d", flags.NArg())
+		return "", sandbox.CopyRequest{}, fmt.Errorf("fork takes one sandbox id or name, got %s", gotArgs(flags.Args()))
 	}
 
 	return flags.Arg(0), req, nil

@@ -110,8 +110,9 @@ func TestPolicyShowTableIsTheFieldsThenTheRules(t *testing.T) {
 // inspect as a table is the record read down a page, then the rules the host enforces, with who implied each one.
 func TestInspectTableIsTheRecordThenTheRules(t *testing.T) {
 	rule := models.Rule{Action: models.ActionDeny, Destination: models.Destination{Kind: models.DestinationCIDR, Value: "10.0.0.0/8"}}
+	created := time.Date(2026, 10, 4, 10, 0, 0, 123456789, time.FixedZone("EEST", 3*60*60))
 	insp := client.Inspection{
-		Sandbox: client.Sandbox{ID: "s-1", Image: "python:3.12", State: models.StateRunning, Resources: models.Resources{MemoryMiB: 512}},
+		Sandbox: client.Sandbox{ID: "s-1", Image: "python:3.12", Command: []string{"echo", "2026-10-04T10:00:00.5+03:00"}, State: models.StateRunning, Resources: models.Resources{MemoryMiB: 512}, CreatedAt: created},
 		Egress:  &egress.Effective{Policy: "web", Rules: []egress.EffectiveRule{{Rule: rule, ID: "r1", Implied: "private ranges"}}},
 	}
 
@@ -124,13 +125,15 @@ func TestInspectTableIsTheRecordThenTheRules(t *testing.T) {
 		t.Fatalf("writeSections: %v", err)
 	}
 
-	for _, line := range []string{"id                     s-1", "resources.memory_mib   512", "egress.policy          web", "ID   RULE              IMPLIED", "r1   deny 10.0.0.0/8   private ranges"} {
+	// A time prints to the second in UTC as every other table, and a command argument shaped like one prints as typed.
+	for _, line := range []string{"id                     s-1", "command[1]             2026-10-04T10:00:00.5+03:00", "resources.memory_mib   512", "created_at             2026-10-04T07:00:00Z", "ID   RULE              IMPLIED", "r1   deny 10.0.0.0/8   private ranges"} {
 		if !strings.Contains(out.String(), line+"\n") {
 			t.Errorf("the table has no line %q:\n%s", line, out.String())
 		}
 	}
-	if strings.Contains(out.String(), "egress.rules") {
-		t.Errorf("the rules are in the field section too:\n%s", out.String())
+	// The record's own policy row already names the egress policy.
+	if strings.Contains(out.String(), "egress.rules") || strings.Contains(out.String(), "egress.policy") {
+		t.Errorf("the egress section repeats a field:\n%s", out.String())
 	}
 }
 

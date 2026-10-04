@@ -17,7 +17,7 @@ func (a App) serve(ctx context.Context, args []string) error {
 		return err
 	}
 	if flags.NArg() != 0 {
-		return fmt.Errorf("serve takes no arguments, got %d", flags.NArg())
+		return fmt.Errorf("serve takes no arguments, got %s", gotArgs(flags.Args()))
 	}
 
 	return serve.Run(ctx, serve.Config{

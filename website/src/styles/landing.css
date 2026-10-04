@@ -1,0 +1,23 @@
+/* The landing skin: Tailwind over the same nairi tokens the docs use. */
+@import 'tailwindcss';
+
+@import './tokens.css';
+@import './ui/vibrant-button.css';
+@import './ui/badge.css';
+@import './ui/banner.css';
+@import './ui/components.css';
+
+@layer base {
+	html {
+		color-scheme: light;
+	}
+	html[data-theme='dark'] {
+		color-scheme: dark;
+	}
+	body {
+		background-color: var(--color-background);
+		color: var(--color-foreground);
+		font-family: var(--font-body);
+		-webkit-font-smoothing: antialiased;
+	}
+}

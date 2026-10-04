@@ -101,6 +101,7 @@ sdks/typescript/           useshards, the TypeScript SDK over the daemon's API
 sdks/python/               the useshards Python SDK: an async client, and the sync one generated from it
 sdks/suite/                the check names every SDK's live suite runs, so the SDKs stay alike
 docs/
+website/                   useshards.com: Astro + Starlight, landing at /, docs at /docs, outside the Go module
 ```
 
 ### Rules
