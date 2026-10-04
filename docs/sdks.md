@@ -81,12 +81,15 @@ daemon through its public front. It needs Node 22 and uv, and three settings:
   `sandbox:delete`, `exec`, `secret:*` and `policy:*`.
 - `SHARD_SUITE_WILDCARD_KEY`, a `*` token, which must still reach no local route.
 
+`SHARD_CA_FILE` trusts a private CA, `SHARD_SUITE_IMAGE` picks the image, and `SHARD_GATE_HOST_PATHS`
+(colon separated) names more host paths no public answer may hold, such as the daemon's root.
+
 It runs, in order:
 
 - `install.*`: `npm pack` and `uv build`, each installed into a clean project.
 - `examples.*`: each package's quickstart, against the daemon.
 - `suite.*`: the shared suite of `sdks/suite/checks.txt`, once in TypeScript and once in each Python
-  mode.
+  mode. Each run must report every check of that list, so the gate clears `SHARD_SUITE_ONLY` for it.
 - `cross.*`: one SDK acts and the other observes. A nonzero exit answers a result in both. A cancel
   in one leaves the command running for the other to find. A command one starts, the other
   reconnects to. A file one writes, the other reads byte for byte.

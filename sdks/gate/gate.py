@@ -1,9 +1,4 @@
-"""The release gate: both SDKs, built and installed as packages, driven against one daemon through its public front.
-
-Run as make sdk-gate with SHARD_REMOTE, SHARD_API_KEY (every scope) and SHARD_SUITE_WILDCARD_KEY (a "*" token) set.
-SHARD_CA_FILE trusts a private CA, SHARD_SUITE_IMAGE picks the image, and SHARD_GATE_HOST_PATHS (colon separated)
-names more host paths no public answer may hold, as the daemon's root. docs/sdks.md says more.
-"""
+"""Cross-SDK checks prove each release claim against one daemon."""
 
 from __future__ import annotations
 
@@ -139,8 +134,10 @@ class Gate:
         self.tag = secrets.token_hex(3)
         self.results: dict[str, Verdict] = {}
         self.suite_lines: dict[str, dict[str, Verdict]] = {}
+        self.listed = [line for line in (tree / "sdks" / "suite" / "checks.txt").read_text().splitlines() if line]
         self.sandboxes: list[str] = []
         self.shared: str | None = None
+        self.leaks: list[str] = []
         self.opener = urllib.request.build_opener(NoRedirect(), urllib.request.HTTPSHandler(context=self.tls()))
         self.answers = 0
 
@@ -297,7 +294,8 @@ class Gate:
         expect(cwd.is_dir(), f"{cwd} does not exist")
         lines: dict[str, Verdict] = {}
         self.suite_lines[run] = lines
-        proc = self.spawn(argv, cwd, f"suite-{run}", env, 3600)
+        # An inherited SHARD_SUITE_ONLY would run part of the suite, and a claim needs every check of it.
+        proc = self.spawn(argv, cwd, f"suite-{run}", {**env, "SHARD_SUITE_ONLY": ""}, 3600)
         for line in proc.stdout.splitlines():
             verdict, _, rest = line.partition(" ")
             if verdict not in ("PASS", "FAIL", "SKIP"):
@@ -307,6 +305,8 @@ class Gate:
             self.say(f"  {run} {line}")
         failed = [name for name, line in lines.items() if line.verdict == "FAIL"]
         skipped = [name for name, line in lines.items() if line.verdict == "SKIP" and name not in MAY_SKIP]
+        unrun = [name for name in self.listed if name not in lines]
+        expect(not unrun, f"{len(unrun)} of {len(self.listed)} never ran: {', '.join(unrun)}")
         expect(not failed, f"{len(failed)} failed: {', '.join(failed)}")
         expect(not skipped, f"skipped where no provider may: {', '.join(skipped)}")
         expect(proc.returncode == 0, f"exited {proc.returncode}: {self.redact(tail(proc.stderr))}")
@@ -441,102 +441,113 @@ class Gate:
     def leak_local_routes(self) -> str:
         refusal = self.request("GET", f"/v0/gate-no-such-route-{self.tag}")
         expect(refusal.status == 403, f"an unknown route answered {refusal.status}, want 403")
-        probes = 0
+        tokens = (("SHARD_API_KEY", self.key), ("SHARD_SUITE_WILDCARD_KEY", self.wildcard))
+        image = f"gate-no-such-image-{self.tag}:none"
+        paths = [(method, pattern.replace("{ref...}", image)) for method, pattern in local_routes()]
+        probes = [(method, variant, token) for method, path in paths for variant in variants(path) for token in tokens]
         found: list[str] = []
-        for method, pattern in local_routes():
-            path = pattern.replace("{ref...}", f"gate-no-such-image-{self.tag}:none")
-            for variant in variants(path):
-                for key_name, key in (("SHARD_API_KEY", self.key), ("SHARD_SUITE_WILDCARD_KEY", self.wildcard)):
-                    probes += 1
-                    got = self.request(method, variant, key)
-                    found += self.leaks_in(f"{method} {variant}", got)
-                    if 300 <= got.status < 400:
-                        target = urllib.parse.urlsplit(got.headers.get("Location", ""))
-                        got = self.request(method, target.path + (f"?{target.query}" if target.query else ""), key)
-                    if got.status != 403 or got.body != refusal.body:
-                        found.append(f"{method} {variant} with {key_name} answered {got.status} {got.body[:120]!r}")
+        for method, variant, (key_name, key) in probes:
+            found += self.probe(method, variant, key_name, key, refusal)
         expect(not found, "; ".join(found))
-        return f"{probes} probes, each refused like an unknown route"
+        return f"{len(probes)} probes, each refused like an unknown route"
+
+    def probe(self, method: str, path: str, key_name: str, key: str, refusal: Answer) -> list[str]:
+        got = self.request(method, path, key)
+        found = self.leaks_in(f"{method} {path}", got)
+        if 300 <= got.status < 400:
+            target = urllib.parse.urlsplit(got.headers.get("Location", ""))
+            got = self.request(method, target.path + (f"?{target.query}" if target.query else ""), key)
+        if got.status != 403 or got.body != refusal.body:
+            found.append(f"{method} {path} with {key_name} answered {got.status} {got.body[:120]!r}")
+        return found
+
+    def sweep(self, method: str, path: str, body: Any = None, key: str | None = "", raw: bytes | None = None) -> Answer:
+        data = raw if raw is not None else (json.dumps(body).encode() if body is not None else None)
+        got = self.request(method, path, key, data)
+        self.record(method, path, got)
+        self.leaks.extend(self.leaks_in(f"{method} {path} ({got.status})", got))
+        return got
 
     def leak_responses(self) -> str:
         (self.out / "responses").mkdir(exist_ok=True)
-        found: list[str] = []
-        img = self.image
-
-        def call(method: str, path: str, body: Any = None, key: str | None = "", raw: bytes | None = None) -> Answer:
-            data = raw if raw is not None else (json.dumps(body).encode() if body is not None else None)
-            got = self.request(method, path, key, data)
-            self.record(method, path, got)
-            found.extend(self.leaks_in(f"{method} {path} ({got.status})", got))
-            return got
-
-        made = {"image": img, "name": f"gate-sweep-{self.tag}"}
-        sid = self.shared or str(call("POST", "/v0/sandboxes", made).json()["id"])
+        made = {"image": self.image, "name": f"gate-sweep-{self.tag}"}
+        sid = self.shared or str(self.sweep("POST", "/v0/sandboxes", made).json()["id"])
         if sid not in self.sandboxes:
             self.sandboxes.append(sid)
         box = f"/v0/sandboxes/{sid}"
+        self.sweep_reads(box)
+        self.sweep_files(box)
+        self.sweep_app()
+        self.sweep_errors(box)
+        expect(not self.leaks, "; ".join(self.leaks))
+        return f"{self.answers} answers recorded under {self.out / 'responses'}"
+
+    def sweep_reads(self, box: str) -> None:
         for path in ("/v0/version", "/v0/capabilities", "/v0/scopes", "/v0/sandboxes", box):
-            call("GET", path)
+            self.sweep("GET", path)
         # An exec runs only once a client attaches, so this one stays created and is never waited on.
-        call("POST", f"{box}/exec", {"command": ["true"]})
-        for each in (call("GET", f"{box}/exec").json().get("execs") or [])[:3]:
-            call("GET", f"{box}/exec/{each['exec']}")
+        self.sweep("POST", f"{box}/exec", {"command": ["true"]})
+        for each in (self.sweep("GET", f"{box}/exec").json().get("execs") or [])[:3]:
+            self.sweep("GET", f"{box}/exec/{each['exec']}")
             if each.get("state") == "exited":
-                call("GET", f"{box}/exec/{each['exec']}?wait=true")
-        call("PUT", f"{box}/files?path=/tmp/gate-sweep.txt", raw=b"sweep\n")
+                self.sweep("GET", f"{box}/exec/{each['exec']}?wait=true")
+        for path in (f"{box}/logs", f"{box}/egress-log", f"{box}/attach", "/v0/secrets", "/v0/policies"):
+            self.sweep("GET", path)
+
+    def sweep_files(self, box: str) -> None:
+        self.sweep("PUT", f"{box}/files?path=/tmp/gate-sweep.txt", raw=b"sweep\n")
         for method, path in (
             ("GET", f"{box}/files?path=/tmp/gate-sweep.txt"),
             ("HEAD", f"{box}/files?path=/tmp/gate-sweep.txt"),
             ("GET", f"{box}/ls?path=/tmp"),
         ):
-            call(method, path)
-        call("POST", f"{box}/mkdir", {"path": "/tmp/gate-sweep-dir"})
-        call("GET", f"{box}/archive?path=/tmp/gate-sweep-dir")
-        call("DELETE", f"{box}/files?path=/tmp/gate-sweep.txt")
-        for path in (f"{box}/logs", f"{box}/egress-log", f"{box}/attach", "/v0/secrets", "/v0/policies"):
-            call("GET", path)
+            self.sweep(method, path)
+        self.sweep("POST", f"{box}/mkdir", {"path": "/tmp/gate-sweep-dir"})
+        self.sweep("GET", f"{box}/archive?path=/tmp/gate-sweep-dir")
+        self.sweep("DELETE", f"{box}/files?path=/tmp/gate-sweep.txt")
 
-        app = call("POST", "/v0/sandboxes", {"image": img, "name": f"gate-app-{self.tag}", "command": ["echo", "app"]})
-        if app.status == 201:
-            aid = str(app.json()["id"])
-            self.sandboxes.append(aid)
-            ab = f"/v0/sandboxes/{aid}"
-            call("GET", f"{ab}/attach")
-            call("GET", f"{ab}/logs")
-            call("POST", f"{ab}/app/stop", {})
-            call("POST", f"{ab}/stop")
-            ref = f"gate-snap-{self.tag}"
-            snapped = call("POST", "/v0/snapshots", {"sandbox": aid, "name": ref}).status == 201
-            call("GET", "/v0/snapshots")
-            if snapped:
-                call("GET", f"/v0/snapshots/{ref}")
-            call("POST", f"{ab}/start")
-            for verb in ("pause", "resume"):
-                call("POST", f"{ab}/{verb}")
-            fork = call("POST", f"{ab}/fork", {"name": f"gate-fork-{self.tag}"})
-            if fork.status == 201:
-                self.sandboxes.append(str(fork.json()["id"]))
-            if snapped:
-                call("DELETE", f"/v0/snapshots/{ref}")
-            if call("DELETE", f"{ab}?force=true").status < 300:
-                self.sandboxes.remove(aid)
+    def sweep_app(self) -> None:
+        made = {"image": self.image, "name": f"gate-app-{self.tag}", "command": ["echo", "app"]}
+        app = self.sweep("POST", "/v0/sandboxes", made)
+        if app.status != 201:
+            return
+        aid = str(app.json()["id"])
+        self.sandboxes.append(aid)
+        ab = f"/v0/sandboxes/{aid}"
+        self.sweep("GET", f"{ab}/attach")
+        self.sweep("GET", f"{ab}/logs")
+        self.sweep("POST", f"{ab}/app/stop", {})
+        self.sweep("POST", f"{ab}/stop")
+        ref = f"gate-snap-{self.tag}"
+        snapped = self.sweep("POST", "/v0/snapshots", {"sandbox": aid, "name": ref}).status == 201
+        self.sweep("GET", "/v0/snapshots")
+        if snapped:
+            self.sweep("GET", f"/v0/snapshots/{ref}")
+        self.sweep("POST", f"{ab}/start")
+        for verb in ("pause", "resume"):
+            self.sweep("POST", f"{ab}/{verb}")
+        fork = self.sweep("POST", f"{ab}/fork", {"name": f"gate-fork-{self.tag}"})
+        if fork.status == 201:
+            self.sandboxes.append(str(fork.json()["id"]))
+        if snapped:
+            self.sweep("DELETE", f"/v0/snapshots/{ref}")
+        if self.sweep("DELETE", f"{ab}?force=true").status < 300:
+            self.sandboxes.remove(aid)
 
-        # The refusals and errors a client meets, each of which could carry the host's detail in its message.
-        missing = f"/v0/sandboxes/gate-no-such-{self.tag}"
-        call("GET", missing)
-        call("GET", "/v0/sandboxes", key="gate-not-a-token")
-        call("GET", "/v0/sandboxes", key=None)
-        call("GET", f"/v0/gate-no-such-route-{self.tag}")
-        call("POST", "/v0/sandboxes", raw=b"{")
-        unpullable = call("POST", "/v0/sandboxes", {"image": f"gate.invalid/none-{self.tag}:none"})
+    def sweep_errors(self, box: str) -> None:
+        """The refusals and errors a client meets, each of which could carry the host's detail in its message."""
+        self.sweep("GET", f"/v0/sandboxes/gate-no-such-{self.tag}")
+        self.sweep("GET", "/v0/sandboxes", key="gate-not-a-token")
+        self.sweep("GET", "/v0/sandboxes", key=None)
+        self.sweep("GET", f"/v0/gate-no-such-route-{self.tag}")
+        self.sweep("POST", "/v0/sandboxes", raw=b"{")
+        unpullable = self.sweep("POST", "/v0/sandboxes", {"image": f"gate.invalid/none-{self.tag}:none"})
         if unpullable.status < 300:
             self.sandboxes.append(str(unpullable.json()["id"]))
-        call("POST", f"{box}/exec", {"command": []})
-        call("GET", f"{box}/files?path=/gate/no/such/file")
-        call("GET", f"{box}/files?path=relative")
-        call("DELETE", f"/v0/snapshots/gate-no-such-{self.tag}")
-        expect(not found, "; ".join(found))
-        return f"{self.answers} answers recorded under {self.out / 'responses'}"
+        self.sweep("POST", f"{box}/exec", {"command": []})
+        self.sweep("GET", f"{box}/files?path=/gate/no/such/file")
+        self.sweep("GET", f"{box}/files?path=relative")
+        self.sweep("DELETE", f"/v0/snapshots/gate-no-such-{self.tag}")
 
     def cleanup(self) -> None:
         left = []
@@ -563,21 +574,33 @@ class Gate:
         return ok
 
     def unproven(self, proof: str) -> Iterator[str]:
-        if not proof.startswith("suite:"):
-            if self.results.get(proof, Verdict("FAIL")).verdict != "PASS":
-                yield proof
+        if proof.startswith("suite:"):
+            yield from self.unproven_suite(proof.removeprefix("suite:"))
             return
-        pattern = proof.removeprefix("suite:")
+        if self.results.get(proof, Verdict("FAIL")).verdict != "PASS":
+            yield proof
+
+    def unproven_suite(self, pattern: str) -> Iterator[str]:
+        """Every listed check the pattern names must pass, or skip where MAY_SKIP allows, in every run."""
+        prefix = pattern.removesuffix("*")
+        named = [name for name in self.listed if name == pattern or (pattern.endswith("*") and name.startswith(prefix))]
+        if not named:
+            yield f"sdks/suite/checks.txt names no {pattern}"
         for run in SUITES:
-            lines = self.suite_lines.get(run, {})
-            named = [
-                name for name in lines if name == pattern or (pattern[-1] == "*" and name.startswith(pattern[:-1]))
-            ]
-            if not named:
-                yield f"{run} ran no {pattern}"
-            for name in named:
-                if lines[name].verdict == "FAIL" or (lines[name].verdict == "SKIP" and name not in MAY_SKIP):
-                    yield f"{run} {name}"
+            yield from self.unproven_in(run, named)
+
+    def unproven_in(self, run: str, names: list[str]) -> Iterator[str]:
+        lines = self.suite_lines.get(run)
+        if lines is None:
+            yield f"{run} never ran"
+            return
+        for name in names:
+            line = lines.get(name)
+            if line is None:
+                yield f"{run} ran no {name}"
+                continue
+            if line.verdict == "FAIL" or (line.verdict == "SKIP" and name not in MAY_SKIP):
+                yield f"{run} {name}"
 
 
 def keys(value: Any) -> Iterator[str]:

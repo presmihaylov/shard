@@ -1,5 +1,4 @@
-// One step of a cross-SDK check, run against the installed useshards package: node actor.mjs <step> <args...>.
-// It prints one JSON line on stdout and exits, so the next step runs in a process that shares nothing with this one.
+// One step of a cross-SDK check, in a process of its own, so the next step shares no client state with this one.
 import { createHash } from "node:crypto";
 import { readFile } from "node:fs/promises";
 import { Shard } from "useshards";

@@ -1,8 +1,4 @@
-"""One step of a cross-SDK check, run against the installed useshards package: python actor.py <step> <args...>.
-
-It prints one JSON line on stdout and exits, so the next step runs in a process that shares nothing with this one.
-The sync client takes every step except cancel and capture-async, which need asyncio.
-"""
+"""One step of a cross-SDK check, in a process of its own, so the next step shares no client state with this one."""
 
 from __future__ import annotations
 
