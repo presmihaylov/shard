@@ -442,6 +442,30 @@ func TestSetTakesAPlaceholderNoEncoderAlters(t *testing.T) {
 }
 
 // A mistyped --placeholder hands the value as the placeholder, so no refusal may put it on a screen.
+// A rotation keeps the stored placeholder, so a new value inside it is refused too, and the refusal names neither (SHARD-550).
+func TestARotationRefusesAValueInsideTheRetainedPlaceholder(t *testing.T) {
+	s, _ := newStore(t)
+
+	if _, err := s.Set("TOKEN", "first-value-1", []string{"a.example.com"}, "sk_test_shaped01"); err != nil {
+		t.Fatal(err)
+	}
+	_, err := s.Set("TOKEN", "test_shaped", nil, "")
+	if err == nil || !strings.Contains(err.Error(), "inside its placeholder") {
+		t.Fatalf("a rotation to a value inside the retained placeholder = %v, want the refusal", err)
+	}
+	if strings.Contains(err.Error(), "test_shaped") {
+		t.Errorf("the refusal echoes the value or the placeholder: %v", err)
+	}
+
+	value, err := s.Value("TOKEN")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if value != "first-value-1" {
+		t.Errorf("the refused rotation stored %q", value)
+	}
+}
+
 func TestARefusedPlaceholderNeverEchoesIt(t *testing.T) {
 	s, _ := newStore(t)
 
