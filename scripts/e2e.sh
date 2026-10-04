@@ -165,17 +165,13 @@ holds() {
 	grep -q -- "${want}" <<<"${out}"
 }
 
-# has_line holds when one line of stdin matches every pattern.
+# has_line holds when one line of stdin matches every pattern. It reads stdin to the end, so a producer never dies of SIGPIPE.
 has_line() {
-	if [ "$#" -eq 1 ]; then
-		grep -qE "$1"
-		return
-	fi
-	if [ "$#" -eq 2 ]; then
-		grep -E "$1" | grep -qE "$2"
-		return
-	fi
-	grep -E "$1" | grep -E "$2" | grep -qE "$3"
+	local lines pattern
+	lines=$(cat)
+	for pattern in "$@"; do
+		lines=$(grep -E -- "${pattern}" <<<"${lines}") || return 1
+	done
 }
 
 # nap_alive reports the guest process of the background exec. The bracket keeps the probe off its own args.
