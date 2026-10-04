@@ -15,12 +15,24 @@ the proxy and the front behind it (`the proxy at shard.example.com and the shard
 
 `shard daemon` itself is the one exception, because it is the daemon process rather than a client
 of one. No verb starts the daemon. A resident root process is installed on purpose, through the
-systemd unit in `packaging/systemd/shard.service`:
+systemd unit in `packaging/systemd/shard.service`. A release carries the unit beside the two Linux
+binaries, so an install needs no checkout. As root:
 
 ```
-cp packaging/systemd/shard.service /etc/systemd/system/
+base=https://github.com/presmihaylov/shard/releases/latest/download
+for f in shard-linux-amd64 shard-init-linux-amd64 shard.service SHA256SUMS; do curl -fsSLO "$base/$f"; done
+sha256sum --ignore-missing -c SHA256SUMS
+install -m0755 shard-linux-amd64 /usr/local/bin/shard
+install -m0755 shard-init-linux-amd64 /usr/local/bin/shard-init
+install -m0644 shard.service /etc/systemd/system/shard.service
+systemctl daemon-reload
 systemctl enable --now shard
 ```
+
+The daemon looks for the guest supervisor at `/usr/local/bin/shard-init`, and `SHARD_INIT_PATH`
+names another path. Install the provider's runtime first: `runsc`, `sysbox-runc` or `runc`
+(`docs/provider.md`). From a checkout, `make build-linux build-shard-init-linux` builds the same two
+binaries into `bin/`, and the unit is the file in `packaging/systemd`.
 
 On a Mac the equivalent is the LaunchDaemon in `packaging/launchd`, which `docs/mac.md` explains
 how to install.
@@ -958,7 +970,9 @@ systemctl restart shard
 install -d -m2750 -o root -g shard /etc/shard
 openssl rand -hex 32 > /etc/shard/serve.secret
 chown root:shard /etc/shard/serve.secret && chmod 0640 /etc/shard/serve.secret
-cp packaging/systemd/shard-serve.service /etc/systemd/system/
+curl -fsSLO https://github.com/presmihaylov/shard/releases/latest/download/shard-serve.service
+install -m0644 shard-serve.service /etc/systemd/system/shard-serve.service
+systemctl daemon-reload
 systemctl enable --now shard-serve
 ```
 
