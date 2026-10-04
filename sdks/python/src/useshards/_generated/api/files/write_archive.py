@@ -74,7 +74,7 @@ def sync_detailed(
     path: str | Unset = UNSET,
     user: str | Unset = UNSET,
 ) -> Response[Any | Error]:
-    """Unpack a tar under a directory"""
+    """copy a directory into a running sandbox"""
 
     kwargs = _get_kwargs(
         id=id,
@@ -98,7 +98,7 @@ def sync(
     path: str | Unset = UNSET,
     user: str | Unset = UNSET,
 ) -> Any | Error | None:
-    """Unpack a tar under a directory"""
+    """copy a directory into a running sandbox"""
 
     return sync_detailed(
         id=id,
@@ -117,7 +117,7 @@ async def asyncio_detailed(
     path: str | Unset = UNSET,
     user: str | Unset = UNSET,
 ) -> Response[Any | Error]:
-    """Unpack a tar under a directory"""
+    """copy a directory into a running sandbox"""
 
     kwargs = _get_kwargs(
         id=id,
@@ -139,7 +139,7 @@ async def asyncio(
     path: str | Unset = UNSET,
     user: str | Unset = UNSET,
 ) -> Any | Error | None:
-    """Unpack a tar under a directory"""
+    """copy a directory into a running sandbox"""
 
     return (
         await asyncio_detailed(

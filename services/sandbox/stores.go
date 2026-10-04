@@ -161,8 +161,8 @@ func (s *Stores) SetPolicy(ctx context.Context, name string, req PolicyRequest) 
 type PolicyView struct {
 	models.Policy
 	Holders []string `json:"holders,omitempty"`
-	// DNS is open or closed, computed from the rules, because nothing stores whether a policy resolves.
-	DNS string `json:"dns"`
+	// DNS is computed from the rules, because nothing stores whether a policy resolves.
+	DNS string `json:"dns" enum:"open,closed"`
 }
 
 // dnsState is the word the view carries, so show and create never disagree about what opens DNS.

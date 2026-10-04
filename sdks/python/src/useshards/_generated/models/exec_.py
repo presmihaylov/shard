@@ -7,6 +7,7 @@ from typing import TYPE_CHECKING, Any, BinaryIO, Generator, TextIO, TypeVar, cas
 from attrs import define as _attrs_define
 from attrs import field as _attrs_field
 
+from ..models.exec_state import ExecState
 from ..types import UNSET, Unset
 
 if TYPE_CHECKING:
@@ -25,7 +26,7 @@ class Exec:
     lost_bytes: int
     sandbox: str
     started_at: datetime.datetime
-    state: str
+    state: ExecState
     truncated: bool
 
     def to_dict(self) -> dict[str, Any]:
@@ -53,7 +54,7 @@ class Exec:
 
         started_at = self.started_at.isoformat()
 
-        state = self.state
+        state = self.state.value
 
         truncated = self.truncated
 
@@ -120,7 +121,7 @@ class Exec:
 
         started_at = datetime.datetime.fromisoformat(d.pop("started_at"))
 
-        state = d.pop("state")
+        state = ExecState(d.pop("state"))
 
         truncated = d.pop("truncated")
 

@@ -153,7 +153,7 @@ rules. Each addition is marked `implied`:
   that cannot resolve it. An `allow any` that leaves port 53 open implies no rule, since it already
   reaches the resolver. A policy of only address rules opens no DNS, and a secret does not open it
   either. If the guest must resolve the host, name the host in the policy or say `allow dns`. When
-  an explicit rule opened DNS, the implied rule reads `dns rule` instead of `dns`.
+  an explicit rule opened DNS, the implied rule reads `dns-rule` instead of `dns`.
 
 A sandbox with a policy resolves names only through shard's resolver. Its `resolv.conf` names the
 gateway, and the host turns port 53 to anywhere else to the gateway, so a policy attached after the

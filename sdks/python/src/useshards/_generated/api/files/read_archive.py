@@ -63,7 +63,7 @@ def sync_detailed(
     client: AuthenticatedClient | Client,
     path: str | Unset = UNSET,
 ) -> Response[Error | File]:
-    """Read a path as a tar"""
+    """copy a directory out of a running sandbox"""
 
     kwargs = _get_kwargs(
         id=id,
@@ -83,7 +83,7 @@ def sync(
     client: AuthenticatedClient | Client,
     path: str | Unset = UNSET,
 ) -> Error | File | None:
-    """Read a path as a tar"""
+    """copy a directory out of a running sandbox"""
 
     return sync_detailed(
         id=id,
@@ -98,7 +98,7 @@ async def asyncio_detailed(
     client: AuthenticatedClient | Client,
     path: str | Unset = UNSET,
 ) -> Response[Error | File]:
-    """Read a path as a tar"""
+    """copy a directory out of a running sandbox"""
 
     kwargs = _get_kwargs(
         id=id,
@@ -116,7 +116,7 @@ async def asyncio(
     client: AuthenticatedClient | Client,
     path: str | Unset = UNSET,
 ) -> Error | File | None:
-    """Read a path as a tar"""
+    """copy a directory out of a running sandbox"""
 
     return (
         await asyncio_detailed(
