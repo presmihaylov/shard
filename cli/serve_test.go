@@ -392,7 +392,7 @@ func selfSigned(t *testing.T, dir string) (string, string) {
 	return certPath, keyPath
 }
 
-// A front refuses every local route, so a local-only verb under --remote fails before it dials, naming itself, never as a bare 403. (SHARD-488)
+// A front refuses every local route, and info and tokens read this host, so each under --remote fails before it dials, naming itself. (SHARD-488, SHARD-556)
 func TestALocalOnlyVerbUnderARemoteFailsBeforeItDials(t *testing.T) {
 	accepted := acceptCount(t)
 
@@ -404,11 +404,23 @@ func TestALocalOnlyVerbUnderARemoteFailsBeforeItDials(t *testing.T) {
 		"image remove":  {"image", "remove", "alpine:3.20"},
 		"image prune":   {"image", "prune"},
 		"daemon status": {"daemon", "status"},
+		"info":          {"info"},
+		"tokens mint":   {"tokens", "mint", "--name", "ci"},
+		"tokens list":   {"tokens", "list"},
+		"tokens revoke": {"tokens", "revoke", "tok_123"},
 	} {
 		app := App{Version: "test", Root: t.TempDir(), Remote: remote, Out: io.Discard}
 		err := app.Run(t.Context(), args)
 		if want := "shard " + verb + " runs on the daemon host only"; err == nil || !strings.Contains(err.Error(), want) {
 			t.Errorf("%s under --remote returned %v, want %q", verb, err, want)
+		}
+		// A mint that ran here would leave a signing key and a ledger under the root.
+		left, err := os.ReadDir(app.Root)
+		if err != nil {
+			t.Fatalf("read the root: %v", err)
+		}
+		if len(left) != 0 {
+			t.Errorf("%s under --remote wrote %v under the root", verb, left)
 		}
 	}
 

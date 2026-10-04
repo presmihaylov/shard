@@ -40,8 +40,9 @@ to stdout. Use it only on localhost or through a trusted encrypted network. `SHA
 `http` remote is refused before the client dials.
 
 `pull`, `image list`, `image remove`, `image prune` and `daemon status` run on the daemon host only,
-because `shard serve` refuses their routes. With `--remote` or `SHARD_REMOTE` set, each one fails
-before it dials, and its error names the verb.
+because `shard serve` refuses their routes. `info` and `tokens mint`, `list` and `revoke` run there
+too, because they read that host's providers, signing key and token ledger. With `--remote` or
+`SHARD_REMOTE` set, each one fails before it dials, and its error names the verb.
 
 ## Names and aliases
 

@@ -439,13 +439,22 @@ func (a App) client() (*client.Client, error) {
 	return c, nil
 }
 
-// localClient is the socket for a verb no front forwards, so a remote target fails here, before any dial, and never as a bare 403.
+// localClient is the socket for a verb no front forwards.
 func (a App) localClient(verb string) (*client.Client, error) {
-	if a.Remote != "" {
-		return nil, fmt.Errorf("shard %s runs on the daemon host only, over its socket, and cannot reach %s; unset --remote and %s to run it there", verb, a.Remote, client.RemoteEnv)
+	if err := a.hostOnly(verb); err != nil {
+		return nil, err
 	}
 
 	return a.client()
+}
+
+// hostOnly refuses a remote target before any dial, so a host-only verb never answers for this host or fails as a bare 403.
+func (a App) hostOnly(verb string) error {
+	if a.Remote == "" {
+		return nil
+	}
+
+	return fmt.Errorf("shard %s runs on the daemon host only and cannot reach %s; unset --remote and %s to run it there", verb, a.Remote, client.RemoteEnv)
 }
 
 // gotArgs echoes what a verb refused, quoted, so the error shows what was typed rather than a count.

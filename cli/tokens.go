@@ -33,6 +33,9 @@ func (a App) tokensMint(_ context.Context, args []string) error {
 	if *duration < 0 {
 		return fmt.Errorf("tokens mint needs a --duration in the future, got %s", *duration)
 	}
+	if err := a.hostOnly("tokens mint"); err != nil {
+		return err
+	}
 	// A refused mint needs no key, so it never creates the default one.
 	scopeList := parseScopes(*scopes)
 	if err := serve.CheckScopes(scopeList); err != nil {
@@ -72,6 +75,9 @@ func (a App) tokensList(_ context.Context, args []string) error {
 	if flags.NArg() != 0 {
 		return fmt.Errorf("tokens list takes no arguments, got %s", gotArgs(flags.Args()))
 	}
+	if err := a.hostOnly("tokens list"); err != nil {
+		return err
+	}
 	path, err := a.ledgerPath(*signingKeyFile)
 	if err != nil {
 		return fmt.Errorf("tokens list: %w", err)
@@ -104,6 +110,9 @@ func (a App) tokensRevoke(_ context.Context, args []string) error {
 	name := flags.String("name", "", "")
 
 	if err := parseVerb(flags, args); err != nil {
+		return err
+	}
+	if err := a.hostOnly("tokens revoke"); err != nil {
 		return err
 	}
 
