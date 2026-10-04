@@ -1,5 +1,6 @@
 // One command in a sandbox over the daemon's stream: its start, its attaches, and how it ended.
 import type { OutputCapture } from "./capture.js";
+import { date, isStrings } from "./decode.js";
 import { ConnectionError, ProtocolError, isObject } from "./errors.js";
 import { opBinary } from "./frames.js";
 import type { Transport } from "./transport.js";
@@ -68,7 +69,7 @@ export class Session {
   async attach(signal?: AbortSignal): Promise<void> {
     this.disconnect();
     await this.closing;
-    const ws = await WebSocket.connect(this.transport, this.path(), this.what, signal);
+    const ws = await WebSocket.connect(this.transport, this.path(), this.what, { signal });
     this.capture.reset();
     this.ws = ws;
     const reading = this.read(ws);
@@ -295,14 +296,4 @@ export function commandInfo(value: unknown): CommandInfo {
     exitedAt,
     lostBytes: Number(lost),
   };
-}
-
-function isStrings(value: unknown): value is string[] {
-  return Array.isArray(value) && value.every((item) => typeof item === "string");
-}
-
-function date(value: unknown): Date | undefined {
-  const parsed = typeof value === "string" ? new Date(value) : undefined;
-
-  return parsed && !Number.isNaN(parsed.getTime()) ? parsed : undefined;
 }

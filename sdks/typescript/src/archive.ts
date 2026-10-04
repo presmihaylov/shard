@@ -408,6 +408,6 @@ async function removeTemp(at: string): Promise<void> {
   await fs.rm(at, { force: true });
 }
 
-function isCode(err: unknown, code: string): boolean {
+export function isCode(err: unknown, code: string): boolean {
   return err instanceof Error && "code" in err && err.code === code;
 }

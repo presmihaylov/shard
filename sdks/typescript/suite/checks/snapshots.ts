@@ -25,10 +25,11 @@ export const checks: Check[] = [
       const source = await ctx.fixture("snapshot-source", stoppedSource);
       const snapshot = await ctx.snapshot(source);
       assert.equal(snapshot.source, source.id);
-      assert.ok(snapshot.name.startsWith(ctx.prefix));
+      assert.ok(snapshot.name?.startsWith(ctx.prefix), `name ${snapshot.name}`);
       const listed = await ctx.shard.snapshots.list();
       assert.ok(listed.some((each) => each.id === snapshot.id), "list holds the snapshot");
       assert.equal((await ctx.shard.snapshots.inspect(snapshot.id)).name, snapshot.name);
+      assert.ok(snapshot.name, "the harness names every snapshot");
       assert.equal((await ctx.shard.snapshots.inspect(snapshot.name)).id, snapshot.id);
     },
   },

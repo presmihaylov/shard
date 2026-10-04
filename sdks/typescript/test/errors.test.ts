@@ -57,10 +57,17 @@ test("a body that is not the daemon's JSON is quoted, short", () => {
   assert.ok(err.detail.startsWith("<html>"));
   assert.equal(err.detail.length, 510, "512 bytes, trimmed of the two leading spaces");
   assert.equal(err.message, `502: ${err.detail}`);
-  assert.equal(apiError(502, new Uint8Array(0)).detail, "an empty body");
-  assert.equal(apiError(400, Buffer.from('{"error":"flat"}')).detail, '{"error":"flat"}');
-  assert.equal(apiError(400, Buffer.from([0xff, 0xfe])).code, "");
+  assert.equal(refused(502, new Uint8Array(0)).detail, "an empty body");
+  assert.equal(refused(400, Buffer.from('{"error":"flat"}')).detail, '{"error":"flat"}');
+  assert.equal(refused(400, Buffer.from([0xff, 0xfe])).code, "");
 });
+
+function refused(status: number, body: Uint8Array): APIError {
+  const err = apiError(status, body);
+  assert.ok(err instanceof APIError);
+
+  return err;
+}
 
 test("a stream failure takes the status its code answers with", () => {
   const cases: Array<[string, number, new (...args: never[]) => APIError]> = [

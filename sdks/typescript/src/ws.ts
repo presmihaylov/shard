@@ -14,8 +14,10 @@ import {
   opPong,
   type Message,
 } from "./frames.js";
-import type { Transport } from "./transport.js";
+import type { CallOptions, Transport } from "./transport.js";
 
+// RFC 6455 reserves this code for a close frame that carried none.
+const closeNoStatus = 1005;
 // How long a goodbye waits for the daemon's own close before the connection is let go.
 const closeWaitMs = 5_000;
 // A reader that falls this many messages behind stops the socket, so a slow consumer stalls the daemon, not memory.
@@ -43,6 +45,7 @@ export class WebSocket {
   private waiters: Array<() => void> = [];
   private failure: Error | undefined;
   private peerClosed = false;
+  private closeFrame: Buffer | undefined;
   private dropped = false;
   private closeSent = false;
 
@@ -56,9 +59,9 @@ export class WebSocket {
     socket.on("error", (err) => this.drop(new ConnectionError(`${what}: the stream to the daemon dropped`, { cause: err })));
   }
 
-  static async connect(transport: Transport, path: string, what: string, signal?: AbortSignal): Promise<WebSocket> {
+  static async connect(transport: Transport, path: string, what: string, options: Pick<CallOptions, "query" | "signal"> = {}): Promise<WebSocket> {
     const key = handshakeKey();
-    const { socket, head, headers } = await transport.upgrade(path, key, signal);
+    const { socket, head, headers } = await transport.upgrade(path, key, options);
     if (headers["sec-websocket-accept"] !== acceptFor(key)) {
       socket.destroy();
       throw new ProtocolError(`${what}: the daemon answered the WebSocket handshake with a key that does not match`);
@@ -69,6 +72,19 @@ export class WebSocket {
     }
 
     return ws;
+  }
+
+  /** peerClose is the code and the reason of the daemon's close, or undefined while none came; a bare close is 1005. */
+  get peerClose(): { code: number; reason: string } | undefined {
+    const frame = this.closeFrame;
+    if (!frame) {
+      return undefined;
+    }
+    if (frame.length < 2) {
+      return { code: closeNoStatus, reason: "" };
+    }
+
+    return { code: frame.readUInt16BE(0), reason: frame.subarray(2).toString("utf8") };
   }
 
   /** ended says nothing more arrives: the daemon's close came, or the connection ended. */
@@ -93,6 +109,7 @@ export class WebSocket {
       const message = this.inbox.shift();
       if (message && message.opcode === opClose) {
         this.peerClosed = true;
+        this.closeFrame = message.payload;
 
         return undefined;
       }

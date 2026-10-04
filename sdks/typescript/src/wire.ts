@@ -18,6 +18,18 @@ export function path(...parts: string[]): string {
   return `/v0/${parts.map(encodeURIComponent).join("/")}`;
 }
 
+/** query keeps the values a call sets; a flag goes as true, the spelling the daemon's ParseBool takes. */
+export function query(values: Record<string, string | number | boolean | undefined>): Record<string, string> {
+  const set: Record<string, string> = {};
+  for (const [key, value] of Object.entries(values)) {
+    if (value !== undefined && value !== false && value !== "") {
+      set[key] = String(value);
+    }
+  }
+
+  return set;
+}
+
 /** TerminalSize is the window of a command that runs on a terminal. */
 export interface TerminalSize {
   rows: number;

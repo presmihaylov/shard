@@ -3,7 +3,7 @@ import { once } from "node:events";
 import * as http from "node:http";
 import * as https from "node:https";
 import type { Duplex } from "node:stream";
-import { acceptFor, opBinary, opClose } from "../../src/frames.js";
+import { acceptFor, opBinary, opClose, opText } from "../../src/frames.js";
 import type { Certificate } from "./tls.js";
 
 export interface Frame {
@@ -92,6 +92,7 @@ export class Peer {
   private readonly frames = new ClientFrames();
   private readonly inbox: Frame[] = [];
   private waiter: (() => void) | undefined;
+  private closeSent = false;
   readonly ended: Promise<void>;
 
   constructor(
@@ -99,7 +100,12 @@ export class Peer {
     readonly path: string,
   ) {
     socket.on("data", (data: Buffer) => {
-      this.inbox.push(...this.frames.feed(data));
+      const frames = this.frames.feed(data);
+      // A daemon answers the client's goodbye with its own, as RFC 6455 asks.
+      if (frames.some((frame) => frame.opcode === opClose)) {
+        this.close();
+      }
+      this.inbox.push(...frames);
       this.waiter?.();
     });
     socket.on("error", () => undefined);
@@ -116,10 +122,18 @@ export class Peer {
     this.send(3, JSON.stringify(fields));
   }
 
-  close(code = 1000): void {
+  close(code = 1000, reason = ""): void {
+    if (this.closeSent || !this.socket.writable) {
+      return;
+    }
+    this.closeSent = true;
     const payload = Buffer.alloc(2);
     payload.writeUInt16BE(code);
-    this.socket.write(serverFrame(opClose, payload));
+    this.socket.write(serverFrame(opClose, Buffer.concat([payload, Buffer.from(reason)])));
+  }
+
+  text(data: string): void {
+    this.socket.write(serverFrame(opText, Buffer.from(data)));
   }
 
   /** next answers the client's next frame, or undefined once its connection is gone. */
@@ -142,12 +156,14 @@ export interface Request {
   url: URL;
   headers: http.IncomingHttpHeaders;
   body: string;
+  bytes: Buffer;
 }
 
 export interface Answer {
   status: number;
   json?: unknown;
-  raw?: string;
+  raw?: string | Uint8Array;
+  headers?: Record<string, string>;
 }
 
 type Route = (request: Request) => Answer | Promise<Answer> | undefined;
@@ -173,7 +189,7 @@ export class FakeDaemon {
       );
     });
     this.server.on("upgrade", (req: http.IncomingMessage, socket: Duplex) => {
-      const request = { method: req.method ?? "", url: new URL(req.url ?? "/", "http://daemon"), headers: req.headers, body: "" };
+      const request = { method: req.method ?? "", url: new URL(req.url ?? "/", "http://daemon"), headers: req.headers, body: "", bytes: Buffer.alloc(0) };
       this.requests.push(request);
       const peer = new Peer(socket, request.url.pathname);
       const refusal = this.upgrade(peer, request);
@@ -238,11 +254,13 @@ export class FakeDaemon {
     for await (const chunk of req) {
       chunks.push(Buffer.from(chunk));
     }
+    const bytes = Buffer.concat(chunks);
     const request = {
       method: req.method ?? "",
       url: new URL(req.url ?? "/", "http://daemon"),
       headers: req.headers,
-      body: Buffer.concat(chunks).toString(),
+      body: bytes.toString(),
+      bytes,
     };
     this.requests.push(request);
 
@@ -251,18 +269,19 @@ export class FakeDaemon {
 }
 
 function write(res: http.ServerResponse, answer: Answer): void {
+  const headers = answer.headers ?? {};
   if (answer.raw !== undefined) {
-    res.writeHead(answer.status);
+    res.writeHead(answer.status, headers);
     res.end(answer.raw);
 
     return;
   }
   if (answer.json === undefined) {
-    res.writeHead(answer.status);
+    res.writeHead(answer.status, headers);
     res.end();
 
     return;
   }
-  res.writeHead(answer.status, { "Content-Type": "application/json" });
+  res.writeHead(answer.status, { "Content-Type": "application/json", ...headers });
   res.end(JSON.stringify(answer.json));
 }

@@ -106,15 +106,24 @@ const codeStatus: ReadonlyMap<string, number> = new Map([
   ["exec_running", 409],
   ["no_app", 409],
   ["app_ended", 409],
+  ["command_not_started", 422],
   ["substrate_timeout", 504],
   ["internal", 500],
 ]);
 
 /** apiError classifies a refusal by the daemon's code, then by its status. */
-export function apiError(status: number, body: Uint8Array): APIError {
-  const { code, detail } = parseBody(body);
+export function apiError(status: number, body: Uint8Array): APIError | CommandNotStartedError {
+  const { code, detail, exitCode } = parseBody(body);
+  if (code === "command_not_started" && exitCode !== undefined) {
+    return new CommandNotStartedError(exitCode, detail);
+  }
 
   return classified(status, code, detail);
+}
+
+/** statusError classifies a refusal that came with no body, as the answer to a HEAD. */
+export function statusError(status: number, detail: string): APIError {
+  return classified(status, "", detail);
 }
 
 /** failureError classifies a failure the daemon sent on a stream after the handshake. */
@@ -131,7 +140,7 @@ function classified(status: number, code: string, detail: string): APIError {
   return new Class(status, code, detail);
 }
 
-function parseBody(body: Uint8Array): { code: string; detail: string } {
+function parseBody(body: Uint8Array): { code: string; detail: string; exitCode?: number } {
   let decoded: unknown;
   try {
     decoded = JSON.parse(new TextDecoder("utf-8", { fatal: true }).decode(body));
@@ -146,6 +155,7 @@ function parseBody(body: Uint8Array): { code: string; detail: string } {
   return {
     code: typeof err.code === "string" ? err.code : "",
     detail: typeof err.message === "string" ? err.message : "",
+    ...(typeof err.exit_code === "number" && Number.isInteger(err.exit_code) ? { exitCode: err.exit_code } : {}),
   };
 }
 

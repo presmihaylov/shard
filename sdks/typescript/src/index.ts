@@ -1,3 +1,26 @@
+export { Shard, Policies, Secrets, Snapshots, type CreateOptions, type RunOptions, type SandboxRef, type SecretOptions } from "./shard.js";
+export { Sandbox, type FollowOptions } from "./sandbox.js";
+export { App } from "./app.js";
+export { Files, type FileEntry, type FileInfo, type FileType, type WriteOptions } from "./files.js";
+export type {
+  AppExit,
+  AppInfo,
+  Capabilities,
+  DNSMode,
+  ExitStatus,
+  NetworkLogRecord,
+  Policy,
+  PolicyRule,
+  Resources,
+  Restart,
+  RestartInfo,
+  RestartPolicy,
+  SandboxInfo,
+  SandboxState,
+  SecretInfo,
+  Snapshot,
+  Version,
+} from "./records.js";
 export type { ShardOptions } from "./config.js";
 export { defaultOutputLimit } from "./capture.js";
 export { Command, Commands, type ExecOptions, type ExecResult, type OutputOptions } from "./commands.js";

@@ -48,6 +48,7 @@ export const checks: Check[] = [
       assert.equal(info.state, "running");
       assert.ok(info.image.endsWith(ctx.image), `image ${info.image}`);
       assert.equal((await ctx.shard.get(sandbox.id)).id, sandbox.id);
+      assert.ok(sandbox.name, "the harness names every sandbox");
       assert.equal((await ctx.shard.get(sandbox.name)).id, sandbox.id);
       const listed = await ctx.shard.list();
       assert.ok(listed.some((each) => each.id === sandbox.id), "list holds the sandbox");

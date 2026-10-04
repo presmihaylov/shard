@@ -1,7 +1,7 @@
 // The commands of one sandbox: a run answers how the command ended, a start answers a handle to it.
 import { OutputCapture, defaultOutputLimit } from "./capture.js";
-import { ProtocolError, isObject } from "./errors.js";
 import { Session, commandInfo, type CommandInfo, type Handlers } from "./exec.js";
+import { listed } from "./pages.js";
 import type { Transport } from "./transport.js";
 import * as wire from "./wire.js";
 import { endedStream } from "./ws.js";
@@ -133,20 +133,7 @@ export class Commands {
 
   /** list answers every command the daemon still holds for the sandbox, running or ended. */
   async list(): Promise<CommandInfo[]> {
-    const commands: CommandInfo[] = [];
-    let cursor = "";
-    do {
-      const page = await this.transport.call("GET", this.path(), { query: cursor ? { cursor } : {} });
-      const execs = isObject(page) ? page.execs : undefined;
-      const next = isObject(page) ? page.next : undefined;
-      if (!Array.isArray(execs) || (next !== null && typeof next !== "string")) {
-        throw new ProtocolError(`the daemon answered ${JSON.stringify(page)} as a page of commands`);
-      }
-      commands.push(...execs.map(commandInfo));
-      cursor = next ?? "";
-    } while (cursor);
-
-    return commands;
+    return (await listed(this.transport, this.path(), "execs")).map(commandInfo);
   }
 
   /** get answers a handle to a command any client started; its output comes when it attaches. */
