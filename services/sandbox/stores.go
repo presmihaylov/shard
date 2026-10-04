@@ -175,6 +175,10 @@ func dnsState(policy models.Policy) string {
 }
 
 func (s *Stores) Policy(name string) (PolicyView, error) {
+	if err := egress.ValidName(name); err != nil {
+		return PolicyView{}, &RequestError{Err: err}
+	}
+
 	policy, err := s.cfg.Policies.Get(name)
 	if err != nil {
 		return PolicyView{}, err
@@ -194,6 +198,10 @@ func (s *Stores) Policies() ([]models.Policy, error) {
 
 // RemovePolicy refuses while a record names the policy: a stopped sandbox counts, since start enforces it again.
 func (s *Stores) RemovePolicy(name string) error {
+	if err := egress.ValidName(name); err != nil {
+		return &RequestError{Err: err}
+	}
+
 	if _, err := s.cfg.Policies.Get(name); err != nil {
 		return err
 	}
