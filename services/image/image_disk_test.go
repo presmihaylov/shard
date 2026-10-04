@@ -44,8 +44,8 @@ func TestPullWithDisksBuildsOneDiskPerDigest(t *testing.T) {
 		t.Fatalf("second Pull: %v", err)
 	}
 	again.Close()
-	// The tree is already there, so the rebuild says building alone and never unpacking (SHARD-385).
-	want := []string{image.StatusPulling, image.StatusLayer, image.StatusBuilding, image.StatusPulled}
+	// The tree and the tag are already held, so the rebuild never unpacks (SHARD-385) and never asks the registry.
+	want := []string{image.StatusBuilding, image.StatusPulled}
 	if got := statuses(events(t, again)); !slices.Equal(got, want) {
 		t.Errorf("the rebuild of the disk said %v, want %v", got, want)
 	}
