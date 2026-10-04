@@ -13,12 +13,6 @@ T = TypeVar("T", bound="Destination")
 
 @_attrs_define
 class Destination:
-    """
-    Attributes:
-        kind (str):
-        value (str):
-    """
-
     kind: str
     value: str
 

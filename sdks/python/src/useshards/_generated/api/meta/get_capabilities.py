@@ -48,15 +48,7 @@ def sync_detailed(
     *,
     client: AuthenticatedClient | Client,
 ) -> Response[Capabilities | Error]:
-    """List the lifecycle verbs and whether this server supports each
-
-    Raises:
-        errors.UnexpectedStatus: If the server returns an undocumented status code and Client.raise_on_unexpected_status is True.
-        httpx.TimeoutException: If the request takes longer than Client.timeout.
-
-    Returns:
-        Response[Capabilities | Error]
-    """
+    """List the lifecycle verbs and whether this server supports each"""
 
     kwargs = _get_kwargs()
 
@@ -71,15 +63,7 @@ def sync(
     *,
     client: AuthenticatedClient | Client,
 ) -> Capabilities | Error | None:
-    """List the lifecycle verbs and whether this server supports each
-
-    Raises:
-        errors.UnexpectedStatus: If the server returns an undocumented status code and Client.raise_on_unexpected_status is True.
-        httpx.TimeoutException: If the request takes longer than Client.timeout.
-
-    Returns:
-        Capabilities | Error
-    """
+    """List the lifecycle verbs and whether this server supports each"""
 
     return sync_detailed(
         client=client,
@@ -90,15 +74,7 @@ async def asyncio_detailed(
     *,
     client: AuthenticatedClient | Client,
 ) -> Response[Capabilities | Error]:
-    """List the lifecycle verbs and whether this server supports each
-
-    Raises:
-        errors.UnexpectedStatus: If the server returns an undocumented status code and Client.raise_on_unexpected_status is True.
-        httpx.TimeoutException: If the request takes longer than Client.timeout.
-
-    Returns:
-        Response[Capabilities | Error]
-    """
+    """List the lifecycle verbs and whether this server supports each"""
 
     kwargs = _get_kwargs()
 
@@ -111,15 +87,7 @@ async def asyncio(
     *,
     client: AuthenticatedClient | Client,
 ) -> Capabilities | Error | None:
-    """List the lifecycle verbs and whether this server supports each
-
-    Raises:
-        errors.UnexpectedStatus: If the server returns an undocumented status code and Client.raise_on_unexpected_status is True.
-        httpx.TimeoutException: If the request takes longer than Client.timeout.
-
-    Returns:
-        Capabilities | Error
-    """
+    """List the lifecycle verbs and whether this server supports each"""
 
     return (
         await asyncio_detailed(

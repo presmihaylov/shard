@@ -53,18 +53,7 @@ def sync_detailed(
     *,
     client: AuthenticatedClient | Client,
 ) -> Response[Error | Snapshot]:
-    """Read a snapshot
-
-    Args:
-        ref (str): The snapshot id or name.
-
-    Raises:
-        errors.UnexpectedStatus: If the server returns an undocumented status code and Client.raise_on_unexpected_status is True.
-        httpx.TimeoutException: If the request takes longer than Client.timeout.
-
-    Returns:
-        Response[Error | Snapshot]
-    """
+    """Read a snapshot"""
 
     kwargs = _get_kwargs(
         ref=ref,
@@ -82,18 +71,7 @@ def sync(
     *,
     client: AuthenticatedClient | Client,
 ) -> Error | Snapshot | None:
-    """Read a snapshot
-
-    Args:
-        ref (str): The snapshot id or name.
-
-    Raises:
-        errors.UnexpectedStatus: If the server returns an undocumented status code and Client.raise_on_unexpected_status is True.
-        httpx.TimeoutException: If the request takes longer than Client.timeout.
-
-    Returns:
-        Error | Snapshot
-    """
+    """Read a snapshot"""
 
     return sync_detailed(
         ref=ref,
@@ -106,18 +84,7 @@ async def asyncio_detailed(
     *,
     client: AuthenticatedClient | Client,
 ) -> Response[Error | Snapshot]:
-    """Read a snapshot
-
-    Args:
-        ref (str): The snapshot id or name.
-
-    Raises:
-        errors.UnexpectedStatus: If the server returns an undocumented status code and Client.raise_on_unexpected_status is True.
-        httpx.TimeoutException: If the request takes longer than Client.timeout.
-
-    Returns:
-        Response[Error | Snapshot]
-    """
+    """Read a snapshot"""
 
     kwargs = _get_kwargs(
         ref=ref,
@@ -133,18 +100,7 @@ async def asyncio(
     *,
     client: AuthenticatedClient | Client,
 ) -> Error | Snapshot | None:
-    """Read a snapshot
-
-    Args:
-        ref (str): The snapshot id or name.
-
-    Raises:
-        errors.UnexpectedStatus: If the server returns an undocumented status code and Client.raise_on_unexpected_status is True.
-        httpx.TimeoutException: If the request takes longer than Client.timeout.
-
-    Returns:
-        Error | Snapshot
-    """
+    """Read a snapshot"""
 
     return (
         await asyncio_detailed(

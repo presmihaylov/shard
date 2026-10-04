@@ -65,19 +65,7 @@ def sync_detailed(
     client: AuthenticatedClient | Client,
     body: ExecRequest | Unset = UNSET,
 ) -> Response[Error | Exec]:
-    """Create an exec, which runs once a client attaches
-
-    Args:
-        id (str): The sandbox id or name.
-        body (ExecRequest | Unset):
-
-    Raises:
-        errors.UnexpectedStatus: If the server returns an undocumented status code and Client.raise_on_unexpected_status is True.
-        httpx.TimeoutException: If the request takes longer than Client.timeout.
-
-    Returns:
-        Response[Error | Exec]
-    """
+    """Create an exec, which runs once a client attaches"""
 
     kwargs = _get_kwargs(
         id=id,
@@ -97,19 +85,7 @@ def sync(
     client: AuthenticatedClient | Client,
     body: ExecRequest | Unset = UNSET,
 ) -> Error | Exec | None:
-    """Create an exec, which runs once a client attaches
-
-    Args:
-        id (str): The sandbox id or name.
-        body (ExecRequest | Unset):
-
-    Raises:
-        errors.UnexpectedStatus: If the server returns an undocumented status code and Client.raise_on_unexpected_status is True.
-        httpx.TimeoutException: If the request takes longer than Client.timeout.
-
-    Returns:
-        Error | Exec
-    """
+    """Create an exec, which runs once a client attaches"""
 
     return sync_detailed(
         id=id,
@@ -124,19 +100,7 @@ async def asyncio_detailed(
     client: AuthenticatedClient | Client,
     body: ExecRequest | Unset = UNSET,
 ) -> Response[Error | Exec]:
-    """Create an exec, which runs once a client attaches
-
-    Args:
-        id (str): The sandbox id or name.
-        body (ExecRequest | Unset):
-
-    Raises:
-        errors.UnexpectedStatus: If the server returns an undocumented status code and Client.raise_on_unexpected_status is True.
-        httpx.TimeoutException: If the request takes longer than Client.timeout.
-
-    Returns:
-        Response[Error | Exec]
-    """
+    """Create an exec, which runs once a client attaches"""
 
     kwargs = _get_kwargs(
         id=id,
@@ -154,19 +118,7 @@ async def asyncio(
     client: AuthenticatedClient | Client,
     body: ExecRequest | Unset = UNSET,
 ) -> Error | Exec | None:
-    """Create an exec, which runs once a client attaches
-
-    Args:
-        id (str): The sandbox id or name.
-        body (ExecRequest | Unset):
-
-    Raises:
-        errors.UnexpectedStatus: If the server returns an undocumented status code and Client.raise_on_unexpected_status is True.
-        httpx.TimeoutException: If the request takes longer than Client.timeout.
-
-    Returns:
-        Error | Exec
-    """
+    """Create an exec, which runs once a client attaches"""
 
     return (
         await asyncio_detailed(

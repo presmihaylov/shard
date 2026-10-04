@@ -14,14 +14,6 @@ T = TypeVar("T", bound="Secret")
 
 @_attrs_define
 class Secret:
-    """
-    Attributes:
-        destinations (list[str]):
-        name (str):
-        placeholder (str):
-        updated_at (datetime.datetime):
-    """
-
     destinations: list[str]
     name: str
     placeholder: str

@@ -65,20 +65,7 @@ def sync_detailed(
     path: str | Unset = UNSET,
     recursive: bool | Unset = UNSET,
 ) -> Response[Any | Error]:
-    """Delete a path
-
-    Args:
-        id (str): The sandbox id or name.
-        path (str | Unset): The absolute guest path.
-        recursive (bool | Unset): Take a directory and everything in it.
-
-    Raises:
-        errors.UnexpectedStatus: If the server returns an undocumented status code and Client.raise_on_unexpected_status is True.
-        httpx.TimeoutException: If the request takes longer than Client.timeout.
-
-    Returns:
-        Response[Any | Error]
-    """
+    """Delete a path"""
 
     kwargs = _get_kwargs(
         id=id,
@@ -100,20 +87,7 @@ def sync(
     path: str | Unset = UNSET,
     recursive: bool | Unset = UNSET,
 ) -> Any | Error | None:
-    """Delete a path
-
-    Args:
-        id (str): The sandbox id or name.
-        path (str | Unset): The absolute guest path.
-        recursive (bool | Unset): Take a directory and everything in it.
-
-    Raises:
-        errors.UnexpectedStatus: If the server returns an undocumented status code and Client.raise_on_unexpected_status is True.
-        httpx.TimeoutException: If the request takes longer than Client.timeout.
-
-    Returns:
-        Any | Error
-    """
+    """Delete a path"""
 
     return sync_detailed(
         id=id,
@@ -130,20 +104,7 @@ async def asyncio_detailed(
     path: str | Unset = UNSET,
     recursive: bool | Unset = UNSET,
 ) -> Response[Any | Error]:
-    """Delete a path
-
-    Args:
-        id (str): The sandbox id or name.
-        path (str | Unset): The absolute guest path.
-        recursive (bool | Unset): Take a directory and everything in it.
-
-    Raises:
-        errors.UnexpectedStatus: If the server returns an undocumented status code and Client.raise_on_unexpected_status is True.
-        httpx.TimeoutException: If the request takes longer than Client.timeout.
-
-    Returns:
-        Response[Any | Error]
-    """
+    """Delete a path"""
 
     kwargs = _get_kwargs(
         id=id,
@@ -163,20 +124,7 @@ async def asyncio(
     path: str | Unset = UNSET,
     recursive: bool | Unset = UNSET,
 ) -> Any | Error | None:
-    """Delete a path
-
-    Args:
-        id (str): The sandbox id or name.
-        path (str | Unset): The absolute guest path.
-        recursive (bool | Unset): Take a directory and everything in it.
-
-    Raises:
-        errors.UnexpectedStatus: If the server returns an undocumented status code and Client.raise_on_unexpected_status is True.
-        httpx.TimeoutException: If the request takes longer than Client.timeout.
-
-    Returns:
-        Any | Error
-    """
+    """Delete a path"""
 
     return (
         await asyncio_detailed(

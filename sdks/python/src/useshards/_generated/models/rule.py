@@ -17,14 +17,6 @@ T = TypeVar("T", bound="Rule")
 
 @_attrs_define
 class Rule:
-    """
-    Attributes:
-        action (str):
-        destination (Destination):
-        ports (list[int] | Unset):
-        protocol (str | Unset):
-    """
-
     action: str
     destination: Destination
     ports: list[int] | Unset = UNSET

@@ -13,13 +13,6 @@ T = TypeVar("T", bound="ErrorObject")
 
 @_attrs_define
 class ErrorObject:
-    """
-    Attributes:
-        code (str):
-        message (str):
-        holders (list[str] | Unset):
-    """
-
     code: str
     message: str
     holders: list[str] | Unset = UNSET

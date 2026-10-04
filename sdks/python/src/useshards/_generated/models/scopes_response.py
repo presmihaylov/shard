@@ -17,11 +17,6 @@ T = TypeVar("T", bound="ScopesResponse")
 
 @_attrs_define
 class ScopesResponse:
-    """
-    Attributes:
-        scopes (list[Scope]):
-    """
-
     scopes: list[Scope]
 
     def to_dict(self) -> dict[str, Any]:

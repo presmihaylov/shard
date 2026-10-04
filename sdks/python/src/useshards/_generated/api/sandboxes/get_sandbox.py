@@ -63,19 +63,7 @@ def sync_detailed(
     client: AuthenticatedClient | Client,
     wait: bool | Unset = UNSET,
 ) -> Response[Error | Inspection]:
-    """Read a sandbox and the egress rules the host enforces for it
-
-    Args:
-        id (str):
-        wait (bool | Unset): Block until a pending create lands.
-
-    Raises:
-        errors.UnexpectedStatus: If the server returns an undocumented status code and Client.raise_on_unexpected_status is True.
-        httpx.TimeoutException: If the request takes longer than Client.timeout.
-
-    Returns:
-        Response[Error | Inspection]
-    """
+    """Read a sandbox and the egress rules the host enforces for it"""
 
     kwargs = _get_kwargs(
         id=id,
@@ -95,19 +83,7 @@ def sync(
     client: AuthenticatedClient | Client,
     wait: bool | Unset = UNSET,
 ) -> Error | Inspection | None:
-    """Read a sandbox and the egress rules the host enforces for it
-
-    Args:
-        id (str):
-        wait (bool | Unset): Block until a pending create lands.
-
-    Raises:
-        errors.UnexpectedStatus: If the server returns an undocumented status code and Client.raise_on_unexpected_status is True.
-        httpx.TimeoutException: If the request takes longer than Client.timeout.
-
-    Returns:
-        Error | Inspection
-    """
+    """Read a sandbox and the egress rules the host enforces for it"""
 
     return sync_detailed(
         id=id,
@@ -122,19 +98,7 @@ async def asyncio_detailed(
     client: AuthenticatedClient | Client,
     wait: bool | Unset = UNSET,
 ) -> Response[Error | Inspection]:
-    """Read a sandbox and the egress rules the host enforces for it
-
-    Args:
-        id (str):
-        wait (bool | Unset): Block until a pending create lands.
-
-    Raises:
-        errors.UnexpectedStatus: If the server returns an undocumented status code and Client.raise_on_unexpected_status is True.
-        httpx.TimeoutException: If the request takes longer than Client.timeout.
-
-    Returns:
-        Response[Error | Inspection]
-    """
+    """Read a sandbox and the egress rules the host enforces for it"""
 
     kwargs = _get_kwargs(
         id=id,
@@ -152,19 +116,7 @@ async def asyncio(
     client: AuthenticatedClient | Client,
     wait: bool | Unset = UNSET,
 ) -> Error | Inspection | None:
-    """Read a sandbox and the egress rules the host enforces for it
-
-    Args:
-        id (str):
-        wait (bool | Unset): Block until a pending create lands.
-
-    Raises:
-        errors.UnexpectedStatus: If the server returns an undocumented status code and Client.raise_on_unexpected_status is True.
-        httpx.TimeoutException: If the request takes longer than Client.timeout.
-
-    Returns:
-        Error | Inspection
-    """
+    """Read a sandbox and the egress rules the host enforces for it"""
 
     return (
         await asyncio_detailed(

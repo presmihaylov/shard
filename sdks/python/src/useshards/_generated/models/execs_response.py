@@ -17,12 +17,6 @@ T = TypeVar("T", bound="ExecsResponse")
 
 @_attrs_define
 class ExecsResponse:
-    """
-    Attributes:
-        execs (list[Exec]):
-        next_ (None | str):
-    """
-
     execs: list[Exec]
     next_: None | str
 

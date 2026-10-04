@@ -17,11 +17,6 @@ T = TypeVar("T", bound="PolicyRequest")
 
 @_attrs_define
 class PolicyRequest:
-    """
-    Attributes:
-        rules (list[RuleText] | Unset):
-    """
-
     rules: list[RuleText] | Unset = UNSET
 
     def to_dict(self) -> dict[str, Any]:

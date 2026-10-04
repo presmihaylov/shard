@@ -13,12 +13,6 @@ T = TypeVar("T", bound="ExitStatus")
 
 @_attrs_define
 class ExitStatus:
-    """
-    Attributes:
-        code (int):
-        signal (int):
-    """
-
     code: int
     signal: int
 

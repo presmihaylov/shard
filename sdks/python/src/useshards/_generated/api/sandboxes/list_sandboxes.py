@@ -67,20 +67,7 @@ def sync_detailed(
     limit: int | Unset = UNSET,
     cursor: str | Unset = UNSET,
 ) -> Response[Error | SandboxesResponse]:
-    """List sandboxes
-
-    Args:
-        all_ (bool | Unset): List stopped sandboxes too.
-        limit (int | Unset): The most rows a page holds; none answers the whole list.
-        cursor (str | Unset): The next of the page before; this page starts after it.
-
-    Raises:
-        errors.UnexpectedStatus: If the server returns an undocumented status code and Client.raise_on_unexpected_status is True.
-        httpx.TimeoutException: If the request takes longer than Client.timeout.
-
-    Returns:
-        Response[Error | SandboxesResponse]
-    """
+    """List sandboxes"""
 
     kwargs = _get_kwargs(
         all_=all_,
@@ -102,20 +89,7 @@ def sync(
     limit: int | Unset = UNSET,
     cursor: str | Unset = UNSET,
 ) -> Error | SandboxesResponse | None:
-    """List sandboxes
-
-    Args:
-        all_ (bool | Unset): List stopped sandboxes too.
-        limit (int | Unset): The most rows a page holds; none answers the whole list.
-        cursor (str | Unset): The next of the page before; this page starts after it.
-
-    Raises:
-        errors.UnexpectedStatus: If the server returns an undocumented status code and Client.raise_on_unexpected_status is True.
-        httpx.TimeoutException: If the request takes longer than Client.timeout.
-
-    Returns:
-        Error | SandboxesResponse
-    """
+    """List sandboxes"""
 
     return sync_detailed(
         client=client,
@@ -132,20 +106,7 @@ async def asyncio_detailed(
     limit: int | Unset = UNSET,
     cursor: str | Unset = UNSET,
 ) -> Response[Error | SandboxesResponse]:
-    """List sandboxes
-
-    Args:
-        all_ (bool | Unset): List stopped sandboxes too.
-        limit (int | Unset): The most rows a page holds; none answers the whole list.
-        cursor (str | Unset): The next of the page before; this page starts after it.
-
-    Raises:
-        errors.UnexpectedStatus: If the server returns an undocumented status code and Client.raise_on_unexpected_status is True.
-        httpx.TimeoutException: If the request takes longer than Client.timeout.
-
-    Returns:
-        Response[Error | SandboxesResponse]
-    """
+    """List sandboxes"""
 
     kwargs = _get_kwargs(
         all_=all_,
@@ -165,20 +126,7 @@ async def asyncio(
     limit: int | Unset = UNSET,
     cursor: str | Unset = UNSET,
 ) -> Error | SandboxesResponse | None:
-    """List sandboxes
-
-    Args:
-        all_ (bool | Unset): List stopped sandboxes too.
-        limit (int | Unset): The most rows a page holds; none answers the whole list.
-        cursor (str | Unset): The next of the page before; this page starts after it.
-
-    Raises:
-        errors.UnexpectedStatus: If the server returns an undocumented status code and Client.raise_on_unexpected_status is True.
-        httpx.TimeoutException: If the request takes longer than Client.timeout.
-
-    Returns:
-        Error | SandboxesResponse
-    """
+    """List sandboxes"""
 
     return (
         await asyncio_detailed(

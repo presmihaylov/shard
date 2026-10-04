@@ -72,19 +72,7 @@ def sync_detailed(
     client: AuthenticatedClient | Client,
     follow: bool | Unset = UNSET,
 ) -> Response[Any | Error | list[Record]]:
-    """Read or follow the egress decisions of a sandbox
-
-    Args:
-        id (str): The sandbox id or name.
-        follow (bool | Unset): Keep the stream open; a WebSocket upgrade follows too.
-
-    Raises:
-        errors.UnexpectedStatus: If the server returns an undocumented status code and Client.raise_on_unexpected_status is True.
-        httpx.TimeoutException: If the request takes longer than Client.timeout.
-
-    Returns:
-        Response[Any | Error | list[Record]]
-    """
+    """Read or follow the egress decisions of a sandbox"""
 
     kwargs = _get_kwargs(
         id=id,
@@ -104,19 +92,7 @@ def sync(
     client: AuthenticatedClient | Client,
     follow: bool | Unset = UNSET,
 ) -> Any | Error | list[Record] | None:
-    """Read or follow the egress decisions of a sandbox
-
-    Args:
-        id (str): The sandbox id or name.
-        follow (bool | Unset): Keep the stream open; a WebSocket upgrade follows too.
-
-    Raises:
-        errors.UnexpectedStatus: If the server returns an undocumented status code and Client.raise_on_unexpected_status is True.
-        httpx.TimeoutException: If the request takes longer than Client.timeout.
-
-    Returns:
-        Any | Error | list[Record]
-    """
+    """Read or follow the egress decisions of a sandbox"""
 
     return sync_detailed(
         id=id,
@@ -131,19 +107,7 @@ async def asyncio_detailed(
     client: AuthenticatedClient | Client,
     follow: bool | Unset = UNSET,
 ) -> Response[Any | Error | list[Record]]:
-    """Read or follow the egress decisions of a sandbox
-
-    Args:
-        id (str): The sandbox id or name.
-        follow (bool | Unset): Keep the stream open; a WebSocket upgrade follows too.
-
-    Raises:
-        errors.UnexpectedStatus: If the server returns an undocumented status code and Client.raise_on_unexpected_status is True.
-        httpx.TimeoutException: If the request takes longer than Client.timeout.
-
-    Returns:
-        Response[Any | Error | list[Record]]
-    """
+    """Read or follow the egress decisions of a sandbox"""
 
     kwargs = _get_kwargs(
         id=id,
@@ -161,19 +125,7 @@ async def asyncio(
     client: AuthenticatedClient | Client,
     follow: bool | Unset = UNSET,
 ) -> Any | Error | list[Record] | None:
-    """Read or follow the egress decisions of a sandbox
-
-    Args:
-        id (str): The sandbox id or name.
-        follow (bool | Unset): Keep the stream open; a WebSocket upgrade follows too.
-
-    Raises:
-        errors.UnexpectedStatus: If the server returns an undocumented status code and Client.raise_on_unexpected_status is True.
-        httpx.TimeoutException: If the request takes longer than Client.timeout.
-
-    Returns:
-        Any | Error | list[Record]
-    """
+    """Read or follow the egress decisions of a sandbox"""
 
     return (
         await asyncio_detailed(

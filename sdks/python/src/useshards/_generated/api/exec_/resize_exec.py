@@ -66,20 +66,7 @@ def sync_detailed(
     client: AuthenticatedClient | Client,
     body: TerminalSize | Unset = UNSET,
 ) -> Response[Any | Error]:
-    """Resize the terminal of an exec
-
-    Args:
-        id (str): The sandbox id or name.
-        exec_ (str): The exec id.
-        body (TerminalSize | Unset):
-
-    Raises:
-        errors.UnexpectedStatus: If the server returns an undocumented status code and Client.raise_on_unexpected_status is True.
-        httpx.TimeoutException: If the request takes longer than Client.timeout.
-
-    Returns:
-        Response[Any | Error]
-    """
+    """Resize the terminal of an exec"""
 
     kwargs = _get_kwargs(
         id=id,
@@ -101,20 +88,7 @@ def sync(
     client: AuthenticatedClient | Client,
     body: TerminalSize | Unset = UNSET,
 ) -> Any | Error | None:
-    """Resize the terminal of an exec
-
-    Args:
-        id (str): The sandbox id or name.
-        exec_ (str): The exec id.
-        body (TerminalSize | Unset):
-
-    Raises:
-        errors.UnexpectedStatus: If the server returns an undocumented status code and Client.raise_on_unexpected_status is True.
-        httpx.TimeoutException: If the request takes longer than Client.timeout.
-
-    Returns:
-        Any | Error
-    """
+    """Resize the terminal of an exec"""
 
     return sync_detailed(
         id=id,
@@ -131,20 +105,7 @@ async def asyncio_detailed(
     client: AuthenticatedClient | Client,
     body: TerminalSize | Unset = UNSET,
 ) -> Response[Any | Error]:
-    """Resize the terminal of an exec
-
-    Args:
-        id (str): The sandbox id or name.
-        exec_ (str): The exec id.
-        body (TerminalSize | Unset):
-
-    Raises:
-        errors.UnexpectedStatus: If the server returns an undocumented status code and Client.raise_on_unexpected_status is True.
-        httpx.TimeoutException: If the request takes longer than Client.timeout.
-
-    Returns:
-        Response[Any | Error]
-    """
+    """Resize the terminal of an exec"""
 
     kwargs = _get_kwargs(
         id=id,
@@ -164,20 +125,7 @@ async def asyncio(
     client: AuthenticatedClient | Client,
     body: TerminalSize | Unset = UNSET,
 ) -> Any | Error | None:
-    """Resize the terminal of an exec
-
-    Args:
-        id (str): The sandbox id or name.
-        exec_ (str): The exec id.
-        body (TerminalSize | Unset):
-
-    Raises:
-        errors.UnexpectedStatus: If the server returns an undocumented status code and Client.raise_on_unexpected_status is True.
-        httpx.TimeoutException: If the request takes longer than Client.timeout.
-
-    Returns:
-        Any | Error
-    """
+    """Resize the terminal of an exec"""
 
     return (
         await asyncio_detailed(

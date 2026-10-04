@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import io
+import itertools
 import os
 import stat
 import tarfile
@@ -175,6 +176,27 @@ def test_negative_size_refused(tmp_path: Path) -> None:
     dst = refused(tmp_path, negative(-1), "a negative size")
     assert not (dst / "b").exists()
     assert leftovers(dst) == []
+
+
+def test_occupied_temp_name_kept(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    dst = tmp_path / "dst"
+    dst.mkdir()
+    theirs = dst / ".useshards-unpack-taken"
+    theirs.write_bytes(b"theirs")
+    taken = itertools.cycle([True, False])
+    fresh = itertools.count()
+    monkeypatch.setattr(_archive, "token_hex", lambda _: "taken" if next(taken) else f"fresh{next(fresh)}")
+    source = top(
+        entry("top/a", data=b"hello"),
+        entry("top/s", tarfile.SYMTYPE, link="a"),
+        entry("top/h", tarfile.LNKTYPE, link="top/a"),
+    )
+    _archive.unpack(source, str(dst), "top")
+    assert theirs.read_bytes() == b"theirs"
+    assert (dst / "a").read_bytes() == b"hello"
+    assert (dst / "s").read_bytes() == b"hello"
+    assert (dst / "h").read_bytes() == b"hello"
+    assert leftovers(dst) == [theirs.name]
 
 
 def test_entry_cap(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:

@@ -70,20 +70,7 @@ def sync_detailed(
     body: CreateRequest | Unset = UNSET,
     wait: bool | Unset = UNSET,
 ) -> Response[Error | Sandbox]:
-    """Create a sandbox
-
-    Args:
-        wait (bool | Unset): Answer once the sandbox leaves pending; with Accept:
-            application/x-ndjson the pull streams first.
-        body (CreateRequest | Unset):
-
-    Raises:
-        errors.UnexpectedStatus: If the server returns an undocumented status code and Client.raise_on_unexpected_status is True.
-        httpx.TimeoutException: If the request takes longer than Client.timeout.
-
-    Returns:
-        Response[Error | Sandbox]
-    """
+    """Create a sandbox"""
 
     kwargs = _get_kwargs(
         body=body,
@@ -103,20 +90,7 @@ def sync(
     body: CreateRequest | Unset = UNSET,
     wait: bool | Unset = UNSET,
 ) -> Error | Sandbox | None:
-    """Create a sandbox
-
-    Args:
-        wait (bool | Unset): Answer once the sandbox leaves pending; with Accept:
-            application/x-ndjson the pull streams first.
-        body (CreateRequest | Unset):
-
-    Raises:
-        errors.UnexpectedStatus: If the server returns an undocumented status code and Client.raise_on_unexpected_status is True.
-        httpx.TimeoutException: If the request takes longer than Client.timeout.
-
-    Returns:
-        Error | Sandbox
-    """
+    """Create a sandbox"""
 
     return sync_detailed(
         client=client,
@@ -131,20 +105,7 @@ async def asyncio_detailed(
     body: CreateRequest | Unset = UNSET,
     wait: bool | Unset = UNSET,
 ) -> Response[Error | Sandbox]:
-    """Create a sandbox
-
-    Args:
-        wait (bool | Unset): Answer once the sandbox leaves pending; with Accept:
-            application/x-ndjson the pull streams first.
-        body (CreateRequest | Unset):
-
-    Raises:
-        errors.UnexpectedStatus: If the server returns an undocumented status code and Client.raise_on_unexpected_status is True.
-        httpx.TimeoutException: If the request takes longer than Client.timeout.
-
-    Returns:
-        Response[Error | Sandbox]
-    """
+    """Create a sandbox"""
 
     kwargs = _get_kwargs(
         body=body,
@@ -162,20 +123,7 @@ async def asyncio(
     body: CreateRequest | Unset = UNSET,
     wait: bool | Unset = UNSET,
 ) -> Error | Sandbox | None:
-    """Create a sandbox
-
-    Args:
-        wait (bool | Unset): Answer once the sandbox leaves pending; with Accept:
-            application/x-ndjson the pull streams first.
-        body (CreateRequest | Unset):
-
-    Raises:
-        errors.UnexpectedStatus: If the server returns an undocumented status code and Client.raise_on_unexpected_status is True.
-        httpx.TimeoutException: If the request takes longer than Client.timeout.
-
-    Returns:
-        Error | Sandbox
-    """
+    """Create a sandbox"""
 
     return (
         await asyncio_detailed(

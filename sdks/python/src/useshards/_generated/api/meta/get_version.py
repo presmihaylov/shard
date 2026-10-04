@@ -48,15 +48,7 @@ def sync_detailed(
     *,
     client: AuthenticatedClient | Client,
 ) -> Response[Error | VersionResponse]:
-    """Read the daemon and API versions
-
-    Raises:
-        errors.UnexpectedStatus: If the server returns an undocumented status code and Client.raise_on_unexpected_status is True.
-        httpx.TimeoutException: If the request takes longer than Client.timeout.
-
-    Returns:
-        Response[Error | VersionResponse]
-    """
+    """Read the daemon and API versions"""
 
     kwargs = _get_kwargs()
 
@@ -71,15 +63,7 @@ def sync(
     *,
     client: AuthenticatedClient | Client,
 ) -> Error | VersionResponse | None:
-    """Read the daemon and API versions
-
-    Raises:
-        errors.UnexpectedStatus: If the server returns an undocumented status code and Client.raise_on_unexpected_status is True.
-        httpx.TimeoutException: If the request takes longer than Client.timeout.
-
-    Returns:
-        Error | VersionResponse
-    """
+    """Read the daemon and API versions"""
 
     return sync_detailed(
         client=client,
@@ -90,15 +74,7 @@ async def asyncio_detailed(
     *,
     client: AuthenticatedClient | Client,
 ) -> Response[Error | VersionResponse]:
-    """Read the daemon and API versions
-
-    Raises:
-        errors.UnexpectedStatus: If the server returns an undocumented status code and Client.raise_on_unexpected_status is True.
-        httpx.TimeoutException: If the request takes longer than Client.timeout.
-
-    Returns:
-        Response[Error | VersionResponse]
-    """
+    """Read the daemon and API versions"""
 
     kwargs = _get_kwargs()
 
@@ -111,15 +87,7 @@ async def asyncio(
     *,
     client: AuthenticatedClient | Client,
 ) -> Error | VersionResponse | None:
-    """Read the daemon and API versions
-
-    Raises:
-        errors.UnexpectedStatus: If the server returns an undocumented status code and Client.raise_on_unexpected_status is True.
-        httpx.TimeoutException: If the request takes longer than Client.timeout.
-
-    Returns:
-        Error | VersionResponse
-    """
+    """Read the daemon and API versions"""
 
     return (
         await asyncio_detailed(

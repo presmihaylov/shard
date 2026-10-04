@@ -14,12 +14,6 @@ T = TypeVar("T", bound="RuleText")
 
 @_attrs_define
 class RuleText:
-    """
-    Attributes:
-        action (RuleTextAction):
-        rule (str):
-    """
-
     action: RuleTextAction
     rule: str
 

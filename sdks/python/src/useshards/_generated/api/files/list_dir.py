@@ -63,19 +63,7 @@ def sync_detailed(
     client: AuthenticatedClient | Client,
     path: str | Unset = UNSET,
 ) -> Response[EntriesResponse | Error]:
-    """List a directory
-
-    Args:
-        id (str): The sandbox id or name.
-        path (str | Unset): The absolute guest path.
-
-    Raises:
-        errors.UnexpectedStatus: If the server returns an undocumented status code and Client.raise_on_unexpected_status is True.
-        httpx.TimeoutException: If the request takes longer than Client.timeout.
-
-    Returns:
-        Response[EntriesResponse | Error]
-    """
+    """List a directory"""
 
     kwargs = _get_kwargs(
         id=id,
@@ -95,19 +83,7 @@ def sync(
     client: AuthenticatedClient | Client,
     path: str | Unset = UNSET,
 ) -> EntriesResponse | Error | None:
-    """List a directory
-
-    Args:
-        id (str): The sandbox id or name.
-        path (str | Unset): The absolute guest path.
-
-    Raises:
-        errors.UnexpectedStatus: If the server returns an undocumented status code and Client.raise_on_unexpected_status is True.
-        httpx.TimeoutException: If the request takes longer than Client.timeout.
-
-    Returns:
-        EntriesResponse | Error
-    """
+    """List a directory"""
 
     return sync_detailed(
         id=id,
@@ -122,19 +98,7 @@ async def asyncio_detailed(
     client: AuthenticatedClient | Client,
     path: str | Unset = UNSET,
 ) -> Response[EntriesResponse | Error]:
-    """List a directory
-
-    Args:
-        id (str): The sandbox id or name.
-        path (str | Unset): The absolute guest path.
-
-    Raises:
-        errors.UnexpectedStatus: If the server returns an undocumented status code and Client.raise_on_unexpected_status is True.
-        httpx.TimeoutException: If the request takes longer than Client.timeout.
-
-    Returns:
-        Response[EntriesResponse | Error]
-    """
+    """List a directory"""
 
     kwargs = _get_kwargs(
         id=id,
@@ -152,19 +116,7 @@ async def asyncio(
     client: AuthenticatedClient | Client,
     path: str | Unset = UNSET,
 ) -> EntriesResponse | Error | None:
-    """List a directory
-
-    Args:
-        id (str): The sandbox id or name.
-        path (str | Unset): The absolute guest path.
-
-    Raises:
-        errors.UnexpectedStatus: If the server returns an undocumented status code and Client.raise_on_unexpected_status is True.
-        httpx.TimeoutException: If the request takes longer than Client.timeout.
-
-    Returns:
-        EntriesResponse | Error
-    """
+    """List a directory"""
 
     return (
         await asyncio_detailed(

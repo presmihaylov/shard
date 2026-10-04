@@ -59,7 +59,7 @@ async def main() -> None:
 asyncio.run(main())
 ```
 
-`examples/` has both in full.
+`examples/` has both in full. Set `SHARD_REMOTE` and `SHARD_API_KEY`, then run `python examples/quickstart.py`.
 
 ## What to know
 
@@ -67,11 +67,12 @@ asyncio.run(main())
   its sandbox stays running, so you can still exec into it. Only `stop()` or `remove()` ends it.
 - **A string command runs under `/bin/sh -c`.** A list runs as it is.
 - **`exec(..., background=True)` answers a `Command`.** `wait()`, `kill()`, `write_stdin()` and
-  `resize()` act on it. `commands.get(id)` finds it again from another client.
+  `resize()` act on it. `commands.get(id)` finds it again from another client. In the foreground `stdin=` is
+  the whole input; in the background `stdin=True` keeps the input open for `write_stdin()`.
 - **A cancel never kills the remote command.** An asyncio cancel, a timeout or a dropped connection
   ends only the wait. The command runs on until it exits or you call `kill()`.
-- **Output is capped.** A result keeps the newest 8 MiB of each stream (`output_limit_bytes=`).
-  `on_stdout=` and `on_stderr=` see every chunk as it arrives.
+- **Output is capped.** A result keeps the newest 8 MiB across stdout and stderr together
+  (`output_limit_bytes=`). `on_stdout=` and `on_stderr=` see every chunk as it arrives.
 - **Files stream.** `files.download()` writes to a temporary file and renames it at the end, so a
   large file never sits in memory. An upload sends its length first: `files.upload()` takes a path,
   and `files.write()` takes bytes, a seekable file, or a stream with `size=`.
@@ -88,6 +89,12 @@ Every exception derives from `ShardError`.
 | `APIError` | The daemon refused the request: `AuthenticationError` (401), `PermissionDeniedError` (403), `NotFoundError` (404), `InvalidRequestError` (400, 413), `ConflictError` (409), `UnsupportedError`, `ServerError` (5xx). |
 
 A non-zero exit code is not an exception. Read `result.exit_code`.
+
+## The shared suite
+
+`uv run python -m suite` runs the checks of `sdks/suite/checks.txt` against `SHARD_REMOTE`, with
+`SHARD_API_KEY` and `SHARD_SUITE_WILDCARD_KEY` each a `"*"` token. `SHARD_SUITE_ONLY=name,name` runs a subset,
+`SHARD_SUITE_MODE=sync|async` runs one mode, and `SHARD_SUITE_IMAGE` picks the image.
 
 ## License
 

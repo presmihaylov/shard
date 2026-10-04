@@ -14,19 +14,6 @@ T = TypeVar("T", bound="Record")
 
 @_attrs_define
 class Record:
-    """
-    Attributes:
-        rule (str):
-        source (str):
-        time (datetime.datetime):
-        verdict (str):
-        address (str | Unset):
-        host (str | Unset):
-        port (int | Unset):
-        reason (str | Unset):
-        rule_text (str | Unset):
-    """
-
     rule: str
     source: str
     time: datetime.datetime

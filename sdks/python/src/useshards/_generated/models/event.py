@@ -13,17 +13,6 @@ T = TypeVar("T", bound="Event")
 
 @_attrs_define
 class Event:
-    """
-    Attributes:
-        status (str):
-        bytes_ (int | Unset):
-        digest (str | Unset):
-        layer (int | Unset):
-        layers (int | Unset):
-        present (bool | Unset):
-        reference (str | Unset):
-    """
-
     status: str
     bytes_: int | Unset = UNSET
     digest: str | Unset = UNSET

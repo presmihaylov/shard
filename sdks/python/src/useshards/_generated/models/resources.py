@@ -13,13 +13,6 @@ T = TypeVar("T", bound="Resources")
 
 @_attrs_define
 class Resources:
-    """
-    Attributes:
-        disk_mib (int):
-        memory_mib (int):
-        vcpus (int):
-    """
-
     disk_mib: int
     memory_mib: int
     vcpus: int

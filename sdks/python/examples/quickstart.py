@@ -1,7 +1,4 @@
-"""Run commands in a fresh sandbox, put a file in it, and wait on an app.
-
-Set SHARD_REMOTE and SHARD_API_KEY, then run: python examples/quickstart.py
-"""
+"""Run commands in a fresh sandbox, put a file in it, and wait on an app."""
 
 from useshards import Shard
 

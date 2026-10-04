@@ -13,11 +13,6 @@ T = TypeVar("T", bound="AppStopRequest")
 
 @_attrs_define
 class AppStopRequest:
-    """
-    Attributes:
-        force (bool | Unset):
-    """
-
     force: bool | Unset = UNSET
 
     def to_dict(self) -> dict[str, Any]:

@@ -74,21 +74,7 @@ def sync_detailed(
     path: str | Unset = UNSET,
     user: str | Unset = UNSET,
 ) -> Response[Any | Error]:
-    """Unpack a tar under a directory
-
-    Args:
-        id (str): The sandbox id or name.
-        path (str | Unset): The absolute guest directory.
-        user (str | Unset): Who unpacks and owns the files; none is the entrypoint's user.
-        body (File):
-
-    Raises:
-        errors.UnexpectedStatus: If the server returns an undocumented status code and Client.raise_on_unexpected_status is True.
-        httpx.TimeoutException: If the request takes longer than Client.timeout.
-
-    Returns:
-        Response[Any | Error]
-    """
+    """Unpack a tar under a directory"""
 
     kwargs = _get_kwargs(
         id=id,
@@ -112,21 +98,7 @@ def sync(
     path: str | Unset = UNSET,
     user: str | Unset = UNSET,
 ) -> Any | Error | None:
-    """Unpack a tar under a directory
-
-    Args:
-        id (str): The sandbox id or name.
-        path (str | Unset): The absolute guest directory.
-        user (str | Unset): Who unpacks and owns the files; none is the entrypoint's user.
-        body (File):
-
-    Raises:
-        errors.UnexpectedStatus: If the server returns an undocumented status code and Client.raise_on_unexpected_status is True.
-        httpx.TimeoutException: If the request takes longer than Client.timeout.
-
-    Returns:
-        Any | Error
-    """
+    """Unpack a tar under a directory"""
 
     return sync_detailed(
         id=id,
@@ -145,21 +117,7 @@ async def asyncio_detailed(
     path: str | Unset = UNSET,
     user: str | Unset = UNSET,
 ) -> Response[Any | Error]:
-    """Unpack a tar under a directory
-
-    Args:
-        id (str): The sandbox id or name.
-        path (str | Unset): The absolute guest directory.
-        user (str | Unset): Who unpacks and owns the files; none is the entrypoint's user.
-        body (File):
-
-    Raises:
-        errors.UnexpectedStatus: If the server returns an undocumented status code and Client.raise_on_unexpected_status is True.
-        httpx.TimeoutException: If the request takes longer than Client.timeout.
-
-    Returns:
-        Response[Any | Error]
-    """
+    """Unpack a tar under a directory"""
 
     kwargs = _get_kwargs(
         id=id,
@@ -181,21 +139,7 @@ async def asyncio(
     path: str | Unset = UNSET,
     user: str | Unset = UNSET,
 ) -> Any | Error | None:
-    """Unpack a tar under a directory
-
-    Args:
-        id (str): The sandbox id or name.
-        path (str | Unset): The absolute guest directory.
-        user (str | Unset): Who unpacks and owns the files; none is the entrypoint's user.
-        body (File):
-
-    Raises:
-        errors.UnexpectedStatus: If the server returns an undocumented status code and Client.raise_on_unexpected_status is True.
-        httpx.TimeoutException: If the request takes longer than Client.timeout.
-
-    Returns:
-        Any | Error
-    """
+    """Unpack a tar under a directory"""
 
     return (
         await asyncio_detailed(

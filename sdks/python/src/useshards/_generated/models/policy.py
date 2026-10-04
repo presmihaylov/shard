@@ -17,12 +17,6 @@ T = TypeVar("T", bound="Policy")
 
 @_attrs_define
 class Policy:
-    """
-    Attributes:
-        name (str):
-        rules (list[Rule]):
-    """
-
     name: str
     rules: list[Rule]
 

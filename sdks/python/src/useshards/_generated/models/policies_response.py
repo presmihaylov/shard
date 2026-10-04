@@ -17,12 +17,6 @@ T = TypeVar("T", bound="PoliciesResponse")
 
 @_attrs_define
 class PoliciesResponse:
-    """
-    Attributes:
-        next_ (None | str):
-        policies (list[Policy]):
-    """
-
     next_: None | str
     policies: list[Policy]
 

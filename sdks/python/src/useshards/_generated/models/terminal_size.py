@@ -13,12 +13,6 @@ T = TypeVar("T", bound="TerminalSize")
 
 @_attrs_define
 class TerminalSize:
-    """
-    Attributes:
-        cols (int | Unset):
-        rows (int | Unset):
-    """
-
     cols: int | Unset = UNSET
     rows: int | Unset = UNSET
 

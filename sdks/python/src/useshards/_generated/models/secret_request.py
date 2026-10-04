@@ -13,13 +13,6 @@ T = TypeVar("T", bound="SecretRequest")
 
 @_attrs_define
 class SecretRequest:
-    """
-    Attributes:
-        value (str):
-        destinations (list[str] | Unset):
-        placeholder (str | Unset):
-    """
-
     value: str
     destinations: list[str] | Unset = UNSET
     placeholder: str | Unset = UNSET

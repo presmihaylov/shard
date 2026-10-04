@@ -17,12 +17,6 @@ T = TypeVar("T", bound="SnapshotsResponse")
 
 @_attrs_define
 class SnapshotsResponse:
-    """
-    Attributes:
-        next_ (None | str):
-        snapshots (list[Snapshot]):
-    """
-
     next_: None | str
     snapshots: list[Snapshot]
 
