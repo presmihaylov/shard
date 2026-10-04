@@ -382,8 +382,8 @@ func TestResumeTakesOnlyASnapshotOfAPausedSandbox(t *testing.T) {
 	p := newProviderOver(t, `echo '{"id":"amber-otter-1a2b","status":"running","pid":42}'`)
 
 	err := p.Resume(t.Context(), "amber-otter-1a2b", t.TempDir())
-	if err == nil || !strings.Contains(err.Error(), "no snapshot") {
-		t.Errorf("Resume from an empty directory returned %v, want a refusal that says there is no snapshot", err)
+	if err == nil || !strings.Contains(err.Error(), "no checkpoint") {
+		t.Errorf("Resume from an empty directory returned %v, want a refusal that says there is no checkpoint", err)
 	}
 
 	dir := t.TempDir()
