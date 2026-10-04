@@ -124,7 +124,7 @@ func (a App) tokensRevoke(_ context.Context, args []string) error {
 	}
 
 	if flags.NArg() != 1 {
-		return fmt.Errorf("tokens revoke needs one token id, got %d; put the flags before the id", flags.NArg())
+		return fmt.Errorf("tokens revoke takes one token id, got %s; put the flags before the id", gotArgs(flags.Args()))
 	}
 	id := flags.Arg(0)
 	found, err := serve.RevokeToken(path, id)
