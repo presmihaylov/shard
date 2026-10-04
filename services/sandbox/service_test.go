@@ -328,7 +328,7 @@ func TestCreateRefusesMoreCPUsThanTheHostHas(t *testing.T) {
 		_, err := svc.Create(t.Context(), req)
 
 		var refused *sandbox.RequestError
-		if want := fmt.Sprintf("--cpus %d is more than the 8 CPUs this host has", cpus); !errors.As(err, &refused) || !strings.Contains(err.Error(), want) {
+		if want := fmt.Sprintf("--vcpus %d is more than the 8 CPUs this host has", cpus); !errors.As(err, &refused) || !strings.Contains(err.Error(), want) {
 			t.Fatalf("create with %d cpus = %v, want a request error that says %q", cpus, err, want)
 		}
 		if slices.Contains(r.calls, "repo.Create") || slices.Contains(r.calls, "images.Pull") {

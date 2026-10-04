@@ -1,0 +1,113 @@
+---
+import { REPO_URL } from '../../site';
+import Icon from '../Icon.astro';
+
+const LIGHT_BG =
+	'radial-gradient(80% 60% at 15% -10%, #FBF9F5, transparent 55%), radial-gradient(58% 55% at 90% 116%, rgba(150,156,180,0.14), transparent 70%), linear-gradient(160deg, #F1EFEA, #E9E6DF 55%, #E4E1D8)';
+const DARK_BG =
+	'radial-gradient(80% 60% at 15% -10%, rgba(255,250,244,0.05), transparent 55%), radial-gradient(58% 55% at 90% 116%, rgba(150,156,180,0.10), transparent 70%), linear-gradient(160deg, #251f19, #1a1510)';
+const GRAIN =
+	'data:image/svg+xml;base64,PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHdpZHRoPSIyMDAiIGhlaWdodD0iMjAwIj48ZmlsdGVyIGlkPSJuIj48ZmVUdXJidWxlbmNlIHR5cGU9ImZyYWN0YWxOb2lzZSIgYmFzZUZyZXF1ZW5jeT0iMC44NSIgbnVtT2N0YXZlcz0iMiIgc3RpdGNoVGlsZXM9InN0aXRjaCIvPjwvZmlsdGVyPjxyZWN0IHdpZHRoPSIxMDAlIiBoZWlnaHQ9IjEwMCUiIGZpbHRlcj0idXJsKCNuKSIvPjwvc3ZnPg==';
+
+const groups = [
+	{
+		title: 'Docs',
+		links: [
+			{ label: 'Overview', href: '/docs/' },
+			{ label: 'Components', href: '/docs/components/' },
+			{ label: 'Placeholder guide', href: '/docs/guides/placeholder/' },
+		],
+	},
+	{
+		title: 'Project',
+		links: [
+			{ label: 'Source', href: REPO_URL },
+			{ label: 'Releases', href: `${REPO_URL}/releases` },
+		],
+	},
+];
+---
+
+<footer class="relative isolate z-10 w-full overflow-hidden">
+	<div class="absolute inset-0 -z-10 dark:hidden" style={`background: ${LIGHT_BG}`}>
+		<div
+			class="absolute inset-0"
+			style={`background-image: url(${GRAIN}); background-size: 180px; opacity: .05; mix-blend-mode: multiply`}
+		>
+		</div>
+	</div>
+	<div class="absolute inset-0 -z-10 hidden dark:block" style={`background: ${DARK_BG}`}>
+		<div
+			class="absolute inset-0"
+			style={`background-image: url(${GRAIN}); background-size: 180px; opacity: .04`}
+		>
+		</div>
+	</div>
+
+	<div class="mx-auto max-w-7xl px-6 md:px-8">
+		<div class="flex flex-col gap-8 pt-20 pb-12 md:flex-row md:items-end md:justify-between md:gap-14">
+			<div>
+				<span class="mono-label">Placeholder</span>
+				<h2
+					class="mt-6 font-display text-[1.9rem] font-semibold leading-[1.14] tracking-[-0.025em] text-foreground md:text-[2.05rem]"
+				>
+					A placeholder sign-off line<span style="color: #C79A4E">.</span>
+				</h2>
+				<p class="mt-4 max-w-sm text-sm leading-relaxed text-muted-foreground">
+					Placeholder copy for the closing band. The real words land with the content ticket.
+				</p>
+			</div>
+			<div class="flex flex-wrap items-center gap-3">
+				<a href="/docs/" class="vbtn vbtn--lg vbtn--neutral vbtn--primary nairi-focus-ring">
+					<span>Read the docs</span>
+				</a>
+				<a
+					href={REPO_URL}
+					class="vbtn vbtn--lg vbtn--neutral vbtn--ghost border border-foreground/15 nairi-focus-ring"
+				>
+					<span>View the source</span>
+				</a>
+			</div>
+		</div>
+
+		<div class="h-px w-full bg-foreground/[0.07]"></div>
+
+		<div class="flex flex-col justify-between gap-10 py-11 md:flex-row md:gap-14">
+			<div class="flex flex-wrap gap-x-14 gap-y-9 md:gap-x-16">
+				{
+					groups.map((group) => (
+						<div>
+							<p class="text-xs font-bold uppercase tracking-[0.08em] text-muted-foreground">{group.title}</p>
+							<ul class="mt-3.5 flex flex-col gap-[11px]">
+								{group.links.map((link) => (
+									<li>
+										<a
+											href={link.href}
+											class="text-sm font-medium text-foreground/70 transition-colors hover:text-foreground"
+										>
+											{link.label}
+										</a>
+									</li>
+								))}
+							</ul>
+						</div>
+					))
+				}
+			</div>
+			<a
+				href={REPO_URL}
+				aria-label="shard on GitHub"
+				class="flex size-9 items-center justify-center rounded-[9px] border border-foreground/15 text-muted-foreground transition-colors hover:border-foreground/25 hover:text-foreground"
+			>
+				<Icon name="github" size={17} />
+			</a>
+		</div>
+
+		<div class="h-px w-full bg-foreground/[0.07]"></div>
+
+		<div class="flex items-center justify-between gap-4 py-6">
+			<span class="font-brand text-lg leading-none text-foreground">shard</span>
+			<span class="text-xs text-muted-foreground">Placeholder copyright line</span>
+		</div>
+	</div>
+</footer>

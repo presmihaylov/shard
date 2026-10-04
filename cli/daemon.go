@@ -24,7 +24,7 @@ func (a App) daemon(ctx context.Context, args []string) error {
 		return err
 	}
 	if flags.NArg() != 0 {
-		return fmt.Errorf("daemon takes no argument, or status, got %s", strings.Join(flags.Args(), " "))
+		return fmt.Errorf("daemon takes no arguments, or status, got %s", gotArgs(flags.Args()))
 	}
 
 	return daemon.Run(ctx, daemon.Config{
@@ -46,7 +46,7 @@ func (a App) daemonStatus(ctx context.Context, args []string) error {
 		return err
 	}
 	if len(rest) != 0 {
-		return fmt.Errorf("daemon status takes no argument, got %d", len(rest))
+		return fmt.Errorf("daemon status takes no arguments, got %s", gotArgs(rest))
 	}
 
 	c, err := a.localClient("daemon status")

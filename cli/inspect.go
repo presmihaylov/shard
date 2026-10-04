@@ -12,7 +12,7 @@ func (a App) inspect(ctx context.Context, args []string) error {
 		return err
 	}
 	if len(rest) != 1 {
-		return fmt.Errorf("inspect takes one sandbox id, got %d", len(rest))
+		return fmt.Errorf("inspect takes one sandbox id or name, got %s", gotArgs(rest))
 	}
 	c, err := a.client()
 	if err != nil {
