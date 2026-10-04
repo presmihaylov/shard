@@ -109,8 +109,14 @@ func New(runner *runsc.Runner, bundles *bundle.Service, dirs StateDirs) (*Provid
 
 func (p *Provider) Name() string { return Name }
 
-// CheckResources takes every bound: zero is unbounded on Linux, and a cgroup holds any size.
-func (p *Provider) CheckResources(models.Resources) error { return nil }
+// CheckResources refuses a memory bound under the sentry's own cost, which kills the create with nothing shard can read back.
+func (p *Provider) CheckResources(res models.Resources) error {
+	if res.MemoryMiB > 0 && res.MemoryMiB < MinimumMemoryMiB {
+		return fmt.Errorf("%s needs at least %d MiB of memory, got %d: the sentry itself costs about 30 MiB", Name, MinimumMemoryMiB, res.MemoryMiB)
+	}
+
+	return nil
+}
 
 func (p *Provider) Capabilities() models.Capabilities { return p.caps }
 
@@ -119,11 +125,9 @@ func (p *Provider) ReleaseRoot() error { return p.runsc.DropNullNetns() }
 
 // Create builds the bundle, stacks the writable layer over the image and prepares the container.
 func (p *Provider) Create(ctx context.Context, spec models.SandboxSpec) error {
-	// The sentry boots inside the cgroup runsc builds from this number, so a bound under its own cost
-	// kills the create with nothing shard can read back.
-	if mib := spec.Resources.MemoryMiB; mib > 0 && mib < MinimumMemoryMiB {
-		return fmt.Errorf("sandbox %s asks for %d MiB, and %s needs at least %d MiB: the sentry itself costs about 30 MiB",
-			spec.ID, mib, Name, MinimumMemoryMiB)
+	// Create checks its spec again, so every path to it is held to the same rule.
+	if err := p.CheckResources(spec.Resources); err != nil {
+		return fmt.Errorf("sandbox %s: %w", spec.ID, err)
 	}
 
 	// A live id must not be re-created: the rollback below would unmount the rootfs the first one runs on.
