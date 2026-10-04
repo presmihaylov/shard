@@ -17,6 +17,7 @@ export {
   ServerError,
   ShardError,
   UnknownLengthError,
+  UnsafeArchiveError,
   UnsupportedError,
 } from "./errors.js";
 export { version } from "./version.js";

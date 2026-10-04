@@ -33,6 +33,16 @@ export class CommandNotStartedError extends ShardError {
   }
 }
 
+/** UnsafeArchiveError is an entry of a sandbox's tar that a download refused, as one that would land outside its target. */
+export class UnsafeArchiveError extends ShardError {
+  constructor(
+    readonly entry: string,
+    readonly reason: string,
+  ) {
+    super(`refuse the entry ${JSON.stringify(entry)}: ${reason}`);
+  }
+}
+
 /** APIError is a request the daemon refused. code is the daemon's error code, empty when the body held none. */
 export class APIError extends ShardError {
   constructor(
