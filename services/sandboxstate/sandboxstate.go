@@ -499,6 +499,20 @@ func (u *UnreadableLog) report(err error) {
 	}
 }
 
+// UnreadableIDs names the records a List could not read, and nil when anything else failed it too.
+func UnreadableIDs(err error) []string {
+	if !onlyUnreadable(err) {
+		return nil
+	}
+
+	var ids []string
+	for _, unreadable := range unreadableErrors(err) {
+		ids = append(ids, unreadable.ID)
+	}
+
+	return ids
+}
+
 // unreadableErrors flattens the UnreadableErrors joined into err, in the order List built them.
 func unreadableErrors(err error) []*UnreadableError {
 	if joined, ok := err.(interface{ Unwrap() []error }); ok {

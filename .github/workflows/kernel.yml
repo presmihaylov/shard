@@ -61,10 +61,11 @@ jobs:
           path: dist
           merge-multiple: true
 
+      # Never the latest release: docs/mac.md downloads shard itself from releases/latest.
       - name: publish
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
           tag=$(go run ./packaging/kernel/tag)
           cat dist/*.sha256 > dist/SHA256SUMS
-          gh release create "$tag" --target "$GITHUB_SHA" --title "guest kernel $tag" --notes "Built by the kernel workflow from packaging/kernel. Reproducible: each file was built twice." dist/Image-arm64 dist/vmlinux-amd64 dist/SHA256SUMS
+          gh release create "$tag" --target "$GITHUB_SHA" --title "guest kernel $tag" --latest=false --notes "Built by the kernel workflow from packaging/kernel. Reproducible: each file was built twice." dist/Image-arm64 dist/vmlinux-amd64 dist/SHA256SUMS

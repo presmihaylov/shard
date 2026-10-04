@@ -185,11 +185,12 @@ has a capability flag. They are `CheckResources`, `Create`, `Start`, `Stop`, `Re
 `AdoptStaging`, and `Capabilities` itself.
 
 `CheckResources` answers whether the substrate can run under a bound before the orchestrator writes
-a record, so a refusal leaves nothing in `list`. Only vz and Firecracker refuse anything. A VM's
-memory is real memory, so both refuse `--memory 0` and a bound under 128 MiB by name, and a `--disk`
-whose last block group cannot hold its own metadata. Firecracker also refuses a `--vcpus` above 32
-and a `--disk` under 11 MiB. gVisor, Sysbox and runc take every bound. `Create` checks its spec
-again, so a create from a snapshot or a fork is held to the same rule.
+a record, so a refusal leaves nothing in `list`. A VM's memory is real memory, so vz and
+Firecracker refuse `--memory 0` and a bound under 128 MiB by name, and a `--disk` whose last block
+group cannot hold its own metadata. Firecracker also refuses a `--vcpus` above 32 and a `--disk`
+under 11 MiB. gVisor refuses a `--memory` from 1 to 63 MiB, because the sentry itself costs about
+30 MiB, and takes 0 as unbounded. Sysbox and runc take every bound. `Create` checks its spec again,
+so a create from a snapshot or a fork is held to the same rule.
 
 `Snapshot(ctx, sourceID, dir string) error` is required because it needs nothing a substrate may
 lack. It copies the files that a stopped sandbox kept into `dir`, and a later `Create` reads them
