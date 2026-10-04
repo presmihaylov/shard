@@ -205,11 +205,7 @@ func (p *Provider) Start(ctx context.Context, id string) error {
 			return fmt.Errorf("sandbox %s is %s on %s%s", id, status.State, Name, because(status))
 		}
 		if status.Alive() {
-			if err := p.lost(id); err != nil {
-				return err
-			}
-
-			return p.run(ctx, m, r)
+			return p.runLive(ctx, m, r)
 		}
 	}
 	// A loss names the run that ended, so a fresh boot leaves it behind once that run's vmm is gone (SHARD-578).
@@ -229,6 +225,15 @@ func (p *Provider) Start(ctx context.Context, id string) error {
 	}
 	if err := m.readdress(ctx, r); err != nil {
 		return errors.Join(err, p.end(ctx, m))
+	}
+
+	return p.run(ctx, m, r)
+}
+
+// runLive runs the entrypoint on a VM still up, unless its run was lost, which only a fresh boot leaves behind.
+func (p *Provider) runLive(ctx context.Context, m *machine, r record) error {
+	if err := p.lost(m.id); err != nil {
+		return err
 	}
 
 	return p.run(ctx, m, r)
