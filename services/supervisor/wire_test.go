@@ -153,19 +153,22 @@ func TestAGuestThatFloodsEventsEndsTheControlStream(t *testing.T) {
 			c := supervisor.ControlOver(host)
 
 			written := floodEvents(t, guest, tc.event, tc.most)
-			read := 0
-			for {
-				_, err := c.Next()
-				if err != nil {
-					if !errors.Is(err, supervisor.ErrEventFlood) || read != written-1 {
-						t.Fatalf("next after %d of %d events = %v, want ErrEventFlood after all but the refused one", read, written, err)
-					}
-
-					break
-				}
-				read++
+			read, err := drainEvents(c)
+			if !errors.Is(err, supervisor.ErrEventFlood) || read != written-1 {
+				t.Fatalf("next after %d of %d events = %v, want ErrEventFlood after all but the refused one", read, written, err)
 			}
 		})
+	}
+}
+
+// drainEvents reads Next until it fails, and answers how many events it read and the error that ended them.
+func drainEvents(c *supervisor.Control) (int, error) {
+	read := 0
+	for {
+		if _, err := c.Next(); err != nil {
+			return read, err
+		}
+		read++
 	}
 }
 

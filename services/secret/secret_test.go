@@ -441,7 +441,6 @@ func TestSetTakesAPlaceholderNoEncoderAlters(t *testing.T) {
 	}
 }
 
-// A mistyped --placeholder hands the value as the placeholder, so no refusal may put it on a screen.
 // A rotation keeps the stored placeholder, so a new value inside it is refused too, and the refusal names neither (SHARD-550).
 func TestARotationRefusesAValueInsideTheRetainedPlaceholder(t *testing.T) {
 	s, _ := newStore(t)
@@ -466,6 +465,7 @@ func TestARotationRefusesAValueInsideTheRetainedPlaceholder(t *testing.T) {
 	}
 }
 
+// A mistyped --placeholder hands the value as the placeholder, so no refusal may put it on a screen.
 func TestARefusedPlaceholderNeverEchoesIt(t *testing.T) {
 	s, _ := newStore(t)
 

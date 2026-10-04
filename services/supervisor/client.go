@@ -102,23 +102,28 @@ func (c *Control) read() {
 
 			return
 		}
-		if m.ID == 0 {
-			if !c.push(m, size) {
-				// The close fails the guest's next write at once, and the redial gets a fresh stream.
-				c.end(errors.Join(ErrEventFlood, c.conn.Close()))
-
-				return
-			}
+		if m.ID != 0 {
+			c.answer(m)
 
 			continue
 		}
-		c.pendingMu.Lock()
-		reply, ok := c.pending[m.ID]
-		delete(c.pending, m.ID)
-		c.pendingMu.Unlock()
-		if ok {
-			reply <- m
+		if !c.push(m, size) {
+			// The close fails the guest's next write at once, and the redial gets a fresh stream.
+			c.end(errors.Join(ErrEventFlood, c.conn.Close()))
+
+			return
 		}
+	}
+}
+
+// answer hands a reply to the request that carries its id; one whose request is gone is dropped.
+func (c *Control) answer(m Message) {
+	c.pendingMu.Lock()
+	reply, ok := c.pending[m.ID]
+	delete(c.pending, m.ID)
+	c.pendingMu.Unlock()
+	if ok {
+		reply <- m
 	}
 }
 
