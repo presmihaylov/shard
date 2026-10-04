@@ -84,7 +84,7 @@ func TestReadPasswordReadsOneLineAndGivesTheEchoBack(t *testing.T) {
 	}
 }
 
-// Ctrl-C at the prompt cancels ctx; the read must end on it and leave the terminal echoing.
+// A stop signal at the prompt cancels ctx; the read must end on it, drop the half-typed line and leave the terminal echoing.
 func TestReadPasswordEndsOnCancelAndGivesTheEchoBack(t *testing.T) {
 	pair := openEchoing(t)
 
@@ -96,6 +96,15 @@ func TestReadPasswordEndsOnCancelAndGivesTheEchoBack(t *testing.T) {
 		done <- err
 	}()
 
+	for deadline := time.Now().Add(2 * time.Second); echoes(t, pair.Replica); {
+		if time.Now().After(deadline) {
+			t.Fatal("the prompt never turned the echo off")
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+	if _, err := pair.Master.WriteString("synthetic-partial"); err != nil {
+		t.Fatalf("type half a line: %v", err)
+	}
 	time.Sleep(50 * time.Millisecond)
 	cancel()
 
@@ -109,5 +118,15 @@ func TestReadPasswordEndsOnCancelAndGivesTheEchoBack(t *testing.T) {
 	}
 	if !echoes(t, pair.Replica) {
 		t.Error("a cancelled prompt left the echo off")
+	}
+
+	if _, err := pair.Master.WriteString("next\n"); err != nil {
+		t.Fatalf("type the next line: %v", err)
+	}
+	next, cancelNext := context.WithTimeout(t.Context(), 2*time.Second)
+	defer cancelNext()
+	line, err := ReadPassword(next, pair.Replica)
+	if err != nil || string(line) != "next" {
+		t.Errorf("the next reader got %q, %v, want only the next line", line, err)
 	}
 }

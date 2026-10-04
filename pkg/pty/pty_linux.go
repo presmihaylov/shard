@@ -55,4 +55,6 @@ func replicaOf(master *os.File) (*Pty, error) {
 const (
 	getTermios = unix.TCGETS
 	setTermios = unix.TCSETS
+	// flushTermios sets the terminal and discards the input nobody has read yet.
+	flushTermios = unix.TCSETSF
 )

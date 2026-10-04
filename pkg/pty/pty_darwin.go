@@ -67,4 +67,6 @@ func ptsname(fd int) (string, error) {
 const (
 	getTermios = unix.TIOCGETA
 	setTermios = unix.TIOCSETA
+	// flushTermios sets the terminal and discards the input nobody has read yet.
+	flushTermios = unix.TIOCSETAF
 )

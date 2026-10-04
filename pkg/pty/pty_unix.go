@@ -90,7 +90,12 @@ func readPassword(ctx context.Context, f *os.File) (line []byte, err error) {
 		return nil, fmt.Errorf("turn the echo of %s off: %w", f.Name(), err)
 	}
 	defer func() {
-		if restoreErr := unix.IoctlSetTermios(fd, setTermios, previous); restoreErr != nil {
+		// A prompt that ends early discards what was typed, so a half-typed secret never reaches the next reader.
+		restore := uint(setTermios)
+		if err != nil {
+			restore = flushTermios
+		}
+		if restoreErr := unix.IoctlSetTermios(fd, restore, previous); restoreErr != nil {
 			err = errors.Join(err, fmt.Errorf("restore the terminal settings of %s: %w", f.Name(), restoreErr))
 		}
 	}()
