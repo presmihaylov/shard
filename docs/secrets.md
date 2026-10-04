@@ -19,8 +19,8 @@ names, destinations and placeholders, and never a value. `shard secret remove` r
 record names the secret, and `--force` overrides that. The name is the environment variable the guest
 reads, so it has the same form: uppercase letters, digits and `_`.
 
-**The grant.** A secret is granted to a destination and never to a sandbox alone. `--to` names the
-hosts the value may go to, and a request to any other host never carries it.
+**The grant.** A secret is granted to a destination and never to a sandbox alone. `--destination` names
+the hosts the value may go to, and a request to any other host never carries it.
 `shard create --secret NAME` hands the guest the placeholder as `$NAME` and records the grant in the
 sandbox record, which `shard inspect` prints as `secrets`. A fork carries the grant of its source,
 because the copied bundle already hands the guest the placeholder. A snapshot holds no grant, so a
@@ -139,7 +139,7 @@ the key at the provider, because shard only keeps the key from leaving.
 ## Rotation
 
 Running `shard secret set` again with the same name replaces the value. It keeps the grant and the
-placeholder unless `--to` or `--placeholder` say otherwise. Nothing caches the value. The proxy
+placeholder unless `--destination` or `--placeholder` say otherwise. Nothing caches the value. The proxy
 reads the store on every request, so a live sandbox uses the new value on its next request and never
 learns that anything changed.
 
