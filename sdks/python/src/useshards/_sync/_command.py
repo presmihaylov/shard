@@ -66,6 +66,8 @@ class Command:
         self._result: CommandResult | None = None
         self._error: Exception | None = None
         self._leaving = False
+        # Held for a whole write, so two writes never interleave their pieces and a close never lands mid-write.
+        self._stdin_lock = _backend.Lock()
 
     def __repr__(self) -> str:
         return f"{type(self).__name__}(id={self.id!r}, sandbox={self.sandbox!r})"
@@ -112,10 +114,12 @@ class Command:
     def write_stdin(self, data: bytes | str) -> None:
         if self._stdin is False:
             raise ValueError(f"{self._what} started without stdin=True, so it reads no input")
-        _feed(self._attached("write_stdin"), _bytes(data))
+        with self._stdin_lock:
+            _feed(self._attached("write_stdin"), _bytes(data))
 
     def close_stdin(self) -> None:
-        self._attached("close_stdin").send_binary(bytes([STDIN_CLOSE]))
+        with self._stdin_lock:
+            self._attached("close_stdin").send_binary(bytes([STDIN_CLOSE]))
 
     def disconnect(self) -> None:
         """Leave the command's stream. The command runs on, and wait() or reconnect() takes it up again."""

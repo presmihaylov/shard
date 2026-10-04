@@ -2624,3 +2624,23 @@ func TestAdoptStagingDropsACutPauseStage(t *testing.T) {
 		t.Errorf("the staging %s survived adopt, want it dropped (err %v)", tmp, err)
 	}
 }
+
+// A restore whose checkpoint overlay is missing must leave the live overlay in place, so a failed copy never bricks a sandbox (SHARD-589).
+func TestRestoreFilesKeepsTheLiveOverlayWhenTheCopyFails(t *testing.T) {
+	stateDir, checkpoint := t.TempDir(), t.TempDir()
+	live := filepath.Join(stateDir, bundle.OverlayDiskFile)
+	if err := os.WriteFile(live, []byte("live"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	// The checkpoint has no overlay, so the copy fails and the swap never runs.
+	if err := firecracker.RestoreFiles(checkpoint, stateDir); err == nil {
+		t.Fatal("restoreFiles with no checkpoint overlay = nil, want an error")
+	}
+	got, err := os.ReadFile(live)
+	if err != nil {
+		t.Fatalf("the live overlay after a failed restore: %v, want it kept", err)
+	}
+	if string(got) != "live" {
+		t.Errorf("the live overlay = %q, want it unchanged", got)
+	}
+}
