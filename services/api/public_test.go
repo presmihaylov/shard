@@ -10,6 +10,7 @@ import (
 	"github.com/presmihaylov/shard/services/api"
 	"github.com/presmihaylov/shard/services/egress"
 	"github.com/presmihaylov/shard/services/image"
+	"github.com/presmihaylov/shard/services/sandbox"
 )
 
 // The front forwards public routes only, so a route with no class would be neither served remotely nor refused on purpose.
@@ -145,4 +146,80 @@ func TestTheCreateStreamLeavesOutThePath(t *testing.T) {
 	if event, _ := lines[0]["event"].(map[string]any); event["path"] != nil || event["reference"] == nil {
 		t.Errorf("the event reads %v, want the reference and no path", lines[0])
 	}
+}
+
+func TestPublicReadsFilterStoppedReasons(t *testing.T) {
+	for _, tc := range []struct {
+		name     string
+		provider string
+		raw      string
+		want     string
+	}{
+		{name: "operator stop", provider: "gvisor"},
+		{name: "out of memory", provider: "gvisor", raw: sandbox.OOMKilledReason, want: sandbox.OOMKilledReason},
+		{name: "process died", provider: "runc", raw: sandbox.DiedReason, want: sandbox.DiedReason},
+		{name: "process lost", provider: "sysbox", raw: sandbox.LostReason, want: sandbox.LostReason},
+		{name: "firecracker supervisor failed", provider: "firecracker",
+			raw:  sandbox.SupervisorFailedReason + ": sandbox sb1 lost its lifecycle state: open /var/lib/shard/sandboxes/sb1/exit: is a directory",
+			want: "the sandbox supervisor failed; remove it and create another sandbox"},
+		{name: "Mac VM supervisor failed", provider: "vz", raw: sandbox.SupervisorFailedReason + ": write /run/shard/exit: permission denied",
+			want: "the sandbox supervisor failed; remove it and create another sandbox"},
+		{name: "supervisor failed without a cause", provider: "firecracker", raw: sandbox.SupervisorFailedReason,
+			want: "the sandbox supervisor failed; remove it and create another sandbox"},
+		{name: "unknown diagnosis", provider: "firecracker", raw: failedCause, want: "the sandbox stopped; the daemon log has the cause"},
+		{name: "diagnosis after a known reason", provider: "firecracker", raw: sandbox.DiedReason + ": " + failedCause,
+			want: "the sandbox stopped; the daemon log has the cause"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			s := seed(t)
+			sb, err := s.repo.Create(models.Sandbox{Name: "reason", Image: "docker.io/library/alpine:3.20", Provider: tc.provider,
+				State: models.StateStopped, StoppedReason: tc.raw})
+			if err != nil {
+				t.Fatal(err)
+			}
+
+			for _, path := range []string{"/v0/sandboxes/" + sb.ID, "/v0/sandboxes/" + sb.ID + "?wait=true", "/v0/sandboxes?all=true"} {
+				status, body := get(t, s.server, path)
+				if status != http.StatusOK {
+					t.Fatalf("GET %s answered %d %v, want 200", path, status, body)
+				}
+
+				if path == "/v0/sandboxes?all=true" {
+					body = listedSandbox(t, body, sb.ID)
+				}
+
+				got, _ := body["stopped_reason"].(string)
+				if body["id"] != sb.ID || got != tc.want {
+					t.Errorf("GET %s answered %v, want sandbox %s with stopped_reason %q", path, body, sb.ID, tc.want)
+				}
+			}
+
+			local, err := s.repo.Get(sb.ID)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if local.StoppedReason != tc.raw {
+				t.Errorf("local stopped_reason = %q, want %q", local.StoppedReason, tc.raw)
+			}
+		})
+	}
+}
+
+func listedSandbox(t *testing.T, body map[string]any, id string) map[string]any {
+	t.Helper()
+
+	rows, ok := body["sandboxes"].([]any)
+	if !ok {
+		t.Fatalf("the list answered %v, want a sandboxes array", body)
+	}
+	for _, row := range rows {
+		listed, ok := row.(map[string]any)
+		if ok && listed["id"] == id {
+			return listed
+		}
+	}
+
+	t.Fatalf("the list answered %v, want sandbox %s", body, id)
+
+	return nil
 }

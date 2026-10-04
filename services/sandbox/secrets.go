@@ -47,7 +47,7 @@ func (s *Service) GrantSecret(ctx context.Context, ref, name string) (models.San
 
 	sec, err := s.cfg.Secrets.Get(name)
 	if errors.Is(err, secret.ErrNotFound) {
-		return models.Sandbox{}, &RequestError{Err: fmt.Errorf("secret %s does not exist: run shard secret set --to <host> %s first", name, name)}
+		return models.Sandbox{}, &RequestError{Err: fmt.Errorf("secret %s does not exist: run shard secret set --destination <host> %s first", name, name)}
 	}
 	if err != nil {
 		return models.Sandbox{}, err

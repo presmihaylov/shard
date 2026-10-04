@@ -2,6 +2,7 @@ package api
 
 import (
 	"slices"
+	"strings"
 	"time"
 
 	"github.com/presmihaylov/shard/models"
@@ -61,7 +62,7 @@ func PublicSandbox(sb models.Sandbox) Sandbox {
 		Kernel:        sb.Kernel,
 		State:         sb.State,
 		ExitStatus:    sb.ExitStatus,
-		StoppedReason: sb.StoppedReason,
+		StoppedReason: publicStoppedReason(sb.StoppedReason),
 		FailedReason:  sandbox.PublicReason(sb),
 		Resources:     sb.Resources,
 		Command:       sb.Command,
@@ -71,6 +72,19 @@ func PublicSandbox(sb models.Sandbox) Sandbox {
 		StartedAt:     sb.StartedAt,
 		CreatedAt:     sb.CreatedAt,
 	}
+}
+
+// publicStoppedReason permits only fixed diagnoses, so an old or new raw cause never reaches the wire.
+func publicStoppedReason(reason string) string {
+	switch reason {
+	case "", sandbox.OOMKilledReason, sandbox.DiedReason, sandbox.LostReason:
+		return reason
+	}
+	if reason == sandbox.SupervisorFailedReason || strings.HasPrefix(reason, sandbox.SupervisorFailedReason+":") {
+		return "the sandbox supervisor failed; remove it and create another sandbox"
+	}
+
+	return "the sandbox stopped; the daemon log has the cause"
 }
 
 func PublicInspection(insp sandbox.Inspection) Inspection {

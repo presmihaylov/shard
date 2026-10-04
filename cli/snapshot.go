@@ -44,7 +44,7 @@ func parseSnapshotCreate(args []string) (sandbox.SnapshotRequest, error) {
 		}
 	}
 	if flags.NArg() != 1 {
-		return sandbox.SnapshotRequest{}, fmt.Errorf("snapshot create takes one sandbox id, got %d", flags.NArg())
+		return sandbox.SnapshotRequest{}, fmt.Errorf("snapshot create takes one sandbox id or name, got %s", gotArgs(flags.Args()))
 	}
 
 	req.Sandbox = flags.Arg(0)
@@ -58,7 +58,7 @@ func (a App) snapshotList(ctx context.Context, args []string) error {
 		return err
 	}
 	if len(rest) != 0 {
-		return fmt.Errorf("snapshot list takes no arguments, got %d", len(rest))
+		return fmt.Errorf("snapshot list takes no arguments, got %s", gotArgs(rest))
 	}
 	c, err := a.client()
 	if err != nil {
@@ -93,7 +93,7 @@ func (a App) snapshotInspect(ctx context.Context, args []string) error {
 		return err
 	}
 	if len(rest) != 1 {
-		return fmt.Errorf("snapshot inspect takes one snapshot id, got %d", len(rest))
+		return fmt.Errorf("snapshot inspect takes one snapshot id or name, got %s", gotArgs(rest))
 	}
 	c, err := a.client()
 	if err != nil {
@@ -123,7 +123,7 @@ func (a App) snapshotRemove(ctx context.Context, args []string) error {
 		return err
 	}
 	if len(rest) != 1 {
-		return fmt.Errorf("snapshot remove takes one snapshot id, got %d", len(rest))
+		return fmt.Errorf("snapshot remove takes one snapshot id or name, got %s", gotArgs(rest))
 	}
 
 	c, err := a.client()

@@ -120,7 +120,7 @@ func uptime(sb client.Sandbox, now time.Time) string {
 		since = sb.CreatedAt
 	}
 
-	return now.Sub(since).Truncate(time.Second).String()
+	return short(now.Sub(since).Truncate(time.Second))
 }
 
 func orDash(s string) string {
@@ -144,7 +144,7 @@ func parseList(args []string) (listOptions, error) {
 	opts.format = *format
 
 	if rest := flags.Args(); len(rest) != 0 {
-		return listOptions{}, fmt.Errorf("list takes no argument, got %d", len(rest))
+		return listOptions{}, fmt.Errorf("list takes no arguments, got %s", gotArgs(rest))
 	}
 
 	return opts, nil

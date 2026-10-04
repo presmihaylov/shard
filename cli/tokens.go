@@ -25,7 +25,7 @@ func (a App) tokensMint(_ context.Context, args []string) error {
 		return err
 	}
 	if flags.NArg() != 0 {
-		return fmt.Errorf("tokens mint takes no arguments, got %d", flags.NArg())
+		return fmt.Errorf("tokens mint takes no arguments, got %s", gotArgs(flags.Args()))
 	}
 	if *name == "" {
 		return errors.New("tokens mint needs --name: it is the subject of the token")
@@ -70,7 +70,7 @@ func (a App) tokensList(_ context.Context, args []string) error {
 		return err
 	}
 	if flags.NArg() != 0 {
-		return fmt.Errorf("tokens list takes no arguments, got %d", flags.NArg())
+		return fmt.Errorf("tokens list takes no arguments, got %s", gotArgs(flags.Args()))
 	}
 	path, err := a.ledgerPath(*signingKeyFile)
 	if err != nil {
@@ -124,7 +124,7 @@ func (a App) tokensRevoke(_ context.Context, args []string) error {
 	}
 
 	if flags.NArg() != 1 {
-		return fmt.Errorf("tokens revoke needs one token id, got %d; put the flags before the id", flags.NArg())
+		return fmt.Errorf("tokens revoke takes one token id, got %s; put the flags before the id", gotArgs(flags.Args()))
 	}
 	id := flags.Arg(0)
 	found, err := serve.RevokeToken(path, id)
@@ -147,7 +147,7 @@ func (a App) tokensScopes(ctx context.Context, args []string) error {
 		return err
 	}
 	if flags.NArg() != 0 {
-		return fmt.Errorf("tokens scopes takes no arguments, got %d", flags.NArg())
+		return fmt.Errorf("tokens scopes takes no arguments, got %s", gotArgs(flags.Args()))
 	}
 	c, err := a.client()
 	if err != nil {

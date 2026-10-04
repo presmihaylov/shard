@@ -17,7 +17,7 @@ func (a App) pull(ctx context.Context, args []string) error {
 		return err
 	}
 	if len(rest) != 1 {
-		return fmt.Errorf("pull takes one image reference, got %d", len(rest))
+		return fmt.Errorf("pull takes one image reference, got %s", gotArgs(rest))
 	}
 
 	c, err := a.localClient("pull")
@@ -96,7 +96,7 @@ func (a App) imageList(ctx context.Context, args []string) error {
 		return err
 	}
 	if len(rest) != 0 {
-		return fmt.Errorf("image list takes no arguments, got %d", len(rest))
+		return fmt.Errorf("image list takes no arguments, got %s", gotArgs(rest))
 	}
 	c, err := a.localClient("image list")
 	if err != nil {
@@ -166,7 +166,7 @@ func (a App) imagePrune(ctx context.Context, args []string) error {
 		return err
 	}
 	if len(rest) != 0 {
-		return fmt.Errorf("image prune takes no arguments, got %d", len(rest))
+		return fmt.Errorf("image prune takes no arguments, got %s", gotArgs(rest))
 	}
 
 	c, err := a.localClient("image prune")
@@ -208,7 +208,7 @@ func parseImageRemove(args []string) (imageRemoveOptions, error) {
 		return imageRemoveOptions{}, fmt.Errorf("image remove takes its flags before the image: shard image remove --force <image>")
 	}
 	if len(rest) != 1 {
-		return imageRemoveOptions{}, fmt.Errorf("image remove takes one image reference, got %d", len(rest))
+		return imageRemoveOptions{}, fmt.Errorf("image remove takes one image reference, got %s", gotArgs(rest))
 	}
 
 	opts.ref = rest[0]

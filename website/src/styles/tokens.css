@@ -1,0 +1,167 @@
+/* The nairi design tokens, copied from @nairi/ui: the one place a color, radius, font or shadow is defined. */
+@custom-variant dark (&:where([data-theme=dark], [data-theme=dark] *));
+
+/* static, so every token reaches :root even when no utility names it; the Starlight mapping in docs.css reads them. */
+@theme static {
+	--font-display: 'Outfit Variable', ui-sans-serif, system-ui, sans-serif;
+	--font-body: 'Geist Variable', ui-sans-serif, system-ui, sans-serif;
+	--font-sans: var(--font-body);
+	--font-mono: 'JetBrains Mono Variable', ui-monospace, monospace;
+	--font-brand: 'Dela Gothic One', ui-sans-serif, system-ui, sans-serif;
+
+	--radius-xs: 2px;
+	--radius-sm: 4px;
+	--radius-md: 8px;
+	--radius-card: 12px;
+	--radius-lg: 16px;
+	--radius-xl: 24px;
+	--radius-pill: 999px;
+
+	--blur-scrim: 2px;
+	--blur-glass: 10px;
+	--blur-panel: 16px;
+
+	--shadow-xs: 0 1px 2px rgba(0, 0, 0, 0.04);
+	--shadow-sm: 0 1px 3px rgba(0, 0, 0, 0.06), 0 1px 2px rgba(0, 0, 0, 0.04);
+	--shadow-md: 0 4px 12px rgba(0, 0, 0, 0.08), 0 1px 3px rgba(0, 0, 0, 0.04);
+	--shadow-lg: 0 8px 24px rgba(0, 0, 0, 0.10), 0 2px 6px rgba(0, 0, 0, 0.04);
+
+	--color-background: #FAFAFA;
+	--color-foreground: #413f3c;
+	--color-card: #FFFFFF;
+	--color-card-foreground: #413f3c;
+	--color-primary: #413f3c;
+	--color-primary-foreground: #FAFAFA;
+	--color-muted: #F3F2F0;
+	--color-muted-foreground: #63605A;
+	--color-accent: #413f3c;
+	--color-accent-foreground: #FAFAFA;
+	--color-destructive: #EA3E67;
+	--color-destructive-foreground: #FFFFFF;
+	--color-scrim: rgba(43, 40, 36, 0.42);
+	--color-link: #4C6FC9;
+	--color-border: #E8E7E4;
+	--color-input: #E8E7E4;
+	--color-ring: #413f3c;
+	--color-surface: #F5F4F2;
+	--color-border-medium: #DDDCD9;
+}
+
+:root {
+	--docs-surface: #FAF8F3;
+}
+
+/* Unlayered, because the Starlight layer order puts base before theme and a layered dark block would lose to the light tokens. */
+[data-theme="dark"] {
+	--color-background: #241f1b;
+	--color-foreground: #DED6C9;
+	--color-card: #322b26;
+	--color-card-foreground: #DED6C9;
+	--color-primary: #DED6C9;
+	--color-primary-foreground: #241f1b;
+	--color-muted: #37302a;
+	--color-muted-foreground: #A49A8D;
+	--color-accent: #DED6C9;
+	--color-accent-foreground: #241f1b;
+	--color-destructive: #F1748F;
+	--color-destructive-foreground: #241f1b;
+	--color-scrim: rgba(8, 6, 5, 0.58);
+	--color-link: #93A8EF;
+	--color-border: #47403a;
+	--color-input: #47403a;
+	--color-ring: #DED6C9;
+	--color-surface: #211c18;
+	--color-border-medium: #574d45;
+	--docs-surface: #241f1b;
+}
+
+@layer base {
+	*,
+	*::before,
+	*::after {
+		@apply border-border;
+	}
+}
+
+@layer utilities {
+	.typo-display {
+		font-family: var(--font-display);
+		font-size: 4rem;
+		font-weight: 600;
+		line-height: 1;
+	}
+	.typo-h1 {
+		font-family: var(--font-display);
+		font-size: 3rem;
+		font-weight: 600;
+		line-height: 1.1;
+	}
+	.typo-h2 {
+		font-family: var(--font-display);
+		font-size: 2rem;
+		font-weight: 600;
+		line-height: 1.15;
+	}
+	.typo-h3 {
+		font-family: var(--font-body);
+		font-size: 1.5rem;
+		font-weight: 600;
+		line-height: 1.2;
+	}
+	.typo-body-lg {
+		font-family: var(--font-body);
+		font-size: 1.15rem;
+		line-height: 1.6;
+	}
+	.typo-body {
+		font-family: var(--font-body);
+		font-size: 1rem;
+		line-height: 1.6;
+	}
+	.typo-small {
+		font-family: var(--font-body);
+		font-size: 0.9rem;
+		line-height: 1.6;
+	}
+	.typo-xs {
+		font-family: var(--font-body);
+		font-size: 0.75rem;
+		line-height: 1.35;
+	}
+
+	.mono-label {
+		font-family: var(--font-mono);
+		font-size: 0.65rem;
+		font-weight: 500;
+		text-transform: uppercase;
+		letter-spacing: 0.15em;
+		color: var(--color-muted-foreground);
+	}
+
+	.font-display {
+		font-family: var(--font-display);
+	}
+	.font-body {
+		font-family: var(--font-body);
+	}
+	.rounded-squircle {
+		border-radius: 30%;
+	}
+	.nairi-focus-ring {
+		@apply outline-none;
+	}
+	.nairi-focus-ring:focus-visible {
+		@apply ring-[3px] ring-foreground/20;
+	}
+}
+
+@media (prefers-reduced-motion: reduce) {
+	*,
+	*::before,
+	*::after {
+		animation-duration: 0.01ms !important;
+		animation-iteration-count: 1 !important;
+		transition-duration: 0.01ms !important;
+		scroll-behavior: auto !important;
+	}
+}
