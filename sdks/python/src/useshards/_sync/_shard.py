@@ -178,7 +178,7 @@ class Policies:
         self._transport = transport
 
     def set(self, name: str, rules: Sequence[PolicyRule]) -> Policy:
-        """Make the policy, or replace every rule of it; a sandbox it is assigned to enforces the new rules."""
+        """Make the policy, or replace every rule of it; a sandbox it is attached to enforces the new rules."""
         body = models.PolicyRequest(
             rules=[models.RuleText(action=models.RuleTextAction(rule.action), rule=rule.rule) for rule in rules]
         )
@@ -205,7 +205,7 @@ class Policies:
     def remove(self, name: str) -> None:
         self._transport.send(lambda: remove_policy.sync_detailed(name, client=self._transport.api))
 
-    def assign(self, sandbox: SandboxRef, name: str) -> SandboxInfo:
+    def attach(self, sandbox: SandboxRef, name: str) -> SandboxInfo:
         body = models.PolicyAttachRequest(policy=name)
         return _changed(
             self._transport,
@@ -213,7 +213,7 @@ class Policies:
             lambda: attach_policy.sync_detailed(_id(sandbox), client=self._transport.api, body=body),
         )
 
-    def clear(self, sandbox: SandboxRef) -> SandboxInfo:
+    def detach(self, sandbox: SandboxRef) -> SandboxInfo:
         return _changed(
             self._transport, sandbox, lambda: detach_policy.sync_detailed(_id(sandbox), client=self._transport.api)
         )
@@ -253,7 +253,7 @@ class Secrets:
         return [_types.secret_info(record) for record in records]
 
     def remove(self, name: str, *, force: bool = False) -> None:
-        """Remove a secret no sandbox is granted; force revokes it from each first."""
+        """Remove a secret no sandbox is granted; force ungrants it from each first."""
         self._transport.send(
             lambda: remove_secret.sync_detailed(name, client=self._transport.api, force=force or UNSET)
         )
@@ -265,7 +265,7 @@ class Secrets:
             lambda: grant_secret.sync_detailed(_id(sandbox), name, client=self._transport.api),
         )
 
-    def revoke(self, sandbox: SandboxRef, name: str) -> SandboxInfo:
+    def ungrant(self, sandbox: SandboxRef, name: str) -> SandboxInfo:
         return _changed(
             self._transport,
             sandbox,

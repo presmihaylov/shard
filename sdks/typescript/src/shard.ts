@@ -118,7 +118,7 @@ export class Shard {
 export class Policies {
   constructor(private readonly transport: Transport) {}
 
-  /** set makes the policy, or replaces every rule of it; a sandbox it is assigned to enforces the new rules. */
+  /** set makes the policy, or replaces every rule of it; a sandbox it is attached to enforces the new rules. */
   async set(name: string, rules: PolicyRule[]): Promise<Policy> {
     const body = { rules: rules.map(({ action, rule }) => ({ action, rule })) };
 
@@ -142,13 +142,13 @@ export class Policies {
     await this.transport.api.DELETE("/v0/policies/{name}", { params: { path: { name } } });
   }
 
-  /** assign makes the sandbox enforce the policy from its next request on; the sandbox must not be running. */
-  assign(sandbox: SandboxRef, name: string): Promise<SandboxInfo> {
+  /** attach makes the sandbox enforce the policy from its next request on; the sandbox must not be running. */
+  attach(sandbox: SandboxRef, name: string): Promise<SandboxInfo> {
     return changed(sandbox, (id) => this.transport.api.PUT("/v0/sandboxes/{id}/policy", { params: { path: { id } }, body: { policy: name } }));
   }
 
-  /** clear takes the sandbox's policy away, which leaves it the daemon's default. */
-  clear(sandbox: SandboxRef): Promise<SandboxInfo> {
+  /** detach takes the sandbox's policy away, which leaves it the daemon's default. */
+  detach(sandbox: SandboxRef): Promise<SandboxInfo> {
     return changed(sandbox, (id) => this.transport.api.DELETE("/v0/sandboxes/{id}/policy", { params: { path: { id } } }));
   }
 }
@@ -181,7 +181,7 @@ export class Secrets {
     return changed(sandbox, (id) => this.transport.api.POST("/v0/sandboxes/{id}/secrets/{name}", { params: { path: { id, name } } }));
   }
 
-  revoke(sandbox: SandboxRef, name: string): Promise<SandboxInfo> {
+  ungrant(sandbox: SandboxRef, name: string): Promise<SandboxInfo> {
     return changed(sandbox, (id) => this.transport.api.DELETE("/v0/sandboxes/{id}/secrets/{name}", { params: { path: { id, name } } }));
   }
 }
