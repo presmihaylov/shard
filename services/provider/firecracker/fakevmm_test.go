@@ -236,14 +236,23 @@ func endSessions(t *testing.T, path string) {
 
 			return
 		}
-		for _, pid := range left {
-			if err := syscall.Kill(pid, syscall.SIGKILL); err != nil && !errors.Is(err, syscall.ESRCH) {
-				t.Errorf("end process %d of a vmm session: %v", pid, err)
+		if err := killAll(left); err != nil {
+			t.Errorf("end the vmm sessions: %v", err)
 
-				return
-			}
+			return
 		}
 	}
+}
+
+// killAll SIGKILLs every pid; one that has exited since the scan is no error.
+func killAll(pids []int) error {
+	for _, pid := range pids {
+		if err := syscall.Kill(pid, syscall.SIGKILL); err != nil && !errors.Is(err, syscall.ESRCH) {
+			return fmt.Errorf("kill %d: %w", pid, err)
+		}
+	}
+
+	return nil
 }
 
 // inJail is where a path the fake vmm is told lives on the host, the way a chroot resolves it.

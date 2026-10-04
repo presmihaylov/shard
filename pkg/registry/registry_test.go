@@ -67,6 +67,22 @@ func TestPullThenGetOffline(t *testing.T) {
 	}
 }
 
+// A host with no ~/.docker/config.json and a broken auth file elsewhere still pulls in a test.
+func TestAPullNeverReadsTheHostAuthFiles(t *testing.T) {
+	home := t.TempDir()
+	broken := filepath.Join(home, "auth.json")
+	if err := os.WriteFile(broken, []byte("{"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("HOME", home)
+	t.Setenv("XDG_CONFIG_HOME", home)
+	t.Setenv("XDG_RUNTIME_DIR", home)
+	t.Setenv("REGISTRY_AUTH_FILE", broken)
+	server, ref := servedImage(t, "app:1.0", map[string]string{"/etc/hostname": "box"})
+
+	pull(t, openStore(t, server), ref)
+}
+
 func TestPullIsReachableFromASecondStore(t *testing.T) {
 	server, ref := servedImage(t, "app:1.0", map[string]string{"/etc/hostname": "box"})
 	dir := t.TempDir()
@@ -212,11 +228,21 @@ func openStore(t *testing.T, server *httptest.Server) *registry.Store {
 	return openStoreAt(t, t.TempDir(), server)
 }
 
+// emptyDockerConfig points DOCKER_CONFIG at a config.json of {}: a directory without one sends the keychain on to the host's REGISTRY_AUTH_FILE and Podman auth.
+func emptyDockerConfig(t *testing.T) {
+	t.Helper()
+
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, "config.json"), []byte("{}"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("DOCKER_CONFIG", dir)
+}
+
 func openStoreAt(t *testing.T, dir string, server *httptest.Server) *registry.Store {
 	t.Helper()
 
-	// An empty Docker config, so a pull never runs the host's credential helper.
-	t.Setenv("DOCKER_CONFIG", t.TempDir())
+	emptyDockerConfig(t)
 
 	var opts []registry.Option
 	if server != nil {
@@ -365,8 +391,7 @@ func tarLayer(t *testing.T, files map[string]string) v1.Layer {
 
 func TestPullRefusesPlaintextHTTP(t *testing.T) {
 	server, ref := servedImage(t, "app:1.0", map[string]string{"/etc/hostname": "box"})
-
-	t.Setenv("DOCKER_CONFIG", t.TempDir())
+	emptyDockerConfig(t)
 
 	// The same store, minus the opt-in: ggcr would downgrade a loopback or RFC1918 registry silently.
 	store, err := registry.Open(t.TempDir(), registry.WithTransport(server.Client().Transport))
