@@ -142,6 +142,12 @@ func (s *Service) recordEntrypointExit(ctx context.Context, id string, sb models
 	if err := s.recordExitChannel(id, sb, "", report); err != nil {
 		return err
 	}
+
+	return s.recordExit(id, sb, exit, report)
+}
+
+// recordExit writes an exit the record does not hold yet, and reports it once.
+func (s *Service) recordExit(id string, sb models.Sandbox, exit *models.ExitStatus, report func(string)) error {
 	if exit == nil {
 		return nil
 	}
@@ -149,7 +155,7 @@ func (s *Service) recordEntrypointExit(ctx context.Context, id string, sb models
 		return nil
 	}
 
-	err = s.cfg.Repo.Update(id, func(rec *models.Sandbox) error {
+	err := s.cfg.Repo.Update(id, func(rec *models.Sandbox) error {
 		rec.ExitStatus = exit
 
 		return nil

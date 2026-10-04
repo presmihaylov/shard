@@ -82,6 +82,92 @@ func TestWaitAppRecordsTheEndOfThePolicy(t *testing.T) {
 	}
 }
 
+// The run client exits with the code and an inspect reads the record next, so the exit is on it before either verb answers (SHARD-479).
+func TestTheAppVerbsRecordTheExitBeforeTheyAnswer(t *testing.T) {
+	verbs := map[string]func(*testing.T, *sandbox.Service) error{
+		"AttachApp": func(t *testing.T, svc *sandbox.Service) error {
+			_, err := svc.AttachApp(t.Context(), "sandbox1", func() (io.Writer, error) { return io.Discard, nil })
+			return err
+		},
+		"WaitApp": func(t *testing.T, svc *sandbox.Service) error {
+			_, err := svc.WaitApp(t.Context(), "sandbox1")
+			return err
+		},
+	}
+	for verb, call := range verbs {
+		t.Run(verb, func(t *testing.T) {
+			svc, l, _ := logsOf(t, &recorder{}, withApp(), "")
+			l.provider.entrypointExit = &models.ExitStatus{Code: 3}
+			l.provider.restarts = models.RestartCount{Ended: true}
+
+			if err := call(t, svc); err != nil {
+				t.Fatalf("%s: %v", verb, err)
+			}
+
+			if got := l.repo.sb; got.State != models.StateRunning || got.ExitStatus == nil || *got.ExitStatus != (models.ExitStatus{Code: 3}) {
+				t.Errorf("the record says %s with exit %+v, want running with {code:3}", got.State, got.ExitStatus)
+			}
+		})
+	}
+}
+
+// The tick skips a sandbox a verb holds, but the run's own write waits for it, or the record misses the exit until a later tick.
+func TestWaitAppRecordsTheExitOnceTheVerbHoldingTheSandboxLetsGo(t *testing.T) {
+	svc, l := newService(t, &recorder{}, withApp())
+	l.provider.entrypointExit = &models.ExitStatus{Code: 3}
+	l.provider.restarts = models.RestartCount{Ended: true}
+	unlock, err := svc.Hold(t.Context(), "sandbox1")
+	if err != nil {
+		t.Fatalf("hold: %v", err)
+	}
+
+	waited := make(chan error, 1)
+	go func() {
+		_, err := svc.WaitApp(t.Context(), "sandbox1")
+		waited <- err
+	}()
+	waitForWaiters(t, svc, "sandbox1", 2)
+	unlock()
+
+	if err := <-waited; err != nil {
+		t.Fatalf("WaitApp: %v", err)
+	}
+	if got := l.repo.sb.ExitStatus; got == nil || *got != (models.ExitStatus{Code: 3}) {
+		t.Errorf("the record holds exit %+v, want {code:3}", got)
+	}
+}
+
+// A stop that took the sandbox first wrote the exit it saw, and the run's write must not make the record running again.
+func TestWaitAppLeavesTheRecordOfAStopThatLandedFirst(t *testing.T) {
+	svc, l := newService(t, &recorder{}, withApp())
+	l.provider.entrypointExit = &models.ExitStatus{Code: 3}
+	l.provider.restarts = models.RestartCount{Ended: true}
+	unlock, err := svc.Hold(t.Context(), "sandbox1")
+	if err != nil {
+		t.Fatalf("hold: %v", err)
+	}
+
+	waited := make(chan models.AppExit, 1)
+	go func() {
+		exit, err := svc.WaitApp(t.Context(), "sandbox1")
+		if err != nil {
+			t.Errorf("WaitApp: %v", err)
+		}
+		waited <- exit
+	}()
+	waitForWaiters(t, svc, "sandbox1", 2)
+	l.repo.sb.State = models.StateStopped
+	l.repo.sb.ExitStatus = &models.ExitStatus{Code: 143, Signal: 15}
+	unlock()
+
+	if exit := <-waited; exit != (models.AppExit{Code: 3}) {
+		t.Errorf("WaitApp answered %+v, want the app's own {code:3}", exit)
+	}
+	if got := l.repo.sb; got.State != models.StateStopped || got.ExitStatus == nil || *got.ExitStatus != (models.ExitStatus{Code: 143, Signal: 15}) {
+		t.Errorf("the record says %s with exit %+v, want the stop's stopped with {code:143 signal:15}", got.State, got.ExitStatus)
+	}
+}
+
 // A sandbox create made runs only shard-init, so there is no app to attach to or stop, and the refusal comes before the attach answers.
 func TestTheAppVerbsRefuseASandboxWithNoApp(t *testing.T) {
 	svc, l := newService(t, &recorder{}, running())

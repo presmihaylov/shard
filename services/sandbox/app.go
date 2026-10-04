@@ -63,8 +63,8 @@ func (s *Service) waitApp(ctx context.Context, id string, copyOut func() error) 
 		}
 
 		if count.Ended {
-			// The tick copies the count seconds later, so an inspect right after the run would still read the policy as going.
-			if err := s.recordRestarts(ctx, id, s.report); err != nil {
+			// The tick copies the exit and the count seconds later, so an inspect right after the run would read neither (SHARD-479).
+			if err := s.recordAppEnd(ctx, id, last); err != nil {
 				return models.AppExit{}, err
 			}
 
@@ -80,6 +80,29 @@ func (s *Service) waitApp(ctx context.Context, id string, copyOut func() error) 
 		case <-time.After(followInterval):
 		}
 	}
+}
+
+// recordAppEnd waits for the lock the tick only tries, since the run client reads the record as soon as it has the end.
+func (s *Service) recordAppEnd(ctx context.Context, id string, last *models.ExitStatus) error {
+	unlock, err := s.lock(ctx, id)
+	if err != nil {
+		return err
+	}
+	defer unlock()
+
+	sb, err := s.cfg.Repo.Get(id)
+	if err != nil {
+		return err
+	}
+	// A stop that landed first wrote the exit it saw.
+	if !sb.State.Live() {
+		return nil
+	}
+	if err := s.recordExit(id, sb, last, s.report); err != nil {
+		return err
+	}
+
+	return s.writeRestarts(ctx, id, sb, s.report)
 }
 
 // appEnd needs no copy of its own: shard-init reports the end only once the host log holds the app's last byte.
