@@ -251,6 +251,19 @@ func (c *Client) Version(ctx context.Context) (Version, error) {
 	return out, nil
 }
 
+// Capabilities is every lifecycle verb and whether the server supports it.
+type Capabilities = api.Capabilities
+
+// Capabilities asks the server which lifecycle verbs it supports; a front answers it for any valid token.
+func (c *Client) Capabilities(ctx context.Context) (Capabilities, error) {
+	var out Capabilities
+	if err := c.call(ctx, http.MethodGet, "/v0/capabilities", nil, &out, c.Timeout); err != nil {
+		return Capabilities{}, err
+	}
+
+	return out, nil
+}
+
 // Daemon is what the daemon reports about its process, its provider and its proxy.
 func (c *Client) Daemon(ctx context.Context) (api.Daemon, error) {
 	var out api.Daemon

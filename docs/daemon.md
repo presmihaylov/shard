@@ -396,9 +396,12 @@ curl --unix-socket /var/lib/shard/shard.sock -X POST http://localhost/v0/images/
   `version` as its `daemon` line, under the `client` line of the binary that asked. `shard
   --version` prints only the `client` line, touches no socket, and never fails, like `docker
   --version`.
-- `GET /v0/capabilities` answers `{"provider": "...", "unsupported": [...]}`, where `unsupported`
-  lists each optional verb the provider refuses (`pause`, `resume`, `fork`) and is `[]` when it
-  refuses none.
+- `GET /v0/capabilities` answers the eight lifecycle verbs and whether this server supports each:
+  `{"create": true, "start": true, "stop": true, "remove": true, "pause": true, "resume": true,
+  "fork": false, "snapshot": true}`. Every provider runs `create`, `start`, `stop`, `remove` and
+  `snapshot`, the copy of a stopped sandbox's files; `pause`, `resume` and `fork` are the
+  provider's own. The scopes of the token and the state of any sandbox never change the answer.
+  `shard capabilities` prints it.
 - `GET /v0/daemon` answers what the daemon knows about itself: `version`, `pid`, `started_at`,
   `socket`, `provider`, `capabilities` as the provider's three booleans (`pause`, `resume`, `fork`),
   and `proxy` with `plain_port` and `tls_port`. `shard daemon status` prints it, one field per line.
