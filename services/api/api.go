@@ -168,6 +168,7 @@ func (h *Handler) routeTable() []routeEntry {
 	return []routeEntry{
 		{Route{"GET", "/v0/version", Public}, h.getVersion},
 		{Route{"GET", "/v0/capabilities", Public}, h.getCapabilities},
+		{Route{"GET", "/v0/scopes", Public}, h.getScopes},
 		{Route{"GET", "/v0/daemon", Local}, h.getDaemon},
 		{Route{"GET", "/v0/sandboxes", Public}, listSandboxes(h, PublicSandbox)},
 		{Route{"GET", "/v0/sandboxes/{id}", Public}, getSandbox(h, PublicInspection)},
@@ -250,6 +251,11 @@ type capabilitiesResponse struct {
 	Unsupported []string `json:"unsupported"`
 }
 
+// ScopesResponse lists every scope a token can carry, never the caller's own.
+type ScopesResponse struct {
+	Scopes []models.Scope `json:"scopes"`
+}
+
 // listResponse is the page: the rows, the cursor of the next page or null, and what could not be read.
 type listResponse[S any] struct {
 	Sandboxes []S     `json:"sandboxes"`
@@ -283,6 +289,10 @@ func (h *Handler) getCapabilities(w http.ResponseWriter, _ *http.Request) {
 	}
 
 	h.writeJSON(w, http.StatusOK, capabilitiesResponse{Provider: d.Provider, Unsupported: unsupported(d.Capabilities)})
+}
+
+func (h *Handler) getScopes(w http.ResponseWriter, _ *http.Request) {
+	h.writeJSON(w, http.StatusOK, ScopesResponse{Scopes: models.Scopes})
 }
 
 // unsupported is never null, so a client reads an empty list as a provider that refuses nothing.
@@ -568,11 +578,11 @@ func checkCreateScopes(header http.Header, req sandbox.CreateRequest) error {
 		return nil
 	}
 
-	if len(req.Secrets) > 0 && !scopesCover(scopes, "secret:*") {
-		return &scopeError{scope: "secret:*", named: "secret"}
+	if len(req.Secrets) > 0 && !scopesCover(scopes, models.ScopeSecret) {
+		return &scopeError{scope: models.ScopeSecret, named: "secret"}
 	}
-	if req.Policy != "" && !scopesCover(scopes, "policy:*") {
-		return &scopeError{scope: "policy:*", named: "policy"}
+	if req.Policy != "" && !scopesCover(scopes, models.ScopePolicy) {
+		return &scopeError{scope: models.ScopePolicy, named: "policy"}
 	}
 
 	return nil
@@ -604,7 +614,7 @@ func scopesCover(scopes []string, need string) bool {
 	}
 
 	for _, s := range scopes {
-		if s == "*" || s == need {
+		if s == models.ScopeAll || s == need {
 			return true
 		}
 	}

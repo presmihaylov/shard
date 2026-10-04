@@ -7,6 +7,7 @@ import (
 	"slices"
 	"strings"
 
+	"github.com/presmihaylov/shard/models"
 	"github.com/presmihaylov/shard/services/api"
 )
 
@@ -16,32 +17,29 @@ type capability string
 const (
 	// capAnyToken is a route every valid token reaches whatever its scopes, so a client can learn what it speaks to before it acts.
 	capAnyToken      capability = ""
-	capSandboxRead   capability = "sandbox:read"
-	capSandboxWrite  capability = "sandbox:write"
-	capSandboxDelete capability = "sandbox:delete"
-	capExec          capability = "exec"
-	capSecret        capability = "secret:*"
-	capPolicy        capability = "policy:*"
+	capSandboxRead   capability = models.ScopeSandboxRead
+	capSandboxWrite  capability = models.ScopeSandboxWrite
+	capSandboxDelete capability = models.ScopeSandboxDelete
+	capExec          capability = models.ScopeExec
+	capSecret        capability = models.ScopeSecret
+	capPolicy        capability = models.ScopePolicy
 )
 
-// capabilities are the six a scope can name besides "*", in the order docs/daemon.md lists them.
-var capabilities = []capability{capSandboxRead, capSandboxWrite, capSandboxDelete, capExec, capSecret, capPolicy}
-
-// CheckScopes refuses a scope that is neither "*" nor a capability, because the front would answer 403 to every request the token makes.
+// CheckScopes refuses a scope models.Scopes does not list, because the front would answer 403 to every request the token makes.
 func CheckScopes(scopes []string) error {
 	for _, s := range scopes {
-		if s != "*" && !slices.Contains(capabilities, capability(s)) {
-			return fmt.Errorf("unknown scope %q: a scope is * or one of %s", s, strings.Join(capabilityNames(), ", "))
+		if !slices.ContainsFunc(models.Scopes, func(known models.Scope) bool { return known.Name == s }) {
+			return fmt.Errorf("unknown scope %q: a scope is one of %s", s, strings.Join(scopeNames(), ", "))
 		}
 	}
 
 	return nil
 }
 
-func capabilityNames() []string {
-	names := make([]string, 0, len(capabilities))
-	for _, c := range capabilities {
-		names = append(names, string(c))
+func scopeNames() []string {
+	names := make([]string, 0, len(models.Scopes))
+	for _, s := range models.Scopes {
+		names = append(names, s.Name)
 	}
 
 	return names
@@ -51,6 +49,7 @@ func capabilityNames() []string {
 var routeCapabilities = map[string]capability{
 	"GET /v0/version":                            capAnyToken,
 	"GET /v0/capabilities":                       capAnyToken,
+	"GET /v0/scopes":                             capAnyToken,
 	"GET /v0/sandboxes":                          capSandboxRead,
 	"GET /v0/sandboxes/{id}":                     capSandboxRead,
 	"POST /v0/sandboxes":                         capSandboxWrite,
@@ -152,7 +151,7 @@ func covers(scopes []string, need capability) bool {
 	}
 
 	for _, s := range scopes {
-		if s == "*" || s == string(need) {
+		if s == models.ScopeAll || s == string(need) {
 			return true
 		}
 	}

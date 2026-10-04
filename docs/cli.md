@@ -112,6 +112,7 @@ shard: sandbox <id> is paused: resume it with shard resume <id>
 | `tokens mint` | `--name --signing-key-file --duration --scopes --format` | json | the token record |
 | `tokens list` | `--signing-key-file --format` | table | the ledger |
 | `tokens revoke <id>` | `--name --signing-key-file` | - | `revoked token <id>`, or `revoked <n> tokens of <sub>` with `--name` |
+| `tokens scopes` | `--format` | table | every scope a token can carry on the server it asks |
 | `version` | `--format` | table | the client and daemon versions |
 
 ## Output formats
@@ -303,8 +304,8 @@ line.
 
 ### Tables
 
-`list`, `image list`, `snapshot list`, `secret list`, `policy list`, `tokens list`, `info`, `daemon
-status` and `version` print tables by default. `list` prints `ID NAME IMAGE STATE UPTIME IP RESTART POLICY`, and
+`list`, `image list`, `snapshot list`, `secret list`, `policy list`, `tokens list`, `tokens scopes`,
+`info`, `daemon status` and `version` print tables by default. `list` prints `ID NAME IMAGE STATE UPTIME IP RESTART POLICY`, and
 `snapshot list` prints `ID NAME SOURCE IMAGE SIZE CREATED`.
 
 The tables of the JSON verbs:
@@ -315,6 +316,8 @@ The tables of the JSON verbs:
 - `snapshot inspect` prints `FIELD VALUE` rows.
 - `policy show` prints `name`, `dns` and `holders`, then a `RULE` section. `holders` has no default.
 - `tokens mint` prints `TOKEN EXPIRES SCOPES`.
+
+`tokens scopes` prints `SCOPE DESCRIPTION`, and its JSON is the body of `GET /v0/scopes`.
 
 ## Snapshots
 

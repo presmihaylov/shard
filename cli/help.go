@@ -595,6 +595,7 @@ var helps = map[string]verbHelp{
 			formatJSONHelp,
 		},
 		notes: []note{
+			para("Run shard tokens scopes to list available scopes."),
 			signingKeyNote,
 			para("The response includes the API token.", "Use its 'token' value as "+client.APIKeyEnv+"."),
 		},
@@ -623,6 +624,11 @@ var helps = map[string]verbHelp{
 		},
 		notes:    []note{para("Revoked tokens are rejected on subsequent requests.")},
 		examples: []string{"shard tokens revoke 0123456789abcdef", "shard tokens revoke --name build-agent"},
+	},
+	"tokens scopes": {
+		usage:   []string{"tokens scopes [OPTIONS]"},
+		summary: "list available token scopes",
+		flags:   []flagHelp{formatTableHelp},
 	},
 	"version": {
 		usage:    []string{"version [OPTIONS]"},

@@ -232,6 +232,16 @@ func (c *Client) Version(ctx context.Context) (Version, error) {
 	return out, nil
 }
 
+// Scopes lists every scope a token can carry on the server it speaks to.
+func (c *Client) Scopes(ctx context.Context) (api.ScopesResponse, error) {
+	var out api.ScopesResponse
+	if err := c.call(ctx, http.MethodGet, "/v0/scopes", nil, &out, c.Timeout); err != nil {
+		return api.ScopesResponse{}, err
+	}
+
+	return out, nil
+}
+
 // Daemon is what the daemon reports about its process, its provider and its proxy.
 func (c *Client) Daemon(ctx context.Context) (api.Daemon, error) {
 	var out api.Daemon
