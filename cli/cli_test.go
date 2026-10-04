@@ -233,8 +233,8 @@ func TestUsageListsVerbHelp(t *testing.T) {
 	if err := newApp(t, &out).Run(t.Context(), nil); err != nil {
 		t.Fatalf("Run(nil): %v", err)
 	}
-	if !strings.Contains(out.String(), "shard <verb> --help") {
-		t.Errorf("the top-level usage does not mention shard <verb> --help:\n%s", out.String())
+	if !strings.Contains(out.String(), "shard COMMAND --help") {
+		t.Errorf("the top-level usage does not mention shard COMMAND --help:\n%s", out.String())
 	}
 }
 

@@ -68,10 +68,10 @@ The daemon never binds TCP. A client on another host reaches it through `shard s
 unprivileged process that speaks plain HTTP behind an HTTPS proxy such as Caddy, checks a bearer
 token and passes the bytes to the socket. A script or a CI job exports
 `SHARD_REMOTE=https://shard.example.com` and `SHARD_API_KEY`, the token that `shard tokens mint`
-issues, and every verb goes through the proxy to the front. `--token-file <path>` and
-`SHARD_TOKEN_FILE` are the alternatives. See `docs/daemon.md`. A Mac that shard does not support,
-an Intel Mac or one on macOS 13, can run shard inside a Linux VM as a workaround, as `docs/mac.md`
-describes.
+issues, and every verb goes through the proxy to the front. An `http` url works too, for
+localhost or an encrypted VPN; use `https` for public access. See `docs/daemon.md`. A Mac that
+shard does not support, an Intel Mac or one on macOS 13, can run shard inside a Linux VM as a
+workaround, as `docs/mac.md` describes.
 
 On create or run, shard pulls the image, claims the record, allocates the network and creates the
 sandbox. Run then starts the app as the child of `shard-init`, and the sandbox outlives it.

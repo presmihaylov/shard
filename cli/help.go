@@ -24,6 +24,8 @@ type verbHelp struct {
 	summary string
 	args    []row
 	flags   []flagHelp
+	// env is the variables it reads, which only the top level lists.
+	env []row
 	// notes are paragraphs wrapped to the width; one that starts with two spaces prints as written.
 	notes   []string
 	example string
@@ -92,16 +94,18 @@ var helps = map[string]verbHelp{
 		usage:   []string{"[global flags] <verb> [flags] [args]"},
 		summary: "shard is a single-node sandbox manager (pre-alpha).",
 		flags: []flagHelp{
-			{"--root <dir>", "where shard keeps its state", DefaultRoot},
-			{"--remote <url>", "the https URL of the proxy in front of shard serve; verbs go there instead of the socket", ""},
-			{"--token-file <path>", "a token file for --remote, which beats " + client.APIKeyEnv, ""},
-			{"--ca-file <pem>", "the CA certificate that signed the certificate of the proxy in front of serve", ""},
-			{"--version", "print the client version; it never fails", ""},
+			{"--root <dir>", "directory for local Shard data", DefaultRoot},
+			{"--remote <url>", "URL of the Shard API server; HTTP/HTTPS supported,\nHTTPS recommended", ""},
+			{"--version", "show the client version", ""},
+		},
+		env: []row{
+			{client.RemoteEnv, "API server URL; --remote overrides it"},
+			{client.APIKeyEnv, "API token from shard tokens mint"},
+			{client.CAFileEnv, "custom CA certificate file; HTTPS only"},
 		},
 		notes: []string{
-			fmt.Sprintf("Scripts and CI export %s and %s, the token field of a shard tokens mint record, and every verb goes to shard serve.", client.RemoteEnv, client.APIKeyEnv),
-			fmt.Sprintf("The token comes from --token-file, then %s, then %s; an empty variable is unset. --remote and --ca-file can also come from %s and %s.", client.APIKeyEnv, client.TokenFileEnv, client.RemoteEnv, client.CAFileEnv),
-			"Run shard <verb> --help for the flags and an example of one verb.",
+			fmt.Sprintf("Set %s and %s for remote access.\nWithout a remote URL, Shard connects to the local daemon.", client.RemoteEnv, client.APIKeyEnv),
+			"Run 'shard COMMAND --help' for options and examples.",
 		},
 	},
 	"create": {
@@ -548,9 +552,12 @@ func helpText(key string) string {
 	if len(h.flags) > 0 {
 		heading := "Flags:\n"
 		if key == "" {
-			heading = "Global flags, which go before the verb:\n"
+			heading = "Global options:\n"
 		}
 		sections = append(sections, heading+columns(flagRows(h.flags)))
+	}
+	if len(h.env) > 0 {
+		sections = append(sections, "Environment variables:\n"+columns(h.env))
 	}
 	for _, note := range h.notes {
 		if strings.HasPrefix(note, "  ") {
@@ -641,20 +648,26 @@ func widest(rows []row) int {
 	return width
 }
 
-// wrap appends text to lead a word at a time, and starts a line indented by indent wherever the next word would pass the width.
+// wrap appends text to lead a word at a time, and starts a line indented by indent wherever the next word would pass the width or the text breaks its line.
 func wrap(lead string, indent int, text string) string {
 	var lines []string
 	line, empty := lead, true
-	for word := range strings.FieldsSeq(text) {
-		if !empty && len(line)+1+len(word) > helpWidth {
+	for i, part := range strings.Split(text, "\n") {
+		if i > 0 {
 			lines = append(lines, line)
 			line, empty = strings.Repeat(" ", indent), true
 		}
-		if !empty {
-			line += " "
+		for word := range strings.FieldsSeq(part) {
+			if !empty && len(line)+1+len(word) > helpWidth {
+				lines = append(lines, line)
+				line, empty = strings.Repeat(" ", indent), true
+			}
+			if !empty {
+				line += " "
+			}
+			line += word
+			empty = false
 		}
-		line += word
-		empty = false
 	}
 
 	return strings.Join(append(lines, line), "\n")

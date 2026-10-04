@@ -17,7 +17,7 @@ import (
 func TestTokensMintPrintsARecordTheFrontAccepts(t *testing.T) {
 	var out bytes.Buffer
 
-	app, flags, secret := newFrontApp(t, &out)
+	app, f, secret := newFrontApp(t, &out)
 
 	// Mint over the front's own signing key, so the record lands in the ledger the front reads and the front accepts it.
 	if err := app.Run(t.Context(), []string{"tokens", "mint", "--name", "ci", "--signing-key-file", secret}); err != nil {
@@ -43,15 +43,11 @@ func TestTokensMintPrintsARecordTheFrontAccepts(t *testing.T) {
 		t.Errorf("the record carries scopes %v, want [\"*\"] by default", record.Scopes)
 	}
 
-	// The client's --token-file takes the whole record; the bare-token form is covered by the other front tests.
-	tokenPath := filepath.Join(t.TempDir(), "token")
-	if err := os.WriteFile(tokenPath, []byte(printed+"\n"), 0o600); err != nil {
-		t.Fatalf("write the token file: %v", err)
-	}
-	flags[3] = tokenPath
+	// SHARD_API_KEY takes the token field of the record.
+	f.key = record.Token
 
 	out.Reset()
-	if err := app.Run(t.Context(), append(flags, "list")); err != nil {
+	if err := app.Run(t.Context(), append(f.use(t), "list")); err != nil {
 		t.Fatalf("list with the minted record: %v", err)
 	}
 	if !strings.Contains(out.String(), "up-1") {
@@ -128,15 +124,16 @@ func TestTokensMintAndServeShareTheDefaultSigningKey(t *testing.T) {
 	if info, err := os.Stat(filepath.Join(app.Root, "auth", "signing-key")); err != nil || info.Mode().Perm() != 0o600 {
 		t.Fatalf("mint left no 0600 key at the default path: %v", err)
 	}
-	tokenPath := filepath.Join(t.TempDir(), "token")
-	if err := os.WriteFile(tokenPath, out.Bytes(), 0o600); err != nil {
-		t.Fatalf("write the token file: %v", err)
+	var record serve.Token
+	if err := json.Unmarshal(out.Bytes(), &record); err != nil {
+		t.Fatalf("mint printed %q, not one JSON object: %v", out.String(), err)
 	}
 
-	address, cert := startFront(t, serve.Config{Listen: "127.0.0.1:0", Root: app.Root, Out: io.Discard})
+	address, cert := startFront(t, serve.Config{Listen: "127.0.0.1:0", Root: app.Root, Out: io.Discard}, true)
+	f := front{url: "https://" + address, key: record.Token, ca: cert}
 
 	out.Reset()
-	if err := app.Run(t.Context(), []string{"--remote", "https://" + address, "--token-file", tokenPath, "--ca-file", cert, "list"}); err != nil {
+	if err := app.Run(t.Context(), append(f.use(t), "list")); err != nil {
 		t.Fatalf("list through the front with the minted token: %v", err)
 	}
 	if !strings.Contains(out.String(), "up-1") {
