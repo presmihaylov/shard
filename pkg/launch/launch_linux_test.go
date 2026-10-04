@@ -376,6 +376,30 @@ func TestAShimKilledInsideTheTraceDidNotStart(t *testing.T) {
 	}
 }
 
+// The kernel resets the channel when the shim's end goes with the go byte unread, which a kill inside the trace races (SHARD-640).
+func TestAShimGoneWithTheGoByteUnreadSentNoRecord(t *testing.T) {
+	c, err := Open()
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		if err := c.Close(); err != nil {
+			t.Error(err)
+		}
+	})
+	if _, err := c.host.Write([]byte{proceed}); err != nil {
+		t.Fatalf("send the go byte: %v", err)
+	}
+	if err := c.CloseGuest(); err != nil {
+		t.Fatal(err)
+	}
+
+	errno, err := c.errno()
+	if err != nil || errno != 0 {
+		t.Fatalf("errno returned %d, %v, want no record and no error", errno, err)
+	}
+}
+
 // The trace passes a signal on, so a shim that a SIGTERM ends before its exec dies of it and did not start.
 func TestASignalInsideTheTraceReachesTheShim(t *testing.T) {
 	r := start(t, middleRole, []string{"/bin/true"})

@@ -474,7 +474,8 @@ func (c *Channel) errno() (syscall.Errno, error) {
 	}); err != nil {
 		return 0, fmt.Errorf("read the launch shim's record: %w", err)
 	}
-	if errors.Is(rerr, unix.EAGAIN) {
+	// A shim killed before it read the go byte resets the channel, and the shim only writes a record after that read (SHARD-640).
+	if errors.Is(rerr, unix.EAGAIN) || errors.Is(rerr, unix.ECONNRESET) {
 		return 0, nil
 	}
 	if rerr != nil {
