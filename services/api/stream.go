@@ -250,20 +250,27 @@ func (e *execSession) read() {
 			return
 		}
 
-		switch stream {
-		case StreamStdin:
-			if err := e.input.offer(payload); err != nil {
-				e.refuseInput(err)
-				return
-			}
-		case StreamStdinClose:
-			e.input.end()
-		default:
-			e.log.Printf("api: exec: the client sent a message of stream %d, which no client sends", stream)
-			e.cancel()
+		if !e.handleInput(stream, payload) {
 			return
 		}
 	}
+}
+
+func (e *execSession) handleInput(stream byte, payload []byte) bool {
+	switch stream {
+	case StreamStdin:
+		if err := e.input.offer(payload); err != nil {
+			e.refuseInput(err)
+			return false
+		}
+	case StreamStdinClose:
+		e.input.end()
+	default:
+		e.log.Printf("api: exec: the client sent a message of stream %d, which no client sends", stream)
+		e.cancel()
+		return false
+	}
+	return true
 }
 
 func (e *execSession) refuseInput(err error) {
