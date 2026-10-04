@@ -1508,7 +1508,7 @@
             "description": "Error"
           }
         },
-        "summary": "List sandboxes",
+        "summary": "list active sandboxes",
         "tags": [
           "sandboxes"
         ],
@@ -1564,7 +1564,7 @@
             "description": "Error"
           }
         },
-        "summary": "Create a sandbox",
+        "summary": "create a sandbox",
         "tags": [
           "sandboxes"
         ],
@@ -1609,7 +1609,7 @@
             "description": "Error"
           }
         },
-        "summary": "Remove a sandbox",
+        "summary": "delete a sandbox and its files",
         "tags": [
           "sandboxes"
         ],
@@ -1769,7 +1769,7 @@
             "description": "Error"
           }
         },
-        "summary": "Read a path as a tar",
+        "summary": "copy a directory out of a running sandbox",
         "tags": [
           "files"
         ],
@@ -1836,7 +1836,7 @@
             "description": "Error"
           }
         },
-        "summary": "Unpack a tar under a directory",
+        "summary": "copy a directory into a running sandbox",
         "tags": [
           "files"
         ],
@@ -2073,7 +2073,7 @@
             "description": "Error"
           }
         },
-        "summary": "Create an exec, which runs once a client attaches",
+        "summary": "execute a command in a running sandbox",
         "tags": [
           "exec"
         ],
@@ -2416,7 +2416,7 @@
             "description": "Error"
           }
         },
-        "summary": "Read a file",
+        "summary": "copy a file out of a running sandbox",
         "tags": [
           "files"
         ],
@@ -2556,7 +2556,7 @@
             "description": "Error"
           }
         },
-        "summary": "Write a file",
+        "summary": "copy a file into a running sandbox",
         "tags": [
           "files"
         ],
@@ -2609,7 +2609,7 @@
             "description": "Error"
           }
         },
-        "summary": "Fork a sandbox into a new one",
+        "summary": "create a sandbox from a running sandbox's memory and files",
         "tags": [
           "sandboxes"
         ],
@@ -2810,7 +2810,7 @@
             "description": "Error"
           }
         },
-        "summary": "Pause a running sandbox",
+        "summary": "save a sandbox's state and suspend it",
         "tags": [
           "sandboxes"
         ],
@@ -2949,7 +2949,7 @@
             "description": "Error"
           }
         },
-        "summary": "Resume a paused sandbox",
+        "summary": "resume a paused sandbox from its saved state",
         "tags": [
           "sandboxes"
         ],
@@ -3091,7 +3091,7 @@
             "description": "Error"
           }
         },
-        "summary": "Start a stopped sandbox",
+        "summary": "start a stopped sandbox with its saved files",
         "tags": [
           "sandboxes"
         ],
@@ -3144,7 +3144,7 @@
             "description": "Error"
           }
         },
-        "summary": "Stop a sandbox",
+        "summary": "stop a sandbox and preserve its files",
         "tags": [
           "sandboxes"
         ],

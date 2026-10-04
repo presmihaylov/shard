@@ -79,7 +79,7 @@ class Shard:
         vcpus: int | None = None,
         disk_mib: int | None = None,
     ) -> Sandbox:
-        """A running sandbox with no app, from an image or a snapshot; exec() runs in it."""
+        """create a sandbox"""
         body = create_body(
             image,
             None,
@@ -113,7 +113,7 @@ class Shard:
         disk_mib: int | None = None,
         restart: Restart | None = None,
     ) -> App:
-        """A sandbox whose app is command. The sandbox outlives the app; remove() it when done."""
+        """create a sandbox and start its command"""
         body = create_body(
             image,
             command,
@@ -139,7 +139,7 @@ class Shard:
         return Sandbox(self._transport, _types.sandbox_info(record))
 
     def list(self, *, all: bool = False) -> builtins.list[Sandbox]:
-        """The running sandboxes, or with all every sandbox the daemon holds a record of."""
+        """list active sandboxes"""
         records = self._transport.listed(
             models.SandboxesResponse,
             lambda cursor: list_sandboxes.sync_detailed(client=self._transport.api, all_=all or UNSET, cursor=cursor),

@@ -15,12 +15,24 @@ the proxy and the front behind it (`the proxy at shard.example.com and the shard
 
 `shard daemon` itself is the one exception, because it is the daemon process rather than a client
 of one. No verb starts the daemon. A resident root process is installed on purpose, through the
-systemd unit in `packaging/systemd/shard.service`:
+systemd unit in `packaging/systemd/shard.service`. A release carries the unit beside the two Linux
+binaries, so an install needs no checkout. As root:
 
 ```
-cp packaging/systemd/shard.service /etc/systemd/system/
+base=https://github.com/presmihaylov/shard/releases/latest/download
+for f in shard-linux-amd64 shard-init-linux-amd64 shard.service SHA256SUMS; do curl -fsSLO "$base/$f"; done
+sha256sum --ignore-missing -c SHA256SUMS
+install -m0755 shard-linux-amd64 /usr/local/bin/shard
+install -m0755 shard-init-linux-amd64 /usr/local/bin/shard-init
+install -m0644 shard.service /etc/systemd/system/shard.service
+systemctl daemon-reload
 systemctl enable --now shard
 ```
+
+The daemon looks for the guest supervisor at `/usr/local/bin/shard-init`, and `SHARD_INIT_PATH`
+names another path. Install the provider's runtime first: `runsc`, `sysbox-runc` or `runc`
+(`docs/provider.md`). From a checkout, `make build-linux build-shard-init-linux` builds the same two
+binaries into `bin/`, and the unit is the file in `packaging/systemd`.
 
 On a Mac the equivalent is the LaunchDaemon in `packaging/launchd`, which `docs/mac.md` explains
 how to install.
@@ -940,8 +952,8 @@ ledger holds no such token. `revoke` marks one token by its id, or every token o
 
 The front reloads the ledger when its size or its modification time changes, so a `revoke` takes
 effect on the next request without a restart. The ledger must be a regular file.
-The front also checks the ledger once per second for
-every active proxy connection, including WebSocket streams and plain HTTP follows. A revoked token,
+The front also checks the ledger once per second for every active proxy connection, including
+WebSocket streams and plain HTTP follows. A revoked token,
 an absent token id, or a ledger read error closes both sides of that connection. A token with an
 `exp` ends the connection at its expiry, independently of the ledger check. A token without an
 `exp` still has the one-second ledger check. These closes detach the client; they do not stop an exec
@@ -965,7 +977,9 @@ systemctl restart shard
 install -d -m2750 -o root -g shard /etc/shard
 openssl rand -hex 32 > /etc/shard/serve.secret
 chown root:shard /etc/shard/serve.secret && chmod 0640 /etc/shard/serve.secret
-cp packaging/systemd/shard-serve.service /etc/systemd/system/
+curl -fsSLO https://github.com/presmihaylov/shard/releases/latest/download/shard-serve.service
+install -m0644 shard-serve.service /etc/systemd/system/shard-serve.service
+systemctl daemon-reload
 systemctl enable --now shard-serve
 ```
 

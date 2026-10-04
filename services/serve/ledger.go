@@ -234,7 +234,7 @@ func readEntries(path string) (entries []ledgerEntry, err error) {
 		return nil, nil
 	}
 	if err != nil {
-		return nil, fmt.Errorf("open the ledger %s: %w", path, err)
+		return nil, err
 	}
 	defer func() {
 		if closeErr := f.Close(); closeErr != nil {

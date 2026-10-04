@@ -66,12 +66,12 @@ export class Shard {
     this.snapshots = new Snapshots(this.transport);
   }
 
-  /** create answers a running sandbox with no app, or one whose state is failed; exec() runs in it. */
+  /** create a sandbox */
   async create(options: CreateOptions = {}): Promise<Sandbox> {
     return new Sandbox(this.transport, await this.made(createBody(options, undefined, undefined)));
   }
 
-  /** run answers the app command starts as in a new sandbox. The sandbox outlives the app; remove() it when done. */
+  /** create a sandbox and start its command */
   async run(image: string, command: string | string[], options: RunOptions = {}): Promise<App> {
     const { restart, ...rest } = options;
     const sandbox = new Sandbox(this.transport, await this.made(createBody({ ...rest, image }, command, restart)));
@@ -86,7 +86,7 @@ export class Shard {
     return new Sandbox(this.transport, records.sandboxInfo(data));
   }
 
-  /** list answers the running sandboxes, or with all every sandbox the daemon holds a record of. */
+  /** list active sandboxes */
   async list(options: { all?: boolean } = {}): Promise<Sandbox[]> {
     const all = options.all || undefined;
     const rows = await listed("/v0/sandboxes", "sandboxes", (cursor) => this.transport.api.GET("/v0/sandboxes", { params: { query: { all, cursor } } }));

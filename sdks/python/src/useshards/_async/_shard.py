@@ -78,7 +78,7 @@ class AsyncShard:
         vcpus: int | None = None,
         disk_mib: int | None = None,
     ) -> AsyncSandbox:
-        """A running sandbox with no app, from an image or a snapshot; exec() runs in it."""
+        """create a sandbox"""
         body = create_body(
             image,
             None,
@@ -112,7 +112,7 @@ class AsyncShard:
         disk_mib: int | None = None,
         restart: Restart | None = None,
     ) -> AsyncApp:
-        """A sandbox whose app is command. The sandbox outlives the app; remove() it when done."""
+        """create a sandbox and start its command"""
         body = create_body(
             image,
             command,
@@ -138,7 +138,7 @@ class AsyncShard:
         return AsyncSandbox(self._transport, _types.sandbox_info(record))
 
     async def list(self, *, all: bool = False) -> builtins.list[AsyncSandbox]:
-        """The running sandboxes, or with all every sandbox the daemon holds a record of."""
+        """list active sandboxes"""
         records = await self._transport.listed(
             models.SandboxesResponse,
             lambda cursor: list_sandboxes.asyncio_detailed(
