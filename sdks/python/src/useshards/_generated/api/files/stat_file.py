@@ -7,13 +7,13 @@ import httpx
 from ... import errors
 from ...client import AuthenticatedClient, Client
 from ...models.error import Error
-from ...types import UNSET, Response, Unset
+from ...types import UNSET, Response
 
 
 def _get_kwargs(
     id: str,
     *,
-    path: str | Unset = UNSET,
+    path: str,
 ) -> dict[str, Any]:
     params: dict[str, Any] = {}
 
@@ -59,7 +59,7 @@ def sync_detailed(
     id: str,
     *,
     client: AuthenticatedClient | Client,
-    path: str | Unset = UNSET,
+    path: str,
 ) -> Response[Any | Error]:
     """Stat a path"""
 
@@ -79,7 +79,7 @@ def sync(
     id: str,
     *,
     client: AuthenticatedClient | Client,
-    path: str | Unset = UNSET,
+    path: str,
 ) -> Any | Error | None:
     """Stat a path"""
 
@@ -94,7 +94,7 @@ async def asyncio_detailed(
     id: str,
     *,
     client: AuthenticatedClient | Client,
-    path: str | Unset = UNSET,
+    path: str,
 ) -> Response[Any | Error]:
     """Stat a path"""
 
@@ -112,7 +112,7 @@ async def asyncio(
     id: str,
     *,
     client: AuthenticatedClient | Client,
-    path: str | Unset = UNSET,
+    path: str,
 ) -> Any | Error | None:
     """Stat a path"""
 

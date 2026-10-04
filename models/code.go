@@ -22,7 +22,7 @@ const (
 	CodeAppEnded          Code = "app_ended"
 	CodeUnauthorized      Code = "unauthorized"
 	CodeForbidden         Code = "forbidden"
-	CodeSubstrateTimeout  Code = "substrate_timeout"
+	CodeTimeout           Code = "timeout"
 	CodeCommandNotStarted Code = "command_not_started"
 	CodeInternal          Code = "internal"
 )

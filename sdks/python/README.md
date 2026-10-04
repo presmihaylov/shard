@@ -99,3 +99,14 @@ A non-zero exit code is not an exception. Read `result.exit_code`.
 ## License
 
 Apache-2.0.
+
+## Lists and errors
+
+`shard.list()` returns `SandboxList(sandboxes, warnings)`. `shard.secrets.list()` returns
+`SecretList(secrets, warnings)`. The async client returns the same result types. The warnings name
+entries the daemon could not read. Both lists collect warnings from every page, keeping each exact
+text once in first-seen order. Check them before you treat the result as complete. Other lists return
+plain lists.
+
+An `APIError` can carry `holders`, the sandbox ids that prevent an operation such as secret removal.
+The attribute is `None` when the error has no holders field.

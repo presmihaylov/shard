@@ -26,7 +26,18 @@ from .._generated.api.sandboxes import (
 from .._generated.api.secrets import list_secrets, put_secret, remove_secret
 from .._generated.api.snapshots import create_snapshot, get_snapshot, list_snapshots, remove_snapshot
 from .._generated.types import UNSET
-from .._types import Capabilities, Policy, PolicyRule, Restart, SandboxInfo, SecretInfo, Snapshot, Version
+from .._types import (
+    Capabilities,
+    Policy,
+    PolicyRule,
+    Restart,
+    SandboxInfo,
+    SandboxList,
+    SecretInfo,
+    SecretList,
+    Snapshot,
+    Version,
+)
 from .._wire import Call, create_body
 from ._sandbox import App, Sandbox
 from ._transport import DEFAULT_TIMEOUT, Transport
@@ -138,14 +149,17 @@ class Shard:
         )
         return Sandbox(self._transport, _types.sandbox_info(record))
 
-    def list(self, *, all: bool = False) -> builtins.list[Sandbox]:
+    def list(self, *, all: bool = False) -> SandboxList[Sandbox]:
         """list active sandboxes"""
-        records = self._transport.listed(
+        sandboxes: builtins.list[Sandbox] = []
+        warnings: dict[str, None] = {}
+        for page in self._transport.pages(
             models.SandboxesResponse,
             lambda cursor: list_sandboxes.sync_detailed(client=self._transport.api, all_=all or UNSET, cursor=cursor),
-            lambda page: page.sandboxes,
-        )
-        return [Sandbox(self._transport, _types.sandbox_info(record)) for record in records]
+        ):
+            sandboxes.extend(Sandbox(self._transport, _types.sandbox_info(record)) for record in page.sandboxes)
+            warnings.update(dict.fromkeys(_types.warning_lines(page.warnings)))
+        return SandboxList(sandboxes, builtins.list(warnings))
 
     def version(self) -> Version:
         return _types.version(
@@ -178,7 +192,7 @@ class Policies:
         self._transport = transport
 
     def set(self, name: str, rules: Sequence[PolicyRule]) -> Policy:
-        """Make the policy, or replace every rule of it; a sandbox it is assigned to enforces the new rules."""
+        """Make the policy, or replace every rule of it; a sandbox it is attached to enforces the new rules."""
         body = models.PolicyRequest(
             rules=[models.RuleText(action=models.RuleTextAction(rule.action), rule=rule.rule) for rule in rules]
         )
@@ -205,7 +219,7 @@ class Policies:
     def remove(self, name: str) -> None:
         self._transport.send(lambda: remove_policy.sync_detailed(name, client=self._transport.api))
 
-    def assign(self, sandbox: SandboxRef, name: str) -> SandboxInfo:
+    def attach(self, sandbox: SandboxRef, name: str) -> SandboxInfo:
         body = models.PolicyAttachRequest(policy=name)
         return _changed(
             self._transport,
@@ -213,7 +227,7 @@ class Policies:
             lambda: attach_policy.sync_detailed(_id(sandbox), client=self._transport.api, body=body),
         )
 
-    def clear(self, sandbox: SandboxRef) -> SandboxInfo:
+    def detach(self, sandbox: SandboxRef) -> SandboxInfo:
         return _changed(
             self._transport, sandbox, lambda: detach_policy.sync_detailed(_id(sandbox), client=self._transport.api)
         )
@@ -244,16 +258,19 @@ class Secrets:
         )
         return _types.secret_info(record)
 
-    def list(self) -> builtins.list[SecretInfo]:
-        records = self._transport.listed(
+    def list(self) -> SecretList:
+        secrets: builtins.list[SecretInfo] = []
+        warnings: dict[str, None] = {}
+        for page in self._transport.pages(
             models.SecretsResponse,
             lambda cursor: list_secrets.sync_detailed(client=self._transport.api, cursor=cursor),
-            lambda page: page.secrets,
-        )
-        return [_types.secret_info(record) for record in records]
+        ):
+            secrets.extend(_types.secret_info(record) for record in page.secrets)
+            warnings.update(dict.fromkeys(_types.warning_lines(page.warnings)))
+        return SecretList(secrets, builtins.list(warnings))
 
     def remove(self, name: str, *, force: bool = False) -> None:
-        """Remove a secret no sandbox is granted; force revokes it from each first."""
+        """Remove a secret no sandbox is granted; force ungrants it from each first."""
         self._transport.send(
             lambda: remove_secret.sync_detailed(name, client=self._transport.api, force=force or UNSET)
         )
@@ -265,7 +282,7 @@ class Secrets:
             lambda: grant_secret.sync_detailed(_id(sandbox), name, client=self._transport.api),
         )
 
-    def revoke(self, sandbox: SandboxRef, name: str) -> SandboxInfo:
+    def ungrant(self, sandbox: SandboxRef, name: str) -> SandboxInfo:
         return _changed(
             self._transport,
             sandbox,

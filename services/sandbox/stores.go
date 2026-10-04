@@ -4,7 +4,6 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"slices"
 	"strings"
 	"time"
 
@@ -162,8 +161,8 @@ func (s *Stores) SetPolicy(ctx context.Context, name string, req PolicyRequest) 
 type PolicyView struct {
 	models.Policy
 	Holders []string `json:"holders,omitempty"`
-	// DNS is open or closed, computed from the rules, because nothing stores whether a policy resolves.
-	DNS string `json:"dns"`
+	// DNS is computed from the rules, because nothing stores whether a policy resolves.
+	DNS string `json:"dns" enum:"open,closed"`
 }
 
 // dnsState is the word the view carries, so show and create never disagree about what opens DNS.
@@ -186,6 +185,10 @@ func (s *Stores) Policy(name string) (PolicyView, error) {
 	}
 
 	holders, err := PolicyHolders(s.cfg.Repo, name)
+	// The same list rm refuses over, so show never answers 500 over a record that does not read back (SHARD-597).
+	if ids := unreadableHolders(err); ids != nil {
+		return PolicyView{Policy: policy, Holders: append(holders, ids...), DNS: dnsState(policy)}, nil
+	}
 	if err != nil {
 		return PolicyView{}, err
 	}
@@ -209,7 +212,7 @@ func (s *Stores) RemovePolicy(name string) error {
 
 	users, err := PolicyHolders(s.cfg.Repo, name)
 	if ids := unreadableHolders(err); ids != nil {
-		return &HeldError{Subject: "policy " + name, Verb: "possibly held by", Noun: "sandbox", Users: ids, Fix: unreadableFix}
+		return &HeldError{Subject: "policy " + name, Verb: "possibly held by", Noun: "sandbox", Users: append(users, ids...), Fix: unreadableFix(ids)}
 	}
 	if err != nil {
 		return err
@@ -221,8 +224,10 @@ func (s *Stores) RemovePolicy(name string) error {
 	return s.cfg.Policies.Remove(name)
 }
 
-// unreadableFix is the way past a refusal over records that do not read back, since rm cannot free a sandbox it cannot read.
-const unreadableFix = "the record of each cannot be read, so fix or delete it under the daemon root first"
+// unreadableFix is the way past records that do not read back, since rm cannot free a sandbox it cannot read.
+func unreadableFix(ids []string) string {
+	return fmt.Sprintf("fix or delete the unreadable record of %s under the daemon root first", strings.Join(ids, ", "))
+}
 
 // unreadableHolders names the records a holder scan could not read, and nil when the scan failed for any other reason (SHARD-584).
 func unreadableHolders(err error) []string {
@@ -238,16 +243,17 @@ func unreadableHolders(err error) []string {
 // what show prints and what rm refuses can never disagree.
 func PolicyHolders(repo Reader, name string) ([]string, error) {
 	sandboxes, unreadable := repo.List()
-	// A record that does not read back may name the policy, so nothing can say it is free.
-	if unreadable != nil {
-		return nil, &CauseError{Text: "cannot tell which sandboxes hold the policy", Err: unreadable}
-	}
 
 	var holders []string
 	for _, sb := range sandboxes {
 		if sb.Policy == name {
 			holders = append(holders, sb.ID)
 		}
+	}
+
+	// A record that does not read back may name the policy, so nothing can say it is free; the readable holders still go back for a refusal to name (SHARD-584).
+	if unreadable != nil {
+		return holders, &CauseError{Text: "cannot tell which sandboxes hold the policy", Err: unreadable}
 	}
 
 	return holders, nil
@@ -305,7 +311,7 @@ func (s *Stores) RemoveSecret(name string, force bool) error {
 func (s *Stores) ungranted(name string) error {
 	users, err := SecretHolders(s.cfg.Repo, name)
 	if ids := unreadableHolders(err); ids != nil {
-		return &HeldError{Subject: "secret " + name, Verb: "possibly granted to", Noun: "sandbox", Users: ids, Fix: unreadableFix + ", or pass --force"}
+		return &HeldError{Subject: "secret " + name, Verb: "possibly granted to", Noun: "sandbox", Users: append(users, ids...), Fix: unreadableFix(ids) + ", or pass --force"}
 	}
 	if err != nil {
 		return err
@@ -397,6 +403,13 @@ func (s *Stores) removeImage(ctx context.Context, ref string, free func() error)
 	return nil, nil
 }
 
+// imageUser is a record that holds an image, by the reference it names and the digest it resolved to.
+type imageUser struct {
+	id        string
+	reference string
+	digest    string
+}
+
 // unreferenced refuses when a record or a snapshot names the image, or one whose rootfs would go with it.
 func (s *Stores) unreferenced(ref string) error {
 	sandboxes, err := s.heldImages()
@@ -424,16 +437,27 @@ func (s *Stores) unreferenced(ref string) error {
 		return err
 	}
 
-	// holders names who holds the image, or another one whose rootfs goes with it.
-	holders := func(held map[string][]string) []string {
-		users := held[canonical]
-		for _, img := range images {
-			if img.Reference != canonical && slices.Contains(orphaned, img.Digest) {
-				users = append(users, held[img.Reference]...)
+	orphanedSet := map[string]bool{}
+	for _, digest := range orphaned {
+		orphanedSet[digest] = true
+	}
+
+	// digestByReference resolves a pending record that holds a tag, since its own digest is not set yet.
+	digestByReference := map[string]string{}
+	for _, img := range images {
+		digestByReference[img.Reference] = img.Digest
+	}
+
+	// holders names who holds the image by reference, or one whose rootfs goes with it by digest.
+	holders := func(users []imageUser) []string {
+		var held []string
+		for _, u := range users {
+			if u.reference == canonical || orphanedSet[resolveDigest(u, digestByReference)] {
+				held = append(held, u.id)
 			}
 		}
 
-		return users
+		return held
 	}
 
 	if users := holders(sandboxes); len(users) != 0 {
@@ -446,35 +470,51 @@ func (s *Stores) unreferenced(ref string) error {
 	return nil
 }
 
-// heldImages maps each image reference to the sandboxes whose records name it.
-func (s *Stores) heldImages() (map[string][]string, error) {
+// resolveDigest is the record's own digest, else the cache digest for its reference, else the digest its by-digest reference names.
+func resolveDigest(u imageUser, byReference map[string]string) string {
+	if u.digest != "" {
+		return u.digest
+	}
+	// A manifest-list reference names the list digest, but the cache keys the platform image under a child digest, so the cache wins over the literal parse (SHARD-573).
+	if digest, ok := byReference[u.reference]; ok {
+		return digest
+	}
+	if digest, ok := image.DigestOf(u.reference); ok {
+		return digest
+	}
+
+	return ""
+}
+
+// heldImages lists the sandboxes whose records name an image, each with the digest it resolved to.
+func (s *Stores) heldImages() ([]imageUser, error) {
 	sandboxes, unreadable := s.cfg.Repo.List()
 	// A record that does not read back may name the image, so nothing can say it is free.
 	if unreadable != nil {
 		return nil, fmt.Errorf("cannot tell which images the sandboxes reference: %w", unreadable)
 	}
 
-	held := map[string][]string{}
+	users := make([]imageUser, 0, len(sandboxes))
 	for _, sb := range sandboxes {
-		held[sb.Image] = append(held[sb.Image], sb.ID)
+		users = append(users, imageUser{id: sb.ID, reference: sb.Image, digest: sb.Digest})
 	}
 
-	return held, nil
+	return users, nil
 }
 
-// snapshotImages maps each image reference to the snapshots whose layer sits over it.
-func (s *Stores) snapshotImages() (map[string][]string, error) {
+// snapshotImages lists the snapshots whose layer sits over an image, each with the digest it resolved to.
+func (s *Stores) snapshotImages() ([]imageUser, error) {
 	snaps, err := s.cfg.Snapshots.List()
 	if err != nil {
 		return nil, fmt.Errorf("cannot tell which images the snapshots reference: %w", err)
 	}
 
-	held := map[string][]string{}
+	users := make([]imageUser, 0, len(snaps))
 	for _, snap := range snaps {
-		held[snap.Image] = append(held[snap.Image], snap.ID)
+		users = append(users, imageUser{id: snap.ID, reference: snap.Image, digest: snap.Digest})
 	}
 
-	return held, nil
+	return users, nil
 }
 
 func (s *Stores) reapplyAll(ctx context.Context) error {

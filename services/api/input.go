@@ -41,10 +41,10 @@ type bodyInput[B any] struct {
 
 type filePath struct {
 	ID   string `path:"id" doc:"The sandbox id or name."`
-	Path string `query:"path" doc:"The absolute guest path."`
+	Path string `query:"path" required:"true" doc:"The absolute guest path."`
 }
 
 type followInput struct {
 	ID     string `path:"id" doc:"The sandbox id or name."`
-	Follow bool   `query:"follow" doc:"Keep the stream open; a WebSocket upgrade follows too."`
+	Follow bool   `query:"follow" doc:"Keep the stream open; a WebSocket upgrade requires follow=true."`
 }
