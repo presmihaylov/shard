@@ -38,6 +38,7 @@ func (f *fakeRing) Follow(_ context.Context, yield func(kmsg.Record) error, caug
 type fakeSandboxes struct {
 	sandboxes []models.Sandbox
 	listed    int
+	gen       uint64
 }
 
 func (f *fakeSandboxes) List() ([]models.Sandbox, error) {
@@ -45,6 +46,8 @@ func (f *fakeSandboxes) List() ([]models.Sandbox, error) {
 
 	return f.sandboxes, nil
 }
+
+func (f *fakeSandboxes) Generation() uint64 { return f.gen }
 
 func newTailer(t *testing.T, out io.Writer, sandboxes ...models.Sandbox) (*Tailer, string, *Log) {
 	t.Helper()
@@ -370,6 +373,8 @@ func (r *relet) List() ([]models.Sandbox, error) {
 	return r.sandboxes[1:], nil
 }
 
+func (r *relet) Generation() uint64 { return 0 }
+
 // A cached holder that is gone must not eat the line: the sandbox that took its address gets the drop.
 func TestTailWritesADropToTheSandboxThatTookTheAddress(t *testing.T) {
 	var out strings.Builder
@@ -392,6 +397,87 @@ func TestTailWritesADropToTheSandboxThatTookTheAddress(t *testing.T) {
 	}
 	if got := out.String(); strings.Contains(got, "no longer exists") {
 		t.Errorf("the tailer counted the drop as unattributed: %q", got)
+	}
+}
+
+// A failed create keeps the address its teardown gave back, so a drop from that address belongs to the sandbox that holds it now (SHARD-545).
+func TestTailWritesADropToTheLiveSandboxNotTheFailedOne(t *testing.T) {
+	var out strings.Builder
+	failed := sandbox(t)
+	failed.State = models.StateFailed
+	live := models.Sandbox{ID: "sb2", State: models.StateRunning, Address: failed.Address, CreatedAt: time.Unix(105, 0).UTC()}
+	tailer, root, decisions := newTailer(t, &out, live, failed)
+	writeCursor(t, root, "6")
+
+	if err := tailer.Run(t.Context(), &fakeRing{records: []kmsg.Record{drops(7, 110, "default")}}); err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+
+	records, _, err := decisions.Tail(live.ID)
+	if err != nil {
+		t.Fatalf("Tail: %v", err)
+	}
+	if len(records) != 1 {
+		t.Errorf("the live sandbox's log holds %+v, want the one drop", records)
+	}
+	records, _, err = decisions.Tail(failed.ID)
+	if err != nil {
+		t.Fatalf("Tail: %v", err)
+	}
+	if len(records) != 0 {
+		t.Errorf("the failed sandbox's log holds %+v", records)
+	}
+}
+
+// turnRing runs turn between two lines, the moment the records change under a cached holder.
+type turnRing struct {
+	records []kmsg.Record
+	turn    func()
+}
+
+func (r turnRing) Follow(_ context.Context, yield func(kmsg.Record) error, caughtUp func()) error {
+	for i, record := range r.records {
+		if i > 0 {
+			r.turn()
+		}
+		if err := yield(record); err != nil {
+			return err
+		}
+	}
+	caughtUp()
+
+	return nil
+}
+
+// A holder cached while pending can fail, keep its log and give its address to the next create, whose drops are its own (SHARD-545).
+func TestTailWritesADropToTheCreateThatTookAPendingHoldersAddress(t *testing.T) {
+	pending := sandbox(t)
+	pending.State = models.StatePending
+	took := models.Sandbox{ID: "sb2", State: models.StateRunning, Address: pending.Address, CreatedAt: time.Unix(115, 0).UTC()}
+	repo := &fakeSandboxes{sandboxes: []models.Sandbox{pending}}
+	root := t.TempDir()
+	decisions := NewLog(fakeDirs{root: root})
+	tailer := NewTailer(root, decisions, repo, nil, log.New(io.Discard, "", 0))
+	writeCursor(t, root, "6")
+
+	ring := turnRing{records: []kmsg.Record{drops(7, 110, "a"), drops(8, 120, "b")}, turn: func() {
+		failed := pending
+		failed.State = models.StateFailed
+		repo.sandboxes = []models.Sandbox{failed, took}
+		repo.gen++
+	}}
+	if err := tailer.Run(t.Context(), ring); err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+
+	for id, rule := range map[string]string{pending.ID: "a", took.ID: "b"} {
+		records, _, err := decisions.Tail(id)
+		if err != nil {
+			t.Fatalf("Tail %s: %v", id, err)
+		}
+		if len(records) != 1 || records[0].Rule != rule {
+			t.Errorf("the log of %s holds %+v, want the one drop with rule %s", id, records, rule)
+		}
 	}
 }
 
@@ -425,6 +511,8 @@ func (k *keyedLate) List() ([]models.Sandbox, error) {
 
 	return []models.Sandbox{k.sandbox}, nil
 }
+
+func (k *keyedLate) Generation() uint64 { return 0 }
 
 // SHARD-327: the port's own drop lists the records mid-create, and the guest's first drop comes well inside a second.
 func TestTailListsAgainForALiveDrop(t *testing.T) {
