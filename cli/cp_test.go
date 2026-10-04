@@ -206,7 +206,7 @@ func TestCpKeepsTheGuestsRefusal(t *testing.T) {
 	app, _, _ := newCpApp(t)
 
 	err := app.Run(t.Context(), []string{"cp", "sandbox1:/srv/missing", t.TempDir()})
-	if err == nil || !strings.Contains(err.Error(), "get /srv/missing: no such file or directory") {
+	if err == nil || !strings.Contains(err.Error(), `get "/srv/missing": no such file or directory`) {
 		t.Fatalf("cp of a missing file gave %v, want the guest's words", err)
 	}
 }

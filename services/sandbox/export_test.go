@@ -45,3 +45,23 @@ func (s *Service) ExecsHeld(id string) int {
 
 	return held
 }
+
+// The running-exec bounds, so a test pins to the real values.
+const (
+	MaxRunningExecsPerSandbox = maxRunningExecsPerSandbox
+	MaxRunningExecs           = maxRunningExecs
+)
+
+// AdmitExec takes a running slot as a create does, so a test fills the daemon bound with sandboxes the fake repository does not hold.
+func (s *Service) AdmitExec(id string) error { return s.admitExec(id) }
+
+// ReleaseExec frees a slot that AdmitExec took.
+func (s *Service) ReleaseExec(id string) { s.releaseExec(id) }
+
+// RunningExecs counts the running slots one sandbox holds, and the daemon holds in all.
+func (s *Service) RunningExecs(id string) (int, int) {
+	s.execMu.Lock()
+	defer s.execMu.Unlock()
+
+	return s.running[id], s.runningAll
+}

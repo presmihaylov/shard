@@ -18,7 +18,7 @@ func CloneRootDisk(base, dst string, r models.Resources) (shared bool, err error
 	}
 	// The image size is known only after the pull, so the provider cannot refuse this bound up front.
 	if need := ceilMiB(st.Size()); st.Size() > DiskBytes(r) {
-		return false, fmt.Errorf("the image takes a %d MiB disk, more than the %d MiB disk bound; set --disk %dMiB or more", need, DiskBound(r), need)
+		return false, fmt.Errorf("the image takes a %d MiB disk, more than the %d MiB disk bound; set resources.disk_mib to %d MiB or more", need, DiskBound(r), need)
 	}
 
 	err = admitDisk(dst, DiskBytes(r), func() error {
@@ -53,16 +53,16 @@ func GrowSeed(dst string, r models.Resources, copy func() error) error {
 	})
 }
 
-// seedRefusal names the --disk that works when ext4 cannot grow a snapshot's disk.
+// seedRefusal names the resources.disk_mib that works when ext4 cannot grow a snapshot's disk.
 func seedRefusal(err error, mib int64) error {
 	if errors.Is(err, ext4.ErrNeedsRecovery) {
-		return fmt.Errorf("the snapshot's disk was not stopped clean, so it cannot grow to %d MiB: drop --disk, or start the sandbox it came from, stop it without --force and snapshot it again: %w", mib, err)
+		return fmt.Errorf("the snapshot's disk was not stopped clean, so it cannot grow to %d MiB; omit resources.disk_mib, or start the sandbox it came from, stop it without --force and snapshot it again: %w", mib, err)
 	}
 	var taken *ext4.DescriptorTakenError
 	if errors.As(err, &taken) {
 		most := taken.Max / bytesPerMiB
 
-		return fmt.Errorf("the snapshot's disk grows to at most %d MiB, as a mount took the room a larger one needs: ask for --disk %dMiB or less: %w", most, most, err)
+		return fmt.Errorf("the snapshot's disk grows to at most %d MiB, as a mount took the room a larger one needs; set resources.disk_mib to %d MiB or less: %w", most, most, err)
 	}
 
 	return fmt.Errorf("grow the snapshot's disk to the %d MiB bound: %w", mib, err)

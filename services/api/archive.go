@@ -64,7 +64,7 @@ func (h *Handler) getArchive(w http.ResponseWriter, r *http.Request) {
 		if whole && r.Context().Err() != nil {
 			return
 		}
-		h.log.Printf("api: archive %s from sandbox %s: %v", r.URL.Query().Get("path"), r.PathValue("id"), err)
+		h.log.Printf("api: archive %q from sandbox %s: %q", r.URL.Query().Get("path"), r.PathValue("id"), h.redacted(err.Error()))
 		// The abort drops the connection without the last chunk, so the client reads a cut, never a whole tar.
 		panic(http.ErrAbortHandler)
 	}
