@@ -1,0 +1,5 @@
+GET /v0/daemon
+GET /v0/images
+POST /v0/images/pull
+POST /v0/images/prune
+DELETE /v0/images/{ref...}

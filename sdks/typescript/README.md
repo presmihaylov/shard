@@ -2,12 +2,21 @@
 
 The TypeScript SDK for [shard](https://github.com/presmihaylov/shard), the sandbox manager.
 
-`useshards` is not on npm yet, so build it from the repository:
+`useshards` is not on npm. Until its GitHub release is published, build it from a checkout of this
+repository:
 
 ```sh
 git clone https://github.com/presmihaylov/shard.git
 cd shard/sdks/typescript
 npm install && npm run build
+```
+
+To use that build in another project, run `npm install /path/to/shard/sdks/typescript` there.
+
+Once the GitHub release is published, install its tarball:
+
+```sh
+npm install https://github.com/presmihaylov/shard/releases/download/sdk-typescript-v0.1.0/useshards-0.1.0.tgz
 ```
 
 Node 20.3 or later. The one runtime dependency is `openapi-fetch`.
@@ -93,3 +102,13 @@ error. Read `result.exitCode`.
 ## License
 
 Apache-2.0.
+
+## Lists and errors
+
+`shard.list()` returns `{ sandboxes, warnings }`. `shard.secrets.list()` returns
+`{ secrets, warnings }`. The warnings name entries the daemon could not read. Both lists collect
+warnings from every page, keeping each exact text once in first-seen order. Check them before you
+treat the result as complete. Other lists return arrays.
+
+An `APIError` can carry `holders`, the sandbox ids that prevent an operation such as secret removal.
+The property is `undefined` when the error has no holders field.

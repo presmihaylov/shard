@@ -153,7 +153,7 @@ done
 say "/dev/kvm, firecracker, jailer, mkfs.erofs, mkfs.xfs, ip, ss, nft, iptables, go, curl and openssl are on the host"
 # The guest reaches the resolver and the proxy over the bridge, and a host firewall that drops INPUT eats them before shard sees them.
 if iptables -S INPUT 2>/dev/null | has_line "^-P INPUT DROP$" && ! iptables -C INPUT -i shard0 -j ACCEPT 2>/dev/null; then
-	fail "the host firewall drops INPUT: run 'iptables -I INPUT -i shard0 -j ACCEPT' (ufw hosts: 'ufw allow in on shard0') and run this again"
+	fail "the host firewall drops INPUT: run 'iptables -I INPUT -i shard0 -j ACCEPT' and run this again"
 fi
 say "the host firewall lets the bridge reach the daemon"
 if [ -n "${SHARD_KERNEL:-}" ]; then

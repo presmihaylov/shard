@@ -3,10 +3,16 @@
 The Python SDK for [shard](https://github.com/presmihaylov/shard), the sandbox manager. `Shard` is for
 blocking code and `AsyncShard` is for asyncio. Both have the same verbs.
 
-`useshards` is not on PyPI yet, so install it from the repository:
+`useshards` is not on PyPI. Until its GitHub release is published, install it from the repository:
 
 ```
 pip install "useshards @ git+https://github.com/presmihaylov/shard#subdirectory=sdks/python"
+```
+
+Once the GitHub release is published, install its wheel:
+
+```
+pip install https://github.com/presmihaylov/shard/releases/download/sdk-python-v0.1.0/useshards-0.1.0-py3-none-any.whl
 ```
 
 Python 3.11 or later. The runtime dependencies are HTTPX, attrs and typing-extensions.
@@ -99,3 +105,14 @@ A non-zero exit code is not an exception. Read `result.exit_code`.
 ## License
 
 Apache-2.0.
+
+## Lists and errors
+
+`shard.list()` returns `SandboxList(sandboxes, warnings)`. `shard.secrets.list()` returns
+`SecretList(secrets, warnings)`. The async client returns the same result types. The warnings name
+entries the daemon could not read. Both lists collect warnings from every page, keeping each exact
+text once in first-seen order. Check them before you treat the result as complete. Other lists return
+plain lists.
+
+An `APIError` can carry `holders`, the sandbox ids that prevent an operation such as secret removal.
+The attribute is `None` when the error has no holders field.
