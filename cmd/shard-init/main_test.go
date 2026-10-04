@@ -671,6 +671,37 @@ func TestNoZombiesAfterManyChildren(t *testing.T) {
 	})
 }
 
+// darwin can drop a SIGCHLD under load, so a death no signal announced must still reach the host (SHARD-481).
+func TestADeathNoSignalAnnouncedIsStillReaped(t *testing.T) {
+	report := memoryReporter{exits: make(chan models.ExitStatus, 1), ooms: make(chan struct{}, 1)}
+	g := newGuest(report, restartPolicy{policy: models.RestartNo})
+	signal.Stop(g.childDeaths)
+	if err := g.launch(entrypoint{argv: []string{os.Args[0], childPrefix + "exit:7"}, env: os.Environ()}); err != nil {
+		t.Fatal(err)
+	}
+	done := make(chan error, 1)
+	go func() { done <- g.supervise() }()
+
+	select {
+	case exit := <-report.exits:
+		if exit.Code != 7 {
+			t.Fatalf("exit = %+v, want code 7", exit)
+		}
+	case <-time.After(5 * reapEvery):
+		t.Fatalf("no exit within %s of a death that no SIGCHLD announced", 5*reapEvery)
+	}
+	// Every guest in this process reaps any child, so this one must end before the next test forks.
+	g.stopSignals <- syscall.SIGTERM
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatalf("supervise: %v", err)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("the guest did not end on a stop with nothing to forward to")
+	}
+}
+
 func TestSupervisorOutlivesALostExitStatus(t *testing.T) {
 	exe, err := os.Executable()
 	if err != nil {
