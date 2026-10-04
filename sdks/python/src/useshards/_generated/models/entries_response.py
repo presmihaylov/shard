@@ -17,11 +17,6 @@ T = TypeVar("T", bound="EntriesResponse")
 
 @_attrs_define
 class EntriesResponse:
-    """
-    Attributes:
-        entries (list[FileEntry]):
-    """
-
     entries: list[FileEntry]
 
     def to_dict(self) -> dict[str, Any]:

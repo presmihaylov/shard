@@ -13,12 +13,6 @@ T = TypeVar("T", bound="SnapshotRequest")
 
 @_attrs_define
 class SnapshotRequest:
-    """
-    Attributes:
-        sandbox (str):
-        name (str | Unset):
-    """
-
     sandbox: str
     name: str | Unset = UNSET
 

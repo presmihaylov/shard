@@ -119,11 +119,7 @@ class AsyncSandbox:
         on_stdout: OutputCallback | None = None,
         on_stderr: OutputCallback | None = None,
     ) -> CommandResult | AsyncCommand:
-        """Run a command and answer how it ended, or with background=True start it and answer its handle.
-
-        A string runs under /bin/sh -c. Foreground, stdin is the whole input; in the background, stdin=True
-        keeps the input open for write_stdin(). A cancel or a dropped connection leaves the command running.
-        """
+        """A cancel or a dropped connection leaves the remote command running."""
         if background:
             if stdin is not None and not isinstance(stdin, bool):
                 raise TypeError("a background command takes its input through write_stdin(), so stdin is a bool")

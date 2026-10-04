@@ -17,13 +17,6 @@ T = TypeVar("T", bound="Effective")
 
 @_attrs_define
 class Effective:
-    """
-    Attributes:
-        policy (str):
-        rules (list[EffectiveRule]):
-        missing (bool | Unset):
-    """
-
     policy: str
     rules: list[EffectiveRule]
     missing: bool | Unset = UNSET

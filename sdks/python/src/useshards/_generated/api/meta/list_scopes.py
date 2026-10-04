@@ -48,15 +48,7 @@ def sync_detailed(
     *,
     client: AuthenticatedClient | Client,
 ) -> Response[Error | ScopesResponse]:
-    """List the scopes a token can carry
-
-    Raises:
-        errors.UnexpectedStatus: If the server returns an undocumented status code and Client.raise_on_unexpected_status is True.
-        httpx.TimeoutException: If the request takes longer than Client.timeout.
-
-    Returns:
-        Response[Error | ScopesResponse]
-    """
+    """List the scopes a token can carry"""
 
     kwargs = _get_kwargs()
 
@@ -71,15 +63,7 @@ def sync(
     *,
     client: AuthenticatedClient | Client,
 ) -> Error | ScopesResponse | None:
-    """List the scopes a token can carry
-
-    Raises:
-        errors.UnexpectedStatus: If the server returns an undocumented status code and Client.raise_on_unexpected_status is True.
-        httpx.TimeoutException: If the request takes longer than Client.timeout.
-
-    Returns:
-        Error | ScopesResponse
-    """
+    """List the scopes a token can carry"""
 
     return sync_detailed(
         client=client,
@@ -90,15 +74,7 @@ async def asyncio_detailed(
     *,
     client: AuthenticatedClient | Client,
 ) -> Response[Error | ScopesResponse]:
-    """List the scopes a token can carry
-
-    Raises:
-        errors.UnexpectedStatus: If the server returns an undocumented status code and Client.raise_on_unexpected_status is True.
-        httpx.TimeoutException: If the request takes longer than Client.timeout.
-
-    Returns:
-        Response[Error | ScopesResponse]
-    """
+    """List the scopes a token can carry"""
 
     kwargs = _get_kwargs()
 
@@ -111,15 +87,7 @@ async def asyncio(
     *,
     client: AuthenticatedClient | Client,
 ) -> Error | ScopesResponse | None:
-    """List the scopes a token can carry
-
-    Raises:
-        errors.UnexpectedStatus: If the server returns an undocumented status code and Client.raise_on_unexpected_status is True.
-        httpx.TimeoutException: If the request takes longer than Client.timeout.
-
-    Returns:
-        Error | ScopesResponse
-    """
+    """List the scopes a token can carry"""
 
     return (
         await asyncio_detailed(

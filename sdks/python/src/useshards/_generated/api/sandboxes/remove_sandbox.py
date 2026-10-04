@@ -61,19 +61,7 @@ def sync_detailed(
     client: AuthenticatedClient | Client,
     force: bool | Unset = UNSET,
 ) -> Response[Any | Error]:
-    """Remove a sandbox
-
-    Args:
-        id (str):
-        force (bool | Unset): Stop a sandbox that is still up or paused first.
-
-    Raises:
-        errors.UnexpectedStatus: If the server returns an undocumented status code and Client.raise_on_unexpected_status is True.
-        httpx.TimeoutException: If the request takes longer than Client.timeout.
-
-    Returns:
-        Response[Any | Error]
-    """
+    """Remove a sandbox"""
 
     kwargs = _get_kwargs(
         id=id,
@@ -93,19 +81,7 @@ def sync(
     client: AuthenticatedClient | Client,
     force: bool | Unset = UNSET,
 ) -> Any | Error | None:
-    """Remove a sandbox
-
-    Args:
-        id (str):
-        force (bool | Unset): Stop a sandbox that is still up or paused first.
-
-    Raises:
-        errors.UnexpectedStatus: If the server returns an undocumented status code and Client.raise_on_unexpected_status is True.
-        httpx.TimeoutException: If the request takes longer than Client.timeout.
-
-    Returns:
-        Any | Error
-    """
+    """Remove a sandbox"""
 
     return sync_detailed(
         id=id,
@@ -120,19 +96,7 @@ async def asyncio_detailed(
     client: AuthenticatedClient | Client,
     force: bool | Unset = UNSET,
 ) -> Response[Any | Error]:
-    """Remove a sandbox
-
-    Args:
-        id (str):
-        force (bool | Unset): Stop a sandbox that is still up or paused first.
-
-    Raises:
-        errors.UnexpectedStatus: If the server returns an undocumented status code and Client.raise_on_unexpected_status is True.
-        httpx.TimeoutException: If the request takes longer than Client.timeout.
-
-    Returns:
-        Response[Any | Error]
-    """
+    """Remove a sandbox"""
 
     kwargs = _get_kwargs(
         id=id,
@@ -150,19 +114,7 @@ async def asyncio(
     client: AuthenticatedClient | Client,
     force: bool | Unset = UNSET,
 ) -> Any | Error | None:
-    """Remove a sandbox
-
-    Args:
-        id (str):
-        force (bool | Unset): Stop a sandbox that is still up or paused first.
-
-    Raises:
-        errors.UnexpectedStatus: If the server returns an undocumented status code and Client.raise_on_unexpected_status is True.
-        httpx.TimeoutException: If the request takes longer than Client.timeout.
-
-    Returns:
-        Any | Error
-    """
+    """Remove a sandbox"""
 
     return (
         await asyncio_detailed(

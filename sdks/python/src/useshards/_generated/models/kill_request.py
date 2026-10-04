@@ -13,11 +13,6 @@ T = TypeVar("T", bound="KillRequest")
 
 @_attrs_define
 class KillRequest:
-    """
-    Attributes:
-        signal (str | Unset):
-    """
-
     signal: str | Unset = UNSET
 
     def to_dict(self) -> dict[str, Any]:

@@ -13,11 +13,6 @@ T = TypeVar("T", bound="PolicyAttachRequest")
 
 @_attrs_define
 class PolicyAttachRequest:
-    """
-    Attributes:
-        policy (str):
-    """
-
     policy: str
 
     def to_dict(self) -> dict[str, Any]:

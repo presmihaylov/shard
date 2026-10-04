@@ -13,11 +13,6 @@ T = TypeVar("T", bound="CopyRequest")
 
 @_attrs_define
 class CopyRequest:
-    """
-    Attributes:
-        name (str | Unset):
-    """
-
     name: str | Unset = UNSET
 
     def to_dict(self) -> dict[str, Any]:

@@ -17,13 +17,6 @@ T = TypeVar("T", bound="SecretsResponse")
 
 @_attrs_define
 class SecretsResponse:
-    """
-    Attributes:
-        next_ (None | str):
-        secrets (list[Secret]):
-        warnings (list[str] | Unset):
-    """
-
     next_: None | str
     secrets: list[Secret]
     warnings: list[str] | Unset = UNSET

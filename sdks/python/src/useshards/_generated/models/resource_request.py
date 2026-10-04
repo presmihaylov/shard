@@ -13,13 +13,6 @@ T = TypeVar("T", bound="ResourceRequest")
 
 @_attrs_define
 class ResourceRequest:
-    """
-    Attributes:
-        disk_mib (int | Unset):
-        memory_mib (int | Unset):
-        vcpus (int | Unset):
-    """
-
     disk_mib: int | Unset = UNSET
     memory_mib: int | Unset = UNSET
     vcpus: int | Unset = UNSET

@@ -17,14 +17,6 @@ T = TypeVar("T", bound="PolicyView")
 
 @_attrs_define
 class PolicyView:
-    """
-    Attributes:
-        dns (str):
-        name (str):
-        rules (list[Rule]):
-        holders (list[str] | Unset):
-    """
-
     dns: str
     name: str
     rules: list[Rule]

@@ -17,16 +17,6 @@ T = TypeVar("T", bound="EffectiveRule")
 
 @_attrs_define
 class EffectiveRule:
-    """
-    Attributes:
-        action (str):
-        destination (Destination):
-        id (str):
-        implied (str | Unset):
-        ports (list[int] | Unset):
-        protocol (str | Unset):
-    """
-
     action: str
     destination: Destination
     id: str

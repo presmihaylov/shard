@@ -13,13 +13,6 @@ T = TypeVar("T", bound="AppExit")
 
 @_attrs_define
 class AppExit:
-    """
-    Attributes:
-        code (int):
-        restarts (int):
-        signal (int):
-    """
-
     code: int
     restarts: int
     signal: int

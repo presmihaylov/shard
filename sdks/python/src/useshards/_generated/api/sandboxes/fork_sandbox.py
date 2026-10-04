@@ -65,19 +65,7 @@ def sync_detailed(
     client: AuthenticatedClient | Client,
     body: CopyRequest | Unset = UNSET,
 ) -> Response[Error | Sandbox]:
-    """Fork a sandbox into a new one
-
-    Args:
-        id (str): The sandbox id or name.
-        body (CopyRequest | Unset):
-
-    Raises:
-        errors.UnexpectedStatus: If the server returns an undocumented status code and Client.raise_on_unexpected_status is True.
-        httpx.TimeoutException: If the request takes longer than Client.timeout.
-
-    Returns:
-        Response[Error | Sandbox]
-    """
+    """Fork a sandbox into a new one"""
 
     kwargs = _get_kwargs(
         id=id,
@@ -97,19 +85,7 @@ def sync(
     client: AuthenticatedClient | Client,
     body: CopyRequest | Unset = UNSET,
 ) -> Error | Sandbox | None:
-    """Fork a sandbox into a new one
-
-    Args:
-        id (str): The sandbox id or name.
-        body (CopyRequest | Unset):
-
-    Raises:
-        errors.UnexpectedStatus: If the server returns an undocumented status code and Client.raise_on_unexpected_status is True.
-        httpx.TimeoutException: If the request takes longer than Client.timeout.
-
-    Returns:
-        Error | Sandbox
-    """
+    """Fork a sandbox into a new one"""
 
     return sync_detailed(
         id=id,
@@ -124,19 +100,7 @@ async def asyncio_detailed(
     client: AuthenticatedClient | Client,
     body: CopyRequest | Unset = UNSET,
 ) -> Response[Error | Sandbox]:
-    """Fork a sandbox into a new one
-
-    Args:
-        id (str): The sandbox id or name.
-        body (CopyRequest | Unset):
-
-    Raises:
-        errors.UnexpectedStatus: If the server returns an undocumented status code and Client.raise_on_unexpected_status is True.
-        httpx.TimeoutException: If the request takes longer than Client.timeout.
-
-    Returns:
-        Response[Error | Sandbox]
-    """
+    """Fork a sandbox into a new one"""
 
     kwargs = _get_kwargs(
         id=id,
@@ -154,19 +118,7 @@ async def asyncio(
     client: AuthenticatedClient | Client,
     body: CopyRequest | Unset = UNSET,
 ) -> Error | Sandbox | None:
-    """Fork a sandbox into a new one
-
-    Args:
-        id (str): The sandbox id or name.
-        body (CopyRequest | Unset):
-
-    Raises:
-        errors.UnexpectedStatus: If the server returns an undocumented status code and Client.raise_on_unexpected_status is True.
-        httpx.TimeoutException: If the request takes longer than Client.timeout.
-
-    Returns:
-        Error | Sandbox
-    """
+    """Fork a sandbox into a new one"""
 
     return (
         await asyncio_detailed(

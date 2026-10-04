@@ -14,13 +14,6 @@ T = TypeVar("T", bound="RestartSpec")
 
 @_attrs_define
 class RestartSpec:
-    """
-    Attributes:
-        policy (RestartSpecPolicy):
-        backoff (int | Unset):
-        retries (int | Unset):
-    """
-
     policy: RestartSpecPolicy
     backoff: int | Unset = UNSET
     retries: int | Unset = UNSET

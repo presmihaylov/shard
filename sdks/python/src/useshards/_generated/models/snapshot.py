@@ -14,21 +14,6 @@ T = TypeVar("T", bound="Snapshot")
 
 @_attrs_define
 class Snapshot:
-    """
-    Attributes:
-        created_at (datetime.datetime):
-        digest (str):
-        disk_mib (int):
-        id (str):
-        image (str):
-        memory_mib (int):
-        provider (str):
-        size (int):
-        source (str):
-        name (str | Unset):
-        source_name (str | Unset):
-    """
-
     created_at: datetime.datetime
     digest: str
     disk_mib: int

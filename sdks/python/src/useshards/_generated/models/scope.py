@@ -13,12 +13,6 @@ T = TypeVar("T", bound="Scope")
 
 @_attrs_define
 class Scope:
-    """
-    Attributes:
-        description (str):
-        name (str):
-    """
-
     description: str
     name: str
 

@@ -3,13 +3,14 @@
 from __future__ import annotations
 
 import errno
-import itertools
 import os
 import posixpath
 import shutil
 import stat
 import tarfile
-from typing import IO
+from collections.abc import Callable
+from secrets import token_hex
+from typing import IO, TypeVar
 
 from .errors import ProtocolError, UnsafeArchiveError
 
@@ -17,6 +18,9 @@ from .errors import ProtocolError, UnsafeArchiveError
 MAX_BYTES = 64 << 30
 MAX_ENTRIES = 1 << 20
 _CHUNK = 1 << 20
+_CREATE = os.O_WRONLY | os.O_CREAT | os.O_EXCL | getattr(os, "O_BINARY", 0)
+
+T = TypeVar("T")
 
 
 def pack(source: str, name: str, out: IO[bytes]) -> None:
@@ -37,7 +41,6 @@ class _Unpacker:
         self.real = os.path.realpath(dst)
         self.strip = strip
         self.bytes = 0
-        self.temps = itertools.count(1)
         # The regular files this unpack wrote, by identity, the only targets a hard link may name.
         self.files: dict[str, os.stat_result] = {}
         self.dirs: list[tuple[str, int]] = []
@@ -149,9 +152,9 @@ class _Unpacker:
         data = tar.extractfile(member)
         if data is None:
             raise ProtocolError(f"the tar holds no data for the file {member.name!r}")
-        tmp = self._temp(at)
+        tmp, fd = _fresh(at, lambda p: os.open(p, _CREATE, 0o600))
         try:
-            with open(tmp, "xb") as out:
+            with os.fdopen(fd, "wb") as out:
                 shutil.copyfileobj(data, out, _CHUNK)
             os.chmod(tmp, _mode(member))
         except BaseException:
@@ -163,8 +166,7 @@ class _Unpacker:
         if _leaves(name, member.linkname):
             raise UnsafeArchiveError(member.name, f"a symlink to {member.linkname!r}, which leaves the destination")
         at = self._parent(name, member.name)
-        tmp = self._temp(at)
-        os.symlink(member.linkname, tmp)
+        tmp = _fresh(at, lambda p: os.symlink(member.linkname, p))[0]
         self.links.append((at, member.name))
         self._place(tmp, at, name, file=False)
 
@@ -180,8 +182,7 @@ class _Unpacker:
         if wrote is None:
             raise refusal
         at = self._parent(name, member.name)
-        tmp = self._temp(at)
-        os.link(os.path.join(self.dst, *target.split("/")), tmp)
+        tmp = _fresh(at, lambda p: os.link(os.path.join(self.dst, *target.split("/")), p))[0]
         # A filesystem that folds case lets a later entry spelled another way take the name.
         linked = os.lstat(tmp)
         if not stat.S_ISREG(linked.st_mode) or not os.path.samestat(wrote, linked):
@@ -202,9 +203,6 @@ class _Unpacker:
             self.files.pop(name, None)
             return
         self.files[name] = os.lstat(at)
-
-    def _temp(self, at: str) -> str:
-        return os.path.join(os.path.dirname(at), f".useshards-unpack-{os.getpid()}-{next(self.temps)}")
 
     def _confine(self) -> list[Exception]:
         """Remove every new link that leaves dst through another one, which only the tree as written shows."""
@@ -232,6 +230,16 @@ def _leaves(name: str, target: str) -> bool:
 def _mode(member: tarfile.TarInfo) -> int:
     # The host drops setuid and setgid, so a sandbox cannot hand it a set-id binary.
     return member.mode & (0o777 | stat.S_ISVTX)
+
+
+def _fresh(at: str, make: Callable[[str], T]) -> tuple[str, T]:
+    """A temp next to at that make creates and that was not there before, so a cleanup only removes its own."""
+    while True:
+        tmp = os.path.join(os.path.dirname(at), f".useshards-unpack-{token_hex(8)}")
+        try:
+            return tmp, make(tmp)
+        except FileExistsError:
+            continue
 
 
 def _remove_temp(tmp: str) -> None:

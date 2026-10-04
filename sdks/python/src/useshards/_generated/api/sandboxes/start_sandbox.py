@@ -53,18 +53,7 @@ def sync_detailed(
     *,
     client: AuthenticatedClient | Client,
 ) -> Response[Error | Sandbox]:
-    """Start a stopped sandbox
-
-    Args:
-        id (str): The sandbox id or name.
-
-    Raises:
-        errors.UnexpectedStatus: If the server returns an undocumented status code and Client.raise_on_unexpected_status is True.
-        httpx.TimeoutException: If the request takes longer than Client.timeout.
-
-    Returns:
-        Response[Error | Sandbox]
-    """
+    """Start a stopped sandbox"""
 
     kwargs = _get_kwargs(
         id=id,
@@ -82,18 +71,7 @@ def sync(
     *,
     client: AuthenticatedClient | Client,
 ) -> Error | Sandbox | None:
-    """Start a stopped sandbox
-
-    Args:
-        id (str): The sandbox id or name.
-
-    Raises:
-        errors.UnexpectedStatus: If the server returns an undocumented status code and Client.raise_on_unexpected_status is True.
-        httpx.TimeoutException: If the request takes longer than Client.timeout.
-
-    Returns:
-        Error | Sandbox
-    """
+    """Start a stopped sandbox"""
 
     return sync_detailed(
         id=id,
@@ -106,18 +84,7 @@ async def asyncio_detailed(
     *,
     client: AuthenticatedClient | Client,
 ) -> Response[Error | Sandbox]:
-    """Start a stopped sandbox
-
-    Args:
-        id (str): The sandbox id or name.
-
-    Raises:
-        errors.UnexpectedStatus: If the server returns an undocumented status code and Client.raise_on_unexpected_status is True.
-        httpx.TimeoutException: If the request takes longer than Client.timeout.
-
-    Returns:
-        Response[Error | Sandbox]
-    """
+    """Start a stopped sandbox"""
 
     kwargs = _get_kwargs(
         id=id,
@@ -133,18 +100,7 @@ async def asyncio(
     *,
     client: AuthenticatedClient | Client,
 ) -> Error | Sandbox | None:
-    """Start a stopped sandbox
-
-    Args:
-        id (str): The sandbox id or name.
-
-    Raises:
-        errors.UnexpectedStatus: If the server returns an undocumented status code and Client.raise_on_unexpected_status is True.
-        httpx.TimeoutException: If the request takes longer than Client.timeout.
-
-    Returns:
-        Error | Sandbox
-    """
+    """Start a stopped sandbox"""
 
     return (
         await asyncio_detailed(

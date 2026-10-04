@@ -65,19 +65,7 @@ def sync_detailed(
     client: AuthenticatedClient | Client,
     body: PolicyRequest | Unset = UNSET,
 ) -> Response[Error | PolicyView]:
-    """Create or replace a policy
-
-    Args:
-        name (str):
-        body (PolicyRequest | Unset):
-
-    Raises:
-        errors.UnexpectedStatus: If the server returns an undocumented status code and Client.raise_on_unexpected_status is True.
-        httpx.TimeoutException: If the request takes longer than Client.timeout.
-
-    Returns:
-        Response[Error | PolicyView]
-    """
+    """Create or replace a policy"""
 
     kwargs = _get_kwargs(
         name=name,
@@ -97,19 +85,7 @@ def sync(
     client: AuthenticatedClient | Client,
     body: PolicyRequest | Unset = UNSET,
 ) -> Error | PolicyView | None:
-    """Create or replace a policy
-
-    Args:
-        name (str):
-        body (PolicyRequest | Unset):
-
-    Raises:
-        errors.UnexpectedStatus: If the server returns an undocumented status code and Client.raise_on_unexpected_status is True.
-        httpx.TimeoutException: If the request takes longer than Client.timeout.
-
-    Returns:
-        Error | PolicyView
-    """
+    """Create or replace a policy"""
 
     return sync_detailed(
         name=name,
@@ -124,19 +100,7 @@ async def asyncio_detailed(
     client: AuthenticatedClient | Client,
     body: PolicyRequest | Unset = UNSET,
 ) -> Response[Error | PolicyView]:
-    """Create or replace a policy
-
-    Args:
-        name (str):
-        body (PolicyRequest | Unset):
-
-    Raises:
-        errors.UnexpectedStatus: If the server returns an undocumented status code and Client.raise_on_unexpected_status is True.
-        httpx.TimeoutException: If the request takes longer than Client.timeout.
-
-    Returns:
-        Response[Error | PolicyView]
-    """
+    """Create or replace a policy"""
 
     kwargs = _get_kwargs(
         name=name,
@@ -154,19 +118,7 @@ async def asyncio(
     client: AuthenticatedClient | Client,
     body: PolicyRequest | Unset = UNSET,
 ) -> Error | PolicyView | None:
-    """Create or replace a policy
-
-    Args:
-        name (str):
-        body (PolicyRequest | Unset):
-
-    Raises:
-        errors.UnexpectedStatus: If the server returns an undocumented status code and Client.raise_on_unexpected_status is True.
-        httpx.TimeoutException: If the request takes longer than Client.timeout.
-
-    Returns:
-        Error | PolicyView
-    """
+    """Create or replace a policy"""
 
     return (
         await asyncio_detailed(

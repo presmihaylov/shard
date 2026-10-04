@@ -19,13 +19,6 @@ T = TypeVar("T", bound="CreateLine")
 
 @_attrs_define
 class CreateLine:
-    """
-    Attributes:
-        error (ErrorObject | Unset):
-        event (Event | Unset):
-        sandbox (Sandbox | Unset):
-    """
-
     error: ErrorObject | Unset = UNSET
     event: Event | Unset = UNSET
     sandbox: Sandbox | Unset = UNSET

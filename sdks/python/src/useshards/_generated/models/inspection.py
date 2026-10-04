@@ -21,29 +21,6 @@ T = TypeVar("T", bound="Inspection")
 
 @_attrs_define
 class Inspection:
-    """
-    Attributes:
-        created_at (datetime.datetime):
-        id (str):
-        image (str):
-        provider (str):
-        resources (Resources):
-        state (str):
-        command (list[str] | Unset):
-        digest (str | Unset):
-        egress (Effective | Unset):
-        exit_status (ExitStatus | Unset):
-        failed_reason (str | Unset):
-        kernel (str | Unset):
-        name (str | Unset):
-        policy (str | Unset):
-        restart (Restart | Unset):
-        secrets (list[str] | Unset):
-        snapshot (str | Unset):
-        started_at (datetime.datetime | Unset):
-        stopped_reason (str | Unset):
-    """
-
     created_at: datetime.datetime
     id: str
     image: str

@@ -13,12 +13,6 @@ T = TypeVar("T", bound="VersionResponse")
 
 @_attrs_define
 class VersionResponse:
-    """
-    Attributes:
-        api_version (str):
-        version (str):
-    """
-
     api_version: str
     version: str
 

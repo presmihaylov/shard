@@ -1,7 +1,4 @@
-"""The quickstart on asyncio: run commands in a fresh sandbox, put a file in it, and wait on an app.
-
-Set SHARD_REMOTE and SHARD_API_KEY, then run: python examples/quickstart_async.py
-"""
+"""The quickstart on asyncio."""
 
 import asyncio
 

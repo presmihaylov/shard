@@ -18,19 +18,6 @@ T = TypeVar("T", bound="Exec")
 
 @_attrs_define
 class Exec:
-    """
-    Attributes:
-        command (list[str]):
-        exec_ (str):
-        exit_status (ExitStatus | None):
-        exited_at (datetime.datetime | None):
-        lost_bytes (int):
-        sandbox (str):
-        started_at (datetime.datetime):
-        state (str):
-        truncated (bool):
-    """
-
     command: list[str]
     exec_: str
     exit_status: ExitStatus | None

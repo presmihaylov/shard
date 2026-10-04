@@ -18,21 +18,6 @@ T = TypeVar("T", bound="CreateRequest")
 
 @_attrs_define
 class CreateRequest:
-    """
-    Attributes:
-        command (list[str] | Unset):
-        env (list[str] | Unset):
-        image (str | Unset):
-        name (str | Unset):
-        policy (str | Unset):
-        resources (ResourceRequest | Unset):
-        restart (RestartSpec | Unset):
-        secrets (list[str] | Unset):
-        snapshot (str | Unset):
-        user (str | Unset):
-        workdir (str | Unset):
-    """
-
     command: list[str] | Unset = UNSET
     env: list[str] | Unset = UNSET
     image: str | Unset = UNSET

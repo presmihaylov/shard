@@ -17,11 +17,6 @@ T = TypeVar("T", bound="Error")
 
 @_attrs_define
 class Error:
-    """
-    Attributes:
-        error (ErrorObject):
-    """
-
     error: ErrorObject
 
     def to_dict(self) -> dict[str, Any]:

@@ -61,19 +61,7 @@ def sync_detailed(
     client: AuthenticatedClient | Client,
     force: bool | Unset = UNSET,
 ) -> Response[Any | Error]:
-    """Remove a secret
-
-    Args:
-        name (str):
-        force (bool | Unset): Remove the secret while a sandbox record still names it.
-
-    Raises:
-        errors.UnexpectedStatus: If the server returns an undocumented status code and Client.raise_on_unexpected_status is True.
-        httpx.TimeoutException: If the request takes longer than Client.timeout.
-
-    Returns:
-        Response[Any | Error]
-    """
+    """Remove a secret"""
 
     kwargs = _get_kwargs(
         name=name,
@@ -93,19 +81,7 @@ def sync(
     client: AuthenticatedClient | Client,
     force: bool | Unset = UNSET,
 ) -> Any | Error | None:
-    """Remove a secret
-
-    Args:
-        name (str):
-        force (bool | Unset): Remove the secret while a sandbox record still names it.
-
-    Raises:
-        errors.UnexpectedStatus: If the server returns an undocumented status code and Client.raise_on_unexpected_status is True.
-        httpx.TimeoutException: If the request takes longer than Client.timeout.
-
-    Returns:
-        Any | Error
-    """
+    """Remove a secret"""
 
     return sync_detailed(
         name=name,
@@ -120,19 +96,7 @@ async def asyncio_detailed(
     client: AuthenticatedClient | Client,
     force: bool | Unset = UNSET,
 ) -> Response[Any | Error]:
-    """Remove a secret
-
-    Args:
-        name (str):
-        force (bool | Unset): Remove the secret while a sandbox record still names it.
-
-    Raises:
-        errors.UnexpectedStatus: If the server returns an undocumented status code and Client.raise_on_unexpected_status is True.
-        httpx.TimeoutException: If the request takes longer than Client.timeout.
-
-    Returns:
-        Response[Any | Error]
-    """
+    """Remove a secret"""
 
     kwargs = _get_kwargs(
         name=name,
@@ -150,19 +114,7 @@ async def asyncio(
     client: AuthenticatedClient | Client,
     force: bool | Unset = UNSET,
 ) -> Any | Error | None:
-    """Remove a secret
-
-    Args:
-        name (str):
-        force (bool | Unset): Remove the secret while a sandbox record still names it.
-
-    Raises:
-        errors.UnexpectedStatus: If the server returns an undocumented status code and Client.raise_on_unexpected_status is True.
-        httpx.TimeoutException: If the request takes longer than Client.timeout.
-
-    Returns:
-        Any | Error
-    """
+    """Remove a secret"""
 
     return (
         await asyncio_detailed(

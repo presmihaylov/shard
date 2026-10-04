@@ -13,14 +13,6 @@ T = TypeVar("T", bound="MkdirRequest")
 
 @_attrs_define
 class MkdirRequest:
-    """
-    Attributes:
-        path (str):
-        mode (str | Unset):
-        parents (bool | Unset):
-        user (str | Unset):
-    """
-
     path: str
     mode: str | Unset = UNSET
     parents: bool | Unset = UNSET

@@ -15,17 +15,6 @@ T = TypeVar("T", bound="Restart")
 
 @_attrs_define
 class Restart:
-    """
-    Attributes:
-        count (int):
-        ended (bool):
-        gave_up (bool):
-        policy (RestartPolicy):
-        backoff (int | Unset):
-        last_at (datetime.datetime | Unset):
-        retries (int | Unset):
-    """
-
     count: int
     ended: bool
     gave_up: bool

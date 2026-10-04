@@ -70,20 +70,7 @@ def sync_detailed(
     client: AuthenticatedClient | Client,
     wait: bool | Unset = UNSET,
 ) -> Response[Any | Error | Exec]:
-    """Read, wait for or attach to an exec
-
-    Args:
-        id (str): The sandbox id or name.
-        exec_ (str): The exec id.
-        wait (bool | Unset): Block until the exec ends.
-
-    Raises:
-        errors.UnexpectedStatus: If the server returns an undocumented status code and Client.raise_on_unexpected_status is True.
-        httpx.TimeoutException: If the request takes longer than Client.timeout.
-
-    Returns:
-        Response[Any | Error | Exec]
-    """
+    """Read, wait for or attach to an exec"""
 
     kwargs = _get_kwargs(
         id=id,
@@ -105,20 +92,7 @@ def sync(
     client: AuthenticatedClient | Client,
     wait: bool | Unset = UNSET,
 ) -> Any | Error | Exec | None:
-    """Read, wait for or attach to an exec
-
-    Args:
-        id (str): The sandbox id or name.
-        exec_ (str): The exec id.
-        wait (bool | Unset): Block until the exec ends.
-
-    Raises:
-        errors.UnexpectedStatus: If the server returns an undocumented status code and Client.raise_on_unexpected_status is True.
-        httpx.TimeoutException: If the request takes longer than Client.timeout.
-
-    Returns:
-        Any | Error | Exec
-    """
+    """Read, wait for or attach to an exec"""
 
     return sync_detailed(
         id=id,
@@ -135,20 +109,7 @@ async def asyncio_detailed(
     client: AuthenticatedClient | Client,
     wait: bool | Unset = UNSET,
 ) -> Response[Any | Error | Exec]:
-    """Read, wait for or attach to an exec
-
-    Args:
-        id (str): The sandbox id or name.
-        exec_ (str): The exec id.
-        wait (bool | Unset): Block until the exec ends.
-
-    Raises:
-        errors.UnexpectedStatus: If the server returns an undocumented status code and Client.raise_on_unexpected_status is True.
-        httpx.TimeoutException: If the request takes longer than Client.timeout.
-
-    Returns:
-        Response[Any | Error | Exec]
-    """
+    """Read, wait for or attach to an exec"""
 
     kwargs = _get_kwargs(
         id=id,
@@ -168,20 +129,7 @@ async def asyncio(
     client: AuthenticatedClient | Client,
     wait: bool | Unset = UNSET,
 ) -> Any | Error | Exec | None:
-    """Read, wait for or attach to an exec
-
-    Args:
-        id (str): The sandbox id or name.
-        exec_ (str): The exec id.
-        wait (bool | Unset): Block until the exec ends.
-
-    Raises:
-        errors.UnexpectedStatus: If the server returns an undocumented status code and Client.raise_on_unexpected_status is True.
-        httpx.TimeoutException: If the request takes longer than Client.timeout.
-
-    Returns:
-        Any | Error | Exec
-    """
+    """Read, wait for or attach to an exec"""
 
     return (
         await asyncio_detailed(

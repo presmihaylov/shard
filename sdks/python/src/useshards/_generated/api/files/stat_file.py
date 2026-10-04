@@ -61,19 +61,7 @@ def sync_detailed(
     client: AuthenticatedClient | Client,
     path: str | Unset = UNSET,
 ) -> Response[Any | Error]:
-    """Stat a path
-
-    Args:
-        id (str): The sandbox id or name.
-        path (str | Unset): The absolute guest path.
-
-    Raises:
-        errors.UnexpectedStatus: If the server returns an undocumented status code and Client.raise_on_unexpected_status is True.
-        httpx.TimeoutException: If the request takes longer than Client.timeout.
-
-    Returns:
-        Response[Any | Error]
-    """
+    """Stat a path"""
 
     kwargs = _get_kwargs(
         id=id,
@@ -93,19 +81,7 @@ def sync(
     client: AuthenticatedClient | Client,
     path: str | Unset = UNSET,
 ) -> Any | Error | None:
-    """Stat a path
-
-    Args:
-        id (str): The sandbox id or name.
-        path (str | Unset): The absolute guest path.
-
-    Raises:
-        errors.UnexpectedStatus: If the server returns an undocumented status code and Client.raise_on_unexpected_status is True.
-        httpx.TimeoutException: If the request takes longer than Client.timeout.
-
-    Returns:
-        Any | Error
-    """
+    """Stat a path"""
 
     return sync_detailed(
         id=id,
@@ -120,19 +96,7 @@ async def asyncio_detailed(
     client: AuthenticatedClient | Client,
     path: str | Unset = UNSET,
 ) -> Response[Any | Error]:
-    """Stat a path
-
-    Args:
-        id (str): The sandbox id or name.
-        path (str | Unset): The absolute guest path.
-
-    Raises:
-        errors.UnexpectedStatus: If the server returns an undocumented status code and Client.raise_on_unexpected_status is True.
-        httpx.TimeoutException: If the request takes longer than Client.timeout.
-
-    Returns:
-        Response[Any | Error]
-    """
+    """Stat a path"""
 
     kwargs = _get_kwargs(
         id=id,
@@ -150,19 +114,7 @@ async def asyncio(
     client: AuthenticatedClient | Client,
     path: str | Unset = UNSET,
 ) -> Any | Error | None:
-    """Stat a path
-
-    Args:
-        id (str): The sandbox id or name.
-        path (str | Unset): The absolute guest path.
-
-    Raises:
-        errors.UnexpectedStatus: If the server returns an undocumented status code and Client.raise_on_unexpected_status is True.
-        httpx.TimeoutException: If the request takes longer than Client.timeout.
-
-    Returns:
-        Any | Error
-    """
+    """Stat a path"""
 
     return (
         await asyncio_detailed(

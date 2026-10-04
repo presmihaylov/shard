@@ -63,19 +63,7 @@ def sync_detailed(
     limit: int | Unset = UNSET,
     cursor: str | Unset = UNSET,
 ) -> Response[Error | SnapshotsResponse]:
-    """List snapshots
-
-    Args:
-        limit (int | Unset): The most rows a page holds; none answers the whole list.
-        cursor (str | Unset): The next of the page before; this page starts after it.
-
-    Raises:
-        errors.UnexpectedStatus: If the server returns an undocumented status code and Client.raise_on_unexpected_status is True.
-        httpx.TimeoutException: If the request takes longer than Client.timeout.
-
-    Returns:
-        Response[Error | SnapshotsResponse]
-    """
+    """List snapshots"""
 
     kwargs = _get_kwargs(
         limit=limit,
@@ -95,19 +83,7 @@ def sync(
     limit: int | Unset = UNSET,
     cursor: str | Unset = UNSET,
 ) -> Error | SnapshotsResponse | None:
-    """List snapshots
-
-    Args:
-        limit (int | Unset): The most rows a page holds; none answers the whole list.
-        cursor (str | Unset): The next of the page before; this page starts after it.
-
-    Raises:
-        errors.UnexpectedStatus: If the server returns an undocumented status code and Client.raise_on_unexpected_status is True.
-        httpx.TimeoutException: If the request takes longer than Client.timeout.
-
-    Returns:
-        Error | SnapshotsResponse
-    """
+    """List snapshots"""
 
     return sync_detailed(
         client=client,
@@ -122,19 +98,7 @@ async def asyncio_detailed(
     limit: int | Unset = UNSET,
     cursor: str | Unset = UNSET,
 ) -> Response[Error | SnapshotsResponse]:
-    """List snapshots
-
-    Args:
-        limit (int | Unset): The most rows a page holds; none answers the whole list.
-        cursor (str | Unset): The next of the page before; this page starts after it.
-
-    Raises:
-        errors.UnexpectedStatus: If the server returns an undocumented status code and Client.raise_on_unexpected_status is True.
-        httpx.TimeoutException: If the request takes longer than Client.timeout.
-
-    Returns:
-        Response[Error | SnapshotsResponse]
-    """
+    """List snapshots"""
 
     kwargs = _get_kwargs(
         limit=limit,
@@ -152,19 +116,7 @@ async def asyncio(
     limit: int | Unset = UNSET,
     cursor: str | Unset = UNSET,
 ) -> Error | SnapshotsResponse | None:
-    """List snapshots
-
-    Args:
-        limit (int | Unset): The most rows a page holds; none answers the whole list.
-        cursor (str | Unset): The next of the page before; this page starts after it.
-
-    Raises:
-        errors.UnexpectedStatus: If the server returns an undocumented status code and Client.raise_on_unexpected_status is True.
-        httpx.TimeoutException: If the request takes longer than Client.timeout.
-
-    Returns:
-        Error | SnapshotsResponse
-    """
+    """List snapshots"""
 
     return (
         await asyncio_detailed(

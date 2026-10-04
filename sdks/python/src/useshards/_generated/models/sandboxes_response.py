@@ -17,13 +17,6 @@ T = TypeVar("T", bound="SandboxesResponse")
 
 @_attrs_define
 class SandboxesResponse:
-    """
-    Attributes:
-        next_ (None | str):
-        sandboxes (list[Sandbox]):
-        warnings (list[str] | Unset):
-    """
-
     next_: None | str
     sandboxes: list[Sandbox]
     warnings: list[str] | Unset = UNSET

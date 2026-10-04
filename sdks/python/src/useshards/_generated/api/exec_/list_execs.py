@@ -67,20 +67,7 @@ def sync_detailed(
     limit: int | Unset = UNSET,
     cursor: str | Unset = UNSET,
 ) -> Response[Error | ExecsResponse]:
-    """List the execs of a sandbox
-
-    Args:
-        id (str): The sandbox id or name.
-        limit (int | Unset): The most rows a page holds; none answers the whole list.
-        cursor (str | Unset): The next of the page before; this page starts after it.
-
-    Raises:
-        errors.UnexpectedStatus: If the server returns an undocumented status code and Client.raise_on_unexpected_status is True.
-        httpx.TimeoutException: If the request takes longer than Client.timeout.
-
-    Returns:
-        Response[Error | ExecsResponse]
-    """
+    """List the execs of a sandbox"""
 
     kwargs = _get_kwargs(
         id=id,
@@ -102,20 +89,7 @@ def sync(
     limit: int | Unset = UNSET,
     cursor: str | Unset = UNSET,
 ) -> Error | ExecsResponse | None:
-    """List the execs of a sandbox
-
-    Args:
-        id (str): The sandbox id or name.
-        limit (int | Unset): The most rows a page holds; none answers the whole list.
-        cursor (str | Unset): The next of the page before; this page starts after it.
-
-    Raises:
-        errors.UnexpectedStatus: If the server returns an undocumented status code and Client.raise_on_unexpected_status is True.
-        httpx.TimeoutException: If the request takes longer than Client.timeout.
-
-    Returns:
-        Error | ExecsResponse
-    """
+    """List the execs of a sandbox"""
 
     return sync_detailed(
         id=id,
@@ -132,20 +106,7 @@ async def asyncio_detailed(
     limit: int | Unset = UNSET,
     cursor: str | Unset = UNSET,
 ) -> Response[Error | ExecsResponse]:
-    """List the execs of a sandbox
-
-    Args:
-        id (str): The sandbox id or name.
-        limit (int | Unset): The most rows a page holds; none answers the whole list.
-        cursor (str | Unset): The next of the page before; this page starts after it.
-
-    Raises:
-        errors.UnexpectedStatus: If the server returns an undocumented status code and Client.raise_on_unexpected_status is True.
-        httpx.TimeoutException: If the request takes longer than Client.timeout.
-
-    Returns:
-        Response[Error | ExecsResponse]
-    """
+    """List the execs of a sandbox"""
 
     kwargs = _get_kwargs(
         id=id,
@@ -165,20 +126,7 @@ async def asyncio(
     limit: int | Unset = UNSET,
     cursor: str | Unset = UNSET,
 ) -> Error | ExecsResponse | None:
-    """List the execs of a sandbox
-
-    Args:
-        id (str): The sandbox id or name.
-        limit (int | Unset): The most rows a page holds; none answers the whole list.
-        cursor (str | Unset): The next of the page before; this page starts after it.
-
-    Raises:
-        errors.UnexpectedStatus: If the server returns an undocumented status code and Client.raise_on_unexpected_status is True.
-        httpx.TimeoutException: If the request takes longer than Client.timeout.
-
-    Returns:
-        Error | ExecsResponse
-    """
+    """List the execs of a sandbox"""
 
     return (
         await asyncio_detailed(

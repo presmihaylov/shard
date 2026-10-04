@@ -129,10 +129,14 @@ class AsyncWebSocket:
     async def _drain(self) -> None:
         while not self.ended:
             await self._fill(CLOSE_WAIT)
-            while self._inbox:
-                message = self._inbox.popleft()
-                if message.opcode == OP_CLOSE:
-                    self._closed_by_peer(message.payload)
+            self._discard_inbox()
+
+    def _discard_inbox(self) -> None:
+        """Drop every message but a close, which ends the drain."""
+        while self._inbox:
+            message = self._inbox.popleft()
+            if message.opcode == OP_CLOSE:
+                self._closed_by_peer(message.payload)
 
     def _closed_by_peer(self, payload: bytes) -> None:
         self._peer_closed = True

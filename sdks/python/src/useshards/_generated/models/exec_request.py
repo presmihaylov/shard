@@ -17,18 +17,6 @@ T = TypeVar("T", bound="ExecRequest")
 
 @_attrs_define
 class ExecRequest:
-    """
-    Attributes:
-        command (list[str]):
-        attach (bool | Unset):
-        env (list[str] | Unset):
-        size (TerminalSize | Unset):
-        stdin (bool | Unset):
-        tty (bool | Unset):
-        user (str | Unset):
-        workdir (str | Unset):
-    """
-
     command: list[str]
     attach: bool | Unset = UNSET
     env: list[str] | Unset = UNSET

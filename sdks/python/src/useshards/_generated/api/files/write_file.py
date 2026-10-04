@@ -82,23 +82,7 @@ def sync_detailed(
     user: str | Unset = UNSET,
     parents: bool | Unset = UNSET,
 ) -> Response[Any | Error]:
-    """Write a file
-
-    Args:
-        id (str): The sandbox id or name.
-        path (str | Unset): The absolute guest path.
-        mode (str | Unset): The file mode in octal; none is 0644.
-        user (str | Unset): Who writes and owns the file; none is the entrypoint's user.
-        parents (bool | Unset): Make the missing parent directories.
-        body (File):
-
-    Raises:
-        errors.UnexpectedStatus: If the server returns an undocumented status code and Client.raise_on_unexpected_status is True.
-        httpx.TimeoutException: If the request takes longer than Client.timeout.
-
-    Returns:
-        Response[Any | Error]
-    """
+    """Write a file"""
 
     kwargs = _get_kwargs(
         id=id,
@@ -126,23 +110,7 @@ def sync(
     user: str | Unset = UNSET,
     parents: bool | Unset = UNSET,
 ) -> Any | Error | None:
-    """Write a file
-
-    Args:
-        id (str): The sandbox id or name.
-        path (str | Unset): The absolute guest path.
-        mode (str | Unset): The file mode in octal; none is 0644.
-        user (str | Unset): Who writes and owns the file; none is the entrypoint's user.
-        parents (bool | Unset): Make the missing parent directories.
-        body (File):
-
-    Raises:
-        errors.UnexpectedStatus: If the server returns an undocumented status code and Client.raise_on_unexpected_status is True.
-        httpx.TimeoutException: If the request takes longer than Client.timeout.
-
-    Returns:
-        Any | Error
-    """
+    """Write a file"""
 
     return sync_detailed(
         id=id,
@@ -165,23 +133,7 @@ async def asyncio_detailed(
     user: str | Unset = UNSET,
     parents: bool | Unset = UNSET,
 ) -> Response[Any | Error]:
-    """Write a file
-
-    Args:
-        id (str): The sandbox id or name.
-        path (str | Unset): The absolute guest path.
-        mode (str | Unset): The file mode in octal; none is 0644.
-        user (str | Unset): Who writes and owns the file; none is the entrypoint's user.
-        parents (bool | Unset): Make the missing parent directories.
-        body (File):
-
-    Raises:
-        errors.UnexpectedStatus: If the server returns an undocumented status code and Client.raise_on_unexpected_status is True.
-        httpx.TimeoutException: If the request takes longer than Client.timeout.
-
-    Returns:
-        Response[Any | Error]
-    """
+    """Write a file"""
 
     kwargs = _get_kwargs(
         id=id,
@@ -207,23 +159,7 @@ async def asyncio(
     user: str | Unset = UNSET,
     parents: bool | Unset = UNSET,
 ) -> Any | Error | None:
-    """Write a file
-
-    Args:
-        id (str): The sandbox id or name.
-        path (str | Unset): The absolute guest path.
-        mode (str | Unset): The file mode in octal; none is 0644.
-        user (str | Unset): Who writes and owns the file; none is the entrypoint's user.
-        parents (bool | Unset): Make the missing parent directories.
-        body (File):
-
-    Raises:
-        errors.UnexpectedStatus: If the server returns an undocumented status code and Client.raise_on_unexpected_status is True.
-        httpx.TimeoutException: If the request takes longer than Client.timeout.
-
-    Returns:
-        Any | Error
-    """
+    """Write a file"""
 
     return (
         await asyncio_detailed(

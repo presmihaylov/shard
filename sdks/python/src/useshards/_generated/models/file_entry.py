@@ -14,17 +14,6 @@ T = TypeVar("T", bound="FileEntry")
 
 @_attrs_define
 class FileEntry:
-    """
-    Attributes:
-        gid (int):
-        mode (int):
-        mtime (datetime.datetime):
-        name (str):
-        size (int):
-        type_ (str):
-        uid (int):
-    """
-
     gid: int
     mode: int
     mtime: datetime.datetime

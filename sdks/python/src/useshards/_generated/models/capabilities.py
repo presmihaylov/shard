@@ -13,18 +13,6 @@ T = TypeVar("T", bound="Capabilities")
 
 @_attrs_define
 class Capabilities:
-    """
-    Attributes:
-        create (bool):
-        fork (bool):
-        pause (bool):
-        remove (bool):
-        resume (bool):
-        snapshot (bool):
-        start (bool):
-        stop (bool):
-    """
-
     create: bool
     fork: bool
     pause: bool
