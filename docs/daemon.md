@@ -990,6 +990,7 @@ Caddy passes a WebSocket upgrade through by itself, and `flush_interval -1` send
 `?follow=true` body on at once. On a host with no public name, `tls internal` inside the site block
 gives Caddy a CA of its own. The client then names that CA's root with `--ca-file`. A Debian
 package keeps it at `/var/lib/caddy/.local/share/caddy/pki/authorities/local/root.crt`.
+`docs/https-devbox.md` runs this setup on a devbox, for the SDK tests.
 
 Cloudflare Tunnel, with no inbound port open on the host:
 
