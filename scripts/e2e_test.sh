@@ -497,9 +497,50 @@ printf '/dev/loop7\n' | has_line '^/dev/loop'
 check "one pattern over a command's output" "$?" "0"
 
 echo "== no grep -q in the e2e scripts reads a pipe from more than a first echo or printf (SHARD-456)"
+# shell_pipelines prints file:line, a tab and each pipeline, with quoted text cut to Q, comments dropped and continued lines joined.
+shell_pipelines() {
+	awk '
+	function trim(s) { sub(/^[ \t]+/, "", s); sub(/[ \t]+$/, "", s); return s }
+	function emit(cmd, line,   cmds, nc, c, p) {
+		gsub(/\$\{[^}]*\}/, "V", cmd)
+		gsub(/[0-9]*(>&|<&)[0-9-]*|&>/, " R ", cmd)
+		gsub(/\|\||&&|[;&(){}`]/, "\n", cmd)
+		gsub(/[ \t]+/, " ", cmd)
+		nc = split(cmd, cmds, "\n")
+		for (c = 1; c <= nc; c++) {
+			p = trim(cmds[c])
+			if (p != "") printf "%s:%d\t%s\n", FILENAME, line, p
+		}
+	}
+	BEGIN { sq = sprintf("%c", 39) }
+	FNR == 1 { quote = ""; cmd = ""; start = 0 }
+	{
+		s = $0
+		n = length(s)
+		cont = 0
+		for (i = 1; i <= n; i++) {
+			ch = substr(s, i, 1)
+			if (quote == sq && ch == sq) { quote = ""; continue }
+			if (quote == sq) continue
+			if (quote == "\"" && ch == "\\") { i++; continue }
+			if (quote == "\"" && ch == "\"") { quote = ""; continue }
+			if (quote == "\"") continue
+			if (ch == "\\" && i == n) cont = 1
+			if (ch == "\\") { i++; continue }
+			if (ch == "#" && (i == 1 || substr(s, i - 1, 1) ~ /[ \t;(]/)) break
+			if (ch == sq || ch == "\"") { quote = ch; ch = "Q" }
+			if (ch !~ /[ \t]/ && cmd !~ /[^ \t]/) start = FNR
+			cmd = cmd ch
+		}
+		if (quote != "" || cont || cmd ~ /(\||&&)[ \t]*$/) { cmd = cmd " "; next }
+		emit(cmd, start)
+		cmd = ""
+	}' "$@"
+}
+
 # quiet_grep_hazards prints file:line for each one: an early match kills the stage before it, and pipefail reads that as a miss.
 quiet_grep_hazards() {
-	awk '
+	shell_pipelines "$@" | awk '
 	function trim(s) { sub(/^[ \t]+/, "", s); sub(/[ \t]+$/, "", s); return s }
 	function bare(s) {
 		s = trim(s)
@@ -516,45 +557,29 @@ quiet_grep_hazards() {
 		}
 		return 0
 	}
-	function scan(cmd, line,   cmds, nc, c, st, ns, k) {
-		gsub(/\$\{[^}]*\}/, "V", cmd)
-		gsub(/[0-9]*(>&|<&)[0-9-]*|&>/, " R ", cmd)
-		gsub(/\|\||&&|[;&(){}`]/, "\n", cmd)
-		nc = split(cmd, cmds, "\n")
-		for (c = 1; c <= nc; c++) {
-			ns = split(cmds[c], st, "|")
-			for (k = 2; k <= ns; k++) {
-				if (!quiet_grep(st[k])) continue
-				if (k == 2 && bare(st[1]) ~ /^(echo|printf)([ \t]|$)/) continue
-				print FILENAME ":" line
-			}
-		}
-	}
-	BEGIN { sq = sprintf("%c", 39) }
-	FNR == 1 { quote = ""; cmd = ""; start = 0 }
+	BEGIN { FS = "\t" }
 	{
-		s = $0
-		n = length(s)
-		cont = 0
-		for (i = 1; i <= n; i++) {
-			ch = substr(s, i, 1)
-			if (quote == sq) { if (ch == sq) quote = ""; continue }
-			if (quote == "\"") {
-				if (ch == "\\") { i++; continue }
-				if (ch == "\"") quote = ""
-				continue
-			}
-			if (ch == "\\") { if (i == n) cont = 1; i++; continue }
-			if (ch == "#" && (i == 1 || substr(s, i - 1, 1) ~ /[ \t;(]/)) break
-			if (ch == sq || ch == "\"") { quote = ch; ch = "Q" }
-			if (ch !~ /[ \t]/ && cmd !~ /[^ \t]/) start = FNR
-			cmd = cmd ch
+		ns = split($2, st, "|")
+		for (k = 2; k <= ns; k++) {
+			if (!quiet_grep(st[k])) continue
+			if (k == 2 && bare(st[1]) ~ /^(echo|printf)([ \t]|$)/) continue
+			print $1
 		}
-		if (quote != "" || cont || cmd ~ /(\||&&)[ \t]*$/) { cmd = cmd " "; next }
-		scan(cmd, start)
-		cmd = ""
-	}' "$@"
+	}'
 }
+
+TOKEN_FIXTURE="${STUB_GREP_DIR}/tokens.sh"
+cat >"${TOKEN_FIXTURE}" <<'EOF'
+echo "a | b" | grep -q x # c | d
+if a && b; then c; fi
+x |
+	y
+f '
+| g
+' | h
+z >&2 | w ${X}
+EOF
+check "the tokenizer cuts quotes and comments, splits commands and joins lines" "$(shell_pipelines "${TOKEN_FIXTURE}" | awk -F '\t' '{ sub(/.*:/, "", $1); print $1 " " $2 }')" "$(printf '%s\n' '1 echo Q | grep -q x' '2 if a' '2 b' '2 then c' '2 fi' '3 x | y' '5 f Q | h' '8 z R | w V')"
 
 SCAN_FIXTURE="${STUB_GREP_DIR}/fixture.sh"
 cat >"${SCAN_FIXTURE}" <<'EOF'
