@@ -11,6 +11,7 @@ import (
 
 	"github.com/opencontainers/runtime-spec/specs-go"
 
+	"github.com/presmihaylov/shard/pkg/launch"
 	"github.com/presmihaylov/shard/pkg/pty"
 )
 
@@ -71,6 +72,9 @@ func readProcess(bundle string) (specs.Process, error) {
 func execProcess(base specs.Process, opts ExecOptions) (specs.Process, error) {
 	process := base
 	process.Args = opts.Argv
+	if opts.Launch != "" {
+		process.Args = append([]string{opts.Launch, launch.Mode}, opts.Argv...)
+	}
 	process.Env = append(slices.Clone(base.Env), opts.Env...)
 	process.Terminal = opts.TTY
 	if opts.WorkDir != "" {

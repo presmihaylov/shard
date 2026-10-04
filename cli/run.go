@@ -23,7 +23,7 @@ type runOptions struct {
 
 // launch creates a sandbox whose app is the command, then waits on the app and exits with its last code; -d prints the id instead.
 func (a App) launch(ctx context.Context, args []string) error {
-	err := a.runApp(ctx, args)
+	err := shellCode(a.runApp(ctx, args))
 
 	var exit *ExitError
 	var help printExit

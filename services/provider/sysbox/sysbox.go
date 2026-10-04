@@ -14,6 +14,7 @@ import (
 
 	"github.com/presmihaylov/shard/models"
 	"github.com/presmihaylov/shard/pkg/cgroup"
+	"github.com/presmihaylov/shard/pkg/launch"
 	"github.com/presmihaylov/shard/pkg/netns"
 	"github.com/presmihaylov/shard/pkg/runc"
 	"github.com/presmihaylov/shard/services/bundle"
@@ -315,13 +316,20 @@ func (p *Provider) neverStarted(id string, b bundle.Bundle) error {
 	if started {
 		return nil
 	}
+	refused, err := p.refusal(id)
+	if err != nil {
+		return err
+	}
+	if refused != nil {
+		return refused
+	}
 
 	path, err := p.LogPath(id)
 	if err != nil {
 		return err
 	}
 
-	return fmt.Errorf("the entrypoint of sandbox %s did not start%s", id, diagnostics(path))
+	return &models.EntrypointNotStartedError{Sandbox: id, Err: diagnostics(path)}
 }
 
 // hasStarted reports whether the supervisor wrote its handshake. The file arrives by rename, so its
@@ -338,19 +346,19 @@ func hasStarted(path string) (bool, error) {
 	return true, nil
 }
 
-// diagnostics quotes the tail of the sandbox output, as the suffix of the error that reports it.
-func diagnostics(path string) string {
+// diagnostics quotes the tail of the sandbox output as the cause of the error that reports it.
+func diagnostics(path string) error {
 	blob, err := readTail(path)
 	if err != nil {
-		return fmt.Sprintf(": its diagnostics were unreadable: %v", err)
+		return fmt.Errorf("its diagnostics were unreadable: %w", err)
 	}
 
 	text := strings.TrimSpace(string(blob))
 	if text == "" {
-		return ": it printed nothing"
+		return errors.New("it printed nothing")
 	}
 
-	return ": " + text
+	return errors.New(text)
 }
 
 // readTail keeps the last diagnosticTail bytes, because the guest writes to this file for as long
@@ -587,24 +595,22 @@ func (p *Provider) StopApp(ctx context.Context, id string, force bool) error {
 	return nil
 }
 
-// notStarted gives a command the driver refused to start a name the cli can answer with a shell's
-// own exit code. The driver looked the command up on the host, so the reason is the shell's wording.
+// notStarted gives a command whose execve never took a name the cli answers with a shell's own exit code.
 func notStarted(id string, err error) error {
-	var lookup *runc.LookupError
-	if !errors.As(err, &lookup) {
+	var failed *launch.NotStartedError
+	if !errors.As(err, &failed) {
 		return err
 	}
 
-	code := models.CommandNotFoundExitCode
-	if lookup.NotExecutable {
-		code = models.CommandNotExecutableExitCode
+	code := models.CommandNotExecutableExitCode
+	if failed.NotFound() {
+		code = models.CommandNotFoundExitCode
 	}
 
-	return &models.CommandNotStartedError{Sandbox: id, Reason: lookup.Reason, Code: code}
+	return &models.CommandNotStartedError{Sandbox: id, Reason: failed.Reason(), Code: code}
 }
 
-// execOptions puts the exec where the entrypoint runs. config.json is the only record of that, and
-// the rootfs it resolves a user and the command against is the sandbox's live tree, not the image's.
+// execOptions resolves users against the live sandbox because it can differ from the image.
 func execOptions(b bundle.Bundle, spec models.ExecSpec) (runc.ExecOptions, error) {
 	runtime, err := b.Runtime()
 	if err != nil {
@@ -616,8 +622,7 @@ func execOptions(b bundle.Bundle, spec models.ExecSpec) (runc.ExecOptions, error
 		Argv:    spec.Argv,
 		Env:     runspec.MergeEnv(runtime.Env, spec.Env),
 		WorkDir: firstNonEmpty(spec.WorkDir, runtime.WorkDir, "/"),
-		RootFS:  b.RootFS,
-		Binds:   runtime.Binds,
+		Launch:  bundle.GuestInitPath,
 		TTY:     spec.TTY,
 		Stdin:   spec.Stdin,
 		Stdout:  spec.Stdout,

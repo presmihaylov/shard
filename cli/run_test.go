@@ -95,6 +95,24 @@ func TestRunExitsWith125WhenShardFails(t *testing.T) {
 	}
 }
 
+// A script reads an app that never ran as a shell does, 127 or 126, never as shard failing with 125.
+func TestRunExitsWithTheCodeOfAnAppThatNeverStarted(t *testing.T) {
+	var out bytes.Buffer
+
+	app, d, r := newRunApp(t, &out, "")
+	d.providerSvc.(*fakeLifecycleProvider).startErr = &models.CommandNotStartedError{Sandbox: "sandbox2", Reason: "no such file or directory", Code: models.CommandNotFoundExitCode}
+
+	err := app.Run(t.Context(), []string{"run", "alpine:3.20", "no-such-app"})
+
+	var exit *ExitError
+	if !errors.As(err, &exit) || exit.Code != models.CommandNotFoundExitCode || !strings.Contains(exit.Message, `could not run "no-such-app"`) {
+		t.Fatalf("run returned %v, want %d with the command named", err, models.CommandNotFoundExitCode)
+	}
+	if !slices.Contains(r.seen(), "provider.Remove") {
+		t.Errorf("the daemon drove %v, want the sandbox removed behind the refusal", r.seen())
+	}
+}
+
 // startRun runs shard run with interrupts main would route, and answers once the run took them.
 func startRun(t *testing.T, app App, args ...string) (chan<- os.Signal, <-chan error) {
 	t.Helper()

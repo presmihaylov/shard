@@ -14,7 +14,6 @@ import (
 	specs "github.com/opencontainers/runtime-spec/specs-go"
 
 	"github.com/presmihaylov/shard/models"
-	"github.com/presmihaylov/shard/pkg/runc"
 	"github.com/presmihaylov/shard/services/runspec"
 )
 
@@ -141,8 +140,6 @@ type Runtime struct {
 	User string
 	// Groups is the supplementary set that goes with User, so an exec adopts the same identity.
 	Groups []uint32
-	// Binds are the mounts from the host over RootFS, so a lookup finds /.shard/init where the guest does.
-	Binds []runc.Bind
 }
 
 // Runtime reads config.json back, so a second process in the sandbox starts where the entrypoint did.
@@ -170,20 +167,7 @@ func (b Bundle) Runtime() (Runtime, error) {
 		WorkDir:   spec.Process.Cwd,
 		User:      supervisorFlag(spec.Process.Args, "-user"),
 		Groups:    groups,
-		Binds:     binds(spec.Mounts),
 	}, nil
-}
-
-// binds keeps the mounts that show a host path to the guest, in order, since a later one hides an earlier one under it.
-func binds(mounts []specs.Mount) []runc.Bind {
-	var out []runc.Bind
-	for _, m := range mounts {
-		if m.Type == "bind" || slices.Contains(m.Options, "bind") || slices.Contains(m.Options, "rbind") {
-			out = append(out, runc.Bind{Guest: m.Destination, Host: m.Source})
-		}
-	}
-
-	return out
 }
 
 // supervisorFlag reads back a flag the supervisor was given. Its own process user is root, so the

@@ -17,7 +17,7 @@ func (s *Service) AttachApp(ctx context.Context, ref string, open func() (io.Wri
 		return models.AppExit{}, err
 	}
 
-	_, t, err := s.openLogs(id)
+	t, err := s.openLogs(id)
 	if err != nil {
 		return models.AppExit{}, err
 	}
