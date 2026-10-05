@@ -136,7 +136,7 @@ shard serve
 | `--listen <address>` | listen address | `127.0.0.1:2376` |
 | `--signing-key-file <path>` | token signing key | `<root>/auth/signing-key` |
 
-The local daemon must be active. Use `shard tokens mint` to create API tokens.
+The local daemon must be active. Use `shard tokens mint` to create API keys.
 
 Use an HTTPS proxy or tunnel for public access. HTTP is suitable for local access or an encrypted VPN.
 
@@ -166,12 +166,12 @@ shard setup --remote https://shard.example.com --save -y
 
 | Option | Description |
 | --- | --- |
-| `--local` | Set up this machine to run sandboxes |
-| `--remote <url>` | Connect to a remote shard server |
+| `--local` | set up this machine to run sandboxes |
+| `--remote <url>` | connect to a remote shard server |
 | `--provider <name>` | firecracker, gvisor, sysbox, runc or vz |
-| `--start-at-boot <true\|false>` | Configure automatic daemon startup |
-| `--save` | Save the remote connection |
-| `-y, --yes` | Apply changes without confirmation |
+| `--start-at-boot <true\|false>` | start the daemon at boot |
+| `--save` | save the remote connection |
+| `-y, --yes` | apply changes without confirmation |
 
 **Remote authentication**
 
@@ -185,7 +185,7 @@ Set `SHARD_API_KEY`. Do not pass the key as a command argument.
 
 ## shard tokens
 
-Create, list and revoke API tokens.
+Create, list and revoke API keys.
 
 ```text
 shard tokens COMMAND [OPTIONS] [ARGS...]
@@ -195,16 +195,16 @@ shard tokens COMMAND [OPTIONS] [ARGS...]
 
 | Command | Description |
 | --- | --- |
-| [`shard tokens mint`](#shard-tokens-mint) | create an API token |
-| [`shard tokens list`](#shard-tokens-list) | list API tokens and their status |
-| [`shard tokens revoke`](#shard-tokens-revoke) | revoke an API token |
+| [`shard tokens mint`](#shard-tokens-mint) | create an API key |
+| [`shard tokens list`](#shard-tokens-list) | list API keys and their status |
+| [`shard tokens revoke`](#shard-tokens-revoke) | revoke an API key |
 | [`shard tokens scopes`](#shard-tokens-scopes) | list available token scopes |
 
 mint, list and revoke run only on the daemon host and refuse `--remote`. scopes follows `--remote` and `SHARD_REMOTE`.
 
 ### shard tokens mint
 
-Create an API token.
+Create an API key.
 
 ```text
 shard tokens mint [OPTIONS]
@@ -227,17 +227,17 @@ shard tokens mint --name reader --duration 24h --scopes sandbox:read
 | `--signing-key-file <path>` | token signing key | `<root>/auth/signing-key` |
 | `--format <format>` | output format: json or table | `json` |
 
-Run shard tokens scopes to list available scopes.
+Use `shard tokens scopes` to list available scopes.
 
 The default signing key is created automatically on first use. A custom signing key file must already exist.
 
-The response includes the API token. Use its `token` value as `SHARD_API_KEY`.
+The response includes the API key. Use its `token` value as `SHARD_API_KEY`.
 
 Runs only on the daemon host and refuses `--remote`, `SHARD_REMOTE` and a saved connection.
 
 ### shard tokens list
 
-List API tokens and their status.
+List API keys and their status.
 
 ```text
 shard tokens list [OPTIONS]
@@ -263,7 +263,7 @@ Runs only on the daemon host and refuses `--remote`, `SHARD_REMOTE` and a saved 
 
 ### shard tokens revoke
 
-Revoke an API token.
+Revoke an API key.
 
 ```text
 shard tokens revoke [OPTIONS] TOKEN
