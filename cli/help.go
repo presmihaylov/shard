@@ -174,7 +174,7 @@ var helps = map[string]verbHelp{
 		examples: []string{
 			"shard create --name web --memory 512MiB python:3.12",
 			"shard create --name web-copy --snapshot web-files",
-			"shard create --name worker --secret API_TOKEN python:3.12",
+			"shard create --name worker --memory 512MiB --secret API_TOKEN python:3.12",
 		},
 	},
 	"run": {
@@ -210,8 +210,8 @@ var helps = map[string]verbHelp{
 			limitsNote,
 		},
 		examples: []string{
-			"shard run --name web python:3.12 python -m http.server",
-			"shard run --detach --name web --restart on-failure python:3.12 python -m http.server",
+			"shard run --name web --memory 512MiB python:3.12 python -m http.server",
+			"shard run --detach --name web --memory 512MiB --restart on-failure python:3.12 python -m http.server",
 		},
 	},
 	"exec": {

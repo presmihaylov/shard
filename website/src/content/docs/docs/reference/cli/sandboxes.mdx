@@ -21,7 +21,7 @@ shard create [OPTIONS] --snapshot SNAPSHOT
 ```sh
 shard create --name web --memory 512MiB python:3.12
 shard create --name web-copy --snapshot web-files
-shard create --name worker --secret API_TOKEN python:3.12
+shard create --name worker --memory 512MiB --secret API_TOKEN python:3.12
 ```
 
 **Arguments**
@@ -74,8 +74,8 @@ shard run [OPTIONS] IMAGE COMMAND [ARGS...]
 **Examples**
 
 ```sh
-shard run --name web python:3.12 python -m http.server
-shard run --detach --name web --restart on-failure python:3.12 python -m http.server
+shard run --name web --memory 512MiB python:3.12 python -m http.server
+shard run --detach --name web --memory 512MiB --restart on-failure python:3.12 python -m http.server
 ```
 
 **Arguments**
