@@ -214,5 +214,5 @@ func (h *Handler) pruneImages(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	h.writeJSON(w, http.StatusOK, pruneResponse{Removed: removed, Warnings: warnings})
+	h.writeJSON(w, http.StatusOK, pruneResponse{Removed: listOf(removed), Warnings: warnings})
 }
