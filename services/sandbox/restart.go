@@ -154,43 +154,6 @@ func entrypointRestartReport(id string, count, retries int) string {
 	return fmt.Sprintf("sandbox %s: the entrypoint was started again, %d", id, count)
 }
 
-// stoppedRestarts keeps the record's count over one the guest forged, since a guest must never keep its sandbox from stopping (SHARD-630).
-func (s *Service) stoppedRestarts(ctx context.Context, sb models.Sandbox) (models.RestartCount, error) {
-	count, err := s.lastRestarts(ctx, sb)
-	// Log and continue, on Pres's 2026-10-03 ErrExitFileTooLarge precedent (PR 309): the substrate has already ended, and only this guest loses its own count.
-	if forgedAlone(err) {
-		s.report(fmt.Sprintf("sandbox %s: %v; the record keeps its last restart count", sb.ID, err))
-
-		return sb.Restart.RestartCount, nil
-	}
-
-	return count, err
-}
-
-// forgedAlone is a forged count with no other failure joined to it, so an unmount error never passes for the guest's doing.
-func forgedAlone(err error) bool {
-	if wrapped := errors.Unwrap(err); wrapped != nil {
-		return forgedAlone(wrapped)
-	}
-	joined, ok := err.(interface{ Unwrap() []error })
-	if !ok {
-		return errors.Is(err, models.ErrRestartFileForged)
-	}
-
-	return allForged(joined.Unwrap())
-}
-
-// allForged says every part of a joined error is a forged count alone.
-func allForged(parts []error) bool {
-	for _, part := range parts {
-		if !forgedAlone(part) {
-			return false
-		}
-	}
-
-	return len(parts) > 0
-}
-
 // lastRestarts asks the supervisor's count for a record that has a policy, and is zero for one that has none.
 func (s *Service) lastRestarts(ctx context.Context, sb models.Sandbox) (models.RestartCount, error) {
 	if sb.Restart == nil {
@@ -198,8 +161,18 @@ func (s *Service) lastRestarts(ctx context.Context, sb models.Sandbox) (models.R
 	}
 
 	count, err := s.cfg.Provider.Restarts(ctx, sb.ID)
+	// Log and continue, on Pres's 2026-10-03 ErrExitFileTooLarge precedent (PR 309): the read emptied the file, and only this sandbox loses its count.
+	if errors.Is(err, models.ErrExitFileTooLarge) {
+		s.report(fmt.Sprintf("sandbox %s: %v; the record keeps its last restart count", sb.ID, err))
+
+		return sb.Restart.RestartCount, nil
+	}
 	if err != nil {
 		return models.RestartCount{}, fmt.Errorf("read the restart count of sandbox %s: %w", sb.ID, err)
+	}
+	// A run's count is zero only while its record's is, so a zero read is shard-init's rewrite of the exit record in flight (SHARD-634).
+	if count == (models.RestartCount{}) {
+		return sb.Restart.RestartCount, nil
 	}
 
 	return count, nil

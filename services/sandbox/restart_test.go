@@ -225,18 +225,18 @@ func TestStopRecordsTheLastRestartCount(t *testing.T) {
 	}
 }
 
-func TestStopKeepsTheRecordedCountOverOneTheGuestForged(t *testing.T) {
+func TestStopKeepsTheRecordedCountOverAnOversizeExitFile(t *testing.T) {
 	sb := policied()
 	sb.Restart.RestartCount = models.RestartCount{Count: 2}
 	var reports []string
 	svc, l := newService(t, &recorder{}, sb, func(cfg *sandbox.Config) {
 		cfg.Report = func(line string) { reports = append(reports, line) }
 	})
-	l.provider.restartsErr = fmt.Errorf("decode the restart count: %w", models.ErrRestartFileForged)
+	l.provider.restartsErr = fmt.Errorf("the exit file was emptied: %w", models.ErrExitFileTooLarge)
 
 	stopped, err := svc.Stop(t.Context(), "sandbox1")
 	if err != nil {
-		t.Fatalf("a forged count kept the sandbox from stopping: %v", err)
+		t.Fatalf("an oversize exit file kept the sandbox from stopping: %v", err)
 	}
 
 	if stopped.State != models.StateStopped || stopped.Restart.Count != 2 {
@@ -253,15 +253,20 @@ func TestStopKeepsTheRecordedCountOverOneTheGuestForged(t *testing.T) {
 	}
 }
 
-func TestStopStillFailsOnAnUnmountJoinedToAForgedCount(t *testing.T) {
-	svc, l := newService(t, &recorder{}, policied())
-	forged := fmt.Errorf("decode the restart count: %w", models.ErrRestartFileForged)
-	unmount := errors.New("unmount the disk: device or resource busy")
-	l.provider.restartsErr = errors.Join(forged, unmount)
+// shard-init empties fd 0 before it writes the record again, so a tick can read no count at all (SHARD-634).
+func TestRecordRestartsKeepsTheRecordOverAZeroRead(t *testing.T) {
+	sb := policied()
+	sb.Restart.RestartCount = models.RestartCount{Count: 2, LastAt: time.Date(2026, 9, 17, 8, 0, 0, 0, time.UTC), Ended: true}
+	r := &recorder{}
+	svc, l := newService(t, r, sb)
 
-	_, err := svc.Stop(t.Context(), "sandbox1")
-	if !errors.Is(err, unmount) {
-		t.Fatalf("stop answered %v, want the unmount error the forged count came with", err)
+	var reports []string
+	if err := svc.RecordRestarts(t.Context(), []models.Sandbox{sb}, func(line string) { reports = append(reports, line) }); err != nil {
+		t.Fatalf("RecordRestarts: %v", err)
+	}
+
+	if got := l.repo.sb.Restart.RestartCount; got != sb.Restart.RestartCount || len(keep(r.calls, "repo.Update")) != 0 || len(reports) != 0 {
+		t.Errorf("a zero read left %+v and reported %v, want the record untouched", got, reports)
 	}
 }
 
@@ -270,7 +275,7 @@ func TestStopStillFailsOnACountItCannotRead(t *testing.T) {
 	l.provider.restartsErr = errors.New("read the restart count: input/output error")
 
 	if _, err := svc.Stop(t.Context(), "sandbox1"); err == nil {
-		t.Fatal("a count that cannot be read stopped the sandbox, and only a forged one may")
+		t.Fatal("a count that cannot be read stopped the sandbox, and only an oversize exit file may")
 	}
 }
 

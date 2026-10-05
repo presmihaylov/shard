@@ -172,16 +172,15 @@ func atoi(s string) int {
 }
 
 type harness struct {
-	cmd         *exec.Cmd
-	exitFile    string
-	readyFile   string
-	restartFile string
-	out         *bufio.Reader
+	cmd       *exec.Cmd
+	exitFile  string
+	readyFile string
+	out       *bufio.Reader
 	// waited records that a test collected the exit itself, so the cleanup does not wait twice.
 	waited bool
 }
 
-// restart flags go before the entrypoint, and an empty child leaves none; the count file lands beside the exit file.
+// restart flags go before the entrypoint, and an empty child leaves none; the count rides the exit record.
 func startSupervisor(t *testing.T, role, child string, restart ...string) *harness {
 	t.Helper()
 
@@ -193,8 +192,7 @@ func startSupervisor(t *testing.T, role, child string, restart ...string) *harne
 	dir := t.TempDir()
 	exitFile := filepath.Join(dir, "exit.json")
 	readyFile := filepath.Join(dir, "started")
-	restartFile := filepath.Join(dir, "restarts.json")
-	args := append(append([]string{"-ready-file", readyFile}, restart...), "-restart-file", restartFile, "--")
+	args := append(append([]string{"-ready-file", readyFile}, restart...), "--")
 	if child != "" {
 		args = append(args, exe, childPrefix+child)
 	}
@@ -221,7 +219,7 @@ func startSupervisor(t *testing.T, role, child string, restart ...string) *harne
 		t.Fatalf("close the exit channel write end: %v", err)
 	}
 
-	super := &harness{cmd: cmd, exitFile: exitFile, readyFile: readyFile, restartFile: restartFile, out: bufio.NewReader(pipe)}
+	super := &harness{cmd: cmd, exitFile: exitFile, readyFile: readyFile, out: bufio.NewReader(pipe)}
 
 	t.Cleanup(func() {
 		if err := cmd.Process.Kill(); err != nil && !errors.Is(err, os.ErrProcessDone) {
@@ -274,9 +272,21 @@ func (s *harness) awaitExitStatus(t *testing.T) models.ExitStatus {
 func readFramedExit(t *testing.T, path string) (models.ExitStatus, bool) {
 	t.Helper()
 
+	report, found := readFramedReport(t, path)
+	if !found {
+		return models.ExitStatus{}, false
+	}
+
+	return models.ExitStatus{Code: report.Code, Signal: report.Signal}, true
+}
+
+// readFramedReport answers the last complete exit record, with the restart count it carries.
+func readFramedReport(t *testing.T, path string) (models.ExitReport, bool) {
+	t.Helper()
+
 	blob, err := os.ReadFile(path)
 	if errors.Is(err, os.ErrNotExist) {
-		return models.ExitStatus{}, false
+		return models.ExitReport{}, false
 	}
 	if err != nil {
 		t.Fatalf("read the exit channel: %v", err)
@@ -284,7 +294,7 @@ func readFramedExit(t *testing.T, path string) (models.ExitStatus, bool) {
 
 	end := bytes.LastIndexByte(blob, '\n')
 	if end < 0 {
-		return models.ExitStatus{}, false
+		return models.ExitReport{}, false
 	}
 
 	var line []byte
@@ -294,7 +304,7 @@ func readFramedExit(t *testing.T, path string) (models.ExitStatus, bool) {
 		}
 	}
 	if line == nil {
-		return models.ExitStatus{}, false
+		return models.ExitReport{}, false
 	}
 
 	var report models.ExitReport
@@ -302,26 +312,23 @@ func readFramedExit(t *testing.T, path string) (models.ExitStatus, bool) {
 		t.Fatalf("the exit record is not valid JSON: %v", err)
 	}
 	if report.Kind != models.ExitReportKind {
-		return models.ExitStatus{}, false
+		return models.ExitReport{}, false
 	}
 
-	return models.ExitStatus{Code: report.Code, Signal: report.Signal}, true
+	return report, true
 }
 
-// awaitRestartCount waits until the count file says what the test wants of it.
+// awaitRestartCount waits until the count on the exit record says what the test wants of it.
 func (s *harness) awaitRestartCount(t *testing.T, want func(models.RestartCount) bool) models.RestartCount {
 	t.Helper()
 
 	var count models.RestartCount
-	waitFor(t, 15*time.Second, "the restart count file", func() bool {
-		blob, err := os.ReadFile(s.restartFile)
-		if err != nil {
+	waitFor(t, 15*time.Second, "the restart count", func() bool {
+		report, found := readFramedReport(t, s.exitFile)
+		if !found {
 			return false
 		}
-
-		if err := json.Unmarshal(blob, &count); err != nil {
-			t.Fatalf("the restart count file is not valid JSON: %v", err)
-		}
+		count = report.Restarts
 
 		return want(count)
 	})
@@ -586,8 +593,8 @@ func TestUSR2KillsAnAppThatIgnoresTerm(t *testing.T) {
 		t.Fatalf("signal the supervisor: %v", err)
 	}
 	time.Sleep(200 * time.Millisecond)
-	if _, err := os.Stat(super.restartFile); !errors.Is(err, os.ErrNotExist) {
-		t.Fatalf("the app ended on a TERM it ignores (stat: %v)", err)
+	if report, found := readFramedReport(t, super.exitFile); found {
+		t.Fatalf("the app ended on a TERM it ignores: %+v", report)
 	}
 
 	if err := super.cmd.Process.Signal(syscall.SIGUSR2); err != nil {
@@ -629,8 +636,8 @@ func TestUSR1WithNoAppChangesNothing(t *testing.T) {
 	if !super.alive(t) {
 		t.Error("the supervisor exited on USR1 with no app")
 	}
-	if _, err := os.Stat(super.restartFile); !errors.Is(err, os.ErrNotExist) {
-		t.Errorf("a sandbox with no app wrote an end (stat: %v)", err)
+	if report, found := readFramedReport(t, super.exitFile); found {
+		t.Errorf("a sandbox with no app wrote an end: %+v", report)
 	}
 }
 
@@ -736,7 +743,7 @@ func TestSupervisorOutlivesALostExitStatus(t *testing.T) {
 		}
 	}()
 
-	cmd := exec.Command(exe, "-ready-file", filepath.Join(dir, "started"), "-restart-file", filepath.Join(dir, "restarts.json"), "--", exe, childPrefix+"exit:0")
+	cmd := exec.Command(exe, "-ready-file", filepath.Join(dir, "started"), "--", exe, childPrefix+"exit:0")
 	cmd.Env = append(os.Environ(), roleEnv+"="+roleSupervisor)
 	cmd.Stdin = readOnly
 
@@ -778,7 +785,7 @@ func TestBrokenImageExitsSeparatelyFromABrokenSupervisor(t *testing.T) {
 
 	dir := t.TempDir()
 	readyFile := filepath.Join(dir, "started")
-	cmd := exec.Command(exe, "-ready-file", readyFile, "-restart-file", filepath.Join(dir, "restarts.json"), "--", "/no/such/entrypoint")
+	cmd := exec.Command(exe, "-ready-file", readyFile, "--", "/no/such/entrypoint")
 	cmd.Env = append(os.Environ(), roleEnv+"="+roleSupervisor)
 
 	var exit *exec.ExitError
@@ -829,7 +836,7 @@ func TestAnEntrypointThatCannotRunLeavesItsErrnoOnFd0(t *testing.T) {
 				}
 			}()
 
-			cmd := exec.Command(exe, "-ready-file", filepath.Join(dir, "started"), "-restart-file", filepath.Join(dir, "restarts.json"), "--", c.argv0)
+			cmd := exec.Command(exe, "-ready-file", filepath.Join(dir, "started"), "--", c.argv0)
 			cmd.Env = append(os.Environ(), roleEnv+"="+roleSupervisor)
 			cmd.Stdin = exitW
 			var exit *exec.ExitError
@@ -919,12 +926,9 @@ func TestRunRejectsBadArguments(t *testing.T) {
 		"user with an extra":     {readyFlag, readyPath, "-user", "1000:1000:10", "--", "/bin/true"},
 		"an id past 32 bits":     {readyFlag, readyPath, "-user", "4294967296:0", "--", "/bin/true"},
 		"a negative id":          {readyFlag, readyPath, "-user", "-1:0", "--", "/bin/true"},
-		"unknown policy":         {readyFlag, readyPath, "-restart", "unless-stopped", "-restart-file", "/tmp/r.json", "--", "/bin/true"},
-		"policy with no file":    {readyFlag, readyPath, "-restart", "always", "--", "/bin/true"},
-		"command with no file":   {readyFlag, readyPath, "--", "/bin/true"},
-		"relative count file":    {readyFlag, readyPath, "-restart", "always", "-restart-file", "r.json", "--", "/bin/true"},
-		"negative retries":       {readyFlag, readyPath, "-restart", "on-failure", "-restart-file", "/tmp/r.json", "-retries", "-1", "--", "/bin/true"},
-		"zero backoff":           {readyFlag, readyPath, "-restart", "always", "-restart-file", "/tmp/r.json", "-backoff", "0s", "--", "/bin/true"},
+		"unknown policy":         {readyFlag, readyPath, "-restart", "unless-stopped", "--", "/bin/true"},
+		"negative retries":       {readyFlag, readyPath, "-restart", "on-failure", "-retries", "-1", "--", "/bin/true"},
+		"zero backoff":           {readyFlag, readyPath, "-restart", "always", "-backoff", "0s", "--", "/bin/true"},
 		"root with base":         {"-transport", "unix:/tmp/x", "-root", "/dev/vda", "-base", "/dev/vdb", "-overlay", "/dev/vdc"},
 		"base with no overlay":   {"-transport", "unix:/tmp/x", "-base", "/dev/vda"},
 		"overlay with no base":   {"-transport", "unix:/tmp/x", "-overlay", "/dev/vdb"},
@@ -1167,7 +1171,7 @@ func TestFileReporterKeepsOneExitRecord(t *testing.T) {
 		t.Fatal(err)
 	}
 	for code := range 300 {
-		if err := (fileReporter{}).exited(models.ExitStatus{Code: code % 256}); err != nil {
+		if err := (&fileReporter{}).exited(models.ExitStatus{Code: code % 256}); err != nil {
 			t.Fatal(err)
 		}
 	}
