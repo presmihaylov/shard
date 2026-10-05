@@ -5,10 +5,12 @@ import (
 	"crypto/tls"
 	"errors"
 	"fmt"
+	"net"
 	"net/http"
 	"net/url"
 	"path/filepath"
 	"strings"
+	"syscall"
 
 	"github.com/presmihaylov/shard/pkg/term"
 	"github.com/presmihaylov/shard/services/client"
@@ -143,7 +145,7 @@ func Verify(ctx context.Context, host Host, conn client.Config, list Checklist) 
 				return []string{err.Error()}, err
 			}
 			if err := c.Reach(ctx); err != nil {
-				return reachDetail(err), err
+				return reachDetail(conn.Remote, err), err
 			}
 
 			return nil, nil
@@ -179,8 +181,8 @@ func Verify(ctx context.Context, host Host, conn client.Config, list Checklist) 
 	return caps, nil
 }
 
-// reachDetail explains SHARD_CA_FILE for a certificate this machine does not trust; there is no way to skip the check.
-func reachDetail(err error) []string {
+// reachDetail says why remote did not answer, and explains SHARD_CA_FILE for a certificate this machine does not trust; there is no way to skip the check.
+func reachDetail(remote string, err error) []string {
 	var untrusted *tls.CertificateVerificationError
 	if errors.As(err, &untrusted) {
 		return []string{
@@ -188,8 +190,31 @@ func reachDetail(err error) []string {
 			"For a private certificate authority, exit, set " + client.CAFileEnv + " to its PEM file, and run shard setup again.",
 		}
 	}
+	var unreachable *client.ConnectError
+	if errors.As(err, &unreachable) {
+		return []string{
+			"Could not reach " + client.Redacted(remote) + ": " + dialCause(unreachable.Err) + ".",
+			"Check the URL, and that shard serve or the proxy in front of it runs.",
+		}
+	}
 
 	return []string{err.Error()}
+}
+
+// dialCause words the common dial failures as a person reads them, and leaves any other as the dialer said it.
+func dialCause(err error) string {
+	var dns *net.DNSError
+	var timeout net.Error
+	switch {
+	case errors.As(err, &dns) && dns.IsNotFound:
+		return "no such host"
+	case errors.Is(err, syscall.ECONNREFUSED):
+		return "connection refused"
+	case errors.Is(err, context.DeadlineExceeded), errors.As(err, &timeout) && timeout.Timeout():
+		return "connection timed out"
+	}
+
+	return err.Error()
 }
 
 // authDetail words the 401 of a server that refused the key.
