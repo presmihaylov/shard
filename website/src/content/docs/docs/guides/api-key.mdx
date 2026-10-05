@@ -63,6 +63,8 @@ with Shard() as shard:
 	</TabItem>
 </Tabs>
 
+The TypeScript and Python examples reach `shard serve` at the address in `SHARD_REMOTE`, with the API key in `SHARD_API_KEY`.
+
 The sandbox prints `mock-OPENAI_API_KEY`. That placeholder is all the sandbox ever holds, and code in the sandbox uses it just as it would use the real key. When a request goes to `api.openai.com` over HTTPS, shard puts the real key into its headers on the host, outside the sandbox.
 
 As a result, an agent that reads its environment, dumps its memory, or posts everything it finds to another host gives away only the placeholder.
@@ -71,9 +73,9 @@ As a result, an agent that reads its environment, dumps its memory, or posts eve
 
 ## Keep the key out of your shell
 
-`shard secret set` reads the key from a pipe, as in the example above. If there is no pipe and no value, it prompts for the key with echo turned off. Do not put the key on the command line: `ps` shows it while the command runs, and `shard secret set` warns you if you do.
+`shard secret set` reads the key from a pipe, as in the example above. If stdin is a terminal and there is no value, it prompts for the key with echo turned off. Do not put the key on the command line: `ps` shows it while the command runs, and `shard secret set` warns you if you do.
 
-The key is stored in a single file on the host that only root can read. `shard secret list` prints each name with its destinations and placeholder, but never the key.
+The key is stored in a single file on the host that only the user the daemon runs as can read, which is root on Linux. `shard secret list` prints each name with its destinations and placeholder, but never the key.
 
 ## Make the request the right way
 
@@ -135,7 +137,7 @@ A placeholder must be 8 characters or more, and contain only letters, digits, `_
 
 ## Grant a key to a sandbox that exists
 
-A grant needs a stopped sandbox. A running sandbox holds its environment in its processes, so the grant is refused with `sandbox <id> is running: secret grant takes a created or stopped sandbox: stop it first`:
+A grant needs a created or stopped sandbox. A running sandbox holds its environment in its processes, so the grant is refused with `sandbox <id> is running: secret grant takes a created or stopped sandbox: stop it first`:
 
 <Tabs syncKey="lang">
 	<TabItem label="CLI">
@@ -167,7 +169,7 @@ sandbox.start()
 	</TabItem>
 </Tabs>
 
-`shard secret ungrant` takes the grant back, and it too needs a stopped sandbox. A fork keeps the grants of its source. A snapshot holds no grants, so a create from a snapshot must name its own `--secret`.
+`shard secret ungrant` takes the grant back, and it too needs a created or stopped sandbox. A fork keeps the grants of its source. A snapshot holds no grants, so a create from a snapshot must name its own `--secret`.
 
 ## With a network policy
 
@@ -197,4 +199,4 @@ To put the key in, shard terminates the TLS connection on the host with its own 
 
 A sandbox that is allowed to call `api.openai.com` with the key can make any call the key allows, so a compromised agent can run up a bill or read whatever the key can read. Scope the key at the provider, because shard only keeps it out of the sandbox.
 
-On the `runc` provider, nothing isolates the sandbox from the host: root in the sandbox is root on the host, and it can read the stored key. The [secrets reference](https://github.com/presmihaylov/shard/blob/main/docs/secrets.md) lists every rule.
+On the `runc` provider, nothing isolates the sandbox from the host: root in the sandbox is root on the host, and a process that escapes the sandbox can read the stored key. The [secrets reference](https://github.com/presmihaylov/shard/blob/main/docs/secrets.md) lists every rule.
