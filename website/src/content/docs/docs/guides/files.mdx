@@ -91,7 +91,7 @@ text = sandbox.files.read_text("/srv/input.json")
 	</TabItem>
 </Tabs>
 
-`files.read` returns bytes: a `Uint8Array` in TypeScript and `bytes` in Python. These are all the file calls in the SDKs:
+Without an encoding option, `files.read` returns bytes: a `Uint8Array` in TypeScript and `bytes` in Python. These are all the file calls in the SDKs:
 
 | TypeScript | Python | What it does |
 | --- | --- | --- |
@@ -101,11 +101,11 @@ text = sandbox.files.read_text("/srv/input.json")
 | `stat`, `list` | `stat`, `list` | get the type, size, mode, owner and modification time of a path, or of each entry in a directory |
 | `mkdir`, `remove` | `mkdir`, `remove` | create a directory, or delete a path; with `recursive`, delete a directory that is not empty |
 
-`write`, `upload` and `mkdir` take `parents` to create any missing directories, and `mode` to set the permission bits. `shard cp`, `upload` and `download` keep the permission bits of the source.
+`write`, `upload` and `mkdir` take `parents` to create any missing directories, and `mode` to set the permission bits. `shard cp`, `upload` and `download` keep the source's ordinary permission bits, but not setuid or setgid.
 
 ## Who owns a written file
 
-A copy into the sandbox runs as a user inside the sandbox. That user is the sandbox's user unless you set `--user` on `shard cp` or `user` in the SDK. The guest kernel checks the permissions and sets the owner, just as it does for an `exec`. A write into `/etc` therefore fails for a user other than root, while `--user root` can write anywhere.
+A copy into the sandbox runs as a user inside the sandbox. That user is the sandbox's user unless you set `--user` on `shard cp` or `user` in the SDK. The guest kernel checks the permissions and sets the owner, just as it does for an `exec`. A write into the image's usual `/etc` directory therefore fails for a user other than root. `--user root` can bypass ordinary file permissions, but not a read-only mount.
 
 ## The rules
 
@@ -130,5 +130,7 @@ Every route is under `/v0/sandboxes/{id}`, where `{id}` is the id or the name of
 | `DELETE /files?path=&recursive=` | | `204` |
 | `PUT /archive?path=&user=` | a tar, streamed | `204` |
 | `GET /archive?path=` | | `200`, a tar, streamed |
+
+`PUT /files` needs a `Content-Length` header with the number of file bytes. Its `mode` query and the `mode` in a mkdir body are octal strings, such as `"644"` and `"755"`.
 
 A stat contains `type`, `size`, `mode`, `uid`, `gid` and `mtime`. The possible errors are `not_found`, `invalid_request` (for a relative path, a bad tar, a tar entry that lands outside `path`, or a path the guest refuses, such as one the user may not write), `sandbox_not_running`, `sandbox_failed` (for a sandbox whose create failed) and `internal`.
