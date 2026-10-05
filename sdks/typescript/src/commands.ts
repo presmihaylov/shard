@@ -135,7 +135,7 @@ export class Commands {
   async list(): Promise<CommandInfo[]> {
     const path = { id: this.sandboxId };
     const route = "/v0/sandboxes/{id}/exec";
-    const rows = await listed(route, "execs", (cursor) => this.transport.api.GET(route, { params: { path, query: { cursor } } }));
+    const { rows } = await listed(route, "execs", (cursor) => this.transport.api.GET(route, { params: { path, query: { cursor } } }));
 
     return rows.map(commandInfo);
   }

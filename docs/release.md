@@ -69,10 +69,21 @@ dropped. A user downloads the binary for their Mac from the release.
 
 The guest kernel has its own workflow and its own release tag, which `docs/kernel.md` describes.
 
-## The Python SDK
+## The SDKs
 
-`useshards` has its own version, in `sdks/python/src/useshards/_version.py`, and its own tag:
-`useshards-v<version>` on `main`. `release-sdk-python.yml` checks that the commit is on `main` and
-that the tag names the package version, runs `make sdk-py-check`, builds the wheel and the sdist, and
-installs the wheel into a clean venv. It keeps the wheel and the sdist as the `useshards-dist`
-workflow artifact and uploads nothing to PyPI, because publication needs Pres's approval.
+Each SDK has its own version and its own tag on `main`: `sdk-typescript-v<version>` for the version
+in `sdks/typescript/package.json`, and `sdk-python-v<version>` for the one in
+`sdks/python/src/useshards/_version.py`. Neither tag matches `v*`, so `release.yml` never runs for
+one. `sdk-release.yml` checks that the commit is on `main`. A shared job runs `make sdk-gate`
+against a fresh runc daemon behind a TLS front, and both package jobs wait for that gate. Each
+package job checks that the tag names its version, then runs `make sdk-ts-check` or
+`make sdk-py-check`. It packs the tarball with `npm pack`, or builds the wheel and the sdist with
+`uv build`, and installs the result into a clean project, so it imports with only the dependencies
+it declares.
+
+A last job, the only one that can write, puts the assets and a `SHA256SUMS` under a draft release
+titled `useshards (TypeScript) <version>` or `useshards (Python) <version>`. Nothing goes to npm or
+PyPI, and the workflow holds no registry token. Before you publish a draft, install each asset in a
+clean directory and run one create, exec and remove against a devbox daemon. Then publish it with
+`gh release edit <tag> --draft=false --latest=false`. `docs/mac.md` downloads `shard` from the
+latest release, so an SDK release must never be the latest.

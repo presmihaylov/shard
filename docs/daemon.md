@@ -688,8 +688,9 @@ and `image prune` leaves it.
   is paused.
 
 - `GET /v0/policies` answers `{"policies": [...], "next"}`, and `GET /v0/policies/{name}` answers one
-  policy with `holders`, the sandboxes whose record names it. The field is omitted when no sandbox
-  names the policy. That is what `shard policy
+  policy with `holders`, the sandboxes whose record names it, plus the id of every sandbox whose
+  record cannot be read, since that record may name it. The field is omitted when no sandbox names
+  the policy. That is what `shard policy
   list` and `shard policy show` print. Errors: 404 when the host holds no such policy.
 - `PUT /v0/policies/{name}` takes `{"rules": [{"action": "allow"|"deny", "rule": "<destination>"}]}`
   with the rules in the order they were given. It compiles them, stores the policy and re-applies it
@@ -698,8 +699,9 @@ and `image prune` leaves it.
   enforce, and 500 when the store holds the new rules but the host still enforces the old ones. The
   error message says so.
 - `DELETE /v0/policies/{name}` answers 204. Errors: 404, and 409 with the name of every sandbox that
-  holds the policy. There is no force here, because a sandbox with no policy would have no egress
-  rules at all.
+  holds the policy, plus the id of every sandbox whose record cannot be read, since that record
+  may hold it. There is no force here, because a sandbox with no policy would have no egress rules
+  at all.
 - `GET /v0/secrets` answers `{"secrets": [...], "next"}` with the name, the destinations, the
   placeholder and the times of each secret, and never a value. Unreadable files come back in
   `warnings` beside the readable ones. `secret list` prints them on stderr before it exits non-zero.
@@ -708,7 +710,8 @@ and `image prune` leaves it.
   an empty value the host refuses, and 409 with the name of every sandbox that holds the placeholder
   a new `placeholder` would change.
 - `DELETE /v0/secrets/{name}` answers 204. Errors: 404, and 409 with the name of every sandbox that
-  was granted the secret, unless the query has `?force=true`.
+  was granted the secret, plus the id of every sandbox whose record cannot be read, unless the
+  query has `?force=true`.
 - `GET /v0/images` answers `{"images": [...], "next"}`, with the images as `shard image list` prints
   them. An entry the daemon could not read carries its reason in `broken`.
 - `POST /v0/images/pull` takes `{"ref"}`, pulls the image and answers 200 with it. Errors: 400 for

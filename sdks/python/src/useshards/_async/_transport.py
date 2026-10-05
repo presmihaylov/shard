@@ -76,12 +76,17 @@ class AsyncTransport:
     async def listed(self, kind: type[P], fetch: AsyncFetch, rows: Callable[[P], Sequence[R]]) -> list[R]:
         """Every row of a paged list, one page after another."""
         out: list[R] = []
+        async for page in self.pages(kind, fetch):
+            out.extend(rows(page))
+        return out
+
+    async def pages(self, kind: type[P], fetch: AsyncFetch) -> AsyncIterator[P]:
         cursor: str | Unset = UNSET
         while True:
             page = await self.answer(kind, functools.partial(fetch, cursor))
-            out.extend(rows(page))
+            yield page
             if not page.next_:
-                return out
+                return
             cursor = page.next_
 
     async def put(self, path: str, params: dict[str, str], content: bytes | AsyncIterable[bytes], size: int) -> None:
