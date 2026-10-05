@@ -159,9 +159,30 @@ func (i Image) Config() (*v1.ConfigFile, error) {
 		return nil, i.Broken
 	}
 
-	cfg, err := i.img.ConfigFile()
+	return verifiedConfig(i.img, i.Reference)
+}
+
+// verifiedConfig parses the config only once its bytes hash to the digest the manifest names, as the layout reads a blob by file name alone.
+func verifiedConfig(img v1.Image, ref string) (*v1.ConfigFile, error) {
+	manifest, err := img.Manifest()
 	if err != nil {
-		return nil, fmt.Errorf("read the config of %s: %w", i.Reference, err)
+		return nil, fmt.Errorf("parse the manifest of %s: %w", ref, err)
+	}
+	raw, err := img.RawConfigFile()
+	if err != nil {
+		return nil, fmt.Errorf("read the config of %s: %w", ref, err)
+	}
+	got, _, err := v1.SHA256(bytes.NewReader(raw))
+	if err != nil {
+		return nil, fmt.Errorf("hash the config of %s: %w", ref, err)
+	}
+	if got != manifest.Config.Digest {
+		return nil, fmt.Errorf("the cached config of %s hashes to %s, not the %s its manifest names: remove the image and pull it again", ref, got, manifest.Config.Digest)
+	}
+
+	cfg, err := v1.ParseConfigFile(bytes.NewReader(raw))
+	if err != nil {
+		return nil, fmt.Errorf("parse the config of %s: %w", ref, err)
 	}
 
 	return cfg, nil
@@ -573,6 +594,15 @@ func (s *Store) image(desc v1.Descriptor) (Image, error) {
 		return Image{}, fmt.Errorf("read %s from the store: %w", ref, err)
 	}
 
+	// The manifest stays in memory once read, so the hash checked here is the one every later read sees.
+	got, err := img.Digest()
+	if err != nil {
+		return Image{}, fmt.Errorf("hash the manifest of %s: %w", ref, err)
+	}
+	if got != desc.Digest {
+		return Image{}, fmt.Errorf("the cached manifest of %s hashes to %s, not the %s the index names: remove the image and pull it again", ref, got, desc.Digest)
+	}
+
 	manifest, err := img.Manifest()
 	if err != nil {
 		return Image{}, fmt.Errorf("parse the manifest of %s: %w", ref, err)
@@ -583,9 +613,9 @@ func (s *Store) image(desc v1.Descriptor) (Image, error) {
 		size += layer.Size
 	}
 
-	cfg, err := img.ConfigFile()
+	cfg, err := verifiedConfig(img, ref)
 	if err != nil {
-		return Image{}, fmt.Errorf("parse the config of %s: %w", ref, err)
+		return Image{}, err
 	}
 
 	return Image{

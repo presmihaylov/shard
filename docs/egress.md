@@ -92,10 +92,12 @@ the host, and dials the address it judged. A TLS request without a server name i
 whose `Host` header disagrees with that name gets a 400.
 
 A denied request gets a 403 with a one-line JSON body that names the host, the port, the rule and the
-reason. A host name that does not resolve is logged as a deny with the rule `resolve`, and the
-request gets a 502 whose body is the lookup error. No value has gone in at that point. When the
-upstream leg fails, the request gets a 502 with a fixed body. That body never holds the error,
-because the error can quote the request after a secret value went into it. A secret value
+reason. When the upstream leg fails, the request gets a 502 with a fixed body. That body never holds
+the error, because the error can quote the request after a secret value went into it. A request the
+proxy cannot judge, such as one whose host does not resolve, gets a 502 that names the host and, for a
+failed lookup, says `no such host` or `the lookup failed`. It never holds the cause, which can name the
+host's nameserver or a host path. The daemon log keeps the cause, and the egress log records a failed
+lookup as `resolve`. A secret value
 goes into request headers only, so every body streams through unchanged (SHARD-337). One sandbox
 holds at most 32 MiB at once of the bytes a value adds to a request, counted from the rewrite until
 the request is forwarded. Past that limit a request gets a 503. The proxy reads the policy, the secret
@@ -291,8 +293,10 @@ The log has three limits:
   starts. So a restart loses only what the ring itself overwrote in the meantime. The ring is
   host-wide and the cursor is per root, so a root with no cursor yet sets its cursor at the ring's
   end. The drops before its first start name no sandbox of that root, and its one summary line says
-  so instead of blaming a sandbox that no longer exists. Each chain rule logs at 2 lines per second,
-  with a burst of 10, so a probe storm cannot fill the ring.
+  so instead of blaming a sandbox that no longer exists. Each sandbox logs its drops under its own
+  limit: 2 lines per second for each rule with a burst of 10, and on a VM host 2 lines per second in
+  all. So a probe storm cannot fill the ring, and one sandbox's storm never takes the records of
+  another sandbox.
 - The log file is rotated at 8 MiB and one older file is kept, so a sandbox holds 16 MiB at most. The
   write that would pass 8 MiB renames the file first. `shard policy logs` prints at most the newest
   10000 records, and says on stderr how many older ones it left out. A follow starts from the same

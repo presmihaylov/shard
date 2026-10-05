@@ -5,6 +5,7 @@ import { CommandNotStartedError, NotFoundError, ProtocolError, ShardConnectionEr
 import { Session } from "../src/exec.js";
 import { opBinary, opClose } from "../src/frames.js";
 import { Transport } from "../src/transport.js";
+import { version } from "../src/version.js";
 import { execRequest, maxPayload } from "../src/wire.js";
 import { FakeDaemon, type Answer, type Request } from "./helpers/daemon.js";
 
@@ -61,7 +62,7 @@ test("a command starts, streams to the capture and every handler, and answers it
   assert.ok(create);
   assert.deepEqual(JSON.parse(create.body), { command: ["/bin/sh", "-c", "echo hi"], stdin: false, tty: false, attach: true });
   assert.equal(create.headers.authorization, "Bearer test-key");
-  assert.match(String(create.headers["user-agent"]), /^useshards-typescript\/\d+\.\d+\.\d+$/);
+  assert.equal(create.headers["user-agent"], `useshards-typescript/${version}`);
 
   const peer = await daemon.peer(0);
   assert.equal(peer.path, execPath);

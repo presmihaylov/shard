@@ -161,6 +161,31 @@ jobs:
       - name: check
         run: make sdk-py-check
 
+  # An SDK change carries its release note, and only the Release SDKs branch edits a version.
+  sdk-changeset:
+    name: sdk changeset
+    if: github.event_name != 'push'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - uses: astral-sh/setup-uv@v10.2.0
+        with:
+          version: ${{ env.UV_VERSION }}
+          python-version: "3.13"
+
+      - name: release tooling tests
+        run: make sdk-release-test
+
+      # A fork may name its branch changeset-release/main, so it never counts as the release branch.
+      - name: changeset check
+        env:
+          BASE: ${{ github.base_ref || 'main' }}
+          BRANCH: ${{ github.event.pull_request.head.repo.full_name != github.repository && github.event_name == 'pull_request' && 'fork' || github.head_ref || github.ref_name }}
+        run: python3 sdks/release/release.py check --base "origin/$BASE" --branch "$BRANCH"
+
   # The SDK release gate (SHARD-493): both packages against one real daemon, the runc provider as root, behind a TLS front.
   sdk-gate:
     name: sdk release gate

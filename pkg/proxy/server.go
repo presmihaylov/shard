@@ -256,7 +256,7 @@ func (s *Server) handle(stopped context.Context, w http.ResponseWriter, r *http.
 	decision, err := s.cfg.Director.Decide(ctx, req)
 	if err != nil {
 		s.log.Printf(req.Source, "proxy: %s %s %s:%d: %v", req.Source, clip(r.Method), req.Host, req.Port, err)
-		writeJSON(w, http.StatusBadGateway, map[string]string{"error": err.Error()})
+		writeJSON(w, http.StatusBadGateway, undecided(req, err))
 
 		return
 	}
@@ -501,6 +501,21 @@ func (s *Server) forward(source netip.Addr) *httputil.ReverseProxy {
 func (s *Server) refuse(w http.ResponseWriter, r *http.Request, status int, message string) {
 	s.log.Printf(sourceOf(r.RemoteAddr), "proxy: %s %s: %d %s", r.RemoteAddr, clip(r.Method), status, message)
 	writeJSON(w, status, map[string]string{"error": message})
+}
+
+// undecided is the guest's 502 when no decision came back: the error can name the host's nameserver or a host path (SHARD-629).
+func undecided(req Request, err error) map[string]string {
+	body := map[string]string{"error": "the proxy could not judge the request", "host": req.Host}
+	var lookup *net.DNSError
+	if !errors.As(err, &lookup) {
+		return body
+	}
+	body["reason"] = "the lookup failed"
+	if lookup.IsNotFound {
+		body["reason"] = "no such host"
+	}
+
+	return body
 }
 
 func deny(w http.ResponseWriter, req Request, decision Decision) {

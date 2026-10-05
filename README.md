@@ -149,10 +149,8 @@ They provide sandbox commands, files, lifecycle operations, secrets, and policie
 requires Node.js 20.3 or later; Python requires Python 3.11 or later and has synchronous and
 asynchronous clients.
 
-Separate SDK releases are planned on GitHub under `sdk-typescript-v0.1.0` and
-`sdk-python-v0.1.0`. After publication, download the TypeScript `.tgz` or the Python `.whl`
-from their release assets and install the local file. The SDKs are not published on npm
-or PyPI. Until the releases are available, the source and examples are in those directories.
+Install them with `npm install useshards` or `pip install useshards`. The source and examples
+are in those directories, and [the release guide](docs/release.md) says how an SDK release is made.
 
 ## Documentation
 
