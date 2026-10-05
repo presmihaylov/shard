@@ -130,14 +130,14 @@ def test_failure_is_the_refusal_it_names(daemon: FakeDaemon) -> None:
 def test_cut_asks_the_record_why(daemon: FakeDaemon) -> None:
     daemon.attaches = [lambda peer: peer.send(STDOUT, b"x")]
     daemon.record = (200, {**RECORD, "lost_bytes": 7})
-    with pytest.raises(ShardConnectionError, match="the command is running with 7 bytes of output lost"):
+    with pytest.raises(ShardConnectionError, match="the command is running, with 7 bytes of output lost"):
         _command.run_command(transport(daemon), "sb", "true", output_limit_bytes=LIMIT)
 
 
 def test_cut_with_no_record_names_the_drop(daemon: FakeDaemon) -> None:
     daemon.attaches = [lambda peer: None]
     daemon.record = (500, {"error": {"code": "internal", "message": "store down"}})
-    with pytest.raises(ShardConnectionError, match="ended without an exit status: the stream to the daemon dropped"):
+    with pytest.raises(ShardConnectionError, match="sandbox sb: the stream ended without an exit status$"):
         _command.run_command(transport(daemon), "sb", "true", output_limit_bytes=LIMIT)
 
 

@@ -60,10 +60,10 @@ export interface paths {
             path?: never;
             cookie?: never;
         };
-        /** list active sandboxes */
+        /** List active sandboxes */
         get: operations["list-sandboxes"];
         put?: never;
-        /** create a sandbox @description A create that names secrets also needs the secret:* scope, and one that names a policy needs policy:*; without it the answer is 403 forbidden. */
+        /** Create a sandbox @description A create that names secrets also needs the secret:* scope, and one that names a policy needs policy:*; without it the answer is 403 forbidden. */
         post: operations["create-sandbox"];
         delete?: never;
         options?: never;
@@ -82,7 +82,7 @@ export interface paths {
         get: operations["get-sandbox"];
         put?: never;
         post?: never;
-        /** delete a sandbox and its files */
+        /** Remove a sandbox and its files */
         delete: operations["remove-sandbox"];
         options?: never;
         head?: never;
@@ -113,9 +113,9 @@ export interface paths {
             path?: never;
             cookie?: never;
         };
-        /** copy a directory out of a running sandbox */
+        /** Copy a directory out of a running sandbox */
         get: operations["read-archive"];
-        /** copy a directory into a running sandbox */
+        /** Copy a directory into a running sandbox */
         put: operations["write-archive"];
         post?: never;
         delete?: never;
@@ -168,7 +168,7 @@ export interface paths {
         /** List the execs of a sandbox */
         get: operations["list-execs"];
         put?: never;
-        /** execute a command in a running sandbox */
+        /** Execute a command in a running sandbox */
         post: operations["create-exec"];
         delete?: never;
         options?: never;
@@ -235,15 +235,15 @@ export interface paths {
             path?: never;
             cookie?: never;
         };
-        /** copy a file out of a running sandbox */
+        /** Copy a file out of a running sandbox */
         get: operations["read-file"];
-        /** copy a file into a running sandbox */
+        /** Copy a file into a running sandbox */
         put: operations["write-file"];
         post?: never;
         /** Delete a path */
         delete: operations["delete-file"];
         options?: never;
-        /** Stat a path */
+        /** Read the type, size and mode of a path */
         head: operations["stat-file"];
         patch?: never;
         trace?: never;
@@ -257,7 +257,7 @@ export interface paths {
         };
         get?: never;
         put?: never;
-        /** create a sandbox from a running sandbox's memory and files */
+        /** Create a sandbox from a running sandbox's memory and files */
         post: operations["fork-sandbox"];
         delete?: never;
         options?: never;
@@ -325,7 +325,7 @@ export interface paths {
         };
         get?: never;
         put?: never;
-        /** save a sandbox's state and suspend it */
+        /** Save a sandbox's state and suspend it */
         post: operations["pause-sandbox"];
         delete?: never;
         options?: never;
@@ -360,7 +360,7 @@ export interface paths {
         };
         get?: never;
         put?: never;
-        /** resume a paused sandbox from its saved state */
+        /** Resume a paused sandbox from its saved state */
         post: operations["resume-sandbox"];
         delete?: never;
         options?: never;
@@ -379,7 +379,7 @@ export interface paths {
         put?: never;
         /** Grant a secret to a sandbox */
         post: operations["grant-secret"];
-        /** Take a secret back from a sandbox */
+        /** Ungrant a secret from a sandbox */
         delete: operations["ungrant-secret"];
         options?: never;
         head?: never;
@@ -395,7 +395,7 @@ export interface paths {
         };
         get?: never;
         put?: never;
-        /** start a stopped sandbox with its saved files */
+        /** Start a stopped sandbox with its saved files */
         post: operations["start-sandbox"];
         delete?: never;
         options?: never;
@@ -412,7 +412,7 @@ export interface paths {
         };
         get?: never;
         put?: never;
-        /** stop a sandbox and preserve its files */
+        /** Stop a sandbox and preserve its files */
         post: operations["stop-sandbox"];
         delete?: never;
         options?: never;
@@ -621,9 +621,11 @@ export interface components {
         ErrorObject: {
             /** @description What a program matches on: invalid_request, body_too_large, not_found, sandbox_not_running, sandbox_not_stopped, sandbox_not_paused, sandbox_live, sandbox_failed, no_checkpoint, unsupported, in_use, name_taken, exec_exited, exec_running, exec_limit, no_app, app_ended, unauthorized, forbidden, timeout, command_not_started or internal. A later daemon may add a code, so a client must take one it does not know. */
             code: string;
-            /** Format: int64 */
+            /** @description The exit code of the command that never started, with command_not_started (int64). */
             exit_code?: number;
+            /** @description The sandboxes or snapshots that hold the resource, with in_use. */
             holders?: string[];
+            /** @description A line for a human; match on code, never on this text. */
             message: string;
         };
         Event: {
@@ -736,7 +738,7 @@ export interface components {
             signal?: string;
         };
         MkdirRequest: {
-            /** @description The permission bits as an octal string, as chmod takes them; none is 0755. */
+            /** @description The permission bits in octal, at most 0777; absent is 0755. */
             mode?: string;
             parents?: boolean;
             path: string;
@@ -780,7 +782,7 @@ export interface components {
             vcpus: number;
         };
         Restart: {
-            /** @description The first wait before a start again, in seconds; 0 or absent is 1. It doubles after each start again, up to 60. Only on-failure and always take it (int64). */
+            /** @description The first wait before a restart, in seconds; 0 or absent is 1. It doubles after each restart, up to 60. Only on-failure and always take it (int64). */
             backoff: number;
             /** Format: int64 */
             count: number;
@@ -790,15 +792,15 @@ export interface components {
             last_at?: string;
             /** @enum {string} */
             policy: "no" | "on-failure" | "always";
-            /** @description The starts again in a row before the policy gives up; 0 or absent is unlimited. Only on-failure takes it (int64). */
+            /** @description The restarts in a row before the policy gives up; 0 or absent is unlimited. Only on-failure takes it (int64). */
             retries?: number;
         };
         RestartSpec: {
-            /** @description The first wait before a start again, in seconds; 0 or absent is 1. It doubles after each start again, up to 60. Only on-failure and always take it (int64). */
+            /** @description The first wait before a restart, in seconds; 0 or absent is 1. It doubles after each restart, up to 60. Only on-failure and always take it (int64). */
             backoff?: number;
             /** @enum {string} */
             policy: "no" | "on-failure" | "always";
-            /** @description The starts again in a row before the policy gives up; 0 or absent is unlimited. Only on-failure takes it (int64). */
+            /** @description The restarts in a row before the policy gives up; 0 or absent is unlimited. Only on-failure takes it (int64). */
             retries?: number;
         };
         Rule: {
@@ -879,7 +881,7 @@ export interface components {
             memory_mib: number;
             name?: string;
             provider: string;
-            /** @description The storage bytes the copy takes on the host, which is neither disk_mib nor the logical size of its files (int64). */
+            /** @description The bytes the snapshot takes on the host disk; not disk_mib and not the logical size of its files (int64). */
             size: number;
             source: string;
             source_name?: string;
@@ -944,9 +946,9 @@ export interface operations {
     "list-policies": {
         parameters: {
             query?: {
-                /** @description The most rows a page holds; none answers the whole list. */
+                /** @description The most items on a page; absent returns the whole list. */
                 limit?: number;
-                /** @description The next of the page before; this page starts after it. */
+                /** @description The next value of the previous page; this page starts after it. */
                 cursor?: string;
             };
             header?: never;
@@ -1075,9 +1077,9 @@ export interface operations {
             query?: {
                 /** @description List stopped sandboxes too. */
                 all?: boolean;
-                /** @description The most rows a page holds; none answers the whole list. */
+                /** @description The most items on a page; absent returns the whole list. */
                 limit?: number;
-                /** @description The next of the page before; this page starts after it. */
+                /** @description The next value of the previous page; this page starts after it. */
                 cursor?: string;
             };
             header?: never;
@@ -1146,7 +1148,7 @@ export interface operations {
     "get-sandbox": {
         parameters: {
             query?: {
-                /** @description Block until a pending create lands. */
+                /** @description Wait until a pending create finishes, then answer. */
                 wait?: boolean;
             };
             header?: never;
@@ -1180,7 +1182,7 @@ export interface operations {
     "remove-sandbox": {
         parameters: {
             query?: {
-                /** @description Stop a sandbox that is still up or paused first. */
+                /** @description Stop the sandbox first if it is running or paused. */
                 force?: boolean;
             };
             header?: never;
@@ -1246,7 +1248,7 @@ export interface operations {
     "read-archive": {
         parameters: {
             query: {
-                /** @description The absolute guest path. */
+                /** @description The absolute path inside the sandbox. */
                 path: string;
             };
             header?: never;
@@ -1261,7 +1263,7 @@ export interface operations {
             /** @description A tar of the path; a body cut short is a failed read. */
             200: {
                 headers: {
-                    /** @description The guest path's stat as JSON: type is file, dir, symlink or other; size is the logical size in bytes; mode is the permission bits as a number, at most 0o7777; then uid, gid and mtime. */
+                    /** @description The stat of the path as JSON: type is file, dir, symlink or other; size is the logical size in bytes; mode is the permission bits as a number, at most 0o7777; then uid, gid and mtime. */
                     "X-Shard-Stat"?: string;
                     [name: string]: unknown;
                 };
@@ -1283,9 +1285,9 @@ export interface operations {
     "write-archive": {
         parameters: {
             query: {
-                /** @description The absolute guest directory. */
+                /** @description The absolute directory inside the sandbox. */
                 path: string;
-                /** @description Who unpacks and owns the files; none is the entrypoint's user. */
+                /** @description The user who unpacks and owns the files; absent is the entrypoint's user. */
                 user?: string;
             };
             header?: never;
@@ -1406,9 +1408,9 @@ export interface operations {
     "list-execs": {
         parameters: {
             query?: {
-                /** @description The most rows a page holds; none answers the whole list. */
+                /** @description The most items on a page; absent returns the whole list. */
                 limit?: number;
-                /** @description The next of the page before; this page starts after it. */
+                /** @description The next value of the previous page; this page starts after it. */
                 cursor?: string;
             };
             header?: never;
@@ -1627,7 +1629,7 @@ export interface operations {
     "read-file": {
         parameters: {
             query: {
-                /** @description The absolute guest path. */
+                /** @description The absolute path inside the sandbox. */
                 path: string;
             };
             header?: never;
@@ -1642,7 +1644,7 @@ export interface operations {
             /** @description The file's bytes, chunked to the end; a body cut short is a failed read. */
             200: {
                 headers: {
-                    /** @description The guest path's stat as JSON: type is file, dir, symlink or other; size is the logical size in bytes; mode is the permission bits as a number, at most 0o7777; then uid, gid and mtime. */
+                    /** @description The stat of the path as JSON: type is file, dir, symlink or other; size is the logical size in bytes; mode is the permission bits as a number, at most 0o7777; then uid, gid and mtime. */
                     "X-Shard-Stat"?: string;
                     [name: string]: unknown;
                 };
@@ -1664,11 +1666,11 @@ export interface operations {
     "write-file": {
         parameters: {
             query: {
-                /** @description The absolute guest path. */
+                /** @description The absolute path inside the sandbox. */
                 path: string;
-                /** @description The file mode in octal, at most 0777; none is 0644. */
+                /** @description The permission bits in octal, at most 0777; absent is 0644. */
                 mode?: string;
-                /** @description Who writes and owns the file; none is the entrypoint's user. */
+                /** @description The user who writes and owns the file; absent is the entrypoint's user. */
                 user?: string;
                 /** @description Make the missing parent directories. */
                 parents?: boolean;
@@ -1707,9 +1709,9 @@ export interface operations {
     "delete-file": {
         parameters: {
             query: {
-                /** @description The absolute guest path. */
+                /** @description The absolute path inside the sandbox. */
                 path: string;
-                /** @description Take a directory and everything in it. */
+                /** @description Delete a directory and everything in it. */
                 recursive?: boolean;
             };
             header?: never;
@@ -1742,7 +1744,7 @@ export interface operations {
     "stat-file": {
         parameters: {
             query: {
-                /** @description The absolute guest path. */
+                /** @description The absolute path inside the sandbox. */
                 path: string;
             };
             header?: never;
@@ -1757,7 +1759,7 @@ export interface operations {
             /** @description The path's stat, in a header and no body. */
             200: {
                 headers: {
-                    /** @description The guest path's stat as JSON: type is file, dir, symlink or other; size is the logical size in bytes; mode is the permission bits as a number, at most 0o7777; then uid, gid and mtime. */
+                    /** @description The stat of the path as JSON: type is file, dir, symlink or other; size is the logical size in bytes; mode is the permission bits as a number, at most 0o7777; then uid, gid and mtime. */
                     "X-Shard-Stat"?: string;
                     [name: string]: unknown;
                 };
@@ -1853,7 +1855,7 @@ export interface operations {
     "list-dir": {
         parameters: {
             query: {
-                /** @description The absolute guest path. */
+                /** @description The absolute path inside the sandbox. */
                 path: string;
             };
             header?: never;
@@ -2215,9 +2217,9 @@ export interface operations {
     "list-secrets": {
         parameters: {
             query?: {
-                /** @description The most rows a page holds; none answers the whole list. */
+                /** @description The most items on a page; absent returns the whole list. */
                 limit?: number;
-                /** @description The next of the page before; this page starts after it. */
+                /** @description The next value of the previous page; this page starts after it. */
                 cursor?: string;
             };
             header?: never;
@@ -2316,9 +2318,9 @@ export interface operations {
     "list-snapshots": {
         parameters: {
             query?: {
-                /** @description The most rows a page holds; none answers the whole list. */
+                /** @description The most items on a page; absent returns the whole list. */
                 limit?: number;
-                /** @description The next of the page before; this page starts after it. */
+                /** @description The next value of the previous page; this page starts after it. */
                 cursor?: string;
             };
             header?: never;

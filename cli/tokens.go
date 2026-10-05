@@ -31,10 +31,10 @@ func (a App) tokensMint(_ context.Context, args []string) error {
 		return err
 	}
 	if *name == "" {
-		return errors.New("tokens mint needs --name: it is the subject of the token")
+		return errors.New("tokens mint needs --name: who or what uses the token, as --name ci")
 	}
 	if *duration < 0 {
-		return fmt.Errorf("tokens mint needs a --duration in the future, got %s", *duration)
+		return fmt.Errorf("--duration must not be negative, got %s; leave it out for a token that never expires", short(*duration))
 	}
 	// A refused mint needs no key, so it never creates the default one.
 	scopeList := parseScopes(*scopes)
@@ -128,7 +128,7 @@ func (a App) tokensRevoke(_ context.Context, args []string) error {
 			return err
 		}
 
-		return a.print(fmt.Sprintf("revoked %d tokens of %s", found, *name))
+		return a.print(fmt.Sprintf("revoked %d token(s) named %s", found, *name))
 	}
 
 	if flags.NArg() != 1 {
@@ -140,7 +140,7 @@ func (a App) tokensRevoke(_ context.Context, args []string) error {
 		return err
 	}
 	if found == 0 {
-		return fmt.Errorf("the ledger holds no token with id %s", id)
+		return fmt.Errorf("no token with id %s; shard tokens list shows the ids", id)
 	}
 
 	return a.print(fmt.Sprintf("revoked token %s", id))

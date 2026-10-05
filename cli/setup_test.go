@@ -20,9 +20,9 @@ func TestSetupRefusesWhatItCannotRun(t *testing.T) {
 		want string
 	}{
 		{[]string{"setup", "now"}, "setup takes no arguments"},
-		{[]string{"setup", "--remote", "https://shard.example.com", "--provider", "gvisor"}, "--remote connects to a server"},
-		{[]string{"setup", "--remote", "https://shard.example.com", "--local"}, "--remote connects to a server"},
-		{[]string{"setup", "--save", "--start-at-boot=false"}, "--save saves a remote connection"},
+		{[]string{"setup", "--remote", "https://shard.example.com", "--provider", "gvisor"}, "--remote cannot go with --local, --provider or --start-at-boot"},
+		{[]string{"setup", "--remote", "https://shard.example.com", "--local"}, "--remote cannot go with --local, --provider or --start-at-boot"},
+		{[]string{"setup", "--save", "--start-at-boot=false"}, "--save applies only to --remote"},
 		{[]string{"setup", "--start-at-boot=yes"}, "want true or false"},
 	} {
 		err := (App{Version: "test", Root: t.TempDir(), Out: &bytes.Buffer{}}).run(t.Context(), tc.args)
@@ -82,9 +82,9 @@ func TestWithoutATerminalTheErrorNamesWhatAnswers(t *testing.T) {
 	_, existing := ui.Select(t.Context(), setup.AskExisting, "What would you like to do?", providers)
 
 	for got, want := range map[error]string{
-		provider: "no terminal to ask provider: pass --provider",
+		provider: "no terminal to answer a setup question: pass --provider",
 		key:      "no terminal to read the API key: set SHARD_API_KEY",
-		existing: "no terminal to ask existing: run shard setup in a terminal",
+		existing: "no terminal to answer a setup question: run shard setup in a terminal",
 	} {
 		if got == nil || got.Error() != want {
 			t.Errorf("got %v, want %q", got, want)
@@ -114,10 +114,10 @@ func TestTheURLIsTheFlagOrTheEnvironmentOnlyOnce(t *testing.T) {
 	} {
 		ui := noTerminal(t, setupFlags{remote: tc.flag})
 		ui.env = func(name string) string { return map[string]string{client.RemoteEnv: tc.env}[name] }
-		if url, err := ui.Text(t.Context(), setup.AskURL, "Shard server URL:", ""); err != nil || url != tc.want {
+		if url, err := ui.Text(t.Context(), setup.AskURL, "URL of the shard server:", ""); err != nil || url != tc.want {
 			t.Errorf("the URL is %q, %v; want %q", url, err, tc.want)
 		}
-		if _, err := ui.Text(t.Context(), setup.AskURL, "Shard server URL:", ""); err == nil || err.Error() != "no terminal to ask url: pass --remote" {
+		if _, err := ui.Text(t.Context(), setup.AskURL, "URL of the shard server:", ""); err == nil || err.Error() != "no terminal to answer a setup question: pass --remote" {
 			t.Errorf("an edit after a failed check answered %v, want the person asked", err)
 		}
 	}

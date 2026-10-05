@@ -36,8 +36,8 @@ type execsResponse struct {
 
 type listExecsInput struct {
 	ID     string `path:"id" doc:"The sandbox id or name."`
-	Limit  int    `query:"limit" minimum:"1" doc:"The most rows a page holds; none answers the whole list."`
-	Cursor string `query:"cursor" doc:"The next of the page before; this page starts after it."`
+	Limit  int    `query:"limit" minimum:"1" doc:"The most items on a page; absent returns the whole list."`
+	Cursor string `query:"cursor" doc:"The next value of the previous page; this page starts after it."`
 }
 
 // listExecs answers a page of the sandbox's execs.

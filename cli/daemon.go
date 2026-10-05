@@ -24,7 +24,7 @@ func (a App) daemon(ctx context.Context, args []string) error {
 		return err
 	}
 	if flags.NArg() != 0 {
-		return fmt.Errorf("daemon takes no arguments, or status, got %s", gotArgs(flags.Args()))
+		return fmt.Errorf("daemon takes no arguments, or the subcommand status, got %s", gotArgs(flags.Args()))
 	}
 	if err := a.noRemote("daemon"); err != nil {
 		return err

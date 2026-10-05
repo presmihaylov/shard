@@ -254,7 +254,7 @@ func TestTheLifecycleVerbsWithNoDaemonFailFast(t *testing.T) {
 		app := App{Version: "test", Root: root, Out: &out, Err: &out}
 
 		err := app.Run(t.Context(), args)
-		if want := "cannot connect to shard daemon at " + filepath.Join(root, api.SocketFile) + ": is it running? shard --root " + root + " daemon"; err == nil || err.Error() != want {
+		if want := "cannot connect to the shard daemon at " + filepath.Join(root, api.SocketFile) + ": is it running? shard --root " + root + " daemon"; err == nil || err.Error() != want {
 			t.Errorf("%v with no daemon returned %v, want %q", args, err, want)
 		}
 		if out.Len() != 0 {

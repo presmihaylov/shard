@@ -205,7 +205,7 @@ func parseImageRemove(args []string) (imageRemoveOptions, error) {
 	rest := flags.Args()
 	// flag stops at the first argument, so a flag after the image would count as a second image.
 	if slices.ContainsFunc(rest, func(s string) bool { return strings.HasPrefix(s, "-") }) {
-		return imageRemoveOptions{}, fmt.Errorf("image remove takes its flags before the image: shard image remove --force <image>")
+		return imageRemoveOptions{}, fmt.Errorf("image remove takes its flags before the image: shard image remove --force IMAGE")
 	}
 	if len(rest) != 1 {
 		return imageRemoveOptions{}, fmt.Errorf("image remove takes one image reference, got %s", gotArgs(rest))

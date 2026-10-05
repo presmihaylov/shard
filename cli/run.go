@@ -94,10 +94,10 @@ func (a App) createCaught(ctx context.Context, c *client.Client, req sandbox.Cre
 
 func createNote(force bool) string {
 	if force {
-		return "killing the app once the sandbox is up"
+		return "killing the main command once the sandbox is up"
 	}
 
-	return "stopping the app once the sandbox is up; Ctrl+C again to kill it"
+	return "stopping the main command once the sandbox is up; Ctrl+C again to kill it"
 }
 
 // cancelApp stops an app the operator interrupted before it began and waits for its end, so the run leaves no app behind.
@@ -118,7 +118,7 @@ func (a App) cancelApp(ctx context.Context, c *client.Client, id string, interru
 		return err
 	}
 
-	return &ExitError{Code: InterruptedExitCode, Message: fmt.Sprintf("interrupted; the app of sandbox %s ended, and the sandbox stays running", id)}
+	return &ExitError{Code: InterruptedExitCode, Message: fmt.Sprintf("interrupted; the main command of sandbox %s ended, and the sandbox stays running", id)}
 }
 
 // attachedApp is how the attach ended: the app's last exit, or why the attach failed.
@@ -167,10 +167,10 @@ func (a App) attachApp(ctx context.Context, c *client.Client, id string, interru
 
 func stopNote(force bool) string {
 	if force {
-		return "killing the app; Ctrl+C again to leave"
+		return "killing the main command; Ctrl+C again to leave"
 	}
 
-	return "stopping the app; Ctrl+C again to kill it"
+	return "stopping the main command; Ctrl+C again to kill it"
 }
 
 // stopApp asks the daemon to stop the app; one that already ended is what the stop asked for, and the attach brings its exit.
@@ -181,7 +181,7 @@ func stopApp(ctx context.Context, c *client.Client, id string, force bool) error
 		return nil
 	}
 	if err != nil {
-		return fmt.Errorf("stop the app of sandbox %s: %w", id, err)
+		return fmt.Errorf("stop the main command of sandbox %s: %w", id, err)
 	}
 
 	return nil

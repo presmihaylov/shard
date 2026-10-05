@@ -496,7 +496,7 @@ func (a App) hostOnly(verb string) error {
 		return nil
 	}
 
-	return fmt.Errorf("shard %s runs on the daemon host only and cannot reach the %v; remove it with shard setup to run it here", verb, saved)
+	return fmt.Errorf("shard %s runs on the daemon host only and cannot reach the %v; remove it with shard setup to run it on this host", verb, saved)
 }
 
 // noRemote is hostOnly for daemon and serve: the saved connection names where commands go, never where a daemon runs.
@@ -505,7 +505,7 @@ func (a App) noRemote(verb string) error {
 		return nil
 	}
 
-	return fmt.Errorf("shard %s runs on the daemon host only and cannot reach %s; unset --remote and %s to run it there", verb, a.Remote, client.RemoteEnv)
+	return fmt.Errorf("shard %s runs on the daemon host only and cannot reach %s; unset --remote and %s to run it on this host", verb, a.Remote, client.RemoteEnv)
 }
 
 // saved is the connection shard setup saved; an explicit --remote "" asks for the socket, so it reads none.

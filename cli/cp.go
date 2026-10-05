@@ -58,15 +58,15 @@ func parseCp(args []string) (cpOptions, error) {
 		return cpOptions{}, err
 	}
 	if flags.NArg() != 2 {
-		return cpOptions{}, fmt.Errorf("cp takes a source and a destination, one of them <id|name>:<path>, got %s", gotArgs(flags.Args()))
+		return cpOptions{}, fmt.Errorf("cp takes a source and a destination, one of them SANDBOX:PATH, got %s", gotArgs(flags.Args()))
 	}
 
 	opts.src, opts.dst = cpTargetOf(flags.Arg(0)), cpTargetOf(flags.Arg(1))
 	if (opts.src.ref == "") == (opts.dst.ref == "") {
-		return cpOptions{}, fmt.Errorf("cp copies between the host and a sandbox, so exactly one of %q and %q must be <id|name>:<path>", flags.Arg(0), flags.Arg(1))
+		return cpOptions{}, fmt.Errorf("cp copies between the host and a sandbox, so exactly one of %q and %q must be SANDBOX:PATH", flags.Arg(0), flags.Arg(1))
 	}
 	if opts.user != "" && opts.src.ref != "" {
-		return cpOptions{}, errors.New("--user is for a copy into a sandbox; a copy out reads as the entrypoint user")
+		return cpOptions{}, errors.New("--user applies only to a copy into a sandbox; a copy out of a sandbox reads as its default user")
 	}
 
 	return opts, nil

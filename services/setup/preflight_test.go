@@ -44,7 +44,7 @@ func TestPreflightPassesAReadyHost(t *testing.T) {
 	want := []string{
 		"Supported operating system and CPU", "Provider requirements", "Administrator access",
 		"Installation paths and permissions", "Available disk space and filesystem support", "Download access",
-		"Existing Shard installation", "Background service support",
+		"Existing shard installation", "Background service support",
 	}
 	if list.title != "Checking this machine" || !slices.Equal(list.steps, want) {
 		t.Fatalf("checklist %q %q", list.title, list.steps)
@@ -65,8 +65,8 @@ func TestPreflightStopsAtTheFirstFailure(t *testing.T) {
 	f, list := preflightOn(t, h, Local{Provider: GVisor, StartAtBoot: true})
 
 	wantFinding(t, f, "Supported operating system and CPU", false,
-		"Shard runs on Linux on x86_64, and on Macs with Apple silicon.", "This machine runs Linux on arm64.")
-	want := []string{"start 0", "fail 0: Shard runs on Linux on x86_64, and on Macs with Apple silicon. / This machine runs Linux on arm64."}
+		"Supported hosts: Linux on x86_64, and Macs with Apple silicon.", "This machine runs Linux on arm64.")
+	want := []string{"start 0", "fail 0: Supported hosts: Linux on x86_64, and Macs with Apple silicon. / This machine runs Linux on arm64."}
 	if !slices.Equal(list.marks, want) {
 		t.Fatalf("marks %q, want %q", list.marks, want)
 	}
@@ -222,7 +222,7 @@ func TestPreflightInstallPaths(t *testing.T) {
 		f, _ := preflightOn(t, l.host(), Local{Provider: GVisor})
 
 		wantFinding(t, f, "Installation paths and permissions", false,
-			"/usr/local/bin can be changed by a user other than root, and the root daemon runs Shard from it.",
+			"/usr/local/bin can be changed by a user other than root, and the root daemon runs shard from it.",
 			"Make root its owner and remove group and other write access, then run shard setup again.")
 	})
 	t.Run("a data dir that is a file", func(t *testing.T) {
@@ -314,7 +314,7 @@ func TestPreflightDownloadAccess(t *testing.T) {
 
 		f, _ := preflightOn(t, h, Local{Provider: GVisor})
 
-		if f == nil || f.check != "Download access" || !strings.HasPrefix(f.lines[0], "Setup could not find shard-init for Shard v0.2.0: ") {
+		if f == nil || f.check != "Download access" || !strings.HasPrefix(f.lines[0], "Setup could not find shard-init for shard v0.2.0: ") {
 			t.Fatalf("finding %+v", f)
 		}
 	})
@@ -344,7 +344,7 @@ func TestPreflightExistingSandboxes(t *testing.T) {
 	l.sandbox(GVisor)
 
 	f, _ := preflightOn(t, l.host(), Local{Provider: Runc})
-	wantFinding(t, f, "Existing Shard installation", true, "The sandboxes in /var/lib/shard use gVisor.", "Setup never changes the provider of existing sandboxes.")
+	wantFinding(t, f, "Existing shard installation", true, "The sandboxes in /var/lib/shard use gVisor.", "Setup never changes the provider of existing sandboxes.")
 
 	if f, _ := preflightOn(t, l.host(), Local{Provider: GVisor}); f != nil {
 		t.Fatalf("the recorded provider fails %q: %q", f.check, f.lines)

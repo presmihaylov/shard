@@ -193,7 +193,7 @@ func TestTheCopyVerbsOutliveTheClientTimeout(t *testing.T) {
 }
 
 func TestTheLifecycleVerbsTurnA404IntoNotFound(t *testing.T) {
-	c := serve(t, shortRoot(t), answer(http.StatusNotFound, `{"error":{"code":"not_found","message":"sandbox ghost: sandbox not found"}}`))
+	c := serve(t, shortRoot(t), answer(http.StatusNotFound, `{"error":{"code":"not_found","message":"sandbox ghost not found"}}`))
 
 	calls := map[string]func() error{
 		"start":  func() error { _, err := c.StartSandbox(t.Context(), "ghost"); return err },

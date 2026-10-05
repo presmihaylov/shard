@@ -209,7 +209,7 @@ func TestCreateFromASnapshotRefusesWhatTheSnapshotCannotStartOn(t *testing.T) {
 		want string
 	}{
 		{"another provider", foreign, false, "made on provider gvisor, and this server runs fake; create from it on a server that runs gvisor"},
-		{"a moved tag", moved, false, "now holds it at " + fakeDigest},
+		{"a moved tag", moved, false, "now holds that tag at " + fakeDigest},
 		{"a gone image", baseSnapshot(), true, "never pulls"},
 	}
 	for _, c := range cases {

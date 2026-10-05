@@ -60,11 +60,11 @@ func (s *Service) CreateSnapshot(ctx context.Context, req SnapshotRequest) (mode
 		return models.Snapshot{}, err
 	}
 	if !found {
-		return models.Snapshot{}, &RequestError{Err: fmt.Errorf("sandbox %s runs over %s, which this host no longer holds, so a snapshot of it could never start: run shard image pull %s first", id, sb.Image, sb.Image)}
+		return models.Snapshot{}, &RequestError{Err: fmt.Errorf("sandbox %s was created from %s, which this host no longer holds, so a snapshot of it could never start: run shard image pull %s first", id, sb.Image, sb.Image)}
 	}
 	// A create from the snapshot looks the tag up, so a tag that moved would mount the layer over another image.
 	if img.Digest != sb.Digest {
-		return models.Snapshot{}, &RequestError{Err: fmt.Errorf("sandbox %s runs over %s at %s, and this host now holds that tag at %s, so a snapshot of it could never start; snapshot a sandbox created from the current %s instead", id, sb.Image, sb.Digest, img.Digest, sb.Image)}
+		return models.Snapshot{}, &RequestError{Err: fmt.Errorf("sandbox %s was created from %s at %s, and this host now holds that tag at %s, so a snapshot of it could never start; snapshot a sandbox created from the current %s instead", id, sb.Image, sb.Digest, img.Digest, sb.Image)}
 	}
 
 	return s.cfg.Snapshots.Create(models.Snapshot{
@@ -161,10 +161,10 @@ func (s *Service) readSeed(id string, req CreateRequest) (seeded, error) {
 		return seeded{}, err
 	}
 	if !found {
-		return seeded{}, &RequestError{Err: fmt.Errorf("snapshot %s sits over %s at %s, which this host no longer holds, and a create from a snapshot never pulls; pull %s again if its tag still names %s, then retry, or create a new snapshot", id, snap.Image, snap.Digest, snap.Image, snap.Digest)}
+		return seeded{}, &RequestError{Err: fmt.Errorf("snapshot %s was taken from %s at %s, which this host no longer holds, and a create from a snapshot never pulls; pull %s again if its tag still names %s, then retry, or create a new snapshot", id, snap.Image, snap.Digest, snap.Image, snap.Digest)}
 	}
 	if img.Digest != snap.Digest {
-		return seeded{}, &RequestError{Err: fmt.Errorf("snapshot %s sits over %s at %s, and this host now holds it at %s, and its layer fits only the image it was copied over; create a new snapshot from a sandbox over the current %s", id, snap.Image, snap.Digest, img.Digest, snap.Image)}
+		return seeded{}, &RequestError{Err: fmt.Errorf("snapshot %s was taken from %s at %s, and this host now holds that tag at %s, and the snapshot fits only the image it was taken from; create a new snapshot from a sandbox created from the current %s", id, snap.Image, snap.Digest, img.Digest, snap.Image)}
 	}
 
 	if req.Resources.DiskMiB == 0 {

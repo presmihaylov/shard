@@ -4,6 +4,7 @@ import { appExit, type AppExit, type AppInfo } from "./records.js";
 import type { Sandbox } from "./sandbox.js";
 import type { Transport } from "./transport.js";
 
+/** App is the app a run started. It ends on its own or by stop(); the sandbox outlives it either way. */
 export class App {
   constructor(
     private readonly transport: Transport,
@@ -13,13 +14,13 @@ export class App {
   async inspect(): Promise<AppInfo> {
     const info = await this.sandbox.inspect();
     if (info.app === null) {
-      throw new ProtocolError(`sandbox ${info.id} answered a record with no app`);
+      throw new ProtocolError(`the daemon answered sandbox ${info.id} with no app`);
     }
 
     return info.app;
   }
 
-  /** wait answers how the app ended once its restart policy starts it no more; an abort ends the wait, never the app. */
+  /** wait returns how the app ended once its restart policy starts it no more; an abort ends the wait, never the app. */
   async wait(options: { signal?: AbortSignal } = {}): Promise<AppExit> {
     const params = { path: { id: this.sandbox.id } };
     const { data } = await this.transport.api.GET("/v0/sandboxes/{id}/attach", { params, signal: options.signal, fetch: this.transport.waiting });
@@ -27,7 +28,7 @@ export class App {
     return appExit(data);
   }
 
-  /** logs answers the app's output so far; the daemon keeps a bounded log, so a long run may hold only its end. */
+  /** logs returns the app's output so far; the daemon keeps a bounded log, so a long run may hold only its end. */
   logs(): Promise<string> {
     return this.sandbox.logs();
   }

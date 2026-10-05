@@ -25,7 +25,7 @@ func TestLocalDaemonNamesTheHostsOwnSetup(t *testing.T) {
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
-			h := Host{Root: t.TempDir(), OS: c.os}
+			h := Host{Root: t.TempDir(), OS: c.os, Env: sudoUser}
 			for _, f := range c.files {
 				put(t, h, f, nil)
 			}
@@ -48,9 +48,45 @@ func TestLocalDaemonNamesTheHostsOwnSetup(t *testing.T) {
 	}
 }
 
+// Root itself runs a command bare, so neither hint tells it to use sudo. (SHARD-727)
+func TestLocalDaemonHintsRootWithoutSudo(t *testing.T) {
+	h := Host{Root: t.TempDir(), OS: "linux", Env: func(string) string { return "" }}
+	put(t, h, systemdUnit, nil)
+	got, err := LocalDaemon(h)
+	if err != nil {
+		t.Fatalf("LocalDaemon: %v", err)
+	}
+	if want := (Daemon{"is it running? systemctl status shard", "journalctl -u shard"}); got != want {
+		t.Errorf("service: LocalDaemon = %+v, want %+v", got, want)
+	}
+
+	h.Root = t.TempDir()
+	data, err := json.Marshal(Manifest{Version: "v0.1.1", Provider: GVisor})
+	if err != nil {
+		t.Fatal(err)
+	}
+	put(t, h, ManifestPath, data)
+	got, err = LocalDaemon(h)
+	if err != nil {
+		t.Fatalf("LocalDaemon: %v", err)
+	}
+	if want := (Daemon{"is it running? shard daemon --provider gvisor", foregroundLog}); got != want {
+		t.Errorf("by hand: LocalDaemon = %+v, want %+v", got, want)
+	}
+}
+
+// sudoUser is the environment of a person who ran a command with sudo.
+func sudoUser(name string) string {
+	if name == "SUDO_USER" {
+		return "u"
+	}
+
+	return ""
+}
+
 // A manifest setup cannot read is the error, never a guess at the daemon.
 func TestLocalDaemonRefusesAManifestItCannotRead(t *testing.T) {
-	h := Host{Root: t.TempDir(), OS: "linux"}
+	h := Host{Root: t.TempDir(), OS: "linux", Env: sudoUser}
 	put(t, h, ManifestPath, []byte("{"))
 
 	if _, err := LocalDaemon(h); err == nil {

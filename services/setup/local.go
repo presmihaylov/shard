@@ -41,7 +41,7 @@ func (s *Setup) local(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
-	if err := s.apply(ctx, "Setting up Shard", steps); err != nil {
+	if err := s.apply(ctx, "Setting up shard", steps); err != nil {
 		return err
 	}
 
@@ -68,7 +68,7 @@ func (s *Setup) askProvider(ctx context.Context, failed map[string][]string) (st
 	if len(failed) > 0 || !available {
 		options = append(options, term.Option{Name: exitOption, Label: "Exit"})
 	}
-	i, err := s.UI.Select(ctx, AskProvider, "Choose how Shard isolates your sandboxes:", options)
+	i, err := s.UI.Select(ctx, AskProvider, "Choose how shard isolates your sandboxes:", options)
 	if err != nil {
 		return "", err
 	}
@@ -84,16 +84,16 @@ func (s *Setup) askStartAtBoot(ctx context.Context) (bool, error) {
 	options := []term.Option{
 		{Name: "true", Label: "Yes (recommended)", Default: true, Lines: []string{
 			"Set up a background service using systemd on Linux or launchd on macOS.",
-			"The service starts Shard at boot and restarts it after a crash.",
+			"The service starts shard at boot and restarts it after a crash.",
 		}},
 		{Name: "false", Label: "No", Lines: []string{
-			"Manage the Shard daemon yourself.",
+			"Manage the shard daemon yourself.",
 			"Local sandbox commands fail when the daemon is not running.",
-			"Run `shard daemon` in a terminal, or configure your own background",
+			"Run shard daemon in a terminal, or configure your own background",
 			"service and automatic startup.",
 		}},
 	}
-	i, err := s.UI.Select(ctx, AskStartAtBoot, "Start Shard automatically when this machine starts?", options)
+	i, err := s.UI.Select(ctx, AskStartAtBoot, "Start shard automatically when this machine starts?", options)
 	if err != nil {
 		return false, err
 	}
@@ -132,7 +132,7 @@ func (s *Setup) review(ctx context.Context, l Local) error {
 	if l.StartAtBoot {
 		startup = "Yes"
 	}
-	lines := []string{"", "Ready to set up Shard", "", "Provider:          " + title, "Automatic startup: " + startup, "", "Setup will:"}
+	lines := []string{"", "Ready to set up shard", "", "Provider:          " + title, "Automatic startup: " + startup, "", "Setup will:"}
 	if names := missingTools(s.Host, l.Provider).names(); len(names) > 0 {
 		lines = append(lines, fmt.Sprintf("  Install the tools required by %s: %s.", title, strings.Join(names, ", ")))
 	}
@@ -142,7 +142,7 @@ func (s *Setup) review(ctx context.Context, l Local) error {
 	_, err := os.Lstat(rooted(s.Host, DataDir))
 	switch {
 	case errors.Is(err, fs.ErrNotExist):
-		lines = append(lines, "  Create Shard's data directory.")
+		lines = append(lines, "  Create shard's data directory.")
 	case err != nil:
 		return fmt.Errorf("check %s: %w", DataDir, err)
 	}
@@ -178,15 +178,12 @@ func startupLine(h Host, l Local) string {
 	return "  Configure and start a systemd service."
 }
 
-// localDone closes a local setup with what to run next; on Linux the API socket belongs to root, so local commands need sudo.
+// localDone closes a local setup with what to run next, with sudo where the person it ran for needs it to reach the API socket.
 func localDone(h Host, l Local) []string {
-	sudo := ""
-	if h.OS == "linux" {
-		sudo = "sudo "
-	}
-	lines := []string{"", "Shard is set up, and the daemon is running.", ""}
+	sudo := socketSudo(h)
+	lines := []string{"", "Setup is complete, and the daemon is running.", ""}
 	if !l.StartAtBoot {
-		lines = []string{"", "Shard is set up.", ""}
+		lines = []string{"", "Setup is complete.", ""}
 	}
 	if sudo != "" {
 		lines = append(lines, "Local commands run with sudo, because the API socket belongs to root.", "")

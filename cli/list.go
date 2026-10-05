@@ -65,7 +65,7 @@ func (a App) noteHidden(format outputFormat, hidden int) error {
 	if hidden == 1 {
 		noun = "sandbox"
 	}
-	if _, err := fmt.Fprintf(a.Err, "%d stopped %s; shard list --all\n", hidden, noun); err != nil {
+	if _, err := fmt.Fprintln(a.Err, ForUser(fmt.Sprintf("%d stopped %s; shard list --all", hidden, noun))); err != nil {
 		return fmt.Errorf("write the output: %w", err)
 	}
 

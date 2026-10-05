@@ -211,36 +211,36 @@ func (h *Handler) routeTable() []routeEntry {
 		public("GET", "/v0/capabilities", AnyToken, operation("meta", "get-capabilities", "List the lifecycle verbs and whether this server supports each", 0), typed(h.getCapabilities)),
 		public("GET", "/v0/scopes", AnyToken, operation("meta", "list-scopes", "List the scopes a token can carry", 0), typed(h.getScopes)),
 		local("GET", "/v0/daemon", h.getDaemon),
-		public("GET", "/v0/sandboxes", SandboxRead, operation("sandboxes", "list-sandboxes", "list active sandboxes", 0), typed(h.listSandboxes)),
+		public("GET", "/v0/sandboxes", SandboxRead, operation("sandboxes", "list-sandboxes", "List active sandboxes", 0), typed(h.listSandboxes)),
 		public("GET", "/v0/sandboxes/{id}", SandboxRead, operation("sandboxes", "get-sandbox", "Read a sandbox and the egress rules the host enforces for it", 0), typed(h.getSandbox)),
-		public("POST", "/v0/sandboxes", SandboxWrite, operation("sandboxes", "create-sandbox", "create a sandbox", http.StatusCreated), documented(describeCreate, typed(h.createSandbox))),
-		public("POST", "/v0/sandboxes/{id}/start", SandboxWrite, operation("sandboxes", "start-sandbox", "start a stopped sandbox with its saved files", 0), typed(h.startSandbox)),
-		public("POST", "/v0/sandboxes/{id}/stop", SandboxWrite, operation("sandboxes", "stop-sandbox", "stop a sandbox and preserve its files", 0), typed(h.stopSandbox)),
-		public("DELETE", "/v0/sandboxes/{id}", SandboxDelete, operation("sandboxes", "remove-sandbox", "delete a sandbox and its files", 0), typed(h.removeSandbox)),
-		public("POST", "/v0/sandboxes/{id}/pause", SandboxWrite, operation("sandboxes", "pause-sandbox", "save a sandbox's state and suspend it", 0), typed(h.pauseSandbox)),
-		public("POST", "/v0/sandboxes/{id}/resume", SandboxWrite, operation("sandboxes", "resume-sandbox", "resume a paused sandbox from its saved state", 0), typed(h.resumeSandbox)),
-		public("POST", "/v0/sandboxes/{id}/fork", SandboxWrite, operation("sandboxes", "fork-sandbox", "create a sandbox from a running sandbox's memory and files", http.StatusCreated), typed(h.forkSandbox)),
-		public("POST", "/v0/sandboxes/{id}/exec", Exec, operation("exec", "create-exec", "execute a command in a running sandbox", http.StatusCreated), typed(h.createExec)),
+		public("POST", "/v0/sandboxes", SandboxWrite, operation("sandboxes", "create-sandbox", "Create a sandbox", http.StatusCreated), documented(describeCreate, typed(h.createSandbox))),
+		public("POST", "/v0/sandboxes/{id}/start", SandboxWrite, operation("sandboxes", "start-sandbox", "Start a stopped sandbox with its saved files", 0), typed(h.startSandbox)),
+		public("POST", "/v0/sandboxes/{id}/stop", SandboxWrite, operation("sandboxes", "stop-sandbox", "Stop a sandbox and preserve its files", 0), typed(h.stopSandbox)),
+		public("DELETE", "/v0/sandboxes/{id}", SandboxDelete, operation("sandboxes", "remove-sandbox", "Remove a sandbox and its files", 0), typed(h.removeSandbox)),
+		public("POST", "/v0/sandboxes/{id}/pause", SandboxWrite, operation("sandboxes", "pause-sandbox", "Save a sandbox's state and suspend it", 0), typed(h.pauseSandbox)),
+		public("POST", "/v0/sandboxes/{id}/resume", SandboxWrite, operation("sandboxes", "resume-sandbox", "Resume a paused sandbox from its saved state", 0), typed(h.resumeSandbox)),
+		public("POST", "/v0/sandboxes/{id}/fork", SandboxWrite, operation("sandboxes", "fork-sandbox", "Create a sandbox from a running sandbox's memory and files", http.StatusCreated), typed(h.forkSandbox)),
+		public("POST", "/v0/sandboxes/{id}/exec", Exec, operation("exec", "create-exec", "Execute a command in a running sandbox", http.StatusCreated), typed(h.createExec)),
 		public("GET", "/v0/sandboxes/{id}/exec", Exec, operation("exec", "list-execs", "List the execs of a sandbox", 0), typed(h.listExecs)),
 		public("GET", "/v0/sandboxes/{id}/exec/{exec}", Exec, operation("exec", "get-exec", "Read, wait for or attach to an exec", 0), raw[getExecInput](h.getExec, describeGetExec)),
 		public("POST", "/v0/sandboxes/{id}/exec/{exec}/kill", Exec, operation("exec", "kill-exec", "Send a signal to a running exec", 0), typed(h.killExec)),
 		public("DELETE", "/v0/sandboxes/{id}/exec/{exec}", Exec, operation("exec", "delete-exec", "Forget an exec that ended", 0), typed(h.deleteExec)),
 		public("POST", "/v0/sandboxes/{id}/exec/{exec}/resize", Exec, operation("exec", "resize-exec", "Resize the terminal of an exec", 0), typed(h.resizeExec)),
-		public("PUT", "/v0/sandboxes/{id}/files", Exec, operation("files", "write-file", "copy a file into a running sandbox", http.StatusNoContent), raw[writeFileInput](h.putFile, describeWriteFile)),
-		public("GET", "/v0/sandboxes/{id}/files", Exec, operation("files", "read-file", "copy a file out of a running sandbox", 0), raw[filePath](h.getFile, describeReadFile)),
+		public("PUT", "/v0/sandboxes/{id}/files", Exec, operation("files", "write-file", "Copy a file into a running sandbox", http.StatusNoContent), raw[writeFileInput](h.putFile, describeWriteFile)),
+		public("GET", "/v0/sandboxes/{id}/files", Exec, operation("files", "read-file", "Copy a file out of a running sandbox", 0), raw[filePath](h.getFile, describeReadFile)),
 		// A GET pattern also serves HEAD, so the stat needs its own, more specific one.
-		public("HEAD", "/v0/sandboxes/{id}/files", Exec, operation("files", "stat-file", "Stat a path", 0), raw[filePath](h.statFile, describeStatFile)),
+		public("HEAD", "/v0/sandboxes/{id}/files", Exec, operation("files", "stat-file", "Read the type, size and mode of a path", 0), raw[filePath](h.statFile, describeStatFile)),
 		public("DELETE", "/v0/sandboxes/{id}/files", Exec, operation("files", "delete-file", "Delete a path", 0), typed(h.deleteFile)),
 		public("GET", "/v0/sandboxes/{id}/ls", Exec, operation("files", "list-dir", "List a directory", 0), raw[filePath](h.listDir, describeListDir)),
 		public("POST", "/v0/sandboxes/{id}/mkdir", Exec, operation("files", "make-dir", "Make a directory", 0), typed(h.makeDir)),
-		public("PUT", "/v0/sandboxes/{id}/archive", Exec, operation("files", "write-archive", "copy a directory into a running sandbox", http.StatusNoContent), raw[archiveInput](h.putArchive, describeWriteArchive)),
-		public("GET", "/v0/sandboxes/{id}/archive", Exec, operation("files", "read-archive", "copy a directory out of a running sandbox", 0), raw[filePath](h.getArchive, describeReadArchive)),
+		public("PUT", "/v0/sandboxes/{id}/archive", Exec, operation("files", "write-archive", "Copy a directory into a running sandbox", http.StatusNoContent), raw[archiveInput](h.putArchive, describeWriteArchive)),
+		public("GET", "/v0/sandboxes/{id}/archive", Exec, operation("files", "read-archive", "Copy a directory out of a running sandbox", 0), raw[filePath](h.getArchive, describeReadArchive)),
 		public("GET", "/v0/sandboxes/{id}/logs", SandboxRead, operation("sandboxes", "get-sandbox-logs", "Read or follow the output of a sandbox", 0), raw[followInput](h.sandboxLogs, describeLogs)),
 		public("GET", "/v0/sandboxes/{id}/attach", SandboxRead, operation("app", "attach-app", "Wait for or attach to the app of a run", 0), raw[sandboxPath](h.attachApp, describeAttachApp)),
 		public("POST", "/v0/sandboxes/{id}/app/stop", SandboxWrite, operation("app", "stop-app", "Stop the app of a run", 0), typed(h.stopApp)),
 		public("GET", "/v0/sandboxes/{id}/egress-log", SandboxRead, operation("sandboxes", "get-sandbox-egress-log", "Read or follow the egress decisions of a sandbox", 0), raw[followInput](h.sandboxEgressLog, describeEgressLog)),
 		public("POST", "/v0/sandboxes/{id}/secrets/{name}", Secret, operation("sandboxes", "grant-secret", "Grant a secret to a sandbox", 0), typed(h.grantSecret)),
-		public("DELETE", "/v0/sandboxes/{id}/secrets/{name}", Secret, operation("sandboxes", "ungrant-secret", "Take a secret back from a sandbox", 0), typed(h.ungrantSecret)),
+		public("DELETE", "/v0/sandboxes/{id}/secrets/{name}", Secret, operation("sandboxes", "ungrant-secret", "Ungrant a secret from a sandbox", 0), typed(h.ungrantSecret)),
 		public("PUT", "/v0/sandboxes/{id}/policy", Policy, operation("sandboxes", "attach-policy", "Attach a policy to a sandbox", 0), typed(h.attachPolicy)),
 		public("DELETE", "/v0/sandboxes/{id}/policy", Policy, operation("sandboxes", "detach-policy", "Detach the policy of a sandbox", 0), typed(h.detachPolicy)),
 		public("POST", "/v0/snapshots", SandboxWrite, operation("snapshots", "create-snapshot", "Snapshot a sandbox", http.StatusCreated), typed(h.createSnapshot)),
@@ -312,9 +312,9 @@ type sandboxesResponse struct {
 // ErrorObject is a code for a program, a line for a human, the holders an in_use names, and the shell code a command_not_started carries.
 type ErrorObject struct {
 	Code     models.Code `json:"code" doc:"What a program matches on: invalid_request, body_too_large, not_found, sandbox_not_running, sandbox_not_stopped, sandbox_not_paused, sandbox_live, sandbox_failed, no_checkpoint, unsupported, in_use, name_taken, exec_exited, exec_running, exec_limit, no_app, app_ended, unauthorized, forbidden, timeout, command_not_started or internal. A later daemon may add a code, so a client must take one it does not know."`
-	Message  string      `json:"message"`
-	Holders  []string    `json:"holders,omitempty"`
-	ExitCode int         `json:"exit_code,omitempty"`
+	Message  string      `json:"message" doc:"A line for a human; match on code, never on this text."`
+	Holders  []string    `json:"holders,omitempty" doc:"The sandboxes or snapshots that hold the resource, with in_use."`
+	ExitCode int         `json:"exit_code,omitempty" doc:"The exit code of the command that never started, with command_not_started."`
 }
 
 func (h *Handler) getVersion(context.Context, *struct{}) (*reply[versionResponse], error) {
@@ -353,8 +353,8 @@ func (h *Handler) getDaemon(w http.ResponseWriter, r *http.Request) {
 
 type listSandboxesInput struct {
 	All    bool   `query:"all" doc:"List stopped sandboxes too."`
-	Limit  int    `query:"limit" minimum:"1" doc:"The most rows a page holds; none answers the whole list."`
-	Cursor string `query:"cursor" doc:"The next of the page before; this page starts after it."`
+	Limit  int    `query:"limit" minimum:"1" doc:"The most items on a page; absent returns the whole list."`
+	Cursor string `query:"cursor" doc:"The next value of the previous page; this page starts after it."`
 }
 
 func (h *Handler) listSandboxes(_ context.Context, in *listSandboxesInput) (*reply[sandboxesResponse], error) {
@@ -382,7 +382,7 @@ func (h *Handler) listSandboxes(_ context.Context, in *listSandboxesInput) (*rep
 
 type getSandboxInput struct {
 	ID   string `path:"id"`
-	Wait bool   `query:"wait" doc:"Block until a pending create lands."`
+	Wait bool   `query:"wait" doc:"Wait until a pending create finishes, then answer."`
 }
 
 // getSandbox answers the public record two ways: wait blocks until a pending create lands, the default reads now.
@@ -561,7 +561,7 @@ type scopeError struct {
 }
 
 func (e *scopeError) Error() string {
-	return fmt.Sprintf("the token does not carry the %q scope, which a %s a %s needs", e.scope, e.action, e.named)
+	return fmt.Sprintf("the token does not carry the %q scope, which a %s a %s needs; use a token that carries it", e.scope, e.action, e.named)
 }
 
 func (e *scopeError) Public() string { return e.Error() }
@@ -640,7 +640,7 @@ func (h *Handler) stopSandbox(ctx context.Context, in *sandboxBody[stopRequest])
 
 type removeInput struct {
 	ID    string `path:"id"`
-	Force bool   `query:"force" doc:"Stop a sandbox that is still up or paused first."`
+	Force bool   `query:"force" doc:"Stop the sandbox first if it is running or paused."`
 }
 
 func (h *Handler) removeSandbox(ctx context.Context, in *removeInput) (*struct{}, error) {
@@ -835,7 +835,7 @@ func refusal(err error, local bool) *apiError {
 }
 
 // internalText is what a public route answers for a failure no error type made public.
-const internalText = "the daemon could not complete the request; its log has the cause"
+const internalText = "the daemon could not complete the request; the daemon log has the cause"
 
 // genericText answers a refusal whose error made nothing public; a code it lacks answers internalText.
 var genericText = map[models.Code]string{

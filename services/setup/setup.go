@@ -143,7 +143,7 @@ const (
 // Run asks the first question and runs the local or the remote half.
 func (s *Setup) Run(ctx context.Context) error {
 	why := noProvider(Providers(ctx, s.Host))
-	mode, err := s.UI.Select(ctx, AskMode, "How do you want to use Shard?", []term.Option{
+	mode, err := s.UI.Select(ctx, AskMode, "How do you want to use shard?", []term.Option{
 		modeLocal:  {Name: "local", Label: "Run sandboxes on this machine", Lines: why, Default: why == nil},
 		modeRemote: {Name: "remote", Label: "Connect to a remote server", Default: why != nil},
 	})
@@ -201,7 +201,7 @@ func (s *Setup) apply(ctx context.Context, title string, steps []Step) error {
 		if err := step.Do(ctx); err != nil {
 			return errors.Join(
 				list.Fail(i, problemLines(err)...),
-				s.UI.Print("", "Setup stopped. Earlier completed steps remain in place.", "Run `shard setup` again to retry."),
+				s.UI.Print("", "Setup stopped. Earlier completed steps remain in place.", "Run shard setup again to retry."),
 				&StoppedError{Step: step.Title, Err: err},
 			)
 		}

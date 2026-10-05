@@ -121,8 +121,8 @@ var (
 	secretsNote = note{title: "Secrets", lines: []string{
 		"Store a secret with 'shard secret set', then select it with --secret.",
 		"Commands receive $NAME with a placeholder instead of the secret value.",
-		"Shard replaces the placeholder with the secret in HTTPS request headers",
-		"sent to approved destinations. The secret value stays outside the sandbox.",
+		"In HTTPS request headers sent to approved destinations, shard replaces the",
+		"placeholder with the secret. The secret value stays outside the sandbox.",
 	}}
 	networkNote = note{title: "Network access", lines: []string{
 		noPolicyLine,
@@ -141,17 +141,17 @@ var helps = map[string]verbHelp{
 		usage: []string{"[OPTIONS] COMMAND [ARGS...]"},
 		about: "A runtime for isolated sandboxes on your own infrastructure. (pre-alpha)",
 		flags: []flagHelp{
-			{"--root <dir>", "directory for local Shard data", DefaultRoot},
-			{"--remote <url>", "URL of the Shard API server; HTTP/HTTPS supported,\nHTTPS recommended", ""},
+			{"--root <dir>", "directory for local shard data", DefaultRoot},
+			{"--remote <url>", "URL of the shard API server; HTTPS recommended", ""},
 			{"--version", "show the client version", ""},
 		},
 		env: []row{
 			{client.RemoteEnv, "API server URL; --remote overrides it"},
-			{client.APIKeyEnv, "API token from shard tokens mint"},
+			{client.APIKeyEnv, "API key from shard tokens mint"},
 			{client.CAFileEnv, "custom CA certificate file; HTTPS only"},
 		},
 		notes: []note{
-			para(fmt.Sprintf("Set %s and %s for remote access.", client.RemoteEnv, client.APIKeyEnv), "Without a remote URL or a saved connection, Shard connects to the local daemon."),
+			para(fmt.Sprintf("Set %s and %s for remote access.", client.RemoteEnv, client.APIKeyEnv), "Without a remote URL or a saved connection, shard connects to the local daemon."),
 			{title: "Get started", lines: []string{"shard setup"}},
 			{title: "For automated setup options", lines: []string{"shard setup --help"}},
 		},
@@ -225,7 +225,7 @@ var helps = map[string]verbHelp{
 			{"--workdir <dir>", "directory for this command", ""},
 			{"--user <user>", "user for this command", ""},
 		},
-		notes:    []note{para("The command uses the sandbox's default directory and user unless overridden.", "Shard returns the command's exit code.")},
+		notes:    []note{para("The command uses the sandbox's default directory and user unless overridden.", "The exit code is the command's exit code.")},
 		examples: []string{"shard exec web python script.py", "shard exec --workdir /app web npm test", "shard exec -it web /bin/sh"},
 	},
 	"list": {
@@ -274,7 +274,7 @@ var helps = map[string]verbHelp{
 	},
 	"remove": {
 		usage:   []string{"remove [OPTIONS] SANDBOX"},
-		summary: "delete a sandbox and its files",
+		summary: "remove a sandbox and its files",
 		args:    []row{sandboxArg},
 		flags:   []flagHelp{{"--force", "stop the sandbox first if needed; ignore a missing sandbox", ""}},
 		notes: []note{para(
@@ -404,7 +404,7 @@ var helps = map[string]verbHelp{
 		summary: "manage secrets and sandbox access to them",
 		notes: []note{para(
 			"Secret values stay outside the sandbox.",
-			"Shard inserts them into HTTPS request headers sent to approved destinations.",
+			"They are inserted into HTTPS request headers sent to approved destinations.",
 		)},
 	},
 	"secret set": {
@@ -421,7 +421,7 @@ var helps = map[string]verbHelp{
 		notes: []note{
 			para(
 				"The sandbox receives the placeholder instead of the secret value.",
-				"Shard replaces it in HTTPS request headers sent to approved destinations.",
+				"In HTTPS request headers sent to approved destinations, shard puts the value in its place.",
 			),
 			para(
 				"Set an existing secret again to update its value.",
@@ -545,7 +545,7 @@ var helps = map[string]verbHelp{
 		summary:  "show network policy decisions for a sandbox",
 		args:     []row{sandboxArg},
 		flags:    []flagHelp{{"-f, --follow", "show new decisions as they occur", ""}},
-		notes:    []note{para("Prints JSON records with destinations, decisions and the rules responsible.")},
+		notes:    []note{para("Prints one JSON decision per line, with the destination and the rule responsible.")},
 		examples: []string{"shard policy logs web", "shard policy logs --follow web"},
 	},
 	"daemon": {
@@ -577,15 +577,15 @@ var helps = map[string]verbHelp{
 	"setup": {
 		usage:   []string{"setup [OPTIONS]"},
 		summary: "configure a local sandbox host or a remote connection",
-		about:   "Set up Shard on this machine or connect to a remote server.",
+		about:   "Set up shard on this machine or connect to a remote server.",
 		intro:   []string{"Run without options to start the interactive wizard.", "For automated setup, specify the choices below."},
 		flags: []flagHelp{
-			{"--local", "Set up this machine to run sandboxes", ""},
-			{"--remote <url>", "Connect to a remote Shard server", ""},
+			{"--local", "set up this machine to run sandboxes", ""},
+			{"--remote <url>", "connect to a remote shard server", ""},
 			{"--provider <name>", "firecracker, gvisor, sysbox, runc or vz", ""},
-			{"--start-at-boot <true|false>", "Configure automatic daemon startup", ""},
-			{"--save", "Save the remote connection", ""},
-			{"-y, --yes", "Apply changes without confirmation", ""},
+			{"--start-at-boot <true|false>", "start the daemon at boot", ""},
+			{"--save", "save the remote connection", ""},
+			{"-y, --yes", "apply changes without confirmation", ""},
 		},
 		notes: []note{
 			{title: "Remote authentication", lines: []string{"Set " + client.APIKeyEnv + ". Do not pass the key as a command argument."}},
@@ -605,7 +605,7 @@ var helps = map[string]verbHelp{
 	"capabilities": {
 		usage:   []string{"capabilities [OPTIONS]"},
 		summary: "show the lifecycle verbs the server supports",
-		about:   "Show sandbox lifecycle capabilities supported by the connected Shard server.",
+		about:   "Show sandbox lifecycle capabilities supported by the connected shard server.",
 		flags:   []flagHelp{formatTableHelp},
 		notes: []note{para(
 			"Lists all eight verbs, each true or false for the server's provider.",
@@ -634,7 +634,7 @@ var helps = map[string]verbHelp{
 			signingKeyHelp,
 		},
 		notes: []note{
-			para("The local daemon must be active.", "Use 'shard tokens mint' to create API tokens."),
+			para("The local daemon must be active.", "Use 'shard tokens mint' to create API keys."),
 			para("Use an HTTPS proxy or tunnel for public access.", "HTTP is suitable for local access or an encrypted VPN."),
 			signingKeyNote,
 			hostOnlyNote,
@@ -643,7 +643,7 @@ var helps = map[string]verbHelp{
 	},
 	"tokens": {
 		usage:   []string{"tokens COMMAND [OPTIONS] [ARGS...]"},
-		summary: "create, list and revoke API tokens",
+		summary: "create, list and revoke API keys",
 		notes: []note{para(
 			"mint, list and revoke run only on the daemon host and refuse --remote.",
 			"scopes follows --remote and "+client.RemoteEnv+".",
@@ -651,7 +651,7 @@ var helps = map[string]verbHelp{
 	},
 	"tokens mint": {
 		usage:   []string{"tokens mint [OPTIONS]"},
-		summary: "create an API token",
+		summary: "create an API key",
 		flags: []flagHelp{
 			{"--name <name>", "token owner or purpose; required", ""},
 			{"--duration <duration>", "token lifetime; default no expiry", ""},
@@ -660,9 +660,9 @@ var helps = map[string]verbHelp{
 			formatJSONHelp,
 		},
 		notes: []note{
-			para("Run shard tokens scopes to list available scopes."),
+			para("Use 'shard tokens scopes' to list available scopes."),
 			signingKeyNote,
-			para("The response includes the API token.", "Use its 'token' value as "+client.APIKeyEnv+"."),
+			para("The response includes the API key.", "Use its 'token' value as "+client.APIKeyEnv+"."),
 			hostOnlyNote,
 		},
 		examples: []string{
@@ -672,7 +672,7 @@ var helps = map[string]verbHelp{
 	},
 	"tokens list": {
 		usage:   []string{"tokens list [OPTIONS]"},
-		summary: "list API tokens and their status",
+		summary: "list API keys and their status",
 		flags:   []flagHelp{registryKeyHelp, formatTableHelp},
 		notes: []note{
 			para(
@@ -685,7 +685,7 @@ var helps = map[string]verbHelp{
 	},
 	"tokens revoke": {
 		usage:   []string{"tokens revoke [OPTIONS] TOKEN", "tokens revoke [OPTIONS] --name NAME"},
-		summary: "revoke an API token",
+		summary: "revoke an API key",
 		args:    []row{{"TOKEN", "token ID from 'shard tokens list'"}},
 		flags: []flagHelp{
 			{"--name <name>", "revoke all tokens with this name", ""},

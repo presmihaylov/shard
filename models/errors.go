@@ -82,13 +82,21 @@ func (e *UnsupportedError) Public() string {
 // NotFoundError marks a lookup miss whose text names only what the caller asked for, so a public route may answer it.
 type NotFoundError struct {
 	Err error
+	// Text words the miss in place of Err, which then serves only errors.Is on its sentinel.
+	Text string
 }
 
-func (e *NotFoundError) Error() string { return e.Err.Error() }
+func (e *NotFoundError) Error() string {
+	if e.Text != "" {
+		return e.Text
+	}
+
+	return e.Err.Error()
+}
 
 func (e *NotFoundError) Unwrap() error { return e.Err }
 
-func (e *NotFoundError) Public() string { return e.Err.Error() }
+func (e *NotFoundError) Public() string { return e.Error() }
 
 // UnresponsiveError is a verb the substrate refused because the process behind the sandbox missed its probe bound.
 type UnresponsiveError struct {

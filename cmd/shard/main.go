@@ -38,13 +38,13 @@ func main() {
 		var exit *cli.ExitError
 		if errors.As(err, &exit) {
 			if exit.Message != "" {
-				fmt.Fprintln(os.Stderr, "shard:", exit.Message)
+				fmt.Fprintln(os.Stderr, "shard:", cli.ForUser(exit.Message))
 			}
 
 			os.Exit(exit.Code)
 		}
 
-		fmt.Fprintln(os.Stderr, "shard:", err)
+		fmt.Fprintln(os.Stderr, "shard:", cli.ForUser(err.Error()))
 		os.Exit(1)
 	}
 }

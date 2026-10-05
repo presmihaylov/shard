@@ -101,10 +101,10 @@ func setupExit(err error) error {
 func (o setupFlags) check() error {
 	localOnly := o.provider != "" || o.startAtBoot.set
 	if o.remote != "" && (o.local || localOnly) {
-		return errors.New("--remote connects to a server; --local, --provider and --start-at-boot set up this machine")
+		return errors.New("--remote cannot go with --local, --provider or --start-at-boot; pass --remote to connect to a server, or the others to set up this machine")
 	}
 	if o.save && (o.local || localOnly) {
-		return errors.New("--save saves a remote connection; it does not apply to --local")
+		return errors.New("--save applies only to --remote; drop --save, or drop --local, --provider and --start-at-boot")
 	}
 
 	return nil
@@ -237,8 +237,8 @@ func need(q setup.Question, err error) error {
 	case q == setup.AskAPIKey:
 		return fmt.Errorf("no terminal to read the API key: set %s", flag)
 	case ok:
-		return fmt.Errorf("no terminal to ask %s: pass %s", q, flag)
+		return fmt.Errorf("no terminal to answer a setup question: pass %s", flag)
 	}
 
-	return fmt.Errorf("no terminal to ask %s: run shard setup in a terminal", q)
+	return errors.New("no terminal to answer a setup question: run shard setup in a terminal")
 }

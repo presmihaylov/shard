@@ -72,10 +72,10 @@ func (s *Setup) forget(ctx context.Context, path string) error {
 		return s.UI.Print(append(lines, note...)...)
 	}
 	if !installed {
-		return s.UI.Print(append(lines, "Shard commands now use this machine, which is not set up to run sandboxes.", "Run shard setup again to set it up.")...)
+		return s.UI.Print(append(lines, "From now on, shard commands use this machine, which is not set up to run sandboxes.", "Run shard setup again to set it up.")...)
 	}
 
-	return s.UI.Print(append(lines, "Shard commands now use the local daemon.")...)
+	return s.UI.Print(append(lines, "From now on, shard commands use the local daemon.")...)
 }
 
 // switchToLocal is §14: it asks now, and finish drops the saved connection only once local setup succeeds.
@@ -92,10 +92,10 @@ func (s *Setup) switchToLocal(ctx context.Context) (finish func(context.Context)
 		return func(context.Context) error { return s.printNote(remoteEnvNote(s.Host.Env, "")) }, nil
 	}
 
-	current := []string{"Normal Shard commands currently use the remote server " + client.Redacted(saved.Remote) + ", saved in " + path + ".", ""}
+	current := []string{"Normal shard commands currently use the remote server " + client.Redacted(saved.Remote) + ", saved in " + path + ".", ""}
 	if env := strings.TrimSpace(s.Host.Env(client.RemoteEnv)); env != "" {
 		current = []string{
-			"Normal Shard commands currently use the remote server " + client.Redacted(env) + ", set in " + client.RemoteEnv + ".",
+			"Normal shard commands currently use the remote server " + client.Redacted(env) + ", set in " + client.RemoteEnv + ".",
 			"A connection to " + client.Redacted(saved.Remote) + " is also saved in " + path + ".", "",
 		}
 	}
@@ -108,7 +108,7 @@ func (s *Setup) switchToLocal(ctx context.Context) (finish func(context.Context)
 	}
 	if !remove {
 		return func(context.Context) error {
-			lines := []string{"", "The saved connection remains, so normal Shard commands still use the remote server.", "Run shard setup again to remove it."}
+			lines := []string{"", "The saved connection remains, so normal shard commands still use the remote server.", "Run shard setup again to remove it."}
 			return s.printNote(append(lines, remoteEnvNote(s.Host.Env, saved.Remote)...))
 		}, nil
 	}

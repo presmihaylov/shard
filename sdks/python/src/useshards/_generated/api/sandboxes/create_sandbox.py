@@ -69,7 +69,7 @@ def sync_detailed(
     body: CreateRequest,
     wait: bool | Unset = UNSET,
 ) -> Response[Error | Sandbox]:
-    """create a sandbox"""
+    """Create a sandbox"""
 
     kwargs = _get_kwargs(
         body=body,
@@ -89,7 +89,7 @@ def sync(
     body: CreateRequest,
     wait: bool | Unset = UNSET,
 ) -> Error | Sandbox | None:
-    """create a sandbox"""
+    """Create a sandbox"""
 
     return sync_detailed(
         client=client,
@@ -104,7 +104,7 @@ async def asyncio_detailed(
     body: CreateRequest,
     wait: bool | Unset = UNSET,
 ) -> Response[Error | Sandbox]:
-    """create a sandbox"""
+    """Create a sandbox"""
 
     kwargs = _get_kwargs(
         body=body,
@@ -122,7 +122,7 @@ async def asyncio(
     body: CreateRequest,
     wait: bool | Unset = UNSET,
 ) -> Error | Sandbox | None:
-    """create a sandbox"""
+    """Create a sandbox"""
 
     return (
         await asyncio_detailed(
