@@ -13,7 +13,7 @@ Create a sandbox, write a file, stop it, start it again, pause it and resume it:
 	<TabItem label="CLI">
 
 ```sh
-shard create --name demo alpine:3.20
+shard create --name demo --memory 512MiB alpine:3.20
 shard exec demo sh -c 'echo hello > /root/hello.txt'
 shard stop demo
 shard start demo
@@ -30,7 +30,7 @@ shard remove --force demo
 import { Shard } from "useshards";
 
 const shard = new Shard();
-const sandbox = await shard.create({ name: "demo", image: "docker.io/library/alpine:3" });
+const sandbox = await shard.create({ name: "demo", image: "docker.io/library/alpine:3", memoryMiB: 512 });
 try {
   await sandbox.exec(["sh", "-c", "echo hello > /root/hello.txt"]);
   await sandbox.stop();
@@ -52,7 +52,7 @@ try {
 from useshards import Shard
 
 with Shard() as shard:
-    sandbox = shard.create("docker.io/library/alpine:3", name="demo")
+    sandbox = shard.create("docker.io/library/alpine:3", name="demo", memory_mib=512)
     try:
         sandbox.exec(["sh", "-c", "echo hello > /root/hello.txt"])
         sandbox.stop()
