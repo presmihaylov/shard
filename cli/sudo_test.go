@@ -1,6 +1,11 @@
 package cli
 
-import "testing"
+import (
+	"errors"
+	"testing"
+
+	"github.com/presmihaylov/shard/services/client"
+)
 
 // Only root on behalf of a person who typed sudo adds it; root itself and a plain user run each hint as printed. (SHARD-727)
 func TestUnderSudo(t *testing.T) {
@@ -48,5 +53,47 @@ func TestWithSudo(t *testing.T) {
 		if got := withSudo(in); got != want {
 			t.Errorf("withSudo(%q) = %q, want %q", in, got, want)
 		}
+	}
+}
+
+// Sudo goes only into a hint for this host's socket; a remote command run under sudo loses the saved connection and key.
+func TestForUserLeavesARemoteAlone(t *testing.T) {
+	sudo := func() bool { return true }
+	const in = "run shard secret set --destination h k"
+	cases := []struct {
+		name   string
+		app    App
+		remote string
+		want   string
+	}{
+		{"local", App{asSudo: sudo}, "", "run sudo shard secret set --destination h k"},
+		{"no sudo", App{asSudo: func() bool { return false }}, "", in},
+		{"--remote", App{asSudo: sudo, Remote: "https://shard.example.com"}, "", in},
+		{"saved connection", App{asSudo: sudo}, "https://shard.example.com", in},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			t.Setenv(client.ConfigHomeEnv, t.TempDir())
+			if c.remote != "" {
+				saveConnection(t, c.remote, "k")
+			}
+			if got := c.app.forUser(errors.New(in)).Error(); got != c.want {
+				t.Errorf("forUser = %q, want %q", got, c.want)
+			}
+			if got, err := c.app.hinted(in); err != nil || got != c.want {
+				t.Errorf("hinted = %q, %v, want %q", got, err, c.want)
+			}
+		})
+	}
+}
+
+// An exec'd command's exit code survives, and main prints the worded message.
+func TestForUserKeepsTheExitCode(t *testing.T) {
+	t.Setenv(client.ConfigHomeEnv, t.TempDir())
+	app := App{asSudo: func() bool { return true }}
+	err := app.forUser(&ExitError{Code: runFailedExitCode, Message: "start it again with shard start demo"})
+	var exit *ExitError
+	if !errors.As(err, &exit) || exit.Code != runFailedExitCode || exit.Message != "start it again with sudo shard start demo" {
+		t.Errorf("forUser of an exit = %#v", err)
 	}
 }

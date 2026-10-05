@@ -155,7 +155,7 @@ func (s *Snapshots) Get(id string) (models.Snapshot, error) {
 
 	data, err := os.ReadFile(path)
 	if errors.Is(err, os.ErrNotExist) {
-		return models.Snapshot{}, &models.NotFoundError{Err: ErrSnapshotNotFound, Text: fmt.Sprintf("snapshot %s not found", id)}
+		return models.Snapshot{}, models.NotFound(ErrSnapshotNotFound, fmt.Sprintf("snapshot %s not found", id))
 	}
 	if err != nil {
 		return models.Snapshot{}, fmt.Errorf("read %s: %w", path, err)

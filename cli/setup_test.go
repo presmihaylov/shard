@@ -25,7 +25,7 @@ func TestSetupRefusesWhatItCannotRun(t *testing.T) {
 		{[]string{"setup", "--save", "--start-at-boot=false"}, "--save applies only to --remote"},
 		{[]string{"setup", "--start-at-boot=yes"}, "want true or false"},
 	} {
-		err := (App{Version: "test", Root: t.TempDir(), Out: &bytes.Buffer{}}).run(t.Context(), tc.args)
+		err := (&App{Version: "test", Root: t.TempDir(), Out: &bytes.Buffer{}}).run(t.Context(), tc.args)
 		if err == nil || !strings.Contains(err.Error(), tc.want) {
 			t.Errorf("shard %s: %v, want %q", strings.Join(tc.args, " "), err, tc.want)
 		}
