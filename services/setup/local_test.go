@@ -583,8 +583,8 @@ func TestAdminEndsSudosRefusalOnce(t *testing.T) {
 // A repair ends on a sentence, as setup and the upgrade do, not on its last ✓ line. (SHARD-735)
 func TestRepairSaysItIsDone(t *testing.T) {
 	for _, c := range []struct{ startAtBoot, want string }{
-		{"true", "Shard v0.1.0 is repaired, and the daemon is running."},
-		{"false", "Shard v0.1.0 is repaired."},
+		{"true", "shard v0.1.0 is repaired, and the daemon is running."},
+		{"false", "shard v0.1.0 is repaired."},
 	} {
 		t.Run(c.startAtBoot, func(t *testing.T) {
 			l := newLocalHost(t)

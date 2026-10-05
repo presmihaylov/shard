@@ -177,9 +177,9 @@ func (s *Setup) repair(ctx context.Context, m Manifest, service ServiceState) er
 		return err
 	}
 
-	done := "Shard " + m.Version + " is repaired."
+	done := "shard " + m.Version + " is repaired."
 	if m.StartAtBoot {
-		done = "Shard " + m.Version + " is repaired, and the daemon is running."
+		done = "shard " + m.Version + " is repaired, and the daemon is running."
 	}
 	return s.UI.Print("", done)
 }
