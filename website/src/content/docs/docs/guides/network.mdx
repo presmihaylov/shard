@@ -68,6 +68,8 @@ with Shard() as shard:
 	</TabItem>
 </Tabs>
 
+The TypeScript and Python examples reach `shard serve` at the address in `SHARD_REMOTE`, with the API key in `SHARD_API_KEY`.
+
 The call to `api.openai.com` goes through. The call to `example.com` fails before it starts, because the sandbox cannot even resolve the name. The log shows both decisions.
 
 The host enforces the policy from outside the sandbox, so the sandbox has no rules of its own that it could change.
