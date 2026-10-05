@@ -776,7 +776,7 @@ else that a refusal carries lives inside `error`, and the root never holds anyth
 | `command_not_started` | 422 | an exec, or a create's app, whose command never started: it is not there, it cannot run, or its interpreter is not there. The message names the command and the kernel's reason, never a host path. `error` then adds `"exit_code"`, 127 for a command that is not there and 126 for one that cannot run, as a shell answers |
 | `name_taken` | 409 | a create whose `name` another sandbox already holds, or a snapshot create whose `name` another snapshot holds |
 | `unauthorized` | 401 | the TCP front, when the request carries no valid bearer token, and then the front dials nothing |
-| `forbidden` | 403 | the TCP front, when the token is valid but its scopes do not reach the route, and then the front dials nothing. Also the daemon, on a create that names a secret without `secret:*` or a policy without `policy:*` |
+| `forbidden` | 403 | the TCP front, when the token is valid but its scopes do not reach the route, and then the front dials nothing. Also the daemon, on a create that names or a fork that copies a secret without `secret:*` or a policy without `policy:*` |
 | `timeout` | 504 | a stop, remove or restart whose substrate status call did not answer within the budget, or an exec whose launch the substrate did not prove within 20 s. Retry it once the runtime frees. On gVisor, rm --force reclaims through the wedge instead. It SIGKILLs the sandbox's own runsc processes, which it finds by the sandbox's cgroup and by the sandbox id on their command line, then finishes the teardown. It answers this code only when that kill fails too |
 | `internal` | 500 | anything else. A local route answers what the daemon got back. A public route answers only `the daemon could not complete the request; its log has the cause`, and the daemon log keeps the cause |
 
@@ -919,9 +919,11 @@ policy needs `policy:*`. Without the scope it needs, the daemon answers `403` wi
 scopes to the daemon in an `X-Shard-Scopes` header. It stamps the header on every request it
 forwards, and strips any copy the client sent, so a forged header can only remove a right. A request
 with no such header reached the daemon socket directly. That socket is the operator's own channel,
-and it keeps every right. A `fork` keeps the grants of the source sandbox by design, so it needs
-only `sandbox:write`. A snapshot holds no grants, so a create from one names its own secrets and
-policy, and the daemon checks the same two scopes as for any create.
+and it keeps every right. A `fork` needs `secret:*` if the source has secret grants and `policy:*`
+if the source has a policy, in addition to `sandbox:write`. The daemon checks the locked source
+before it claims a new record or captures the source. The copied grants belong to the fork and
+outlive a stop or an ungrant on the source. A snapshot holds no grants, so a create from one names
+its own secrets and policy, and the daemon checks the same two scopes as for any create.
 
 A token is minted on the server, from the same signing key, and never over the API:
 
