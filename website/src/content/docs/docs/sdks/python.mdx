@@ -10,7 +10,7 @@ Run a command in a new sandbox from Python:
 ```sh
 pip install useshards
 export SHARD_REMOTE=https://shard.example.com
-export SHARD_API_KEY=<your API key>
+export SHARD_API_KEY='your-api-key'
 ```
 
 ```python title="demo.py"
@@ -25,7 +25,7 @@ with Shard() as shard:
         sandbox.remove(force=True)
 ```
 
-Replace `https://shard.example.com` with the URL of your server, then run the script with `python demo.py`. It prints `0 hello`.
+Replace `https://shard.example.com` with your server URL and `your-api-key` with your API key. Then run `python demo.py`. It prints `0 hello`.
 
 ## Install
 
@@ -39,7 +39,7 @@ The package needs Python 3.11 or later and ships with type hints. Its runtime de
 
 ## Connect
 
-The SDK talks to `shard serve` on your server, never to the daemon's local socket, and it ignores the connection that `shard setup` saves. It reads three settings. For each one, an argument you pass to `Shard()` takes precedence over the environment variable:
+The SDK talks to `shard serve` on your server, never to the daemon's local socket, and it ignores the connection that `shard setup` saves. It reads three settings. A non-empty `remote` or `ca_file` argument takes precedence over its environment variable. An `api_key` argument other than `None` takes precedence even when it is empty, which the SDK refuses:
 
 | Argument | Variable | Value |
 | --- | --- | --- |
@@ -86,6 +86,8 @@ Use `Shard` in a `with` block, or call `shard.close()` when you are done, so it 
 | `memory_mib` | The memory bound. Without it, the sandbox takes a snapshot's own bound, or has no bound. |
 | `vcpus`, `disk_mib` | The CPU count and the disk size. Without them, the daemon's defaults apply. A sandbox from a snapshot takes the snapshot's disk size. |
 
+Firecracker and `vz` require a memory bound of at least 128 MiB. Set `memory_mib` when you create from an image. A snapshot supplies its saved bound when you leave the argument out.
+
 `shard.get(ref)` finds a sandbox by ID or name. `shard.list()` returns `SandboxList(sandboxes, warnings)` for the active sandboxes, and `shard.list(all=True)` adds the stopped ones. The warnings name entries that the daemon could not read, so check them before you treat the list as complete.
 
 A `Sandbox` has these lifecycle methods:
@@ -118,7 +120,7 @@ The result holds `exit_code`, `signal`, `stdout`, `stderr` and `lost_bytes`. `st
 | `env` | Variables added to the sandbox's environment for this command. |
 | `workdir` | The working directory. |
 | `user` | A user name or uid in the sandbox. |
-| `stdin` | The whole input, as text or bytes. For a background command, `True` keeps the input open for `write_stdin()`. |
+| `stdin` | For a foreground command, the whole input as text or bytes. For a background command, pass a bool. `True` keeps the input open for `write_stdin()`. |
 | `tty` | `True`, or a `TerminalSize(rows, cols)`: runs the command on a terminal. |
 | `on_stdout`, `on_stderr` | Called with each chunk of output, as bytes, as it arrives. |
 | `output_limit_bytes` | How many of the newest bytes the result keeps. |
@@ -173,7 +175,7 @@ finally:
     app.sandbox.remove(force=True)
 ```
 
-When the app exits, its sandbox stays `running`, so you can still run commands in `app.sandbox`. Only `stop()` or `remove()` ends the sandbox.
+When the app exits, its sandbox stays `running`, so you can still run commands in `app.sandbox`. Use `app.sandbox.stop()` or `app.sandbox.remove()` to end it. `app.stop()` stops only the app.
 
 - `app.wait()` returns `AppExit(exit_code, signal, restarts)` once the restart policy will not start the app again. With `timeout=`, it raises `TimeoutError` when the time runs out, and the app keeps running.
 - `app.stop()` ends the app with `TERM`, or with `KILL` when you pass `force=True`, and cancels its restart policy. The sandbox keeps running.
@@ -201,10 +203,10 @@ The sandbox never holds the secret value. Its commands see a placeholder, and th
 | `secrets.set(name, value=, destinations=, placeholder=)` | Stores a secret, or replaces its value. |
 | `secrets.list()` | Returns `SecretList(secrets, warnings)`. |
 | `secrets.remove(name, force=)` | Deletes a secret that no sandbox holds. `force=True` deletes it even when a sandbox holds it. That sandbox keeps the grant, but its placeholder no longer gets a value. |
-| `secrets.grant(sandbox, name)`, `secrets.ungrant(sandbox, name)` | Grant a secret to a sandbox, or take it away. The sandbox must be stopped. |
+| `secrets.grant(sandbox, name)`, `secrets.ungrant(sandbox, name)` | Grant a secret to a sandbox, or take it away. The sandbox must be `created` or `stopped`. |
 | `policies.set(name, rules)` | Makes a policy, or replaces all its rules. A sandbox that holds the policy enforces the new rules. |
 | `policies.get(name)`, `policies.list()`, `policies.remove(name)` | Read policies, or delete one that no sandbox holds. |
-| `policies.attach(sandbox, name)`, `policies.detach(sandbox)` | Give a sandbox a policy, or take it away. The sandbox must be stopped. |
+| `policies.attach(sandbox, name)`, `policies.detach(sandbox)` | Give a sandbox a policy, or take it away. The sandbox must be `created` or `stopped`. |
 | `snapshots.create(sandbox, name=)` | Copies the files of a stopped sandbox into a snapshot, which outlives the sandbox. |
 | `snapshots.list()`, `snapshots.inspect(ref)`, `snapshots.remove(ref)` | Read snapshots, or delete one. |
 
@@ -212,7 +214,7 @@ A `PolicyRule(action, rule)` takes `"allow"` or `"deny"` and a rule in the form 
 
 ## Asyncio
 
-`AsyncShard` takes the same arguments as `Shard`. With none, it reads `SHARD_REMOTE` and `SHARD_API_KEY`. Every method that calls the server is a coroutine:
+`AsyncShard` takes the same arguments as `Shard`. With none, it reads `SHARD_REMOTE` and `SHARD_API_KEY`. Await its request methods. Its follow methods return async iterators:
 
 ```python
 import asyncio
