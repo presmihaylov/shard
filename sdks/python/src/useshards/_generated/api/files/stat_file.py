@@ -6,14 +6,13 @@ import httpx
 
 from ... import errors
 from ...client import AuthenticatedClient, Client
-from ...models.error import Error
-from ...types import UNSET, Response, Unset
+from ...types import UNSET, Response
 
 
 def _get_kwargs(
     id: str,
     *,
-    path: str | Unset = UNSET,
+    path: str,
 ) -> dict[str, Any]:
     params: dict[str, Any] = {}
 
@@ -34,19 +33,16 @@ def _get_kwargs(
 
 def _parse_response(
     *, client: AuthenticatedClient | Client, response: httpx.Response
-) -> Any | Error:
+) -> Any:
     if response.status_code == 200:
-        response_200 = cast(Any, None)
-        return response_200
+        return None
 
-    response_default = Error.from_dict(response.json())
-
-    return response_default
+    return None
 
 
 def _build_response(
     *, client: AuthenticatedClient | Client, response: httpx.Response
-) -> Response[Any | Error]:
+) -> Response[Any]:
     return Response(
         status_code=HTTPStatus(response.status_code),
         content=response.content,
@@ -59,8 +55,8 @@ def sync_detailed(
     id: str,
     *,
     client: AuthenticatedClient | Client,
-    path: str | Unset = UNSET,
-) -> Response[Any | Error]:
+    path: str,
+) -> Response[Any]:
     """Stat a path"""
 
     kwargs = _get_kwargs(
@@ -75,27 +71,12 @@ def sync_detailed(
     return _build_response(client=client, response=response)
 
 
-def sync(
-    id: str,
-    *,
-    client: AuthenticatedClient | Client,
-    path: str | Unset = UNSET,
-) -> Any | Error | None:
-    """Stat a path"""
-
-    return sync_detailed(
-        id=id,
-        client=client,
-        path=path,
-    ).parsed
-
-
 async def asyncio_detailed(
     id: str,
     *,
     client: AuthenticatedClient | Client,
-    path: str | Unset = UNSET,
-) -> Response[Any | Error]:
+    path: str,
+) -> Response[Any]:
     """Stat a path"""
 
     kwargs = _get_kwargs(
@@ -106,20 +87,3 @@ async def asyncio_detailed(
     response = await client.get_async_httpx_client().request(**kwargs)
 
     return _build_response(client=client, response=response)
-
-
-async def asyncio(
-    id: str,
-    *,
-    client: AuthenticatedClient | Client,
-    path: str | Unset = UNSET,
-) -> Any | Error | None:
-    """Stat a path"""
-
-    return (
-        await asyncio_detailed(
-            id=id,
-            client=client,
-            path=path,
-        )
-    ).parsed

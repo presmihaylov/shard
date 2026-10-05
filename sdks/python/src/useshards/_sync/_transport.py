@@ -75,19 +75,37 @@ class Transport:
     def listed(self, kind: type[P], fetch: Fetch, rows: Callable[[P], Sequence[R]]) -> list[R]:
         """Every row of a paged list, one page after another."""
         out: list[R] = []
+        for page in self.pages(kind, fetch):
+            out.extend(rows(page))
+        return out
+
+    def pages(self, kind: type[P], fetch: Fetch) -> Iterator[P]:
         cursor: str | Unset = UNSET
         while True:
             page = self.answer(kind, functools.partial(fetch, cursor))
-            out.extend(rows(page))
+            yield page
             if not page.next_:
-                return out
+                return
             cursor = page.next_
 
-    def put(self, path: str, params: dict[str, str], content: bytes | Iterable[bytes], size: int) -> None:
-        """A body of a known length; the generated client takes a file it buffers, never a stream."""
-        # An explicit length keeps HTTPX from sending the stream chunked, which the daemon refuses.
+    def put(
+        self,
+        path: str,
+        params: dict[str, str],
+        content: bytes | Iterable[bytes],
+        size: int | None,
+        timeout: httpx.Timeout | None = None,
+    ) -> None:
+        """A streamed body, chunked when size is None; the generated client takes a file it buffers, never a stream."""
+        # A file put needs the length up front, since the guest lands exactly that many bytes.
+        headers = {} if size is None else {"Content-Length": str(size)}
         request = self.http.build_request(
-            "PUT", path, params=params, content=content, headers={"Content-Length": str(size)}
+            "PUT",
+            path,
+            params=params,
+            content=content,
+            headers=headers,
+            timeout=self.timeout if timeout is None else timeout,
         )
         try:
             self.http.send(request)

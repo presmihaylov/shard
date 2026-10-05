@@ -13,7 +13,7 @@ from ...types import UNSET, Response, Unset
 def _get_kwargs(
     id: str,
     *,
-    path: str | Unset = UNSET,
+    path: str,
     recursive: bool | Unset = UNSET,
 ) -> dict[str, Any]:
     params: dict[str, Any] = {}
@@ -62,7 +62,7 @@ def sync_detailed(
     id: str,
     *,
     client: AuthenticatedClient | Client,
-    path: str | Unset = UNSET,
+    path: str,
     recursive: bool | Unset = UNSET,
 ) -> Response[Any | Error]:
     """Delete a path"""
@@ -84,7 +84,7 @@ def sync(
     id: str,
     *,
     client: AuthenticatedClient | Client,
-    path: str | Unset = UNSET,
+    path: str,
     recursive: bool | Unset = UNSET,
 ) -> Any | Error | None:
     """Delete a path"""
@@ -101,7 +101,7 @@ async def asyncio_detailed(
     id: str,
     *,
     client: AuthenticatedClient | Client,
-    path: str | Unset = UNSET,
+    path: str,
     recursive: bool | Unset = UNSET,
 ) -> Response[Any | Error]:
     """Delete a path"""
@@ -121,7 +121,7 @@ async def asyncio(
     id: str,
     *,
     client: AuthenticatedClient | Client,
-    path: str | Unset = UNSET,
+    path: str,
     recursive: bool | Unset = UNSET,
 ) -> Any | Error | None:
     """Delete a path"""

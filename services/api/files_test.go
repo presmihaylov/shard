@@ -8,6 +8,7 @@ import (
 	"io"
 	"net"
 	"net/http"
+	"net/http/httptest"
 	"slices"
 	"strings"
 	"testing"
@@ -212,6 +213,32 @@ func TestGetFileThatDiesMidwayCutsTheBody(t *testing.T) {
 	}
 	if _, err := io.ReadAll(resp.Body); !errors.Is(err, io.ErrUnexpectedEOF) {
 		t.Fatalf("reading the cut body gave %v, want io.ErrUnexpectedEOF", err)
+	}
+}
+
+// The path is the client's own text and the cause can repeat it, so the log quotes both and redacts the cause (SHARD-550).
+func TestGetFileThatDiesMidwayQuotesThePathInTheLog(t *testing.T) {
+	s := seed(t)
+	s.verbs.stat = models.FileStat{Type: models.FileRegular, Size: 10}
+	s.verbs.content = "hello"
+	s.verbs.bodyErr = errors.New("read /srv/blob\napi: forged with sk_live_synthetic_0002: the guest went away")
+	redact := func(text string) string {
+		return strings.ReplaceAll(text, "sk_live_synthetic_0002", "<secret API_KEY>")
+	}
+	s.server = httptest.NewServer(api.NewHandler("v-test", fakeProcess{}, s.repo, nil, s.verbs, s.stores, s.egress, redact, s.log))
+
+	resp := fileRequest(t, s, http.MethodGet, "path=/srv/blob%0Aapi:%20forged", nil) //nolint:bodyclose // fileRequest closes the body in a cleanup
+	if _, err := io.ReadAll(resp.Body); !errors.Is(err, io.ErrUnexpectedEOF) {
+		t.Fatalf("reading the cut body gave %v, want io.ErrUnexpectedEOF", err)
+	}
+
+	s.server.Close()
+	logged := s.log.String()
+	if !strings.Contains(logged, `api: get "/srv/blob\napi: forged" from sandbox `) || strings.Contains(logged, "\napi: forged") {
+		t.Errorf("the daemon log %q, want the path and the cause quoted on one line", logged)
+	}
+	if !strings.Contains(logged, "<secret API_KEY>") || strings.Contains(logged, "sk_live_synthetic_0002") {
+		t.Errorf("the daemon log %q, want the cause redacted", logged)
 	}
 }
 

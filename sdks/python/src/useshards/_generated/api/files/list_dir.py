@@ -8,13 +8,13 @@ from ... import errors
 from ...client import AuthenticatedClient, Client
 from ...models.entries_response import EntriesResponse
 from ...models.error import Error
-from ...types import UNSET, Response, Unset
+from ...types import UNSET, Response
 
 
 def _get_kwargs(
     id: str,
     *,
-    path: str | Unset = UNSET,
+    path: str,
 ) -> dict[str, Any]:
     params: dict[str, Any] = {}
 
@@ -61,7 +61,7 @@ def sync_detailed(
     id: str,
     *,
     client: AuthenticatedClient | Client,
-    path: str | Unset = UNSET,
+    path: str,
 ) -> Response[EntriesResponse | Error]:
     """List a directory"""
 
@@ -81,7 +81,7 @@ def sync(
     id: str,
     *,
     client: AuthenticatedClient | Client,
-    path: str | Unset = UNSET,
+    path: str,
 ) -> EntriesResponse | Error | None:
     """List a directory"""
 
@@ -96,7 +96,7 @@ async def asyncio_detailed(
     id: str,
     *,
     client: AuthenticatedClient | Client,
-    path: str | Unset = UNSET,
+    path: str,
 ) -> Response[EntriesResponse | Error]:
     """List a directory"""
 
@@ -114,7 +114,7 @@ async def asyncio(
     id: str,
     *,
     client: AuthenticatedClient | Client,
-    path: str | Unset = UNSET,
+    path: str,
 ) -> EntriesResponse | Error | None:
     """List a directory"""
 

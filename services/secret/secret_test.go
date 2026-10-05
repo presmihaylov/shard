@@ -386,6 +386,8 @@ func TestSetRefusals(t *testing.T) {
 		{"bad label", "KEY", "v-1234567", []string{"exa_mple.com"}, "", "not a host name"},
 		{"default placeholder inside the value", "KEY", "abc-mock-KEY-1", []string{"example.com"}, "", "inside its value"},
 		{"chosen placeholder inside the value", "KEY", "abc-sk_test_shaped01-1", []string{"example.com"}, "sk_test_shaped01", "inside its value"},
+		{"value inside the default placeholder", "KEY", "mock", []string{"example.com"}, "", "inside its placeholder"},
+		{"value inside the chosen placeholder", "KEY", "shaped01", []string{"example.com"}, "sk_test_shaped01", "inside its placeholder"},
 		{"placeholder too short", "KEY", "v-1234567", []string{"example.com"}, "sk_test", "shorter than"},
 		{"whitespace in the placeholder", "KEY", "v-1234567", []string{"example.com"}, "sk test shaped", "outside letters, digits"},
 		{"control character in the placeholder", "KEY", "v-1234567", []string{"example.com"}, "sk_test\x01shaped", "outside letters, digits"},
@@ -436,6 +438,30 @@ func TestSetTakesAPlaceholderNoEncoderAlters(t *testing.T) {
 	}
 	if sec.Placeholder != "sk_test.e2e-01" {
 		t.Errorf("the store kept %q", sec.Placeholder)
+	}
+}
+
+// A rotation keeps the stored placeholder, so a new value inside it is refused too, and the refusal names neither (SHARD-550).
+func TestARotationRefusesAValueInsideTheRetainedPlaceholder(t *testing.T) {
+	s, _ := newStore(t)
+
+	if _, err := s.Set("TOKEN", "first-value-1", []string{"a.example.com"}, "sk_test_shaped01"); err != nil {
+		t.Fatal(err)
+	}
+	_, err := s.Set("TOKEN", "test_shaped", nil, "")
+	if err == nil || !strings.Contains(err.Error(), "inside its placeholder") {
+		t.Fatalf("a rotation to a value inside the retained placeholder = %v, want the refusal", err)
+	}
+	if strings.Contains(err.Error(), "test_shaped") {
+		t.Errorf("the refusal echoes the value or the placeholder: %v", err)
+	}
+
+	value, err := s.Value("TOKEN")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if value != "first-value-1" {
+		t.Errorf("the refused rotation stored %q", value)
 	}
 }
 
