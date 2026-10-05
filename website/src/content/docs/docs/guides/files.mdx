@@ -52,6 +52,8 @@ with Shard() as shard:
 	</TabItem>
 </Tabs>
 
+The TypeScript and Python examples reach `shard serve` at the address in `SHARD_REMOTE`, with the API key in `SHARD_API_KEY`.
+
 In this example, `main.py` writes `out.json` next to itself. The image does not need `tar` or a shell for any of this, because shard's own supervisor in the sandbox reads and writes the files.
 
 ## Where a copy lands
@@ -107,16 +109,16 @@ A copy into the sandbox runs as a user inside the sandbox. That user is the sand
 
 ## The rules
 
-- **The sandbox must be running.** A copy into or out of a stopped sandbox fails with `sandbox <id> is stopped: start it again with shard start <name>`. On a paused sandbox, it fails with `sandbox <id> is paused: resume it with shard resume <name>`.
+- **The sandbox must be running.** A copy into or out of a stopped sandbox fails with `sandbox <id> is stopped: start it again with shard start <name>`. On a paused sandbox, it fails with `sandbox <id> is paused: resume it with shard resume <name>`. In both messages, `<name>` is the sandbox's name, or its id when it has none.
 - **A write never leaves half a file.** A copy in writes the data under a temporary name in the target directory, syncs it, and then renames it over the old file. If a copy is cut off midway, the old file stays intact.
-- **There is no size cap.** Copies stream in both directions, and the daemon never holds the whole file.
+- **The daemon sets no size cap.** Copies stream in both directions, and the daemon never holds the whole file. A directory copied out is the exception: `shard cp` and the SDKs refuse one past 64 GiB of file data or 1,048,576 entries.
 - **A file is only bytes.** shard never puts a secret value into a file, even when the file holds a placeholder.
-- **A directory copied out of the sandbox is untrusted.** The sandbox packs it, so `shard cp` and the SDKs unpack it carefully. They refuse an absolute name, a `..`, a hardlink to a name outside the directory, and a device node, and no symlink can lead the unpack outside the destination. They also drop the setuid and setgid bits and never change an owner on your machine.
+- **A directory copied out of the sandbox is untrusted.** The sandbox packs it, so `shard cp` and the SDKs unpack it carefully. They refuse an absolute name, a `..`, a hardlink to a name outside the directory, and a device node, and no symlink can lead the unpack outside the destination. They also drop the setuid and setgid bits and never change an owner on your machine. A refusal names the entry, and the copy writes nothing more.
 - **A file call needs the `exec` scope.** A write can replace what the sandbox runs, and a read sees what `cat` sees, so a token that copies files can also run commands.
 
 ## Over the API
 
-Every route is under `/v0/sandboxes/{id}`, where `{id}` is the id or the name of the sandbox.
+Every route is under `/v0/sandboxes/{id}`, where `{id}` is the id or the name of the sandbox. An error has the body `{"error":{"code":"<code>","message":"<message>"}}`, except on a `HEAD`, which has no body.
 
 | Route | Body | Answer |
 | --- | --- | --- |
@@ -129,4 +131,4 @@ Every route is under `/v0/sandboxes/{id}`, where `{id}` is the id or the name of
 | `PUT /archive?path=&user=` | a tar, streamed | `204` |
 | `GET /archive?path=` | | `200`, a tar, streamed |
 
-A stat contains `type`, `size`, `mode`, `uid`, `gid` and `mtime`. The possible errors are `not_found`, `invalid_request` (for a relative path or a bad tar), `sandbox_not_running`, `sandbox_failed` and `internal`.
+A stat contains `type`, `size`, `mode`, `uid`, `gid` and `mtime`. The possible errors are `not_found`, `invalid_request` (for a relative path, a bad tar, a tar entry that lands outside `path`, or a path the guest refuses, such as one the user may not write), `sandbox_not_running`, `sandbox_failed` (for a sandbox whose create failed) and `internal`.
