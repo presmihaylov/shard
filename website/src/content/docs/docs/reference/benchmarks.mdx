@@ -13,7 +13,7 @@ time shard exec demo true
 shard remove --force demo
 ```
 
-On Linux, run them in a root shell, so that `sudo` is not part of the time.
+On Linux, run them in a root shell, so `sudo` does not add to the time.
 
 ## Common commands
 
@@ -36,13 +36,13 @@ The Linux providers ran on one host and `vz` ran on a Mac, so compare the Linux 
 ## How the numbers were measured
 
 - One script ran every command 10 times on each provider, after one untimed warm-up round.
-- Each time is the wall clock around one `shard` process, CLI start-up included. The CLI spoke to the daemon over its local socket. A client that connects to a remote server through `shard serve` also waits for the network.
+- Each time is the wall-clock time of one `shard` process, including CLI start-up. The CLI spoke to the daemon over its local socket. A client that connects to a remote server through `shard serve` also waits for the network.
 - The tables give the median and the 90th percentile by nearest rank: 9 of the 10 runs took that long or less.
-- `alpine:3.20` was pulled before the first run, and every sandbox was created with `--memory 512MiB`.
-- The sandbox commands ran in the order of the tables, on one sandbox. `create` starts it. `pause`, `resume`, `fork` and `policy logs` find it running. The secret and policy commands and `snapshot create` find it stopped. `start` runs it again, and `remove --force` removes it while it runs. `fork` and `create --snapshot` each made a second sandbox, which the script removed untimed.
-- `shard pull alpine:3.20` finds the image cached. `shard pull busybox:1.36` pulls an image that the run before removed, so its time depends on the network.
-- A command that the provider does not support reads "not supported".
-- Not measured: `shard daemon` and `shard serve`, which run until you stop them, the interactive `shard setup`, and `logs -f`, `policy logs -f` and `exec -it`, which follow or attach.
+- The script pulled `alpine:3.20` before the first run, and created every sandbox with `--memory 512MiB`.
+- The sandbox commands ran on one sandbox, in the order of the tables. `create` starts it. `pause`, `resume`, `fork` and `policy logs` find it running. The secret and policy commands and `snapshot create` find it stopped. `start` runs it again, and `remove --force` removes it while it runs. `fork` and `create --snapshot` each made a second sandbox, which the script then removed outside the timing.
+- `shard pull alpine:3.20` finds the image already cached. `shard pull busybox:1.36` pulls an image that the previous round removed, so its time depends on the network.
+- A command that the provider does not support shows "not supported".
+- The script did not time `shard daemon` and `shard serve`, which run until you stop them, the interactive `shard setup`, or `logs -f`, `policy logs -f` and `exec -it`, which follow or attach.
 
 ## Linux host
 
