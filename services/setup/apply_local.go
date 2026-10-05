@@ -516,13 +516,13 @@ func (p *localPlan) verify(ctx context.Context) error {
 	}
 	deadline := time.Now().Add(verifyWait)
 	for {
-		_, err := ask(ctx, p.h, shardBinary, "--remote", "", "daemon", "status")
+		out, err := ask(ctx, p.h, shardBinary, "--remote", "", "daemon", "status")
 		if err == nil {
 			return nil
 		}
 		if time.Now().After(deadline) {
 			return &Problem{Lines: []string{
-				fmt.Sprintf("The daemon did not answer within %s: %v.", verifyWait, err),
+				fmt.Sprintf("The daemon is not ready after %s: %s.", verifyWait, notReady(out, err)),
 				p.logHint(),
 			}}
 		}
@@ -532,6 +532,15 @@ func (p *localPlan) verify(ctx context.Context) error {
 		case <-time.After(verifyPoll):
 		}
 	}
+}
+
+// notReady is the reason daemon status printed, without the command line behind it, else the error whole.
+func notReady(out []byte, err error) string {
+	if reason := strings.TrimPrefix(strings.TrimPrefix(outputTail(out), ": "), "shard: "); reason != "" {
+		return reason
+	}
+
+	return err.Error()
 }
 
 func (p *localPlan) logHint() string {

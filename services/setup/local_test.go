@@ -473,3 +473,17 @@ func TestProvidersAreTheDaemons(t *testing.T) {
 		t.Fatalf("setup offers %q, and the daemon takes %q", names, daemon.Providers)
 	}
 }
+
+// A failed verify says what the daemon reported, never the sudo command line that asked it.
+func TestNotReadyIsTheDaemonsReason(t *testing.T) {
+	err := errors.New("sudo -n -- /usr/local/bin/shard --remote  daemon status: exit status 1")
+	for out, want := range map[string]string{
+		"shard: tasks in backoff: egress-log-tailer\n": "tasks in backoff: egress-log-tailer",
+		"":         err.Error(),
+		"  \n\n  ": err.Error(),
+	} {
+		if got := notReady([]byte(out), err); got != want {
+			t.Errorf("notReady(%q) = %q, want %q", out, got, want)
+		}
+	}
+}
