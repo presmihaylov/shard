@@ -850,19 +850,70 @@ func leftCommands(h Host) ([]string, error) {
 // manual reports an install setup did not make, changes nothing in it, and names the route that moves it to setup.
 func (s *Setup) manual(ctx context.Context, inst Installation) error {
 	h := s.Host
-	lines := []string{"Manual installation detected.", ""}
-	if slices.Contains(inst.Manual, shardBinary) {
-		out, err := run(ctx, h, shardBinary, "--version")
-		if err != nil {
-			return fmt.Errorf("read the installed version of %s: %w", shardBinary, err)
-		}
-		lines = append(lines, "Installed:      Shard "+strings.TrimPrefix(strings.TrimSpace(string(out)), "client "))
+	versions, err := manualVersions(ctx, h, inst.Manual)
+	if err != nil {
+		return err
 	}
-	lines = append(lines, "Setup installs: Shard "+h.Version, "", "Found:")
+	// The API socket is root's on Linux, so a command that asks the daemon needs sudo there.
+	sudo := ""
+	if h.OS == "linux" {
+		sudo = "sudo "
+	}
+	sandboxes, err := manualSandboxes(h, inst.Manual, sudo)
+	if err != nil {
+		return err
+	}
 
-	var bins, units, others []string
+	lines := slices.Concat([]string{"Manual installation detected.", ""}, versions, []string{"", "Found:"})
 	for _, p := range inst.Manual {
 		lines = append(lines, "  "+p)
+	}
+	lines = slices.Concat(lines,
+		[]string{"", "Setup did not install these files, so it does not change or remove them.", "", "Inspect the installation:"},
+		manualInspect(h, sudo),
+		sandboxes,
+		[]string{"", "To move it to setup, run:"},
+		manualMove(h, inst.Manual),
+		[]string{
+			"", "To remove it instead, remove every sandbox first (" + sudo + "shard list --all), then run the lines above without the last.",
+			"", "Your saved data in " + DataDir + " is not part of this.",
+		},
+	)
+
+	return s.UI.Print(lines...)
+}
+
+// manualVersions names the version the found binary reports beside the one setup installs.
+func manualVersions(ctx context.Context, h Host, found []string) ([]string, error) {
+	installs := "Setup installs: Shard " + h.Version
+	if !slices.Contains(found, shardBinary) {
+		return []string{installs}, nil
+	}
+	out, err := run(ctx, h, shardBinary, "--version")
+	if err != nil {
+		return nil, fmt.Errorf("read the installed version of %s: %w", shardBinary, err)
+	}
+
+	return []string{"Installed:      Shard " + strings.TrimPrefix(strings.TrimSpace(string(out)), "client "), installs}, nil
+}
+
+// manualInspect lists the commands that show the manual install and its service.
+func manualInspect(h Host, sudo string) []string {
+	lines := []string{"  " + sudo + "shard version"}
+	if h.OS == "darwin" {
+		return append(lines, "  sudo launchctl print "+launchdLabel)
+	}
+	if h.OS == "linux" {
+		return append(lines, "  systemctl status shard")
+	}
+
+	return lines
+}
+
+// manualMove lists the commands that stop and remove the found files, then run setup.
+func manualMove(h Host, found []string) []string {
+	var bins, units, others []string
+	for _, p := range found {
 		switch {
 		case strings.HasSuffix(p, ".service"):
 			units = append(units, p)
@@ -873,26 +924,7 @@ func (s *Setup) manual(ctx context.Context, inst Installation) error {
 		}
 	}
 
-	// The API socket is root's on Linux, so a command that asks the daemon needs sudo there.
-	sudo := ""
-	if h.OS == "linux" {
-		sudo = "sudo "
-	}
-	lines = append(lines, "", "Setup did not install these files, so it does not change or remove them.", "", "Inspect the installation:", "  "+sudo+"shard version")
-	if h.OS == "darwin" {
-		lines = append(lines, "  sudo launchctl print "+launchdLabel)
-	}
-	if h.OS == "linux" {
-		lines = append(lines, "  systemctl status shard")
-	}
-
-	sandboxes, err := manualSandboxes(h, inst.Manual, sudo)
-	if err != nil {
-		return err
-	}
-	lines = append(lines, sandboxes...)
-
-	lines = append(lines, "", "To move it to setup, run:")
+	var lines []string
 	for _, u := range units {
 		lines = append(lines, "  sudo systemctl disable --now "+strings.TrimSuffix(filepath.Base(u), ".service"))
 	}
@@ -910,11 +942,8 @@ func (s *Setup) manual(ctx context.Context, inst Installation) error {
 	if h.Executable == rooted(h, shardBinary) {
 		next = "curl -fsSL https://useshards.com/install | sh"
 	}
-	lines = append(lines, "  "+next,
-		"", "To remove it instead, remove every sandbox first ("+sudo+"shard list --all), then run the lines above without the last.",
-		"", "Your saved data in "+DataDir+" is not part of this.")
 
-	return s.UI.Print(lines...)
+	return append(lines, "  "+next)
 }
 
 // manualSandboxes names the provider the recorded sandboxes use and whether they outlive the manual daemon, and says nothing when there are none.
