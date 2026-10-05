@@ -38,10 +38,10 @@ what it will change, and asks once before it changes anything.
   [the daemon guide](daemon.md).
 
 Setup runs as you and uses `sudo` for the steps that need root. It installs the running binary as
-`/usr/local/bin/shard`, owned by root, and `shard-init` from the same release, after it checks both
-against the release's `SHA256SUMS`. Setup creates no `shard` group, so on Linux the API socket
-belongs to root and local commands run with `sudo`. [The API socket](daemon.md#the-api-socket) says
-what a group you create yourself changes.
+`/usr/local/bin/shard`, owned by root, and `shard-init` from the same release, after it checks that
+download against the release's `SHA256SUMS`. Setup creates no `shard` group, so on Linux the API
+socket belongs to root and local commands run with `sudo`. [The API socket](daemon.md#the-api-socket)
+says what a group you create yourself changes.
 
 Declining at the confirmation leaves the host as it was.
 
