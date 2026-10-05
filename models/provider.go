@@ -219,6 +219,8 @@ type ExitReport struct {
 	Signal int    `json:"signal"`
 	// Errno is the guest errno of an entrypoint whose exec failed, on a NotStartedReportKind record only.
 	Errno int `json:"errno,omitempty"`
+	// Restarts rides the exit record, since fd 0 is the one channel shard-init has that the guest cannot write (SHARD-634).
+	Restarts RestartCount `json:"restarts,omitzero"`
 }
 
 // ExitReportKind marks the entrypoint's exit, so an exit reader rejects every other line.

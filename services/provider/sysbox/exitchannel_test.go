@@ -254,7 +254,7 @@ func TestASandboxFromBeforeTheChannelReadsItsExitFile(t *testing.T) {
 		t.Fatal(err)
 	}
 	lab.pointFd0(t, fifo)
-	if err := bundle.WriteExitStatus(lab.b.ExitFile, models.ExitStatus{Code: 9}); err != nil {
+	if err := bundle.WriteExitReport(lab.b.ExitFile, models.ExitReport{Kind: models.ExitReportKind, Code: 9}); err != nil {
 		t.Fatal(err)
 	}
 

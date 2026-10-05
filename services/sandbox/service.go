@@ -623,6 +623,21 @@ type diskAdmitter interface {
 	ReleaseDisk(dir string)
 }
 
+// kernelBooter is a VM substrate, which boots a guest kernel of shard's.
+type kernelBooter interface {
+	GuestKernel() string
+}
+
+// guestKernel is the tag of the kernel a fresh boot on provider runs, empty on a container substrate.
+func guestKernel(provider models.Provider) string {
+	booter, ok := provider.(kernelBooter)
+	if !ok {
+		return ""
+	}
+
+	return booter.GuestKernel()
+}
+
 // Complete pulls the image, builds the sandbox and starts it, then moves the record from pending to
 // running. A failure that is not a shutdown leaves the record failed with the reason, so a get reads why
 // and rm still frees it. It pushes every claim before the commit point onto the teardown stack.
@@ -1028,6 +1043,7 @@ func (s *Service) recordCreated(ctx context.Context, spec models.SandboxSpec, di
 		sb.Address = spec.Network.Address
 		sb.HostInterface = spec.Network.HostInterface
 		sb.Digest = digest
+		sb.Kernel = guestKernel(s.cfg.Provider)
 
 		return nil
 	})

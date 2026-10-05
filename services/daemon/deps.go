@@ -447,6 +447,7 @@ func (d *deps) newFirecracker(dirs, checkpoints firecracker.StateDirs) (models.P
 		Jailer:      jailer,
 		JailBase:    filepath.Join(d.cfg.Root, jailDir),
 		Kernel:      guest.Path,
+		KernelTag:   guest.Tag,
 		Init:        d.cfg.InitPath,
 		Dir:         filepath.Join(d.cfg.Root, firecrackerDir),
 		Dirs:        dirs,
@@ -516,6 +517,7 @@ func (d *deps) newVZ(dirs vzvm.StateDirs) (models.Provider, error) {
 	return vzvm.New(vzvm.Config{
 		Shim:        shim,
 		Kernel:      guest.Path,
+		KernelTag:   guest.Tag,
 		Init:        init,
 		Dir:         dir,
 		Stack:       stack,

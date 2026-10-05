@@ -306,6 +306,7 @@ func (s *Service) Fork(ctx context.Context, ref string, req CopyRequest) (sb mod
 		Command:    slices.Clone(src.Command),
 		Restart:    src.Restart,
 		ExitStatus: src.ExitStatus,
+		Kernel:     src.Kernel,
 	})
 	defer claim.unlock()
 
