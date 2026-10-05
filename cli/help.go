@@ -130,7 +130,7 @@ var (
 	}}
 	limitsNote     = note{title: "Resource limits", lines: []string{"Use sizes such as 512MiB or 2GiB, and whole numbers for CPUs."}}
 	signingKeyNote = para("The default signing key is created automatically on first use.", "A custom signing key file must already exist.")
-	hostOnlyNote   = para("Runs only on the daemon host and refuses --remote and " + client.RemoteEnv + ".")
+	hostOnlyNote   = para("Runs only on the daemon host and refuses --remote, " + client.RemoteEnv + " and a saved connection.")
 )
 
 const noPolicyLine = "Without a policy, the sandbox can access the internet but not private networks."
@@ -151,7 +151,7 @@ var helps = map[string]verbHelp{
 			{client.CAFileEnv, "custom CA certificate file; HTTPS only"},
 		},
 		notes: []note{
-			para(fmt.Sprintf("Set %s and %s for remote access.", client.RemoteEnv, client.APIKeyEnv), "Without a remote URL, Shard connects to the local daemon."),
+			para(fmt.Sprintf("Set %s and %s for remote access.", client.RemoteEnv, client.APIKeyEnv), "Without a remote URL or a saved connection, Shard connects to the local daemon."),
 			{title: "Get started", lines: []string{"shard setup"}},
 			{title: "For automated setup options", lines: []string{"shard setup --help"}},
 		},

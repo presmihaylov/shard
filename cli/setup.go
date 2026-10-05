@@ -1,6 +1,7 @@
 package cli
 
 import (
+	"cmp"
 	"context"
 	"errors"
 	"fmt"
@@ -73,9 +74,27 @@ func (a App) setup(ctx context.Context, args []string) error {
 	if err != nil {
 		return err
 	}
-	run := setup.Setup{Host: host, UI: &answers{opts: opts, t: term.New(a.stdin(), a.Out, os.Getenv)}}
+	run := setup.Setup{Host: host, UI: &answers{opts: opts, t: term.New(a.stdin(), a.Out, os.Getenv), env: os.Getenv}}
 
-	return run.Run(ctx)
+	return setupExit(run.Run(ctx))
+}
+
+// setupExit is the exit a setup error takes: a stopped step already said why under its checklist, and an interrupt leaves as SIGINT does.
+func setupExit(err error) error {
+	interrupted := errors.Is(err, term.ErrInterrupted) || errors.Is(err, context.Canceled)
+	var stopped *setup.StoppedError
+	switch {
+	case err == nil:
+		return nil
+	case errors.As(err, &stopped) && interrupted:
+		return &ExitError{Code: InterruptedExitCode}
+	case errors.As(err, &stopped):
+		return &ExitError{Code: 1}
+	case interrupted:
+		return &ExitError{Code: InterruptedExitCode, Message: "setup interrupted"}
+	}
+
+	return err
 }
 
 // check refuses a local choice beside a remote one, so neither half guesses which was meant.
@@ -95,6 +114,9 @@ func (o setupFlags) check() error {
 type answers struct {
 	opts setupFlags
 	t    *term.Terminal
+	env  func(string) string
+	// urlAsked is set once the URL was answered, so an edit after a failed check asks the person and never loops on the flag.
+	urlAsked bool
 }
 
 // flagged is the option name a flag picks for a question, and whether one does.
@@ -111,6 +133,11 @@ func (a *answers) flagged(q setup.Question) (string, bool) {
 		return a.opts.provider, a.opts.provider != ""
 	case setup.AskStartAtBoot:
 		return a.opts.startAtBoot.String(), a.opts.startAtBoot.set
+	case setup.AskSaved:
+		return "replace", a.opts.remote != ""
+	case setup.AskRetry:
+		// A failed check with nobody to ask leaves with its reason rather than an error about the terminal.
+		return "exit", !a.t.Interactive()
 	}
 
 	return "", false
@@ -159,8 +186,11 @@ func (a *answers) Confirm(ctx context.Context, q setup.Question, text string, ye
 }
 
 func (a *answers) Text(ctx context.Context, q setup.Question, prompt string) (string, error) {
-	if q == setup.AskURL && a.opts.remote != "" {
-		return a.opts.remote, nil
+	if q == setup.AskURL && !a.urlAsked {
+		a.urlAsked = true
+		if url := cmp.Or(a.opts.remote, a.env(client.RemoteEnv)); url != "" {
+			return url, nil
+		}
 	}
 	answer, err := a.t.Text(ctx, prompt)
 
