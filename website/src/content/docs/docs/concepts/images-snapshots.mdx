@@ -13,7 +13,7 @@ Write a file in a sandbox, save the sandbox as a snapshot, and start a new sandb
 	<TabItem label="CLI">
 
 ```sh
-shard create --name web alpine:3.20
+shard create --name web --memory 512MiB alpine:3.20
 shard exec web sh -c 'echo ready > /root/state.txt'
 shard stop web
 shard snapshot create --name web-base web
@@ -32,7 +32,7 @@ import { Shard } from "useshards";
 
 const shard = new Shard();
 try {
-  const web = await shard.create({ name: "web", image: "alpine:3.20" });
+  const web = await shard.create({ name: "web", image: "alpine:3.20", memoryMiB: 512 });
   await web.exec(["sh", "-c", "echo ready > /root/state.txt"]);
   await web.stop();
   const snapshot = await shard.snapshots.create(web, { name: "web-base" });
@@ -53,7 +53,7 @@ try {
 from useshards import Shard
 
 with Shard() as shard:
-    web = shard.create("alpine:3.20", name="web")
+    web = shard.create("alpine:3.20", name="web", memory_mib=512)
     web.exec(["sh", "-c", "echo ready > /root/state.txt"])
     web.stop()
     snapshot = shard.snapshots.create(web, name="web-base")
