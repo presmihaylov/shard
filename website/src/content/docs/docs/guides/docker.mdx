@@ -7,7 +7,7 @@ sidebar:
 
 import { Tabs, TabItem } from '@astrojs/starlight/components';
 
-Start `dockerd` in a sandbox, wait for it, then run a container inside the sandbox. On a Sysbox, vz or Firecracker server:
+This example starts `dockerd` in a sandbox, waits for it, then runs a container inside the sandbox. It works on a Sysbox, vz or Firecracker server:
 
 <Tabs syncKey="lang">
 	<TabItem label="CLI">
@@ -58,9 +58,9 @@ with Shard() as shard:
 	</TabItem>
 </Tabs>
 
-`dockerd` takes a few seconds to open its socket, so the example waits until `docker info` answers. The nested `docker run` pulls `alpine:3.20` from Docker Hub over the network of the sandbox.
+`dockerd` takes a few seconds to open its socket, so the example waits until `docker info` answers. The nested `docker run` pulls `alpine:3.20` from Docker Hub over the sandbox's network.
 
-`dockerd` keeps running in the background. Use `docker build` and `docker run` inside the sandbox as on any host. To end it all, stop and remove the sandbox:
+`dockerd` keeps running in the background. Use `docker build` and `docker run` inside the sandbox as you would on any host. When you are done, stop and remove the sandbox:
 
 ```sh
 shard stop dind
@@ -81,35 +81,35 @@ On a Linux host without `/dev/kvm`, Sysbox is the provider for Docker. Setup ins
 shard setup --local --provider sysbox --start-at-boot=true -y
 ```
 
-Setup never recommends Sysbox, and a daemon started without `--provider` never picks it. Name it. Sysbox needs an x86_64 Linux host, root, and a kernel that Sysbox supports. There is no fallback to another provider.
+Setup never recommends Sysbox, and a daemon started without `--provider` never picks it. You have to name it. Sysbox needs an x86_64 Linux host, root, and a kernel that Sysbox supports. There is no fallback to another provider.
 
 ## Why dockerd is the command
 
-The command you give replaces the command of the image. shard runs `dockerd` itself, not the entrypoint script of the `docker:dind` image, and finds it on the `PATH` of the image. PID 1 of the sandbox is shard's own supervisor, and `dockerd` is its child.
+The command you give replaces the image's command. shard runs `dockerd` directly, not the entrypoint script of the `docker:dind` image, and finds it on the image's `PATH`. PID 1 of the sandbox is shard's own supervisor, and `dockerd` is its child.
 
 A sandbox outlives its command. If `dockerd` exits, the sandbox stays running and you can still exec into it. Only `shard stop` ends the sandbox. Add `--restart on-failure` to `shard run` to start `dockerd` again after a nonzero exit.
 
 ## What the sandbox bounds
 
-Everything Docker starts runs inside the sandbox, so the bounds of the sandbox cover it:
+Everything Docker starts runs inside the sandbox, so the sandbox's bounds cover it:
 
-- **Memory.** `dockerd` and every nested container share the `--memory` of the sandbox. Give the sandbox enough memory for all of them.
-- **Network.** A nested container reaches the network as the sandbox does. The egress policy of the sandbox judges its traffic too.
-- **Images.** Nested images stay inside the sandbox. `shard image list` on the host never shows them.
+- `dockerd` and every nested container share the sandbox's `--memory`. Give the sandbox enough memory for all of them.
+- A nested container reaches the network as the sandbox does, and the sandbox's egress policy judges its traffic too.
+- Nested images stay inside the sandbox. `shard image list` on the host never shows them.
 
 Each provider adds limits of its own.
 
 ### Sysbox
 
 - **One tenant per host.** Sysbox CE maps every sandbox to the same host user range. Two Sysbox sandboxes are isolated from the host, but not from each other. Do not put the sandboxes of two customers on one Sysbox host.
-- **No pause, resume or fork.** These verbs are refused on Sysbox. `shard snapshot create` still works on a stopped sandbox.
+- **No pause, resume or fork.** shard refuses these verbs on Sysbox. `shard snapshot create` still works on a stopped sandbox.
 - **The disk bound does not cover Docker's data.** Sysbox keeps `/var/lib/docker` on the host, outside the `--disk` bound of the sandbox. Nested images and container layers fill the host disk, not the sandbox disk.
-- **4096 processes.** Every sandbox holds at most 4096 processes, nested containers included. The bound is fixed.
+- **4096 processes.** Every sandbox can hold at most 4096 processes, including the ones in nested containers. You cannot change this bound.
 
 ### vz and Firecracker
 
 - **IPv4 only.** The guest kernel has no IPv6, so `dockerd` runs IPv4 only.
-- **Docker's data is under the disk bound.** Nested images and layers sit on the disk of the sandbox. `--disk` sets it, and the default is 10240 MiB.
+- **Docker's data is under the disk bound.** Nested images and layers sit on the sandbox's disk. `--disk` sets its size, and the default is 10240 MiB.
 
 ## When every container fails
 
@@ -119,4 +119,4 @@ On a Sysbox host with kernel 6.12.107 and Sysbox 0.7.1, `dockerd` starts, but ev
 error mounting "cgroup" to rootfs at "/sys/fs/cgroup": ... permission denied
 ```
 
-This is a known issue with that kernel. Kernel 6.12.101 runs the containers.
+This is a known issue with that kernel. On kernel 6.12.101 the containers run.
