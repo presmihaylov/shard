@@ -1,0 +1,165 @@
+---
+title: Benchmarks
+description: How long each shard command takes on each provider, timed against a local daemon on a Linux host and on a Mac.
+sidebar:
+  order: 5
+---
+
+Each number on this page is how long one `shard` command took, from the start of the CLI to its exit, against a daemon on the same machine. To time a command the same way on your host:
+
+```sh
+shard create --name demo --memory 512MiB alpine:3.20
+time shard exec demo true
+shard remove --force demo
+```
+
+On Linux, run them in a root shell, so `sudo` does not add to the time.
+
+## Common commands
+
+The median time in milliseconds over 10 runs of each command:
+
+| Command | `firecracker` | `gvisor` | `sysbox` | `runc` | `vz` |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| `shard create --name demo --memory 512MiB alpine:3.20` | 665 | 266 | 347 | 261 | 445 |
+| `shard exec demo true` | 9 | 35 | 47 | 76 | 27 |
+| `shard pause demo` | 543 | 191 | not supported | not supported | 571 |
+| `shard resume demo` | 265 | 195 | not supported | not supported | 336 |
+| `shard fork --name demo-fork demo` | 378 | 244 | not supported | not supported | 779 |
+| `shard stop demo` | 120 | 50 | 52 | 58 | 138 |
+| `shard start demo` | 708 | 261 | 728 | 381 | 381 |
+| `shard remove --force demo` | 212 | 99 | 512 | 210 | 160 |
+| `shard run --name demo-run --memory 512MiB alpine:3.20 true` | 897 | 305 | 449 | 305 | 756 |
+
+The Linux providers ran on one host and `vz` ran on a Mac, so compare the Linux columns with each other and not with `vz`. Each section below names its machine.
+
+## How the numbers were measured
+
+- One script ran every command 10 times on each provider, after one untimed warm-up round.
+- Each time is the wall-clock time of one `shard` process, including CLI start-up. The CLI spoke to the daemon over its local socket. A client that connects to a remote server through `shard serve` also waits for the network.
+- The tables give the median and the 90th percentile by nearest rank: 9 of the 10 runs took that long or less.
+- The script pulled `alpine:3.20` before the first run, and created every sandbox with `--memory 512MiB`.
+- The sandbox commands ran on one sandbox, in the order of the tables. `create` starts it. `pause`, `resume`, `fork` and `policy logs` find it running. `secret grant`, `secret ungrant`, `policy attach`, `policy detach` and `snapshot create` find it stopped. `start` runs it again, and `remove --force` removes it while it runs. `fork` and `create --snapshot` each made a second sandbox, which the script then removed outside the timing.
+- `shard pull alpine:3.20` finds the image already cached. `shard pull busybox:1.36` pulls an image that the previous round removed, so its time depends on the network.
+- A command that the provider does not support shows "not supported".
+- The script did not time `shard daemon` and `shard serve`, which run until you stop them, the interactive `shard setup`, or `logs -f`, `policy logs -f` and `exec -it`, which follow or attach.
+
+## Linux host
+
+| | |
+| --- | --- |
+| Machine | Supermicro server (X11SSE-F board), bare metal |
+| CPU | Intel Xeon E3-1270 v6 @ 3.80GHz, 4 cores, 8 threads |
+| Memory | 31 GiB |
+| Operating system | Ubuntu 24.04.5 LTS, kernel Linux 6.8.0-142-generic |
+| shard | v0.1.2 |
+| Measured | 2026-10-05 |
+
+Every Linux provider ran on this host, each on a fresh install with the install script and `shard setup`. Each cell is the median / the 90th percentile in milliseconds.
+
+| Command | `firecracker` | `gvisor` | `sysbox` | `runc` |
+| --- | ---: | ---: | ---: | ---: |
+| `shard create --name demo --memory 512MiB alpine:3.20` | 665 / 707 | 266 / 272 | 347 / 355 | 261 / 273 |
+| `shard exec demo true` | 9 / 9 | 35 / 39 | 47 / 58 | 76 / 102 |
+| `shard cp ./notes.txt demo:/tmp/` | 26 / 26 | 50 / 60 | 58 / 60 | 69 / 100 |
+| `shard cp demo:/tmp/notes.txt ./notes-back.txt` | 12 / 12 | 55 / 57 | 93 / 98 | 123 / 153 |
+| `shard logs demo` | 5 / 5 | 5 / 5 | 5 / 6 | 5 / 6 |
+| `shard inspect demo` | 5 / 6 | 5 / 5 | 6 / 6 | 5 / 6 |
+| `shard list` | 5 / 6 | 5 / 5 | 5 / 6 | 5 / 6 |
+| `shard pause demo` | 543 / 562 | 191 / 204 | not supported | not supported |
+| `shard resume demo` | 265 / 283 | 195 / 206 | not supported | not supported |
+| `shard fork --name demo-fork demo` | 378 / 394 | 244 / 265 | not supported | not supported |
+| `shard policy logs demo` | 6 / 25 | 6 / 6 | 5 / 6 | 5 / 6 |
+| `shard stop demo` | 120 / 130 | 50 / 114 | 52 / 63 | 58 / 61 |
+| `shard secret grant demo API_KEY` | 37 / 43 | 64 / 75 | 47 / 55 | 51 / 67 |
+| `shard secret ungrant demo API_KEY` | 39 / 44 | 42 / 47 | 40 / 43 | 41 / 45 |
+| `shard policy attach demo example-only` | 42 / 49 | 50 / 54 | 42 / 58 | 62 / 68 |
+| `shard policy detach demo` | 34 / 40 | 29 / 33 | 37 / 47 | 27 / 36 |
+| `shard snapshot create --name demo-snap demo` | 23 / 26 | 32 / 35 | 29 / 43 | 28 / 30 |
+| `shard snapshot inspect demo-snap` | 5 / 5 | 5 / 6 | 5 / 6 | 6 / 6 |
+| `shard create --snapshot demo-snap --name demo-copy --memory 512MiB` | 630 / 646 | 271 / 277 | 875 / 938 | 277 / 286 |
+| `shard snapshot remove demo-snap` | 8 / 23 | 17 / 21 | 22 / 33 | 15 / 45 |
+| `shard start demo` | 708 / 725 | 261 / 289 | 728 / 770 | 381 / 512 |
+| `shard remove --force demo` | 212 / 238 | 99 / 114 | 512 / 522 | 210 / 216 |
+| `shard run --name demo-run --memory 512MiB alpine:3.20 true` | 897 / 919 | 305 / 311 | 449 / 470 | 305 / 327 |
+| `shard version` | 6 / 18 | 5 / 6 | 6 / 6 | 5 / 6 |
+| `shard info` | 7 / 21 | 5 / 6 | 5 / 7 | 5 / 9 |
+| `shard capabilities` | 9 / 21 | 5 / 8 | 5 / 8 | 6 / 6 |
+| `shard daemon status` | 10 / 15 | 5 / 6 | 6 / 6 | 6 / 6 |
+| `shard image list` | 10 / 12 | 6 / 6 | 6 / 10 | 6 / 6 |
+| `shard pull alpine:3.20` | 10 / 12 | 6 / 6 | 6 / 6 | 6 / 6 |
+| `shard snapshot list` | 9 / 11 | 5 / 5 | 5 / 5 | 5 / 6 |
+| `shard secret set --destination example.com NEW_KEY` | 37 / 44 | 17 / 18 | 9 / 15 | 8 / 10 |
+| `shard secret list` | 6 / 6 | 5 / 6 | 5 / 7 | 6 / 6 |
+| `shard secret remove NEW_KEY` | 6 / 7 | 6 / 7 | 6 / 7 | 6 / 6 |
+| `shard policy create --allow example.com new-policy` | 17 / 23 | 10 / 20 | 10 / 13 | 15 / 21 |
+| `shard policy show new-policy` | 5 / 6 | 5 / 5 | 5 / 6 | 5 / 6 |
+| `shard policy list` | 5 / 6 | 5 / 6 | 5 / 6 | 5 / 6 |
+| `shard policy remove new-policy` | 6 / 6 | 6 / 6 | 6 / 6 | 6 / 6 |
+| `shard tokens scopes` | 12 / 12 | 5 / 12 | 5 / 13 | 12 / 23 |
+| `shard tokens mint --name ci --duration 1h` | 5 / 6 | 5 / 5 | 5 / 5 | 5 / 7 |
+| `shard tokens list` | 5 / 6 | 5 / 8 | 5 / 6 | 6 / 7 |
+| `shard tokens revoke --name ci` | 14 / 27 | 26 / 36 | 22 / 27 | 18 / 28 |
+| `shard pull busybox:1.36` | 640 / 649 | 645 / 652 | 621 / 767 | 625 / 636 |
+| `shard image remove busybox:1.36` | 22 / 23 | 12 / 12 | 12 / 13 | 12 / 12 |
+| `shard image prune` | 13 / 14 | 13 / 14 | 13 / 14 | 13 / 13 |
+
+## Mac
+
+| | |
+| --- | --- |
+| Machine | Mac mini (Mac14,3), bare metal |
+| CPU | Apple M2, 8 cores |
+| Memory | 16 GiB |
+| Operating system | macOS 26.6 (25G72), kernel Darwin 25.6.0 |
+| shard | v0.1.2 |
+| Measured | 2026-10-05 |
+
+`vz` ran on this Mac. Each cell is the median / the 90th percentile in milliseconds.
+
+| Command | `vz` |
+| --- | ---: |
+| `shard create --name demo --memory 512MiB alpine:3.20` | 445 / 584 |
+| `shard exec demo true` | 27 / 47 |
+| `shard cp ./notes.txt demo:/tmp/` | 35 / 40 |
+| `shard cp demo:/tmp/notes.txt ./notes-back.txt` | 25 / 37 |
+| `shard logs demo` | 13 / 23 |
+| `shard inspect demo` | 11 / 17 |
+| `shard list` | 10 / 13 |
+| `shard pause demo` | 571 / 769 |
+| `shard resume demo` | 336 / 461 |
+| `shard fork --name demo-fork demo` | 779 / 862 |
+| `shard policy logs demo` | 29 / 34 |
+| `shard stop demo` | 138 / 187 |
+| `shard secret grant demo API_KEY` | 63 / 91 |
+| `shard secret ungrant demo API_KEY` | 61 / 124 |
+| `shard policy attach demo example-only` | 66 / 94 |
+| `shard policy detach demo` | 31 / 89 |
+| `shard snapshot create --name demo-snap demo` | 53 / 245 |
+| `shard snapshot inspect demo-snap` | 16 / 38 |
+| `shard create --snapshot demo-snap --name demo-copy --memory 512MiB` | 388 / 464 |
+| `shard snapshot remove demo-snap` | 33 / 41 |
+| `shard start demo` | 381 / 512 |
+| `shard remove --force demo` | 160 / 164 |
+| `shard run --name demo-run --memory 512MiB alpine:3.20 true` | 756 / 861 |
+| `shard version` | 32 / 49 |
+| `shard info` | 16 / 19 |
+| `shard capabilities` | 15 / 34 |
+| `shard daemon status` | 12 / 19 |
+| `shard image list` | 12 / 65 |
+| `shard pull alpine:3.20` | 11 / 22 |
+| `shard snapshot list` | 9 / 17 |
+| `shard secret set --destination example.com NEW_KEY` | 18 / 26 |
+| `shard secret list` | 10 / 27 |
+| `shard secret remove NEW_KEY` | 13 / 15 |
+| `shard policy create --allow example.com new-policy` | 26 / 56 |
+| `shard policy show new-policy` | 10 / 18 |
+| `shard policy list` | 11 / 16 |
+| `shard policy remove new-policy` | 13 / 79 |
+| `shard tokens scopes` | 10 / 27 |
+| `shard tokens mint --name ci --duration 1h` | 9 / 11 |
+| `shard tokens list` | 9 / 15 |
+| `shard tokens revoke --name ci` | 14 / 17 |
+| `shard pull busybox:1.36` | 2638 / 2931 |
+| `shard image remove busybox:1.36` | 51 / 55 |
+| `shard image prune` | 54 / 62 |
