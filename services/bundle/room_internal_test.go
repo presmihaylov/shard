@@ -285,7 +285,7 @@ func TestAdmitMemoryRefusesWithoutWriting(t *testing.T) {
 
 		return nil
 	})
-	if err == nil || !strings.Contains(err.Error(), "memory of the checkpoint does not fit") {
+	if err == nil || !strings.Contains(err.Error(), "of sandbox memory to save does not fit on the host disk") {
 		t.Fatalf("got %v, want the 1 PiB memory refused by name", err)
 	}
 }

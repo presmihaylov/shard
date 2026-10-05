@@ -189,10 +189,10 @@ func (s *Store) placeholder(name, value, chosen string, existing record) (string
 
 	// A guest that held the value would need no proxy, so this rule holds for the default too.
 	if strings.Contains(value, chosen) {
-		return "", &InvalidError{Err: fmt.Errorf("the placeholder of secret %s is inside its value, and the guest must never hold the value", name)}
+		return "", &InvalidError{Err: fmt.Errorf("the placeholder of secret %s is inside its value, and a sandbox must never see the value; choose another placeholder", name)}
 	}
 	if strings.Contains(chosen, value) {
-		return "", &InvalidError{Err: fmt.Errorf("the value of secret %s is inside its placeholder, and the guest holds the placeholder", name)}
+		return "", &InvalidError{Err: fmt.Errorf("the value of secret %s is inside its placeholder, and every sandbox sees the placeholder; choose another placeholder", name)}
 	}
 
 	// Only what this call named is shaped: a rotation must never be blocked by the placeholder it carries
@@ -379,7 +379,7 @@ func (s *Store) read(name string) (record, error) {
 
 	blob, err := os.ReadFile(s.path(name))
 	if errors.Is(err, fs.ErrNotExist) {
-		return record{}, &models.NotFoundError{Err: fmt.Errorf("%w: %s", ErrNotFound, name)}
+		return record{}, models.NotFound(ErrNotFound, fmt.Sprintf("secret %s not found", name))
 	}
 	if err != nil {
 		return record{}, fmt.Errorf("read secret %s: %w", name, err)

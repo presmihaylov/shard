@@ -282,7 +282,7 @@ func FailedGuard(id string, sb models.Sandbox) error {
 	}
 
 	public := PublicReason(sb)
-	refused := &StateError{ID: id, State: sb.State, Fix: fmt.Sprintf("%s; remove it with shard remove %s", public, id), Code: models.CodeSandboxFailed}
+	refused := &StateError{ID: id, State: sb.State, Fix: fmt.Sprintf("%s; remove it with shard remove %s and create another sandbox", public, id), Code: models.CodeSandboxFailed}
 	if sb.FailedReason != public {
 		refused.Detail = sb.FailedReason
 	}
@@ -577,7 +577,10 @@ func (s *Service) Prepare(ctx context.Context, req CreateRequest) (models.Sandbo
 
 // policyRefused makes the request's fault only a policy name that is malformed or names none; a store it could not read broke the verb.
 func policyRefused(name string, err error) error {
-	if errors.Is(err, egress.ErrNotFound) || egress.ValidName(name) != nil {
+	if errors.Is(err, egress.ErrNotFound) {
+		return &RequestError{Err: fmt.Errorf("policy %s does not exist: run shard policy create %s first", name, name)}
+	}
+	if egress.ValidName(name) != nil {
 		return &RequestError{Err: err}
 	}
 
@@ -906,7 +909,7 @@ func ValidPolicyName(name string) error { return egress.ValidName(name) }
 // validate refuses what no store could hold or no verb could take back, before anything is pulled.
 func validate(req CreateRequest) error {
 	if req.Image == "" && req.Snapshot == "" {
-		return &RequestError{Err: errors.New("the request names no image and no snapshot")}
+		return &RequestError{Err: errors.New("the request names no image and no snapshot; set one of them")}
 	}
 	if req.Image != "" && req.Snapshot != "" {
 		return &RequestError{Err: errors.New("the request names both an image and a snapshot: a snapshot already names its image")}
@@ -965,7 +968,7 @@ func validate(req CreateRequest) error {
 		}
 		// An env of the same name would either hide the placeholder or be hidden by it, and either is a surprise.
 		if slices.Contains(req.Secrets, key) {
-			return &RequestError{Err: fmt.Errorf("the secret %s and the environment entry %s name the same variable: the guest gets the placeholder as $%s, so drop the entry", key, key, key)}
+			return &RequestError{Err: fmt.Errorf("the secret %s and the environment entry %s name the same variable: the sandbox gets the placeholder as $%s, so drop the entry", key, key, key)}
 		}
 	}
 
@@ -974,11 +977,11 @@ func validate(req CreateRequest) error {
 			return &RequestError{Err: err}
 		}
 		if slices.Contains(req.Secrets[:i], name) {
-			return &RequestError{Err: fmt.Errorf("the secret %s was named twice", name)}
+			return &RequestError{Err: fmt.Errorf("the secret %s is in secrets twice; list it once", name)}
 		}
 		// The trust merge writes over a variable of this name, so the placeholder would never reach the guest.
 		if slices.Contains(bundle.TrustEnv, name) {
-			return &RequestError{Err: fmt.Errorf("the secret %s cannot be granted to a sandbox: the proxy sets that variable to the trust store", name)}
+			return &RequestError{Err: fmt.Errorf("secret %s cannot be granted: the proxy sets $%s to its trust store; store the secret under another name", name, name)}
 		}
 	}
 

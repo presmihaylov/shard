@@ -94,7 +94,7 @@ func TestApplyStopsAtTheFailedStepAndSaysWhatStays(t *testing.T) {
 	if want := []string{"start 0", "done 0", "start 1", "fail 1: it broke"}; !slices.Equal(ui.lists[0].marks, want) {
 		t.Errorf("marked %v, want %v", ui.lists[0].marks, want)
 	}
-	if want := []string{"", "Setup stopped. Earlier completed steps remain in place.", "Run `shard setup` again to retry."}; !slices.Equal(ui.printed, want) {
+	if want := []string{"", "Setup stopped. Earlier completed steps remain in place.", "Run shard setup again to retry."}; !slices.Equal(ui.printed, want) {
 		t.Errorf("printed %q, want %q", ui.printed, want)
 	}
 }

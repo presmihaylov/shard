@@ -21,7 +21,7 @@ import (
 
 func TestDaemonTakesNoArgumentButStatus(t *testing.T) {
 	err := App{Out: io.Discard}.Run(t.Context(), []string{"daemon", "extra"})
-	if want := `daemon takes no arguments, or status, got ["extra"]`; err == nil || err.Error() != want {
+	if want := `daemon takes no arguments, or the subcommand status, got ["extra"]`; err == nil || err.Error() != want {
 		t.Errorf("daemon with an argument got %v, want %q", err, want)
 	}
 }

@@ -156,7 +156,7 @@ func TestARemoteClientReadsThePublicSandboxRoutes(t *testing.T) {
 }
 
 func TestGetSandboxTurnsNotFoundIntoItsOwnError(t *testing.T) {
-	c := serve(t, shortRoot(t), answer(http.StatusNotFound, `{"error":{"code":"not_found","message":"sandbox ghost: sandbox not found"}}`))
+	c := serve(t, shortRoot(t), answer(http.StatusNotFound, `{"error":{"code":"not_found","message":"sandbox ghost not found"}}`))
 
 	_, err := c.GetSandbox(t.Context(), "ghost")
 
@@ -198,7 +198,7 @@ func TestNoDaemonIsOneConnectLine(t *testing.T) {
 	if !errors.As(err, &connect) {
 		t.Fatalf("Version = %v, want a ConnectError", err)
 	}
-	want := "cannot connect to shard daemon at " + filepath.Join(root, api.SocketFile) + ": is it running? shard --root " + root + " daemon"
+	want := "cannot connect to the shard daemon at " + filepath.Join(root, api.SocketFile) + ": is it running? shard --root " + root + " daemon"
 	if err.Error() != want {
 		t.Errorf("the error reads %q, want %q", err.Error(), want)
 	}
@@ -226,7 +226,7 @@ func TestADeniedSocketNamesSudo(t *testing.T) {
 
 	_, err = client.New(root).Version(t.Context())
 
-	want := "cannot connect to shard daemon at " + socket + ": permission denied; run the command again with sudo"
+	want := "cannot connect to the shard daemon at " + socket + ": permission denied; run the command again with sudo"
 	if err == nil || err.Error() != want {
 		t.Errorf("Version on a denied socket returned %v, want %q", err, want)
 	}
@@ -239,7 +239,7 @@ func TestSetHintIsReadOnlyWhenNothingAnswers(t *testing.T) {
 	c.SetHint(func() (string, error) { return "is it set up? shard setup", nil })
 
 	_, err := c.Version(t.Context())
-	if want := "cannot connect to shard daemon at " + filepath.Join(root, api.SocketFile) + ": is it set up? shard setup"; err == nil || err.Error() != want {
+	if want := "cannot connect to the shard daemon at " + filepath.Join(root, api.SocketFile) + ": is it set up? shard setup"; err == nil || err.Error() != want {
 		t.Errorf("the error reads %v, want %q", err, want)
 	}
 
@@ -271,7 +271,7 @@ func TestADaemonThatNeverAnswersIsCutByTheDeadline(t *testing.T) {
 	if took := time.Since(start); took > 2*time.Second {
 		t.Errorf("ListSandboxes took %s to give up, want the deadline", took)
 	}
-	want := "GET /v0/sandboxes on " + filepath.Join(root, api.SocketFile) + ": no answer within 100ms"
+	want := "the daemon at " + filepath.Join(root, api.SocketFile) + " gave no answer within 100ms"
 	if err == nil || err.Error() != want {
 		t.Errorf("ListSandboxes = %v, want %q", err, want)
 	}

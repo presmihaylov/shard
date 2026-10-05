@@ -149,7 +149,7 @@ var allDone = []string{"start 0", "done 0", "start 1", "done 1", "start 2", "don
 // The §13 completion text, quoted from the spec, after the path line.
 var completion = []string{
 	"The file stores your API key as plain text and is accessible only to your user.",
-	"Shard will use this connection automatically.",
+	"From now on, shard commands use this connection automatically.",
 	"",
 	"Next steps:",
 	"",
@@ -383,7 +383,7 @@ func TestEditAsksForTheKeyThatSHARDAPIKEYGotWrong(t *testing.T) {
 	if got := savedConnection(t, path); got.APIKey != testKey {
 		t.Errorf("saved a key other than the edited one")
 	}
-	containsAll(t, ui.printed, client.APIKeyEnv+" is set to another key, and Shard commands use it before the saved one.")
+	containsAll(t, ui.printed, client.APIKeyEnv+" is set to another key, and shard commands use it before the saved one.")
 	noLeak(t, ui, err)
 }
 
@@ -552,7 +552,7 @@ func TestADeclinedSaveWritesNothing(t *testing.T) {
 		t.Errorf("printed %q, want no plain-text note without a save", ui.printed)
 	}
 	// The person asked hears it before the answer instead. (SHARD-739)
-	if want := "A saved connection stores your API key as plain text in a file only your user can read.\nSave this connection for future Shard commands?"; ui.questions[AskSave] != want {
+	if want := "A saved connection stores your API key as plain text in a file only your user can read.\nSave this connection for future shard commands?"; ui.questions[AskSave] != want {
 		t.Errorf("the save asks %q, want %q", ui.questions[AskSave], want)
 	}
 	noLeak(t, ui, err)
@@ -638,8 +638,8 @@ func TestRemoveDeletesTheSavedConnection(t *testing.T) {
 		installed bool
 		want      []string
 	}{
-		{name: "local", installed: true, want: []string{"✓ Connection removed", "", "Shard commands now use the local daemon."}},
-		{name: "nothing local", want: []string{"✓ Connection removed", "", "Shard commands now use this machine, which is not set up to run sandboxes.", "Run shard setup again to set it up."}},
+		{name: "local", installed: true, want: []string{"✓ Connection removed", "", "From now on, shard commands use the local daemon."}},
+		{name: "nothing local", want: []string{"✓ Connection removed", "", "From now on, shard commands use this machine, which is not set up to run sandboxes.", "Run shard setup again to set it up."}},
 		{name: "SHARD_REMOTE", vars: map[string]string{client.RemoteEnv: "https://other.example.com"}, want: []string{
 			"✓ Connection removed", "", "SHARD_REMOTE is still set to https://other.example.com, and it overrides the local default.", "Unset it to use the local daemon.",
 		}},
@@ -713,8 +713,8 @@ func TestSwitchToLocalRemovesTheConnectionOnlyAtTheEnd(t *testing.T) {
 		says   string
 		review string
 	}{
-		{name: "remove", remove: true, want: client.Config{}, says: "Shard commands now use the local daemon.", review: "  Remove the saved connection to https://shard.example.com."},
-		{name: "keep", want: saved, says: "The saved connection remains, so normal Shard commands still use the remote server."},
+		{name: "remove", remove: true, want: client.Config{}, says: "From now on, shard commands use the local daemon.", review: "  Remove the saved connection to https://shard.example.com."},
+		{name: "keep", want: saved, says: "The saved connection remains, so normal shard commands still use the remote server."},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			host, path := testHost(t, nil)
@@ -726,7 +726,7 @@ func TestSwitchToLocalRemovesTheConnectionOnlyAtTheEnd(t *testing.T) {
 			if err != nil {
 				t.Fatalf("switchToLocal: %v", err)
 			}
-			containsAll(t, ui.printed, "Normal Shard commands currently use the remote server https://shard.example.com, saved in "+path+".")
+			containsAll(t, ui.printed, "Normal shard commands currently use the remote server https://shard.example.com, saved in "+path+".")
 			if h.review != tc.review {
 				t.Errorf("the review says %q, want %q", h.review, tc.review)
 			}
@@ -760,7 +760,7 @@ func TestSwitchToLocalNamesTheRemoteThatWins(t *testing.T) {
 			"SHARD_REMOTE is still set to https://other.example.com, and it overrides the local default.", "Unset it to use the local daemon.",
 		}},
 		{name: "keep", after: []string{
-			"The saved connection remains, so normal Shard commands still use the remote server.", "Run shard setup again to remove it.",
+			"The saved connection remains, so normal shard commands still use the remote server.", "Run shard setup again to remove it.",
 			"SHARD_REMOTE is still set to https://other.example.com, and it overrides the saved connection.",
 			"Unset it to use the saved connection to https://shard.example.com.",
 		}},
@@ -781,7 +781,7 @@ func TestSwitchToLocalNamesTheRemoteThatWins(t *testing.T) {
 			}
 
 			want := append([]string{
-				"Normal Shard commands currently use the remote server https://other.example.com, set in SHARD_REMOTE.",
+				"Normal shard commands currently use the remote server https://other.example.com, set in SHARD_REMOTE.",
 				"A connection to https://shard.example.com is also saved in " + path + ".", "",
 			}, tc.after...)
 			if got := append(ui.printed, lines...); !slices.Equal(got, want) {

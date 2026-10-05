@@ -54,7 +54,7 @@ func TestTheSnapshotReadsAndTheRemoveNameTheRoute(t *testing.T) {
 
 // NotFoundError prints "no sandbox", so a snapshot that is not there keeps the daemon's own line.
 func TestASnapshotThatIsNotThereKeepsTheDaemonLine(t *testing.T) {
-	const line = "snapshot ghost: snapshot not found"
+	const line = "snapshot ghost not found"
 	c := serve(t, shortRoot(t), answer(http.StatusNotFound, `{"error":{"code":"not_found","message":"`+line+`"}}`))
 
 	calls := map[string]func() error{

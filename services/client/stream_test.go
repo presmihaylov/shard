@@ -451,7 +451,7 @@ func TestExecReportsARefusalOfTheAttach(t *testing.T) {
 }
 
 func TestExecReportsAnIDTheDaemonDoesNotHold(t *testing.T) {
-	c := serve(t, shortRoot(t), answer(http.StatusNotFound, `{"error":{"code":"not_found","message":"sandbox ghost: sandbox not found"}}`))
+	c := serve(t, shortRoot(t), answer(http.StatusNotFound, `{"error":{"code":"not_found","message":"sandbox ghost not found"}}`))
 
 	_, err := c.Exec(t.Context(), "ghost", sandbox.ExecRequest{Command: []string{"true"}}, client.ExecStreams{})
 
@@ -470,7 +470,7 @@ func TestExecReportsAnExecThatEndedWithNoStatus(t *testing.T) {
 	_, err := c.Exec(t.Context(), "sandbox1", sandbox.ExecRequest{Command: []string{"true"}}, client.ExecStreams{})
 
 	// No frame text, as a hang-up leaves nothing better to say than the record does.
-	want := "the exec in sandbox sandbox1 ended without an exit status: the stream to the daemon dropped; the daemon detaches a client that takes no output for 30s, and exec 1a2b3c4d5e6f7a8b is running with 4096 bytes of output lost"
+	want := "the exec in sandbox sandbox1 ended without an exit status: the stream to the daemon dropped; the daemon detaches a client that reads no output for 30s, and exec 1a2b3c4d5e6f7a8b is running, with 4096 bytes of output lost"
 	if err == nil || err.Error() != want {
 		t.Fatalf("Exec returned %q, want %q", err, want)
 	}
@@ -619,7 +619,7 @@ func TestLogsWritesWhatTheDaemonAnswers(t *testing.T) {
 }
 
 func TestLogsReportsAnIDTheDaemonDoesNotHold(t *testing.T) {
-	c := serve(t, shortRoot(t), answer(http.StatusNotFound, `{"error":{"code":"not_found","message":"sandbox ghost: sandbox not found"}}`))
+	c := serve(t, shortRoot(t), answer(http.StatusNotFound, `{"error":{"code":"not_found","message":"sandbox ghost not found"}}`))
 
 	var out bytes.Buffer
 
@@ -808,7 +808,7 @@ func TestFollowEgressLogSaysOneLineWhenTheDaemonDrops(t *testing.T) {
 }
 
 func TestFollowEgressLogReportsAnIDTheDaemonDoesNotHold(t *testing.T) {
-	c := serve(t, shortRoot(t), answer(http.StatusNotFound, `{"error":{"code":"not_found","message":"sandbox ghost: sandbox not found"}}`))
+	c := serve(t, shortRoot(t), answer(http.StatusNotFound, `{"error":{"code":"not_found","message":"sandbox ghost not found"}}`))
 
 	var out, errOut bytes.Buffer
 

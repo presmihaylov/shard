@@ -60,13 +60,13 @@ npx tsx examples/quickstart.ts
 
 ## What to know
 
-- **`create()` runs no command.** It answers a running sandbox, or one in state `failed` with
+- **`create()` runs no command.** It returns a running sandbox, or one in state `failed` with
   `info.failedReason`. Run commands in it with `exec()`.
-- **A sandbox outlives its app.** `shard.run(image, command, { restart })` starts one app and answers
+- **A sandbox outlives its app.** `shard.run(image, command, { restart })` starts one app and returns
   an `App`. When the app exits, or after `app.stop()`, the sandbox stays running, so you can still exec
   into it. Only `stop()` or `remove()` ends it.
 - **A string command runs under `/bin/sh -c`.** An array runs as it is.
-- **`exec(command, { background: true })` answers a `Command`.** `wait()`, `kill()`, `writeStdin()`,
+- **`exec(command, { background: true })` returns a `Command`.** `wait()`, `kill()`, `writeStdin()`,
   `closeStdin()` and `resize()` act on it. `commands.get(id)` finds it again from another client.
 - **An abort never kills the remote command.** An `AbortSignal` ends only this client's wait and
   lets go of the stream. The command runs on until it exits or you call `kill()`.
@@ -78,8 +78,15 @@ npx tsx examples/quickstart.ts
   large file never sits in memory. `files.upload()` sends a local file with its length.
   `uploadDir()` and `downloadDir()` move a whole tree as a tar.
 - **A verb the provider lacks throws `UnsupportedError`.** `shard.capabilities()` says which of the
-  eight lifecycle verbs the server supports (create, start, stop, remove, pause, resume, fork and
-  snapshot), before you call them.
+  eight lifecycle verbs the daemon's provider supports (create, start, stop, remove, pause, resume,
+  fork and snapshot), before you call them.
+
+## Lists
+
+`shard.list()` returns `{ sandboxes, warnings }`. `shard.secrets.list()` returns
+`{ secrets, warnings }`. The warnings name entries the daemon could not read. Both lists collect
+warnings from every page, keeping each exact text once in first-seen order. Check them before you
+treat the result as complete. Other lists return arrays.
 
 ## Errors
 
@@ -94,20 +101,14 @@ local argument throws the native error instead: an `upload` of a missing file th
 | `CommandNotStartedError` | The command never ran, as when its binary does not exist. |
 | `APIError` | The daemon refused the request: `AuthenticationError` (401), `PermissionDeniedError` (403), `NotFoundError` (404), `InvalidRequestError` (400, 413), `ConflictError` (409), `UnsupportedError`, `ServerError` (5xx). An exec past the running-exec bound is a plain `APIError` with status 429 and code `exec_limit`. |
 
-`ProtocolError` is an answer the SDK cannot read, `UnknownLengthError` an upload of unknown size, and
-`UnsafeArchiveError` a tar entry that would land outside its target. A non-zero exit code is not an
-error. Read `result.exitCode`.
+`ProtocolError` is an answer the SDK cannot read, `UnknownLengthError` an upload of unknown size or
+one whose source changed size while it was sent, and `UnsafeArchiveError` a `downloadDir` tar entry
+the SDK refuses to land, as one outside the destination, named by `entry` and `reason`. A non-zero
+exit code is not an error. Read `result.exitCode`.
+
+An `APIError` can carry `holders`, the sandbox ids that prevent an operation such as secret removal.
+The property is `undefined` when the error has no holders field.
 
 ## License
 
 Apache-2.0.
-
-## Lists and errors
-
-`shard.list()` returns `{ sandboxes, warnings }`. `shard.secrets.list()` returns
-`{ secrets, warnings }`. The warnings name entries the daemon could not read. Both lists collect
-warnings from every page, keeping each exact text once in first-seen order. Check them before you
-treat the result as complete. Other lists return arrays.
-
-An `APIError` can carry `holders`, the sandbox ids that prevent an operation such as secret removal.
-The property is `undefined` when the error has no holders field.

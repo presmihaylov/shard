@@ -13,6 +13,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/presmihaylov/shard/pkg/mountinfo"
 	"github.com/presmihaylov/shard/pkg/proxy"
 	"github.com/presmihaylov/shard/pkg/term"
 	"github.com/presmihaylov/shard/pkg/vzshim"
@@ -80,13 +81,13 @@ func (s *Setup) existing(ctx context.Context, inst Installation) error {
 	}
 
 	m := *inst.Manifest
-	if err := s.UI.Print("Shard is already installed", "", "Version:  "+m.Version, "Provider: "+providerTitle(m.Provider), "Service:  "+string(inst.Service), ""); err != nil {
+	if err := s.UI.Print("This machine already has shard installed", "", "Version:  "+m.Version, "Provider: "+providerTitle(m.Provider), "Service:  "+string(inst.Service), ""); err != nil {
 		return err
 	}
 	choice, err := s.UI.Select(ctx, AskExisting, "What would you like to do?", []term.Option{
 		{Name: "repair", Label: "Check or repair the installation", Default: true},
-		{Name: "upgrade", Label: "Upgrade Shard"},
-		{Name: "uninstall", Label: "Uninstall Shard"},
+		{Name: "upgrade", Label: "Upgrade shard"},
+		{Name: "uninstall", Label: "Uninstall shard"},
 		{Name: "exit", Label: "Exit"},
 	})
 	if err != nil {
@@ -137,7 +138,7 @@ func (s *Setup) repair(ctx context.Context, m Manifest, service ServiceState, re
 	}
 
 	if len(problems) == 0 {
-		return s.UI.Print("✓ No problems found", "", "Shard "+m.Version+" with "+providerTitle(m.Provider)+" is installed correctly.")
+		return s.UI.Print("✓ No problems found", "", "Installed correctly: shard "+m.Version+" with "+providerTitle(m.Provider)+".")
 	}
 
 	steps, err := s.localSteps(ctx, Local{Provider: m.Provider, StartAtBoot: m.StartAtBoot})
@@ -164,7 +165,7 @@ func (s *Setup) repair(ctx context.Context, m Manifest, service ServiceState, re
 		lines = append(lines, "", "Then setup will:", removal)
 	}
 	if len(runtime) > 0 && service == ServiceNone {
-		lines = append(lines, "", "Then restart `shard daemon` and run `shard daemon status`, which puts back the files it keeps in "+DataDir+".")
+		lines = append(lines, "", "Then restart shard daemon and run shard daemon status, which puts back the files it keeps in "+DataDir+".")
 	}
 	lines = append(lines, "", "Your settings and sandbox data stay in place.", "")
 	if err := s.UI.Print(lines...); err != nil {
@@ -176,8 +177,15 @@ func (s *Setup) repair(ctx context.Context, m Manifest, service ServiceState, re
 	if err := s.admin(ctx); err != nil {
 		return err
 	}
+	if err := s.apply(ctx, "Repairing shard", steps); err != nil {
+		return err
+	}
 
-	return s.apply(ctx, "Repairing Shard", steps)
+	done := "shard " + m.Version + " is repaired."
+	if m.StartAtBoot {
+		done = "shard " + m.Version + " is repaired, and the daemon is running."
+	}
+	return s.UI.Print("", done)
 }
 
 // runtimeFiles are what the daemon of provider writes under its root when it builds the provider: the vz shim and guest init, and a microVM's kernel.
@@ -271,7 +279,7 @@ func (s *Setup) upgrade(ctx context.Context, m Manifest, service ServiceState, r
 	}
 	latest, _ := stableVersion(rel.Tag)
 	if installed, ok := stableVersion(m.Version); ok && !newer(latest, installed) {
-		return s.UI.Print("", "Shard "+m.Version+" is up to date.")
+		return s.UI.Print("", "Up to date: shard "+m.Version+".")
 	}
 
 	targets, err := upgradeTargets(h, m)
@@ -280,11 +288,11 @@ func (s *Setup) upgrade(ctx context.Context, m Manifest, service ServiceState, r
 	}
 	dir, err := os.MkdirTemp("", "shard-upgrade-*")
 	if err != nil {
-		return fmt.Errorf("upgrade Shard: %w", err)
+		return fmt.Errorf("upgrade shard: %w", err)
 	}
 	defer func() { err = errors.Join(err, os.RemoveAll(dir)) }()
 
-	fetch := Step{Title: "Download and verify Shard " + rel.Tag, Do: func(ctx context.Context) error {
+	fetch := Step{Title: "Download and verify shard " + rel.Tag, Do: func(ctx context.Context) error {
 		fetched := map[string]bool{}
 		for i := range targets {
 			t := &targets[i]
@@ -316,11 +324,11 @@ func (s *Setup) upgrade(ctx context.Context, m Manifest, service ServiceState, r
 	case ServiceActive:
 		lines = append(lines, "The background service restarts to run "+rel.Tag+".",
 			"Your sandboxes keep running while the daemon restarts.",
-			"Open `shard exec` sessions disconnect. Their commands keep running.")
+			"Open shard exec sessions disconnect. Their commands keep running.")
 	case ServiceInactive:
 		lines = append(lines, "The background service is not running. Setup does not start it.")
 	case ServiceNone:
-		lines = append(lines, "You start the daemon yourself. Restart `shard daemon` to run "+rel.Tag+".")
+		lines = append(lines, "You start the daemon yourself. Restart shard daemon to run "+rel.Tag+".")
 	}
 	if err := s.UI.Print(append(lines, "")...); err != nil {
 		return err
@@ -333,21 +341,21 @@ func (s *Setup) upgrade(ctx context.Context, m Manifest, service ServiceState, r
 	}
 
 	steps := []Step{
-		{Title: "Replace the Shard binaries", Do: func(ctx context.Context) error { return replaceAll(ctx, h, targets) }},
-		{Title: "Record Shard " + rel.Tag, Do: func(ctx context.Context) error {
+		{Title: "Replace the shard binaries", Do: func(ctx context.Context) error { return replaceAll(ctx, h, targets) }},
+		{Title: "Record shard " + rel.Tag, Do: func(ctx context.Context) error {
 			m.Version = rel.Tag
 			return saveManifest(ctx, h, m)
 		}},
 	}
-	done := "Shard " + rel.Tag + " is installed."
+	done := "Upgraded to shard " + rel.Tag + "."
 	if service == ServiceActive {
 		steps = append(steps,
 			Step{Title: "Restart the daemon", Do: func(ctx context.Context) error { return restartService(ctx, h, m) }},
 			Step{Title: "Verify the daemon connection", Do: func(ctx context.Context) error { return verifyDaemon(ctx, h) }},
 		)
-		done = "Shard " + rel.Tag + " is installed, and the daemon is running."
+		done = "Upgraded to shard " + rel.Tag + ", and the daemon is running."
 	}
-	if err := s.apply(ctx, "Upgrading Shard", steps); err != nil {
+	if err := s.apply(ctx, "Upgrading shard", steps); err != nil {
 		return err
 	}
 
@@ -382,7 +390,7 @@ func releaseAsset(h Host, name string) (string, error) {
 		return name + "-" + h.OS + "-" + h.Arch, nil
 	}
 
-	return "", fmt.Errorf("upgrade Shard: no release file replaces %s", name)
+	return "", fmt.Errorf("upgrade shard: no release file replaces %s", name)
 }
 
 // verifyVersion runs each new CLI before anything is replaced; shard-init is a guest PID 1, so its checksum is its proof.
@@ -490,13 +498,9 @@ func (s *Setup) uninstall(ctx context.Context, m Manifest) error {
 	}
 	if n > 0 {
 		left := fmt.Sprintf("%d %s", n, plural(n, "sandbox", "sandboxes"))
-		// On Linux the API socket belongs to root, so the commands that reach the daemon need sudo, as in localDone.
-		sudo := ""
-		if h.OS == "linux" {
-			sudo = "sudo "
-		}
-		return errors.Join(s.UI.Print("Shard has "+left+" on this machine.",
-			"Remove "+plural(n, "it", "them")+" before you uninstall Shard:", "",
+		sudo := socketSudo(h)
+		return errors.Join(s.UI.Print("This machine still has "+left+".",
+			"Remove "+plural(n, "it", "them")+" before you uninstall shard:", "",
 			"  List sandboxes:", "    "+sudo+"shard list --all", "",
 			"  Remove a sandbox:", "    "+sudo+"shard remove --force <name>"),
 			fmt.Errorf("uninstall stopped: %s left", left))
@@ -514,19 +518,19 @@ func (s *Setup) uninstall(ctx context.Context, m Manifest) error {
 			netHeld, err = removeNetwork(ctx, h)
 			return err
 		}})
-		clauses = append(clauses, "remove Shard's network bridge and firewall tables")
+		clauses = append(clauses, "remove shard's network bridge and firewall tables")
 	}
 	// Last, since it removes the manifest that lets a failed uninstall run again.
-	steps = append(steps, Step{Title: "Remove files installed by Shard setup", Do: func(ctx context.Context) error { return removeOwned(ctx, h, m) }})
-	clauses = append(clauses, "remove files installed by Shard setup")
+	steps = append(steps, Step{Title: "Remove files installed by shard setup", Do: func(ctx context.Context) error { return removeOwned(ctx, h, m) }})
+	clauses = append(clauses, "remove files installed by shard setup")
 
-	if err := s.UI.Print(slices.Concat([]string{"Uninstall Shard?", ""}, clauseLines(clauses), []string{"", "Your saved data will remain.", "Shared tools will remain.", ""})...); err != nil {
+	if err := s.UI.Print(slices.Concat([]string{"Uninstall shard?", ""}, clauseLines(clauses), []string{"", "Your saved data will remain.", "Shared tools will remain.", ""})...); err != nil {
 		return err
 	}
 	if err := s.confirm(ctx, false); err != nil {
 		return err
 	}
-	if err := s.apply(ctx, "Uninstalling Shard", steps); err != nil {
+	if err := s.apply(ctx, "Uninstalling shard", steps); err != nil {
 		return err
 	}
 
@@ -708,8 +712,9 @@ func removeNetwork(ctx context.Context, h Host) (held bool, err error) {
 
 // uninstalled names what stays and how to remove it, since uninstall removes no shared tool and no data.
 func uninstalled(h Host, m Manifest, netHeld bool) ([]string, error) {
-	lines := []string{"", "Shard was uninstalled.", "", "Your saved data remains in " + DataDir + "."}
+	lines := []string{"", "Uninstalled shard.", "", "Your saved data remains in " + DataDir + "."}
 	if h.OS == "darwin" {
+		lines = append(lines, "To delete the saved data, run: "+sudoFor(h)+"rm -r "+DataDir)
 		logs, err := macLogsLeft(h)
 		if err != nil {
 			return nil, err
@@ -717,11 +722,11 @@ func uninstalled(h Host, m Manifest, netHeld bool) ([]string, error) {
 		lines = append(lines, logs...)
 	}
 	if h.OS == "linux" {
-		image, err := dataImageLeft(h)
+		data, err := dataLeft(h)
 		if err != nil {
 			return nil, err
 		}
-		lines = append(lines, image...)
+		lines = append(lines, data...)
 	}
 
 	var tools []string
@@ -730,10 +735,10 @@ func uninstalled(h Host, m Manifest, netHeld bool) ([]string, error) {
 			continue
 		}
 		if f.Package != "" {
-			tools = append(tools, "  "+f.Package, "    Remove it with: sudo apt-get remove "+f.Package)
+			tools = append(tools, "  "+f.Package, "    Remove it with: "+sudoFor(h)+"apt-get remove "+f.Package)
 			continue
 		}
-		tools = append(tools, "  "+f.Path, "    Remove it with: sudo rm "+f.Path)
+		tools = append(tools, "  "+f.Path, "    Remove it with: "+sudoFor(h)+"rm "+f.Path)
 	}
 	if len(tools) > 0 {
 		lines = append(lines, "", "These shared tools remain:")
@@ -769,7 +774,7 @@ func uninstalled(h Host, m Manifest, netHeld bool) ([]string, error) {
 // networkLeft names the shared bridge and tables a daemon still uses, or else IP forwarding, which other software may need on.
 func networkLeft(h Host, held bool) ([]string, error) {
 	if held {
-		return []string{"", "A Shard daemon still uses the network bridge " + hostBridge + " and its firewall tables, so they remain."}, nil
+		return []string{"", "A shard daemon still uses the network bridge " + hostBridge + " and its firewall tables, so they remain."}, nil
 	}
 	forward, err := os.ReadFile(filepath.Join(h.Root, ipForward))
 	if errors.Is(err, fs.ErrNotExist) {
@@ -782,21 +787,31 @@ func networkLeft(h Host, held bool) ([]string, error) {
 		return nil, nil
 	}
 
-	return []string{"", "IP forwarding remains on (net.ipv4.ip_forward = 1). Other software may need it.", "Turn it off with: sudo sysctl -w net.ipv4.ip_forward=0"}, nil
+	return []string{"", "IP forwarding remains on (net.ipv4.ip_forward = 1). Other software may need it.", "Turn it off with: " + sudoFor(h) + "sysctl -w net.ipv4.ip_forward=0"}, nil
 }
 
 const fstabPath = "/etc/fstab"
 
-// dataImageLeft names the disk image the daemon made for a data dir that cannot clone, and the fstab line that mounts it, which uninstall keeps with the data.
-func dataImageLeft(h Host) ([]string, error) {
+// dataLeft names the commands that delete the data uninstall keeps on Linux, with the disk image and fstab line of a data dir that cannot clone.
+func dataLeft(h Host) ([]string, error) {
+	sudo := sudoFor(h)
 	image := datadir.ImagePath(DataDir)
-	info, err := os.Lstat(rooted(h, image))
-	if errors.Is(err, fs.ErrNotExist) {
-		return nil, nil
+	// The mount point outlives the umount, and the lock a Firecracker start takes outlives the image. (SHARD-734)
+	remove := sudo + "rm -r " + DataDir
+	lock := image + ".lock"
+	_, err := os.Lstat(rooted(h, lock))
+	if err != nil && !errors.Is(err, fs.ErrNotExist) {
+		return nil, fmt.Errorf("check %s: %w", lock, err)
 	}
-	if err != nil {
+	if err == nil {
+		remove += " " + lock
+	}
+
+	info, err := os.Lstat(rooted(h, image))
+	if err != nil && !errors.Is(err, fs.ErrNotExist) {
 		return nil, fmt.Errorf("check %s: %w", image, err)
 	}
+	imaged := err == nil
 	fstab, err := os.ReadFile(rooted(h, fstabPath))
 	if err != nil && !errors.Is(err, fs.ErrNotExist) {
 		return nil, fmt.Errorf("read %s: %w", fstabPath, err)
@@ -808,15 +823,40 @@ func dataImageLeft(h Host) ([]string, error) {
 		}
 	}
 
+	_, mounted, err := mountinfo.Under(h.Root, DataDir)
+	if err != nil && !errors.Is(err, fs.ErrNotExist) {
+		return nil, fmt.Errorf("check the mount at %s: %w", DataDir, err)
+	}
+	// A mount outlives its deleted image, and rm -r would empty it, then fail on the busy mount point.
+	var unmount []string
+	if mounted {
+		unmount = []string{"  " + sudo + "umount " + DataDir}
+	}
+	if !imaged && len(mounts) == 0 && !mounted {
+		return []string{"To delete the saved data, run: " + remove}, nil
+	}
+	if !imaged && len(mounts) == 0 {
+		return slices.Concat([]string{"To delete the saved data, run:"}, unmount, []string{"  " + remove}), nil
+	}
+	// systemd keeps the mount unit it made from the fstab line until a reload. (SHARD-730)
+	dropLine := []string{"  " + sudo + "sed -i '\\|^" + regexp.QuoteMeta(image) + "[[:space:]]|d' " + fstabPath, "  " + sudo + "systemctl daemon-reload"}
+	// A line left for a deleted image fails its mount at every boot.
+	if !imaged {
+		return slices.Concat(
+			[]string{"The disk image " + image + " is gone, but this line in " + fstabPath + " still mounts it at boot:"}, mounts,
+			[]string{"To remove the line and delete the saved data, run:"}, unmount, dropLine, []string{"  " + remove},
+		), nil
+	}
+
 	where := fmt.Sprintf("It lives in the %.1f GiB disk image %s", float64(info.Size())/(1<<30), image)
 	free := "To free the disk and delete the saved data, run:"
 	if len(mounts) == 0 {
-		return []string{where + ".", free, "  sudo umount " + DataDir, "  sudo rm " + image}, nil
+		return []string{where + ".", free, "  " + sudo + "umount " + DataDir, "  " + sudo + "rm " + image, "  " + remove}, nil
 	}
 
 	return slices.Concat(
 		[]string{where + ", which this line in " + fstabPath + " mounts at boot:"}, mounts,
-		[]string{free, "  sudo umount " + DataDir, "  sudo sed -i '\\|^" + regexp.QuoteMeta(image) + "[[:space:]]|d' " + fstabPath, "  sudo rm " + image},
+		[]string{free, "  " + sudo + "umount " + DataDir}, dropLine, []string{"  " + sudo + "rm " + image, "  " + remove},
 	), nil
 }
 
@@ -830,7 +870,7 @@ func macLogsLeft(h Host) ([]string, error) {
 		return nil, fmt.Errorf("check %s: %w", macLogDir, err)
 	}
 
-	return []string{"The daemon's logs remain in " + macLogDir + ".", "Remove them with: sudo rm -r " + macLogDir}, nil
+	return []string{"The daemon's logs remain in " + macLogDir + ".", "Remove them with: " + sudoFor(h) + "rm -r " + macLogDir}, nil
 }
 
 // leftCommands are the shard commands that still exist: the one that ran setup, and the copy the installer put in ~/.local/bin.
@@ -865,11 +905,7 @@ func (s *Setup) manual(ctx context.Context, inst Installation) error {
 	if err != nil {
 		return err
 	}
-	// The API socket is root's on Linux, so a command that asks the daemon needs sudo there.
-	sudo := ""
-	if h.OS == "linux" {
-		sudo = "sudo "
-	}
+	sudo := socketSudo(h)
 	sandboxes, err := manualSandboxes(h, inst.Manual, sudo)
 	if err != nil {
 		return err
@@ -896,7 +932,7 @@ func (s *Setup) manual(ctx context.Context, inst Installation) error {
 
 // manualVersions names the version the found binary reports beside the one setup installs.
 func manualVersions(ctx context.Context, h Host, found []string) ([]string, error) {
-	installs := "Setup installs: Shard " + h.Version
+	installs := "Setup installs: shard " + h.Version
 	if !slices.Contains(found, shardBinary) {
 		return []string{installs}, nil
 	}
@@ -905,14 +941,14 @@ func manualVersions(ctx context.Context, h Host, found []string) ([]string, erro
 		return nil, fmt.Errorf("read the installed version of %s: %w", shardBinary, err)
 	}
 
-	return []string{"Installed:      Shard " + strings.TrimPrefix(strings.TrimSpace(string(out)), "client "), installs}, nil
+	return []string{"Installed:      shard " + strings.TrimPrefix(strings.TrimSpace(string(out)), "client "), installs}, nil
 }
 
 // manualInspect lists the commands that show the manual install and its service.
 func manualInspect(h Host, sudo string) []string {
 	lines := []string{"  " + sudo + "shard version"}
 	if h.OS == "darwin" {
-		return append(lines, "  sudo launchctl print "+launchdLabel)
+		return append(lines, "  "+sudoFor(h)+"launchctl print "+launchdLabel)
 	}
 	if h.OS == "linux" {
 		return append(lines, "  systemctl status shard")
@@ -935,18 +971,19 @@ func manualMove(h Host, found []string) []string {
 		}
 	}
 
+	sudo := sudoFor(h)
 	var lines []string
 	for _, u := range units {
-		lines = append(lines, "  sudo systemctl disable --now "+strings.TrimSuffix(filepath.Base(u), ".service"))
+		lines = append(lines, "  "+sudo+"systemctl disable --now "+strings.TrimSuffix(filepath.Base(u), ".service"))
 	}
 	if slices.Contains(others, launchdPlist) {
-		lines = append(lines, "  sudo launchctl bootout "+launchdLabel)
+		lines = append(lines, "  "+sudo+"launchctl bootout "+launchdLabel)
 	}
 	if files := slices.Concat(units, others, bins); len(files) > 0 {
-		lines = append(lines, "  sudo rm "+strings.Join(files, " "))
+		lines = append(lines, "  "+sudo+"rm "+strings.Join(files, " "))
 	}
 	if len(units) > 0 {
-		lines = append(lines, "  sudo systemctl daemon-reload")
+		lines = append(lines, "  "+sudo+"systemctl daemon-reload")
 	}
 	// The rm above takes a setup run from the manual binary with it, so the installer fetches one again.
 	next := h.Executable + " setup"

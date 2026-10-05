@@ -441,7 +441,7 @@ func TestAPublicErrorJoinedWithARawCauseAnswersOnlyItsWords(t *testing.T) {
 }
 
 // internalText is what a public route answers for a failure no error type made public.
-const internalText = "the daemon could not complete the request; its log has the cause"
+const internalText = "the daemon could not complete the request; the daemon log has the cause"
 
 // wantInternal asserts a public 500 that says only the generic text, while the daemon log keeps the cause.
 func wantInternal(t *testing.T, s seeded, status int, body map[string]any, cause string) {

@@ -58,6 +58,7 @@ export interface SecretOptions {
   placeholder?: string;
 }
 
+/** Shard is a client of one shard daemon; remote and apiKey default to SHARD_REMOTE and SHARD_API_KEY. */
 export class Shard {
   readonly policies: Policies;
   readonly secrets: Secrets;
@@ -89,7 +90,7 @@ export class Shard {
     return new App(this.transport, sandbox);
   }
 
-  /** get answers a sandbox by id, id prefix or name. */
+  /** get returns a sandbox by id, id prefix or name. */
   async get(ref: string): Promise<Sandbox> {
     const { data } = await this.transport.api.GET("/v0/sandboxes/{id}", { params: { path: { id: ref } } });
 
@@ -108,11 +109,12 @@ export class Shard {
     return records.version((await this.transport.api.GET("/v0/version")).data);
   }
 
+  /** capabilities returns which of the eight lifecycle verbs the daemon's provider supports. */
   async capabilities(): Promise<Capabilities> {
     return records.capabilities((await this.transport.api.GET("/v0/capabilities")).data);
   }
 
-  /** close lets go of the pooled connections, so the process can exit. */
+  /** close closes the pooled connections, so the process can exit. */
   close(): void {
     this.transport.close();
   }
@@ -125,6 +127,7 @@ export class Shard {
   }
 }
 
+/** Policies are the named egress policies, and which sandbox enforces which. */
 export class Policies {
   constructor(private readonly transport: Transport) {}
 
@@ -163,10 +166,11 @@ export class Policies {
   }
 }
 
+/** Secrets are the secrets by name; the SDK sends a value and never reads one back. */
 export class Secrets {
   constructor(private readonly transport: Transport) {}
 
-  /** set stores the secret, or replaces its value; the answer never holds the value. */
+  /** set stores the secret, or replaces its value. A sandbox sees only the placeholder, and the proxy puts the value in; the SDK never reads the value back. */
   async set(name: string, options: SecretOptions): Promise<SecretInfo> {
     const { value, destinations, placeholder } = options;
     const body = { value, destinations, placeholder };
@@ -191,11 +195,13 @@ export class Secrets {
     return changed(sandbox, (id) => this.transport.api.POST("/v0/sandboxes/{id}/secrets/{name}", { params: { path: { id, name } } }));
   }
 
+  /** ungrant takes the secret from the sandbox; the sandbox must not be running. */
   ungrant(sandbox: SandboxRef, name: string): Promise<SandboxInfo> {
     return changed(sandbox, (id) => this.transport.api.DELETE("/v0/sandboxes/{id}/secrets/{name}", { params: { path: { id, name } } }));
   }
 }
 
+/** Snapshots are the snapshots of stopped sandboxes, which create({ snapshot }) makes new sandboxes from. */
 export class Snapshots {
   constructor(private readonly transport: Transport) {}
 
@@ -214,7 +220,7 @@ export class Snapshots {
     return rows.map(records.snapshot);
   }
 
-  /** inspect answers a snapshot by id, id prefix or name. */
+  /** inspect returns a snapshot by id, id prefix or name. */
   async inspect(ref: string): Promise<Snapshot> {
     return records.snapshot((await this.transport.api.GET("/v0/snapshots/{ref}", { params: { path: { ref } } })).data);
   }

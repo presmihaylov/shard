@@ -146,6 +146,24 @@ func daemonUser(h Host) string {
 	return h.Env("USER")
 }
 
+// sudoFor starts a printed command that needs root: bare for root itself, else with sudo, also for a person who started setup with it.
+func sudoFor(h Host) string {
+	if h.Euid == 0 && h.Env("SUDO_USER") == "" {
+		return ""
+	}
+
+	return "sudo "
+}
+
+// socketSudo is sudoFor a command that reaches the daemon, whose API socket belongs to root on Linux only.
+func socketSudo(h Host) string {
+	if h.OS == "darwin" {
+		return ""
+	}
+
+	return sudoFor(h)
+}
+
 // localSteps are the steps that set up l on this host, in checklist order; each is safe to run again.
 func (s *Setup) localSteps(_ context.Context, l Local) ([]Step, error) {
 	p := newLocalPlan(s.Host, l)
@@ -155,7 +173,7 @@ func (s *Setup) localSteps(_ context.Context, l Local) ([]Step, error) {
 	}
 	steps = append(steps,
 		Step{Title: "Install " + providerTitle(l.Provider), Do: p.install},
-		Step{Title: "Create Shard's data directory", Do: p.dataDir},
+		Step{Title: "Create shard's data directory", Do: p.dataDir},
 	)
 	if !l.StartAtBoot {
 		return steps, nil
@@ -568,7 +586,7 @@ func logHint(h Host) string {
 		return "Read its log in " + macLogDir + "/daemon.log."
 	}
 
-	return "Read its log with: sudo journalctl -u shard.service"
+	return "Read its log with: " + sudoFor(h) + "journalctl -u shard.service"
 }
 
 // systemdUnitText is packaging/systemd/shard.service with the provider named, so the daemon never probes for one.

@@ -17,8 +17,8 @@ type pageQuery struct {
 
 // pageInput is the page query of a public list, whose limit Huma checks before the handler runs.
 type pageInput struct {
-	Limit  int    `query:"limit" minimum:"1" doc:"The most rows a page holds; none answers the whole list."`
-	Cursor string `query:"cursor" doc:"The next of the page before; this page starts after it."`
+	Limit  int    `query:"limit" minimum:"1" doc:"The most items on a page; absent returns the whole list."`
+	Cursor string `query:"cursor" doc:"The next value of the previous page; this page starts after it."`
 }
 
 // paged refuses a cursor that could never be a key of the list, by the list's shape.

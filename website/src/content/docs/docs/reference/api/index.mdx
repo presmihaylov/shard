@@ -71,14 +71,14 @@ The routes that follow a stream, such as an exec attach or a `logs` follow, upgr
 | `POST` | `/v0/sandboxes` | `sandbox:write` | [Create a sandbox](/docs/reference/api/sandboxes/#create-a-sandbox) |
 | `POST` | `/v0/sandboxes/{id}/start` | `sandbox:write` | [Start a stopped sandbox with its saved files](/docs/reference/api/sandboxes/#start-a-stopped-sandbox-with-its-saved-files) |
 | `POST` | `/v0/sandboxes/{id}/stop` | `sandbox:write` | [Stop a sandbox and preserve its files](/docs/reference/api/sandboxes/#stop-a-sandbox-and-preserve-its-files) |
-| `DELETE` | `/v0/sandboxes/{id}` | `sandbox:delete` | [Delete a sandbox and its files](/docs/reference/api/sandboxes/#delete-a-sandbox-and-its-files) |
+| `DELETE` | `/v0/sandboxes/{id}` | `sandbox:delete` | [Remove a sandbox and its files](/docs/reference/api/sandboxes/#remove-a-sandbox-and-its-files) |
 | `POST` | `/v0/sandboxes/{id}/pause` | `sandbox:write` | [Save a sandbox's state and suspend it](/docs/reference/api/sandboxes/#save-a-sandboxs-state-and-suspend-it) |
 | `POST` | `/v0/sandboxes/{id}/resume` | `sandbox:write` | [Resume a paused sandbox from its saved state](/docs/reference/api/sandboxes/#resume-a-paused-sandbox-from-its-saved-state) |
 | `POST` | `/v0/sandboxes/{id}/fork` | `sandbox:write` | [Create a sandbox from a running sandbox's memory and files](/docs/reference/api/sandboxes/#create-a-sandbox-from-a-running-sandboxs-memory-and-files) |
 | `GET` | `/v0/sandboxes/{id}/logs` | `sandbox:read` | [Read or follow the output of a sandbox](/docs/reference/api/sandboxes/#read-or-follow-the-output-of-a-sandbox) |
 | `GET` | `/v0/sandboxes/{id}/egress-log` | `sandbox:read` | [Read or follow the egress decisions of a sandbox](/docs/reference/api/sandboxes/#read-or-follow-the-egress-decisions-of-a-sandbox) |
 | `POST` | `/v0/sandboxes/{id}/secrets/{name}` | `secret:*` | [Grant a secret to a sandbox](/docs/reference/api/sandboxes/#grant-a-secret-to-a-sandbox) |
-| `DELETE` | `/v0/sandboxes/{id}/secrets/{name}` | `secret:*` | [Take a secret back from a sandbox](/docs/reference/api/sandboxes/#take-a-secret-back-from-a-sandbox) |
+| `DELETE` | `/v0/sandboxes/{id}/secrets/{name}` | `secret:*` | [Ungrant a secret from a sandbox](/docs/reference/api/sandboxes/#ungrant-a-secret-from-a-sandbox) |
 | `PUT` | `/v0/sandboxes/{id}/policy` | `policy:*` | [Attach a policy to a sandbox](/docs/reference/api/sandboxes/#attach-a-policy-to-a-sandbox) |
 | `DELETE` | `/v0/sandboxes/{id}/policy` | `policy:*` | [Detach the policy of a sandbox](/docs/reference/api/sandboxes/#detach-the-policy-of-a-sandbox) |
 
@@ -88,7 +88,7 @@ The routes that follow a stream, such as an exec attach or a `logs` follow, upgr
 | --- | --- | --- | --- |
 | `PUT` | `/v0/sandboxes/{id}/files` | `exec` | [Copy a file into a running sandbox](/docs/reference/api/files/#copy-a-file-into-a-running-sandbox) |
 | `GET` | `/v0/sandboxes/{id}/files` | `exec` | [Copy a file out of a running sandbox](/docs/reference/api/files/#copy-a-file-out-of-a-running-sandbox) |
-| `HEAD` | `/v0/sandboxes/{id}/files` | `exec` | [Stat a path](/docs/reference/api/files/#stat-a-path) |
+| `HEAD` | `/v0/sandboxes/{id}/files` | `exec` | [Read the type, size and mode of a path](/docs/reference/api/files/#read-the-type-size-and-mode-of-a-path) |
 | `DELETE` | `/v0/sandboxes/{id}/files` | `exec` | [Delete a path](/docs/reference/api/files/#delete-a-path) |
 | `GET` | `/v0/sandboxes/{id}/ls` | `exec` | [List a directory](/docs/reference/api/files/#list-a-directory) |
 | `POST` | `/v0/sandboxes/{id}/mkdir` | `exec` | [Make a directory](/docs/reference/api/files/#make-a-directory) |
@@ -160,8 +160,8 @@ The routes that follow a stream, such as an exec attach or a `logs` follow, upgr
 | Field | Type | Required | Description |
 | --- | --- | --- | --- |
 | `code` | string | yes | What a program matches on: invalid\_request, body\_too\_large, not\_found, sandbox\_not\_running, sandbox\_not\_stopped, sandbox\_not\_paused, sandbox\_live, sandbox\_failed, no\_checkpoint, unsupported, in\_use, name\_taken, exec\_exited, exec\_running, exec\_limit, no\_app, app\_ended, unauthorized, forbidden, timeout, command\_not\_started or internal. A later daemon may add a code, so a client must take one it does not know. |
-| `exit_code` | integer (int64) | no |  |
-| `holders` | array of string | no |  |
-| `message` | string | yes |  |
+| `exit_code` | integer (int64) | no | The exit code of the command that never started, with command\_not\_started. |
+| `holders` | array of string | no | The sandboxes or snapshots that hold the resource, with in\_use. |
+| `message` | string | yes | A line for a human; match on code, never on this text. |
 
 {/* make openapi writes everything above this line. Write by hand below it. */}

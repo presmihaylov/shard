@@ -66,7 +66,7 @@ func (s *Service) GrantSecret(ctx context.Context, ref, name string) (models.San
 
 	// Before any write: a refused grant must leave the guest environment byte for byte as it found it.
 	if slices.Contains(bundle.TrustEnv, name) {
-		return models.Sandbox{}, &RequestError{Err: fmt.Errorf("sandbox %s cannot be granted secret %s: the proxy sets that variable to the trust store", id, name)}
+		return models.Sandbox{}, &RequestError{Err: fmt.Errorf("secret %s cannot be granted: the proxy sets $%s to its trust store; store the secret under another name", name, name)}
 	}
 	if err := b.CanSetEnv(name); err != nil {
 		return models.Sandbox{}, grantRefused(id, name, err)

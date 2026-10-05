@@ -27,7 +27,8 @@ class TerminalSize:
 
 @attrs.frozen
 class CommandResult:
-    """How a command ended. The output keeps only the newest bytes under the limit; lost_bytes is the daemon's loss."""
+    """How a command ended, with the end of its output. lost_bytes counts the output the daemon dropped before any
+    client read it."""
 
     id: str
     exit_code: int
@@ -47,7 +48,7 @@ class CommandResult:
 
 @attrs.frozen
 class CommandInfo:
-    """One command's record as the daemon holds it, with no output."""
+    """One command as the daemon holds it, with no output; any client can read it."""
 
     id: str
     sandbox: str
@@ -79,7 +80,7 @@ FileType = Literal["file", "dir", "symlink", "other"]
 
 @attrs.frozen
 class FileInfo:
-    """One sandbox path as the guest sees it; mode is the permission bits with setuid, setgid and sticky."""
+    """One sandbox path as the sandbox sees it; mode is the permission bits with setuid, setgid and sticky."""
 
     type: FileType
     size: int
@@ -137,7 +138,8 @@ class Version:
 
 @attrs.frozen
 class Capabilities:
-    """Whether the server runs each lifecycle verb; snapshot is creating a filesystem snapshot."""
+    """Which of the eight lifecycle verbs the daemon's provider supports; snapshot is the creation of a filesystem
+    snapshot."""
 
     create: bool
     start: bool
@@ -205,7 +207,7 @@ class AppExit:
 
 @attrs.frozen
 class SandboxInfo:
-    """A sandbox's record. app is None for a sandbox made with no command, kernel on a container substrate."""
+    """One sandbox as the daemon holds it. app is None with no command, and kernel is None on a container substrate."""
 
     id: str
     name: str | None
@@ -227,7 +229,8 @@ class SandboxInfo:
 
 @attrs.frozen
 class PolicyRule:
-    """One rule as the CLI spells it, as in allow suffix:example.com tcp:443."""
+    """One rule as `shard policy create` takes it: an action, allow or deny, and a rule, as
+    suffix:example.com tcp:443."""
 
     action: Literal["allow", "deny"]
     rule: str
@@ -290,7 +293,8 @@ class Snapshot:
 
 @attrs.frozen
 class EgressDecision:
-    """One egress decision. rule is the id of the rule that decided it, rule_text that rule as the CLI spells it."""
+    """One egress decision. rule is the id of the rule that decided it, or why none did, as default; rule_text is that
+    rule as the CLI spells it."""
 
     time: datetime.datetime
     source: str

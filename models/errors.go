@@ -84,11 +84,25 @@ type NotFoundError struct {
 	Err error
 }
 
+// NotFound words a miss as one sentence, while errors.Is still finds sentinel.
+func NotFound(sentinel error, text string) error {
+	return &NotFoundError{Err: worded{text: text, cause: sentinel}}
+}
+
 func (e *NotFoundError) Error() string { return e.Err.Error() }
 
 func (e *NotFoundError) Unwrap() error { return e.Err }
 
 func (e *NotFoundError) Public() string { return e.Err.Error() }
+
+type worded struct {
+	text  string
+	cause error
+}
+
+func (w worded) Error() string { return w.text }
+
+func (w worded) Unwrap() error { return w.cause }
 
 // UnresponsiveError is a verb the substrate refused because the process behind the sandbox missed its probe bound.
 type UnresponsiveError struct {

@@ -108,7 +108,7 @@ func readSecretValue(in io.Reader) (string, error) {
 		return "", fmt.Errorf("read the secret value from stdin: %w", err)
 	}
 	if len(blob) > maxSecretBytes {
-		return "", fmt.Errorf("the secret value is longer than %d bytes, and no credential is", maxSecretBytes)
+		return "", fmt.Errorf("the secret value is longer than %d bytes; store a value of at most %d bytes", maxSecretBytes, maxSecretBytes)
 	}
 
 	value := strings.TrimSuffix(string(blob), "\n")
@@ -142,7 +142,7 @@ func parseSecretSet(args []string) (secretSetOptions, error) {
 	}
 	// A value that starts with - needs a -- before it, so --placeholder=x after the name is refused, never stored.
 	if strings.HasPrefix(rest[0], "-") || (!guarded && slices.ContainsFunc(rest[1:], misplacedFlag)) {
-		return secretSetOptions{}, errors.New("secret set takes its flags before the name: shard secret set --destination <host> [--placeholder <string>] <NAME> [VALUE], with -- before a value that starts with -")
+		return secretSetOptions{}, errors.New("secret set takes its flags before the name: shard secret set --destination <host> [--placeholder <string>] NAME [VALUE], with -- before a value that starts with -")
 	}
 	if len(rest) > 2 {
 		// A count, never the arguments: one of them is the secret value.
@@ -274,7 +274,7 @@ func parseSecretRemove(args []string) (secretRemoveOptions, error) {
 
 	rest := flags.Args()
 	if slices.ContainsFunc(rest, func(s string) bool { return strings.HasPrefix(s, "-") }) {
-		return secretRemoveOptions{}, errors.New("secret remove takes its flags before the name: shard secret remove --force <NAME>")
+		return secretRemoveOptions{}, errors.New("secret remove takes its flags before the name: shard secret remove --force NAME")
 	}
 	if len(rest) != 1 {
 		return secretRemoveOptions{}, fmt.Errorf("secret remove takes one name, got %s", gotArgs(rest))
@@ -331,7 +331,7 @@ func parseGrant(verb string, args []string) (string, string, error) {
 	}
 	// A sandbox name may start with -, after a --, but a secret name never does: one that seems to is a flag after the sandbox.
 	if len(rest) > 1 && strings.HasPrefix(rest[1], "-") {
-		return "", "", fmt.Errorf("secret %s takes no flags: shard secret %s <id|name> <NAME>", verb, verb)
+		return "", "", fmt.Errorf("secret %s takes no flags: shard secret %s SANDBOX NAME", verb, verb)
 	}
 	if len(rest) != 2 {
 		return "", "", fmt.Errorf("secret %s takes a sandbox and a secret name, got %s", verb, gotArgs(rest))

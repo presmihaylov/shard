@@ -40,14 +40,14 @@ class Files:
         self._sandbox = sandbox
 
     def read(self, path: str) -> bytes:
-        """copy a file out of a running sandbox"""
+        """copy a file out of a running sandbox, and return its bytes"""
         file = self._transport.answer(
             File, lambda: read_file.sync_detailed(self._sandbox, client=self._transport.api, path=path)
         )
         return file.payload.read()
 
     def read_text(self, path: str, encoding: str = "utf-8") -> str:
-        """copy a file out of a running sandbox"""
+        """copy a file out of a running sandbox, and return its text"""
         return (self.read(path)).decode(encoding)
 
     def write(
@@ -60,7 +60,7 @@ class Files:
         parents: bool = False,
         user: str | None = None,
     ) -> None:
-        """copy a file into a running sandbox"""
+        """copy a file into a running sandbox, from a str, bytes or a binary stream"""
         if isinstance(data, str):
             data = data.encode()
         if isinstance(data, bytes):
@@ -81,6 +81,7 @@ class Files:
         self._put(path, content, size, mode=mode, parents=parents, user=user)
 
     def stat(self, path: str) -> FileInfo:
+        """Return the type, size, mode, owner and mtime of a sandbox path."""
         try:
             response = self._transport.send(
                 lambda: stat_file.sync_detailed(self._sandbox, client=self._transport.api, path=path)
@@ -91,7 +92,7 @@ class Files:
         return _stat_of(response.headers, f"stat {path}")
 
     def list(self, path: str) -> builtins.list[FileEntry]:
-        """The entries of the directory at path, each with its own stat."""
+        """Return the entries of the directory at path, each with its own stat."""
         try:
             listing = self._transport.answer(
                 models.EntriesResponse,
@@ -103,6 +104,7 @@ class Files:
         return [file_entry(entry) for entry in listing.entries]
 
     def mkdir(self, path: str, *, mode: int | None = None, parents: bool = False, user: str | None = None) -> None:
+        """Make a directory in the sandbox; parents makes the missing parents too."""
         body = models.MkdirRequest(
             path=path,
             mode=UNSET if mode is None else format(mode, "o"),
@@ -112,6 +114,7 @@ class Files:
         self._transport.send(lambda: make_dir.sync_detailed(self._sandbox, client=self._transport.api, body=body))
 
     def remove(self, path: str, *, recursive: bool = False) -> None:
+        """Delete a path in the sandbox; recursive deletes a directory and everything under it."""
         # A recursive remove waits on the guest for as long as the tree takes, so no bound cuts it.
         self._transport.send(
             lambda: delete_file.sync_detailed(
@@ -129,7 +132,7 @@ class Files:
         parents: bool = False,
         user: str | None = None,
     ) -> None:
-        """copy a file into a running sandbox"""
+        """copy a local file into a running sandbox"""
         source = os.fspath(local)
         with _backend.offload(functools.partial(_reader, source)) as f:
             info = os.fstat(f.fileno())
@@ -140,7 +143,7 @@ class Files:
             self._put(remote, content, info.st_size, mode=mode, parents=parents, user=user)
 
     def download(self, remote: str, local: LocalPath) -> None:
-        """copy a file out of a running sandbox"""
+        """copy a file out of a running sandbox into a local file"""
         target = os.fspath(local)
         fd, tmp = tempfile.mkstemp(prefix=f".{os.path.basename(target)}.useshards-", dir=os.path.dirname(target) or ".")
         try:
@@ -156,7 +159,7 @@ class Files:
             raise
 
     def upload_dir(self, local: LocalPath, remote: str, *, user: str | None = None) -> None:
-        """copy a directory into a running sandbox"""
+        """copy a local directory into a running sandbox"""
         source = os.fspath(local)
         parent, name = _split(remote)
         if not os.path.isdir(source):
@@ -173,7 +176,7 @@ class Files:
             content.close()
 
     def download_dir(self, remote: str, local: LocalPath) -> None:
-        """copy a directory out of a running sandbox"""
+        """copy a directory out of a running sandbox into a local directory"""
         _, name = _split(remote)
         target = os.path.abspath(local)
         # The whole tar is in before the unpack starts, so a cut never lands half a tree.
@@ -227,16 +230,16 @@ def _exactly(source: IO[bytes], size: int, what: str, *, to_end: bool) -> Iterat
         want = left + 1 if to_end and left <= CHUNK else min(CHUNK, left)
         chunk = _backend.offload(functools.partial(source.read, want))
         if len(chunk) > left:
-            raise UnknownLengthError(f"{what}: the data grew past the {size} bytes it held at the start")
+            raise UnknownLengthError(f"{what}: the source grew past the {size} bytes it held at the start")
         if not chunk:
-            raise UnknownLengthError(f"{what}: the data ended {left} bytes short of the {size} it held at the start")
+            raise UnknownLengthError(f"{what}: the source ended {left} bytes short of the {size} it held at the start")
         left -= len(chunk)
         yield chunk
     if not to_end:
         return
     extra = _backend.offload(functools.partial(source.read, 1))
     if extra:
-        raise UnknownLengthError(f"{what}: the data grew past the {size} bytes it held at the start")
+        raise UnknownLengthError(f"{what}: the source grew past the {size} bytes it held at the start")
 
 
 def _packed(source: str, name: str) -> Generator[bytes, None]:

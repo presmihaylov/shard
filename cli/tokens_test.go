@@ -369,7 +369,7 @@ func TestTokensScopesPrintsTheServerTable(t *testing.T) {
 		"sandbox:delete   Remove sandboxes and snapshots",
 		"exec             Run commands and access sandbox files",
 		"secret:*         Manage secrets and secret grants",
-		"policy:*         Manage policies and their sandbox assignments",
+		"policy:*         Manage policies and attach them to sandboxes",
 		"*                All available permissions",
 		"",
 	}, "\n")

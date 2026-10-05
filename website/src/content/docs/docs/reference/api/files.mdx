@@ -33,9 +33,9 @@ Each route answers an error with the [Error](/docs/reference/api/#error) body, u
 | Name | In | Type | Required | Description |
 | --- | --- | --- | --- | --- |
 | `id` | path | string | yes | The sandbox id or name. |
-| `path` | query | string | yes | The absolute guest path. |
-| `mode` | query | string | no | The file mode in octal, at most 0777; none is 0644. |
-| `user` | query | string | no | Who writes and owns the file; none is the entrypoint's user. |
+| `path` | query | string | yes | The absolute path inside the sandbox. |
+| `mode` | query | string | no | The permission bits in octal, at most 0777; absent is 0644. |
+| `user` | query | string | no | The user who writes and owns the file; absent is the entrypoint's user. |
 | `parents` | query | boolean | no | Make the missing parent directories. |
 
 **Request body**
@@ -57,7 +57,7 @@ binary as `application/octet-stream`, required.
 | Name | In | Type | Required | Description |
 | --- | --- | --- | --- | --- |
 | `id` | path | string | yes | The sandbox id or name. |
-| `path` | query | string | yes | The absolute guest path. |
+| `path` | query | string | yes | The absolute path inside the sandbox. |
 
 **Responses**
 
@@ -69,9 +69,9 @@ binary as `application/octet-stream`, required.
 
 | Header | Status | Type | Description |
 | --- | --- | --- | --- |
-| `X-Shard-Stat` | 200 | string | The guest path's stat as JSON: type is file, dir, symlink or other; size is the logical size in bytes; mode is the permission bits as a number, at most 0o7777; then uid, gid and mtime. |
+| `X-Shard-Stat` | 200 | string | The stat of the path as JSON: type is file, dir, symlink or other; size is the logical size in bytes; mode is the permission bits as a number, at most 0o7777; then uid, gid and mtime. |
 
-## Stat a path
+## Read the type, size and mode of a path
 
 `HEAD /v0/sandboxes/{id}/files` · scope `exec`
 
@@ -80,7 +80,7 @@ binary as `application/octet-stream`, required.
 | Name | In | Type | Required | Description |
 | --- | --- | --- | --- | --- |
 | `id` | path | string | yes | The sandbox id or name. |
-| `path` | query | string | yes | The absolute guest path. |
+| `path` | query | string | yes | The absolute path inside the sandbox. |
 
 **Responses**
 
@@ -93,7 +93,7 @@ binary as `application/octet-stream`, required.
 
 | Header | Status | Type | Description |
 | --- | --- | --- | --- |
-| `X-Shard-Stat` | 200 | string | The guest path's stat as JSON: type is file, dir, symlink or other; size is the logical size in bytes; mode is the permission bits as a number, at most 0o7777; then uid, gid and mtime. |
+| `X-Shard-Stat` | 200 | string | The stat of the path as JSON: type is file, dir, symlink or other; size is the logical size in bytes; mode is the permission bits as a number, at most 0o7777; then uid, gid and mtime. |
 
 ## Delete a path
 
@@ -104,8 +104,8 @@ binary as `application/octet-stream`, required.
 | Name | In | Type | Required | Description |
 | --- | --- | --- | --- | --- |
 | `id` | path | string | yes | The sandbox id or name. |
-| `path` | query | string | yes | The absolute guest path. |
-| `recursive` | query | boolean | no | Take a directory and everything in it. |
+| `path` | query | string | yes | The absolute path inside the sandbox. |
+| `recursive` | query | boolean | no | Delete a directory and everything in it. |
 
 **Responses**
 
@@ -122,7 +122,7 @@ binary as `application/octet-stream`, required.
 | Name | In | Type | Required | Description |
 | --- | --- | --- | --- | --- |
 | `id` | path | string | yes | The sandbox id or name. |
-| `path` | query | string | yes | The absolute guest path. |
+| `path` | query | string | yes | The absolute path inside the sandbox. |
 
 **Responses**
 
@@ -159,8 +159,8 @@ binary as `application/octet-stream`, required.
 | Name | In | Type | Required | Description |
 | --- | --- | --- | --- | --- |
 | `id` | path | string | yes | The sandbox id or name. |
-| `path` | query | string | yes | The absolute guest directory. |
-| `user` | query | string | no | Who unpacks and owns the files; none is the entrypoint's user. |
+| `path` | query | string | yes | The absolute directory inside the sandbox. |
+| `user` | query | string | no | The user who unpacks and owns the files; absent is the entrypoint's user. |
 
 **Request body**
 
@@ -181,7 +181,7 @@ binary as `application/x-tar`, required.
 | Name | In | Type | Required | Description |
 | --- | --- | --- | --- | --- |
 | `id` | path | string | yes | The sandbox id or name. |
-| `path` | query | string | yes | The absolute guest path. |
+| `path` | query | string | yes | The absolute path inside the sandbox. |
 
 **Responses**
 
@@ -193,7 +193,7 @@ binary as `application/x-tar`, required.
 
 | Header | Status | Type | Description |
 | --- | --- | --- | --- |
-| `X-Shard-Stat` | 200 | string | The guest path's stat as JSON: type is file, dir, symlink or other; size is the logical size in bytes; mode is the permission bits as a number, at most 0o7777; then uid, gid and mtime. |
+| `X-Shard-Stat` | 200 | string | The stat of the path as JSON: type is file, dir, symlink or other; size is the logical size in bytes; mode is the permission bits as a number, at most 0o7777; then uid, gid and mtime. |
 
 ## Objects
 
@@ -219,7 +219,7 @@ binary as `application/x-tar`, required.
 
 | Field | Type | Required | Description |
 | --- | --- | --- | --- |
-| `mode` | string | no | The permission bits as an octal string, as chmod takes them; none is 0755. |
+| `mode` | string | no | The permission bits in octal, at most 0777; absent is 0755. |
 | `parents` | boolean | no |  |
 | `path` | string | yes | At least 1 character. |
 | `user` | string | no |  |

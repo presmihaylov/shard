@@ -226,7 +226,7 @@ func (s *Stores) RemovePolicy(name string) error {
 
 // unreadableFix is the way past records that do not read back, since rm cannot free a sandbox it cannot read.
 func unreadableFix(ids []string) string {
-	return fmt.Sprintf("fix or delete the unreadable record of %s under the daemon root first", strings.Join(ids, ", "))
+	return fmt.Sprintf("ask the server administrator to repair or remove the unreadable sandbox %s first", strings.Join(ids, ", "))
 }
 
 // unreadableHolders names the records a holder scan could not read, and nil when the scan failed for any other reason (SHARD-584).
@@ -271,9 +271,9 @@ func (s *Stores) SetSecret(name string, req SecretRequest) (secret.Secret, error
 	sec, err := s.cfg.Secrets.Set(name, req.Value, req.Destinations, req.Placeholder)
 	var held *secret.HeldError
 	if errors.As(err, &held) {
-		fix := "ungrant it first, its placeholder cannot change under a guest"
+		fix := "ungrant it first: a granted secret cannot change its placeholder"
 		if held.Removed {
-			fix = "ungrant it first, nothing records the placeholder the guest kept when the secret was removed"
+			fix = "ungrant it first: those sandboxes still hold the placeholder of the removed secret"
 		}
 		return secret.Secret{}, &HeldError{Subject: "secret " + name, Verb: "granted to", Noun: "sandbox", Users: held.Holders, Fix: fix}
 	}

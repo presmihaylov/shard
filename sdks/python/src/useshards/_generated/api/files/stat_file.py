@@ -57,7 +57,7 @@ def sync_detailed(
     client: AuthenticatedClient | Client,
     path: str,
 ) -> Response[Any]:
-    """Stat a path"""
+    """Read the type, size and mode of a path"""
 
     kwargs = _get_kwargs(
         id=id,
@@ -77,7 +77,7 @@ async def asyncio_detailed(
     client: AuthenticatedClient | Client,
     path: str,
 ) -> Response[Any]:
-    """Stat a path"""
+    """Read the type, size and mode of a path"""
 
     kwargs = _get_kwargs(
         id=id,

@@ -43,7 +43,7 @@ Run `shard COMMAND --help` for options and examples.
 | [`shard inspect`](/docs/reference/cli/sandboxes/#shard-inspect) | show detailed information about a sandbox |
 | [`shard stop`](/docs/reference/cli/sandboxes/#shard-stop) | stop a sandbox and preserve its files |
 | [`shard start`](/docs/reference/cli/sandboxes/#shard-start) | start a stopped sandbox with its saved files |
-| [`shard remove`](/docs/reference/cli/sandboxes/#shard-remove) | delete a sandbox and its files |
+| [`shard remove`](/docs/reference/cli/sandboxes/#shard-remove) | remove a sandbox and its files |
 | [`shard pause`](/docs/reference/cli/sandboxes/#shard-pause) | save a sandbox's state and suspend it |
 | [`shard resume`](/docs/reference/cli/sandboxes/#shard-resume) | resume a paused sandbox from its saved state |
 | [`shard fork`](/docs/reference/cli/sandboxes/#shard-fork) | create a sandbox from a running sandbox's memory and files |
@@ -68,7 +68,7 @@ Run `shard COMMAND --help` for options and examples.
 | [`shard info`](/docs/reference/cli/host/#shard-info) | show available providers and the default for this host |
 | [`shard serve`](/docs/reference/cli/host/#shard-serve) | start an HTTP API server with token authentication |
 | [`shard setup`](/docs/reference/cli/host/#shard-setup) | configure a local sandbox host or a remote connection |
-| [`shard tokens`](/docs/reference/cli/host/#shard-tokens) | create, list and revoke API tokens |
+| [`shard tokens`](/docs/reference/cli/host/#shard-tokens) | create, list and revoke API keys |
 | [`shard version`](/docs/reference/cli/host/#shard-version) | show the client and daemon versions |
 
 ## Global options
@@ -76,7 +76,7 @@ Run `shard COMMAND --help` for options and examples.
 | Option | Description | Default |
 | --- | --- | --- |
 | `--root <dir>` | directory for local shard data | `/var/lib/shard` |
-| `--remote <url>` | URL of the shard API server; HTTP/HTTPS supported, HTTPS recommended |  |
+| `--remote <url>` | URL of the shard API server; HTTPS recommended |  |
 | `--version` | show the client version |  |
 
 ## Environment variables
@@ -84,7 +84,7 @@ Run `shard COMMAND --help` for options and examples.
 | Variable | Description |
 | --- | --- |
 | `SHARD_REMOTE` | API server URL; `--remote` overrides it |
-| `SHARD_API_KEY` | API token from shard tokens mint |
+| `SHARD_API_KEY` | API key from shard tokens mint |
 | `SHARD_CA_FILE` | custom CA certificate file; HTTPS only |
 
 {/* make cli-docs writes everything above this line. Write by hand below it. */}

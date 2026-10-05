@@ -112,7 +112,7 @@ func (c *Client) cutShort(ctx context.Context, ref, execID string, cut *cutError
 		return cut
 	}
 
-	return fmt.Errorf("%w; the daemon detaches a client that takes no output for %s, and exec %s is %s with %d bytes of output lost", cut, sandbox.ExecStallBound, execID, rec.State, rec.LostBytes)
+	return fmt.Errorf("%w; the daemon detaches a client that reads no output for %s, and exec %s is %s, with %d bytes of output lost", cut, sandbox.ExecStallBound, execID, rec.State, rec.LostBytes)
 }
 
 // ListExecs answers every exec the sandbox holds, oldest id first.
@@ -254,7 +254,7 @@ func sendInput(ctx context.Context, conn *websocket.Conn, streams ExecStreams) {
 	if streams.Stdin != nil {
 		if err := copyInput(ctx, conn, streams.Stdin); err != nil {
 			if !gone(ctx, err) {
-				warn(streams.Warn, fmt.Sprintf("the keyboard stopped reaching the command: %v", err))
+				warn(streams.Warn, fmt.Sprintf("input stopped reaching the command: %v", err))
 			}
 
 			return
@@ -318,7 +318,7 @@ func readExec(ctx context.Context, conn *websocket.Conn, ref string, streams Exe
 		case api.StreamFailure:
 			return models.ExitStatus{}, failureOf(payload, ref)
 		default:
-			return models.ExitStatus{}, fmt.Errorf("the daemon sent a message of stream %d, which no daemon sends", stream)
+			return models.ExitStatus{}, fmt.Errorf("the daemon sent an unknown stream %d; upgrade shard to match the daemon", stream)
 		}
 	}
 }
@@ -453,7 +453,7 @@ func (c *Client) followLogs(ctx context.Context, ref, path string, w io.Writer) 
 		case api.StreamFailure:
 			return failureOf(payload, ref)
 		default:
-			return fmt.Errorf("the daemon sent a message of stream %d, which no daemon sends", stream)
+			return fmt.Errorf("the daemon sent an unknown stream %d; upgrade shard to match the daemon", stream)
 		}
 	}
 }

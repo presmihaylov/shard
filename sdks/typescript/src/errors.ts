@@ -20,7 +20,7 @@ export class ShardConnectionError extends ShardError {}
 /** ProtocolError is an answer from the daemon that the SDK cannot read. */
 export class ProtocolError extends ShardError {}
 
-/** UnknownLengthError is an upload whose size is unknown, as the daemon refuses a body without a Content-Length. */
+/** UnknownLengthError is an upload whose size is unknown, or whose source changed size while it was sent; the daemon refuses a body without a Content-Length. */
 export class UnknownLengthError extends ShardError {}
 
 /** CommandNotStartedError is a command that never ran, as when its binary does not exist. */
@@ -33,7 +33,7 @@ export class CommandNotStartedError extends ShardError {
   }
 }
 
-/** UnsafeArchiveError is an entry of a sandbox's tar that a download refused, as one that would land outside its target. */
+/** UnsafeArchiveError is a tar entry from a sandbox that downloadDir refuses to land, as one that leaves the destination. */
 export class UnsafeArchiveError extends ShardError {
   constructor(
     readonly entry: string,

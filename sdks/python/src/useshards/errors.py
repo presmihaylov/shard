@@ -44,11 +44,12 @@ class ProtocolError(ShardError):
 
 
 class UnknownLengthError(ShardError):
-    """An upload's size is unknown, and the daemon refuses a body without a Content-Length."""
+    """An upload whose size is unknown, or whose source changed size while it was sent; the daemon refuses a body
+    without a Content-Length."""
 
 
 class UnsafeArchiveError(ShardError):
-    """A sandbox's tar holds an entry a download refuses to land, as one that leaves the destination."""
+    """A tar entry from a sandbox that download_dir refuses to land, as one that leaves the destination."""
 
     def __init__(self, entry: str, reason: str) -> None:
         super().__init__(f"refuse the entry {entry!r}: {reason}")
