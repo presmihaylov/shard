@@ -499,16 +499,24 @@ func constraints(s *schema) string {
 		out = append(out, fmt.Sprintf("At most %d.", *s.Maximum))
 	}
 	if s.MinLength != nil {
-		out = append(out, fmt.Sprintf("At least %d characters.", *s.MinLength))
+		out = append(out, atLeast(*s.MinLength, "character"))
 	}
 	if s.MinItems != nil {
-		out = append(out, fmt.Sprintf("At least %d items.", *s.MinItems))
+		out = append(out, atLeast(*s.MinItems, "item"))
 	}
 	if len(out) == 0 {
 		return ""
 	}
 
 	return " " + strings.Join(out, " ")
+}
+
+func atLeast(n int64, noun string) string {
+	if n != 1 {
+		noun += "s"
+	}
+
+	return fmt.Sprintf("At least %d %s.", n, noun)
 }
 
 // uniqueAnchors refuses a page where two headings would get one id, since the site would then number the second.

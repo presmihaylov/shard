@@ -8,7 +8,7 @@ sidebar:
 This creates a sandbox named `web`, then stops it. A stopped sandbox keeps its files, and a start runs it again:
 
 ```sh
-curl --unix-socket /var/lib/shard/shard.sock -X POST -d '{"name":"web","image":"alpine:3.20","command":["sleep","600"],"resources":{"memory_mib":512}}' http://localhost/v0/sandboxes
+curl --unix-socket /var/lib/shard/shard.sock -X POST -d '{"name":"web","image":"alpine:3.20","command":["sleep","600"],"resources":{"memory_mib":512}}' 'http://localhost/v0/sandboxes?wait=true'
 curl --unix-socket /var/lib/shard/shard.sock -X POST http://localhost/v0/sandboxes/web/stop
 curl --unix-socket /var/lib/shard/shard.sock -X POST http://localhost/v0/sandboxes/web/start
 ```
@@ -437,7 +437,7 @@ A create that names secrets also needs the secret:\* scope, and one that names a
 
 | Field | Type | Required | Description |
 | --- | --- | --- | --- |
-| `policy` | string | yes | At least 1 characters. |
+| `policy` | string | yes | At least 1 character. |
 
 ### ResourceRequest
 
