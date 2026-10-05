@@ -27,6 +27,8 @@ func TestCreatePrintsTheIDTheDaemonAnswered(t *testing.T) {
 	var out bytes.Buffer
 
 	app, d, r := newDaemonCreateApp(t, &out)
+	var stderr bytes.Buffer
+	app.Err = &stderr
 
 	if err := app.Run(t.Context(), []string{"create", "--name", "builder", "--memory", "512MiB", "alpine:3.20"}); err != nil {
 		t.Fatalf("create: %v", err)
@@ -34,6 +36,10 @@ func TestCreatePrintsTheIDTheDaemonAnswered(t *testing.T) {
 
 	if got := strings.TrimSpace(out.String()); got != "sandbox2" {
 		t.Errorf("create printed %q, want the bare sandbox id", out.String())
+	}
+	// A person who named the sandbox sees the name, on stderr so the id stays the only output. (SHARD-728)
+	if got := stderr.String(); got != "created sandbox builder\n" {
+		t.Errorf("create wrote %q to stderr, want the name", got)
 	}
 
 	// The daemon ran the verb: the pull, the record and the start all happened behind the socket.
@@ -191,6 +197,8 @@ func TestForkPrintsTheNewIDTheDaemonAnswered(t *testing.T) {
 
 	source := running()
 	app, d := newClientApp(t, &out, source)
+	var stderr bytes.Buffer
+	app.Err = &stderr
 
 	if err := app.Run(t.Context(), []string{"fork", "--name", "web-2", "sandbox1"}); err != nil {
 		t.Fatalf("fork: %v", err)
@@ -198,6 +206,9 @@ func TestForkPrintsTheNewIDTheDaemonAnswered(t *testing.T) {
 
 	if got := strings.TrimSpace(out.String()); got != "sandbox2" {
 		t.Errorf("fork printed %q, want the new id", got)
+	}
+	if got := stderr.String(); got != "created sandbox web-2\n" {
+		t.Errorf("fork wrote %q to stderr, want the name", got)
 	}
 	if got := d.repoSvc.(*fakeLifecycleRepo).created; got.Name != "web-2" || got.Image != source.Image {
 		t.Errorf("fork created %+v, want the source's image under the new name", got)

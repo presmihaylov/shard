@@ -62,7 +62,7 @@ func (a App) runApp(ctx context.Context, args []string) error {
 		return a.cancelApp(ctx, c, sb.ID, interrupts, asked, opts.detach)
 	}
 	if opts.detach {
-		return a.print(sb.ID)
+		return a.printCreated(sb)
 	}
 
 	return a.attachApp(ctx, c, sb.ID, interrupts, 0, a.Out)

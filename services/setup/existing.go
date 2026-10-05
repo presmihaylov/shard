@@ -708,11 +708,11 @@ func uninstalled(h Host, m Manifest, netHeld bool) ([]string, error) {
 		lines = append(lines, logs...)
 	}
 	if h.OS == "linux" {
-		image, err := dataImageLeft(h)
+		data, err := dataLeft(h)
 		if err != nil {
 			return nil, err
 		}
-		lines = append(lines, image...)
+		lines = append(lines, data...)
 	}
 
 	var tools []string
@@ -778,12 +778,24 @@ func networkLeft(h Host, held bool) ([]string, error) {
 
 const fstabPath = "/etc/fstab"
 
-// dataImageLeft names the disk image the daemon made for a data dir that cannot clone, and the fstab line that mounts it, which uninstall keeps with the data.
-func dataImageLeft(h Host) ([]string, error) {
+// dataLeft names the commands that delete the data uninstall keeps on Linux, with the disk image and fstab line of a data dir that cannot clone.
+func dataLeft(h Host) ([]string, error) {
+	sudo := sudoFor(h)
 	image := datadir.ImagePath(DataDir)
+	// The mount point outlives the umount, and the lock a Firecracker start takes outlives the image. (SHARD-734)
+	remove := sudo + "rm -r " + DataDir
+	lock := image + ".lock"
+	_, err := os.Lstat(rooted(h, lock))
+	if err != nil && !errors.Is(err, fs.ErrNotExist) {
+		return nil, fmt.Errorf("check %s: %w", lock, err)
+	}
+	if err == nil {
+		remove += " " + lock
+	}
+
 	info, err := os.Lstat(rooted(h, image))
 	if errors.Is(err, fs.ErrNotExist) {
-		return nil, nil
+		return []string{"To delete the saved data, run: " + remove}, nil
 	}
 	if err != nil {
 		return nil, fmt.Errorf("check %s: %w", image, err)
@@ -799,16 +811,16 @@ func dataImageLeft(h Host) ([]string, error) {
 		}
 	}
 
-	sudo := sudoFor(h)
 	where := fmt.Sprintf("It lives in the %.1f GiB disk image %s", float64(info.Size())/(1<<30), image)
 	free := "To free the disk and delete the saved data, run:"
 	if len(mounts) == 0 {
-		return []string{where + ".", free, "  " + sudo + "umount " + DataDir, "  " + sudo + "rm " + image}, nil
+		return []string{where + ".", free, "  " + sudo + "umount " + DataDir, "  " + sudo + "rm " + image, "  " + remove}, nil
 	}
 
+	// systemd keeps the mount unit it made from the fstab line until a reload. (SHARD-730)
 	return slices.Concat(
 		[]string{where + ", which this line in " + fstabPath + " mounts at boot:"}, mounts,
-		[]string{free, "  " + sudo + "umount " + DataDir, "  " + sudo + "sed -i '\\|^" + regexp.QuoteMeta(image) + "[[:space:]]|d' " + fstabPath, "  " + sudo + "rm " + image},
+		[]string{free, "  " + sudo + "umount " + DataDir, "  " + sudo + "sed -i '\\|^" + regexp.QuoteMeta(image) + "[[:space:]]|d' " + fstabPath, "  " + sudo + "systemctl daemon-reload", "  " + sudo + "rm " + image, "  " + remove},
 	), nil
 }
 

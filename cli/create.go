@@ -32,6 +32,17 @@ func (a App) create(ctx context.Context, args []string) error {
 		return err
 	}
 
+	return a.printCreated(sb)
+}
+
+// printCreated keeps stdout the id alone for a script, and names the new sandbox on stderr for a person.
+func (a App) printCreated(sb client.Sandbox) error {
+	if sb.Name != "" && a.Err != nil {
+		if _, err := fmt.Fprintln(a.Err, "created sandbox "+sb.Name); err != nil {
+			return fmt.Errorf("write the output: %w", err)
+		}
+	}
+
 	return a.print(sb.ID)
 }
 
