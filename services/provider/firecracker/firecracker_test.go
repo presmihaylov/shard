@@ -23,6 +23,7 @@ import (
 	"github.com/presmihaylov/shard/models"
 	fcapi "github.com/presmihaylov/shard/pkg/firecracker"
 	"github.com/presmihaylov/shard/pkg/pidpin/pidpintest"
+	"github.com/presmihaylov/shard/pkg/reaper"
 	"github.com/presmihaylov/shard/services/bundle"
 	"github.com/presmihaylov/shard/services/provider/conformance"
 	"github.com/presmihaylov/shard/services/provider/firecracker"
@@ -61,7 +62,7 @@ func newHarness(t *testing.T) *harness {
 	if err := os.WriteFile(sessions, nil, 0o600); err != nil {
 		t.Fatal(err)
 	}
-	if err := note(harnessesFile, sessions); err != nil {
+	if err := reaper.Note(harnessesFile, sessions); err != nil {
 		t.Fatal(err)
 	}
 	// Registered after the RemoveAll, so it runs before it and after every spec's stop.

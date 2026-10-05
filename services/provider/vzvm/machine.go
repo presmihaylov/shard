@@ -39,6 +39,9 @@ type machine struct {
 	swap   sync.Mutex
 	link   io.Closer
 	cancel context.CancelFunc
+	// following ends once a stop found the shim gone, so a redial in flight never holds settle past its grace (SHARD-638).
+	following context.Context
+	unfollow  context.CancelFunc
 	// freezing, taken before swap, holds each freeze and thaw of the guest's root until the guest answers, so none lands inside another.
 	freezing sync.Mutex
 	// pausing, set under freezing and read bare, is a verb that froze the guest's root to pause the VM, until it stops the VM or runs it again.
@@ -451,6 +454,7 @@ func (p *Provider) forget(m *machine) {
 // settle waits for the last events of a guest that went, so a death it reported on the way down is on disk before the stop returns.
 func (p *Provider) settle(ctx context.Context, m *machine) error {
 	if m.events != nil {
+		m.unfollow()
 		select {
 		case <-m.events:
 		case <-ctx.Done():
@@ -533,6 +537,7 @@ func (p *Provider) attach(ctx context.Context, id, dir string, r record, client 
 		return nil, err
 	}
 	m := &machine{id: id, dir: dir, client: client, shim: shim, machineID: info.MachineID, events: make(chan struct{}), refusals: supervisor.NewRefusals(p.cfg.Log, id)}
+	m.following, m.unfollow = context.WithCancel(context.Background())
 
 	if r.Address != "" && p.cfg.Stack == nil {
 		return nil, fmt.Errorf("sandbox %s has an address and the provider no stack to carry it", id)
@@ -781,6 +786,9 @@ func (p *Provider) reconnectOnce(m *machine, dropped *supervisor.Control, deadli
 	if m.control.Load() != dropped {
 		return reconnectAdopted, nil
 	}
+	if m.following.Err() != nil {
+		return reconnectGone, nil
+	}
 	state := m.vmState()
 	// A pause still in flight leaves the root frozen on the stream this puts in, since adopt thaws none under it.
 	if state == vz.StateRunning && time.Now().Before(deadline) {
@@ -801,7 +809,7 @@ func (p *Provider) reconnectOnce(m *machine, dropped *supervisor.Control, deadli
 
 // dialAgain dials the control stream once and takes it in once the guest replays its state there within bound; the caller holds freezing.
 func (p *Provider) dialAgain(m *machine, bound time.Duration) (bool, error) {
-	conn, err := m.dial(context.Background(), supervisor.ControlPort)
+	conn, err := m.dial(m.following, supervisor.ControlPort)
 	if err != nil {
 		return false, fmt.Errorf("sandbox %s: dial the control stream: %w", m.id, err)
 	}
@@ -818,6 +826,8 @@ func (p *Provider) dialAgain(m *machine, bound time.Duration) (bool, error) {
 	select {
 	case <-time.After(bound):
 		return false, errors.Join(fmt.Errorf("sandbox %s: the guest replayed no state within %s", m.id, bound), control.Close())
+	case <-m.following.Done():
+		return false, errors.Join(fmt.Errorf("sandbox %s: the stop ended the wait for a replayed state", m.id), control.Close())
 	case r := <-replayed:
 		if r.err != nil {
 			return false, errors.Join(fmt.Errorf("sandbox %s: read the replayed state: %w", m.id, r.err), control.Close())
@@ -967,6 +977,9 @@ func (m *machine) close() error {
 	m.closed.Store(true)
 	if m.cancel != nil {
 		m.cancel()
+	}
+	if m.unfollow != nil {
+		m.unfollow()
 	}
 	var err error
 	if control := m.control.Load(); control != nil {

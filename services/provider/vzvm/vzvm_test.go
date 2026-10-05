@@ -27,6 +27,7 @@ import (
 	"github.com/presmihaylov/shard/pkg/ext4"
 	"github.com/presmihaylov/shard/pkg/pgroup"
 	"github.com/presmihaylov/shard/pkg/pidpin/pidpintest"
+	"github.com/presmihaylov/shard/pkg/reaper"
 	"github.com/presmihaylov/shard/pkg/vz"
 	"github.com/presmihaylov/shard/services/bundle"
 	"github.com/presmihaylov/shard/services/provider/conformance"
@@ -85,6 +86,20 @@ func newHarnessOn(t *testing.T, saveRestore bool) *harness {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { os.RemoveAll(root) })
+	reaper.Require(t)
+	marks := filepath.Join(root, marksFile)
+	if err := os.WriteFile(marks, nil, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := reaper.Note(harnessesFile, marks); err != nil {
+		t.Fatal(err)
+	}
+	// A shim the test froze or killed reads no EOF of the run's pipe, and a killed one leaves its guest behind.
+	t.Cleanup(func() {
+		if err := reaper.End(func() (reaper.Marks, error) { return reaper.Read(marks) }); err != nil {
+			t.Error(err)
+		}
+	})
 
 	h := &harness{root: root, disk: baseDisk(t, root), shim: os.Args[0], saveRestore: saveRestore, log: &safeBuffer{}}
 	h.open(t)

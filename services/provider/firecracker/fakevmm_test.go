@@ -27,6 +27,7 @@ import (
 	"time"
 
 	"github.com/presmihaylov/shard/models"
+	"github.com/presmihaylov/shard/pkg/reaper"
 	"github.com/presmihaylov/shard/services/supervisor"
 )
 
@@ -79,21 +80,8 @@ const (
 var initBinary string
 
 func TestMain(m *testing.M) {
-	switch os.Getenv(fakeReaperEnv) {
-	case launchReaper:
-		if err := launch(); err != nil {
-			fmt.Fprintln(os.Stderr, "launch the reaper:", err)
-			os.Exit(1)
-		}
-
-		return
-	case runReaper:
-		// reap writes its error to the test binary, the one reader there is.
-		if err := reap(); err != nil {
-			os.Exit(1)
-		}
-
-		return
+	if ran, code := reaper.Role(); ran {
+		os.Exit(code)
 	}
 	// The vmm passes its whole environment to the guest, so only the -transport argv says which one this is.
 	if os.Getenv(failingGuestEnv) == "1" && len(os.Args) == 3 && os.Args[1] == "-transport" {
@@ -172,7 +160,7 @@ func runTests(m *testing.M) (exit int) {
 
 		return 1
 	}
-	reaped, err := startReaper(harnessesFile)
+	reaped, err := reaper.Start(harnessesFile)
 	if err != nil {
 		fmt.Fprintln(os.Stderr, "start the reaper:", err)
 
@@ -235,17 +223,21 @@ func fakeJailer() error {
 	if err := vmm.Start(); err != nil {
 		return err
 	}
+	session, err := reaper.Session(vmm.Process.Pid)
+	if err != nil {
+		return err
+	}
 	if held := os.Getenv(heldJailerEnv); held != "" {
-		if err := holdUntilOrphaned(held, vmm.Process.Pid); err != nil {
+		if err := holdUntilOrphaned(held, session); err != nil {
 			return err
 		}
 	}
-	if err := note(filepath.Join(filepath.Dir(*base), sessionsFile), strconv.Itoa(vmm.Process.Pid)); err != nil {
+	if err := reaper.Note(filepath.Join(filepath.Dir(*base), sessionsFile), session.String()); err != nil {
 		return err
 	}
 	// A test binary that died before the note may have had its reaper scan without it, so this jailer ends the session itself.
 	if orphaned() {
-		return end(func() (map[int]bool, error) { return map[int]bool{vmm.Process.Pid: true}, nil })
+		return reaper.End(func() (reaper.Marks, error) { return session, nil })
 	}
 	pidFile, err := os.OpenFile(filepath.Join(chroot, filepath.Base(*execFile)+".pid"), os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0o600)
 	if err != nil {
@@ -262,80 +254,27 @@ func fakeJailer() error {
 func endSessions(t *testing.T, path string) {
 	t.Helper()
 
-	if err := end(func() (map[int]bool, error) { return sessionsIn(path) }); err != nil {
+	if err := reaper.End(func() (reaper.Marks, error) { return reaper.Read(path) }); err != nil {
 		t.Error(err)
 	}
 }
 
-// sessionsIn is every vmm session the file names.
-func sessionsIn(path string) (map[int]bool, error) {
-	blob, err := os.ReadFile(path)
-	if err != nil {
-		return nil, err
-	}
-	sids := map[int]bool{}
-	for field := range strings.FieldsSeq(string(blob)) {
-		sid, err := strconv.Atoi(field)
-		if err != nil {
-			return nil, fmt.Errorf("parse the vmm session %q in %s: %w", field, path, err)
-		}
-		sids[sid] = true
-	}
-
-	return sids, nil
-}
-
-// end SIGKILLs every process left in the sessions that sids reads, round after round, until none is left or stopGrace passes.
-func end(sids func() (map[int]bool, error)) error {
-	for deadline := time.Now().Add(stopGrace); ; time.Sleep(20 * time.Millisecond) {
-		noted, err := sids()
-		if err != nil {
-			return fmt.Errorf("read the vmm sessions: %w", err)
-		}
-		left, err := inSessions(noted)
-		if err != nil {
-			return fmt.Errorf("list the vmm sessions: %w", err)
-		}
-		if len(left) == 0 {
-			return nil
-		}
-		if time.Now().After(deadline) {
-			return fmt.Errorf("processes %v are left in the vmm sessions %s after SIGKILL", left, stopGrace)
-		}
-		if err := killAll(left); err != nil {
-			return fmt.Errorf("end the vmm sessions: %w", err)
-		}
-	}
-}
-
-// killAll SIGKILLs every pid; one that has exited since the scan is no error.
-func killAll(pids []int) error {
-	for _, pid := range pids {
-		if err := syscall.Kill(pid, syscall.SIGKILL); err != nil && !errors.Is(err, syscall.ESRCH) {
-			return fmt.Errorf("kill %d: %w", pid, err)
-		}
-	}
-
-	return nil
-}
-
-// requireProcessTable skips t only where this host refuses to read a live child in the process table, as a seatbelt sandbox refuses ps; any other failure to read it fails t.
+// requireProcessTable skips t only where this host refuses to list the session of a live child or read its state, as a seatbelt sandbox refuses ps; any other failure fails t.
 func requireProcessTable(t *testing.T) {
 	t.Helper()
-	refusal, err := tableRefusal()
+	reaper.Require(t)
+	refusal, err := stateRefusal()
 	if err != nil {
-		t.Fatalf("read a live child in the process table: %v", err)
+		t.Fatalf("read the state of a live child: %v", err)
 	}
 	if refusal != "" {
 		t.Skip(refusal)
 	}
 }
 
-// tableRefusal is why this host refuses to read a live child in the process table, or "" where it reads one; a run asks once, as every harness would pay a full scan.
-var tableRefusal = sync.OnceValues(func() (string, error) {
+// stateRefusal is why this host refuses to read the state of a live child the way freezeVMM does, or "" where it reads one; a run asks once.
+var stateRefusal = sync.OnceValues(func() (string, error) {
 	child := exec.Command("sleep", "60")
-	// A session of its own, so the child alone is in it.
-	child.SysProcAttr = &syscall.SysProcAttr{Setsid: true}
 	if err := child.Start(); err != nil {
 		return "", err
 	}
@@ -351,18 +290,7 @@ var tableRefusal = sync.OnceValues(func() (string, error) {
 	return refusal, err
 })
 
-// readLiveChild lists the session of a live child and reads its state the way endSessions and freezeVMM do, and names a refusal of either.
 func readLiveChild(pid int) (string, error) {
-	left, err := inSessions(map[int]bool{pid: true})
-	if errors.Is(err, os.ErrPermission) {
-		return fmt.Sprintf("this host refuses to list the session of a live child, so no test can end what its vmm sessions leave: %v", err), nil
-	}
-	if err != nil {
-		return "", fmt.Errorf("list the session of live child %d: %w", pid, err)
-	}
-	if !slices.Equal(left, []int{pid}) {
-		return "", fmt.Errorf("the session of live child %d lists %v", pid, left)
-	}
 	done, err := stopped(pid)
 	if errors.Is(err, os.ErrPermission) {
 		return fmt.Sprintf("this host refuses to read the state of a live child, so no test can see a vmm stop: %v", err), nil
