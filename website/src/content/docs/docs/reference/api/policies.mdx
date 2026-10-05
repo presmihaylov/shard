@@ -8,7 +8,7 @@ sidebar:
 This stores a network policy named `web` with one rule. A sandbox with this policy can reach `api.example.com`, and the policy drops whatever its rules do not allow:
 
 ```sh
-curl --unix-socket /var/lib/shard/shard.sock -X PUT -d '{"rules":[{"action":"allow","rule":"api.example.com"}]}' http://localhost/v0/policies/web
+curl --unix-socket /var/lib/shard/shard.sock -X PUT -H 'Content-Type: application/json' -d '{"rules":[{"action":"allow","rule":"api.example.com"}]}' http://localhost/v0/policies/web
 ```
 
 A create names the policy, and so does an [attach](/docs/reference/api/sandboxes/#attach-a-policy-to-a-sandbox) to a stopped sandbox.

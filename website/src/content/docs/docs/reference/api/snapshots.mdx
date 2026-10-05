@@ -8,8 +8,8 @@ sidebar:
 This saves the files of the stopped sandbox `web` as a snapshot, then creates a new sandbox from it:
 
 ```sh
-curl --unix-socket /var/lib/shard/shard.sock -X POST -d '{"sandbox":"web","name":"web-base"}' http://localhost/v0/snapshots
-curl --unix-socket /var/lib/shard/shard.sock -X POST -d '{"snapshot":"web-base","name":"web-3","resources":{"memory_mib":512}}' http://localhost/v0/sandboxes
+curl --unix-socket /var/lib/shard/shard.sock -X POST -H 'Content-Type: application/json' -d '{"sandbox":"web","name":"web-base"}' http://localhost/v0/snapshots
+curl --unix-socket /var/lib/shard/shard.sock -X POST -H 'Content-Type: application/json' -d '{"snapshot":"web-base","name":"web-3","resources":{"memory_mib":512}}' http://localhost/v0/sandboxes
 ```
 
 To create a sandbox from a snapshot, use the create route in [Sandboxes](/docs/reference/api/sandboxes/#create-a-sandbox).

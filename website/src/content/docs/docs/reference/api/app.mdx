@@ -14,7 +14,7 @@ curl --unix-socket /var/lib/shard/shard.sock http://localhost/v0/sandboxes/web/a
 This stops the app and leaves the sandbox running:
 
 ```sh
-curl --unix-socket /var/lib/shard/shard.sock -X POST -d '{"force":true}' http://localhost/v0/sandboxes/web/app/stop
+curl --unix-socket /var/lib/shard/shard.sock -X POST -H 'Content-Type: application/json' -d '{"force":true}' http://localhost/v0/sandboxes/web/app/stop
 ```
 
 {/* make openapi writes this part from the routes. Edit the routes, not this part. */}

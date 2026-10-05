@@ -8,7 +8,7 @@ sidebar:
 The shard command line and the SDKs talk to the daemon over this API. This request creates a sandbox named `web`, over the daemon's socket:
 
 ```sh
-curl --unix-socket /var/lib/shard/shard.sock -X POST -d '{"name":"web","image":"alpine:3.20","command":["sleep","600"],"resources":{"memory_mib":512}}' http://localhost/v0/sandboxes
+curl --unix-socket /var/lib/shard/shard.sock -X POST -H 'Content-Type: application/json' -d '{"name":"web","image":"alpine:3.20","command":["sleep","600"],"resources":{"memory_mib":512}}' http://localhost/v0/sandboxes
 ```
 
 The daemon answers `201` with the [Sandbox](/docs/reference/api/sandboxes/#sandbox) as JSON. Each page under REST API covers one group of routes, and the [Routes](#routes) tables below list them all.

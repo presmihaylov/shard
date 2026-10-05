@@ -8,10 +8,10 @@ sidebar:
 This runs a command in the running sandbox `web`:
 
 ```sh
-curl --unix-socket /var/lib/shard/shard.sock -X POST -d '{"command":["/bin/echo","hi"]}' http://localhost/v0/sandboxes/web/exec
+curl --unix-socket /var/lib/shard/shard.sock -X POST -H 'Content-Type: application/json' -d '{"command":["/bin/echo","hi"]}' http://localhost/v0/sandboxes/web/exec
 ```
 
-The daemon answers `201` with the [Exec](#exec). The other routes on this page take its `exec` field as the id. This one waits for the command to end:
+The daemon answers `201` with the [Exec](#exec). Routes with `{exec}` in the path use its `exec` field as the id. This one waits for the command to end:
 
 ```sh
 curl --unix-socket /var/lib/shard/shard.sock 'http://localhost/v0/sandboxes/web/exec/<exec>?wait=true'
