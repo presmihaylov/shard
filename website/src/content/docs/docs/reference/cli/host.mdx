@@ -1,0 +1,341 @@
+---
+title: Host and access
+description: The shard commands that set up a host, run the daemon and the API server, and manage API tokens.
+sidebar:
+  order: 7
+---
+
+{/* make cli-docs writes this part from cli/help.go. Edit the help, not this part. */}
+
+## shard capabilities
+
+Show sandbox lifecycle capabilities supported by the connected shard server.
+
+```text
+shard capabilities [OPTIONS]
+```
+
+**Examples**
+
+```sh
+shard capabilities
+shard capabilities --format json
+```
+
+**Options**
+
+| Option | Description | Default |
+| --- | --- | --- |
+| `--format <format>` | output format: json or table | `table` |
+
+Lists all eight verbs, each true or false for the server's provider. Token scopes and sandbox states never change the answer.
+
+## shard daemon
+
+Start the daemon or show its status.
+
+```text
+shard daemon [OPTIONS]
+shard daemon status [OPTIONS]
+```
+
+**Examples**
+
+```sh
+shard daemon
+shard daemon --provider gvisor
+```
+
+**Commands**
+
+| Command | Description |
+| --- | --- |
+| [`shard daemon status`](#shard-daemon-status) | show daemon status |
+
+**Options**
+
+| Option | Description | Default |
+| --- | --- | --- |
+| `--provider <name>` | sandbox provider: gvisor, sysbox, runc, vz or firecracker |  |
+| `--timeout <duration>` | image download timeout | `30m` |
+| `--insecure-registry <host>` | allow HTTP for a registry; repeatable |  |
+| `--log <path>` | daemon log file (macOS only) |  |
+
+The daemon manages local sandboxes and stays active until stopped. An existing data directory must use its original provider. Use `shard info` to see the default provider for this host.
+
+Runs only on the daemon host and refuses `--remote`, `SHARD_REMOTE` and a saved connection.
+
+### shard daemon status
+
+Show daemon status.
+
+```text
+shard daemon status [OPTIONS]
+```
+
+**Examples**
+
+```sh
+shard daemon status
+shard daemon status --format json
+```
+
+**Options**
+
+| Option | Description | Default |
+| --- | --- | --- |
+| `--format <format>` | output format: json or table | `table` |
+
+Shows the version, provider, process details and background tasks.
+
+Runs only on the daemon host and refuses `--remote`, `SHARD_REMOTE` and a saved connection.
+
+## shard info
+
+Show available providers and the default for this host.
+
+```text
+shard info [OPTIONS]
+```
+
+**Examples**
+
+```sh
+shard info
+shard info --format json
+```
+
+**Options**
+
+| Option | Description | Default |
+| --- | --- | --- |
+| `--format <format>` | output format: json or table | `table` |
+
+Works without an active daemon. Use `shard daemon status` to see the provider the current daemon uses.
+
+Runs only on the daemon host and refuses `--remote`, `SHARD_REMOTE` and a saved connection.
+
+## shard serve
+
+Start an HTTP API server with token authentication.
+
+```text
+shard serve [OPTIONS]
+```
+
+**Example**
+
+```sh
+shard serve
+```
+
+**Options**
+
+| Option | Description | Default |
+| --- | --- | --- |
+| `--listen <address>` | listen address | `127.0.0.1:2376` |
+| `--signing-key-file <path>` | token signing key | `<root>/auth/signing-key` |
+
+The local daemon must be active. Use `shard tokens mint` to create API tokens.
+
+Use an HTTPS proxy or tunnel for public access. HTTP is suitable for local access or an encrypted VPN.
+
+The default signing key is created automatically on first use. A custom signing key file must already exist.
+
+Runs only on the daemon host and refuses `--remote`, `SHARD_REMOTE` and a saved connection.
+
+## shard setup
+
+Set up shard on this machine or connect to a remote server.
+
+Run without options to start the interactive wizard. For automated setup, specify the choices below.
+
+```text
+shard setup [OPTIONS]
+```
+
+**Examples**
+
+```sh
+shard setup
+shard setup --local --provider gvisor --start-at-boot=true -y
+shard setup --remote https://shard.example.com --save -y
+```
+
+**Options**
+
+| Option | Description |
+| --- | --- |
+| `--local` | Set up this machine to run sandboxes |
+| `--remote <url>` | Connect to a remote shard server |
+| `--provider <name>` | firecracker, gvisor, sysbox, runc or vz |
+| `--start-at-boot <true\|false>` | Configure automatic daemon startup |
+| `--save` | Save the remote connection |
+| `-y, --yes` | Apply changes without confirmation |
+
+**Remote authentication**
+
+Set `SHARD_API_KEY`. Do not pass the key as a command argument.
+
+**Exit codes**
+
+- `0`: setup finished, or there was nothing to do
+- `1`: a check or a step failed, an option was refused, or the confirmation was declined
+- `130`: Ctrl+C left setup; the steps done so far stay in place
+
+## shard tokens
+
+Create, list and revoke API tokens.
+
+```text
+shard tokens COMMAND [OPTIONS] [ARGS...]
+```
+
+**Commands**
+
+| Command | Description |
+| --- | --- |
+| [`shard tokens mint`](#shard-tokens-mint) | create an API token |
+| [`shard tokens list`](#shard-tokens-list) | list API tokens and their status |
+| [`shard tokens revoke`](#shard-tokens-revoke) | revoke an API token |
+| [`shard tokens scopes`](#shard-tokens-scopes) | list available token scopes |
+
+mint, list and revoke run only on the daemon host and refuse `--remote`. scopes follows `--remote` and `SHARD_REMOTE`.
+
+### shard tokens mint
+
+Create an API token.
+
+```text
+shard tokens mint [OPTIONS]
+```
+
+**Examples**
+
+```sh
+shard tokens mint --name build-agent --duration 24h
+shard tokens mint --name reader --duration 24h --scopes sandbox:read
+```
+
+**Options**
+
+| Option | Description | Default |
+| --- | --- | --- |
+| `--name <name>` | token owner or purpose; required |  |
+| `--duration <duration>` | token lifetime; default no expiry |  |
+| `--scopes <list>` | permissions, separated by commas; default all permissions |  |
+| `--signing-key-file <path>` | token signing key | `<root>/auth/signing-key` |
+| `--format <format>` | output format: json or table | `json` |
+
+Run shard tokens scopes to list available scopes.
+
+The default signing key is created automatically on first use. A custom signing key file must already exist.
+
+The response includes the API token. Use its `token` value as `SHARD_API_KEY`.
+
+Runs only on the daemon host and refuses `--remote`, `SHARD_REMOTE` and a saved connection.
+
+### shard tokens list
+
+List API tokens and their status.
+
+```text
+shard tokens list [OPTIONS]
+```
+
+**Examples**
+
+```sh
+shard tokens list
+shard tokens list --format json
+```
+
+**Options**
+
+| Option | Description | Default |
+| --- | --- | --- |
+| `--signing-key-file <path>` | locate the token registry beside this key | `<root>/auth/signing-key` |
+| `--format <format>` | output format: json or table | `table` |
+
+Table columns: ID, NAME, ISSUED, EXPIRES, SCOPES and STATUS. Does not create a signing key.
+
+Runs only on the daemon host and refuses `--remote`, `SHARD_REMOTE` and a saved connection.
+
+### shard tokens revoke
+
+Revoke an API token.
+
+```text
+shard tokens revoke [OPTIONS] TOKEN
+shard tokens revoke [OPTIONS] --name NAME
+```
+
+**Examples**
+
+```sh
+shard tokens revoke 0123456789abcdef
+shard tokens revoke --name build-agent
+```
+
+**Arguments**
+
+| Argument | Description |
+| --- | --- |
+| `TOKEN` | token ID from `shard tokens list` |
+
+**Options**
+
+| Option | Description | Default |
+| --- | --- | --- |
+| `--name <name>` | revoke all tokens with this name |  |
+| `--signing-key-file <path>` | locate the token registry beside this key | `<root>/auth/signing-key` |
+
+Revoked tokens are rejected on subsequent requests.
+
+Runs only on the daemon host and refuses `--remote`, `SHARD_REMOTE` and a saved connection.
+
+### shard tokens scopes
+
+List available token scopes.
+
+```text
+shard tokens scopes [OPTIONS]
+```
+
+**Examples**
+
+```sh
+shard tokens scopes
+shard tokens scopes --format json
+```
+
+**Options**
+
+| Option | Description | Default |
+| --- | --- | --- |
+| `--format <format>` | output format: json or table | `table` |
+
+## shard version
+
+Show the client and daemon versions.
+
+```text
+shard version [OPTIONS]
+```
+
+**Examples**
+
+```sh
+shard version
+shard version --format json
+```
+
+**Options**
+
+| Option | Description | Default |
+| --- | --- | --- |
+| `--format <format>` | output format: json or table | `table` |
+
+Use `shard --version` to show only the client version.
+
+{/* make cli-docs writes everything above this line. Write by hand below it. */}

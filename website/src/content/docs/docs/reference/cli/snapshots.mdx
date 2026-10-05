@@ -1,0 +1,148 @@
+---
+title: Snapshots
+description: The shard commands that save a stopped sandbox's files as a snapshot and manage snapshots.
+sidebar:
+  order: 4
+---
+
+{/* make cli-docs writes this part from cli/help.go. Edit the help, not this part. */}
+
+## shard snapshot
+
+Save and manage filesystem snapshots.
+
+```text
+shard snapshot COMMAND [OPTIONS] [ARGS...]
+```
+
+**Commands**
+
+| Command | Description |
+| --- | --- |
+| [`shard snapshot create`](#shard-snapshot-create) | save a stopped sandbox's files as a snapshot |
+| [`shard snapshot list`](#shard-snapshot-list) | list snapshots |
+| [`shard snapshot inspect`](#shard-snapshot-inspect) | show detailed information about a snapshot |
+| [`shard snapshot remove`](#shard-snapshot-remove) | delete a snapshot and its files |
+
+### shard snapshot create
+
+Save a stopped sandbox's files as a snapshot and print its ID.
+
+```text
+shard snapshot create [OPTIONS] SANDBOX
+```
+
+**Examples**
+
+```sh
+shard stop web
+shard snapshot create --name web-base web
+```
+
+**Arguments**
+
+| Argument | Description |
+| --- | --- |
+| `SANDBOX` | source sandbox ID or name |
+
+**Options**
+
+| Option | Description |
+| --- | --- |
+| `--name <name>` | snapshot name to use instead of its ID |
+
+Stop the sandbox first. Snapshots contain files, not memory or process state. They remain available after the source sandbox is removed.
+
+### shard snapshot list
+
+List filesystem snapshots.
+
+```text
+shard snapshot list [OPTIONS]
+```
+
+**Examples**
+
+```sh
+shard snapshot list
+shard snapshot list --format json
+```
+
+**Options**
+
+| Option | Description | Default |
+| --- | --- | --- |
+| `--format <format>` | output format: json or table | `table` |
+
+Table columns: ID, NAME, SOURCE, IMAGE, SIZE and CREATED.
+
+### shard snapshot inspect
+
+Show detailed information about a snapshot.
+
+```text
+shard snapshot inspect [OPTIONS] SNAPSHOT
+```
+
+**Examples**
+
+```sh
+shard snapshot inspect web-base
+shard snapshot inspect --format table web-base
+```
+
+**Arguments**
+
+| Argument | Description |
+| --- | --- |
+| `SNAPSHOT` | snapshot ID or name |
+
+**Options**
+
+| Option | Description | Default |
+| --- | --- | --- |
+| `--format <format>` | output format: json or table | `json` |
+
+### shard snapshot remove
+
+Delete a snapshot and its files.
+
+```text
+shard snapshot remove SNAPSHOT
+```
+
+**Example**
+
+```sh
+shard snapshot remove web-base
+```
+
+**Arguments**
+
+| Argument | Description |
+| --- | --- |
+| `SNAPSHOT` | snapshot ID or name |
+
+Sandboxes created from the snapshot keep their own files.
+
+{/* make cli-docs writes everything above this line. Write by hand below it. */}
+
+## Create a sandbox from a snapshot
+
+```sh
+shard stop web
+shard snapshot create --name web-base web
+shard create --name web-2 --snapshot web-base
+```
+
+A snapshot holds the files of a stopped sandbox, with no memory image. No two snapshots share a name, and a snapshot outlives its source.
+
+`shard create --snapshot` takes no image and never pulls:
+
+- The image must be on the host at the digest the snapshot recorded. If the host no longer holds it, or holds it at another digest, shard refuses the create, and the error says what to do.
+- Only a server that runs the provider that made the snapshot can create from it.
+- With no `--memory` or `--disk`, the new sandbox takes the memory and disk bounds its source ran under.
+- On Firecracker and vz, a larger `--disk` grows the snapshot's disk and its filesystem. shard refuses a smaller one, because a disk can only grow.
+- On the other providers, shard refuses a `--disk` that is too small for the snapshot's files.
+
+[JSON output](/docs/reference/cli/#snapshot) shows the record that `shard snapshot inspect` prints.

@@ -1,0 +1,119 @@
+---
+title: Images
+description: The shard commands that download, list and delete images.
+sidebar:
+  order: 3
+---
+
+{/* make cli-docs writes this part from cli/help.go. Edit the help, not this part. */}
+
+## shard pull
+
+Download an image.
+
+```text
+shard pull IMAGE
+```
+
+**Example**
+
+```sh
+shard pull python:3.12
+```
+
+**Arguments**
+
+| Argument | Description |
+| --- | --- |
+| `IMAGE` | image reference, such as python:3.12 |
+
+Prints the image reference and digest when the download finishes.
+
+Runs only on the daemon host and refuses `--remote`, `SHARD_REMOTE` and a saved connection.
+
+## shard image
+
+Manage downloaded images.
+
+```text
+shard image COMMAND [OPTIONS] [ARGS...]
+```
+
+**Commands**
+
+| Command | Description |
+| --- | --- |
+| [`shard image list`](#shard-image-list) | list downloaded images |
+| [`shard image remove`](#shard-image-remove) | delete a downloaded image |
+| [`shard image prune`](#shard-image-prune) | delete unused images |
+
+### shard image list
+
+List downloaded images.
+
+```text
+shard image list [OPTIONS]
+```
+
+**Examples**
+
+```sh
+shard image list
+shard image list --format json
+```
+
+**Options**
+
+| Option | Description | Default |
+| --- | --- | --- |
+| `--format <format>` | output format: json or table | `table` |
+
+Runs only on the daemon host and refuses `--remote`, `SHARD_REMOTE` and a saved connection.
+
+### shard image remove
+
+Delete a downloaded image.
+
+```text
+shard image remove [OPTIONS] IMAGE
+```
+
+**Example**
+
+```sh
+shard image remove python:3.12
+```
+
+**Arguments**
+
+| Argument | Description |
+| --- | --- |
+| `IMAGE` | image reference |
+
+**Options**
+
+| Option | Description |
+| --- | --- |
+| `--force` | delete the image even if a sandbox or snapshot uses it |
+
+Runs only on the daemon host and refuses `--remote`, `SHARD_REMOTE` and a saved connection.
+
+### shard image prune
+
+Delete images that no sandbox or snapshot uses.
+
+```text
+shard image prune
+```
+
+**Example**
+
+```sh
+shard image prune
+```
+
+Images used by stopped sandboxes are also kept.
+
+Runs only on the daemon host and refuses `--remote`, `SHARD_REMOTE` and a saved connection.
+
+{/* make cli-docs writes everything above this line. Write by hand below it. */}
