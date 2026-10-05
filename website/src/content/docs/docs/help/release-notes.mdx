@@ -17,6 +17,59 @@ To upgrade the CLI, run the installer again. To upgrade a host that setup prepar
 
 shard is pre-alpha, so a release can change the API, the CLI and the SDKs without any compatibility guarantees.
 
+## v0.1.3
+
+5 October 2026. [Full notes](https://github.com/presmihaylov/shard/releases/tag/v0.1.3).
+
+**New**
+
+- These docs cover install and setup, a quickstart for a server and one for a client, the concepts, the security model, guides, the TypeScript and Python SDKs, a reference and help. The guides that were in the repository's `docs/` folder moved here.
+- The CLI and REST API reference pages are built from the CLI's help text and the API's routes, so they list every command, flag and endpoint of this release.
+- Firecracker and vz: the `kernel` field of a sandbox names the guest kernel that it booted, such as `kernel-6.12.110-3`, or `local-` and a hash prefix for a kernel set with `SHARD_KERNEL`. A fork keeps the kernel of its source. gVisor, runc and Sysbox leave the field out.
+- `shard create`, `shard fork` and `shard run --detach` print `created sandbox <name>` on stderr for a sandbox with a name. Stdout still holds only the id.
+
+**Install and setup**
+
+- With a saved remote connection, `shard setup` opens on the menu of that connection: check, replace, remove, run sandboxes on this machine, or exit. `--local`, `--provider` or `--start-at-boot` picks the local choice.
+- Setup says that a saved connection stores the API key as plain text before it asks whether to save it.
+- A local setup with no terminal names every flag that it still needs in one error, before any check, and exits 1.
+- On Linux, setup also finds a Firecracker disk image in `/var/lib/shard`. When the data belongs to another provider, setup prints the commands that keep or delete it. Repair and upgrade stop with the same advice before they change anything.
+- On Linux, when only root can read the sandbox records, setup asks for administrator access before its checks. It skips a record that it cannot read, as the daemon does.
+- After a failed step, the retry hint names a command that runs: `shard setup`, or the full path of the binary when `shard` is not on `PATH`.
+- The tool download shows its progress for `runsc`, `firecracker` and `sysbox`. A download that gets no data for 30 seconds fails with `no data for 30s`.
+- A local setup ends with `shard <version> is set up`, and a repair with `shard <version> is repaired`.
+- Setup prints `sudo` only where you need it: never before a shard command on a Mac, and never when you are logged in as root.
+
+**Uninstall**
+
+- On Linux, the note ends with the command that deletes the saved data: `sudo rm -r /var/lib/shard`, and the lock file of the disk image when there is one. After the `sed` that removes the `/etc/fstab` line, it adds `systemctl daemon-reload`.
+- On Linux, when the disk image is gone but its `/etc/fstab` line stays, the note names that line and the commands that clean it up, with `umount` first while the data directory is still mounted.
+- On a Mac, the note also prints the command that deletes the saved data.
+
+**CLI**
+
+- When the daemon does not answer on a host where setup installed a service that starts at boot, the error says `is the background service running? shard setup repairs it`.
+- Errors name the fix as a command or a flag, say API key instead of token, and write shard in lowercase. A command in a hint starts with `sudo` when you ran the CLI with `sudo` against the local daemon.
+- `shard snapshot create` on a sandbox whose image is gone names `shard pull <image>`, the command that exists.
+
+**API and SDKs**
+
+- A sandbox or snapshot name with the shape of a generated id gets `400 invalid_request`, not `500 internal`.
+- Error messages use plain words and name the fix. Match on `code`, not on the text. The texts of `failed_reason` and `stopped_reason` change too.
+- The next release of the `useshards` SDKs carries the same wording in its errors.
+
+**Fixes**
+
+- vz: when the daemon loses its connection to a guest and cannot read the VM state, the sandbox no longer shows as `stopped`. The daemon tries again, then reports the error.
+- vz: a connection to a guest that times out no longer leaves a goroutine or a handle in the daemon.
+- gVisor, runc and Sysbox: the restart count comes back with the exit record, which the host holds, so a process in the sandbox can no longer change it. A file left in `/.shard` no longer makes `stop` or `start` fail.
+- `shard rm` no longer fails when the egress log writes into the sandbox directory during the remove.
+
+**Site**
+
+- The landing page has a new design, and these docs take its palette, fonts and logo.
+- The installer's banner shows the new logo.
+
 ## v0.1.2
 
 5 October 2026. [Full notes](https://github.com/presmihaylov/shard/releases/tag/v0.1.2).
