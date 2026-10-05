@@ -14,7 +14,7 @@ Connect to a shard server and run a command in a new sandbox:
 
 ```sh
 curl -fsSL https://useshards.com/install | sh
-export SHARD_API_KEY=<your API key>
+export SHARD_API_KEY='your-api-key'
 shard setup --remote https://shard.example.com --save -y
 
 shard create --name demo --memory 512MiB alpine:3.20
@@ -28,7 +28,7 @@ shard remove --force demo
 ```sh
 npm install useshards
 export SHARD_REMOTE=https://shard.example.com
-export SHARD_API_KEY=<your API key>
+export SHARD_API_KEY='your-api-key'
 ```
 
 ```ts
@@ -51,7 +51,7 @@ try {
 ```sh
 pip install useshards
 export SHARD_REMOTE=https://shard.example.com
-export SHARD_API_KEY=<your API key>
+export SHARD_API_KEY='your-api-key'
 ```
 
 ```python
@@ -69,7 +69,7 @@ with Shard() as shard:
 	</TabItem>
 </Tabs>
 
-Replace `https://shard.example.com` with the URL of your server. The TypeScript SDK needs Node 20.3 or later, and the Python SDK needs Python 3.11 or later.
+Replace `https://shard.example.com` with the URL of your server and `your-api-key` with an API key from that server. The TypeScript SDK needs Node 20.3 or later, and the Python SDK needs Python 3.11 or later.
 
 ## What you need
 
@@ -89,13 +89,13 @@ Run `shard setup` with no options, and choose `Connect to a remote server`. The 
 
 Setup then checks three things: that it can reach the server, that the server accepts the key, and which lifecycle verbs the server supports. If a check fails, you can retry, edit the details or exit.
 
-When the checks pass, setup offers to save the connection. Every later `shard` command then uses it without a flag or a variable. The file is `~/.config/shard/config.json`, or `$XDG_CONFIG_HOME/shard/config.json` when that variable is set. It holds the key in plain text, so setup makes it readable only by your user.
+When the checks pass, setup offers to save the connection. Later client commands then use it without a flag or a variable. The file is `~/.config/shard/config.json`, or `$XDG_CONFIG_HOME/shard/config.json` when that variable contains an absolute path. It holds the key in plain text, so setup makes it readable only by your user.
 
 If you do not save the connection, set both variables in each shell:
 
 ```sh
 export SHARD_REMOTE=https://shard.example.com
-export SHARD_API_KEY=<your API key>
+export SHARD_API_KEY='your-api-key'
 ```
 
 A command picks its server and key in this order:
@@ -109,7 +109,7 @@ The CLI sends the saved key only to the server you saved it for. `--remote ""` r
 
 ## Commands that run on the server only
 
-A few commands act on the daemon's own host, so they refuse a remote: `pull`, `image list`, `image remove`, `image prune`, `info`, `daemon status`, `tokens mint`, `tokens list` and `tokens revoke`. Run them on the server. On a machine with a saved connection, add `--remote ""` to run them against the local daemon.
+A few commands act on the daemon's own host, so they refuse a remote: `pull`, `image list`, `image remove`, `image prune`, `info`, `daemon status`, `tokens mint`, `tokens list` and `tokens revoke`. Run them on the server. On a machine with a saved connection, add `--remote ""` to use this host instead.
 
 You do not need to `pull` before `shard create`. The server fetches a missing image itself.
 
@@ -140,9 +140,9 @@ shard = Shard(remote="https://shard.example.com", api_key=os.environ["MY_SHARD_K
 
 ## HTTPS and certificates
 
-Use an `https` URL. An `http` URL works, but it sends the API key and every request unencrypted. Setup asks you to confirm an `http` URL, and every CLI command and both SDKs print a warning for one. Use `http` only on localhost or through a trusted encrypted network.
+Use an `https` URL. An `http` URL works, but it sends the API key and every request unencrypted. Setup asks you to confirm an `http` URL. The CLI and both SDKs warn when they connect over HTTP. Use `http` only on localhost or through a trusted encrypted network.
 
-The CLI and both SDKs always verify the server's certificate, and no option turns that off. If a private certificate authority signed it, set `SHARD_CA_FILE` to that authority's PEM file. The saved connection does not store this path, so keep the variable set. The TypeScript SDK also takes `caFile`, and the Python SDK takes `ca_file=`.
+For HTTPS, the CLI and both SDKs always verify the server's certificate, and no option turns that off. If a private certificate authority signed it, set `SHARD_CA_FILE` to that authority's PEM file. The saved connection does not store this path, so keep the variable set. The TypeScript SDK also takes `caFile`, and the Python SDK takes `ca_file=`.
 
 ## Next steps
 
