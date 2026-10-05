@@ -99,6 +99,8 @@ func RecordRunning(ctx context.Context, repo Repository, provider models.Provide
 		// A new run starts with nothing started again; a resume keeps the count.
 		if !keepExit {
 			sb.Restart = freshRestart(sb.Restart)
+			// A new run booted the substrate's kernel, where a resume runs the memory image of the one before.
+			sb.Kernel = guestKernel(provider)
 		}
 
 		return nil

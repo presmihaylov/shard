@@ -58,7 +58,7 @@ func TestEnsureDownloadsOnceAndVerifies(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if k.SHA256 != sum(body) || k.Version != Version || k.Arch != "test" {
+	if k.SHA256 != sum(body) || k.Version != Version || k.Arch != "test" || k.Tag != Tag() {
 		t.Fatalf("unexpected kernel %+v", k)
 	}
 	if path, err := Path(root, "test"); err != nil || k.Path != path {
@@ -203,6 +203,10 @@ func TestWithLocalStillChecksTheHash(t *testing.T) {
 	}
 	if k.Path != path {
 		t.Fatalf("path %s, want %s", k.Path, path)
+	}
+	// A dev kernel is no release, so a record names it by its hash (SHARD-745).
+	if want := "local-" + sum(body)[:12]; k.Tag != want {
+		t.Fatalf("tag %s, want %s", k.Tag, want)
 	}
 
 	_, err = New(t.TempDir(), WithLocal(path, sum([]byte("other")))).Ensure(context.Background(), "arm64")

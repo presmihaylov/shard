@@ -47,7 +47,7 @@ func TestARepliedStateLandsTheLastExitAndTheRestarts(t *testing.T) {
 	if err != nil || !found || exit.Code != 5 {
 		t.Fatalf("exit after the second replay = %+v, %v, %v; want code 5", exit, found, err)
 	}
-	count, err := bundle.Bundle{RestartFile: filepath.Join(m.dir, restartsFile)}.RestartCount()
+	count, err := bundle.ReadRestartCount(filepath.Join(m.dir, restartsFile))
 	if err != nil || count.Count != 2 {
 		t.Fatalf("restarts = %+v, %v; want 2", count, err)
 	}

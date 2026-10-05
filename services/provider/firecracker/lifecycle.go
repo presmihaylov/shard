@@ -514,7 +514,7 @@ func (p *Provider) Restarts(_ context.Context, id string) (models.RestartCount, 
 		return models.RestartCount{}, err
 	}
 
-	return bundle.Bundle{RestartFile: filepath.Join(dir, restartsFile)}.RestartCount()
+	return bundle.ReadRestartCount(filepath.Join(dir, restartsFile))
 }
 
 // lost is the first event the loop could not land, which the files would otherwise answer for as if it never came.

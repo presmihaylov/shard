@@ -207,7 +207,7 @@ class AppExit:
 
 @attrs.frozen
 class SandboxInfo:
-    """One sandbox as the daemon holds it. app is None for a sandbox made with no command."""
+    """One sandbox as the daemon holds it. app is None with no command, and kernel is None on a container substrate."""
 
     id: str
     name: str | None
