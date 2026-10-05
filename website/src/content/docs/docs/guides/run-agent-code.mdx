@@ -65,6 +65,8 @@ with Shard() as shard:
 	</TabItem>
 </Tabs>
 
+The TypeScript and Python examples reach `shard serve` at the address in `SHARD_REMOTE`, with the API key in `SHARD_API_KEY`.
+
 The code runs in the sandbox, not in your process. It sees the image's files and the file you wrote.
 
 **Caution: the `runc` provider isolates nothing.** Root in a `runc` sandbox is root on the host. Use `runc` only for code you trust.
@@ -76,7 +78,7 @@ The code runs in the sandbox, not in your process. It sees the image's files and
 | TypeScript | Python | What it holds |
 | --- | --- | --- |
 | `exitCode` | `exit_code` | the command's exit code |
-| `signal` | `signal` | the signal that ended it, or none |
+| `signal` | `signal` | always none, since a signal shows in the exit code |
 | `stdout`, `stderr` | `stdout`, `stderr` | the newest output |
 | `lostBytes` | `lost_bytes` | output the daemon dropped before any client read it |
 
