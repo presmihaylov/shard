@@ -155,7 +155,7 @@ func providerRequirements(ctx context.Context, h Host, l Local) *finding {
 	return nil
 }
 
-func administratorAccess(_ context.Context, h Host, _ Local) *finding {
+func administratorAccess(ctx context.Context, h Host, _ Local) *finding {
 	if h.OS == "darwin" && h.Euid == 0 && h.Env("SUDO_USER") == "" {
 		return failed(
 			"On a Mac the daemon runs as your user, and setup cannot tell who that is when it runs as root.",
@@ -169,7 +169,47 @@ func administratorAccess(_ context.Context, h Host, _ Local) *finding {
 		return failed("Setup needs administrator access, and this machine has no sudo.", "Run shard setup as root.")
 	}
 
-	return nil
+	// Setup runs its commands with sudo -n, so a rule that runs them without a password passes even where -v wants one.
+	if _, err := h.Run(ctx, "sudo", "-n", "true"); err == nil {
+		return nil
+	}
+	// LC_ALL=C keeps the words read below, and -v, unlike a command or -l, refuses a user outside sudoers before it wants a password.
+	out, err := h.Run(ctx, "env", "LC_ALL=C", "sudo", "-n", "-v")
+	if err == nil {
+		return nil
+	}
+	if strings.Contains(string(out), "a password is required") {
+		if terminal(h) {
+			return nil
+		}
+		return failed(
+			"Setup needs administrator access, and sudo needs a password it has no terminal to ask for.",
+			"Run shard setup as root, or as a user with passwordless sudo.",
+		)
+	}
+
+	said := strings.TrimPrefix(outputTail(out), ": ")
+	if said == "" {
+		said = err.Error()
+	}
+	return failed("Setup needs administrator access, and sudo does not allow this user: "+strings.TrimSuffix(said, ".")+".", notAllowedHint)
+}
+
+const notAllowedHint = "Ask an administrator to give your user sudo access, or run shard setup as root."
+
+// notInSudoers says sudo refused the user itself, which no password and no terminal fixes.
+func notInSudoers(said string) bool {
+	return strings.Contains(said, "may not run sudo") || strings.Contains(said, "not in the sudoers file")
+}
+
+// terminal says /dev/tty opens, which is where sudo asks for a password.
+func terminal(h Host) bool {
+	f, err := os.OpenFile(rooted(h, "/dev/tty"), os.O_RDWR, 0)
+	if err != nil {
+		return false
+	}
+
+	return f.Close() == nil
 }
 
 // installPaths refuses a place a person other than root could change what the root daemon runs or keeps.

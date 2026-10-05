@@ -142,9 +142,10 @@ const (
 
 // Run asks the first question and runs the local or the remote half.
 func (s *Setup) Run(ctx context.Context) error {
+	why := noProvider(Providers(ctx, s.Host))
 	mode, err := s.UI.Select(ctx, AskMode, "How do you want to use Shard?", []term.Option{
-		modeLocal:  {Name: "local", Label: "Run sandboxes on this machine", Default: true},
-		modeRemote: {Name: "remote", Label: "Connect to a remote server"},
+		modeLocal:  {Name: "local", Label: "Run sandboxes on this machine", Lines: why, Default: why == nil},
+		modeRemote: {Name: "remote", Label: "Connect to a remote server", Default: why != nil},
 	})
 	if err != nil {
 		return err

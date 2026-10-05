@@ -18,7 +18,7 @@ The installer puts the CLI at `~/.local/bin/shard`. It needs no root and changes
 3. Downloads the binary for this platform and the release's `SHA256SUMS` from that one release, into a temporary directory.
 4. Verifies the binary's checksum, and refuses to install on a mismatch.
 5. Checks that the new binary reports the expected version, then moves it over `~/.local/bin/shard`.
-6. Prints the install path, and how to add `~/.local/bin` to `PATH` when it is missing.
+6. Prints the install path and, when `~/.local/bin` is not on `PATH`, the line that adds it for new shells and the `export` that adds it to the current one.
 
 An existing `shard` stays in place until the new binary is downloaded and verified. On a failure or an interrupt, the installer removes its temporary files and leaves the old binary as it was.
 
@@ -43,6 +43,16 @@ Set up Shard later:
 For automated setup:
   shard setup --help
 ```
+
+## Setup exit codes
+
+`shard setup` ends with one of these codes, so a script can tell the outcomes apart:
+
+| Code | When |
+| --- | --- |
+| 0 | Setup finished, or there was nothing to do |
+| 1 | A check or a step failed, an option was refused, or the confirmation was declined |
+| 130 | Ctrl+C left setup; the steps done so far stay in place |
 
 ## Upgrade
 
