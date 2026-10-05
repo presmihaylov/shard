@@ -11,6 +11,7 @@ import (
 	"net"
 	"net/http"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/coder/websocket"
@@ -23,8 +24,8 @@ import (
 )
 
 // createExec validates the command and names the exec; nothing runs until a client attaches.
-func (h *Handler) createExec(ctx context.Context, in *sandboxBody[sandbox.ExecRequest]) (*reply[models.Exec], error) {
-	return answer(h.lifecycle.CreateExec(ctx, in.ID, value(in.Body)))
+func (h *Handler) createExec(ctx context.Context, in *sandboxRequest[sandbox.ExecRequest]) (*reply[models.Exec], error) {
+	return answer(h.lifecycle.CreateExec(ctx, in.ID, in.Body))
 }
 
 // execsResponse is a page of one sandbox's execs, oldest id first.
@@ -135,18 +136,17 @@ func (h *Handler) attachExec(w http.ResponseWriter, r *http.Request) {
 	session := &execSession{w: w, r: r, log: h.log, ctx: ctx, cancel: cancel, failure: func(err error) FailureMessage { return h.failureOf(r, err) }}
 	defer session.close()
 
-	stdin, writer := io.Pipe()
-	session.stdin = writer
+	inputCtx, stopInput := context.WithCancel(ctx)
+	session.stopInput = stopInput
+	session.input = newExecInput(inputCtx)
 
 	streams := sandbox.Streams{
-		Stdin:   stdin,
-		Stdout:  session.stream(StreamStdout),
-		Stderr:  session.stream(StreamStderr),
-		Started: session.start,
-		Warn: func(message string) {
-			h.log.Printf("api: exec %s in sandbox %s: %s", r.PathValue("exec"), r.PathValue("id"), message)
-		},
-		Detach: cancel,
+		Stdin:     session.input,
+		StopStdin: session.interruptInput,
+		Stdout:    session.stream(StreamStdout),
+		Stderr:    session.stream(StreamStderr),
+		Started:   session.start,
+		Detach:    cancel,
 	}
 
 	attached, err := h.lifecycle.Attach(ctx, r.PathValue("id"), r.PathValue("exec"), streams)
@@ -214,9 +214,14 @@ type execSession struct {
 	cancel context.CancelFunc
 
 	// answered says the handshake was answered, in the affirmative or not, so no JSON body follows it.
-	answered bool
-	conn     *websocket.Conn
-	stdin    *io.PipeWriter
+	answered    bool
+	conn        *websocket.Conn
+	stopInput   context.CancelFunc
+	input       *execInput
+	readDone    chan struct{}
+	closeMu     sync.Mutex
+	closeStatus websocket.StatusCode
+	closeReason string
 }
 
 // start answers the 101 and takes the connection, so everything after this is messages and never HTTP.
@@ -230,47 +235,58 @@ func (e *execSession) start(execID string) error {
 	conn.SetReadLimit(MaxPayload + 1)
 	e.conn = conn
 
+	e.readDone = make(chan struct{})
 	go e.read()
 
 	return nil
 }
 
-// read moves the client's messages into the guest's stdin until the client says it is done, or goes away.
 func (e *execSession) read() {
+	defer close(e.readDone)
 	for {
 		stream, payload, err := Receive(context.Background(), e.conn)
 		if err != nil {
-			// The client is gone, so this attach ends; the command runs on and a later attach replays it.
-			e.closeStdin(err)
 			e.cancel()
-
 			return
 		}
 
-		switch stream {
-		case StreamStdin:
-			if _, err := e.stdin.Write(payload); err != nil {
-				e.log.Printf("api: exec: the command stopped reading its input: %v", err)
-
-				return
-			}
-		case StreamStdinClose:
-			e.closeStdin(io.EOF)
-		default:
-			e.log.Printf("api: exec: the client sent a message of stream %d, which no client sends", stream)
-			e.closeStdin(fmt.Errorf("the client sent a message of stream %d", stream))
-			e.cancel()
-
+		if !e.handleInput(stream, payload) {
 			return
 		}
 	}
 }
 
-// closeStdin hands the guest process the end of its input; CloseWithError reports nothing on a second call.
-func (e *execSession) closeStdin(err error) {
-	if closeErr := e.stdin.CloseWithError(err); closeErr != nil {
-		e.log.Printf("api: exec: close the input of the command: %v", closeErr)
+func (e *execSession) handleInput(stream byte, payload []byte) bool {
+	switch stream {
+	case StreamStdin:
+		if err := e.input.offer(payload); err != nil {
+			e.refuseInput(err)
+			return false
+		}
+	case StreamStdinClose:
+		e.input.end()
+	default:
+		e.log.Printf("api: exec: the client sent a message of stream %d, which no client sends", stream)
+		e.cancel()
+		return false
 	}
+	return true
+}
+
+func (e *execSession) refuseInput(err error) {
+	status := websocket.StatusTryAgainLater
+	if errors.Is(err, errExecInputClosed) {
+		status = websocket.StatusPolicyViolation
+	}
+	e.closeMu.Lock()
+	e.closeStatus, e.closeReason = status, err.Error()
+	e.closeMu.Unlock()
+	e.cancel()
+}
+
+func (e *execSession) interruptInput() error {
+	e.stopInput()
+	return nil
 }
 
 // finish says how the command ended. A command that never ran exits with the code a shell answers for it.
@@ -310,16 +326,23 @@ func (e *execSession) stream(stream byte) io.Writer {
 
 // close ends the WebSocket of this attach. A client that left first closed it; the command it streamed runs on.
 func (e *execSession) close() {
-	e.closeStdin(io.EOF)
+	e.stopInput()
 
 	if e.conn == nil {
 		return
 	}
 
-	err := e.conn.Close(websocket.StatusNormalClosure, "")
+	e.closeMu.Lock()
+	status, reason := e.closeStatus, e.closeReason
+	e.closeMu.Unlock()
+	if status == 0 {
+		status = websocket.StatusNormalClosure
+	}
+	err := e.conn.Close(status, reason)
 	if err != nil && !errors.Is(err, net.ErrClosed) {
 		e.log.Printf("api: exec: close the WebSocket: %v", err)
 	}
+	<-e.readDone
 }
 
 type writerFunc func(p []byte) (int, error)
@@ -332,8 +355,8 @@ func (h *Handler) resizeExec(ctx context.Context, in *execBody[sandbox.TerminalS
 
 // describeLogs names the two answers of sandboxLogs: the output as text, or with follow over a WebSocket.
 func describeLogs(registry huma.Registry, op *huma.Operation) {
-	op.Responses["200"] = response("The entrypoint's output as it was written; with follow the body streams until the sandbox stops.", "text/plain", text())
-	op.Responses["101"] = upgrade("A WebSocket follow. Each binary message leads with its stream byte: 1 the output, 3 an EndMessage naming why the follow ended, 5 a FailureMessage.", map[string]*huma.Schema{
+	op.Responses["200"] = response("The entrypoint's output as it was written; with follow the body streams until the sandbox stops or is removed.", "text/plain", text())
+	op.Responses["101"] = upgrade("A WebSocket follow with follow=true. Each binary message leads with its stream byte: 1 the output, 3 an EndMessage naming why the follow ended, 5 a FailureMessage.", map[string]*huma.Schema{
 		"3": schemaOf[EndMessage](registry),
 		"5": schemaOf[FailureMessage](registry),
 	})
@@ -501,7 +524,7 @@ func (h *Handler) followLogsPlain(w http.ResponseWriter, r *http.Request, id str
 	}
 }
 
-// followEgressLog streams one decision per message, or per line without the handshake, until the sandbox stops or is removed.
+// followEgressLog streams decisions until the sandbox stops, fails or is removed.
 func (h *Handler) followEgressLog(w http.ResponseWriter, r *http.Request, sb models.Sandbox) {
 	if !isHandshake(r) {
 		h.followEgressLogPlain(w, r, sb)
@@ -538,6 +561,8 @@ func (h *Handler) followEgressLog(w http.ResponseWriter, r *http.Request, sb mod
 	// Each end of the record is said in its sentinel's own words, which no wrapper on the way can add a host detail to.
 	case errors.Is(err, errStopped):
 		f.close(websocket.StatusNormalClosure, errStopped.Error())
+	case errors.Is(err, errFailed):
+		f.close(websocket.StatusNormalClosure, errFailed.Error())
 	case errors.Is(err, egress.ErrSandboxGone):
 		f.close(websocket.StatusNormalClosure, egress.ErrSandboxGone.Error())
 	case f.ctx.Err() != nil:
@@ -576,8 +601,8 @@ func (h *Handler) followEgressLogPlain(w http.ResponseWriter, r *http.Request, s
 
 	err = endOf(ctx, err)
 
-	// A stop, a rm or a client that hung up ends the body, and none of them is a failure.
-	if errors.Is(err, errStopped) || errors.Is(err, egress.ErrSandboxGone) || r.Context().Err() != nil {
+	// A terminal sandbox or a client that hung up has no more records to wait for.
+	if errors.Is(err, errStopped) || errors.Is(err, errFailed) || errors.Is(err, egress.ErrSandboxGone) || r.Context().Err() != nil {
 		err = nil
 	}
 	if err != nil {
@@ -588,10 +613,13 @@ func (h *Handler) followEgressLogPlain(w http.ResponseWriter, r *http.Request, s
 // errStopped ends an egress follow: a stopped sandbox makes no more decisions, so there is nothing left to follow.
 var errStopped = errors.New("the sandbox stopped")
 
+// A failed sandbox cannot run again, so its log will never gain another decision.
+var errFailed = errors.New("the sandbox failed")
+
 // stopPoll is how often an egress follow asks the record whether the sandbox stopped.
 const stopPoll = 500 * time.Millisecond
 
-// untilStopped ends the context once the record says stopped or is gone, since the egress log outlives both.
+// untilStopped watches the record because the egress log outlives a stopped, failed or removed sandbox.
 func (h *Handler) untilStopped(parent context.Context, id string) (context.Context, func()) {
 	ctx, cancel := context.WithCancelCause(parent)
 
@@ -611,6 +639,8 @@ func (h *Handler) untilStopped(parent context.Context, id string) (context.Conte
 				cancel(fmt.Errorf("ask whether sandbox %s stopped: %w", id, err))
 			case sb.State == models.StateStopped:
 				cancel(errStopped)
+			case sb.State == models.StateFailed:
+				cancel(errFailed)
 			}
 		}
 	}()

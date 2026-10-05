@@ -15,4 +15,6 @@ func open(int) (handle, error) { return handle{}, errUnsupported }
 
 func signal(handle, syscall.Signal) error { return errUnsupported }
 
+func gone(handle, int) (bool, error) { return false, errUnsupported }
+
 func release(handle) error { return nil }

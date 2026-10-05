@@ -203,9 +203,15 @@ func (c *Client) Resume() error {
 	return c.patch("/vm", vmState{State: "Resumed"})
 }
 
-// Snapshot writes the device state and the guest's memory to two files, a Diff merged into memory when that file is already the guest's size; firecracker wants the microVM paused first.
-func (c *Client) Snapshot(kind SnapshotType, state, memory string) error {
-	return c.put("/snapshot/create", snapshotCreate{Type: kind, StatePath: state, MemoryPath: memory})
+// Snapshot writes the device state and the guest's memory to two files, a Diff merged into memory when that file is already the guest's size; firecracker wants the microVM paused first, and within bounds it, not callTimeout, as a cut create leaves the vmm writing on.
+func (c *Client) Snapshot(within time.Duration, kind SnapshotType, state, memory string) error {
+	conn, err := c.dial(context.Background(), c.socket, within)
+	if err != nil {
+		return fmt.Errorf("PUT /snapshot/create: %w", err)
+	}
+	defer conn.Close()
+
+	return request(context.Background(), conn, http.MethodPut, "/snapshot/create", snapshotCreate{Type: kind, StatePath: state, MemoryPath: memory}, nil)
 }
 
 // claim refuses a socket a live vmm answers on, and clears the paths a dead one left, which firecracker refuses to reuse.
@@ -379,7 +385,7 @@ func (c *Client) Kill() error {
 
 // owner is the pid that listens on the API socket, which the kernel attests at the dial: a vmm too wedged to answer HTTP still owns it (SHARD-339).
 func (c *Client) owner() (int, error) {
-	conn, err := c.dial(context.Background(), c.socket)
+	conn, err := c.dial(context.Background(), c.socket, callTimeout)
 	if err != nil {
 		return 0, err
 	}
@@ -411,7 +417,7 @@ func (c *Client) Connect(port uint32) (net.Conn, error) {
 	if c.vsock == "" {
 		return nil, errors.New("connect: the microVM has no vsock device")
 	}
-	conn, err := c.dial(context.Background(), c.vsock)
+	conn, err := c.dial(context.Background(), c.vsock, callTimeout)
 	if err != nil {
 		return nil, fmt.Errorf("connect to guest port %d: %w", port, err)
 	}
@@ -479,7 +485,7 @@ func (c *Client) call(ctx context.Context, method, path string, body, reply any)
 
 // peer dials the API socket and names the process behind the connection, which the kernel attests.
 func (c *Client) peer(ctx context.Context, method, path string) (net.Conn, int, error) {
-	conn, err := c.dial(ctx, c.socket)
+	conn, err := c.dial(ctx, c.socket, callTimeout)
 	if err != nil {
 		return nil, 0, fmt.Errorf("%s %s: %w", method, path, err)
 	}
@@ -532,9 +538,9 @@ func request(ctx context.Context, conn net.Conn, method, path string, body, repl
 	return nil
 }
 
-// dial opens one connection to a unix socket, bounded by callTimeout or ctx's deadline, whichever comes first.
-func (c *Client) dial(ctx context.Context, socket string) (net.Conn, error) {
-	deadline := time.Now().Add(callTimeout)
+// dial opens one connection to a unix socket, bounded by within or ctx's deadline, whichever comes first.
+func (c *Client) dial(ctx context.Context, socket string, within time.Duration) (net.Conn, error) {
+	deadline := time.Now().Add(within)
 	if due, ok := ctx.Deadline(); ok && due.Before(deadline) {
 		deadline = due
 	}

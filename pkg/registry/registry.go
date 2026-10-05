@@ -231,18 +231,20 @@ func (e *FetchError) Public() string {
 
 	answer, ok := errors.AsType[*transport.Error](e.Err)
 	if !ok {
-		return e.Ref + " could not be fetched from its registry"
+		return e.Ref + unreachable
 	}
 
 	switch {
 	case answer.StatusCode == http.StatusUnauthorized, answer.StatusCode == http.StatusForbidden:
-		return "the registry refused access to " + e.Ref
+		return "the registry refused access to " + e.Ref + "; ask the server administrator to check the registry credentials"
 	case answer.StatusCode == http.StatusNotFound, slices.ContainsFunc(answer.Errors, unknown):
-		return e.Ref + " is not in its registry"
+		return e.Ref + " is not in its registry; check the image name and tag"
 	}
 
-	return e.Ref + " could not be fetched from its registry"
+	return e.Ref + unreachable
 }
+
+const unreachable = " could not be fetched from its registry; check that the registry is up, then retry"
 
 func unknown(d transport.Diagnostic) bool {
 	return d.Code == transport.ManifestUnknownErrorCode || d.Code == transport.NameUnknownErrorCode
@@ -603,6 +605,31 @@ func Canonical(ref string) (string, error) {
 	}
 
 	return parsed.Name(), nil
+}
+
+// Pinned is ref's repository at digest, so a pull fetches those files whatever a tag in ref names now.
+func Pinned(ref, digest string) (string, error) {
+	parsed, err := parseRef(ref)
+	if err != nil {
+		return "", err
+	}
+
+	return parsed.Context().Digest(digest).Name(), nil
+}
+
+// DigestOf is the digest a by-digest reference names, so a holder found by digest matches an rm by tag.
+func DigestOf(ref string) (string, bool) {
+	parsed, err := parseRef(ref)
+	if err != nil {
+		return "", false
+	}
+
+	digest, ok := parsed.(name.Digest)
+	if !ok {
+		return "", false
+	}
+
+	return digest.DigestStr(), true
 }
 
 // parseRef also rejects what ParseReference accepts and a later path join would not: a . or .. segment.

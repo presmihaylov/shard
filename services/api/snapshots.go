@@ -13,8 +13,8 @@ type snapshotsResponse struct {
 	Next      *string           `json:"next"`
 }
 
-func (h *Handler) createSnapshot(ctx context.Context, in *bodyInput[sandbox.SnapshotRequest]) (*reply[models.Snapshot], error) {
-	return answer(h.lifecycle.CreateSnapshot(ctx, value(in.Body)))
+func (h *Handler) createSnapshot(ctx context.Context, in *bodyRequest[sandbox.SnapshotRequest]) (*reply[models.Snapshot], error) {
+	return answer(h.lifecycle.CreateSnapshot(ctx, in.Body))
 }
 
 func (h *Handler) listSnapshots(ctx context.Context, in *pageInput) (*reply[snapshotsResponse], error) {

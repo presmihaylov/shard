@@ -160,7 +160,7 @@ type ExecSpec struct {
 	Stdin  *os.File
 	Stdout *os.File
 	Stderr *os.File
-	// Report is called once with the guest process id, so the caller can Signal the exec while it runs.
+	// Report gives Signal the provider's process handle after the command launches.
 	Report func(pid int)
 	// Resizes carries every later window of the terminal, for a provider whose guest has a pty of its own; nil for one that shares the replica.
 	Resizes <-chan TerminalSize

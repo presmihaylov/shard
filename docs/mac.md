@@ -22,6 +22,9 @@ chmod +x shard && sudo install -d -m0755 /usr/local/bin && sudo install -m0755 s
 sudo install -d -o "$USER" /var/lib/shard
 ```
 
+On an Intel Mac, which is not supported, download `shard-darwin-amd64` in place of
+`shard-darwin-arm64`.
+
 A Mac without the developer tools has no `/usr/local/bin`, so the first `install -d` makes it. The
 root is where the daemon keeps every record, disk and kernel, and it defaults to `/var/lib/shard`.
 The second `install -d` gives it to your user, so nothing runs as root. `--root <dir>` on every
@@ -138,15 +141,16 @@ again, so to leave the Mac clean, run `shard stop` on each sandbox first.
 
 ## If it does not start
 
-- `provider vz does not support pause on this host`: the Mac runs macOS 13, or it is an Intel Mac.
+- `provider vz does not support pause on this host; use a server that supports pause`: the Mac runs macOS 13, or it is an Intel Mac.
   The verb needs Apple silicon on 14.
 - `kernel checksum mismatch`: the release no longer serves the bytes this build expects, or the
   `SHARD_KERNEL` file changed. A file under `<root>/kernel/` that was cut short is fetched again on
   its own.
 - A VM that never boots on a managed laptop: an MDM profile can block the framework outright. The
   error names `Virtualization.framework`, and nothing works around it except a change to the profile.
-- `codesign: command not found`: shard signs the shim on first use with the Command Line Tools.
-  `xcode-select --install` installs them. Xcode itself is not needed.
+- `codesign the shim: exec: "codesign": executable file not found in $PATH`: shard signs the shim
+  on first use with the Command Line Tools. `xcode-select --install` installs them. Xcode itself
+  is not needed.
 - A daemon restart keeps every sandbox, because the daemon re-adopts each running VM by its shim.
   Sandboxes also survive when the Mac sleeps.
 

@@ -26,8 +26,10 @@ import (
 // recorder logs what the fakes were asked in order; a name in fail fails every call, a name#N the Nth only.
 // The exec tests drive the service concurrently, so mu guards every access to calls and live.
 type recorder struct {
-	mu    sync.Mutex
-	fail  []string
+	mu   sync.Mutex
+	fail []string
+	// cause is what a forced failure wraps, so a test can fail a call with a typed substrate error.
+	cause error
 	calls []string
 	live  map[string]bool
 }
@@ -45,6 +47,10 @@ func (r *recorder) record(name string) error {
 	r.calls = append(r.calls, name)
 
 	if slices.Contains(r.fail, name) || slices.Contains(r.fail, fmt.Sprintf("%s#%d", name, nth)) {
+		if r.cause != nil {
+			return fmt.Errorf("forced failure at %s: %w", name, r.cause)
+		}
+
 		return fmt.Errorf("forced failure at %s", name)
 	}
 
@@ -138,6 +144,10 @@ type fakeRepo struct {
 	stateDir      string
 	// onGet runs inside every Get, so a test moves the record on the goroutine that polls it.
 	onGet func()
+	// onCreate runs once a fork's copy exists, so a test lands a verb before the fork takes its lock.
+	onCreate func(id string)
+	// unmade is a fork's copy that a delete took, which reads not found from then on.
+	unmade string
 }
 
 func (f *fakeRepo) Get(id string) (models.Sandbox, error) {
@@ -191,6 +201,9 @@ func (f *fakeRepo) Create(sb models.Sandbox, admit ...func(dir string) error) (m
 	if f.sb.ID != "" {
 		sb.ID = "sandbox2"
 		f.made = &sb
+		if f.onCreate != nil {
+			f.onCreate(sb.ID)
+		}
 
 		return sb, nil
 	}
@@ -236,9 +249,15 @@ func (f *fakeRepo) Dir(id string) (string, error) {
 	return "/state/" + id, nil
 }
 
-func (f *fakeRepo) Delete(string) error {
+func (f *fakeRepo) Delete(id string) error {
 	if err := f.r.record("repo.Delete"); err != nil {
 		return err
+	}
+	if id == f.unmade {
+		return fmt.Errorf("sandbox %s: %w", id, sandboxstate.ErrNotFound)
+	}
+	if f.made != nil && id == f.made.ID {
+		f.unmade, f.made = id, nil
 	}
 	f.deleted = true
 
@@ -401,6 +420,7 @@ type fakeProvider struct {
 	signaled  chan struct{}
 	signalPID int
 	signalGot string
+	signalErr error
 	// serve, when set, answers the exec in place of the canned streams, the way shard-init's files mode does.
 	serve func(spec models.ExecSpec) (models.ExitStatus, error)
 	// execCtx is what the last exec ran on, so a test sees whether the exec outlives its request.
@@ -480,6 +500,9 @@ func (f *fakeProvider) Exec(ctx context.Context, id string, spec models.ExecSpec
 func (f *fakeProvider) Signal(_ context.Context, _ string, pid int, signal string) error {
 	if err := f.r.record("provider.Signal"); err != nil {
 		return err
+	}
+	if f.signalErr != nil {
+		return f.signalErr
 	}
 	f.mu.Lock()
 	f.signalPID, f.signalGot = pid, signal

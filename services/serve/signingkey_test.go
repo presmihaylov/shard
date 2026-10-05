@@ -107,6 +107,7 @@ func TestSigningKeyRefusesAnInvalidKeyAndLeavesItAlone(t *testing.T) {
 		"short":          {value: strings.Repeat("k", 31), mode: 0o600, want: "31 bytes"},
 		"empty":          {value: "  \n", mode: 0o600, want: "holds no key"},
 		"world-readable": {value: testSecret, mode: 0o604, want: "everyone on the host can read"},
+		"world-writable": {value: testSecret, mode: 0o602, want: "everyone on the host can write"},
 	}
 	// Root reads a 0000 file, so only another user sees it as unreadable.
 	if os.Geteuid() != 0 {
@@ -131,6 +132,27 @@ func TestSigningKeyRefusesAnInvalidKeyAndLeavesItAlone(t *testing.T) {
 				t.Errorf("the refused key file now holds other bytes, or cannot be read: %v", err)
 			}
 		})
+	}
+}
+
+func TestExposedNamesTheAccessEveryoneHas(t *testing.T) {
+	refused := map[fs.FileMode]string{
+		0o604: "everyone on the host can read",
+		0o602: "everyone on the host can write",
+		0o601: "everyone on the host can execute",
+		0o606: "everyone on the host can read and write",
+		0o607: "everyone on the host can read, write and execute",
+	}
+	for perm, want := range refused {
+		err := exposed("the file", perm)
+		if err == nil || !strings.HasSuffix(err.Error(), want) {
+			t.Errorf("exposed(%04o) = %v, want an error ending in %q", perm, err, want)
+		}
+	}
+	for _, perm := range []fs.FileMode{0o600, 0o640, 0o660, 0o750} {
+		if err := exposed("the file", perm); err != nil {
+			t.Errorf("exposed(%04o) = %v, want nil", perm, err)
+		}
 	}
 }
 

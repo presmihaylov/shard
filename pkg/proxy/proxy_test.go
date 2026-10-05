@@ -585,6 +585,68 @@ func TestProxyNeverEchoesTheRewrittenRequestInA502(t *testing.T) {
 	}
 }
 
+// An upstream's headers past maxResponseHeaderBytes get the fixed 502, so no connection holds the transport's 10 MiB default.
+func TestProxyBoundsTheHeadersOfAnUpstream(t *testing.T) {
+	for name, tc := range map[string]struct {
+		size int
+		want int
+	}{
+		"half the bound": {maxResponseHeaderBytes / 2, http.StatusOK},
+		"the bound":      {maxResponseHeaderBytes, http.StatusBadGateway},
+	} {
+		t.Run(name, func(t *testing.T) {
+			h := newHarness(t, http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+				w.Header().Set("X-Large", strings.Repeat("a", tc.size))
+			}))
+
+			if got := getStatus(t, h); got != tc.want {
+				t.Errorf("a %d byte header got %d, want %d", tc.size, got, tc.want)
+			}
+		})
+	}
+}
+
+func TestProxyGivesUpOnAnUpstreamThatSendsNoHeaders(t *testing.T) {
+	previous := responseHeaderTimeout
+	responseHeaderTimeout = 100 * time.Millisecond
+	t.Cleanup(func() { responseHeaderTimeout = previous })
+
+	h := newHarness(t, http.HandlerFunc(func(_ http.ResponseWriter, r *http.Request) {
+		select {
+		case <-r.Context().Done():
+		case <-time.After(5 * time.Second):
+		}
+	}))
+
+	start := time.Now()
+	if got := getStatus(t, h); got != http.StatusBadGateway {
+		t.Errorf("an upstream that sent no headers got %d, want 502", got)
+	}
+	if waited := time.Since(start); waited > 2*time.Second {
+		t.Errorf("the proxy waited %s on the upstream's headers", waited)
+	}
+}
+
+// getStatus sends one GET through the proxy and returns the status the guest got.
+func getStatus(t *testing.T, h *harness) int {
+	t.Helper()
+
+	req, err := http.NewRequestWithContext(t.Context(), http.MethodGet, "http://api.test/", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	resp, err := h.client().Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+	if _, err := io.Copy(io.Discard, resp.Body); err != nil {
+		t.Fatal(err)
+	}
+
+	return resp.StatusCode
+}
+
 // A held body takes the value up to BodyCap, whether it names its length or not; past the cap it goes as it was.
 func TestProxyRewritesAHeldBodyUpToTheCap(t *testing.T) {
 	small := []byte(`{"key":"mock-TOKEN"}`)

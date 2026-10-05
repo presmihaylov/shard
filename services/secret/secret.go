@@ -48,9 +48,15 @@ type Holders func(name string) ([]string, error)
 type HeldError struct {
 	Name    string
 	Holders []string
+	// Removed is a secret removed with --force while Holders held it, so no record names the placeholder they hold.
+	Removed bool
 }
 
 func (e *HeldError) Error() string {
+	if e.Removed {
+		return fmt.Sprintf("secret %s was removed while sandbox %s held it, and nothing records the placeholder it holds: ungrant it first", e.Name, strings.Join(e.Holders, ", "))
+	}
+
 	return fmt.Sprintf("secret %s changes its placeholder and sandbox %s still holds it: ungrant it first", e.Name, strings.Join(e.Holders, ", "))
 }
 
@@ -76,7 +82,7 @@ func (e *UnreadableError) Error() string { return e.Err.Error() }
 func (e *UnreadableError) Unwrap() error { return e.Err }
 
 func (e *UnreadableError) Public() string {
-	return fmt.Sprintf("secret %s: its record cannot be read", e.Name)
+	return fmt.Sprintf("secret %s cannot be read; ask the server administrator to check the daemon log", e.Name)
 }
 
 // record is the file on disk. It is the only place the value is written.
@@ -185,6 +191,9 @@ func (s *Store) placeholder(name, value, chosen string, existing record) (string
 	if strings.Contains(value, chosen) {
 		return "", &InvalidError{Err: fmt.Errorf("the placeholder of secret %s is inside its value, and the guest must never hold the value", name)}
 	}
+	if strings.Contains(chosen, value) {
+		return "", &InvalidError{Err: fmt.Errorf("the value of secret %s is inside its placeholder, and the guest holds the placeholder", name)}
+	}
 
 	// Only what this call named is shaped: a rotation must never be blocked by the placeholder it carries
 	// forward, and the default is exempt too, so a short NAME still gets a placeholder.
@@ -199,8 +208,11 @@ func (s *Store) placeholder(name, value, chosen string, existing record) (string
 		return "", err
 	}
 
-	if existing.Placeholder != "" && chosen != existing.Placeholder {
-		if err := s.placeholderMoved(name); err != nil {
+	moved := existing.Placeholder != "" && chosen != existing.Placeholder
+	// With no record, a forced remove may have left a holder a placeholder nothing names; a blind store cannot ask.
+	removed := existing.Placeholder == "" && s.holders != nil
+	if moved || removed {
+		if err := s.placeholderMoved(name, removed); err != nil {
 			return "", err
 		}
 	}
@@ -249,17 +261,17 @@ func (s *Store) freePlaceholder(name, chosen string) error {
 
 // placeholderMoved refuses to change what a running guest already holds: the placeholder moves only
 // when no sandbox holds a grant on the secret.
-func (s *Store) placeholderMoved(name string) error {
+func (s *Store) placeholderMoved(name string, removed bool) error {
 	if s.holders == nil {
 		return &InvalidError{Err: fmt.Errorf("secret %s changes its placeholder and the store cannot tell which sandboxes hold it: ungrant it first", name)}
 	}
 
 	holders, err := s.holders(name)
 	if err != nil {
-		return fmt.Errorf("secret %s changes its placeholder and the sandboxes that hold it cannot be read: %w", name, err)
+		return fmt.Errorf("the sandboxes that hold secret %s cannot be read: %w", name, err)
 	}
 	if len(holders) != 0 {
-		return &HeldError{Name: name, Holders: holders}
+		return &HeldError{Name: name, Holders: holders, Removed: removed}
 	}
 
 	return nil

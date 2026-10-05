@@ -536,6 +536,29 @@ func TestACancelInsideTheTraceKillsTheShim(t *testing.T) {
 	}
 }
 
+// The kernel resets the host end when a killed shim drops the guest end with the go byte unread (SHARD-602).
+func TestAGuestEndClosedWithTheGoByteUnreadSentNoRecord(t *testing.T) {
+	ch, err := Open()
+	if err != nil {
+		t.Fatalf("Open: %v", err)
+	}
+	t.Cleanup(func() {
+		if err := ch.Close(); err != nil {
+			t.Errorf("Close: %v", err)
+		}
+	})
+	if _, err := ch.host.Write([]byte{proceed}); err != nil {
+		t.Fatalf("write the go byte: %v", err)
+	}
+	if err := ch.CloseGuest(); err != nil {
+		t.Fatalf("CloseGuest: %v", err)
+	}
+
+	if errno, err := ch.errno(); errno != 0 || err != nil {
+		t.Fatalf("errno returned %v, %v, want no record", errno, err)
+	}
+}
+
 // The pin outlives the launch, so a cancel after the exec still ends the command and nothing that reused its pid.
 func TestAKillAfterTheLaunchEndsTheCommand(t *testing.T) {
 	r := start(t, middleRole, []string{"/bin/sleep", "30"})
@@ -586,7 +609,7 @@ func TestARecordIsOneErrno(t *testing.T) {
 	}
 }
 
-// killWhenTraced sends sigs once the host's trace holds the shim, and says how that went.
+// killWhenTraced sends sigs to the shim's main thread once the host's trace holds it, and says how that went.
 func killWhenTraced(r *launchRun, sigs ...syscall.Signal) <-chan error {
 	sent := make(chan error, 1)
 	go func() {
@@ -598,7 +621,8 @@ func killWhenTraced(r *launchRun, sigs ...syscall.Signal) <-chan error {
 
 		var errs []error
 		for _, sig := range sigs {
-			if err := unix.Kill(pid, sig); err != nil {
+			// The trace holds the main thread alone, and another thread could take a process signal while the main one execs.
+			if err := unix.Tgkill(pid, pid, sig); err != nil {
 				errs = append(errs, fmt.Errorf("send %v to the shim: %w", sig, err))
 			}
 		}

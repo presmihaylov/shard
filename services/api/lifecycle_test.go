@@ -778,7 +778,7 @@ func TestTheStatusAndTheCodeFollowTheError(t *testing.T) {
 		text   string
 	}{
 		{"a request error", &sandbox.RequestError{Err: errors.New("secret NOPE does not exist")}, http.StatusBadRequest, "invalid_request", "secret NOPE"},
-		{"a body past the cap", &sandbox.RequestError{Err: fmt.Errorf("decode the request body: %w", &http.MaxBytesError{Limit: 1 << 20})}, http.StatusRequestEntityTooLarge, "body_too_large", "too large"},
+		{"a body past the cap", &sandbox.RequestError{Err: fmt.Errorf("decode the request body: %w", &http.MaxBytesError{Limit: 1 << 20})}, http.StatusRequestEntityTooLarge, "body_too_large", "exceeds 1 MiB"},
 		{"a bad name", &sandboxstate.ValidationError{Reason: "the name is a slash"}, http.StatusBadRequest, "invalid_request", "slash"},
 		{"not found", &models.NotFoundError{Err: fmt.Errorf("sandbox ghost: %w", sandboxstate.ErrNotFound)}, http.StatusNotFound, "not_found", "ghost"},
 		{"a name taken", &sandboxstate.NameTakenError{Noun: "sandbox", Name: "web", Holder: "quiet-heron-3f0a"}, http.StatusConflict, "name_taken", "taken by sandbox quiet-heron-3f0a"},
@@ -786,9 +786,11 @@ func TestTheStatusAndTheCodeFollowTheError(t *testing.T) {
 		{"not stopped", &sandbox.StateError{ID: "sandbox1", State: models.StateRunning, Fix: "stop it first with shard stop sandbox1, or pass --force", Code: models.CodeSandboxNotStopped}, http.StatusConflict, "sandbox_not_stopped", "sandbox sandbox1 is running: stop it first with shard stop sandbox1, or pass --force"},
 		{"not paused", &sandbox.StateError{ID: "sandbox1", State: models.StateRunning, Fix: "resume takes a paused sandbox", Code: models.CodeSandboxNotPaused}, http.StatusConflict, "sandbox_not_paused", "resume takes a paused sandbox"},
 		{"live", &sandbox.StateError{ID: "sandbox1", State: models.StateRunning, Fix: "stop it first", Code: models.CodeSandboxLive}, http.StatusConflict, "sandbox_live", "stop it first"},
-		{"no checkpoint", &sandbox.StateError{ID: "sandbox1", State: models.StatePaused, Fix: "its record names no checkpoint to resume from", Code: models.CodeNoCheckpoint}, http.StatusConflict, "no_checkpoint", "no checkpoint"},
+		{"no checkpoint", &sandbox.StateError{ID: "sandbox1", State: models.StatePaused, Fix: "it has no saved state to resume; remove it and create another sandbox", Code: models.CodeNoCheckpoint}, http.StatusConflict, "no_checkpoint", "sandbox sandbox1 is paused: it has no saved state to resume; remove it and create another sandbox"},
 		{"gone from the substrate", &sandbox.UnavailableError{ID: "sandbox1", Why: "is gone from gvisor", Fix: "remove it with shard remove sandbox1 and create another"}, http.StatusConflict, "sandbox_not_running", "gone from gvisor"},
-		{"an unclaimed verb", models.Unsupported("gvisor", "fork"), http.StatusConflict, "unsupported", "provider gvisor does not support fork on this host"},
+		{"an image gone from the host", &sandbox.ImageGoneError{ID: "sandbox1", Image: "index.docker.io/library/alpine@sha256:0a1b", Verb: "start",
+			Err: fmt.Errorf("the image at /var/lib/shard/rootfs/sha256-0a1b is gone: %w", models.ErrImageGone)}, http.StatusNotFound, "not_found", "pull that image, then start"},
+		{"an unclaimed verb", models.Unsupported("gvisor", "fork"), http.StatusConflict, "unsupported", "provider gvisor does not support fork on this host; use a server that supports fork"},
 		{"a status past its budget", &sandbox.SubstrateTimeoutError{ID: "sandbox1", Op: "stop", Budget: time.Second}, http.StatusGatewayTimeout, "timeout", "did not answer within 1s"},
 		{"anything else", errors.New("runsc: boom"), http.StatusInternalServerError, "internal", "its log has the cause"},
 	}
@@ -905,6 +907,27 @@ func TestAFailedStartIsLoggedOnlyWhenTheSubstrateBrokeIt(t *testing.T) {
 		if logged := strings.Contains(out.String(), "start sandbox web: "+c.err.Error()); logged != c.logged {
 			t.Errorf("%s: the daemon log holds %q, want the failure logged %t", name, out.String(), c.logged)
 		}
+	}
+}
+
+// A broken start's cause reaches the log through the redactor, like every other raw error (SHARD-550).
+func TestTheLogLineOfABrokenStartCarriesNoSecretValue(t *testing.T) {
+	s := seed(t)
+	s.verbs.err = errors.New("runsc start /var/lib/shard/sandboxes/web: env API_KEY=sk_live_synthetic_0001")
+	redact := func(text string) string {
+		return strings.ReplaceAll(text, "sk_live_synthetic_0001", "<secret API_KEY>")
+	}
+	var out bytes.Buffer
+	handler := api.NewHandler("v-test", fakeProcess{}, s.repo, nil, s.verbs, s.stores, s.egress, redact, &out)
+
+	w := httptest.NewRecorder()
+	handler.ServeHTTP(w, httptest.NewRequestWithContext(t.Context(), http.MethodPost, "/v0/sandboxes/web/start", nil))
+
+	if w.Code != http.StatusInternalServerError {
+		t.Fatalf("the start answered %d, want 500", w.Code)
+	}
+	if line := out.String(); !strings.Contains(line, "start sandbox web: ") || !strings.Contains(line, "API_KEY=<secret API_KEY>") || strings.Contains(line, "sk_live_synthetic_0001") {
+		t.Errorf("the daemon log %q, want the start named with the secret's name and never its value", line)
 	}
 }
 

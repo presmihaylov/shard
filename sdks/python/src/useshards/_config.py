@@ -60,9 +60,17 @@ def _base_url(remote: str | None, env: Mapping[str, str]) -> str:
         source, value = REMOTE_ENV, env.get(REMOTE_ENV, "")
     if not value:
         raise ConfigurationError(f"no remote: pass remote= or set {REMOTE_ENV}, as https://shard.example.com")
-    parsed = urllib.parse.urlsplit(value)
+    malformed = f"{source} must be an http or https url with a host, as https://shard.example.com"
+    try:
+        parsed = urllib.parse.urlsplit(value)
+    except ValueError:
+        raise ConfigurationError(malformed) from None
     if parsed.scheme not in _PORTS or not parsed.hostname:
-        raise ConfigurationError(f"{source} must be an http or https url with a host, as https://shard.example.com")
+        raise ConfigurationError(malformed)
+    # Older Python patch releases accept text after the bracket, as http://[::1]x, and read it as port 80.
+    _, bracket, after = parsed.netloc.rpartition("]")
+    if bracket and after and not after.startswith(":"):
+        raise ConfigurationError(malformed)
     if parsed.username is not None or parsed.query or parsed.fragment or parsed.path not in ("", "/"):
         raise ConfigurationError(f"{source} must name only a scheme, a host and a port, as https://shard.example.com")
     try:

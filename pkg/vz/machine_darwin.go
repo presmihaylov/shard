@@ -3,12 +3,14 @@
 package vz
 
 import (
+	"bytes"
 	"encoding/base64"
 	"errors"
 	"fmt"
 	"log"
 	"net"
 	"os"
+	"sync"
 	"syscall"
 	"time"
 
@@ -22,7 +24,18 @@ type VM struct {
 	netHost *os.File
 	// The framework keeps the descriptors, not the files, so these stay referenced or a finalizer closes a live device.
 	files []*os.File
+
+	// panicked closes when the guest console prints the kernel panic banner, which VZ reports through no state change (SHARD-641).
+	panicked  chan struct{}
+	panicOnce sync.Once
+	// teeDone closes when the console drain ends, so Close can surface the first console-log write error teeErr holds.
+	teeDone chan struct{}
+	teeMu   sync.Mutex
+	teeErr  error
 }
+
+// teeDrainGrace bounds the wait for the console drain to end after Close shuts the pipe, so a wedged drain cannot hang the shim's exit.
+const teeDrainGrace = 2 * time.Second
 
 // Close releases the files behind the devices, once the VM is gone.
 func (m *VM) Close() error {
@@ -33,11 +46,24 @@ func (m *VM) Close() error {
 		}
 	}
 
+	// Closing the pipe write end above ends the drain; wait for it so a console-log write error reaches the caller.
+	if m.teeDone != nil {
+		select {
+		case <-m.teeDone:
+		case <-time.After(teeDrainGrace):
+		}
+		m.teeMu.Lock()
+		if m.teeErr != nil {
+			errs = append(errs, m.teeErr)
+		}
+		m.teeMu.Unlock()
+	}
+
 	return errors.Join(errs...)
 }
 
 // NewMachine builds the VM from cfg and validates it; nothing starts until Boot.
-func NewMachine(cfg *Config) (*VM, error) {
+func NewMachine(cfg *Config) (_ *VM, err error) {
 	if err := CheckCPUs(cfg.CPUs, cpuRange()); err != nil {
 		return nil, err
 	}
@@ -61,6 +87,12 @@ func NewMachine(cfg *Config) (*VM, error) {
 	if err := m.console(vmc, cfg.Console); err != nil {
 		return nil, err
 	}
+	// console started the drain and holds the pipe; any later setup failure must close the VM so the drain ends and the files release.
+	defer func() {
+		if err != nil {
+			err = errors.Join(err, m.Close())
+		}
+	}()
 	if err := disk(vmc, cfg.Disk); err != nil {
 		return nil, err
 	}
@@ -264,7 +296,13 @@ func (m *VM) platform(vmc *vz.VirtualMachineConfiguration, cfg *Config) error {
 	return nil
 }
 
-// The console is write-only into a log file; the guest's stdin is the vsock exec stream, never the serial line.
+// panicBanner is the first line the arm64 kernel prints on a panic; VZ reports no state change for the in-process reboot that follows (SHARD-641).
+var panicBanner = []byte("Kernel panic - not syncing")
+
+// Panicked closes once the console prints panicBanner, so the shim can force the VM off when VZ reports nothing.
+func (m *VM) Panicked() <-chan struct{} { return m.panicked }
+
+// The console is read into a log file; a drain scans it for the panic banner, as the guest's stdin is the vsock exec stream, not the serial line.
 func (m *VM) console(vmc *vz.VirtualMachineConfiguration, path string) error {
 	in, err := os.Open(os.DevNull)
 	if err != nil {
@@ -274,9 +312,14 @@ func (m *VM) console(vmc *vz.VirtualMachineConfiguration, path string) error {
 	if err != nil {
 		return fmt.Errorf("open the console log: %w", err)
 	}
-	m.files = append(m.files, in, out)
+	r, w, err := os.Pipe()
+	if err != nil {
+		return fmt.Errorf("console pipe: %w", err)
+	}
+	// VZ gets the pipe write end, not the log; the drain owns the log and closing w ends it.
+	m.files = append(m.files, in, w)
 
-	attachment, err := vz.NewFileHandleSerialPortAttachment(in, out)
+	attachment, err := vz.NewFileHandleSerialPortAttachment(in, w)
 	if err != nil {
 		return fmt.Errorf("console attachment: %w", err)
 	}
@@ -286,7 +329,60 @@ func (m *VM) console(vmc *vz.VirtualMachineConfiguration, path string) error {
 	}
 	vmc.SetSerialPortsVirtualMachineConfiguration([]*vz.VirtioConsoleDeviceSerialPortConfiguration{port})
 
+	m.panicked = make(chan struct{})
+	m.teeDone = make(chan struct{})
+	go m.tee(r, out)
+
 	return nil
+}
+
+// tee copies the console into out and fires panicked on the banner; File.Fd made w blocking, so it must never stop draining before EOF or the guest console wedges.
+func (m *VM) tee(r, out *os.File) {
+	defer close(m.teeDone)
+	defer r.Close()
+	// out is the drain's to close now, so its close error reaches Close through teeErr like a write error would.
+	defer func() {
+		if cerr := out.Close(); cerr != nil {
+			m.teeMu.Lock()
+			if m.teeErr == nil {
+				m.teeErr = fmt.Errorf("close the console log: %w", cerr)
+			}
+			m.teeMu.Unlock()
+		}
+	}()
+
+	var tail []byte
+	buf := make([]byte, 64<<10)
+	for {
+		n, err := r.Read(buf)
+		if n > 0 {
+			chunk := buf[:n]
+			if _, werr := out.Write(chunk); werr != nil {
+				m.teeMu.Lock()
+				if m.teeErr == nil {
+					m.teeErr = fmt.Errorf("write the console log: %w", werr)
+				}
+				m.teeMu.Unlock()
+			}
+			// Carry the tail of the last chunk so a banner split across a read boundary still matches.
+			window := append(append([]byte(nil), tail...), chunk...)
+			if bytes.Contains(window, panicBanner) {
+				m.panicOnce.Do(func() { close(m.panicked) })
+			}
+			tail = lastBytes(window, len(panicBanner)-1)
+		}
+		if err != nil {
+			return
+		}
+	}
+}
+
+func lastBytes(b []byte, k int) []byte {
+	if len(b) <= k {
+		return append([]byte(nil), b...)
+	}
+
+	return append([]byte(nil), b[len(b)-k:]...)
 }
 
 // Apple asks for a receive buffer four times the send buffer; at the macOS default of 4 KiB a peer refuses the third full frame (SHARD-384).

@@ -281,8 +281,8 @@ func openLedger(path string) (*os.File, os.FileInfo, error) {
 	if !info.Mode().IsRegular() {
 		return nil, nil, errors.Join(fmt.Errorf("the ledger %s is not a regular file", path), f.Close())
 	}
-	if info.Mode().Perm()&0o007 != 0 {
-		return nil, nil, errors.Join(fmt.Errorf("the ledger %s is at mode %04o, which everyone on the host can read", path, info.Mode().Perm()), f.Close())
+	if err := exposed("the ledger "+path, info.Mode().Perm()); err != nil {
+		return nil, nil, errors.Join(err, f.Close())
 	}
 
 	return f, info, nil
@@ -316,11 +316,7 @@ func checkTokensMode(path string) error {
 	if err != nil {
 		return fmt.Errorf("read the ledger %s: %w", path, err)
 	}
-	if info.Mode().Perm()&0o007 != 0 {
-		return fmt.Errorf("the ledger %s is at mode %04o, which everyone on the host can read", path, info.Mode().Perm())
-	}
-
-	return nil
+	return exposed("the ledger "+path, info.Mode().Perm())
 }
 
 // ledger is the front's view of the tokens file; it reloads when the file's mtime or size changes.

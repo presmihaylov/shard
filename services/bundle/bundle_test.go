@@ -555,8 +555,9 @@ func TestTheCgroupSitsUnderOneShardParent(t *testing.T) {
 
 // TestRuntimeReadsTheRestartSpecBack pins what a start after a stop needs from config.json alone.
 func TestRuntimeReadsTheRestartSpecBack(t *testing.T) {
+	rootfs := t.TempDir()
 	b, _ := build(t, models.SandboxSpec{
-		RootFS:     "/var/lib/shard/rootfs/sha256-abc",
+		RootFS:     rootfs,
 		Entrypoint: []string{"/bin/sh"},
 		Resources:  models.Resources{MemoryMiB: 256, VCPUs: 2},
 	}, models.ImageConfig{})
@@ -566,7 +567,7 @@ func TestRuntimeReadsTheRestartSpecBack(t *testing.T) {
 		t.Fatalf("Runtime: %v", err)
 	}
 
-	if rt.RootFS != "/var/lib/shard/rootfs/sha256-abc" {
+	if rt.RootFS != rootfs {
 		t.Errorf("RootFS is %q", rt.RootFS)
 	}
 	// Every sandbox carries a disk bound, so a restart reads back the default the spec never named.
@@ -606,5 +607,18 @@ func TestBuildJoinsTheUserNamespaceThatOwnsTheNetns(t *testing.T) {
 	want := []specs.LinuxIDMapping{{ContainerID: 0, HostID: 165536, Size: 65536}}
 	if !slices.Equal(got.Linux.UIDMappings, want) || !slices.Equal(got.Linux.GIDMappings, want) {
 		t.Errorf("mappings %v %v, want %v for both", got.Linux.UIDMappings, got.Linux.GIDMappings, want)
+	}
+}
+
+// An image removed after the pull leaves nothing to stack over, and the refusal carries the sentinel a route answers (SHARD-585).
+func TestBuildRefusesAnImageGoneFromTheHost(t *testing.T) {
+	spec := newSpec(t)
+	if err := os.RemoveAll(spec.RootFS); err != nil {
+		t.Fatal(err)
+	}
+
+	_, err := newService(t).Build(spec)
+	if !errors.Is(err, models.ErrImageGone) || !strings.Contains(err.Error(), spec.ID) {
+		t.Errorf("Build over a gone rootfs = %v, want the sandbox named and models.ErrImageGone", err)
 	}
 }

@@ -571,6 +571,47 @@ func Run(t *testing.T, s Subject) {
 		}
 	})
 
+	// A created container holds the config.json of its create, so a grant before the first start reaches the entrypoint only through a new create (SHARD-526).
+	t.Run("AGrantBeforeTheFirstStartReachesTheEntrypoint", func(t *testing.T) {
+		if !s.HostLayer {
+			t.Skip("the guest's writable layer is not a host directory")
+		}
+
+		envs, ok := s.Provider.(environments)
+		if !ok {
+			t.Fatal("conformance: a HostLayer provider needs Environment")
+		}
+
+		const ca, probed = "conformance late proxy CA", "conformance-probed"
+		spec := s.NewSpec(t)
+		spec.Entrypoint = s.Shell(`printf 'late=%s\n%s\n' "$CONFORMANCE_LATE" "$(tail -c 64 "$SSL_CERT_FILE")"; echo ` + probed)
+		if err := s.Provider.Create(t.Context(), spec); err != nil {
+			t.Fatalf("Create: %v", err)
+		}
+		env, err := envs.Environment(spec.ID)
+		if err != nil {
+			t.Fatalf("Environment: %v", err)
+		}
+		if err := env.TrustProxy([]byte(ca + "\n")); err != nil {
+			t.Fatalf("TrustProxy: %v", err)
+		}
+		if err := env.SetEnv("CONFORMANCE_LATE", "granted"); err != nil {
+			t.Fatalf("SetEnv: %v", err)
+		}
+
+		if err := s.Provider.Start(t.Context(), spec.ID); err != nil {
+			t.Fatalf("Start: %v", err)
+		}
+
+		out := s.awaitPrinted(t, spec.ID, probed)
+		if !strings.Contains(out, "late=granted\n") {
+			t.Errorf("the entrypoint never saw the variable granted before its first start:\n%s", out)
+		}
+		if !strings.Contains(out, ca) {
+			t.Errorf("the entrypoint's CA bundle does not end in the proxy CA planted before its first start:\n%s", out)
+		}
+	})
+
 	t.Run("Pause", func(t *testing.T) {
 		id := s.running(t)
 		err := s.Provider.Pause(t.Context(), id, s.EmptyDir(t))
@@ -832,6 +873,13 @@ func (s Subject) scratch(name string) string {
 func (s Subject) awaitReady(t *testing.T, id string) {
 	t.Helper()
 
+	s.awaitPrinted(t, id, ReadyMarker)
+}
+
+// awaitPrinted blocks until the sandbox log holds marker, and returns the log.
+func (s Subject) awaitPrinted(t *testing.T, id, marker string) string {
+	t.Helper()
+
 	path, err := s.Provider.LogPath(id)
 	if err != nil {
 		t.Fatalf("LogPath: %v", err)
@@ -843,14 +891,16 @@ func (s Subject) awaitReady(t *testing.T, id string) {
 		if err != nil && !errors.Is(err, fs.ErrNotExist) {
 			t.Fatalf("read the sandbox log %s: %v", path, err)
 		}
-		if strings.Contains(string(out), ReadyMarker) {
-			return
+		if strings.Contains(string(out), marker) {
+			return string(out)
 		}
 
 		time.Sleep(readyPoll)
 	}
 
-	t.Fatalf("the entrypoint of %s never printed %q within %s", id, ReadyMarker, waitSlack)
+	t.Fatalf("the entrypoint of %s never printed %q within %s", id, marker, waitSlack)
+
+	return ""
 }
 
 // awaitLog blocks until the sandbox log holds more than seen bytes, and returns how many it holds.

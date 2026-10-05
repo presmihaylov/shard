@@ -73,7 +73,7 @@ func CheckGrowBound(mib int64) error {
 		above++
 	}
 
-	return fmt.Errorf("a %d MiB disk ends on a block group too small for its own metadata; use %d or %d MiB", mib, below, above)
+	return fmt.Errorf("a %d MiB disk ends on a block group too small for its own metadata; set resources.disk_mib to %d MiB or %d MiB", mib, below, above)
 }
 
 // DiskBytes is the image size the bound asks for.
