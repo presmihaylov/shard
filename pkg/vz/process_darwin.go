@@ -14,8 +14,11 @@ import (
 	"golang.org/x/sys/unix"
 )
 
-// zombie is SZOMB in sys/proc.h, which x/sys does not name.
-const zombie = 5
+// zombie is SZOMB and exiting is P_WEXIT in sys/proc.h, which x/sys does not name.
+const (
+	zombie  = 5
+	exiting = 0x2000
+)
 
 // startOf is the start time of pid in microseconds, from the kernel's process table.
 func startOf(pid int) (int64, error) {
@@ -23,11 +26,16 @@ func startOf(pid int) (int64, error) {
 	if err != nil {
 		return 0, fmt.Errorf("read the process table: %w", err)
 	}
-	if len(procs) == 0 || procs[0].Proc.P_stat == zombie {
+	if len(procs) == 0 || ended(&procs[0]) {
 		return 0, syscall.ESRCH
 	}
 
 	return startedAt(&procs[0]), nil
+}
+
+// ended says the process began its exit or is a zombie, so it answers nothing again; pgrep stops seeing it at the exit, not the reap (SHARD-618).
+func ended(proc *unix.KinfoProc) bool {
+	return proc.Proc.P_stat == zombie || proc.Proc.P_flag&exiting != 0
 }
 
 func startedAt(proc *unix.KinfoProc) int64 {
@@ -50,7 +58,7 @@ func scan(shim string, match func([]string) bool) (Process, error) {
 	euid := os.Geteuid()
 	for i := range procs {
 		pid := int(procs[i].Proc.P_pid)
-		if pid <= 1 || procs[i].Proc.P_stat == zombie || int(procs[i].Eproc.Ucred.Uid) != euid {
+		if pid <= 1 || ended(&procs[i]) || int(procs[i].Eproc.Ucred.Uid) != euid {
 			continue
 		}
 		exe, err := executable(pid)

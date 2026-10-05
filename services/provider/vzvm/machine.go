@@ -62,7 +62,7 @@ type machine struct {
 
 	// started is what the guest last said: the entrypoint forked, so the sandbox runs.
 	started bool
-	// gone is set by the event loop when the control connection ended, so a status needs no socket round trip.
+	// gone is set once the VM is proven stopped, by the event loop or by a probe that found the shim dead, so a status needs no socket round trip.
 	gone bool
 	// silent is set when the shim missed the probe bound; only stop ends it, and an answer clears it (SHARD-421).
 	silent bool
@@ -404,7 +404,7 @@ func (p *Provider) probe(ctx context.Context, m *machine, bound time.Duration) {
 	timer := time.NewTimer(bound)
 	defer timer.Stop()
 	select {
-	// The request cleared the mark on an answer; a failed one is the shim gone, which the event loop reports.
+	// The request cleared the mark on an answer, and marked a shim whose pid is gone as stopped.
 	case <-asking:
 	case <-ctx.Done():
 	case <-timer.C:
@@ -419,18 +419,34 @@ func (p *Provider) probe(ctx context.Context, m *machine, bound time.Duration) {
 // ask puts the one state request to the shim and holds it past the caller until the shim answers or dies; stop kills one that never answers.
 func (p *Provider) ask(ctx context.Context, m *machine, asking chan struct{}) {
 	_, err := m.client.Await(ctx)
-	frozen := refused(err) && m.lingers()
+	ended := err != nil && !m.lingers()
 	p.mu.Lock()
 	m.asking = nil
 	if err == nil {
 		m.silent = false
 	}
 	// A full socket queue refuses the dial as a dead shim's socket does, so a shim that still runs by its pid stays silent (SHARD-423).
-	if frozen {
+	if refused(err) && !ended {
 		m.silent = true
 	}
 	p.mu.Unlock()
+	if ended {
+		p.markGone(m)
+	}
 	close(asking)
+}
+
+// markGone marks a shim proven gone as stopped once the follower landed its last events; a follower mid-redial or one that lost the shim never would (SHARD-618).
+func (p *Provider) markGone(m *machine) {
+	if m.events != nil {
+		select {
+		case <-m.events:
+		case <-time.After(killGrace):
+		}
+	}
+	p.mu.Lock()
+	m.gone = true
+	p.mu.Unlock()
 }
 
 // lingers says the shim the attach verified still runs; a pid the kernel will not read is not proven gone, and a stop's kill reports why.
