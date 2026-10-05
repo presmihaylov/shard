@@ -438,7 +438,7 @@ func (s *Setup) uninstall(ctx context.Context, m Manifest) error {
 	if n > 0 {
 		left := fmt.Sprintf("%d %s", n, plural(n, "sandbox", "sandboxes"))
 		return errors.Join(s.UI.Print("Shard has "+left+" on this machine.",
-			"Remove them before you uninstall Shard:", "",
+			"Remove "+plural(n, "it", "them")+" before you uninstall Shard:", "",
 			"  List sandboxes:", "    shard list --all", "",
 			"  Remove a sandbox:", "    shard remove --force <name>"),
 			fmt.Errorf("uninstall stopped: %s left", left))

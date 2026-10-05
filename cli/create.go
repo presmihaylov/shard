@@ -39,13 +39,36 @@ func (a App) create(ctx context.Context, args []string) error {
 func (a App) createAndWait(ctx context.Context, c *client.Client, req sandbox.CreateRequest) (client.Sandbox, error) {
 	sb, err := c.CreateSandboxAndWait(ctx, req, a.pullProgress())
 	if err != nil {
-		return client.Sandbox{}, err
+		return client.Sandbox{}, inFlags(err, req)
 	}
 	if sb.State == models.StateFailed {
 		return client.Sandbox{}, fmt.Errorf("sandbox %s failed to start: %s", sb.ID, sb.FailedReason)
 	}
 
 	return sb, nil
+}
+
+// resourceFlags names each resources field of the API as the flag that sets it.
+var resourceFlags = strings.NewReplacer("resources.memory_mib", "--memory", "resources.vcpus", "--vcpus", "resources.disk_mib", "--disk")
+
+// inFlags words a refusal of the request's resources in the flags the operator typed, and shows --memory to one who typed none.
+func inFlags(err error, req sandbox.CreateRequest) error {
+	var refused *client.APIError
+	if !errors.As(err, &refused) || refused.Code != models.CodeInvalidRequest {
+		return err
+	}
+
+	message := resourceFlags.Replace(refused.Message)
+	if message == refused.Message {
+		return err
+	}
+	if req.Resources.MemoryMiB == nil && strings.Contains(message, "--memory") {
+		message += ", for example --memory 512MiB"
+	}
+	worded := *refused
+	worded.Message = message
+
+	return &worded
 }
 
 // parseCreate splits the flags and the image, and refuses a typo before the daemon is asked.

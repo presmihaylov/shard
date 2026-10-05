@@ -2,6 +2,7 @@ package cli
 
 import (
 	"bytes"
+	"errors"
 	"os"
 	"reflect"
 	"runtime"
@@ -10,6 +11,7 @@ import (
 	"testing"
 
 	"github.com/presmihaylov/shard/models"
+	"github.com/presmihaylov/shard/services/client"
 	"github.com/presmihaylov/shard/services/sandbox"
 )
 
@@ -148,6 +150,45 @@ func TestParseCreateTellsAnOmittedMemoryFromZero(t *testing.T) {
 	}
 	if req.Resources.MemoryMiB == nil || *req.Resources.MemoryMiB != 0 {
 		t.Errorf("memory = %v with --memory 0, want an explicit 0", req.Resources.MemoryMiB)
+	}
+}
+
+func TestInFlagsWordsARefusalInTheFlags(t *testing.T) {
+	small := int64(64)
+	tests := []struct {
+		name    string
+		message string
+		memory  *int64
+		want    string
+	}{
+		{"no memory on a VM", "provider vz needs resources.memory_mib, as a VM's memory is real memory on the host; set it to 128 MiB or more", nil,
+			"provider vz needs --memory, as a VM's memory is real memory on the host; set it to 128 MiB or more, for example --memory 512MiB"},
+		{"too little memory", "resources.memory_mib is 64 MiB, under the 128 MiB provider vz needs; set it to 128 MiB or more", &small,
+			"--memory is 64 MiB, under the 128 MiB provider vz needs; set it to 128 MiB or more"},
+		{"the disk", "the image takes a 900 MiB disk, more than the 512 MiB disk bound; set resources.disk_mib to 900 MiB or more", nil,
+			"the image takes a 900 MiB disk, more than the 512 MiB disk bound; set --disk to 900 MiB or more"},
+		{"the cpus", "resources.vcpus is 9, more than the 8 CPUs on this host; set it to 8 or less", nil,
+			"--vcpus is 9, more than the 8 CPUs on this host; set it to 8 or less"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			var req sandbox.CreateRequest
+			req.Resources.MemoryMiB = tt.memory
+			err := inFlags(&client.APIError{Status: 400, Code: models.CodeInvalidRequest, Message: tt.message}, req)
+
+			var refused *client.APIError
+			if !errors.As(err, &refused) || refused.Code != models.CodeInvalidRequest {
+				t.Fatalf("inFlags = %v, want an invalid_request APIError", err)
+			}
+			if refused.Message != tt.want {
+				t.Errorf("message = %q, want %q", refused.Message, tt.want)
+			}
+		})
+	}
+
+	other := &client.APIError{Status: 404, Code: models.CodeNotFound, Message: "image resources.memory_mib not found"}
+	if err := inFlags(other, sandbox.CreateRequest{}); err.Error() != other.Message {
+		t.Errorf("inFlags(not_found) = %v, want it untouched", err)
 	}
 }
 

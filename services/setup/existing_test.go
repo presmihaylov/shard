@@ -494,21 +494,34 @@ func TestUpgradeLeavesAnInactiveServiceStopped(t *testing.T) {
 }
 
 func TestUninstallRefusesWhileASandboxRemains(t *testing.T) {
-	f := newFakeHost(t)
-	m := linuxInstall("v0.1.0")
-	f.installed(t, m)
-	f.write(t, "/var/lib/shard/sandboxes/sb_1/sandbox.json", "{}")
-	f.write(t, "/var/lib/shard/sandboxes/sb_2/sandbox.json", "{}")
-	f.write(t, "/var/lib/shard/images/sb_3/sandbox.json", "{}")
-	ui := &fakeUI{}
-
-	err := (&Setup{Host: f.host(nil), UI: ui}).uninstall(t.Context(), m)
-	if err == nil || !strings.Contains(err.Error(), "2 sandboxes left") {
-		t.Fatalf("uninstall = %v, want 2 sandboxes named", err)
+	tests := []struct {
+		name string
+		ids  []string
+		want []string
+	}{
+		{"one", []string{"sb_1"}, []string{"1 sandbox left", "Shard has 1 sandbox on this machine.", "Remove it before you uninstall Shard:"}},
+		{"two", []string{"sb_1", "sb_2"}, []string{"2 sandboxes left", "Shard has 2 sandboxes on this machine.", "Remove them before you uninstall Shard:"}},
 	}
-	said(t, ui, "Shard has 2 sandboxes on this machine.", "shard list --all", "shard remove --force <name>")
-	if _, ok := f.read(t, "/usr/local/bin/shard"); !ok || len(ui.asked) != 0 {
-		t.Fatalf("uninstall removed a file or asked %v while a sandbox remains", ui.asked)
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			f := newFakeHost(t)
+			m := linuxInstall("v0.1.0")
+			f.installed(t, m)
+			for _, id := range tt.ids {
+				f.write(t, "/var/lib/shard/sandboxes/"+id+"/sandbox.json", "{}")
+			}
+			f.write(t, "/var/lib/shard/images/sb_3/sandbox.json", "{}")
+			ui := &fakeUI{}
+
+			err := (&Setup{Host: f.host(nil), UI: ui}).uninstall(t.Context(), m)
+			if err == nil || !strings.Contains(err.Error(), tt.want[0]) {
+				t.Fatalf("uninstall = %v, want %q", err, tt.want[0])
+			}
+			said(t, ui, tt.want[1], tt.want[2], "shard list --all", "shard remove --force <name>")
+			if _, ok := f.read(t, "/usr/local/bin/shard"); !ok || len(ui.asked) != 0 {
+				t.Fatalf("uninstall removed a file or asked %v while a sandbox remains", ui.asked)
+			}
+		})
 	}
 }
 
