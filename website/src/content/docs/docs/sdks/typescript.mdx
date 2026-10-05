@@ -10,7 +10,7 @@ Run a command in a new sandbox from Node:
 ```sh
 npm install useshards
 export SHARD_REMOTE=https://shard.example.com
-export SHARD_API_KEY=<your API key>
+export SHARD_API_KEY='your-api-key'
 ```
 
 ```js title="demo.mjs"
@@ -30,7 +30,7 @@ try {
 }
 ```
 
-Replace `https://shard.example.com` with the URL of your server, then run it with `node demo.mjs`. It prints `0 hello`.
+Replace `https://shard.example.com` with your server URL and `your-api-key` with your API key. Then run `node demo.mjs`. It prints `0 hello`.
 
 ## Install
 
@@ -42,13 +42,13 @@ The package needs Node 20.3 or later. It is an ES module, so load it with `impor
 
 ## Connect
 
-The SDK talks to `shard serve` on your server, never to the daemon's local socket, and it ignores the connection that `shard setup` saves. It reads three settings. An option you pass to `new Shard()` takes precedence over its environment variable:
+The SDK talks to `shard serve` on your server, never to the daemon's local socket, and it ignores the connection that `shard setup` saves. It reads three settings. A non-empty `remote` or `caFile` option takes precedence over its environment variable. An `apiKey` option takes precedence even when it is empty, which the SDK refuses:
 
 | Option | Variable | Value |
 | --- | --- | --- |
 | `remote` | `SHARD_REMOTE` | The URL of `shard serve`, such as `https://shard.example.com`, with only a scheme, a host and a port. |
 | `apiKey` | `SHARD_API_KEY` | The API key. |
-| `caFile` | `SHARD_CA_FILE` | A PEM file of the CA that signed the server's certificate. It applies to an `https` remote only. Without it, the SDK trusts the system's CAs. |
+| `caFile` | `SHARD_CA_FILE` | A PEM file of the CA that signed the server's certificate. It applies to an `https` remote only. Without it, the SDK uses [Node's default trusted CAs](https://nodejs.org/api/tls.html#tlsgetcacertificatestype). |
 
 ```ts
 const shard = new Shard({ remote: "https://shard.example.com", apiKey: process.env.MY_SHARD_KEY });
@@ -82,6 +82,8 @@ Call `shard.close()` when you are done. It releases the pooled connections so th
 | `policy` | The name of the network policy. |
 | `memoryMiB` | The memory bound. Without it, the sandbox takes the snapshot's own bound, or has no bound. |
 | `vcpus`, `diskMiB` | The CPU count and the disk size. Without them, the daemon's defaults apply. A sandbox from a snapshot takes the snapshot's disk size. |
+
+Firecracker and `vz` require a memory bound of at least 128 MiB. Set `memoryMiB` when you create from an image. A snapshot supplies its saved bound when you leave the option out.
 
 `shard.get(ref)` finds a sandbox by ID or name. `shard.list()` returns `{ sandboxes, warnings }` for the active sandboxes, and `shard.list({ all: true })` adds the stopped ones. The warnings name entries that the daemon could not read, so check them before you treat the list as complete.
 
@@ -172,7 +174,7 @@ try {
 }
 ```
 
-When the app exits, its sandbox stays `running`, so you can still run commands in `app.sandbox`. Only `stop()` or `remove()` ends the sandbox.
+When the app exits, its sandbox stays `running`, so you can still run commands in `app.sandbox`. Use `app.sandbox.stop()` or `app.sandbox.remove()` to end it. `app.stop()` stops only the app.
 
 - `app.wait()` returns `{ exitCode, signal, restarts }` once the restart policy will not start the app again.
 - `app.stop()` ends the app with `TERM`, or with `KILL` when you pass `{ force: true }`, and cancels its restart policy. The sandbox keeps running.
@@ -199,10 +201,10 @@ The sandbox never holds the secret value. Its commands see a placeholder, and th
 | `secrets.set(name, { value, destinations, placeholder })` | Stores a secret, or replaces its value. |
 | `secrets.list()` | Returns `{ secrets, warnings }`. |
 | `secrets.remove(name, { force })` | Deletes a secret that no sandbox holds. `force: true` deletes it even when a sandbox holds it. That sandbox keeps the grant, but its placeholder no longer gets a value. |
-| `secrets.grant(sandbox, name)`, `secrets.ungrant(sandbox, name)` | Grant a secret to a sandbox, or take it away. The sandbox must be stopped. |
+| `secrets.grant(sandbox, name)`, `secrets.ungrant(sandbox, name)` | Grant a secret to a sandbox, or take it away. The sandbox must be `created` or `stopped`. |
 | `policies.set(name, rules)` | Creates a policy, or replaces all of its rules. A sandbox that holds the policy enforces the new rules. |
 | `policies.get(name)`, `policies.list()`, `policies.remove(name)` | Read policies, or delete one that no sandbox holds. |
-| `policies.attach(sandbox, name)`, `policies.detach(sandbox)` | Give a sandbox a policy, or take it away. The sandbox must be stopped. |
+| `policies.attach(sandbox, name)`, `policies.detach(sandbox)` | Give a sandbox a policy, or take it away. The sandbox must be `created` or `stopped`. |
 | `snapshots.create(sandbox, { name })` | Copies the files of a stopped sandbox into a snapshot, which outlives the sandbox. |
 | `snapshots.list()`, `snapshots.inspect(ref)`, `snapshots.remove(ref)` | Read snapshots, or delete one. |
 
