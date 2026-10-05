@@ -181,7 +181,7 @@ export class Secrets {
     return { secrets: rows.map(records.secretInfo), warnings };
   }
 
-  /** remove deletes a secret no sandbox holds; force takes it from every sandbox first. */
+  /** remove deletes a secret no sandbox holds; force deletes it anyway, and a grant left redeems nothing. */
   async remove(name: string, options: { force?: boolean } = {}): Promise<void> {
     await this.transport.api.DELETE("/v0/secrets/{name}", { params: { path: { name }, query: { force: options.force || undefined } } });
   }
