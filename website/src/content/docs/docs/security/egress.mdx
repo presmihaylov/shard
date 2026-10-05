@@ -113,7 +113,7 @@ A rule is `<destination> [tcp|udp[:<ports>]]`. The form of the destination decid
 | `any` | `any` | everything |
 | `dns` | `dns` | DNS to shard's resolver, in an allow rule only |
 
-A wildcard stands for one whole label. `www.*.com` matches any one label in that position, and `*` alone matches every host. A `*` inside a label, such as `api*.example.com`, is refused. Names match in any letter case, with or without a trailing dot.
+A leading `*.` matches any depth below the name, but not the name itself. Any other wildcard stands for one whole label: `www.*.com` matches any one label in that position. `*` alone matches every host. A `*` inside a label, such as `api*.example.com`, is refused. Names match in any letter case, with or without a trailing dot.
 
 Ports are a comma-separated list of numbers and ranges from 1 to 65535, such as `tcp:22,8000-8100`. A rule can name at most 1024 ports. A rule with no protocol matches every protocol, including ping. An address rule with no ports opens every TCP and UDP port, so name the ports when you only want some of them.
 
@@ -171,7 +171,7 @@ The resolver answers a name only when the policy allows it: through a name, wild
 
 A policy that names a host, or that says `allow dns`, opens DNS to the resolver for you. `shard inspect` prints these added rules in `egress`, marked `implied`. The mark is `dns`, or `dns-rule` when the policy says `allow dns`. An `allow any` that leaves port 53 open adds no rule, because it already reaches the resolver. A secret does not open DNS. A sandbox with no policy uses public DNS directly, with or without a secret.
 
-One resolver serves every sandbox with a policy on the server. Each sandbox can have at most 16 questions or TCP connections in progress at once, under a limit of 256 for the whole server. A UDP question past the limit is dropped and the client asks again, and a TCP connection past it is closed. A sandbox that floods port 53 slows only its own lookups.
+One resolver serves every sandbox with a policy on the server. Each sandbox can hold at most 16 UDP questions or TCP connections at once. The resolver processes at most 256 questions at once across the server; an idle TCP connection uses no question slot. A UDP question past the sandbox's limit is dropped and the client asks again, and a TCP connection past it is closed. The per-sandbox limit prevents one sandbox from taking every question slot.
 
 **Caution: a policy with only address rules does not open DNS.** `allow 203.0.113.7` gives the sandbox an address but no way to resolve a name, so a tool that looks up a name fails at the lookup. `shard policy create` prints a note when you store such a policy. It prints the same note when earlier deny rules cover every name that an allow opens, such as `--deny any` before `--allow api.example.com`, because the resolver uses the first rule that matches. Add a name rule for the host, or add `--allow dns`.
 
@@ -193,7 +193,7 @@ The proxy can answer with these statuses:
 | --- | --- |
 | `403` | the policy denies the request. The JSON body names the host, the port, the rule and the reason. |
 | `502` | the host does not resolve, or the upstream fails. The body never holds the upstream error. When the host does not resolve, the body names the host and says `no such host` or `the lookup failed`. |
-| `503` | the secret values put into the sandbox's in-flight requests add up to more than 32 MiB. |
+| `503` | the sandbox exceeds its 32 MiB budget for buffered request data and expanded secret values. |
 
 The daemon log keeps the cause of a failed lookup. The proxy writes one line to the daemon log for each request, and that line never holds a header value, a body or a secret.
 
