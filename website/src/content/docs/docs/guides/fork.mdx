@@ -1,0 +1,128 @@
+---
+title: How to fork a sandbox to try two paths?
+description: Copy a running sandbox, memory and files, into new sandboxes, and try a different change in each.
+sidebar:
+  order: 4
+---
+
+import { Tabs, TabItem } from '@astrojs/starlight/components';
+
+Set up a sandbox once, fork it twice, and try a different version of a package in each fork:
+
+<Tabs syncKey="lang">
+	<TabItem label="CLI">
+
+```sh
+shard create --name base --memory 512MiB python:3.12-slim
+shard exec base pip install --quiet requests
+shard fork --name try-a base
+shard fork --name try-b base
+shard exec try-a pip install --quiet "requests==2.31.0"
+shard exec try-b pip install --quiet --upgrade requests
+shard exec try-a python -c "import requests; print(requests.__version__)"
+shard exec try-b python -c "import requests; print(requests.__version__)"
+shard remove --force try-a
+```
+
+	</TabItem>
+	<TabItem label="TypeScript">
+
+```ts
+import { Shard } from "useshards";
+
+const shard = new Shard();
+try {
+  const base = await shard.create({ name: "base", image: "python:3.12-slim", memoryMiB: 512 });
+  await base.exec(["pip", "install", "--quiet", "requests"]);
+
+  const tryA = await base.fork({ name: "try-a" });
+  const tryB = await base.fork({ name: "try-b" });
+  await tryA.exec(["pip", "install", "--quiet", "requests==2.31.0"]);
+  await tryB.exec(["pip", "install", "--quiet", "--upgrade", "requests"]);
+
+  const check = ["python", "-c", "import requests; print(requests.__version__)"];
+  console.log((await tryA.exec(check)).stdout);
+  console.log((await tryB.exec(check)).stdout);
+  await tryA.remove({ force: true });
+} finally {
+  shard.close();
+}
+```
+
+	</TabItem>
+	<TabItem label="Python">
+
+```python
+from useshards import Shard
+
+with Shard() as shard:
+    base = shard.create("python:3.12-slim", name="base", memory_mib=512)
+    base.exec(["pip", "install", "--quiet", "requests"])
+
+    try_a = base.fork(name="try-a")
+    try_b = base.fork(name="try-b")
+    try_a.exec(["pip", "install", "--quiet", "requests==2.31.0"])
+    try_b.exec(["pip", "install", "--quiet", "--upgrade", "requests"])
+
+    check = ["python", "-c", "import requests; print(requests.__version__)"]
+    print(try_a.exec(check).stdout)
+    print(try_b.exec(check).stdout)
+    try_a.remove(force=True)
+```
+
+	</TabItem>
+</Tabs>
+
+The TypeScript and Python examples reach `shard serve` at the address in `SHARD_REMOTE`, with the API key in `SHARD_API_KEY`.
+
+Each fork starts with what `base` held at the moment of the fork, and a change in one fork never reaches `base` or the other fork. Keep the fork that worked and remove the rest.
+
+`shard fork` prints the id of the new sandbox. If you do not pass `--name`, use that id to refer to the fork.
+
+## What a fork copies
+
+| State | In the fork |
+| --- | --- |
+| Files | yes, as its own copy |
+| Memory, and the processes that ran | yes, from where they left off |
+| The memory, cpu and disk bounds | yes, the source's |
+| Secret grants and the network policy | yes |
+| The id, the name and the network address | no, the fork gets new ones |
+
+A fork does not take bounds of its own, so the `--memory 512MiB` on `base` also applies to every fork of it.
+
+The copied secret grants belong to the fork. An ungrant on the source does not change them, and neither does a stop of the source.
+
+## Keep a sandbox warm for each task
+
+Set up one sandbox with what every task needs, and leave it running. Then fork it once for each new task, so that no task has to wait for the setup. Each `shard fork` creates one new sandbox.
+
+## What the source sees
+
+The source freezes for a moment while shard copies its memory and files. After that it keeps running as before, with the same processes and the same id.
+
+On `gvisor`, if the freeze lasts 10 minutes, the fork fails and the source thaws.
+
+On `firecracker` and `vz`, an `exec` that is running in the source during the fork can lose its stream. The command keeps running, but nothing reads its output. An `exec` that starts during the freeze is refused with an error that ends with `a fork holds the sandbox frozen, and nothing starts in it until that ends: run the command again`. Run it again after the fork returns.
+
+## Where fork works
+
+Fork works only on a running sandbox. A fork of a stopped sandbox fails with `sandbox <id> is stopped: fork takes a running sandbox`. To copy a stopped sandbox, take a snapshot of it.
+
+`fork` works on `gvisor`, `firecracker`, and `vz` on Apple silicon with macOS 14 or later. On `sysbox` and `runc` it is refused with an error such as `provider sysbox does not support fork on this host`. `shard capabilities` shows what your server supports.
+
+## Fork or snapshot
+
+| | Fork | Snapshot |
+| --- | --- | --- |
+| The source | running | stopped |
+| What it copies | memory, processes and files | files |
+| What it makes | one running sandbox | a snapshot that each create starts from |
+
+## With a token
+
+A fork needs the `sandbox:write` scope. It also needs `secret:*` if the source has secret grants, and `policy:*` if the source has a network policy.
+
+## Over the API
+
+`POST /v0/sandboxes/{id}/fork` takes `{"name": "try-a"}`, where `{id}` is the id or the name of the source. It answers `201` with the new sandbox, or `409` with the code `sandbox_not_running` when the source is not running, `unsupported` when the provider cannot fork, or `name_taken` when another sandbox already has the name.

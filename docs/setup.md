@@ -128,10 +128,11 @@ only, and replaces the file whole. A command resolves its server and key in this
 | API key | `SHARD_API_KEY` | | the saved connection |
 
 A verb that runs on the daemon host only refuses a saved connection, and `--remote ""` runs it on
-this host. Run `shard setup` again to check, replace or remove the saved connection. Choosing local
-setup while a connection is saved offers to remove it, and removes it only once local setup
-succeeds; a repair or an upgrade of an existing installation makes the same offer. A `SHARD_REMOTE`
-in the environment still overrides the local daemon after that.
+this host. Run `shard setup` again and its first screen names the saved server, and offers to check,
+replace or remove the connection, or to set up this machine instead. Choosing local setup while a
+connection is saved offers to remove it, lists the removal among the changes, and removes it only
+once local setup succeeds; a repair or an upgrade of an existing installation makes the same offer.
+A `SHARD_REMOTE` in the environment still overrides the local daemon after that.
 
 ## Automated setup
 
@@ -150,7 +151,8 @@ SHARD_API_KEY=... shard setup --remote https://shard.example.com --save -y
 ```
 
 An option answers its question and the wizard asks the rest. Without a terminal, every question
-must have its answer: setup fails and names the option it needs, and it never picks one for you.
+must have its answer: setup fails and names the option it needs, and it never picks one for you. A
+local run without a terminal names every missing option at once, before any check runs.
 `-y` answers the confirmation and the `http` warning only. It skips no check, and it saves a
 connection only with `--save`. The API key comes from `SHARD_API_KEY`, never from an option. Setup
 refuses a local option beside `--remote`, and `--save` beside a local option.

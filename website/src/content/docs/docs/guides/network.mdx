@@ -1,0 +1,177 @@
+---
+title: How to lock down network access?
+description: Let a sandbox reach only the hosts it needs, and see every request the host allowed or denied.
+sidebar:
+  order: 6
+---
+
+import { Tabs, TabItem } from '@astrojs/starlight/components';
+
+Let a sandbox reach `api.openai.com` and nothing else:
+
+<Tabs syncKey="lang">
+	<TabItem label="CLI">
+
+```sh
+shard policy create --allow api.openai.com --deny any locked
+shard create --name agent --memory 512MiB --policy locked python:3.12
+shard exec agent curl -sS -o /dev/null -w '%{http_code}\n' https://api.openai.com/v1/models
+shard exec agent curl -sS https://example.com
+shard policy logs agent
+```
+
+	</TabItem>
+	<TabItem label="TypeScript">
+
+```ts
+import { Shard } from "useshards";
+
+const shard = new Shard();
+try {
+  await shard.policies.set("locked", [
+    { action: "allow", rule: "api.openai.com" },
+    { action: "deny", rule: "any" },
+  ]);
+  const sandbox = await shard.create({
+    name: "agent",
+    image: "python:3.12",
+    memoryMiB: 512,
+    policy: "locked",
+  });
+  await sandbox.exec(["curl", "-sS", "-o", "/dev/null", "https://api.openai.com/v1/models"]);
+  const blocked = await sandbox.exec(["curl", "-sS", "https://example.com"]);
+  console.log(blocked.exitCode, blocked.stderr);
+  console.log(await sandbox.egressLog());
+} finally {
+  shard.close();
+}
+```
+
+	</TabItem>
+	<TabItem label="Python">
+
+```python
+from useshards import PolicyRule, Shard
+
+with Shard() as shard:
+    shard.policies.set(
+        "locked",
+        [PolicyRule(action="allow", rule="api.openai.com"), PolicyRule(action="deny", rule="any")],
+    )
+    sandbox = shard.create("python:3.12", name="agent", memory_mib=512, policy="locked")
+    sandbox.exec(["curl", "-sS", "-o", "/dev/null", "https://api.openai.com/v1/models"])
+    blocked = sandbox.exec(["curl", "-sS", "https://example.com"])
+    print(blocked.exit_code, blocked.stderr)
+    print(sandbox.egress_log())
+```
+
+	</TabItem>
+</Tabs>
+
+The TypeScript and Python examples reach `shard serve` at the address in `SHARD_REMOTE`, with the API key in `SHARD_API_KEY`.
+
+The call to `api.openai.com` goes through. The call to `example.com` fails before it starts, because the sandbox cannot even resolve the name. The log shows both decisions.
+
+The host enforces the policy from outside the sandbox, so the sandbox has no rules of its own that it could change.
+
+## Without a policy
+
+A sandbox with no policy can reach the internet, but nothing private. The host drops its traffic to:
+
+- private networks: `10.0.0.0/8`, `172.16.0.0/12` and `192.168.0.0/16`
+- link-local addresses and cloud metadata: `169.254.0.0/16`
+- loopback, `127.0.0.0/8`, and carrier NAT, `100.64.0.0/10`
+- every other sandbox
+
+These drops also apply under every policy, and no rule can open them.
+
+## Write the rules
+
+A policy is a name and an ordered list of rules. The first rule that matches decides, and traffic that no rule allows is denied.
+
+A rule is a destination, then an optional protocol and ports: `<destination> [tcp|udp[:<ports>]]`.
+
+| Destination | Example | What it matches |
+| --- | --- | --- |
+| A name | `api.example.com` | that host, on `tcp` 80 and 443 |
+| Every name under a domain | `*.example.com` | each host under `example.com`, but not `example.com` |
+| A domain and every name under it | `suffix:example.com` | `example.com`, and each host under it |
+| An address or a range | `203.0.113.7`, `203.0.113.0/24` | the address, or the range, on every port |
+| Everything | `any` | every destination |
+| DNS | `dns` | lookups through shard's resolver |
+
+Ports are numbers and ranges, separated by commas, such as `tcp:22,8000-8100`. A name rule covers only HTTP and HTTPS, so for any other port, use an address: `--allow "203.0.113.7 tcp:5432"`.
+
+## Names need DNS
+
+A sandbox with a policy can look up names only through shard's resolver on the host. The resolver answers only the names the policy allows, and every other name fails to resolve. That is why `curl https://example.com` failed above.
+
+A name rule opens the lookups it needs. A policy with only address rules opens none, so add `--allow dns` if the sandbox must resolve names:
+
+```sh
+shard policy create --allow "203.0.113.7 tcp:5432" --allow dns db-only
+```
+
+## Watch the decisions
+
+`shard policy logs agent` prints each decision as one JSON record. Add `--follow` to see new ones as they happen. In the SDKs, `egressLog()` and `egress_log()` return the same records, and `followEgressLog()` and `follow_egress_log()` stream them.
+
+A record holds `time`, `source`, `verdict`, `host`, `port`, `address`, `rule`, `rule_text` and `reason`. It never contains a header, a body or a secret. `source` says what made the decision:
+
+- `proxy`: an HTTP or HTTPS request.
+- `dns`: a lookup.
+- `host`: a packet that the host dropped on any other port.
+
+`rule` is the position of the rule that decided, in the order that `shard inspect agent` lists the rules under `egress`. Some decisions have a name instead: `private` for the drops that every sandbox gets, and `default` when no rule matched.
+
+A denied HTTP or HTTPS request gets a `403` with a one-line JSON body that names the host, the port, the rule and the reason.
+
+## Change a policy
+
+Run `shard policy create` again with the same name, or call `policies.set` in the SDKs. The new rules replace every old one. Every sandbox that has the policy enforces the new rules at once, whether it is running or paused. A connection that is already open stays open until it ends.
+
+To attach a policy to an existing sandbox, stop the sandbox first:
+
+<Tabs syncKey="lang">
+	<TabItem label="CLI">
+
+```sh
+shard stop agent
+shard policy attach agent locked
+shard start agent
+```
+
+	</TabItem>
+	<TabItem label="TypeScript">
+
+```ts
+await sandbox.stop();
+await shard.policies.attach(sandbox, "locked");
+await sandbox.start();
+```
+
+	</TabItem>
+	<TabItem label="Python">
+
+```python
+sandbox.stop()
+shard.policies.attach(sandbox, "locked")
+sandbox.start()
+```
+
+	</TabItem>
+</Tabs>
+
+`shard policy detach` takes the policy away from a stopped sandbox, which then goes back to the default. `shard policy remove` deletes a policy that no sandbox has.
+
+## With an API key
+
+A secret grant does not open a host, so the policy must also allow the host that a secret is granted to. Under `deny any` with no allow rule for that host, the request is denied and the key is never sent. See [secrets](https://github.com/presmihaylov/shard/blob/main/docs/secrets.md).
+
+## Limits
+
+- **IPv4 only.** A sandbox gets an IPv4 address. The host drops every IPv6 packet and logs it with the rule `ipv6`.
+- **A name resolves on the host when the policy is applied.** If a host's addresses change later, a rule that names it can go stale. Store the policy again to resolve the names again.
+- **Another firewall on the host is not in the log.** A drop by `ufw` or `firewalld` leaves no record, so the sandbox just sees a timeout. With `ufw`, let the bridge through: `ufw allow in on shard0` and `ufw route allow in on shard0`.
+
+The [egress reference](https://github.com/presmihaylov/shard/blob/main/docs/egress.md) lists every rule.

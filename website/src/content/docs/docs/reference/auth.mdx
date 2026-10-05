@@ -1,0 +1,172 @@
+---
+title: Authentication
+description: The API tokens that shard serve checks, the scopes a token carries, and the commands that mint, list and revoke tokens.
+sidebar:
+  order: 1
+---
+
+import { Tabs, TabItem } from '@astrojs/starlight/components';
+
+A client on another host reaches the daemon through `shard serve`, and every request carries an API token. Mint a token on the daemon host:
+
+```sh
+shard tokens mint --name reader --duration 24h --scopes sandbox:read,exec
+# {"token":"<jwt>","expires_at":"2026-10-06T18:00:00Z","scopes":["sandbox:read","exec"]}
+```
+
+Give the `token` field to the client:
+
+<Tabs syncKey="lang">
+	<TabItem label="CLI">
+		```sh
+		export SHARD_REMOTE=https://shard.example.com
+		export SHARD_API_KEY=<the token field>
+		shard list
+		```
+	</TabItem>
+	<TabItem label="TypeScript">
+		```ts
+		import { Shard } from "useshards";
+
+		// Reads SHARD_API_KEY.
+		const shard = new Shard({ remote: "https://shard.example.com" });
+		try {
+		  const { sandboxes } = await shard.list();
+		  for (const sandbox of sandboxes) console.log(sandbox.id);
+		} finally {
+		  shard.close();
+		}
+		```
+	</TabItem>
+	<TabItem label="Python">
+		```python
+		from useshards import Shard
+
+		# Reads SHARD_API_KEY.
+		with Shard(remote="https://shard.example.com") as shard:
+		    for sandbox in shard.list().sandboxes:
+		        print(sandbox.id)
+		```
+	</TabItem>
+</Tabs>
+
+This token can list sandboxes, read their logs and run commands in them. It cannot create, stop or remove a sandbox, and it stops working after 24 hours.
+
+## How a request is checked
+
+On the host, the daemon listens on a unix socket and takes no token. A request on the socket can do anything. `shard serve` is the only way in from the network, and it checks each request in two steps before it passes the request to the socket.
+
+1. The token must be an HS256 JWT signed with the host's signing key. It must carry a subject, an id and an issued-at time. The ledger on the host must hold its id, and the id must not be revoked. A token with an `exp` must not have expired. Any other token gets `401` with the code `unauthorized`.
+2. `shard serve` maps the method and the path to one scope, and the token must carry that scope. Otherwise it gets `403` with the code `forbidden`. A route that only the host can use, such as `POST /v0/images/pull`, gets the same `403` for every token.
+
+Both refusals come from `shard serve` before it opens the socket, so a refused request never reaches the daemon. `shard serve` logs the name of the token for every request it lets through, and never logs the token itself or the signing key.
+
+## Scopes
+
+| Scope | Lets a token | Routes |
+| --- | --- | --- |
+| `sandbox:read` | View sandboxes, logs and snapshots | List and get a sandbox, its logs, its egress log, attach to its app, list and get a snapshot |
+| `sandbox:write` | Create sandboxes, change their state and create snapshots | Create, start, stop, pause, resume and fork a sandbox, stop its app, create a snapshot |
+| `sandbox:delete` | Remove sandboxes and snapshots | Remove a sandbox, remove a snapshot |
+| `exec` | Run commands and access sandbox files | Every exec route, and every files, ls, mkdir and archive route |
+| `secret:*` | Manage secrets and secret grants | Every secrets route, and grant and ungrant on a sandbox |
+| `policy:*` | Manage policies and their sandbox assignments | Every policies route, and attach and detach on a sandbox |
+| `*` | All available permissions | Every route above |
+
+A token with no scopes, or with `*`, reaches every route. `GET /v0/version`, `GET /v0/capabilities` and `GET /v0/scopes` answer any valid token, so a client can check which server it talks to before it acts. The [TCP front](https://github.com/presmihaylov/shard/blob/main/docs/daemon.md#the-tcp-front) names the scope of each route.
+
+A create that names a secret also needs `secret:*`, and a create that names a policy also needs `policy:*`. A fork of a sandbox with secret grants or a policy needs the same scopes, because the fork copies them. The daemon refuses the request with `403` before it builds anything:
+
+```text
+the token does not carry the "secret:*" scope, which a create that names a secret needs
+```
+
+`shard tokens scopes` lists the scopes. Unlike the other `tokens` commands, it follows `--remote` and `SHARD_REMOTE`, so it shows what a remote server accepts:
+
+```text
+SCOPE            DESCRIPTION
+sandbox:read     View sandboxes, logs and snapshots
+sandbox:write    Create sandboxes, change their state and create snapshots
+sandbox:delete   Remove sandboxes and snapshots
+exec             Run commands and access sandbox files
+secret:*         Manage secrets and secret grants
+policy:*         Manage policies and their sandbox assignments
+*                All available permissions
+```
+
+## Mint a token
+
+```sh
+shard tokens mint --name build-agent --duration 24h --scopes sandbox:read,sandbox:write,exec
+```
+
+- `--name` is required. It names the owner or the purpose of the token, and it is the name that `shard serve` logs.
+- `--duration` is how long the token lives. The default is 0, which mints a token that never expires.
+- `--scopes` is a comma-separated list. The default is every permission, `*`. Pass `--scopes` and `--duration` for every token except an operator's.
+- `--format json`, the default, prints one object with the `token`, its `scopes`, and its `expires_at` in UTC (`null` when it never expires). `--format table` prints the columns TOKEN, EXPIRES and SCOPES.
+
+`mint` refuses a scope that `shard tokens scopes` does not list, and records nothing. Every token gets a random 128-bit id, and `mint` records it in the ledger before it prints the token. A client takes the `token` field as its API key:
+
+```sh
+export SHARD_API_KEY=$(shard tokens mint --name ci --duration 24h --scopes sandbox:read | jq -r .token)
+```
+
+`mint`, `list` and `revoke` run only on the daemon host. They refuse `--remote`, `SHARD_REMOTE` and a saved connection, and none of them talks to the daemon. [The TCP front](https://github.com/presmihaylov/shard/blob/main/docs/daemon.md#the-tcp-front) lists every option.
+
+## List and revoke tokens
+
+```sh
+shard tokens list
+```
+
+```text
+ID                                 NAME     ISSUED                 EXPIRES                SCOPES              STATUS
+9f2c4e1a7b3d5f60a1b2c3d4e5f60718   reader   2026-10-05T18:00:00Z   2026-10-06T18:00:00Z   sandbox:read,exec   active
+4b8e0d2f6a1c3e5b7d9f0a2c4e6b8d01   ci       2026-10-02T09:30:00Z   never                  *                   revoked
+```
+
+The status is what a request with the token would see now: `active`, `revoked` or `expired`. `--format json` prints a list of objects with `id`, `name`, `issued_at`, `expires_at`, `scopes` and `status`.
+
+Revoke one token by its id, or every token of one name:
+
+```sh
+shard tokens revoke 9f2c4e1a7b3d5f60a1b2c3d4e5f60718
+# revoked token 9f2c4e1a7b3d5f60a1b2c3d4e5f60718
+shard tokens revoke --name ci
+# revoked 1 tokens of ci
+```
+
+A revoke takes effect on the next request, with no restart. `shard serve` also checks the ledger once a second for each open connection, such as an exec session or a log follow, and closes the connection when its token is revoked. A token with an `exp` closes its connections when it expires. A close only detaches the client: the command in the sandbox keeps running, and so does the sandbox.
+
+## The signing key and the ledger
+
+| File | Default path | Mode |
+| --- | --- | --- |
+| Signing key | `<root>/auth/signing-key` | `0600`, in an `auth` directory of mode `0700` |
+| Ledger | `serve.tokens` beside the signing key | `0640` |
+
+The first `shard serve` or `shard tokens mint` that finds no key at the default path creates one: 32 random bytes, written as 64 hex characters. Nothing rotates or replaces the key after that. shard refuses a key file that is empty, that holds fewer than 32 bytes, or that everyone on the host can read, write or execute. The error names the path. `tokens list` and `tokens revoke` never create a key.
+
+`--signing-key-file` names a key outside the root. The file must exist, because `serve` and the `tokens` commands never create a named file. `openssl rand -hex 32` prints a key that passes. Give `shard serve` and the `mint`, `list` and `revoke` commands the same `--root` and `--signing-key-file`, so that the tokens you mint land in the ledger that `shard serve` reads.
+
+`shard serve` reads the signing key once, when it starts. When you replace the key, restart `shard serve`, and every token signed with the old key stops working. The daemon never reads the key or the ledger.
+
+## Send a token from a client
+
+| Client | Option | Default |
+| --- | --- | --- |
+| CLI | none | `SHARD_API_KEY`, then the key that `shard setup` saved for the saved remote |
+| TypeScript | `apiKey` | `SHARD_API_KEY` |
+| Python | `api_key` | `SHARD_API_KEY` |
+
+Each client sends the key as `Authorization: Bearer <token>`, and trims the whitespace around it. The CLI reads a blank `SHARD_API_KEY` as unset, and the SDKs refuse a blank key. A remote client with no key refuses to start before it connects, and the error names `SHARD_API_KEY`. The CLI sends a saved key only to the remote it was saved for.
+
+When `shard serve` refuses the key with `401`, the CLI prints which key it sent and how to replace it, never the key itself:
+
+```text
+shard: the server at https://shard.example.com did not accept the API key in SHARD_API_KEY; set SHARD_API_KEY to a valid key, or ask the server administrator for a new one
+```
+
+The SDKs raise `AuthenticationError` for a `401` and `PermissionDeniedError` for a `403`. [The API socket](https://github.com/presmihaylov/shard/blob/main/docs/daemon.md#the-api-socket) lists every error code.
+
+Use an `https` remote for any request that crosses a network you do not trust. Over an `http` remote, the token crosses the network unencrypted.
