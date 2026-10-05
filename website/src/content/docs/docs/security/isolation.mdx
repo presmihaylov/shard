@@ -49,6 +49,8 @@ with Shard() as shard:
 	</TabItem>
 </Tabs>
 
+The TypeScript and Python examples reach `shard serve` at the address in `SHARD_REMOTE`, with the API key in `SHARD_API_KEY`.
+
 Compare the answer with `uname -r` on the server. On gVisor, the sandbox reports gVisor's own kernel version. On Firecracker and vz, it reports the kernel that shard boots in each virtual machine. On Sysbox and runc, it reports the server's kernel, because the sandbox runs on that kernel.
 
 ## The five providers
@@ -89,7 +91,7 @@ Docker runs inside a Firecracker sandbox.
 
 ## vz
 
-Each sandbox is a virtual machine on Apple's Virtualization framework, with its own kernel. The vz provider needs an Apple silicon Mac. On a Mac, the daemon and every virtual machine run as your user, not as root.
+Each sandbox is a virtual machine on Apple's Virtualization framework, with its own kernel. shard supports the vz provider only on an Apple silicon Mac. On a Mac, the daemon and every virtual machine run as your user, not as root.
 
 The virtual machine has no network bridge. Its only network device connects to a network stack inside the daemon, which judges every flow with the same rules as the Linux host. A sandbox never sees another sandbox's traffic.
 
