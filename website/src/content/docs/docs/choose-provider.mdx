@@ -1,6 +1,6 @@
 ---
 title: What provider should I pick?
-description: Pick the isolation technology that runs every sandbox on a shard host, from Firecracker, gVisor, vz, Sysbox and runc.
+description: Pick the isolation technology for a shard daemon, from Firecracker, gVisor, vz, Sysbox and runc.
 ---
 
 Run `shard info` on the machine that will be your sandbox host. It prints the provider that a daemon on this host uses by default, and the reason:
@@ -72,6 +72,6 @@ runc runs sandboxes on the host kernel with no user namespace, so root in the sa
 
 ## Change the provider later
 
-One host runs one provider, and every sandbox on it runs on that provider. A host keeps the provider that made its sandboxes, because no other provider can read them. The daemon refuses a `--provider` that names a different one, and the error names both. On a host that is already set up, `shard setup` shows the menu for the existing installation, and that menu has no option to change the provider.
+One daemon runs one provider, and every sandbox in its data directory uses that provider. The data directory keeps the provider that made its sandboxes, because no other provider can read them. The daemon refuses a `--provider` that names a different one, and the error names both. On a host that is already set up, `shard setup` shows the menu for the existing installation, and that menu has no option to change the provider.
 
 To move a host to another provider, remove its sandboxes, run `shard setup` and choose **Uninstall Shard**. Then run `shard setup` again and pick the new provider. Its checks name anything that is still in the way. On a Firecracker host, also run the commands that the uninstall note prints for `/var/lib/shard.xfs`, because that image still names Firecracker.
