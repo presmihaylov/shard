@@ -27,7 +27,7 @@ Each sandbox is a Linux micro VM with a kernel of its own. shard drives Apple's 
 ## What you need
 
 - **Apple silicon and macOS 14 or later.** Setup checks both, and refuses the `vz` provider on any other Mac. Pause, resume and fork use the save and restore API of macOS 14.
-- **`codesign`.** The daemon signs its VM helper with it. Setup checks that it is there.
+- **`codesign`.** It ships with macOS. The daemon signs its VM helper with it, and setup checks that it is there.
 - **Enough memory.** A VM's memory is real memory on the Mac. Eight sandboxes of 512 MiB use 4 GiB.
 
 An Intel Mac cannot host sandboxes. See [A Mac that cannot host sandboxes](#a-mac-that-cannot-host-sandboxes).
@@ -149,7 +149,6 @@ A sandbox has no route to the Mac or to the LAN. Its traffic reaches the network
 
 - **`provider vz does not support pause on this host; use a server that supports pause`.** The daemon runs on an Intel Mac or on macOS 13. Pause, resume and fork need Apple silicon with macOS 14 or later.
 - **`kernel checksum mismatch`.** The downloaded guest kernel does not match the hash this build expects. If a download was cut short, the daemon fetches the kernel again on its own.
-- **`codesign the shim: exec: "codesign": executable file not found in $PATH`.** The daemon cannot find `codesign`. Install the Command Line Tools with `xcode-select --install`. You do not need Xcode.
 - **A VM never boots on a managed Mac.** A device management profile can block Virtualization.framework. The error names the framework. Only a change to the profile fixes it.
 - **The daemon does not start.** Read `/var/log/shard/daemon.log`. If the daemon refuses to start, it writes the reason there too.
 
