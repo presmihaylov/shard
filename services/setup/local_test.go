@@ -445,7 +445,7 @@ func TestAProviderFailureOffersTheOthers(t *testing.T) {
 	}
 	again := ui.shown[1]
 	runc := again[providerIndex(Runc)]
-	if !slices.Equal(runc.Unavailable, runcOverGVisor("")) {
+	if !slices.Equal(runc.Unavailable, runcOverGVisor("", false)) {
 		t.Fatalf("the failed provider shows %+v", runc)
 	}
 	if last := again[len(again)-1]; last.Name != exitOption {
@@ -487,7 +487,7 @@ func TestANonRootSetupReadsTheRecordsAsRoot(t *testing.T) {
 	}
 
 	said(t, ui.fakeUI, "Setup needs administrator access. sudo may ask for your password.")
-	if runc := ui.shown[1][providerIndex(Runc)]; !slices.Equal(runc.Unavailable, runcOverGVisor("sudo ")) {
+	if runc := ui.shown[1][providerIndex(Runc)]; !slices.Equal(runc.Unavailable, runcOverGVisor("sudo ", false)) {
 		t.Fatalf("the failed provider shows %+v", runc)
 	}
 	reads := []string{"sudo -n true", "sudo -v", "env LC_ALL=C sudo -n -v", "sudo -n -- sh -c"}

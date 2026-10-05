@@ -341,19 +341,31 @@ func TestPreflightDownloadAccess(t *testing.T) {
 	})
 }
 
-// runcOverGVisor is the refusal of runc over a data dir whose sandboxes use gVisor, with both ways out, prefixing root commands with sudo (SHARD-742).
-func runcOverGVisor(sudo string) []string {
-	return []string{
+// runcOverGVisor is the refusal of runc over a data dir whose sandboxes use gVisor, with both ways out: the daemon steps when shard is installed, else the reinstall path, prefixing root commands with sudo (SHARD-742).
+func runcOverGVisor(sudo string, installed bool) []string {
+	head := []string{
 		"The sandboxes in /var/lib/shard use gVisor.",
 		"The daemon cannot start with runc over that data, and setup never changes its provider.",
 		"To keep the data, choose gVisor.",
-		"To delete the saved data, first remove its sandboxes so their network and cgroups go too:", "",
-		"  Start the daemon on that data:", "    " + sudo + "shard daemon --provider gvisor", "",
-		"  List sandboxes:", "    " + sudo + "shard list --all", "",
-		"  Remove a sandbox:", "    " + sudo + "shard remove --force <name>", "",
-		"  Then stop that daemon and delete the data:", "    " + sudo + "rm -r /var/lib/shard",
-		"Then run shard setup again.",
 	}
+	tail := []string{"Then run shard setup again."}
+	if installed {
+		return slices.Concat(head, []string{
+			"To delete the saved data, first remove its sandboxes so their network and cgroups go too:", "",
+			"  Start the daemon on that data:", "    " + sudo + "shard daemon --provider gvisor", "",
+			"  List sandboxes:", "    " + sudo + "shard list --all", "",
+			"  Remove a sandbox:", "    " + sudo + "shard remove --force <name>", "",
+			"  Then stop that daemon and delete the data:", "    " + sudo + "rm -r /var/lib/shard",
+		}, tail)
+	}
+
+	return slices.Concat(head, []string{
+		"To delete the saved data, let setup install shard first, so its daemon can remove the sandboxes:", "",
+		"  Choose gVisor. Setup installs shard and starts its daemon over this data.", "",
+		"  Remove every sandbox:", "    " + sudo + "shard list --all", "    " + sudo + "shard remove --force <name>", "",
+		"  Then uninstall shard and free the disk:", "    shard setup   (choose Uninstall Shard)",
+		"    " + sudo + "rm -r /var/lib/shard",
+	}, tail)
 }
 
 func TestPreflightExistingSandboxes(t *testing.T) {
@@ -361,17 +373,28 @@ func TestPreflightExistingSandboxes(t *testing.T) {
 	l.sandbox(GVisor)
 
 	f, _ := preflightOn(t, l.host(), Local{Provider: Runc})
-	wantFinding(t, f, "Existing shard installation", true, runcOverGVisor("")...)
+	wantFinding(t, f, "Existing shard installation", true, runcOverGVisor("", false)...)
 
 	if f, _ := preflightOn(t, l.host(), Local{Provider: GVisor}); f != nil {
 		t.Fatalf("the recorded provider fails %q: %q", f.check, f.lines)
 	}
 }
 
-// A firecracker root hides its records in a data image that uninstall leaves unmounted, so the image alone names it (SHARD-742).
+// An installed host can run the daemon, so the delete steps drive it directly instead of reinstalling first (SHARD-742).
+func TestPreflightExistingSandboxesInstalled(t *testing.T) {
+	l := newLocalHost(t)
+	l.sandbox(GVisor)
+	l.write(shardBinary, "bin")
+
+	f, _ := preflightOn(t, l.host(), Local{Provider: Runc})
+	wantFinding(t, f, "Existing shard installation", true, runcOverGVisor("", true)...)
+}
+
+// A firecracker root hides its records in a data image that uninstall leaves unmounted, so the image alone names it, and the free steps also remove its start lock (SHARD-742, SHARD-734).
 func TestPreflightExistingDataImage(t *testing.T) {
 	l := newLocalHost(t)
 	l.write("/var/lib/shard.xfs", "")
+	l.write("/var/lib/shard.xfs.lock", "")
 
 	f, _ := preflightOn(t, l.host(), Local{Provider: GVisor})
 	wantFinding(t, f, "Existing shard installation", true,
@@ -379,14 +402,13 @@ func TestPreflightExistingDataImage(t *testing.T) {
 		"The daemon cannot start with gVisor over that data, and setup never changes its provider.",
 		"To keep the data, choose Firecracker.",
 		"It lives in the 0.0 GiB disk image /var/lib/shard.xfs.",
-		"To delete the saved data, first remove its sandboxes so their network and cgroups go too:", "",
-		"  Start the daemon on that data:", "    shard daemon --provider firecracker", "",
-		"  List sandboxes:", "    shard list --all", "",
-		"  Remove a sandbox:", "    shard remove --force <name>", "",
-		"  Then stop that daemon and free the disk:",
+		"To delete the saved data, let setup install shard first, so its daemon can remove the sandboxes:", "",
+		"  Choose Firecracker. Setup installs shard and starts its daemon over this data.", "",
+		"  Remove every sandbox:", "    shard list --all", "    shard remove --force <name>", "",
+		"  Then uninstall shard and free the disk:", "    shard setup   (choose Uninstall Shard)",
 		"    umount /var/lib/shard",
 		"    rm /var/lib/shard.xfs",
-		"    rm -r /var/lib/shard",
+		"    rm -r /var/lib/shard /var/lib/shard.xfs.lock",
 		"Then run shard setup again.",
 	)
 }

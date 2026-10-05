@@ -520,8 +520,16 @@ func deleteDataLines(h Host, owner string) ([]string, error) {
 	if err != nil {
 		return nil, err
 	}
-
+	installed, err := installedInBin(h)
+	if err != nil {
+		return nil, err
+	}
 	sudo := sudoFor(h)
+	// Without the installed binaries the daemon cannot start, so setup must install them before anything can remove the sandboxes. (SHARD-742)
+	if !installed {
+		return deleteAfterReinstall(owner, where, free, sudo), nil
+	}
+
 	// A plain delete leaves a stopped sandbox's netns, veth and cgroup behind, so remove the sandboxes through their own daemon first.
 	lines := append(where,
 		"To delete the saved data, first remove its sandboxes so their network and cgroups go too:", "",
@@ -540,6 +548,36 @@ func deleteDataLines(h Host, owner string) ([]string, error) {
 	}
 
 	return lines, nil
+}
+
+// installedInBin reports whether setup already put shard in /usr/local/bin, so the daemon the delete steps start is on root's PATH and can run. (SHARD-742)
+func installedInBin(h Host) (bool, error) {
+	if _, err := os.Lstat(rooted(h, shardBinary)); err != nil {
+		if errors.Is(err, fs.ErrNotExist) {
+			return false, nil
+		}
+		return false, fmt.Errorf("check %s: %w", shardBinary, err)
+	}
+
+	return true, nil
+}
+
+// deleteAfterReinstall is the delete path when shard is not installed: choose the owner so setup installs it, then remove the sandboxes, uninstall, and free the disk. (SHARD-742)
+func deleteAfterReinstall(owner string, where, free []string, sudo string) []string {
+	lines := append(where,
+		"To delete the saved data, let setup install shard first, so its daemon can remove the sandboxes:", "",
+		"  Choose "+providerTitle(owner)+". Setup installs shard and starts its daemon over this data.", "",
+		"  Remove every sandbox:", "    "+sudo+"shard list --all", "    "+sudo+"shard remove --force <name>", "",
+		"  Then uninstall shard and free the disk:", "    shard setup   (choose Uninstall Shard)",
+	)
+	if where == nil {
+		return append(lines, "    "+sudo+"rm -r "+DataDir)
+	}
+	for _, c := range free {
+		lines = append(lines, "    "+c)
+	}
+
+	return lines
 }
 
 func serviceSupport(_ context.Context, h Host, _ Local) *finding {
