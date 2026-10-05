@@ -214,9 +214,10 @@ for (const shell of shells) {
 		test('names the rc file when ~/.local/bin is not on PATH, and stays quiet when it is', async () => {
 			reset();
 			const zsh = await install(shell, sandbox(), { shell: '/bin/zsh' }).done;
-			assert.ok(zsh.stdout.includes(`~/.local/bin is not on your PATH. Add it with:\n  echo 'export PATH="$HOME/.local/bin:$PATH"' >> ~/.zshrc\n`));
+			assert.ok(zsh.stdout.includes(`~/.local/bin is not on your PATH. Add it with:\n  echo 'export PATH="$HOME/.local/bin:$PATH"' >> ~/.zshrc\n\nThat takes effect in a new shell. For this shell, run:\n  export PATH="$HOME/.local/bin:$PATH"\n\n`));
 			const fish = await install(shell, sandbox(), { shell: '/usr/bin/fish' }).done;
 			assert.ok(fish.stdout.includes('fish_add_path ~/.local/bin'));
+			assert.ok(!fish.stdout.includes('For this shell'));
 			const box = sandbox();
 			const onPath = await install(shell, box, { path: [box.bin] }).done;
 			assert.equal(onPath.code, 0, onPath.stderr);

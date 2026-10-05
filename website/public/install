@@ -216,6 +216,9 @@ path_hint() {
 	esac
 	printf '~/.local/bin is not on your PATH. Add it with:\n'
 	printf '  echo '"'"'export PATH="$HOME/.local/bin:$PATH"'"'"' >> %s\n\n' "$rc"
+	# The installer runs in a child shell, so the rc line reaches only shells started after it.
+	printf 'That takes effect in a new shell. For this shell, run:\n'
+	printf '  export PATH="$HOME/.local/bin:$PATH"\n\n'
 }
 
 setup_later() {
