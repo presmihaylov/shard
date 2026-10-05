@@ -1,5 +1,6 @@
 ---
 import Card from '../components/landing/Card.astro';
+import InstallCommand from '../components/landing/InstallCommand.astro';
 import Landing from '../layouts/Landing.astro';
 import { REPO_URL } from '../site';
 ---
@@ -11,7 +12,8 @@ import { REPO_URL } from '../site';
 		<p class="typo-body-lg mt-6 max-w-xl text-muted-foreground">
 			Placeholder copy for the hero. It holds the space for the real pitch, which lands with the content ticket.
 		</p>
-		<div class="mt-10 flex flex-wrap items-center gap-3">
+		<InstallCommand />
+		<div class="mt-8 flex flex-wrap items-center gap-3">
 			<a href="/docs/" class="vbtn vbtn--lg vbtn--neutral vbtn--primary nairi-focus-ring">
 				<span>Read the docs</span>
 			</a>

@@ -1,0 +1,57 @@
+---
+title: Install
+description: Install the Shard CLI with one command, on Linux or macOS.
+---
+
+Install the Shard CLI with one command:
+
+```sh
+curl -fsSL https://useshards.com/install | sh
+```
+
+The installer puts the CLI at `~/.local/bin/shard`. It needs no root and changes nothing else on the machine. When a terminal is attached, it then offers to start `shard setup`, which sets up this machine as a sandbox host or connects it to a remote Shard server.
+
+## What the installer does
+
+1. Detects the operating system and the CPU architecture.
+2. Asks the GitHub releases API for the newest stable Shard release, a `vX.Y.Z` tag that is neither a draft nor a prerelease, and prints that version.
+3. Downloads the binary for this platform and the release's `SHA256SUMS` from that one release, into a temporary directory.
+4. Verifies the binary's checksum, and refuses to install on a mismatch.
+5. Checks that the new binary reports the expected version, then moves it over `~/.local/bin/shard`.
+6. Prints the install path, and how to add `~/.local/bin` to `PATH` when it is missing.
+
+An existing `shard` stays in place until the new binary is downloaded and verified. On a failure or an interrupt, the installer removes its temporary files and leaves the old binary as it was.
+
+## Supported platforms
+
+| Platform | Sandbox host | Remote client |
+| --- | --- | --- |
+| Linux, x86_64 | Yes | Yes |
+| macOS, Apple silicon | Yes | Yes |
+| macOS, Intel | No | Yes |
+
+On another CPU architecture, the installer stops with an error that lists the builds the release has. On another operating system, it stops with an error that names the system. On Windows, run it inside WSL 2. Under Rosetta, an Apple silicon Mac gets the native arm64 build.
+
+## Set up later
+
+Without a terminal, for example in CI or under `ssh host 'curl ... | sh'`, the installer skips the prompt and prints:
+
+```text
+Set up Shard later:
+  shard setup
+
+For automated setup:
+  shard setup --help
+```
+
+## Upgrade
+
+Run the same command again. The installer resolves the newest release each time and replaces the binary in place.
+
+## Output
+
+The banner uses color when standard output is a terminal. Set `NO_COLOR` to turn the color off. The installer takes no options.
+
+## Troubleshooting
+
+The installer makes one unauthenticated call to the GitHub API, which allows 60 calls an hour for each IP address. When that limit is spent, the installer stops with an error that says so. Run it again an hour later. It never falls back to a fixed version.

@@ -1,0 +1,299 @@
+#!/bin/sh
+# Installs the Shard CLI into ~/.local/bin: curl -fsSL https://useshards.com/install | sh
+set -u
+
+REPO=presmihaylov/shard
+RELEASES_URL="https://api.github.com/repos/$REPO/releases?per_page=100"
+DOWNLOAD_URL="https://github.com/$REPO/releases/download"
+
+tmp=""
+stage=""
+color=0
+truecolor=0
+
+cleanup() {
+	if [ -n "$stage" ]; then
+		rm -f "$stage"
+	fi
+	if [ -n "$tmp" ]; then
+		rm -rf "$tmp"
+	fi
+}
+
+fail() {
+	printf 'error: %s\n' "$1" >&2
+	exit 1
+}
+
+banner() {
+	awk -v color="$color" -v truecolor="$truecolor" '
+	function lerp(a, b, t) { return int(a + (b - a) * t + 0.5) }
+	function cube(v) {
+		if (v < 48) return 0
+		if (v < 115) return 1
+		return int((v - 35) / 40)
+	}
+	# #585BE2 at column 0, #3E57DE at column 19, #93A8EF at column 38.
+	function paint(col,   t, r, g, b) {
+		t = col / 19
+		r = lerp(88, 62, t); g = lerp(91, 87, t); b = lerp(226, 222, t)
+		if (col > 19) {
+			t = (col - 19) / 19
+			r = lerp(62, 147, t); g = lerp(87, 168, t); b = lerp(222, 239, t)
+		}
+		if (truecolor) return sprintf("\033[38;2;%d;%d;%dm", r, g, b)
+		return sprintf("\033[38;5;%dm", 16 + 36 * cube(r) + 6 * cube(g) + cube(b))
+	}
+	{
+		out = ""
+		for (i = 1; i <= length($0); i++) {
+			if (substr($0, i, 1) == " ") {
+				out = out " "
+				continue
+			}
+			if (color) out = out paint(i - 1)
+			out = out "\342\226\210"
+		}
+		if (color) out = out "\033[0m"
+		print out
+	}' <<'EOF'
+####### ##   ##  #####  ######  ######
+##      ##   ## ##   ## ##   ## ##   ##
+####### ####### ####### ######  ##   ##
+     ## ##   ## ##   ## ##   ## ##   ##
+####### ##   ## ##   ## ##   ## ######
+EOF
+	cat <<'EOF'
+
+Run isolated sandboxes on your own infrastructure.
+
+Create sandboxes, run commands, and save or fork their state.
+Run them locally or connect to a Shard server.
+
+Installing the Shard CLI...
+EOF
+}
+
+detect_platform() {
+	kernel=$(uname -s)
+	case "$kernel" in
+	Linux) os=linux ;;
+	Darwin) os=darwin ;;
+	MINGW* | MSYS* | CYGWIN*) fail "Shard does not run on Windows. Run this installer inside WSL 2." ;;
+	*) fail "Shard runs on Linux and macOS, and this system is $kernel." ;;
+	esac
+	arch=$(uname -m)
+	case "$arch" in
+	x86_64 | amd64) arch=amd64 ;;
+	arm64 | aarch64) arch=arm64 ;;
+	esac
+	# A shell under Rosetta reports x86_64 on Apple silicon.
+	if [ "$os" = darwin ] && [ "$arch" = amd64 ] && [ "$(sysctl -n sysctl.proc_translated 2>/dev/null)" = 1 ]; then
+		arch=arm64
+	fi
+	asset="shard-$os-$arch"
+}
+
+# Reads the releases API JSON and prints the highest vX.Y.Z tag that is neither a draft nor a prerelease.
+pick_version() {
+	grep -o -E '"(tag_name|draft|prerelease)"[[:space:]]*:[[:space:]]*("[^"]*"|true|false)' | awk '
+	function newer(a, b,   x, y, i) {
+		if (b == "") return 1
+		split(substr(a, 2), x, ".")
+		split(substr(b, 2), y, ".")
+		for (i = 1; i <= 3; i++) {
+			if (x[i] + 0 != y[i] + 0) return x[i] + 0 > y[i] + 0
+		}
+		return 0
+	}
+	{
+		key = $0
+		sub(/^"/, "", key)
+		sub(/".*/, "", key)
+		value = $0
+		sub(/^[^:]*:[ \t]*/, "", value)
+		gsub(/"/, "", value)
+		got[key] = value
+		if (!("tag_name" in got) || !("draft" in got) || !("prerelease" in got)) next
+		if (got["draft"] == "false" && got["prerelease"] == "false" && got["tag_name"] ~ /^v[0-9]+\.[0-9]+\.[0-9]+$/ && newer(got["tag_name"], best)) best = got["tag_name"]
+		split("", got)
+	}
+	END { print best }'
+}
+
+resolve_version() {
+	status=$(curl -sS -D "$tmp/headers" -o "$tmp/releases.json" -w '%{http_code}' -H 'Accept: application/vnd.github+json' "$RELEASES_URL") ||
+		fail "could not reach the GitHub releases API at api.github.com. Check the network and run the installer again."
+	case "$status" in
+	200) ;;
+	403 | 429)
+		if grep -i -q '^x-ratelimit-remaining: *0' "$tmp/headers"; then
+			fail "the GitHub releases API rate limit for this IP address is spent (HTTP $status). Run the installer again in an hour."
+		fi
+		fail "the GitHub releases API refused the request (HTTP $status)."
+		;;
+	*) fail "the GitHub releases API returned HTTP $status." ;;
+	esac
+	version=$(pick_version <"$tmp/releases.json")
+	if [ -z "$version" ]; then
+		fail "found no published Shard release on GitHub."
+	fi
+}
+
+sha256() {
+	case "$hasher" in
+	sha256sum) sha256sum "$1" | awk '{ print $1 }' ;;
+	shasum) shasum -a 256 "$1" | awk '{ print $1 }' ;;
+	openssl) openssl dgst -sha256 "$1" | awk '{ print $NF }' ;;
+	esac
+}
+
+pick_hasher() {
+	for hasher in sha256sum shasum openssl; do
+		if command -v "$hasher" >/dev/null 2>&1; then
+			return
+		fi
+	done
+	fail "found no sha256sum, shasum or openssl to verify the download."
+}
+
+download() {
+	curl -fsSL -o "$tmp/SHA256SUMS" "$DOWNLOAD_URL/$version/SHA256SUMS" ||
+		fail "could not download the checksums of Shard $version."
+	expected=$(awk -v name="$asset" '$2 == name || $2 == "*" name { print $1 }' "$tmp/SHA256SUMS")
+	if [ -z "$expected" ]; then
+		builds=$(awk '{ sub(/^\*/, "", $2) } $2 ~ /^shard-[a-z0-9]+-[a-z0-9]+$/ { sub(/^shard-/, "", $2); printf "%s%s", sep, $2; sep = ", " }' "$tmp/SHA256SUMS")
+		fail "Shard $version has no build for $os-$arch. Its builds are: $builds."
+	fi
+	curl -fsSL -o "$tmp/$asset" "$DOWNLOAD_URL/$version/$asset" ||
+		fail "could not download $asset from Shard $version."
+	actual=$(sha256 "$tmp/$asset")
+	if [ -z "$actual" ]; then
+		fail "could not compute the checksum of $asset."
+	fi
+	if [ "$actual" != "$expected" ]; then
+		fail "the checksum of $asset is $actual, and SHA256SUMS of Shard $version says $expected. Nothing was installed."
+	fi
+}
+
+reports_version() {
+	[ "$("$1" --version 2>/dev/null | sed -n 's/^client //p')" = "$version" ]
+}
+
+install_binary() {
+	mkdir -p "$dir" || fail "could not create $dir."
+	# Staged beside the target, so the final mv is a rename that replaces the old binary only once the new one runs.
+	stage="$dir/.shard.install.$$"
+	cp "$tmp/$asset" "$stage" || fail "could not write $stage."
+	chmod 755 "$stage" || fail "could not make $stage executable."
+	if ! reports_version "$stage"; then
+		fail "the downloaded binary does not report version $version. Nothing was installed."
+	fi
+	mv -f "$stage" "$bin" || fail "could not move the new binary to $bin."
+	stage=""
+	if ! reports_version "$bin"; then
+		fail "$bin does not report version $version after the install."
+	fi
+}
+
+path_hint() {
+	case ":$PATH:" in
+	*":$dir:"* | *":$dir/:"*) return ;;
+	esac
+	rc="~/.profile"
+	case "${SHELL:-}" in
+	*/zsh) rc="~/.zshrc" ;;
+	*/bash)
+		rc="~/.bashrc"
+		if [ "$os" = darwin ]; then
+			rc="~/.bash_profile"
+		fi
+		;;
+	*/fish)
+		printf '~/.local/bin is not on your PATH. Add it with:\n  fish_add_path ~/.local/bin\n\n'
+		return
+		;;
+	esac
+	printf '~/.local/bin is not on your PATH. Add it with:\n'
+	printf '  echo '"'"'export PATH="$HOME/.local/bin:$PATH"'"'"' >> %s\n\n' "$rc"
+}
+
+setup_later() {
+	cat <<'EOF'
+Set up Shard later:
+  shard setup
+
+For automated setup:
+  shard setup --help
+EOF
+}
+
+main() {
+	if [ -t 1 ] && [ -z "${NO_COLOR:-}" ]; then
+		color=1
+	fi
+	case "${COLORTERM:-}" in
+	truecolor | 24bit) truecolor=1 ;;
+	esac
+	if [ -z "${HOME:-}" ]; then
+		fail "HOME is not set."
+	fi
+	if ! command -v curl >/dev/null 2>&1; then
+		fail "the installer needs curl."
+	fi
+
+	banner
+	detect_platform
+	pick_hasher
+
+	trap cleanup EXIT
+	trap 'exit 130' INT
+	trap 'exit 143' TERM
+	trap 'exit 129' HUP
+	tmp=$(mktemp -d "${TMPDIR:-/tmp}/shard-install.XXXXXX") || fail "could not create a temporary directory."
+
+	resolve_version
+	echo
+	echo "Downloading Shard $version for $os-$arch..."
+	if [ "$os" = darwin ] && [ "$arch" = amd64 ]; then
+		echo "An Intel Mac can connect to a remote Shard server. It cannot host sandboxes itself."
+	fi
+	download
+
+	dir="$HOME/.local/bin"
+	bin="$dir/shard"
+	install_binary
+	cleanup
+	tmp=""
+
+	echo
+	green='\033[38;5;79m'
+	if [ "$truecolor" = 1 ]; then
+		green='\033[38;2;110;214;175m'
+	fi
+	check='\342\234\223'
+	if [ "$color" = 1 ]; then
+		check="$green$check"'\033[0m'
+	fi
+	printf "$check Shard installed\n"
+	printf '\nInstalled at: %s\n\n' "$bin"
+	path_hint
+
+	if [ ! -t 1 ] || ! (true </dev/tty) 2>/dev/null; then
+		setup_later
+		return
+	fi
+	printf 'Start the setup wizard? [Y/n] '
+	answer=""
+	read -r answer </dev/tty || answer=n
+	case "$answer" in
+	"" | [Yy] | [Yy][Ee][Ss])
+		trap - EXIT INT TERM HUP
+		exec "$bin" setup </dev/tty
+		;;
+	esac
+	echo
+	setup_later
+}
+
+main "$@"
