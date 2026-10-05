@@ -122,6 +122,21 @@ func TestTheRetryHintNamesAReachableCommand(t *testing.T) {
 	}
 }
 
+// A no-TTY run sets RetrySuffix so the retry hint repeats the flags the run had, since a re-run cannot ask for them. (SHARD-743)
+func TestTheRetryHintRepeatsTheRunsFlags(t *testing.T) {
+	ui := &fakeUI{}
+	broke := func(context.Context) error { return errors.New("nope") }
+	host := Host{LookPath: func(string) (string, error) { return "/usr/local/bin/shard", nil }}
+	s := &Setup{Host: host, UI: ui, RetrySuffix: " --local --provider gvisor --start-at-boot=true -y"}
+	if err := s.apply(t.Context(), "Setting up", []Step{{"only", broke}}); err == nil {
+		t.Fatal("apply of a failing step returned no error")
+	}
+	want := "Run `shard setup --local --provider gvisor --start-at-boot=true -y` again to retry."
+	if !slices.Contains(ui.printed, want) {
+		t.Errorf("printed %q, want it to contain %q", ui.printed, want)
+	}
+}
+
 func TestApplyPrintsTheLinesOfAProblem(t *testing.T) {
 	ui := &fakeUI{}
 	problem := &Problem{Lines: []string{"Could not download runsc", "Check the network and run shard setup again."}}

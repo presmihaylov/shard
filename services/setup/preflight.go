@@ -423,7 +423,7 @@ func existingSandboxes(ctx context.Context, h Host, l Local) *finding {
 	if owner == "" || owner == l.Provider {
 		return nil
 	}
-	remove, err := deleteDataLines(h)
+	remove, err := deleteDataLines(h, owner)
 	if err != nil {
 		return failed(fmt.Sprintf("Setup could not read %s: %v.", DataDir, err))
 	}
@@ -515,13 +515,20 @@ func (s *Setup) rootAccess(ctx context.Context) error {
 }
 
 // deleteDataLines are the commands that delete the data dir, after which the daemon starts over it with any provider.
-func deleteDataLines(h Host) ([]string, error) {
+func deleteDataLines(h Host, owner string) ([]string, error) {
 	image, err := dataImageLeft(h)
 	if err != nil || image != nil {
 		return image, err
 	}
 
-	return []string{"To delete the saved data, run:", "  sudo rm -r " + DataDir}, nil
+	// A plain rm leaves a stopped sandbox's netns, veth and cgroup behind, so remove the sandboxes through their own daemon first.
+	return []string{
+		"To delete the saved data, first remove its sandboxes so their network and cgroups go too:", "",
+		"  Start the daemon on that data:", "    sudo shard daemon --provider " + owner, "",
+		"  List sandboxes:", "    sudo shard list --all", "",
+		"  Remove a sandbox:", "    sudo shard remove --force <name>", "",
+		"  Then stop that daemon and delete the data:", "    sudo rm -r " + DataDir,
+	}, nil
 }
 
 func serviceSupport(_ context.Context, h Host, _ Local) *finding {

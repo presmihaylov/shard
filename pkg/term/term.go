@@ -394,6 +394,13 @@ func (t *Terminal) redraw(drawn int, lines []string, newline string) (int, error
 		b.WriteString(clearLine + line + newline)
 		used += rows(line, cols)
 	}
+	// A shorter render must wipe the rows the last one left below it, then put the cursor back under the new rows.
+	for extra := used; extra < drawn; extra++ {
+		b.WriteString(clearLine + newline)
+	}
+	if drawn > used {
+		fmt.Fprintf(&b, "\x1b[%dA", drawn-used)
+	}
 	if _, err := io.WriteString(t.out, b.String()); err != nil {
 		return 0, wrapWrite(err)
 	}

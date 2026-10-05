@@ -274,7 +274,7 @@ func (s *Setup) sameProvider(ctx context.Context, m Manifest) error {
 	if owner == "" || owner == m.Provider {
 		return nil
 	}
-	remove, err := deleteDataLines(s.Host)
+	remove, err := deleteDataLines(s.Host, owner)
 	if err != nil {
 		return err
 	}

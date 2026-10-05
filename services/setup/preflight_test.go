@@ -346,8 +346,11 @@ var runcOverGVisor = []string{
 	"The sandboxes in /var/lib/shard use gVisor.",
 	"The daemon cannot start with runc over that data, and setup never changes its provider.",
 	"To keep the data, choose gVisor.",
-	"To delete the saved data, run:",
-	"  sudo rm -r /var/lib/shard",
+	"To delete the saved data, first remove its sandboxes so their network and cgroups go too:", "",
+	"  Start the daemon on that data:", "    sudo shard daemon --provider gvisor", "",
+	"  List sandboxes:", "    sudo shard list --all", "",
+	"  Remove a sandbox:", "    sudo shard remove --force <name>", "",
+	"  Then stop that daemon and delete the data:", "    sudo rm -r /var/lib/shard",
 	"Then run shard setup again.",
 }
 

@@ -152,6 +152,8 @@ var ErrDeclined = errors.New("setup was cancelled; nothing changed")
 type Setup struct {
 	Host Host
 	UI   UI
+	// RetrySuffix repeats this run's flags in the retry hint, so a no-TTY run that fails can be re-run without a terminal.
+	RetrySuffix string
 	// step reports progress on the running step; apply sets it per step, and it is nil outside apply.
 	step func(detail ...string) error
 }
@@ -256,7 +258,7 @@ func (s *Setup) apply(ctx context.Context, title string, steps []Step) error {
 		if err != nil {
 			return errors.Join(
 				list.Fail(i, problemLines(err)...),
-				s.UI.Print("", "Setup stopped. Earlier completed steps remain in place.", fmt.Sprintf("Run `%s setup` again to retry.", s.Host.retryCommand())),
+				s.UI.Print("", "Setup stopped. Earlier completed steps remain in place.", fmt.Sprintf("Run `%s setup%s` again to retry.", s.Host.retryCommand(), s.RetrySuffix)),
 				&StoppedError{Step: step.Title, Err: err},
 			)
 		}
