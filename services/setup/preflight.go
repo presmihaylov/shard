@@ -259,7 +259,7 @@ func diskSpace(_ context.Context, h Host, l Local) *finding {
 	if err := unix.Statfs(dir, &st); err != nil {
 		return failed(fmt.Sprintf("Setup could not read the filesystem of %s: %v.", DataDir, err))
 	}
-	free := uint64(st.Bavail) * uint64(st.Bsize)
+	free := uint64(st.Bavail) * uint64(st.Bsize) //nolint:gosec // G115: a block size is never negative
 	reflink := int64(st.Type) == xfsMagic || int64(st.Type) == btrfsMagic
 	if h.OS == "linux" && l.Provider == Firecracker {
 		if f := firecrackerDisk(h, dir, free, reflink); f != nil {
