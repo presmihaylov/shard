@@ -3,7 +3,7 @@ title: Architecture
 description: How the shard CLI, the SDKs, shard serve, the daemon, the provider and shard-init fit together on one host.
 ---
 
-Every shard command is a request to one daemon on the host. The CLI sends it over a unix socket, and you can send the same request yourself:
+Almost every shard command is a request to one daemon on the host. The exceptions are `shard setup`, `shard daemon` itself, `shard serve`, `shard info`, and the `shard tokens` commands that mint, list and revoke tokens. The CLI sends each request over a unix socket, and you can send the same request yourself:
 
 ```sh
 sudo curl --unix-socket /var/lib/shard/shard.sock http://localhost/v0/version
@@ -21,16 +21,16 @@ CLI or SDK elsewhere ── TLS proxy ── shard serve ┘                    
 
 | Part | What it does |
 | --- | --- |
-| `shard` CLI | Sends each command to the daemon and prints the answer. It holds no state. |
+| `shard` CLI | Sends commands to the daemon and prints the answer. It holds no sandbox state. |
 | TypeScript and Python SDKs | Send the same requests from your program, through `shard serve`. |
 | `shard serve` | Checks the bearer token of each request, then passes the bytes to the daemon's socket. |
-| `shard daemon` | Owns every sandbox, image, snapshot, secret and policy, and runs every command. |
+| `shard daemon` | Owns every sandbox, image, snapshot, secret and policy, and runs every command on them. |
 | Provider | Isolates each sandbox: `runsc` for gVisor, `sysbox-runc`, `runc`, one `firecracker` process per sandbox, or one Virtualization.framework VM per sandbox on a Mac. |
 | `shard-init` | Runs as PID 1 inside every sandbox. It starts the sandbox's command, if any, and stays up. |
 
 ## The daemon
 
-The daemon is the only process that writes shard's state. Every command, local or remote, goes through it, so the stores need no lock between processes. It keeps its state under `/var/lib/shard`: the sandbox records, the images, the snapshots, the secrets and the policies.
+The daemon is the only process that writes the sandbox records, the images, the snapshots, the secrets and the policies. Every command on them, local or remote, goes through it, so these stores need no lock between processes. It keeps them under `/var/lib/shard`.
 
 One daemon serves one data directory. It takes a lock on `daemon.lock` there, and a second daemon on the same directory refuses to start. On Linux it runs as root. On a Mac it runs as your user, which owns the data directory.
 
@@ -39,7 +39,7 @@ The daemon runs these background tasks. `shard daemon status` lists them:
 | Task | What it does |
 | --- | --- |
 | `api` | Serves the REST API on `shard.sock`. |
-| `proxy` | The egress proxy on the sandbox bridge. For a sandbox with a policy or a secret, it judges each HTTP and HTTPS request by host name, and puts secret values into the requests to approved destinations. |
+| `proxy` | The egress proxy on the gateway of the sandbox network. For a sandbox with a policy or a secret, it judges each HTTP and HTTPS request by host name. It puts a secret value into the headers of an HTTPS request only when the secret is granted to that destination. |
 | `dns` | Answers DNS lookups for every sandbox that has a policy. |
 | `egress-log-tailer` | Copies the host's records of dropped packets into each sandbox's egress log. |
 | `liveness` | Every 5 seconds, checks each running sandbox against the provider and corrects the record. |
@@ -59,13 +59,15 @@ A sandbox also outlives its own command. When the command exits, the sandbox sta
 
 ## Remote access
 
-The daemon never listens on TCP. To reach it from another machine, run `shard serve` on the same host. `shard serve` listens on `127.0.0.1:2376` by default, behind a proxy that terminates TLS. It rejects a request without a valid token before it connects to the daemon. It reads only the request line and the headers up to the token, then passes the bytes on unchanged. It needs no root, because the daemon gives its socket to a `shard` group when the host has one.
+The daemon never listens on TCP. To reach it from another machine, run `shard serve` on the same host. `shard serve` listens on `127.0.0.1:2376` by default, behind a proxy that terminates TLS. It rejects a request without a valid token before it connects to the daemon. It reads the request line and all the headers. Before it connects to the daemon, it checks that the token's scopes cover the route. It adds the token's scopes as a header and asks the daemon to close the connection after the answer. Then it passes the body and the answer on unchanged. It needs no root, because the daemon gives its socket to a `shard` group when the host has one.
 
-A client picks the daemon in this order:
+The CLI picks the daemon in this order:
 
 1. `--remote <url>`, or `SHARD_REMOTE`, with the token in `SHARD_API_KEY`.
 2. The connection that `shard setup` saved.
 3. Otherwise, the local daemon's socket.
+
+The SDKs use only a remote URL, passed in or read from `SHARD_REMOTE`, and the token in `SHARD_API_KEY`, so they always go through `shard serve`.
 
 ## Isolation and the network
 
