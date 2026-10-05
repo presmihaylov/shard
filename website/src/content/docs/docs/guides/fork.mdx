@@ -73,6 +73,8 @@ with Shard() as shard:
 	</TabItem>
 </Tabs>
 
+The TypeScript and Python examples reach `shard serve` at the address in `SHARD_REMOTE`, with the API key in `SHARD_API_KEY`.
+
 Each fork starts with what `base` held at the moment of the fork, and a change in one fork never reaches `base` or the other fork. Keep the fork that worked and remove the rest.
 
 `shard fork` prints the id of the new sandbox. If you do not pass `--name`, use that id to refer to the fork.
@@ -101,7 +103,7 @@ The source freezes for a moment while shard copies its memory and files. After t
 
 On `gvisor`, if the freeze lasts 10 minutes, the fork fails and the source thaws.
 
-On `firecracker`, an `exec` that is running in the source during the fork loses its stream. The command keeps running, but nothing reads its output. An `exec` that starts during the freeze is refused with `a fork holds the sandbox frozen, and nothing starts in it until that ends: run the command again`. Run it again after the fork returns.
+On `firecracker` and `vz`, an `exec` that is running in the source during the fork can lose its stream. The command keeps running, but nothing reads its output. An `exec` that starts during the freeze is refused with an error that ends with `a fork holds the sandbox frozen, and nothing starts in it until that ends: run the command again`. Run it again after the fork returns.
 
 ## Where fork works
 
