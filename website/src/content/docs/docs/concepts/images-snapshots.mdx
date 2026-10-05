@@ -67,6 +67,8 @@ with Shard() as shard:
 	</TabItem>
 </Tabs>
 
+The TypeScript and Python examples reach `shard serve` at the address in `SHARD_REMOTE`, with the API key in `SHARD_API_KEY`.
+
 `web-2` starts with the file that `web` wrote, because a snapshot copies the files that a stop keeps. Snapshots work on every provider.
 
 ## Images
@@ -87,27 +89,27 @@ A sandbox record stores the digest of the sandbox's image in its `digest` key.
 
 ### Registries
 
-The server downloads only over HTTPS, and a download from a registry on plain HTTP fails:
+The server downloads only over HTTPS. A download over plain HTTP from a registry on `localhost:<port>`, `127.0.0.1`, `::1`, a `.localhost` name or a private IPv4 address fails with an error that includes:
 
 ```text
-shard: refusing plaintext http to registry.internal:5000: start shard daemon with --insecure-registry registry.internal:5000 to allow it
+refusing plaintext http to <host>: start shard daemon with --insecure-registry <host> to allow it
 ```
 
 To allow such a registry, start the daemon with `--insecure-registry <host>`. You can repeat the option for more registries.
 
 The daemon's `--timeout` limits each download, and the default is `30m`. The download also fails if a registry accepts the connection and then sends nothing for 30 seconds.
 
-When the registry refuses access, the error says so:
+When the registry refuses access, `shard create` fails, and the error says so:
 
 ```text
-shard: the registry refused access to registry.internal:5000/team/app:1.0; ask the server administrator to check the registry credentials
+shard: sandbox <id> failed to start: the registry refused access to registry.internal:5000/team/app:1.0; ask the server administrator to check the registry credentials
 ```
 
 ### Manage images on the server
 
 `shard pull`, `shard image list`, `shard image remove` and `shard image prune` work only on the server, and they refuse `--remote`, `SHARD_REMOTE` and a saved connection. Through `shard serve`, the API refuses the four image routes with `403`.
 
-`shard image list` prints the columns `REFERENCE`, `DIGEST`, `SIZE` and `CREATED`. If the server cannot read an image, the list shows `unreadable` for its size and its age. `--format json` prints the list as JSON.
+`shard image list` prints the columns `REFERENCE`, `DIGEST`, `SIZE` and `CREATED`. If the server cannot read an image, the list shows `unreadable` in its `SIZE` and `CREATED` columns. `--format json` prints the list as JSON.
 
 `shard image remove <image>` deletes an image. If a sandbox or a snapshot uses the image, it refuses with status `409` and the code `in_use`:
 
