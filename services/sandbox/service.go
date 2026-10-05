@@ -144,10 +144,13 @@ type Service struct {
 	// execs holds every exec from its create to its end, so an attach and a resize find it by id.
 	execMu sync.Mutex
 	execs  map[string]*execSession
+	// running counts each sandbox's admitted execs until their commands end, and runningAll their sum; both under execMu.
+	running    map[string]int
+	runningAll int
 }
 
 func New(cfg Config) *Service {
-	return &Service{cfg: cfg, locks: map[string]*sandboxLock{}, pulls: map[string]context.CancelCauseFunc{}, execs: map[string]*execSession{}}
+	return &Service{cfg: cfg, locks: map[string]*sandboxLock{}, pulls: map[string]context.CancelCauseFunc{}, execs: map[string]*execSession{}, running: map[string]int{}}
 }
 
 // CreateRequest is what a create names. It is the JSON body of POST /v0/sandboxes.
@@ -1177,8 +1180,8 @@ func (s *Service) stop(ctx context.Context, id string, force bool) error {
 		case err != nil:
 			return err
 		case sb.State == models.StateStopped && !status.Alive():
-			// A second stop changes nothing; only a start that failed after the substrate came up makes a stopped record lie.
-			return nil
+			// A second stop changes nothing but the checkpoint, which an earlier stop's failed drop leaves behind (SHARD-592).
+			return s.dropCheckpoint(id)
 		}
 	}
 
@@ -1208,10 +1211,12 @@ func (s *Service) stop(ctx context.Context, id string, force bool) error {
 		return err
 	}
 
-	return s.cfg.Repo.Update(id, func(sb *models.Sandbox) error {
+	err = s.cfg.Repo.Update(id, func(sb *models.Sandbox) error {
 		sb.State = models.StateStopped
 		sb.PID = 0
 		sb.UnresponsiveReason = ""
+		// A stop ends the sandbox, so no resume can read its checkpoint again (SHARD-592).
+		sb.Checkpoint = ""
 		if exit != nil {
 			sb.ExitStatus = exit
 		}
@@ -1225,6 +1230,12 @@ func (s *Service) stop(ctx context.Context, id string, force bool) error {
 
 		return nil
 	})
+	if err != nil {
+		return err
+	}
+
+	// The record no longer names the checkpoint, so its memory and disk copy would leak until rm takes the sandbox (SHARD-592).
+	return s.dropCheckpoint(id)
 }
 
 // awaitStopped makes stop mean stopped. runsc can report a sandbox alive for a moment after a clean

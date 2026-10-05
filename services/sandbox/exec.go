@@ -37,6 +37,12 @@ const DefaultExecCleanupGrace = 2 * time.Second
 // execIDLen is how many hex characters name an exec, so a list cursor that is not one is refused.
 const execIDLen = 16
 
+// The execs the daemon runs at once, per sandbox and in all: each holds up to execBufferCap of output in daemon memory, outside every sandbox's bound (SHARD-550).
+const (
+	maxRunningExecsPerSandbox = 32
+	maxRunningExecs           = 256
+)
+
 // ExecRequest is one command to run in a sandbox that already runs. It is the body of POST /v0/sandboxes/{id}/exec.
 type ExecRequest struct {
 	Command []string `json:"command" minItems:"1"`
@@ -146,6 +152,24 @@ func (e *ExecRunningError) Error() string {
 }
 
 func (e *ExecRunningError) Public() string { return e.Error() }
+
+// ExecLimitError is a create past the execs one sandbox, or the whole daemon, runs at once. No running exec is evicted to make room.
+type ExecLimitError struct {
+	ID    string
+	Limit int
+	// Daemon is a refusal by the bound across every sandbox, not by the sandbox's own.
+	Daemon bool
+}
+
+func (e *ExecLimitError) Error() string {
+	if e.Daemon {
+		return fmt.Sprintf("the daemon runs %d execs, the most it runs at once across all sandboxes: wait for one to exit, or kill one", e.Limit)
+	}
+
+	return fmt.Sprintf("sandbox %s runs %d execs, the most one sandbox runs at once: wait for one to exit, or kill one", e.ID, e.Limit)
+}
+
+func (e *ExecLimitError) Public() string { return e.Error() }
 
 // chunk is one write the guest made, tagged with the stream it came on so a replay keeps them apart.
 type chunk struct {
@@ -692,10 +716,19 @@ func (s *Service) CreateExec(ctx context.Context, ref string, req ExecRequest) (
 		return models.Exec{}, err
 	}
 
-	session, err := s.startExec(id, execID, req)
-	if err != nil {
+	if err := s.admitExec(id); err != nil {
 		return models.Exec{}, err
 	}
+	session, err := s.startExec(id, execID, req)
+	if err != nil {
+		s.releaseExec(id)
+		return models.Exec{}, err
+	}
+	// The slot frees when the command ends, whether it ran, never started, or a stop or a remove ended it.
+	go func() {
+		<-session.done
+		s.releaseExec(id)
+	}()
 
 	// Held before the wait so a stop cancels it, and shown only once it launched, so a refused command never lists.
 	s.holdExec(execID, session)
@@ -1234,6 +1267,35 @@ func (s *Service) dropHidden(session *execSession) {
 
 	if !session.shown {
 		delete(s.execs, session.id)
+	}
+}
+
+// admitExec takes one running slot of sandbox id, or refuses when the sandbox or the daemon has none left.
+func (s *Service) admitExec(id string) error {
+	s.execMu.Lock()
+	defer s.execMu.Unlock()
+
+	if s.running[id] >= maxRunningExecsPerSandbox {
+		return &ExecLimitError{ID: id, Limit: maxRunningExecsPerSandbox}
+	}
+	if s.runningAll >= maxRunningExecs {
+		return &ExecLimitError{ID: id, Limit: maxRunningExecs, Daemon: true}
+	}
+	s.running[id]++
+	s.runningAll++
+
+	return nil
+}
+
+// releaseExec frees the slot admitExec took for sandbox id.
+func (s *Service) releaseExec(id string) {
+	s.execMu.Lock()
+	defer s.execMu.Unlock()
+
+	s.runningAll--
+	s.running[id]--
+	if s.running[id] == 0 {
+		delete(s.running, id)
 	}
 }
 
