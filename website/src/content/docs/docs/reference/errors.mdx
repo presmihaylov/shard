@@ -1,0 +1,144 @@
+---
+title: Errors and exit codes
+description: The exit codes of the shard command line, and the error body and error codes of the daemon API.
+sidebar:
+  order: 3
+---
+
+import { Tabs, TabItem } from '@astrojs/starlight/components';
+
+A refusal carries a code for a program to match and a message for a person to read. Here, a pause targets a stopped sandbox on a provider that supports pause:
+
+<Tabs syncKey="lang">
+	<TabItem label="CLI">
+		```sh
+		shard pause quiet-heron-3f0a
+		# shard: sandbox quiet-heron-3f0a is stopped: pause takes a running sandbox
+		echo $?
+		# 1
+		```
+	</TabItem>
+	<TabItem label="TypeScript">
+		```ts
+		import { ConflictError, Shard } from "useshards";
+
+		const shard = new Shard();
+		try {
+		  const sandbox = await shard.get("quiet-heron-3f0a");
+		  await sandbox.pause();
+		} catch (err) {
+		  if (!(err instanceof ConflictError)) throw err;
+		  console.log(err.status, err.code); // 409 sandbox_not_running
+		} finally {
+		  shard.close();
+		}
+		```
+	</TabItem>
+	<TabItem label="Python">
+		```python
+		from useshards import ConflictError, Shard
+
+		with Shard() as shard:
+		    sandbox = shard.get("quiet-heron-3f0a")
+		    try:
+		        sandbox.pause()
+		    except ConflictError as err:
+		        print(err.status, err.code)  # 409 sandbox_not_running
+		```
+	</TabItem>
+</Tabs>
+
+The API returns the same refusal as an HTTP status and a JSON body:
+
+```sh
+curl --unix-socket /var/lib/shard/shard.sock -X POST http://localhost/v0/sandboxes/quiet-heron-3f0a/pause
+```
+
+```json
+{"error":{"code":"sandbox_not_running","message":"sandbox quiet-heron-3f0a is stopped: pause takes a running sandbox"}}
+```
+
+Match on the code, never on the message. The message is for a person to read.
+
+## Exit codes
+
+| Code | When |
+| --- | --- |
+| 0 | The command did what it says. |
+| 1 | shard failed, or the request did. stderr holds one line: `shard: <reason>`. |
+| The command's own code | `shard exec` exits with the code of the command it ran. `shard run` exits with the last exit code of its app. |
+| 128 + n | Signal n ended the command of `shard exec` or `shard run`, and shard reports it the way a shell does. SIGTERM gives 143 and SIGKILL gives 137. |
+| 126 or 127 | The command of `shard exec` or `shard run` never started: 126 when it cannot run, 127 when it does not exist. |
+| 1 or more | `shard exec` lost the command's output. A lost stream never counts as a pass, even when the command exited 0. |
+| 125 | `shard run` failed in shard itself. The separate code lets a script tell this apart from an app that exits 1. |
+| 130 | Ctrl+C ended `shard run` or `shard setup`, or a second Ctrl+C ended any other verb. See below. |
+
+When the command in `shard exec` or `shard run` fails, shard writes nothing of its own to stderr, so stderr holds only what the command wrote. If the command never started or its output was lost, shard writes one `shard:` line that says why.
+
+### Ctrl+C in shard run
+
+The first Ctrl+C stops the app, and the second kills it. Each time, `shard run` waits for the app to end and exits with its code, such as 143 or 137. A third Ctrl+C exits 130 at once, without waiting. If you press Ctrl+C before the app starts, `shard run` stops the app as soon as the sandbox is up, then exits 130. In every case the sandbox keeps running. Only `shard stop` ends it.
+
+### shard setup
+
+| Code | When |
+| --- | --- |
+| 0 | Setup finished, or there was nothing to do. |
+| 1 | A check or a step failed, an option was refused, or the confirmation was declined. |
+| 130 | Ctrl+C ended setup. The steps that already ran stay in place. |
+
+### shard daemon status
+
+`shard daemon status` prints the full status. It then exits 1 if any background task of the daemon is in backoff, so a script can use it as a health check.
+
+## The error body
+
+Every error from the API has this body:
+
+```json
+{"error":{"code":"in_use","message":"policy locked is held by sandbox quiet-heron-3f0a: remove the sandbox first","holders":["quiet-heron-3f0a"]}}
+```
+
+| Field | Description |
+| --- | --- |
+| `code` | What a program matches on. The next section lists every code. |
+| `message` | The line the CLI prints after `shard:`. |
+| `holders` | Only on `in_use`, when sandboxes or snapshots hold the entry. It lists the sandbox ids, or the snapshot ids when no sandbox holds it. |
+| `exit_code` | Only on `command_not_started`: 127 for a command that does not exist, 126 for one that cannot run. |
+
+`error` is the only top-level field.
+
+An `internal` error shows only what is safe to show, which can be as little as `the daemon could not complete the request; its log has the cause`. The full cause stays in the daemon log. The host-only routes, such as the ones behind `shard pull` and `shard image list`, return the whole text.
+
+To read the daemon log, run `sudo journalctl -u shard` for the systemd unit, or open `/var/log/shard/daemon.log` for the Mac LaunchDaemon. A daemon you started with `shard daemon` logs to its own terminal.
+
+If the daemon fails after the WebSocket of a command stream such as `shard exec` opens, the stream reports it as the same `error` object on stream 5.
+
+## Error codes
+
+| Code | Status | When |
+| --- | --- | --- |
+| `invalid_request` | 400 | The body does not decode, a field does not validate, or a named secret, policy or image is unknown. Also `shard serve`, when the request line does not parse. |
+| `body_too_large` | 413 | A JSON body over 1 MiB. The daemon stops reading and closes the connection after it answers. |
+| `not_found` | 404 | No sandbox, snapshot, policy, secret, image or exec has the reference, or no route has the path. Also a create, start, resume or fork whose image files are no longer on the host. The message names the image by its digest, and `shard pull` brings it back. |
+| `sandbox_not_running` | 409 | Exec, pause, fork, attach or app stop on a sandbox that is not running, that the provider no longer holds, or whose provider process does not answer. |
+| `sandbox_not_stopped` | 409 | Start on a sandbox that is up. Remove without force on a sandbox that is up or paused. Snapshot create on a sandbox that is not stopped. |
+| `sandbox_not_paused` | 409 | Resume on a sandbox that is not paused. |
+| `sandbox_live` | 409 | Grant, ungrant, policy attach or policy detach while the sandbox is pending, running, paused or unresponsive. These verbs take a created or stopped sandbox only. |
+| `sandbox_failed` | 409 | Any request except a get or a remove, on a sandbox whose create failed. The message carries the reason, and a remove frees the sandbox. |
+| `no_checkpoint` | 409 | Resume on a paused sandbox that has no saved state to resume. |
+| `unsupported` | 409 | The provider does not support the request, such as a pause on Sysbox. The message names the provider and the request. |
+| `in_use` | 409 | Remove a policy, secret or image that sandboxes hold, remove an image that snapshots hold, or change the placeholder of a secret that sandboxes hold. `holders` lists them. Also a second attach to one exec, without `holders`. |
+| `name_taken` | 409 | A create or fork whose name another sandbox has, or a snapshot create whose name another snapshot has. |
+| `exec_exited` | 409 | Kill on an exec whose command ended. |
+| `exec_running` | 409 | Delete on an exec whose command still runs. |
+| `exec_limit` | 429 | An exec while the sandbox runs 32 execs, or the daemon runs 256 across all sandboxes. shard stops no running exec to make room, so try again after one exits. |
+| `no_app` | 409 | App attach or app stop on a sandbox that `shard create` made, which has no app. |
+| `app_ended` | 409 | App stop after the app ended and its restart policy will not start it again. |
+| `unauthorized` | 401 | `shard serve`, when the request has no valid API token. |
+| `forbidden` | 403 | `shard serve`, when the token is valid but its scopes do not cover the route, or when no scope reaches the route, such as an unknown path or a host-only route. Also a create that names, or a fork that copies, a secret without the `secret:*` scope or a policy without the `policy:*` scope. |
+| `timeout` | 504 | A start that the provider did not finish in 60 s, a stop, remove or restart whose provider status call did not answer in time, or an exec that the provider did not start in 20 s. Try again once the runtime is free. |
+| `command_not_started` | 422 | An exec, or the app of a create, whose command never started: it does not exist, it cannot run, or its interpreter does not exist. The message names the command and the reason. `exit_code` is 127 or 126. |
+| `internal` | 500 | Any other failure. The daemon log has the cause. Also `shard serve`, with status 502, when the daemon does not answer on its socket. |
+
+On gVisor, `shard remove --force` works even when the runtime does not answer. It kills the runsc processes of the sandbox, finishes the removal, and returns `timeout` only if that kill fails too.

@@ -1,0 +1,252 @@
+---
+title: How to run an agent's code in a sandbox?
+description: Put code that an agent wrote into a sandbox, run it, read the result, and bound its time, memory and network.
+sidebar:
+  order: 1
+---
+
+import { Tabs, TabItem } from '@astrojs/starlight/components';
+
+Write the agent's code into a fresh sandbox, run it, and read what it printed:
+
+<Tabs syncKey="lang">
+	<TabItem label="CLI">
+
+```sh
+printf 'print("hello from the agent")\n' > main.py
+shard create --name agent --memory 512MiB python:3.12-slim
+shard cp main.py agent:/tmp/main.py
+shard exec agent python /tmp/main.py
+echo "exit code $?"
+shard remove --force agent
+```
+
+	</TabItem>
+	<TabItem label="TypeScript">
+
+```ts
+import { Shard } from "useshards";
+
+const code = 'print("hello from the agent")\n';
+
+const shard = new Shard();
+try {
+  const sandbox = await shard.create({ image: "python:3.12-slim", memoryMiB: 512 });
+  try {
+    await sandbox.files.write("/tmp/main.py", code);
+    const result = await sandbox.exec(["python", "/tmp/main.py"]);
+    console.log(result.exitCode, result.stdout, result.stderr);
+  } finally {
+    await sandbox.remove({ force: true });
+  }
+} finally {
+  shard.close();
+}
+```
+
+	</TabItem>
+	<TabItem label="Python">
+
+```python
+from useshards import Shard
+
+code = 'print("hello from the agent")\n'
+
+with Shard() as shard:
+    sandbox = shard.create("python:3.12-slim", memory_mib=512)
+    try:
+        sandbox.files.write("/tmp/main.py", code)
+        result = sandbox.exec(["python", "/tmp/main.py"])
+        print(result.exit_code, result.stdout, result.stderr)
+    finally:
+        sandbox.remove(force=True)
+```
+
+	</TabItem>
+</Tabs>
+
+The TypeScript and Python examples reach `shard serve` at the address in `SHARD_REMOTE`, with the API key in `SHARD_API_KEY`.
+
+The code runs in the sandbox, not in your process. It sees the image's files and the file you wrote.
+
+**Caution: the `runc` provider isolates nothing.** Root in a `runc` sandbox is root on the host. Use `runc` only for code you trust.
+
+## Read the result
+
+`shard exec` prints the command's output as it runs. When the output stream is complete, it exits with the command's exit code. The SDKs return a result with these fields:
+
+| TypeScript | Python | What it holds |
+| --- | --- | --- |
+| `exitCode` | `exit_code` | the command's exit code |
+| `signal` | `signal` | always none, since a signal shows in the exit code |
+| `stdout`, `stderr` | `stdout`, `stderr` | the newest output |
+| `lostBytes` | `lost_bytes` | output the daemon dropped before any client read it |
+
+A nonzero exit code is a result, not an error.
+
+A command ended by a signal reports the exit code 128 plus the signal number, so `KILL` gives `137`.
+
+The result keeps the newest 8 MiB of stdout and stderr combined. Set `outputLimitBytes` (`output_limit_bytes`) to keep more or less. To get every chunk as it arrives, pass `onStdout` and `onStderr` (`on_stdout` and `on_stderr`).
+
+## Give the code its input
+
+Pass the input on stdin, or set environment variables for one command:
+
+<Tabs syncKey="lang">
+	<TabItem label="CLI">
+
+```sh
+echo '{"n": 3}' | shard exec -i --env MODE=test agent python /tmp/main.py
+```
+
+	</TabItem>
+	<TabItem label="TypeScript">
+
+```ts
+const result = await sandbox.exec(["python", "/tmp/main.py"], {
+  stdin: '{"n": 3}\n',
+  env: { MODE: "test" },
+});
+```
+
+	</TabItem>
+	<TabItem label="Python">
+
+```python
+result = sandbox.exec(
+    ["python", "/tmp/main.py"], stdin='{"n": 3}\n', env={"MODE": "test"}
+)
+```
+
+	</TabItem>
+</Tabs>
+
+To read a file the code wrote, run `shard cp agent:/tmp/out.json ./out.json`. In TypeScript, call `sandbox.files.read("/tmp/out.json", { encoding: "utf8" })`. In Python, `sandbox.files.read("/tmp/out.json")` returns bytes.
+
+## Bound the time
+
+A command runs until it exits or something ends it. Without `-t`, Ctrl+C on `shard exec` only detaches from the output. A disconnect or a cancelled wait also leaves the command running. Set a time bound when you start it:
+
+<Tabs syncKey="lang">
+	<TabItem label="CLI">
+
+```sh
+shard exec agent timeout -k 5 30 python /tmp/main.py
+```
+
+	</TabItem>
+	<TabItem label="TypeScript">
+
+```ts
+const command = await sandbox.exec(["python", "/tmp/main.py"], { background: true });
+const deadline = AbortSignal.timeout(30_000);
+let result;
+try {
+  result = await command.wait({ signal: deadline });
+} catch (error) {
+  if (!deadline.aborted) throw error;
+  await command.kill("KILL");
+  result = await command.wait();
+}
+```
+
+	</TabItem>
+	<TabItem label="Python">
+
+```python
+command = sandbox.exec(["python", "/tmp/main.py"], background=True)
+try:
+    result = command.wait(timeout=30)
+except TimeoutError:
+    command.kill("KILL")
+    result = command.wait()
+```
+
+	</TabItem>
+</Tabs>
+
+The CLI has no time bound of its own, so the example uses `timeout` from the image. It sends TERM after 30 seconds and KILL five seconds later if the command still runs. It reports `124` after the TERM timeout, or `137` if KILL is needed. The SDKs start the command in the background and send KILL when the wait times out. A command killed that way reports `137`; a command that finishes first keeps its own exit code.
+
+## Bound the memory, CPU and disk
+
+Set the bounds when you create the sandbox:
+
+<Tabs syncKey="lang">
+	<TabItem label="CLI">
+
+```sh
+shard create --name agent --memory 1GiB --vcpus 2 --disk 2GiB python:3.12-slim
+```
+
+	</TabItem>
+	<TabItem label="TypeScript">
+
+```ts
+const sandbox = await shard.create({
+  image: "python:3.12-slim",
+  memoryMiB: 1024,
+  vcpus: 2,
+  diskMiB: 2048,
+});
+```
+
+	</TabItem>
+	<TabItem label="Python">
+
+```python
+sandbox = shard.create("python:3.12-slim", memory_mib=1024, vcpus=2, disk_mib=2048)
+```
+
+	</TabItem>
+</Tabs>
+
+**Caution: when the memory ceiling triggers an OOM kill, the whole sandbox ends, not only the command.** gVisor allows headroom for the sentry and throttles the sandbox before that ceiling. The record then says `stopped`, with the reason `ran out of memory and the host ended it`. `shard start` runs it again with the files it kept. To get more memory, create a new sandbox with a larger bound.
+
+A write past the disk bound fails with `ENOSPC`, and the sandbox keeps running. If you set no disk bound, it is 10 GiB. On `vz` and `firecracker`, a create with no memory bound is refused. For details on each bound, see [the provider notes](https://github.com/presmihaylov/shard/blob/main/docs/provider.md#what-a-memory-bound-means).
+
+## Cut the network
+
+A sandbox without a policy can reach the internet, but not a private network. To cut off the internet too, store a policy that denies everything and create the sandbox with it:
+
+<Tabs syncKey="lang">
+	<TabItem label="CLI">
+
+```sh
+shard policy create --deny any offline
+shard create --name agent --memory 512MiB --policy offline python:3.12-slim
+```
+
+	</TabItem>
+	<TabItem label="TypeScript">
+
+```ts
+await shard.policies.set("offline", [{ action: "deny", rule: "any" }]);
+const sandbox = await shard.create({
+  image: "python:3.12-slim",
+  memoryMiB: 512,
+  policy: "offline",
+});
+```
+
+	</TabItem>
+	<TabItem label="Python">
+
+```python
+from useshards import PolicyRule
+
+shard.policies.set("offline", [PolicyRule(action="deny", rule="any")])
+sandbox = shard.create("python:3.12-slim", memory_mib=512, policy="offline")
+```
+
+	</TabItem>
+</Tabs>
+
+Every name lookup in that sandbox then fails, and the host drops or refuses every outgoing connection. To let the code reach one API, put an `--allow` rule for that host before `--deny any`. See [egress](https://github.com/presmihaylov/shard/blob/main/docs/egress.md) for the rules and the decision log.
+
+When the code needs an API key, give it a placeholder and let the host put the key in. See [secrets](https://github.com/presmihaylov/shard/blob/main/docs/secrets.md).
+
+## One sandbox per task
+
+Each create starts from the image's files. Commands in one sandbox share its files and installed packages, so a later command sees whatever an earlier one left behind. Run the steps of one task in one sandbox, and give an unrelated task a new sandbox so that it starts clean.
+
+A sandbox remains until you remove it, even after every command in it has ended. When the task is done, remove it with `shard remove --force`, `sandbox.remove({ force: true })` or `sandbox.remove(force=True)`.

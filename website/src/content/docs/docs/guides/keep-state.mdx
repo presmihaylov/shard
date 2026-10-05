@@ -1,0 +1,240 @@
+---
+title: How to keep state between commands?
+description: What one command leaves for the next, and how stop, pause and snapshots keep a sandbox's files and memory.
+sidebar:
+  order: 2
+---
+
+import { Tabs, TabItem } from '@astrojs/starlight/components';
+
+Install a package in one command and use it in the next:
+
+<Tabs syncKey="lang">
+	<TabItem label="CLI">
+
+```sh
+shard create --name agent --memory 512MiB python:3.12-slim
+shard exec agent pip install --quiet requests
+shard exec agent python -c "import requests; print(requests.__name__)"
+```
+
+	</TabItem>
+	<TabItem label="TypeScript">
+
+```ts
+import { Shard } from "useshards";
+
+const shard = new Shard();
+try {
+  const sandbox = await shard.create({ name: "agent", image: "python:3.12-slim", memoryMiB: 512 });
+  await sandbox.exec(["pip", "install", "--quiet", "requests"]);
+  const result = await sandbox.exec(["python", "-c", "import requests; print(requests.__name__)"]);
+  console.log(result.stdout);
+} finally {
+  shard.close();
+}
+```
+
+	</TabItem>
+	<TabItem label="Python">
+
+```python
+from useshards import Shard
+
+with Shard() as shard:
+    sandbox = shard.create("python:3.12-slim", name="agent", memory_mib=512)
+    sandbox.exec(["pip", "install", "--quiet", "requests"])
+    result = sandbox.exec(["python", "-c", "import requests; print(requests.__name__)"])
+    print(result.stdout)
+```
+
+	</TabItem>
+</Tabs>
+
+The TypeScript and Python examples reach `shard serve` at the address in `SHARD_REMOTE`, with the API key in `SHARD_API_KEY`.
+
+The second command prints `requests`. Every command in a sandbox works on the same files, so the package the first command installed is still there for the second.
+
+## What carries from one command to the next
+
+| State | Carries over |
+| --- | --- |
+| Files, and the packages a command installed | yes |
+| A process that still runs | yes, until it ends or the sandbox stops |
+| An `export` or a `cd` in a command | no |
+
+Each command is a new process. It starts with the sandbox's environment and working directory, plus its own `--env` and `--workdir`. Set what every command needs when you create the sandbox:
+
+<Tabs syncKey="lang">
+	<TabItem label="CLI">
+
+```sh
+shard create --name agent --memory 512MiB --env MODE=test --workdir /root python:3.12-slim
+```
+
+	</TabItem>
+	<TabItem label="TypeScript">
+
+```ts
+const sandbox = await shard.create({
+  name: "agent",
+  image: "python:3.12-slim",
+  memoryMiB: 512,
+  env: { MODE: "test" },
+  workdir: "/root",
+});
+```
+
+	</TabItem>
+	<TabItem label="Python">
+
+```python
+sandbox = shard.create(
+    "python:3.12-slim", name="agent", memory_mib=512, env={"MODE": "test"}, workdir="/root"
+)
+```
+
+	</TabItem>
+</Tabs>
+
+To use a `cd` or an `export` in the next step, run both steps in one shell: `shard exec agent sh -c 'cd /srv && ls'`.
+
+## Keep a process running
+
+A command runs until it ends, something kills it, or the sandbox stops. You can start a server in the background and call it from later commands:
+
+<Tabs syncKey="lang">
+	<TabItem label="CLI">
+
+```sh
+shard exec agent python -m http.server 8000 > server.log 2>&1 &
+```
+
+	</TabItem>
+	<TabItem label="TypeScript">
+
+```ts
+const server = await sandbox.exec(["python", "-m", "http.server", "8000"], { background: true });
+```
+
+	</TabItem>
+	<TabItem label="Python">
+
+```python
+server = sandbox.exec(["python", "-m", "http.server", "8000"], background=True)
+```
+
+	</TabItem>
+</Tabs>
+
+Later commands in the sandbox reach the server on `localhost:8000`. The server keeps running when the client disconnects and when your process exits. To end it, call `server.kill()` or stop the sandbox. `sandbox.commands.list()` lists the commands the daemon still holds, both running and ended.
+
+## Stop and start: keep the files
+
+<Tabs syncKey="lang">
+	<TabItem label="CLI">
+
+```sh
+shard stop agent
+shard start agent
+```
+
+	</TabItem>
+	<TabItem label="TypeScript">
+
+```ts
+await sandbox.stop();
+await sandbox.start();
+```
+
+	</TabItem>
+	<TabItem label="Python">
+
+```python
+sandbox.stop()
+sandbox.start()
+```
+
+	</TabItem>
+</Tabs>
+
+A stopped sandbox keeps its files but holds no memory and no processes. `start` runs it again with the same files. Every provider supports stop and start.
+
+`stop` sends `SIGTERM` to the main command and kills it if it is still running after 30 seconds. This grace period is fixed.
+
+## Pause and resume: keep the memory too
+
+<Tabs syncKey="lang">
+	<TabItem label="CLI">
+
+```sh
+shard pause agent
+shard resume agent
+```
+
+	</TabItem>
+	<TabItem label="TypeScript">
+
+```ts
+await sandbox.pause();
+await sandbox.resume();
+```
+
+	</TabItem>
+	<TabItem label="Python">
+
+```python
+sandbox.pause()
+sandbox.resume()
+```
+
+	</TabItem>
+</Tabs>
+
+A pause writes the sandbox's memory and files to disk and frees the memory. A resume brings the processes back, and they continue where they left off.
+
+**Caution: a pause ends every `exec` that is running at that moment.** Let your commands finish before you pause. An `exec` on a paused sandbox fails with `sandbox <id> is paused: resume it with shard resume <id>`.
+
+`pause` and `resume` work on `gvisor`, `firecracker`, and `vz` on Apple silicon with macOS 14 or later. `sysbox` and `runc` refuse them. `shard capabilities` shows what your server supports.
+
+## Snapshot: keep the files for new sandboxes
+
+A snapshot copies the files of a stopped sandbox. It is still there after that sandbox is gone, and every sandbox you create from it starts with those files:
+
+<Tabs syncKey="lang">
+	<TabItem label="CLI">
+
+```sh
+shard stop agent
+shard snapshot create --name agent-base agent
+shard create --name agent-2 --snapshot agent-base
+```
+
+	</TabItem>
+	<TabItem label="TypeScript">
+
+```ts
+await sandbox.stop();
+await shard.snapshots.create(sandbox, { name: "agent-base" });
+const copy = await shard.create({ name: "agent-2", snapshot: "agent-base" });
+```
+
+	</TabItem>
+	<TabItem label="Python">
+
+```python
+sandbox.stop()
+shard.snapshots.create(sandbox, name="agent-base")
+copy = shard.create(snapshot="agent-base", name="agent-2")
+```
+
+	</TabItem>
+</Tabs>
+
+A snapshot holds files, not memory or processes. A sandbox created from it gets the source's memory and disk bounds unless you set different ones. Only the provider that made the snapshot can create from it, and the image must still be on the host.
+
+## What ends the state
+
+- **`remove` deletes the sandbox and its files.** To keep the files, take a snapshot first.
+- **A sandbox that goes over its memory bound stops.** Its files are kept, and `shard start` runs it again with them.
+- **A daemon restart leaves every sandbox running.** The daemon loses its record of each command, but the command keeps running in the sandbox.

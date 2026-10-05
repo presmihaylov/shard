@@ -6,7 +6,6 @@
 @import 'tailwindcss/utilities.css' layer(utilities);
 
 @import './tokens.css';
-@import './ui/vibrant-button.css';
 @import './ui/badge.css';
 @import './ui/banner.css';
 @import './ui/components.css';
