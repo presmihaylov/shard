@@ -1,0 +1,167 @@
+---
+title: Troubleshooting
+description: What to do when the installer, setup, the daemon, a remote server or a sandbox fails, by the error it prints.
+sidebar:
+  order: 1
+---
+
+Start with two commands. They say which side is wrong:
+
+```sh
+shard version
+shard capabilities
+```
+
+`shard version` prints the version of the CLI, then the version of the daemon or server it reaches. When nothing answers, the second line says why. On a machine with no setup:
+
+```text
+client v0.1.2
+shard: cannot connect to shard daemon at /var/lib/shard/shard.sock: is it set up? shard setup
+```
+
+`shard capabilities` lists the eight lifecycle verbs, each `true` or `false` for the provider the server runs.
+
+Every error from the CLI starts with `shard:`. Most end with the command that tells you more or fixes it. Find your line below.
+
+## The installer
+
+The installer prints `error:` and a reason, and exits with code 1.
+
+**`~/.local/bin is not on your PATH`.** The installer put `shard` in `~/.local/bin`, and your shell does not look there. It prints the commands that add it, for new shells and for the one you are in. Run them.
+
+**`has no build for linux-arm64`.** shard ships Linux builds for x86-64 only. The error lists the builds the release has.
+
+**`the GitHub releases API rate limit for this IP address is spent`.** The installer asks the GitHub API for the newest release without a token. GitHub allows 60 such calls an hour for each IP address. Run the installer again an hour later.
+
+**`could not reach the GitHub releases API at api.github.com`.** Check the network, and run the installer again.
+
+**`the checksum of ... is ..., and SHA256SUMS ... says ...`.** The download does not match the release. Nothing was installed. Run the installer again.
+
+**On an Intel Mac**, the installer says the Mac can connect to a remote server but cannot host sandboxes. This is a notice, not an error. Run `shard setup` and choose a remote server.
+
+## Setup
+
+Setup stops at the first check or step that fails. It marks the step, says why, and changes nothing more:
+
+```text
+✗ Install gVisor
+  Could not download runsc: connection timed out.
+
+Setup stopped. Earlier completed steps remain in place.
+Run `shard setup` again to retry.
+```
+
+Every step is safe to run again. Fix the cause, then run `shard setup` again, and it picks up where it stopped. A download fails when it gets no data for 30 seconds. A slow download that still moves runs to the end.
+
+A check that fails before any change ends with `No installation changes were made.`
+
+**`Setup needs administrator access, and sudo does not allow this user`.** Setup uses `sudo` for the steps that need root. Ask an administrator to give your user `sudo` access, or run `shard setup` as root.
+
+**`Setup needs administrator access, and sudo needs a password it has no terminal to ask for`.** Run `shard setup` in a terminal, as root, or as a user with passwordless `sudo`.
+
+**Firecracker shows `Requires access to /dev/kvm.`** The host has no hardware virtualization that shard can use. The line under it says why, such as `This machine does not provide it.` Choose gVisor, or use a host with `/dev/kvm`: bare metal, or a VM with nested virtualization.
+
+**`no terminal to ask ...: pass ...`.** Setup runs without a terminal, as in a script or over `ssh` with no TTY, and a question has no answer. The error names the option that answers it. Setup never picks one for you. For the API key, the error is `no terminal to read the API key: set SHARD_API_KEY`.
+
+**`setup was cancelled; nothing changed`.** You declined the confirmation. The exit code is 1.
+
+[Setup exit codes](/docs/install/#setup-exit-codes) lists the codes for a script.
+
+## The daemon
+
+### `is it running?`
+
+A command that cannot reach the daemon ends with a question and the command that answers it. The end of the line follows how this host runs the daemon:
+
+| The line ends with | The daemon runs as | Its log |
+| --- | --- | --- |
+| `is it running? systemctl status shard` | a systemd service | `sudo journalctl -u shard` |
+| `is it running? launchctl print system/shard.daemon` | a launchd service on a Mac | `/var/log/shard/daemon.log` |
+| `is it running? sudo shard daemon --provider gvisor` | a process you start | the terminal that runs it |
+| `is it set up? shard setup` | nothing yet | |
+
+To restart the service:
+
+```sh
+sudo systemctl restart shard                      # Linux
+sudo launchctl kickstart -k system/shard.daemon   # macOS
+```
+
+If the service is gone, or does not stay up, run `shard setup` and choose `Check or repair the installation`. It checks the tools, the files in `/var/lib/shard`, the permissions and the service. It shows each change before it makes one, and keeps your settings and your data.
+
+A daemon you started yourself ends with its terminal. Start it again in a terminal of its own.
+
+### `permission denied; run the command again with sudo`
+
+On Linux the API socket belongs to root, so local commands run with `sudo`:
+
+```sh
+sudo shard list
+```
+
+On a Mac the daemon runs as your user, and no command needs `sudo`.
+
+### `another shard daemon already holds ...`
+
+One root takes one daemon. A second `shard daemon` on the same root refuses to start. This happens when you start a daemon by hand while the service already runs one. Use the service, or stop it first.
+
+### A sandbox is stopped after a reboot
+
+A reboot ends every sandbox process. The daemon comes back and marks each sandbox that ran as stopped. `shard list` leaves stopped sandboxes out, and says how many:
+
+```text
+1 stopped sandbox; shard list --all
+```
+
+`shard list --all` shows the reason beside the state, `stopped (daemon restarted and found no process)`. `shard start <name>` brings the sandbox back, with its files.
+
+A restart of the daemon alone ends no sandbox. The next daemon takes the running ones back.
+
+## Sandboxes
+
+**`provider sysbox does not support fork on this host; use a server that supports fork`.** shard refuses a verb the provider cannot do. It never falls back to a weaker one. `shard capabilities` lists what the server supports. The verb and the provider in the line vary.
+
+**`provider firecracker needs --memory, as a VM's memory is real memory on the host; set it to 128 MiB or more, for example --memory 512MiB`.** The `firecracker` and `vz` providers need a memory bound on every create. Add `--memory 512MiB`, or more.
+
+**`stopped (ran out of memory and the host ended it)`.** The sandbox used more than its `--memory` bound, so the host ended it. Nothing starts it again on its own. `shard start <name>` brings it back with its files. The bound is fixed at create, so for more memory, create a new sandbox with a larger `--memory`.
+
+**`stopped (the sandbox process died)`.** The host or a crash ended the sandbox. `shard start <name>` brings it back.
+
+**`running (exited 7)`.** The entrypoint exited with code 7, and the sandbox is still up. A sandbox outlives its entrypoint, so you can still `exec` into it. `shard stop` ends it.
+
+**A request out of the sandbox times out.** A firewall on the host can drop it before shard sees it. A host with `ufw` on is the common case. Let the bridge through:
+
+```sh
+sudo ufw allow in on shard0
+sudo ufw route allow in on shard0
+```
+
+**A name does not resolve, or a request gets a `403`, in a sandbox with a network policy.** The policy does not allow that host. `shard policy logs <name>` shows each decision and the rule that made it. A policy of address rules alone needs `--allow dns` to resolve names. The [egress reference](https://github.com/presmihaylov/shard/blob/main/docs/egress.md) has every rule.
+
+**An HTTPS client fails on a certificate in a sandbox with a secret.** shard's proxy puts the key in on the host, so it shows the client its own certificate. Most clients trust it with no change. Java and some Rust builds need a step, and a client that pins a certificate cannot use a secret. The [secrets reference](https://github.com/presmihaylov/shard/blob/main/docs/secrets.md) has the steps.
+
+## A remote server
+
+A command goes to the server named by `--remote`, else by `SHARD_REMOTE`, else by the saved connection. The API key comes from `SHARD_API_KEY`, else from the saved connection.
+
+**`cannot connect to the shard server at ...: connection refused; check the URL, and that shard serve or the proxy in front of it runs`.** Nothing answers at that address. The cause can also be `no such host` or `connection timed out`. Check the URL, and that `shard serve` runs on the server.
+
+**`the server certificate is not trusted (...); for a private certificate authority, set SHARD_CA_FILE to its PEM file`.** shard always checks the certificate, and there is no option to skip the check. For a server whose certificate a private authority signed, point `SHARD_CA_FILE` at that authority's certificate:
+
+```sh
+export SHARD_CA_FILE=/path/to/ca.pem
+```
+
+**`the server at ... did not accept the API key in SHARD_API_KEY`.** The server refused the key. A key in `SHARD_API_KEY` wins over the saved one, so unset it to use the saved key. When the line names the saved key instead, run `shard setup` to replace it.
+
+**`a remote client needs SHARD_API_KEY for ...; the saved API key is for ... and is sent to no other server`.** You named a server other than the saved one. shard sends a saved key only to its own server. Set `SHARD_API_KEY` for this one.
+
+**`the token lacks sandbox:write; use a token with sandbox:write`.** The key works, but its scopes do not cover the command. Ask for a key with that scope. `shard tokens scopes` lists every scope.
+
+**`shard info runs on the daemon host only and cannot reach ...`.** Some commands act on this machine only, such as `shard info` and `shard daemon status`. They refuse a remote server. With a saved connection, add `--remote ""` to run one here.
+
+## Still stuck
+
+Read the daemon's log. On Linux, `sudo journalctl -u shard`. On a Mac, `/var/log/shard/daemon.log`. For a daemon you started yourself, its terminal. An error whose cause the daemon kept in its log names that place in the line.
+
+`shard daemon status` on the daemon host, with `sudo` on Linux, shows the version, the provider, the process and the background tasks of the running daemon.
