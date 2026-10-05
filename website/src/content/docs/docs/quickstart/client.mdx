@@ -35,7 +35,7 @@ export SHARD_API_KEY=<your API key>
 import { Shard } from "useshards";
 
 const shard = new Shard();
-const sandbox = await shard.create({ image: "docker.io/library/alpine:3" });
+const sandbox = await shard.create({ image: "docker.io/library/alpine:3", memoryMiB: 512 });
 try {
   const result = await sandbox.exec(["uname", "-sr"]);
   console.log(result.exitCode, result.stdout);
@@ -58,7 +58,7 @@ export SHARD_API_KEY=<your API key>
 from useshards import Shard
 
 with Shard() as shard:
-    sandbox = shard.create("docker.io/library/alpine:3")
+    sandbox = shard.create("docker.io/library/alpine:3", memory_mib=512)
     try:
         result = sandbox.exec(["uname", "-sr"])
         print(result.exit_code, result.stdout)
