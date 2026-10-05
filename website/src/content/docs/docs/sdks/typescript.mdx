@@ -30,7 +30,7 @@ try {
 }
 ```
 
-Run it with `node demo.mjs`. It prints `0 hello`. Replace `https://shard.example.com` with the URL of your server.
+Replace `https://shard.example.com` with the URL of your server, then run it with `node demo.mjs`. It prints `0 hello`.
 
 ## Install
 
@@ -38,52 +38,52 @@ Run it with `node demo.mjs`. It prints `0 hello`. Replace `https://shard.example
 npm install useshards
 ```
 
-The package needs Node 20.3 or later. It is an ES module, so load it with `import`. It ships its own type definitions, so the code on this page type-checks in a TypeScript project as it is. Its one runtime dependency is `openapi-fetch`.
+The package needs Node 20.3 or later. It is an ES module, so load it with `import`. It ships its own type definitions, so the code on this page type-checks in a TypeScript project without changes. Its only runtime dependency is `openapi-fetch`.
 
 ## Connect
 
-The SDK talks to `shard serve` on your server, never to the daemon's local socket. It ignores the connection that `shard setup` saves. It reads three settings, and an option you pass to `new Shard()` wins over its variable:
+The SDK talks to `shard serve` on your server, never to the daemon's local socket, and it ignores the connection that `shard setup` saves. It reads three settings. An option you pass to `new Shard()` takes precedence over its environment variable:
 
 | Option | Variable | Value |
 | --- | --- | --- |
-| `remote` | `SHARD_REMOTE` | The URL of `shard serve`, such as `https://shard.example.com`. Only a scheme, a host and a port. |
+| `remote` | `SHARD_REMOTE` | The URL of `shard serve`, such as `https://shard.example.com`, with only a scheme, a host and a port. |
 | `apiKey` | `SHARD_API_KEY` | The API key. |
-| `caFile` | `SHARD_CA_FILE` | A PEM file of the CA that signed the server's certificate, for an `https` remote only. Without it, the SDK trusts the system's CAs. |
+| `caFile` | `SHARD_CA_FILE` | A PEM file of the CA that signed the server's certificate. It applies to an `https` remote only. Without it, the SDK trusts the system's CAs. |
 
 ```ts
 const shard = new Shard({ remote: "https://shard.example.com", apiKey: process.env.MY_SHARD_KEY });
 ```
 
-A missing or refused setting throws `ConfigurationError` from `new Shard()`. The message never shows the key. An `http` remote works, but it sends the key unencrypted, so Node prints a warning. An `http` remote refuses a CA file.
+If a setting is missing or refused, `new Shard()` throws `ConfigurationError`, and the error message never shows the key. An `http` remote works, but it sends the key unencrypted, so Node prints a warning. An `http` remote also refuses a CA file.
 
-Mint an API key on the server, with `sudo` on Linux:
+To mint an API key, run this on the server, with `sudo` on Linux:
 
 ```sh
 sudo shard tokens mint --name build-agent --duration 24h
 ```
 
-The command prints a JSON record. Its `token` value is the API key. Without `--scopes`, the key can do everything.
+The command prints a JSON record, and its `token` value is the API key. Without `--scopes`, the key can do everything.
 
-Call `shard.close()` when you are done. It lets go of the pooled connections, so the process can exit.
+Call `shard.close()` when you are done. It releases the pooled connections so that the process can exit.
 
 ## Sandboxes
 
-`shard.create()` makes a sandbox and waits until it runs, which can take minutes while the server pulls the image. It runs no command of its own. It answers a `Sandbox` in state `running`, or in state `failed` with the reason in `sandbox.info.failedReason`.
+`shard.create()` makes a sandbox and waits until it is running, which can take minutes while the server pulls the image. It starts no command of its own. It returns a `Sandbox` in state `running`, or in state `failed` with the reason in `sandbox.info.failedReason`.
 
 | Option | Value |
 | --- | --- |
 | `image` | The image, such as `alpine:3.20`. |
-| `snapshot` | A snapshot ID, ID prefix or name. The sandbox starts from its files. Give `image` or `snapshot`, not both. |
+| `snapshot` | A snapshot ID, ID prefix or name. The sandbox starts from the snapshot's files. Give `image` or `snapshot`, not both. |
 | `name` | A name to use in place of the ID. |
 | `env` | The environment that every command in the sandbox starts with. |
 | `workdir` | The working directory of every command. |
 | `user` | A user name or uid in the sandbox, such as `nobody` or `1000`. |
 | `secrets` | The names of the secrets to grant. |
 | `policy` | The name of the network policy. |
-| `memoryMiB` | The memory bound. Without it, a snapshot's own bound, or no bound. |
-| `vcpus`, `diskMiB` | The CPU count and the disk size. Without them, the daemon's defaults. |
+| `memoryMiB` | The memory bound. Without it, the sandbox takes the snapshot's own bound, or has no bound. |
+| `vcpus`, `diskMiB` | The CPU count and the disk size. Without them, the daemon's defaults apply. |
 
-`shard.get(ref)` finds a sandbox by ID, ID prefix or name. `shard.list()` answers `{ sandboxes, warnings }` for the active sandboxes, and `shard.list({ all: true })` adds the stopped ones. The warnings name entries that the daemon could not read, so check them before you treat the list as complete.
+`shard.get(ref)` finds a sandbox by ID, ID prefix or name. `shard.list()` returns `{ sandboxes, warnings }` for the active sandboxes, and `shard.list({ all: true })` adds the stopped ones. The warnings name entries that the daemon could not read, so check them before you treat the list as complete.
 
 A `Sandbox` has these lifecycle methods:
 
@@ -93,22 +93,22 @@ A `Sandbox` has these lifecycle methods:
 | `start()` | Starts a stopped sandbox with its files. |
 | `pause()` | Saves the sandbox's memory and files to disk, and suspends it. |
 | `resume()` | Continues a paused sandbox from where it paused. |
-| `fork({ name })` | Makes a new running sandbox from this sandbox's memory and files, and answers it. |
+| `fork({ name })` | Makes a new running sandbox from this sandbox's memory and files, and returns it. |
 | `remove({ force })` | Deletes the sandbox and its files. With `force: true`, it stops a running or paused sandbox first. |
 | `inspect()` | Reads the sandbox's record again. |
 
-`sandbox.info` holds the record as the last call on that handle answered it.
+`sandbox.info` holds the record that the last call on that handle returned.
 
 ## Run commands
 
-`sandbox.exec()` runs a command and answers how it ended. A string runs under `/bin/sh -c`. An array runs as it is, with no shell:
+`sandbox.exec()` runs a command and returns how it ended. A string runs under `/bin/sh -c`, and an array runs as it is, with no shell:
 
 ```ts
 const result = await sandbox.exec("echo $GREETING from $(pwd)", { env: { GREETING: "hello" }, workdir: "/tmp" });
 console.log(result.stdout);
 ```
 
-The result holds `exitCode`, `signal`, `stdout`, `stderr` and `lostBytes`. A non-zero exit code is a result, not an error. A command that never started, for example because its binary does not exist, throws `CommandNotStartedError`.
+The result holds `exitCode`, `signal`, `stdout`, `stderr` and `lostBytes`. A non-zero exit code is a result, not an error. If the command never started, for example because its binary does not exist, `exec()` throws `CommandNotStartedError`.
 
 | Option | Value |
 | --- | --- |
@@ -116,11 +116,11 @@ The result holds `exitCode`, `signal`, `stdout`, `stderr` and `lostBytes`. A non
 | `workdir` | The working directory. |
 | `user` | A user name or uid in the sandbox. |
 | `stdin` | Text or bytes for the command to read, after which its input ends. `true` leaves the input open for `writeStdin()`. |
-| `tty` | `{ rows, cols }`: runs the command on a terminal of this size, which sends all output as stdout. |
+| `tty` | `{ rows, cols }`: runs the command on a terminal of this size, and all of its output arrives as stdout. |
 | `signal` | An `AbortSignal` that ends this client's wait. |
-| `onStdout`, `onStderr` | Get each chunk of output as it arrives. |
+| `onStdout`, `onStderr` | Receive each chunk of output as it arrives. |
 | `outputLimitBytes` | How many of the newest bytes the result keeps. |
-| `background` | `true` answers a `Command` as soon as the command runs. |
+| `background` | `true` returns a `Command` as soon as the command is running. |
 
 ### Background commands
 
@@ -132,13 +132,13 @@ const result = await command.wait();
 
 A `Command` has `wait()`, `kill()`, `writeStdin()`, `closeStdin()`, `resize(rows, cols)` and `inspect()`. `kill()` sends `TERM` unless you name another signal, such as `kill("KILL")`.
 
-The daemon keeps the command after this client lets go of it. `command.disconnect()` lets go of the stream and leaves the command running. `command.reconnect()` opens a new stream, which replays the output the daemon still holds. From any client, `sandbox.commands.list()` lists the commands the daemon holds for the sandbox, and `sandbox.commands.get(id)` finds one again.
+The daemon keeps the command after this client releases it. `command.disconnect()` releases the stream and leaves the command running. `command.reconnect()` opens a new stream and replays the output that the daemon still holds. From any client, `sandbox.commands.list()` lists the commands the daemon holds for the sandbox, and `sandbox.commands.get(id)` finds one again.
 
 ### Abort and output
 
-An abort never kills the remote command. It ends only this client's wait and lets go of the stream. The command runs until it exits or you call `kill()`.
+An abort never kills the remote command. It only ends this client's wait and releases the stream, and the command keeps running until it exits or you call `kill()`.
 
-A result keeps the newest 8 MiB of stdout and stderr together, so a long run may hold only its end. Set `outputLimitBytes` to keep more or less, or `0` to keep none. `onStdout` and `onStderr` see every chunk, past the limit too. `result.lostBytes` counts something else: the output that the daemon dropped before any client read it.
+A result keeps the newest 8 MiB of stdout and stderr combined, so the result of a long run may hold only the end of its output. Set `outputLimitBytes` to keep more or less, or `0` to keep none. `onStdout` and `onStderr` still see every chunk, including the ones past the limit. `result.lostBytes` counts something different: the output that the daemon dropped before any client read it.
 
 ## Files
 
@@ -151,16 +151,16 @@ console.log(await sandbox.files.read("/root/notes.txt", { encoding: "utf8" }));
 
 | Method | What it does |
 | --- | --- |
-| `write(path, data, { mode, parents, user })` | Writes a string or bytes to a file. `parents: true` makes the missing parent directories. |
-| `read(path)` | Answers the file's bytes, or a string with `{ encoding: "utf8" }`. |
-| `stat(path)`, `list(path)` | Answer the type, size, mode, owner and modification time of a path, or of each entry in a directory. |
+| `write(path, data, { mode, parents, user })` | Writes a string or bytes to a file. `parents: true` creates any missing parent directories. |
+| `read(path)` | Returns the file's bytes, or a string when you pass `{ encoding: "utf8" }`. |
+| `stat(path)`, `list(path)` | Return the type, size, mode, owner and modification time of a path, or of each entry in a directory. |
 | `mkdir(path)`, `remove(path, { recursive })` | Make a directory, or remove a path. |
 | `upload(local, remote)`, `download(remote, local)` | Copy one file in or out without holding it in memory. A download writes a temporary file and renames it at the end. |
-| `uploadDir(local, remote)`, `downloadDir(remote, local)` | Copy a whole directory in or out as a tar. |
+| `uploadDir(local, remote)`, `downloadDir(remote, local)` | Copy a whole directory in or out as a tar archive. |
 
 ## Apps
 
-`shard.run(image, command, options)` makes a sandbox and starts `command` in it as its app. It takes the create options except `image` and `snapshot`, and a `restart` option:
+`shard.run(image, command, options)` makes a sandbox and starts `command` in it as its app. It takes the same options as `create()`, except `image` and `snapshot`, plus a `restart` option:
 
 ```ts
 const app = await shard.run("alpine:3.20", "for i in 1 2 3; do echo tick $i; done", { memoryMiB: 512 });
@@ -174,10 +174,10 @@ try {
 
 When the app exits, its sandbox stays `running`, so you can still run commands in `app.sandbox`. Only `stop()` or `remove()` ends the sandbox.
 
-- `app.wait()` answers `{ exitCode, signal, restarts }` once the restart policy starts the app no more.
+- `app.wait()` returns `{ exitCode, signal, restarts }` once the restart policy will not start the app again.
 - `app.stop()` ends the app with `TERM`, or with `KILL` when you pass `{ force: true }`, and cancels its restart policy. The sandbox keeps running.
-- `app.logs()` answers the app's output so far. The daemon keeps a bounded log, so a long run may hold only its end. `app.sandbox.followLogs()` yields the output from the start of the log, then as it comes, and ends when the sandbox stops.
-- `restart` is `{ policy, retries, backoff }`. `policy` is `"no"`, `"on-failure"` (after a non-zero exit) or `"always"` (after any exit). `retries` caps how many times in a row `on-failure` starts the app again, and `0` or no value means no cap. `backoff` is the first wait in seconds, 1 by default. Each wait doubles, up to 60 seconds. Without `restart`, the daemon never starts the app again.
+- `app.logs()` returns the app's output so far. The daemon keeps a bounded log, so for a long run it may hold only the end. `app.sandbox.followLogs()` yields the output from the start of the log, then new output as it arrives, and ends when the sandbox stops.
+- `restart` is `{ policy, retries, backoff }`. `policy` is `"no"`, `"on-failure"` (after a non-zero exit) or `"always"` (after any exit). `retries` caps how many times in a row `on-failure` starts the app again, and `0` or no value means no cap. `backoff` is the first wait in seconds, 1 by default, and each later wait doubles, up to 60 seconds. Without `restart`, the daemon never starts the app again.
 
 ## Secrets, policies and snapshots
 
@@ -192,31 +192,31 @@ await shard.policies.set("api-only", [{ action: "allow", rule: "api.example.com"
 const sandbox = await shard.create({ image: "alpine:3.20", secrets: ["API_TOKEN"], policy: "api-only", memoryMiB: 512 });
 ```
 
-The sandbox never holds the secret value. Its commands see a placeholder, and the server puts the value into the HTTPS request headers sent to `api.example.com`. The answer of `secrets.set()` never holds the value either.
+The sandbox never holds the secret value. Its commands see a placeholder, and the server puts the value into the HTTPS request headers sent to `api.example.com`. What `secrets.set()` returns never holds the value either.
 
 | Method | What it does |
 | --- | --- |
 | `secrets.set(name, { value, destinations, placeholder })` | Stores a secret, or replaces its value. |
-| `secrets.list()` | Answers `{ secrets, warnings }`. |
+| `secrets.list()` | Returns `{ secrets, warnings }`. |
 | `secrets.remove(name, { force })` | Deletes a secret that no sandbox holds. `force: true` takes it from every sandbox first. |
 | `secrets.grant(sandbox, name)`, `secrets.ungrant(sandbox, name)` | Grant a secret to a sandbox, or take it away. The sandbox must not be running. |
-| `policies.set(name, rules)` | Makes a policy, or replaces all its rules. A sandbox that holds the policy enforces the new rules. |
+| `policies.set(name, rules)` | Creates a policy, or replaces all of its rules. A sandbox that holds the policy enforces the new rules. |
 | `policies.get(name)`, `policies.list()`, `policies.remove(name)` | Read policies, or delete one that no sandbox holds. |
 | `policies.attach(sandbox, name)`, `policies.detach(sandbox)` | Give a sandbox a policy, or take it away. The sandbox must not be running. |
 | `snapshots.create(sandbox, { name })` | Copies the files of a stopped sandbox into a snapshot, which outlives the sandbox. |
 | `snapshots.list()`, `snapshots.inspect(ref)`, `snapshots.remove(ref)` | Read snapshots, or delete one. |
 
-A policy rule is `{ action, rule }`, where `action` is `"allow"` or `"deny"`. `sandbox.egressLog()` answers the network decisions the daemon holds for a sandbox, and `sandbox.followEgressLog()` yields each one as it happens.
+A policy rule is `{ action, rule }`, where `action` is `"allow"` or `"deny"`. `sandbox.egressLog()` returns the network decisions the daemon holds for a sandbox, and `sandbox.followEgressLog()` yields each one as it happens.
 
 ## Capabilities
 
-Not every provider supports every verb. `shard.capabilities()` answers which of the eight lifecycle verbs the server supports, each `true` or `false`: `create`, `start`, `stop`, `remove`, `pause`, `resume`, `fork` and `snapshot`.
+Not every provider supports every verb. `shard.capabilities()` reports which of the eight lifecycle verbs the server supports, as `true` or `false` for each: `create`, `start`, `stop`, `remove`, `pause`, `resume`, `fork` and `snapshot`.
 
 ```ts
 const { fork } = await shard.capabilities();
 ```
 
-A call to a verb that the provider does not support throws `UnsupportedError`.
+Calling a verb that the provider does not support throws `UnsupportedError`.
 
 ## Errors
 
