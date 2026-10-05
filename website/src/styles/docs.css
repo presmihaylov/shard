@@ -1,4 +1,4 @@
-/* The docs skin: Starlight wired to the nairi tokens, then restyled after the nairi docs. */
+/* The docs skin: Starlight wired to the winter tokens, then restyled after the nairi docs. */
 @layer base, starlight, theme, components, utilities;
 
 @import '@astrojs/starlight-tailwind';
@@ -34,13 +34,13 @@
 	--sl-color-backdrop-overlay: var(--color-scrim);
 
 	--sl-color-gray-1: var(--color-foreground);
-	--sl-color-gray-2: #57534a;
-	--sl-color-gray-3: #63605a;
-	--sl-color-gray-4: #9c968c;
-	--sl-color-gray-5: #dddcd9;
-	--sl-color-gray-6: #e8e7e4;
-	--sl-color-gray-7: #f3f2f0;
-	--sl-color-black: #faf8f3;
+	--sl-color-gray-2: #3a4c5f;
+	--sl-color-gray-3: #4a5d71;
+	--sl-color-gray-4: #8697aa;
+	--sl-color-gray-5: #c9d5e1;
+	--sl-color-gray-6: #dce5ee;
+	--sl-color-gray-7: #e9f0f6;
+	--sl-color-black: #f3f7fb;
 
 	--sl-line-height: 1.65;
 	--sl-line-height-headings: 1.2;
@@ -49,14 +49,14 @@
 	--sl-text-h3: 1.125rem;
 }
 :root[data-theme='dark'] {
-	--sl-color-gray-1: #ded6c9;
-	--sl-color-gray-2: #c9c4bc;
-	--sl-color-gray-3: #a49a8d;
-	--sl-color-gray-4: #8a857c;
-	--sl-color-gray-5: #574d45;
-	--sl-color-gray-6: #37302a;
-	--sl-color-gray-7: #2d2722;
-	--sl-color-black: #241f1b;
+	--sl-color-gray-1: #dce6f0;
+	--sl-color-gray-2: #c0cedc;
+	--sl-color-gray-3: #93a6ba;
+	--sl-color-gray-4: #72859a;
+	--sl-color-gray-5: #32465c;
+	--sl-color-gray-6: #1c2938;
+	--sl-color-gray-7: #162130;
+	--sl-color-black: #0e1621;
 	--sl-color-hairline-shade: color-mix(in oklab, var(--color-foreground) 10%, transparent);
 }
 
@@ -115,13 +115,13 @@ body {
 	margin-inline-start: 0;
 	padding-inline-start: 0;
 }
-/* The active row is the nairi ink fill: dark ink in light, a soft warm pill in dark. */
+/* The active row is the ink fill: night ink in light, a soft frost pill in dark. */
 #starlight__sidebar a[aria-current='page'],
 #starlight__sidebar a[aria-current='page']:hover,
 #starlight__sidebar a[aria-current='page']:focus {
 	font-weight: 600;
-	color: #f4f1ea;
-	background: radial-gradient(125% 130% at 35% 25%, #3a352d 0%, #2b2822 46%, #16130f 100%);
+	color: #eef4fa;
+	background: radial-gradient(125% 130% at 35% 25%, #2b3d53 0%, #1c2b3d 46%, #0f1824 100%);
 }
 [data-theme='dark'] #starlight__sidebar a[aria-current='page'],
 [data-theme='dark'] #starlight__sidebar a[aria-current='page']:hover,
@@ -257,9 +257,9 @@ starlight-tabs .tab > [role='tab'][aria-selected='true'] {
 		var(--vbn-surface);
 }
 .starlight-aside--note {
-	--vbn-tone: #3e57de;
-	--vbn-surface: color-mix(in srgb, #3e57de 12%, var(--vbn-base));
-	--vbn-wash: color-mix(in srgb, #3e57de 24%, var(--color-background));
+	--vbn-tone: #2a74b8;
+	--vbn-surface: color-mix(in srgb, #2a74b8 12%, var(--vbn-base));
+	--vbn-wash: color-mix(in srgb, #2a74b8 24%, var(--color-background));
 }
 .starlight-aside--tip {
 	--vbn-tone: #15bd7e;
@@ -277,9 +277,9 @@ starlight-tabs .tab > [role='tab'][aria-selected='true'] {
 	--vbn-wash: color-mix(in srgb, #ea3e67 24%, var(--color-background));
 }
 [data-theme='dark'] .starlight-aside--note {
-	--vbn-tone: #7e8fea;
-	--vbn-surface: color-mix(in srgb, #7e8fea 20%, var(--vbn-base));
-	--vbn-wash: color-mix(in srgb, #7e8fea 34%, var(--color-background));
+	--vbn-tone: #7dbceb;
+	--vbn-surface: color-mix(in srgb, #7dbceb 20%, var(--vbn-base));
+	--vbn-wash: color-mix(in srgb, #7dbceb 34%, var(--color-background));
 }
 [data-theme='dark'] .starlight-aside--tip {
 	--vbn-tone: #3fd79a;
@@ -323,7 +323,7 @@ site-search dialog {
 	box-shadow: var(--shadow-lg);
 }
 
-/* The github-dark comment grey is too faint on the warm code panel. */
+/* The github-dark comment grey is too faint on the night code panel. */
 .expressive-code .ec-line span[style*='--0:#6A737D'] {
-	--0: #8b96a0;
+	--0: #95a3b1;
 }
