@@ -1,0 +1,416 @@
+---
+title: Overview
+description: The shard command line, with its global options, environment variables, commands and JSON output.
+sidebar:
+  order: 1
+---
+
+{/* make cli-docs writes this part from cli/help.go. Edit the help, not this part. */}
+
+A runtime for isolated sandboxes on your own infrastructure. (pre-alpha)
+
+```text
+shard [OPTIONS] COMMAND [ARGS...]
+```
+
+Set `SHARD_REMOTE` and `SHARD_API_KEY` for remote access. Without a remote URL or a saved connection, shard connects to the local daemon.
+
+**Get started**
+
+```sh
+shard setup
+```
+
+**For automated setup options**
+
+```sh
+shard setup --help
+```
+
+Run `shard COMMAND --help` for options and examples.
+
+## Commands
+
+**Sandboxes**
+
+| Command | Description |
+| --- | --- |
+| [`shard create`](/docs/reference/cli/sandboxes/#shard-create) | create a sandbox and print its ID |
+| [`shard run`](/docs/reference/cli/sandboxes/#shard-run) | create a sandbox and run a command in the foreground |
+| [`shard exec`](/docs/reference/cli/sandboxes/#shard-exec) | execute a command in a running sandbox |
+| [`shard list`](/docs/reference/cli/sandboxes/#shard-list) | list active sandboxes |
+| [`shard logs`](/docs/reference/cli/sandboxes/#shard-logs) | show output from the sandbox's main command |
+| [`shard inspect`](/docs/reference/cli/sandboxes/#shard-inspect) | show detailed information about a sandbox |
+| [`shard stop`](/docs/reference/cli/sandboxes/#shard-stop) | stop a sandbox and preserve its files |
+| [`shard start`](/docs/reference/cli/sandboxes/#shard-start) | start a stopped sandbox with its saved files |
+| [`shard remove`](/docs/reference/cli/sandboxes/#shard-remove) | delete a sandbox and its files |
+| [`shard pause`](/docs/reference/cli/sandboxes/#shard-pause) | save a sandbox's state and suspend it |
+| [`shard resume`](/docs/reference/cli/sandboxes/#shard-resume) | resume a paused sandbox from its saved state |
+| [`shard fork`](/docs/reference/cli/sandboxes/#shard-fork) | create a sandbox from a running sandbox's memory and files |
+| [`shard cp`](/docs/reference/cli/sandboxes/#shard-cp) | copy files or directories between your machine and a running sandbox |
+
+**Images, snapshots, secrets and network policies**
+
+| Command | Description |
+| --- | --- |
+| [`shard pull`](/docs/reference/cli/images/#shard-pull) | download an image |
+| [`shard image`](/docs/reference/cli/images/#shard-image) | manage downloaded images |
+| [`shard snapshot`](/docs/reference/cli/snapshots/#shard-snapshot) | save and manage filesystem snapshots |
+| [`shard secret`](/docs/reference/cli/secrets/#shard-secret) | manage secrets and sandbox access to them |
+| [`shard policy`](/docs/reference/cli/policies/#shard-policy) | manage outbound network rules and view network logs |
+
+**Host and access**
+
+| Command | Description |
+| --- | --- |
+| [`shard capabilities`](/docs/reference/cli/host/#shard-capabilities) | show the lifecycle verbs the server supports |
+| [`shard daemon`](/docs/reference/cli/host/#shard-daemon) | start the daemon or show its status |
+| [`shard info`](/docs/reference/cli/host/#shard-info) | show available providers and the default for this host |
+| [`shard serve`](/docs/reference/cli/host/#shard-serve) | start an HTTP API server with token authentication |
+| [`shard setup`](/docs/reference/cli/host/#shard-setup) | configure a local sandbox host or a remote connection |
+| [`shard tokens`](/docs/reference/cli/host/#shard-tokens) | create, list and revoke API tokens |
+| [`shard version`](/docs/reference/cli/host/#shard-version) | show the client and daemon versions |
+
+## Global options
+
+| Option | Description | Default |
+| --- | --- | --- |
+| `--root <dir>` | directory for local shard data | `/var/lib/shard` |
+| `--remote <url>` | URL of the shard API server; HTTP/HTTPS supported, HTTPS recommended |  |
+| `--version` | show the client version |  |
+
+## Environment variables
+
+| Variable | Description |
+| --- | --- |
+| `SHARD_REMOTE` | API server URL; `--remote` overrides it |
+| `SHARD_API_KEY` | API token from shard tokens mint |
+| `SHARD_CA_FILE` | custom CA certificate file; HTTPS only |
+
+{/* make cli-docs writes everything above this line. Write by hand below it. */}
+
+## Option order
+
+Global options go before the command. If you type one after it, the command fails, and the error shows where the option goes:
+
+```text
+shard: --remote goes before the verb: shard --remote <url> list
+```
+
+A command's own options go before its arguments, as in `shard logs -f web`. shard reads an option after an argument as an argument, and the error says to put the flags before the arguments.
+
+## Remote and local commands
+
+With `--remote`, `SHARD_REMOTE` or a connection that `shard setup` saved, a command goes to that server. `--remote` overrides `SHARD_REMOTE`, and `SHARD_REMOTE` overrides the saved connection. `SHARD_API_KEY` overrides the saved key.
+
+An `http` remote encrypts nothing. Every command that uses one prints this line once, to stderr and never to stdout:
+
+```text
+Warning: HTTP does not encrypt this connection. Use it only on localhost or through a trusted encrypted network.
+```
+
+The client refuses `SHARD_CA_FILE` with an `http` remote before it connects.
+
+Some commands act on this host's files and processes, so they run only on the daemon host:
+
+- `pull`, `image list`, `image remove`, `image prune`, `daemon status`, `info`, `tokens mint`, `tokens list` and `tokens revoke` refuse `--remote`, `SHARD_REMOTE` and a saved connection. Their error names the command.
+- `daemon` and `serve` refuse `--remote` and `SHARD_REMOTE`, and ignore a saved connection.
+- `--remote ""` runs a command on this host even when a connection is saved.
+- `tokens scopes` asks the server, so it follows the remote.
+
+## Names and aliases
+
+A command has one name. `list` and `remove` also take `ls` and `rm`, at the top level and under `image`, `secret`, `policy` and `snapshot`. `tokens list` takes `ls`. An alias runs the same code and prints the same help, and the help never lists it.
+
+Short options:
+
+| Command | Short | Long |
+| --- | --- | --- |
+| `exec` | `-i`, `-t`, `-it` for both | `--interactive`, `--tty` |
+| `logs`, `policy logs` | `-f` | `--follow` |
+| `run` | `-d` | `--detach` |
+| `setup` | `-y` | `--yes` |
+| `secret set` | | `--dest` and `--destination` are the same option |
+
+## What each command prints
+
+The Format column shows the default `--format`. A dash means the command has no `--format`. A command that prints the id prints it even when you pass the name.
+
+**Sandboxes**
+
+| Command | Format | Prints |
+| --- | --- | --- |
+| `create` | - | the id |
+| `run` | - | the app's output, or the id with `--detach` |
+| `exec` | - | the command's output |
+| `list` | table | the sandboxes |
+| `logs` | - | the main command's output |
+| `inspect` | json | the record |
+| `stop`, `start`, `pause`, `resume` | - | the id |
+| `remove` | - | the id, or nothing for a missing sandbox with `--force` |
+| `fork` | - | the new id |
+| `cp` | - | nothing |
+
+Without `--all`, `list` leaves out stopped sandboxes. The table then ends with a count on stderr, such as `2 stopped sandboxes; shard list --all`. JSON output has no such line.
+
+**Images, snapshots, secrets and network policies**
+
+| Command | Format | Prints |
+| --- | --- | --- |
+| `pull` | - | the reference and the digest |
+| `image list` | table | the images |
+| `image remove` | - | the reference |
+| `image prune` | - | each reference it removed |
+| `snapshot create` | - | the snapshot id |
+| `snapshot list` | table | the snapshots |
+| `snapshot inspect` | json | the record |
+| `snapshot remove` | - | the id or name it was given |
+| `secret set`, `secret remove` | - | the name |
+| `secret list` | table | the secrets, never a value |
+| `secret grant`, `secret ungrant` | - | the sandbox id |
+| `policy create`, `policy remove` | - | the name |
+| `policy show` | json | the policy and the sandboxes that hold it |
+| `policy list` | table | the policies |
+| `policy attach`, `policy detach` | - | the sandbox id |
+| `policy logs` | - | the egress decisions, one JSON record per line |
+
+**Host and access**
+
+| Command | Format | Prints |
+| --- | --- | --- |
+| `capabilities` | table | the eight lifecycle verbs and whether the server supports each |
+| `daemon` | - | its log |
+| `daemon status` | table | the daemon's state and its tasks |
+| `info` | table | the provider a daemon would pick, and why |
+| `serve` | - | its log |
+| `setup` | - | the wizard, or a checklist when you give every answer as an option |
+| `tokens mint` | json | the token record |
+| `tokens list` | table | the token ledger |
+| `tokens revoke` | - | `revoked token <id>`, or `revoked <n> tokens of <name>` with `--name` |
+| `tokens scopes` | table | every scope a token can carry on the server it asks |
+| `version` | table | the client and daemon versions |
+
+## JSON output
+
+`--format` takes `json` or `table`. Any other word is a usage error. If you name the default, nothing changes: `list --format table` prints the same as `list`.
+
+A `--format json` call writes one value or nothing:
+
+- The value is indented by two spaces, and a list command prints an array.
+- `tokens mint` writes its value on one line.
+- A failure to parse the command, to reach the daemon or to encode the value writes nothing to stdout.
+- A list with warnings, or a `daemon status` with a task in backoff, still writes the whole value. Then it writes the warnings or the error to stderr and exits 1.
+- `version --format json` with no daemon writes nothing and fails.
+
+`inspect`, `snapshot inspect`, `policy show` and `tokens mint` print JSON by default. The values in the examples below are synthetic.
+
+### Sandbox
+
+`list` prints an array of sandbox records, the same on the daemon host and with `--remote`:
+
+```json
+[
+  {
+    "id": "misty-otter-81c0",
+    "name": "web",
+    "image": "python:3.12",
+    "provider": "gvisor",
+    "state": "running",
+    "resources": {"memory_mib": 512, "vcpus": 1, "disk_mib": 2048},
+    "command": ["python", "-m", "http.server"],
+    "restart": {"policy": "on-failure", "retries": 3, "backoff": 1, "count": 0, "gave_up": false, "ended": false},
+    "secrets": ["API_TOKEN"],
+    "policy": "api-only",
+    "started_at": "2026-10-01T09:30:05Z",
+    "created_at": "2026-10-01T09:30:00Z"
+  }
+]
+```
+
+`id`, `image`, `provider`, `state`, `resources` and `created_at` are always present. `state` is `pending`, `created`, `running`, `paused`, `unresponsive`, `stopped` or `failed`. `resources` holds `memory_mib`, `vcpus` and `disk_mib`. Every other field is absent when empty:
+
+| Field | Present when |
+| --- | --- |
+| `name` | the sandbox has a `--name` |
+| `digest` | the provider created it; the image digest |
+| `snapshot` | `create --snapshot` made it; the snapshot id |
+| `exit_status` | the main command exited since the last start: `{"code": 0, "signal": 0}` |
+| `stopped_reason` | shard stopped it with no operator, or `shard-init` died on a stop |
+| `failed_reason` | `state` is `failed` |
+| `command` | `run` made it; the app's argv |
+| `restart` | it has a restart policy |
+| `secrets` | it holds a placeholder; the secret names |
+| `policy` | it holds a network policy |
+| `started_at` | the daemon started it at least once |
+
+`restart.policy` is `on-failure` or `always`. `retries` is absent when there is no cap. `backoff` is the first wait in seconds. `count` is the number of restarts in this run, and `last_at` is absent before the first one. `gave_up` is true when an exit asked for a restart after the retries ran out. `ended` is true when no restart follows the last exit.
+
+`inspect` prints one sandbox record. It adds `egress` when the record names a network policy:
+
+```json
+{
+  "id": "misty-otter-81c0",
+  "image": "python:3.12",
+  "provider": "gvisor",
+  "state": "stopped",
+  "exit_status": {"code": 0, "signal": 0},
+  "resources": {"memory_mib": 512, "vcpus": 1, "disk_mib": 2048},
+  "policy": "api-only",
+  "created_at": "2026-10-01T09:30:00Z",
+  "egress": {
+    "rules": [
+      {"action": "allow", "destination": {"kind": "group", "value": "dns"}, "protocol": "udp", "ports": [53], "id": "1", "implied": "dns"},
+      {"action": "allow", "destination": {"kind": "group", "value": "dns"}, "protocol": "tcp", "ports": [53], "id": "2", "implied": "dns"},
+      {"action": "allow", "destination": {"kind": "domain", "value": "api.example.com"}, "protocol": "tcp", "ports": [80, 443], "id": "3"}
+    ]
+  }
+}
+```
+
+`egress.rules` lists the rules in the order the host and the proxy enforce them. `id` is the rule's position in that order, starting at `"1"`. `action` is `allow` or `deny`. `destination.kind` is `cidr`, `domain`, `domain-suffix` or `group`. `protocol` and `ports` are absent for a rule that covers every protocol. `implied` marks a rule that the policy did not write: `dns` when a name rule opened DNS, and `dns-rule` when a `dns` rule did. When the store no longer holds the policy, `egress` is `{"missing": true, "rules": []}` and the sandbox reaches nothing.
+
+### Snapshot
+
+`snapshot inspect` prints one snapshot record, and `snapshot list` prints an array of them:
+
+```json
+{
+  "id": "quiet-heron-4f2a",
+  "name": "web-base",
+  "source": "misty-otter-81c0",
+  "source_name": "web",
+  "image": "python:3.12",
+  "digest": "sha256:0f1e2d3c4b5a69788796a5b4c3d2e1f00f1e2d3c4b5a69788796a5b4c3d2e1f0",
+  "provider": "gvisor",
+  "disk_mib": 1024,
+  "memory_mib": 512,
+  "size": 7340032,
+  "created_at": "2026-10-01T09:30:00Z"
+}
+```
+
+`name` and `source_name` are absent when empty. `disk_mib` and `memory_mib` are the bounds the source ran under. `size` is the space the copy takes on the host, in bytes.
+
+### Images, secrets, policies and tokens
+
+`image list` prints an array of images. `digest` is the full digest, `size` is in bytes, and `broken` is absent when empty:
+
+```json
+[
+  {
+    "reference": "python:3.12",
+    "digest": "sha256:0f1e2d3c4b5a69788796a5b4c3d2e1f00f1e2d3c4b5a69788796a5b4c3d2e1f0",
+    "size": 52428800,
+    "created": "2026-10-01T09:30:00Z"
+  }
+]
+```
+
+`secret list` prints the secrets, never a value:
+
+```json
+[
+  {
+    "name": "API_TOKEN",
+    "destinations": ["api.example.com"],
+    "placeholder": "mock-API_TOKEN",
+    "updated_at": "2026-10-01T09:30:00Z"
+  }
+]
+```
+
+`policy list` prints each policy with its number of rules:
+
+```json
+[{"name": "api-only", "rule_count": 2}]
+```
+
+`policy show` prints `{name, rules, dns, holders}`. `dns` is `open` or `closed`. `holders` names the sandboxes whose record names the policy, and is absent when there are none.
+
+`tokens list` prints the token ledger. `expires_at` is `null` for a token that never expires, and `status` is `active`, `revoked` or `expired`:
+
+```json
+[
+  {
+    "id": "0123456789abcdef0123456789abcdef",
+    "name": "build-agent",
+    "issued_at": "2026-10-01T09:30:00Z",
+    "expires_at": null,
+    "scopes": ["sandbox:read", "exec"],
+    "status": "active"
+  }
+]
+```
+
+`tokens mint` prints `{token, expires_at, scopes}` on one line.
+
+### Host
+
+`info` prints the provider a daemon would pick, and why. `unreadable` is absent unless the root holds a record that shard cannot read:
+
+```json
+{"provider": "gvisor", "reason": "no /dev/kvm"}
+```
+
+`daemon status` is the body of `GET /v0/daemon`. A task has `last_error` when it failed:
+
+```json
+{
+  "version": "v0.1.0",
+  "pid": 4242,
+  "started_at": "2026-10-01T09:30:00Z",
+  "socket": "/var/lib/shard/shard.sock",
+  "provider": "gvisor",
+  "capabilities": {"pause": true, "resume": true, "fork": true},
+  "proxy": {"plain_port": 30080, "tls_port": 30443},
+  "tasks": [{"name": "proxy", "state": "running", "restarts": 0}]
+}
+```
+
+`capabilities` is the body of `GET /v0/capabilities`, with the same eight keys for every provider:
+
+```json
+{"create": true, "start": true, "stop": true, "remove": true, "pause": true, "resume": true, "fork": false, "snapshot": true}
+```
+
+`version` prints the client and daemon versions. On a Mac, it adds `shim`, which is `embedded` or `absent`:
+
+```json
+{"client": "v0.1.0", "daemon": "v0.1.0"}
+```
+
+## Tables
+
+| Command | Columns |
+| --- | --- |
+| `list` | `ID NAME IMAGE STATE UPTIME RESTART POLICY` |
+| `image list` | `REFERENCE DIGEST SIZE CREATED` |
+| `snapshot list` | `ID NAME SOURCE IMAGE SIZE CREATED` |
+| `secret list` | `NAME DESTINATIONS PLACEHOLDER UPDATED` |
+| `policy list` | `NAME RULES` |
+| `tokens list` | `ID NAME ISSUED EXPIRES SCOPES STATUS` |
+| `tokens scopes` | `SCOPE DESCRIPTION` |
+| `capabilities` | `CAPABILITY SUPPORTED` |
+
+The commands that print JSON by default have these tables:
+
+- `inspect` prints `FIELD VALUE` rows, with every time in RFC 3339 to the second, in UTC. A sandbox with a network policy then gets an `ID RULE IMPLIED` section, with each rule as `policy create` takes it, for example `allow suffix:example.com tcp:443`.
+- `snapshot inspect` prints `FIELD VALUE` rows.
+- `policy show` prints `name`, `dns` and `holders`, then a `RULE` section.
+- `tokens mint` prints `TOKEN EXPIRES SCOPES`.
+
+## Exit codes
+
+| Code | When |
+| --- | --- |
+| 0 | the verb did what it says |
+| 1 | any failure of shard, or of the request, with `shard: <reason>` on stderr |
+| the command's code | `exec`, and `run` with the app's last code |
+| 126, 127 | `exec` of a command that is not executable, or not found |
+| 1 or more | `exec` whose output was lost, so a lost stream never reads as a pass |
+| 128 + n | `run` of an app that signal n ended |
+| 125 | `run` when shard itself fails, so a script tells it from an app that exits 1 |
+| 130 | `run` that Ctrl+C left; the sandbox stays running |
+| 130 | `setup` that Ctrl+C left; the steps done so far stay in place |
+
+`daemon status` exits 1 when a background task is in backoff, after it prints the whole status.

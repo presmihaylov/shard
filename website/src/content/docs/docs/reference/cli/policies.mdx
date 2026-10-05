@@ -1,0 +1,216 @@
+---
+title: Network policies
+description: The shard commands that store network policies, attach them to sandboxes and show their decisions.
+sidebar:
+  order: 6
+---
+
+{/* make cli-docs writes this part from cli/help.go. Edit the help, not this part. */}
+
+## shard policy
+
+Manage outbound network rules and view network logs.
+
+```text
+shard policy COMMAND [OPTIONS] [ARGS...]
+```
+
+**Commands**
+
+| Command | Description |
+| --- | --- |
+| [`shard policy create`](#shard-policy-create) | store a network policy |
+| [`shard policy show`](#shard-policy-show) | show a policy and the sandboxes that use it |
+| [`shard policy list`](#shard-policy-list) | list network policies |
+| [`shard policy remove`](#shard-policy-remove) | delete an unused policy |
+| [`shard policy attach`](#shard-policy-attach) | assign a policy to a sandbox |
+| [`shard policy detach`](#shard-policy-detach) | remove a sandbox's policy |
+| [`shard policy logs`](#shard-policy-logs) | show network policy decisions for a sandbox |
+
+### shard policy create
+
+Store a network policy.
+
+```text
+shard policy create [OPTIONS] NAME
+```
+
+**Examples**
+
+```sh
+shard policy create --allow api.example.com api-only
+shard policy create --allow "203.0.113.0/24 tcp:22" ssh-only
+```
+
+**Arguments**
+
+| Argument | Description |
+| --- | --- |
+| `NAME` | policy name; up to 64 lower-case letters, digits and hyphens |
+
+**Options**
+
+| Option | Description |
+| --- | --- |
+| `--allow <rule>` | allow matching traffic; repeatable |
+| `--deny <rule>` | deny matching traffic; repeatable |
+
+The name starts with a letter or a digit.
+
+Rules apply in the order given. The first match decides access. Traffic that no rule allows is denied.
+
+**Rules**
+
+Use a destination with an optional protocol and ports:
+
+```text
+DESTINATION [tcp|udp[:PORTS]]
+```
+
+Destinations can be domains, IP addresses, network ranges, `any` or `dns`. `*.example.com` matches the names under example.com, not example.com itself. `suffix:example.com` matches example.com and every name under it. Ports can be numbers or ranges, separated by commas. Domain rules default to TCP ports 80 and 443. Domain rules also allow the DNS access needed to resolve their names. Use `--allow dns` to allow DNS explicitly. `--deny dns` is not supported.
+
+### shard policy show
+
+Show a policy and the sandboxes that use it.
+
+```text
+shard policy show [OPTIONS] NAME
+```
+
+**Examples**
+
+```sh
+shard policy show api-only
+shard policy show --format table api-only
+```
+
+**Arguments**
+
+| Argument | Description |
+| --- | --- |
+| `NAME` | policy name |
+
+**Options**
+
+| Option | Description | Default |
+| --- | --- | --- |
+| `--format <format>` | output format: json or table | `json` |
+
+### shard policy list
+
+List network policies.
+
+```text
+shard policy list [OPTIONS]
+```
+
+**Examples**
+
+```sh
+shard policy list
+shard policy list --format json
+```
+
+**Options**
+
+| Option | Description | Default |
+| --- | --- | --- |
+| `--format <format>` | output format: json or table | `table` |
+
+### shard policy remove
+
+Delete an unused network policy.
+
+```text
+shard policy remove NAME
+```
+
+**Example**
+
+```sh
+shard policy remove api-only
+```
+
+**Arguments**
+
+| Argument | Description |
+| --- | --- |
+| `NAME` | policy name |
+
+Detach the policy from its sandboxes before removal.
+
+### shard policy attach
+
+Assign a network policy to a sandbox.
+
+```text
+shard policy attach SANDBOX POLICY
+```
+
+**Example**
+
+```sh
+shard policy attach web api-only
+```
+
+**Arguments**
+
+| Argument | Description |
+| --- | --- |
+| `SANDBOX` | sandbox ID or name |
+| `POLICY` | policy name |
+
+The sandbox must be created or stopped. The policy replaces any policy already assigned to the sandbox.
+
+### shard policy detach
+
+Remove a sandbox's network policy.
+
+```text
+shard policy detach SANDBOX
+```
+
+**Example**
+
+```sh
+shard policy detach web
+```
+
+**Arguments**
+
+| Argument | Description |
+| --- | --- |
+| `SANDBOX` | sandbox ID or name |
+
+The sandbox must be created or stopped. Secret access remains unchanged. Without a policy, the sandbox can access the internet but not private networks.
+
+### shard policy logs
+
+Show network policy decisions for a sandbox.
+
+```text
+shard policy logs [OPTIONS] SANDBOX
+```
+
+**Examples**
+
+```sh
+shard policy logs web
+shard policy logs --follow web
+```
+
+**Arguments**
+
+| Argument | Description |
+| --- | --- |
+| `SANDBOX` | sandbox ID or name |
+
+**Options**
+
+| Option | Description |
+| --- | --- |
+| `-f, --follow` | show new decisions as they occur |
+
+Prints JSON records with destinations, decisions and the rules responsible.
+
+{/* make cli-docs writes everything above this line. Write by hand below it. */}

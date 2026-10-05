@@ -29,7 +29,7 @@ DARWIN_ARCH ?= $(shell go env GOARCH)
 KERNEL_OUT := bin/kernel
 KERNEL_IMAGE := packaging-kernel-builder
 
-.PHONY: all build build-linux build-shard-init build-shard-init-linux build-shard-vz-shim build-shard-vz-init build-darwin test test-integration e2e-test vet lint lint-fix fmt fmt-check vuln check clean devbox-sync devbox-test itest e2e devbox-e2e e2e-firecracker devbox-demo kernel kernel-reproducible openapi sdk-ts sdk-ts-check sdk-py sdk-py-check sdk-gate sdk-release-test
+.PHONY: all build build-linux build-shard-init build-shard-init-linux build-shard-vz-shim build-shard-vz-init build-darwin test test-integration e2e-test vet lint lint-fix fmt fmt-check vuln check clean devbox-sync devbox-test itest e2e devbox-e2e e2e-firecracker devbox-demo kernel kernel-reproducible openapi cli-docs sdk-ts sdk-ts-check sdk-py sdk-py-check sdk-gate sdk-release-test
 
 all: check build
 
@@ -135,6 +135,10 @@ vuln:
 openapi:
 	go run ./cmd/shard-openapi docs/openapi.json
 	go run ./cmd/shard-apidocs website/src/content/docs/docs/reference/api
+
+# Regenerates the CLI reference pages of the site from cli/help.go; a unit test fails while they differ.
+cli-docs:
+	go run ./cmd/shard-clidocs website/src/content/docs/docs/reference/cli
 
 # Regenerates the TypeScript SDK's private types from docs/openapi.json; sdk-ts-check fails while they differ.
 sdk-ts:
