@@ -11,13 +11,13 @@ The shard command line and the SDKs talk to the daemon over this API. This reque
 curl --unix-socket /var/lib/shard/shard.sock -X POST -d '{"name":"web","image":"alpine:3.20","command":["sleep","600"],"resources":{"memory_mib":512}}' http://localhost/v0/sandboxes
 ```
 
-The answer is `201` with the [Sandbox](/docs/reference/api/sandboxes/#sandbox) as JSON. Each page under REST API covers one group of routes, and the [Routes](#routes) tables below list them all.
+The daemon answers `201` with the [Sandbox](/docs/reference/api/sandboxes/#sandbox) as JSON. Each page under REST API covers one group of routes, and the [Routes](#routes) tables below list them all.
 
 ## Reach the API
 
-On the host, the daemon listens on a unix socket, `/var/lib/shard/shard.sock` by default, and never on TCP. The socket takes no token, and a request on it holds every right. When the host has a `shard` group, the members of that group can open the socket without root.
+On the host, the daemon listens on a unix socket, `/var/lib/shard/shard.sock` by default, and never on TCP. The socket needs no token, and a request on it can do anything. If the host has a `shard` group, its members can open the socket without root.
 
-From another host, `shard serve` is the way in. It listens on `127.0.0.1:2376` by default, checks the token of each request, then passes the request on to the socket. Put a proxy that terminates TLS in front of it. Mint a token on the host, then send it in the `Authorization` header:
+From another host, you reach the API through `shard serve`. It listens on `127.0.0.1:2376` by default, checks each request's token, then passes the request to the socket. Put a proxy that terminates TLS in front of it. Mint a token on the host, then send it in the `Authorization` header:
 
 ```sh
 export SHARD_API_KEY=$(shard tokens mint --name ci --scopes sandbox:read,exec | jq -r .token)
@@ -28,22 +28,22 @@ A client on another host sends the same header to the proxy.
 
 ## Scopes
 
-Each route names the scope a token needs to reach it. A token with no scopes, or with `*`, reaches every route in this reference. A route marked "any token" answers every valid token. `GET /v0/scopes` lists the scopes, and `shard tokens mint --scopes` takes them.
+Each route names the scope a token needs to reach it. A token with no scopes, or with `*`, reaches every route in this reference. A route marked "any token" accepts every valid token. `GET /v0/scopes` lists the scopes, and `shard tokens mint --scopes` takes them.
 
-`shard serve` refuses a request before it reaches the daemon:
+`shard serve` refuses some requests before they reach the daemon:
 
 | Status | Code | When |
 | --- | --- | --- |
 | 401 | `unauthorized` | The token is missing, does not verify, has expired, or was revoked. |
-| 403 | `forbidden` | The scopes of the token do not cover the route, or the route is unknown or local. |
+| 403 | `forbidden` | The token's scopes do not cover the route, or the route is unknown or local. |
 
-A create that names a secret or a policy also needs `secret:*` or `policy:*`, and so does a fork of a sandbox that holds one. Without it, the daemon answers `403` with `forbidden`.
+A create that names a secret also needs `secret:*`, and one that names a policy also needs `policy:*`. A fork of a sandbox that holds a secret or a policy needs the same scope. Without it, the daemon answers `403` with `forbidden`.
 
-The local routes answer on the socket only, and this reference leaves them out. They are `GET /v0/daemon`, which `shard daemon status` reads, and the four `images` routes, which `shard pull` and `shard image` use.
+The local routes answer only on the socket, and this reference leaves them out. They are `GET /v0/daemon`, which `shard daemon status` reads, and the four `images` routes, which `shard pull` and `shard image` use.
 
 ## Lists
 
-A list answers every row, unless the request passes `limit`. Then it answers at most that many rows, and `next` names the last row when more remain. Pass `next` as `cursor` to read the page after it. On the last page, `next` is `null`.
+A list returns every row unless the request passes `limit`. With `limit`, it returns at most that many rows, and `next` names the last row when more remain. Pass `next` as `cursor` to read the page after it. On the last page, `next` is `null`.
 
 ```sh
 curl --unix-socket /var/lib/shard/shard.sock 'http://localhost/v0/sandboxes?limit=20'
@@ -52,11 +52,11 @@ curl --unix-socket /var/lib/shard/shard.sock 'http://localhost/v0/sandboxes?limi
 
 ## Errors
 
-A refusal answers a `4xx` or `5xx` status with the [Error](#error) body, except a `HEAD`, which answers the status alone. Match on the `code`, never on the `message`. [Errors and exit codes](/docs/reference/errors/) lists every code and when the daemon answers it.
+A refused request gets a `4xx` or `5xx` status and the [Error](#error) body. A `HEAD` request gets the status alone. Match on the `code`, never on the `message`. [Errors and exit codes](/docs/reference/errors/) lists every code and when the daemon returns it.
 
 ## WebSockets
 
-The routes that follow a stream, such as an exec attach or a `logs` follow, upgrade to a WebSocket and answer `101`. Their sections list the messages. An exec, an app attach and a `logs` follow send binary messages that each lead with a stream byte. An `egress-log` follow sends one text message per decision.
+The routes that follow a stream, such as an exec attach or a `logs` follow, upgrade to a WebSocket and answer `101`. Their sections list the messages. An exec, an app attach and a `logs` follow send binary messages, and each message starts with a stream byte. An `egress-log` follow sends one text message per decision.
 
 {/* make openapi writes this part from the routes. Edit the routes, not this part. */}
 

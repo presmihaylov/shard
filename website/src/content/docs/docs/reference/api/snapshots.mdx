@@ -12,7 +12,7 @@ curl --unix-socket /var/lib/shard/shard.sock -X POST -d '{"sandbox":"web","name"
 curl --unix-socket /var/lib/shard/shard.sock -X POST -d '{"snapshot":"web-base","name":"web-3"}' http://localhost/v0/sandboxes
 ```
 
-A create from a snapshot is a route of [Sandboxes](/docs/reference/api/sandboxes/#create-a-sandbox).
+To create a sandbox from a snapshot, use the create route in [Sandboxes](/docs/reference/api/sandboxes/#create-a-sandbox).
 
 {/* make openapi writes this part from the routes. Edit the routes, not this part. */}
 

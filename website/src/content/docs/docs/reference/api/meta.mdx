@@ -5,13 +5,13 @@ sidebar:
   order: 8
 ---
 
-This reads the version of the daemon and of its API:
+This reads the daemon's version and its API version:
 
 ```sh
 curl --unix-socket /var/lib/shard/shard.sock http://localhost/v0/version
 ```
 
-Every route on this page answers any valid token.
+Every route on this page accepts any valid token.
 
 {/* make openapi writes this part from the routes. Edit the routes, not this part. */}
 

@@ -11,7 +11,7 @@ This runs a command in the running sandbox `web`:
 curl --unix-socket /var/lib/shard/shard.sock -X POST -d '{"command":["/bin/echo","hi"]}' http://localhost/v0/sandboxes/web/exec
 ```
 
-The answer is `201` with the [Exec](#exec). Its `exec` field is the id the other routes on this page take, so this waits for the command to end:
+The daemon answers `201` with the [Exec](#exec). The other routes on this page take its `exec` field as the id. This one waits for the command to end:
 
 ```sh
 curl --unix-socket /var/lib/shard/shard.sock 'http://localhost/v0/sandboxes/web/exec/<exec>?wait=true'

@@ -13,7 +13,7 @@ curl --unix-socket /var/lib/shard/shard.sock -X POST http://localhost/v0/sandbox
 curl --unix-socket /var/lib/shard/shard.sock -X POST http://localhost/v0/sandboxes/web/start
 ```
 
-Every `{id}` in a path takes the id or the name of a sandbox. A create on vz or Firecracker needs `resources.memory_mib`, because the memory of a VM is real memory on the host.
+Every `{id}` in a path takes a sandbox's id or name. A create on vz or Firecracker needs `resources.memory_mib`, because the memory of a VM is real memory on the host.
 
 {/* make openapi writes this part from the routes. Edit the routes, not this part. */}
 

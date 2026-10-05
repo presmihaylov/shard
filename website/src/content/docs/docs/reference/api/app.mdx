@@ -5,7 +5,7 @@ sidebar:
   order: 9
 ---
 
-A sandbox created with a `command` runs it as its app. This waits for the app of the sandbox `web` to end, then answers how it ended:
+A sandbox created with a `command` runs it as its app. This waits for the app in the sandbox `web` to end, then says how it ended:
 
 ```sh
 curl --unix-socket /var/lib/shard/shard.sock http://localhost/v0/sandboxes/web/attach
