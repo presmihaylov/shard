@@ -1,20 +1,107 @@
 ---
-title: Overview
-description: Placeholder overview of the shard documentation.
+title: What is shard?
+description: shard runs isolated sandboxes on one Linux server or Apple silicon Mac that you own.
+sidebar:
+  label: What is shard?
 ---
 
-import { Card, CardGrid, LinkCard } from '@astrojs/starlight/components';
+import { LinkCard, TabItem, Tabs } from '@astrojs/starlight/components';
 
-Placeholder introduction for the shard documentation. The real overview lands with the content ticket.
+shard runs isolated sandboxes on one host that you own: a Linux server or an Apple silicon Mac.
+One binary is both the CLI and the daemon. This example creates a sandbox from an OCI image, writes
+a file in it, reads the file back, and removes the sandbox:
 
-## What this site holds
+<Tabs syncKey="lang">
+<TabItem label="CLI">
 
-Placeholder paragraph. It holds the space for a short description of the docs and who they are for.
+```sh
+sudo shard create --name demo --memory 512MiB alpine:3.20
+sudo shard exec demo sh -c 'echo hello from shard > /tmp/hello.txt'
+sudo shard exec demo cat /tmp/hello.txt
+sudo shard remove --force demo
+```
 
-<CardGrid>
-	<Card title="Placeholder card one">Placeholder text for the first card.</Card>
-	<Card title="Placeholder card two">Placeholder text for the second card.</Card>
-</CardGrid>
+</TabItem>
+<TabItem label="TypeScript">
+
+```ts
+import { Shard } from 'useshards';
+
+const shard = new Shard();
+const sandbox = await shard.create({ image: 'alpine:3.20', name: 'demo', memoryMiB: 512 });
+try {
+  await sandbox.files.write('/tmp/hello.txt', 'hello from shard\n');
+  console.log((await sandbox.exec('cat /tmp/hello.txt')).stdout);
+} finally {
+  await sandbox.remove({ force: true });
+  shard.close();
+}
+```
+
+</TabItem>
+<TabItem label="Python">
+
+```python
+from useshards import Shard
+
+with Shard() as shard:
+    sandbox = shard.create("alpine:3.20", name="demo", memory_mib=512)
+    try:
+        sandbox.files.write("/tmp/hello.txt", "hello from shard\n")
+        print(sandbox.exec("cat /tmp/hello.txt").stdout)
+    finally:
+        sandbox.remove(force=True)
+```
+
+</TabItem>
+</Tabs>
+
+Each tab prints `hello from shard`. After `shard setup`, the CLI talks to the daemon on this host.
+On Linux the daemon's socket belongs to root, so the commands run with `sudo`. On a Mac, drop
+`sudo`. The SDKs reach a host over HTTPS through `shard serve`. They read the server URL from
+`SHARD_REMOTE`, and `SHARD_API_KEY` holds a token from `shard tokens mint`.
+
+## What a sandbox is
+
+A sandbox starts from an OCI image and keeps running until you stop or remove it. If it has a main
+command, that command can exit, and the sandbox stays available for `exec`. `create` starts no main
+command. `run` starts the command you give it. The image's `ENTRYPOINT` and `CMD` never run.
+
+| Verb | What it does |
+|---|---|
+| `stop`, `start` | Stop frees the memory and keeps the files. Start uses those files and starts any main command from the beginning. |
+| `pause`, `resume` | Pause saves the memory and the files. Resume continues the processes from that state. |
+| `fork` | Copies a running sandbox's memory and files into a new sandbox. The source pauses briefly, then continues. |
+| `snapshot create` | Saves a stopped sandbox's files, without its memory. A snapshot outlives its sandbox and can seed new ones. |
+| `remove` | Deletes the sandbox and its files. |
+
+## Providers
+
+A provider is the isolation technology under every sandbox on a host. One host runs one provider.
+
+| Provider | Isolation | `pause`, `resume`, `fork` |
+|---|---|---|
+| `firecracker` | A microVM per sandbox. Needs `/dev/kvm`. | yes |
+| `gvisor` | A user-space kernel, `runsc`. | yes |
+| `vz` | A VM per sandbox on a Mac, through Virtualization.framework. | yes, on Apple silicon with macOS 14 or later |
+| `sysbox` | Linux user namespaces. The sandbox can run Docker inside. One tenant per host. | no |
+| `runc` | Linux namespaces on the host kernel, with no user namespace. Only for code you trust. | no |
+
+`shard setup` recommends Firecracker when `/dev/kvm` is usable, gVisor on Linux without it, and
+`vz` on a Mac. A verb that a provider does not support fails with an error that names the provider.
+shard never falls back to a weaker mechanism.
+
+## Secrets and network access
+
+A sandbox never holds a secret's value. It holds a placeholder instead, and the host proxy swaps in
+the real value in the headers of HTTPS requests to the destinations you granted. Without a network
+policy, a sandbox can reach the internet but not private networks. A policy adds ordered allow and
+deny rules.
+
+## What shard is not
+
+shard manages one host. It does not schedule sandboxes across a fleet. It is pre-alpha, so
+commands and APIs can change between releases.
 
 ## Next steps
 

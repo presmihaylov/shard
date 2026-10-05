@@ -35,6 +35,14 @@ func TestSetupRefusesWhatItCannotRun(t *testing.T) {
 // noTerminal is the answers of these flags with stdin a pipe, the way a script runs setup.
 func noTerminal(t *testing.T, opts setupFlags) *answers {
 	t.Helper()
+	ui, _ := noTerminalOut(t, opts)
+
+	return ui
+}
+
+// noTerminalOut is noTerminal with the buffer its lines go to.
+func noTerminalOut(t *testing.T, opts setupFlags) (*answers, *bytes.Buffer) {
+	t.Helper()
 	in, w, err := os.Pipe()
 	if err != nil {
 		t.Fatal(err)
@@ -46,8 +54,9 @@ func noTerminal(t *testing.T, opts setupFlags) *answers {
 	})
 
 	none := func(string) string { return "" }
+	out := &bytes.Buffer{}
 
-	return &answers{opts: opts, t: term.New(in, &bytes.Buffer{}, none), env: none}
+	return &answers{opts: opts, t: term.New(in, out, none), env: none}, out
 }
 
 var providers = []term.Option{
@@ -77,17 +86,56 @@ func TestAFlagPicksItsOptionOrSaysWhyNot(t *testing.T) {
 
 func TestWithoutATerminalTheErrorNamesWhatAnswers(t *testing.T) {
 	ui := noTerminal(t, setupFlags{})
+	_, mode := ui.Select(t.Context(), setup.AskMode, "How do you want to use Shard?", providers)
 	_, provider := ui.Select(t.Context(), setup.AskProvider, "Provider", providers)
+	_, confirm := ui.Confirm(t.Context(), setup.AskConfirm, "Continue?", true)
 	_, key := ui.Secret(t.Context(), setup.AskAPIKey, "API key")
 	_, existing := ui.Select(t.Context(), setup.AskExisting, "What would you like to do?", providers)
 
+	// Each question is worded for a person and keeps the option that answers it (SHARD-740).
 	for got, want := range map[error]string{
-		provider: "no terminal to ask provider: pass --provider",
+		mode:     "no terminal to choose local or remote setup: pass --local or --remote <url>",
+		provider: "no terminal to choose a provider: pass --provider",
+		confirm:  "no terminal to confirm the changes: pass -y",
 		key:      "no terminal to read the API key: set SHARD_API_KEY",
-		existing: "no terminal to ask existing: run shard setup in a terminal",
+		existing: "no terminal to choose what to do with the existing installation: run shard setup in a terminal",
 	} {
 		if got == nil || got.Error() != want {
 			t.Errorf("got %v, want %q", got, want)
+		}
+	}
+}
+
+func TestEveryQuestionIsWorded(t *testing.T) {
+	for _, q := range []setup.Question{
+		setup.AskMode, setup.AskProvider, setup.AskStartAtBoot, setup.AskConfirm, setup.AskURL, setup.AskHTTP,
+		setup.AskAPIKey, setup.AskSave, setup.AskSaved, setup.AskExisting, setup.AskRetry, setup.AskSwitch,
+	} {
+		if setupQuestion[q].ask == "" {
+			t.Errorf("question %s has no wording", q)
+		}
+	}
+}
+
+func TestALocalRunWithoutATerminalRefusesBeforeAnyCheck(t *testing.T) {
+	boot := boolChoice{set: true, value: true}
+	for _, tc := range []struct {
+		opts setupFlags
+		want string
+	}{
+		{setupFlags{local: true}, "no terminal to choose a provider, choose whether shard starts at boot and confirm the changes: pass --provider, --start-at-boot and -y"},
+		{setupFlags{provider: "gvisor", startAtBoot: boot}, "no terminal to confirm the changes: pass -y"},
+		{setupFlags{local: true, startAtBoot: boot, yes: true}, "no terminal to choose a provider: pass --provider"},
+		{setupFlags{provider: "gvisor", startAtBoot: boot, yes: true}, ""},
+		{setupFlags{remote: "https://shard.example.com"}, ""},
+		{setupFlags{}, ""},
+	} {
+		err := noTerminal(t, tc.opts).unattended()
+		if tc.want == "" && err != nil {
+			t.Errorf("%+v refused: %v", tc.opts, err)
+		}
+		if tc.want != "" && (err == nil || err.Error() != tc.want) {
+			t.Errorf("%+v: %v, want %q", tc.opts, err, tc.want)
 		}
 	}
 }
@@ -105,6 +153,17 @@ func TestYesConfirmsButMakesNoChoice(t *testing.T) {
 	}
 }
 
+// A flag that answers yes still prints the warning above the question (SHARD-739).
+func TestASaveFlagStillPrintsThePlainTextWarning(t *testing.T) {
+	ui, out := noTerminalOut(t, setupFlags{remote: "https://shard.example.com", save: true})
+	if save, err := ui.Confirm(t.Context(), setup.AskSave, "The key is plain text.\nSave?", true); err != nil || !save {
+		t.Fatalf("--save answered %v, %v; want a save", save, err)
+	}
+	if got := out.String(); got != "The key is plain text.\n" {
+		t.Errorf("--save printed %q, want the warning alone", got)
+	}
+}
+
 func TestTheURLIsTheFlagOrTheEnvironmentOnlyOnce(t *testing.T) {
 	for _, tc := range []struct {
 		flag, env, want string
@@ -117,7 +176,7 @@ func TestTheURLIsTheFlagOrTheEnvironmentOnlyOnce(t *testing.T) {
 		if url, err := ui.Text(t.Context(), setup.AskURL, "Shard server URL:", ""); err != nil || url != tc.want {
 			t.Errorf("the URL is %q, %v; want %q", url, err, tc.want)
 		}
-		if _, err := ui.Text(t.Context(), setup.AskURL, "Shard server URL:", ""); err == nil || err.Error() != "no terminal to ask url: pass --remote" {
+		if _, err := ui.Text(t.Context(), setup.AskURL, "Shard server URL:", ""); err == nil || err.Error() != "no terminal to read the server URL: pass --remote" {
 			t.Errorf("an edit after a failed check answered %v, want the person asked", err)
 		}
 	}
@@ -125,13 +184,17 @@ func TestTheURLIsTheFlagOrTheEnvironmentOnlyOnce(t *testing.T) {
 
 func TestARemoteFlagReplacesASavedConnectionAndAFailedCheckExits(t *testing.T) {
 	ui := noTerminal(t, setupFlags{remote: "https://shard.example.com", save: true, yes: true})
-	saved := []term.Option{{Name: "check"}, {Name: "replace"}, {Name: "remove"}, {Name: "exit"}}
+	saved := []term.Option{{Name: "check"}, {Name: "replace"}, {Name: "remove"}, {Name: "local"}, {Name: "exit"}}
 	if chosen, err := ui.Select(t.Context(), setup.AskSaved, "What would you like to do?", saved); err != nil || saved[chosen].Name != "replace" {
 		t.Errorf("--remote chose %d, %v; want replace", chosen, err)
 	}
 	retry := []term.Option{{Name: "retry"}, {Name: "edit"}, {Name: "exit"}}
 	if chosen, err := ui.Select(t.Context(), setup.AskRetry, "What would you like to do?", retry); err != nil || retry[chosen].Name != "exit" {
 		t.Errorf("a failed check without a terminal chose %d, %v; want exit", chosen, err)
+	}
+	// A local option picks local setup from the saved connection's menu (SHARD-741).
+	if chosen, err := noTerminal(t, setupFlags{provider: "gvisor"}).Select(t.Context(), setup.AskSaved, "What would you like to do?", saved); err != nil || saved[chosen].Name != "local" {
+		t.Errorf("--provider chose %d, %v; want local", chosen, err)
 	}
 }
 
