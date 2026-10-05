@@ -3,6 +3,7 @@ package registry_test
 import (
 	"archive/tar"
 	"bytes"
+	"encoding/json"
 	"errors"
 	"io"
 	"net/http/httptest"
@@ -524,6 +525,83 @@ func TestListDegradesOnAnUnreadableEntry(t *testing.T) {
 	}
 }
 
+// A cached config edited in place keeps its file name, so only the hash tells it from what the pull verified.
+func TestACachedConfigThatNoLongerHashesToItsDigestIsRefused(t *testing.T) {
+	server, ref := servedImage(t, "app:1.0", map[string]string{"/etc/hostname": "box"})
+	dir := t.TempDir()
+	store := openStoreAt(t, dir, server)
+
+	pulled := pull(t, store, ref)
+	held, err := store.Get(ref)
+	if err != nil {
+		t.Fatalf("Get before the edit: %v", err)
+	}
+
+	manifest, err := v1.ParseManifest(bytes.NewReader(readBlob(t, dir, pulled.Digest)))
+	if err != nil {
+		t.Fatalf("parse the cached manifest: %v", err)
+	}
+	cfg, err := v1.ParseConfigFile(bytes.NewReader(readBlob(t, dir, manifest.Config.Digest.String())))
+	if err != nil {
+		t.Fatalf("parse the cached config: %v", err)
+	}
+	cfg.Config.Env = append(cfg.Config.Env, "INJECTED=1")
+	edited, err := json.Marshal(cfg)
+	if err != nil {
+		t.Fatalf("encode the edited config: %v", err)
+	}
+	writeBlob(t, dir, manifest.Config.Digest.String(), edited)
+
+	if _, err := held.Config(); err == nil || !strings.Contains(err.Error(), "pull it again") {
+		t.Errorf("Config of an image read before the edit: got %v, want a refusal", err)
+	}
+	if _, err := store.Get(ref); err == nil || !strings.Contains(err.Error(), "pull it again") {
+		t.Errorf("Get: got %v, want a refusal", err)
+	}
+}
+
+// The index names the manifest by digest, and the layout reads that file without hashing it.
+func TestACachedManifestThatNoLongerHashesToItsDigestIsRefused(t *testing.T) {
+	server, ref := servedImage(t, "app:1.0", map[string]string{"/etc/hostname": "box"})
+	dir := t.TempDir()
+	store := openStoreAt(t, dir, server)
+
+	pulled := pull(t, store, ref)
+	writeBlob(t, dir, pulled.Digest, append(readBlob(t, dir, pulled.Digest), '\n'))
+
+	if _, err := store.Get(ref); err == nil || !strings.Contains(err.Error(), "pull it again") {
+		t.Errorf("Get: got %v, want a refusal", err)
+	}
+	images, err := store.List()
+	if err != nil {
+		t.Fatalf("List: %v", err)
+	}
+	if len(images) != 1 || images[0].Broken == nil {
+		t.Errorf("List: got %+v, want the one entry marked broken", images)
+	}
+}
+
+func blobPath(dir, digest string) string {
+	return filepath.Join(dir, "blobs", "sha256", strings.TrimPrefix(digest, "sha256:"))
+}
+
+func readBlob(t *testing.T, dir, digest string) []byte {
+	t.Helper()
+	raw, err := os.ReadFile(blobPath(dir, digest))
+	if err != nil {
+		t.Fatalf("read the blob %s: %v", digest, err)
+	}
+
+	return raw
+}
+
+func writeBlob(t *testing.T, dir, digest string, raw []byte) {
+	t.Helper()
+	if err := os.WriteFile(blobPath(dir, digest), raw, 0o644); err != nil {
+		t.Fatalf("write the blob %s: %v", digest, err)
+	}
+}
+
 // A public route answers FetchError.Public, so the operator's fix survives and a helper's host path does not.
 func TestAFetchErrorNamesOnlyTheRegistrysAnswer(t *testing.T) {
 	server, ref := servedImage(t, "app:1.0", map[string]string{"/etc/hostname": "box"})
@@ -542,12 +620,28 @@ func TestAFetchErrorNamesOnlyTheRegistrysAnswer(t *testing.T) {
 	store := openStoreAt(t, t.TempDir(), server)
 	missing := strings.Replace(ref, "app:1.0", "app:no-such-tag", 1)
 	_, err = store.Pull(t.Context(), missing, nil)
-	if !errors.As(err, &fetch) || fetch.Public() != missing+" is not in its registry" {
+	if !errors.As(err, &fetch) || fetch.Public() != missing+" is not in its registry; check the image name and tag" {
 		t.Errorf("pull of a missing tag = %v, want a fetch error that says the registry has no such image", err)
 	}
 
 	helper := &registry.FetchError{Ref: ref, Err: errors.New("error getting credentials: exec /home/op/.docker/bin/docker-credential-desktop: permission denied")}
-	if got := helper.Public(); strings.Contains(got, "/home/op") || got != ref+" could not be fetched from its registry" {
+	if got := helper.Public(); strings.Contains(got, "/home/op") || got != ref+" could not be fetched from its registry; check that the registry is up, then retry" {
 		t.Errorf("public text = %q, want the ref alone with no host path", got)
+	}
+}
+
+// A tag can move after the pull, so only the digest names the files a sandbox stacks over (SHARD-585).
+func TestPinnedNamesTheRepositoryAtTheDigest(t *testing.T) {
+	digest := "sha256:" + strings.Repeat("ab", 32)
+	for ref, want := range map[string]string{
+		"alpine:3.20":                              "index.docker.io/library/alpine@" + digest,
+		"index.docker.io/library/alpine:3.20":      "index.docker.io/library/alpine@" + digest,
+		"localhost:5000/team/app:v1":               "localhost:5000/team/app@" + digest,
+		"index.docker.io/library/alpine@" + digest: "index.docker.io/library/alpine@" + digest,
+	} {
+		got, err := registry.Pinned(ref, digest)
+		if err != nil || got != want {
+			t.Errorf("Pinned(%q) = %q, %v, want %q", ref, got, err, want)
+		}
 	}
 }

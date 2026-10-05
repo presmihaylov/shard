@@ -2,6 +2,7 @@
 package cli
 
 import (
+	"cmp"
 	"context"
 	"errors"
 	"flag"
@@ -19,7 +20,7 @@ import (
 	"github.com/presmihaylov/shard/services/client"
 )
 
-// DefaultRoot is where shard keeps everything on the box. The client owns it: its connect hint names the unit there only.
+// DefaultRoot is where shard keeps everything on the box, and the one root a connect hint names the host's setup for.
 const DefaultRoot = client.DefaultRoot
 
 // DefaultTimeout bounds one pull inside the daemon. Without it a registry that accepts and stalls pins it.
@@ -54,6 +55,9 @@ type App struct {
 
 	// plainWarned is shared by every copy of the App one run makes, so a verb that builds two clients warns once.
 	plainWarned *sync.Once
+
+	// remoteFlag says --remote was passed, so even an empty one names the target and the saved connection names none.
+	remoteFlag bool
 }
 
 // stdin is what exec hands the guest and what secret set reads the value from.
@@ -140,6 +144,10 @@ var (
 func flagError(flags *flag.FlagSet, err error) error {
 	msg := err.Error()
 	if m := undefinedFlag.FindStringSubmatch(msg); m != nil {
+		if err := globalFlagHint(flags, m[1]); err != nil {
+			return err
+		}
+
 		return fmt.Errorf("unknown flag %s; run %s --help", dashed(m[1]), flags.Name())
 	}
 	if m := valuelessFlag.FindStringSubmatch(msg); m != nil {
@@ -160,6 +168,21 @@ func flagError(flags *flag.FlagSet, err error) error {
 	}
 
 	return err
+}
+
+// globalFlagHint says where a global flag typed after the verb belongs, and is nil for any other flag.
+func globalFlagHint(flags *flag.FlagSet, name string) error {
+	verb := helpKey(flags)
+	if verb == "" {
+		return nil
+	}
+	for _, f := range helps[""].flags {
+		if flagName(f.spell) == name {
+			return fmt.Errorf("%s goes before the verb: shard %s %s", dashed(name), f.spell, verb)
+		}
+	}
+
+	return nil
 }
 
 // wanted is what a flag's value must be: true or false for a bool, else what its placeholder in the help stands for.
@@ -235,6 +258,7 @@ func commands() []command {
 		{name: "daemon", run: App.daemon, subs: []command{{name: "status", run: App.daemonStatus}}},
 		{name: "info", run: App.info},
 		{name: "serve", run: App.serve},
+		{name: "setup", run: App.setup},
 		{name: "tokens", subs: []command{
 			{name: "mint", run: App.tokensMint},
 			{name: "list", aliases: []string{"ls"}, run: App.tokensList},
@@ -295,7 +319,7 @@ func (a App) run(ctx context.Context, args []string) error {
 		return fmt.Errorf("unknown command %q; run shard help", args[0])
 	}
 
-	return a.dispatch(ctx, cmd, args[1:])
+	return a.located(a.dispatch(ctx, cmd, args[1:]))
 }
 
 // dispatch runs a verb, or the subcommand its first argument names; a noun with none names the ones it takes.
@@ -369,6 +393,7 @@ func (a *App) parseGlobals(args []string) ([]string, error) {
 	if err := parseVerb(flags, args); err != nil {
 		return nil, err
 	}
+	flags.Visit(func(f *flag.Flag) { a.remoteFlag = a.remoteFlag || f.Name == "remote" })
 
 	// --version answers before the root is checked, so it never fails.
 	if showVersion {
@@ -416,11 +441,15 @@ func (h *hostList) Set(value string) error {
 	return nil
 }
 
-// client speaks to the daemon on the socket, or through --remote; a verb asks only after its flags parsed, so --help reads no token.
+// client speaks to the daemon on the socket, or through --remote, SHARD_REMOTE or the saved connection; a verb asks only after its flags parsed, so --help reads no token.
 func (a App) client() (*client.Client, error) {
-	// The key and the certificate are read here, so a bad one fails before the verb dials.
-	if a.Remote != "" {
-		c, err := client.NewRemoteFromEnv(a.Remote)
+	saved, err := a.saved()
+	if err != nil {
+		return nil, err
+	}
+	// a.Remote is already --remote or SHARD_REMOTE (fromEnv), so the saved remote comes last; a bad key or certificate fails before the dial.
+	if remote := cmp.Or(a.Remote, saved.Remote); remote != "" {
+		c, err := client.NewRemoteFromEnv(remote, saved)
 		if err != nil {
 			return nil, err
 		}
@@ -432,6 +461,12 @@ func (a App) client() (*client.Client, error) {
 	}
 
 	c := client.New(a.Root)
+	if a.Root == DefaultRoot {
+		c.SetHint(func() (string, error) {
+			daemon, err := a.localDaemon()
+			return daemon.Hint, err
+		})
+	}
 	if a.clientTimeout != 0 {
 		c.Timeout = a.clientTimeout
 	}
@@ -441,17 +476,64 @@ func (a App) client() (*client.Client, error) {
 
 // localClient is the socket for a verb no front forwards, so a remote target fails here, before any dial, and never as a bare 403.
 func (a App) localClient(verb string) (*client.Client, error) {
-	if a.Remote != "" {
-		return nil, fmt.Errorf("shard %s runs on the daemon host only, over its socket, and cannot reach %s; unset --remote and %s to run it there", verb, a.Remote, client.RemoteEnv)
+	if err := a.hostOnly(verb); err != nil {
+		return nil, err
 	}
 
 	return a.client()
+}
+
+// hostOnly refuses a remote for a verb that acts on this host, so it never reports the local result as the server's.
+func (a App) hostOnly(verb string) error {
+	if err := a.noRemote(verb); err != nil {
+		return err
+	}
+	saved, err := a.saved()
+	if err != nil {
+		return err
+	}
+	if saved.Remote == "" {
+		return nil
+	}
+
+	return fmt.Errorf("shard %s runs on the daemon host only and cannot reach the %v; remove it with shard setup to run it here", verb, saved)
+}
+
+// noRemote is hostOnly for daemon and serve: the saved connection names where commands go, never where a daemon runs.
+func (a App) noRemote(verb string) error {
+	if a.Remote == "" {
+		return nil
+	}
+
+	return fmt.Errorf("shard %s runs on the daemon host only and cannot reach %s; unset --remote and %s to run it there", verb, a.Remote, client.RemoteEnv)
+}
+
+// saved is the connection shard setup saved; an explicit --remote "" asks for the socket, so it reads none.
+func (a App) saved() (client.Config, error) {
+	if a.remoteFlag && a.Remote == "" {
+		return client.Config{}, nil
+	}
+	path, err := client.ConfigPath(os.Getenv)
+	if err != nil {
+		return client.Config{}, err
+	}
+
+	return client.LoadConfig(path)
 }
 
 // gotArgs echoes what a verb refused, quoted, so the error shows what was typed rather than a count.
 func gotArgs(args []string) string {
 	if len(args) == 0 {
 		return "none"
+	}
+	// Flag parsing stops at the first argument, so a flag typed after it lands here.
+	for _, arg := range args[1:] {
+		if arg == "--" {
+			break
+		}
+		if len(arg) > 1 && strings.HasPrefix(arg, "-") {
+			return fmt.Sprintf("%q; put the flags before the arguments", args)
+		}
 	}
 
 	return fmt.Sprintf("%q", args)

@@ -1,0 +1,285 @@
+name: SDK publish
+
+on:
+  push:
+    branches: [main]
+  # A retry after a partial failure: the plan skips what is already published.
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+# A queued run replans from main, so a pending run this one replaces loses nothing.
+concurrency:
+  group: sdk-publish
+  cancel-in-progress: false
+
+jobs:
+  release-pr:
+    name: release PR
+    runs-on: ubuntu-latest
+    if: github.ref == 'refs/heads/main'
+    permissions:
+      contents: write
+      pull-requests: write
+      actions: write
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: sdks/package-lock.json
+
+      - name: install changesets
+        working-directory: sdks
+        run: npm ci --no-audit --no-fund
+
+      - id: changesets
+        uses: changesets/action@ae32849d5ba541f9ae29e40e22a623bc13562f51 # v2.1.2
+        with:
+          cwd: sdks
+          version-script: npm run release-version
+          pr-title: Release SDKs
+          commit-message: Release SDKs
+
+      - name: name the setting
+        if: failure() && steps.changesets.outcome == 'failure'
+        run: |
+          echo "::error::If the log above says GitHub Actions may not create pull requests, turn on Settings > Actions > General > Allow GitHub Actions to create and approve pull requests."
+
+      # A push by GITHUB_TOKEN starts no workflow, so the release branch gets its checks by dispatch.
+      - name: describe the release and run its checks
+        if: steps.changesets.outputs.pr-number != ''
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PR: ${{ steps.changesets.outputs.pr-number }}
+        run: |
+          git fetch origin changeset-release/main
+          python3 sdks/release/pr_body.py --base "$GITHUB_SHA" --head origin/changeset-release/main > "$RUNNER_TEMP/body.md"
+          gh api --method PATCH "repos/$GITHUB_REPOSITORY/pulls/$PR" -F "body=@$RUNNER_TEMP/body.md" --silent
+          gh workflow run ci.yml --ref changeset-release/main
+          gh workflow run sdk-release.yml --ref changeset-release/main -f sdk=both
+
+  plan:
+    name: plan
+    runs-on: ubuntu-latest
+    if: github.ref == 'refs/heads/main'
+    # Only a token that can write sees a draft release, which the plan must refuse.
+    permissions:
+      contents: write
+    outputs:
+      typescript: ${{ steps.plan.outputs.typescript }}
+      typescript_version: ${{ steps.plan.outputs.typescript_version }}
+      typescript_tag: ${{ steps.plan.outputs.typescript_tag }}
+      typescript_ref: ${{ steps.plan.outputs.typescript_ref }}
+      typescript_prerelease: ${{ steps.plan.outputs.typescript_prerelease }}
+      typescript_npm_tag: ${{ steps.plan.outputs.typescript_npm_tag }}
+      python: ${{ steps.plan.outputs.python }}
+      python_version: ${{ steps.plan.outputs.python_version }}
+      python_tag: ${{ steps.plan.outputs.python_tag }}
+      python_ref: ${{ steps.plan.outputs.python_ref }}
+      python_prerelease: ${{ steps.plan.outputs.python_prerelease }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+
+      - id: plan
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: python3 sdks/release/release.py plan
+
+  build-typescript:
+    name: build typescript
+    needs: plan
+    if: needs.plan.outputs.typescript == 'true'
+    uses: ./.github/workflows/sdk-release.yml
+    with:
+      sdk: typescript
+      ref: ${{ needs.plan.outputs.typescript_ref }}
+
+  build-python:
+    name: build python
+    needs: plan
+    if: needs.plan.outputs.python == 'true'
+    uses: ./.github/workflows/sdk-release.yml
+    with:
+      sdk: python
+      ref: ${{ needs.plan.outputs.python_ref }}
+
+  # The trusted publisher names this workflow and the environment npm, so only this job can publish.
+  npm:
+    name: npm
+    needs: [plan, build-typescript]
+    runs-on: ubuntu-latest
+    environment: npm
+    permissions:
+      contents: read
+      id-token: write
+    env:
+      VERSION: ${{ needs.plan.outputs.typescript_version }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      # Trusted publishing needs npm 11.5.1 or later, and Node 22 ships npm 10.
+      - name: npm
+        run: npm install -g npm@11.21.0
+
+      - uses: actions/download-artifact@v4
+        with:
+          name: sdk-typescript
+          path: ${{ runner.temp }}/sdk
+
+      - name: the tested files
+        working-directory: ${{ runner.temp }}/sdk
+        run: |
+          sha256sum -c SHA256SUMS
+          packed=$(tar -xOzf "useshards-$VERSION.tgz" package/package.json | jq -er .version)
+          [ "$packed" = "$VERSION" ] || { echo "the tarball says $packed, but the plan says $VERSION"; exit 1; }
+
+      # npm never replaces a version, so a retry skips the same files and fails on different ones.
+      - id: registry
+        name: what npm holds
+        run: |
+          status=$(curl -sS -o "$RUNNER_TEMP/meta.json" -w '%{http_code}' "https://registry.npmjs.org/useshards/$VERSION")
+          if [ "$status" = 404 ]; then
+            echo "publish=true" >>"$GITHUB_OUTPUT"
+            exit 0
+          fi
+          [ "$status" = 200 ] || { echo "npm answered $status for useshards@$VERSION"; exit 1; }
+          curl -sSfL -o "$RUNNER_TEMP/published.tgz" "$(jq -er .dist.tarball "$RUNNER_TEMP/meta.json")"
+          python3 sdks/release/release.py compare "$RUNNER_TEMP/published.tgz" "$RUNNER_TEMP/sdk/useshards-$VERSION.tgz" ||
+            { echo "::error::npm holds useshards@$VERSION with other files; release a new version"; exit 1; }
+          echo "npm holds useshards@$VERSION with these files"
+          echo "publish=false" >>"$GITHUB_OUTPUT"
+
+      - name: publish
+        if: steps.registry.outputs.publish == 'true'
+        env:
+          NPM_TAG: ${{ needs.plan.outputs.typescript_npm_tag }}
+        run: npm publish "$RUNNER_TEMP/sdk/useshards-$VERSION.tgz" --access public --tag "$NPM_TAG"
+
+  # The trusted publisher names this workflow and the environment pypi, so only this job can publish.
+  pypi:
+    name: pypi
+    needs: [plan, build-python]
+    runs-on: ubuntu-latest
+    environment: pypi
+    permissions:
+      contents: read
+      id-token: write
+    env:
+      VERSION: ${{ needs.plan.outputs.python_version }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/download-artifact@v4
+        with:
+          name: sdk-python
+          path: dist
+
+      # The upload takes every file in its directory, so the sums move out of it.
+      - name: the tested files
+        working-directory: dist
+        run: |
+          sha256sum -c SHA256SUMS
+          mv SHA256SUMS "$RUNNER_TEMP/SHA256SUMS"
+          want=$(printf '%s\n' "useshards-$VERSION-py3-none-any.whl" "useshards-$VERSION.tar.gz" | sort)
+          [ "$(ls | sort)" = "$want" ] || { echo "expected $want, found: $(ls)"; exit 1; }
+
+      # PyPI never replaces a file, so a retry skips the same files and fails on different ones.
+      - id: registry
+        name: what PyPI holds
+        run: |
+          status=$(curl -sS -o "$RUNNER_TEMP/meta.json" -w '%{http_code}' "https://pypi.org/pypi/useshards/$VERSION/json")
+          if [ "$status" = 404 ]; then
+            echo "publish=true" >>"$GITHUB_OUTPUT"
+            exit 0
+          fi
+          [ "$status" = 200 ] || { echo "PyPI answered $status for useshards $VERSION"; exit 1; }
+          missing=false
+          for name in $(jq -r '.urls[].filename' "$RUNNER_TEMP/meta.json"); do
+            [ -f "dist/$name" ] || { echo "::error::PyPI holds $name, which this build does not have; release a new version"; exit 1; }
+          done
+          for file in dist/*; do
+            name=$(basename "$file")
+            url=$(jq -r --arg name "$name" '.urls[] | select(.filename == $name) | .url' "$RUNNER_TEMP/meta.json")
+            if [ -z "$url" ]; then
+              missing=true
+              continue
+            fi
+            mkdir -p "$RUNNER_TEMP/published"
+            curl -sSfL -o "$RUNNER_TEMP/published/$name" "$url"
+            python3 sdks/release/release.py compare "$RUNNER_TEMP/published/$name" "$file" ||
+              { echo "::error::PyPI holds $name with other bytes; release a new version"; exit 1; }
+            echo "PyPI holds $name with these bytes"
+          done
+          echo "publish=$missing" >>"$GITHUB_OUTPUT"
+
+      - name: publish
+        if: steps.registry.outputs.publish == 'true'
+        uses: pypa/gh-action-pypi-publish@dc37677b2e1c63e2034f94d8a5b11f265b73ba33 # v1.14.2
+        with:
+          packages-dir: dist
+          skip-existing: true
+
+  release-typescript:
+    name: release typescript
+    needs: [plan, npm]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    env:
+      SDK: typescript
+      TITLE: useshards (TypeScript) ${{ needs.plan.outputs.typescript_version }}
+      TAG: ${{ needs.plan.outputs.typescript_tag }}
+      REF: ${{ needs.plan.outputs.typescript_ref }}
+      PRERELEASE: ${{ needs.plan.outputs.typescript_prerelease }}
+      GH_TOKEN: ${{ github.token }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - uses: actions/download-artifact@v4
+        with:
+          name: sdk-typescript
+          path: ${{ runner.temp }}/sdk
+
+      - name: tag and release
+        run: scripts/sdk-tag-release.sh
+
+  release-python:
+    name: release python
+    needs: [plan, pypi]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    env:
+      SDK: python
+      TITLE: useshards (Python) ${{ needs.plan.outputs.python_version }}
+      TAG: ${{ needs.plan.outputs.python_tag }}
+      REF: ${{ needs.plan.outputs.python_ref }}
+      PRERELEASE: ${{ needs.plan.outputs.python_prerelease }}
+      GH_TOKEN: ${{ github.token }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - uses: actions/download-artifact@v4
+        with:
+          name: sdk-python
+          path: ${{ runner.temp }}/sdk
+
+      - name: tag and release
+        run: scripts/sdk-tag-release.sh

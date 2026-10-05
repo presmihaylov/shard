@@ -216,6 +216,21 @@ func TestASandboxThatStoppedCleanlyIsNotReportedAsOutOfMemory(t *testing.T) {
 	}
 }
 
+// A count that does not parse is a read to report, never a sandbox that no OOM ended (SHARD-615).
+func TestAnOOMCountThatDoesNotParseFailsTheStatus(t *testing.T) {
+	const id = "amber-otter-7a8b"
+
+	root := fakeCgroup(t, id, "134217728")
+	writeEvents(t, root, id, "oom x\noom_kill 0\n")
+
+	p := newProviderOver(t, `printf '{"id":"amber-otter-7a8b","status":"stopped","pid":0}'`)
+	p.SetCgroupRoot(root)
+
+	if status, err := p.Status(t.Context(), id); err == nil {
+		t.Errorf("Status over an OOM count that does not parse returned %+v, want an error", status)
+	}
+}
+
 func writeEvents(t *testing.T, root, id, body string) {
 	t.Helper()
 

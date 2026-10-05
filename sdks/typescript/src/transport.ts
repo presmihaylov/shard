@@ -57,15 +57,18 @@ export class Transport {
   readonly api: Api;
   /** waiting is the fetch a call passes to api when it waits on the guest, so no bound cuts it. */
   readonly waiting: Fetch;
-  private readonly agent: http.Agent;
   private readonly base: URL;
+  // ES private fields, so no print of any handle reaches the key, nor the pooled sockets that hold its header.
+  readonly #agent: http.Agent;
+  readonly #authorization: string;
 
   constructor(
-    private readonly settings: Pick<Settings, "baseUrl" | "apiKey" | "ca">,
+    settings: Pick<Settings, "baseUrl" | "apiKey" | "ca">,
     private readonly timeoutMs = defaultTimeoutMs,
   ) {
+    this.#authorization = `Bearer ${settings.apiKey}`;
     this.base = new URL(settings.baseUrl);
-    this.agent =
+    this.#agent =
       this.base.protocol === "https:" ? new https.Agent({ keepAlive: true, ca: settings.ca }) : new http.Agent({ keepAlive: true });
     // Accept lets the fetcher refuse an answer that is not JSON before the generated client parses it.
     this.api = createClient<paths>({ baseUrl: this.base.origin, fetch: this.fetcher(this.timeoutMs), headers: { Accept: json } });
@@ -152,7 +155,7 @@ export class Transport {
   }
 
   close(): void {
-    this.agent.destroy();
+    this.#agent.destroy();
   }
 
   /** send resolves on the response, whatever its status; a body source that fails rejects with its own error. */
@@ -189,9 +192,9 @@ export class Transport {
     }
     const settings: http.RequestOptions = {
       method,
-      agent: this.agent,
+      agent: this.#agent,
       signal: options.signal,
-      headers: { ...headers, Authorization: `Bearer ${this.settings.apiKey}`, "User-Agent": `useshards-typescript/${version}` },
+      headers: { ...headers, Authorization: this.#authorization, "User-Agent": `useshards-typescript/${version}` },
     };
     const req = this.base.protocol === "https:" ? https.request(url, settings) : http.request(url, settings);
     // Set even at 0, so a pooled socket keeps no bound an earlier call left on it.

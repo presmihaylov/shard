@@ -7,6 +7,7 @@ import (
 	"path/filepath"
 	"runtime"
 	"strings"
+	"syscall"
 	"testing"
 	"time"
 
@@ -28,7 +29,13 @@ func newProvider(t *testing.T) *runc.Provider {
 func newProviderOver(t *testing.T, script string) *runc.Provider {
 	t.Helper()
 
-	dir := t.TempDir()
+	return newProviderIn(t, t.TempDir(), script)
+}
+
+// newProviderIn keeps each sandbox's state under dir, so a test can lay a bundle out where the provider opens it.
+func newProviderIn(t *testing.T, dir, script string) *runc.Provider {
+	t.Helper()
+
 	binary := filepath.Join(dir, "runc")
 	if err := os.WriteFile(binary, []byte("#!/bin/sh\n"+script+"\n"), 0o755); err != nil {
 		t.Fatalf("write the fake runc: %v", err)
@@ -157,6 +164,39 @@ func TestExecTakesOnlyARunningSandbox(t *testing.T) {
 	}
 }
 
+// runc opens the guest's passwd and group before every exec, whatever the user, so a fifo there stalls an exec that names nobody (SHARD-653).
+func TestExecRefusesAUserDatabaseThatIsNotAFileWhenNoUserIsNamed(t *testing.T) {
+	const id = "amber-otter-1a2b"
+	dir := t.TempDir()
+	p := newProviderIn(t, dir, `echo '{"id":"amber-otter-1a2b","status":"running","pid":42}'`)
+	rootfs := liveBundle(t, filepath.Join(dir, id))
+	if err := syscall.Mkfifo(filepath.Join(rootfs, "etc/group"), 0o600); err != nil {
+		t.Fatalf("make the group fifo: %v", err)
+	}
+
+	_, err := p.Exec(t.Context(), id, models.ExecSpec{Argv: []string{"true"}})
+	refused, ok := errors.AsType[*bundle.UserDatabaseError](err)
+	if !ok || !strings.HasPrefix(refused.Public(), "/etc/group is a named pipe") {
+		t.Fatalf("Exec over a fifo group returned %v, want a user database refusal that names /etc/group", err)
+	}
+}
+
+// liveBundle lays out the config.json and rootfs an exec reads, and returns the rootfs.
+func liveBundle(t *testing.T, stateDir string) string {
+	t.Helper()
+
+	rootfs := filepath.Join(stateDir, "bundle", "rootfs")
+	if err := os.MkdirAll(filepath.Join(rootfs, "etc"), 0o755); err != nil {
+		t.Fatalf("create the rootfs: %v", err)
+	}
+	config := `{"process":{"args":["/usr/local/bin/shard-init"],"cwd":"/"}}`
+	if err := os.WriteFile(filepath.Join(stateDir, "bundle", "config.json"), []byte(config), 0o600); err != nil {
+		t.Fatalf("write config.json: %v", err)
+	}
+
+	return rootfs
+}
+
 // A snapshot copies the layer, so a source that still writes it is refused before anything is copied.
 func TestSnapshotRefusesASourceThatIsLive(t *testing.T) {
 	p := newProviderOver(t, `echo '{"id":"amber-otter-1a2b","status":"running","pid":42}'`)
@@ -228,6 +268,26 @@ func TestOnlyTheSandboxsOwnBoundIsAnOOM(t *testing.T) {
 				t.Errorf("OOMKilled = %v, want %v", status.OOMKilled, tc.want)
 			}
 		})
+	}
+}
+
+// A count that does not parse is a read to report, never a sandbox that no OOM ended (SHARD-615).
+func TestAnOOMCountThatDoesNotParseFailsTheStatus(t *testing.T) {
+	const id = "amber-otter-1a2b"
+
+	root := t.TempDir()
+	dir := filepath.Join(root, bundle.CgroupsPath(id))
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "memory.events.local"), []byte("oom x\noom_kill 0\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	p := newProviderOver(t, `echo '{"id":"amber-otter-1a2b","status":"stopped","pid":0}'`)
+	p.SetCgroupRoot(root)
+
+	if status, err := p.Status(t.Context(), id); err == nil {
+		t.Errorf("Status over an OOM count that does not parse returned %+v, want an error", status)
 	}
 }
 

@@ -29,6 +29,7 @@ export default defineConfig({
 					label: 'Start here',
 					items: [
 						{ label: 'Overview', slug: 'docs' },
+						{ label: 'Install', slug: 'docs/install' },
 						{ label: 'Components', slug: 'docs/components' },
 					],
 				},

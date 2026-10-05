@@ -113,7 +113,7 @@ func TestAVerbUnderABadRemoteFailsOnTheMissingKey(t *testing.T) {
 }
 
 // The top level ends with the global options, the variables a remote reads and how to reach one, as SHARD-503 words them.
-func TestTheTopLevelEndsWithTheRemoteSetup(t *testing.T) {
+func TestTheTopLevelEndsWithTheRemoteSetupAndGetStarted(t *testing.T) {
 	want := `Global options:
   --root <dir>    directory for local Shard data (default ` + DefaultRoot + `)
   --remote <url>  URL of the Shard API server; HTTP/HTTPS supported,
@@ -126,7 +126,13 @@ Environment variables:
   SHARD_CA_FILE  custom CA certificate file; HTTPS only
 
 Set SHARD_REMOTE and SHARD_API_KEY for remote access.
-Without a remote URL, Shard connects to the local daemon.
+Without a remote URL or a saved connection, Shard connects to the local daemon.
+
+Get started:
+  shard setup
+
+For automated setup options:
+  shard setup --help
 
 Run 'shard COMMAND --help' for options and examples.`
 

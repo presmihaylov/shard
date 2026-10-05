@@ -9,6 +9,7 @@ import (
 	"path/filepath"
 
 	"github.com/presmihaylov/shard/models"
+	"github.com/presmihaylov/shard/pkg/filemode"
 )
 
 // restartFileCap bounds the read: shard-init writes a few dozen bytes, and the guest can write anything there.
@@ -32,7 +33,7 @@ func (b Bundle) RestartCount() (models.RestartCount, error) {
 
 // ClearRun drops what an earlier run left of the supervisor's files. The guest can leave a tree at two of them, so a plain remove is not enough (SHARD-635).
 func (b Bundle) ClearRun() error {
-	for _, stale := range []string{b.ExitFile, b.ReadyFile, b.RestartFile} {
+	for _, stale := range []string{b.ExitFile, b.ReadyFile, b.RestartFile, b.ChangedFile} {
 		// The guest is down here, and RemoveAll follows no link, so nothing past the tree it left goes with it.
 		if err := os.RemoveAll(stale); err != nil {
 			return fmt.Errorf("clear %s: %w", stale, err)
@@ -85,7 +86,7 @@ func requireRegular(f *os.File, path string) error {
 		return fmt.Errorf("stat %s: %w", path, err)
 	}
 	if !info.Mode().IsRegular() {
-		return fmt.Errorf("%s is a %s, and it must be a regular file: %w", path, info.Mode().Type(), models.ErrRestartFileForged)
+		return fmt.Errorf("%s is a %s, and it must be a regular file: %w", path, filemode.Name(info.Mode()), models.ErrRestartFileForged)
 	}
 
 	return nil

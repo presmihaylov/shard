@@ -32,6 +32,12 @@ func CheckVersion(binary string) error {
 	if err != nil {
 		return fmt.Errorf("read the version of %s: %w", binary, err)
 	}
+
+	return CheckVersionOutput(binary, out)
+}
+
+// CheckVersionOutput is CheckVersion over what binary --version already printed.
+func CheckVersionOutput(binary string, out []byte) error {
 	v, err := parseVersion(string(out))
 	if err != nil {
 		return fmt.Errorf("read the version of %s: %w", binary, err)

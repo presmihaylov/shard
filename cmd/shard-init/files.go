@@ -14,6 +14,7 @@ import (
 	"syscall"
 
 	"github.com/presmihaylov/shard/models"
+	"github.com/presmihaylov/shard/pkg/filemode"
 	"github.com/presmihaylov/shard/pkg/tarball"
 	"github.com/presmihaylov/shard/services/supervisor"
 )
@@ -334,7 +335,7 @@ func openFile(path string) (served, error) {
 		return served{}, errors.Join(invalidError("is a directory; a get takes one file"), f.Close())
 	}
 	if !info.Mode().IsRegular() {
-		return served{}, errors.Join(invalidError(fmt.Sprintf("is a %s, not a regular file; a get takes one file", info.Mode().Type())), f.Close())
+		return served{}, errors.Join(invalidError(fmt.Sprintf("is a %s, not a regular file; a get takes one file", filemode.Name(info.Mode()))), f.Close())
 	}
 
 	return served{stat: statOf(info), file: f}, nil

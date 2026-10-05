@@ -105,6 +105,7 @@ const codeStatus: ReadonlyMap<string, number> = new Map([
   ["name_taken", 409],
   ["exec_exited", 409],
   ["exec_running", 409],
+  ["exec_limit", 429],
   ["no_app", 409],
   ["app_ended", 409],
   ["command_not_started", 422],

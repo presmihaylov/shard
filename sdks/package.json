@@ -1,0 +1,11 @@
+{
+  "name": "shard-sdks",
+  "private": true,
+  "description": "The Changesets root of the two SDKs; nothing here is published.",
+  "scripts": {
+    "release-version": "changeset version && python3 release/release.py sync"
+  },
+  "devDependencies": {
+    "@changesets/cli": "3.0.3"
+  }
+}

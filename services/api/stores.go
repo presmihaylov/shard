@@ -117,8 +117,8 @@ func (h *Handler) listSecrets(_ context.Context, in *pageInput) (*reply[secretsR
 	return answer(secretsResponse{Secrets: secrets, Next: next, Warnings: warnings}, nil)
 }
 
-func (h *Handler) putSecret(_ context.Context, in *nameBody[sandbox.SecretRequest]) (*reply[secret.Secret], error) {
-	sec, err := h.stores.SetSecret(in.Name, value(in.Body))
+func (h *Handler) putSecret(_ context.Context, in *nameRequest[sandbox.SecretRequest]) (*reply[secret.Secret], error) {
+	sec, err := h.stores.SetSecret(in.Name, in.Body)
 	sec.Destinations = listOf(sec.Destinations)
 
 	return answer(sec, err)
@@ -126,7 +126,7 @@ func (h *Handler) putSecret(_ context.Context, in *nameBody[sandbox.SecretReques
 
 type removeSecretInput struct {
 	Name  string `path:"name"`
-	Force bool   `query:"force" doc:"Remove the secret while a sandbox record still names it."`
+	Force bool   `query:"force" doc:"Remove the secret even when a sandbox still has a grant on it."`
 }
 
 func (h *Handler) removeSecret(_ context.Context, in *removeSecretInput) (*struct{}, error) {
@@ -214,5 +214,5 @@ func (h *Handler) pruneImages(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	h.writeJSON(w, http.StatusOK, pruneResponse{Removed: removed, Warnings: warnings})
+	h.writeJSON(w, http.StatusOK, pruneResponse{Removed: listOf(removed), Warnings: warnings})
 }

@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"slices"
 	"strings"
 	"text/tabwriter"
 	"time"
@@ -30,13 +31,21 @@ func (a App) list(ctx context.Context, args []string) error {
 		return err
 	}
 
-	result, err := c.ListSandboxes(ctx, opts.all)
+	// Every sandbox is asked for, so a list without --all can say how many stopped ones it leaves out.
+	result, err := c.ListSandboxes(ctx, true)
 	if err != nil {
 		return err
 	}
+	shown := result.Sandboxes
+	if !opts.all {
+		shown = slices.DeleteFunc(slices.Clone(shown), func(sb client.Sandbox) bool { return sb.State == models.StateStopped })
+	}
 
 	// The daemon answers with both: the sandboxes it read are printed, and the ones it could not are the exit.
-	if err := a.writeList(opts.format, result.Sandboxes, time.Now()); err != nil {
+	if err := a.writeList(opts.format, shown, time.Now()); err != nil {
+		return err
+	}
+	if err := a.noteHidden(opts.format, len(result.Sandboxes)-len(shown)); err != nil {
 		return err
 	}
 
@@ -45,6 +54,22 @@ func (a App) list(ctx context.Context, args []string) error {
 	}
 
 	return errors.New(strings.Join(result.Warnings, "\n"))
+}
+
+// noteHidden says on stderr how many stopped sandboxes the table left out; JSON is for a script, which asks with --all.
+func (a App) noteHidden(format outputFormat, hidden int) error {
+	if hidden == 0 || format == formatJSON || a.Err == nil {
+		return nil
+	}
+	noun := "sandboxes"
+	if hidden == 1 {
+		noun = "sandbox"
+	}
+	if _, err := fmt.Fprintf(a.Err, "%d stopped %s; shard list --all\n", hidden, noun); err != nil {
+		return fmt.Errorf("write the output: %w", err)
+	}
+
+	return nil
 }
 
 func (a App) writeList(format outputFormat, sandboxes []client.Sandbox, now time.Time) error {

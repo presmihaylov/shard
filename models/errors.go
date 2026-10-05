@@ -25,6 +25,12 @@ var ErrExitChannelReplaced = errors.New("exit channel replaced")
 // ErrExecLost is a command that started while the substrate lost its wait on it, so how it ended is unknown.
 var ErrExecLost = errors.New("the substrate lost its wait on the command")
 
+// ErrImageGone is an image whose files left the host while a sandbox still stacks over them.
+var ErrImageGone = errors.New("its image is gone from the host")
+
+// ErrLostState is a run whose state files say nothing true, since the substrate could not land one of its events.
+var ErrLostState = errors.New("lost its lifecycle state")
+
 // CommandNotStartedError is a command a sandbox refused to start, which is no exit code of that
 // command: it never ran. Code is what a shell answers for the same refusal.
 type CommandNotStartedError struct {
@@ -72,7 +78,9 @@ func (e *UnsupportedError) Error() string {
 
 func (e *UnsupportedError) Unwrap() error { return ErrUnsupported }
 
-func (e *UnsupportedError) Public() string { return e.Error() }
+func (e *UnsupportedError) Public() string {
+	return fmt.Sprintf("%s; use a server that supports %s", e.Error(), e.Verb)
+}
 
 // NotFoundError marks a lookup miss whose text names only what the caller asked for, so a public route may answer it.
 type NotFoundError struct {
@@ -110,7 +118,9 @@ func (e *LostError) Error() string {
 
 func (e *LostError) Unwrap() error { return e.Err }
 
-func (e *LostError) Public() string { return fmt.Sprintf("sandbox %s is lost", e.Sandbox) }
+func (e *LostError) Public() string {
+	return fmt.Sprintf("sandbox %s is lost; remove it and create another sandbox", e.Sandbox)
+}
 
 // EntrypointNotStartedError is a sandbox whose entrypoint never ran; Err quotes the sandbox log, which can name a host path.
 type EntrypointNotStartedError struct {

@@ -29,9 +29,10 @@ type Ring interface {
 	Follow(ctx context.Context, yield func(kmsg.Record) error, caughtUp func()) error
 }
 
-// Sandboxes is the part of the repository the tailer needs: which sandbox holds which address.
+// Sandboxes is the part of the repository the tailer needs: who holds which address, and a generation that moves on every record write.
 type Sandboxes interface {
 	List() ([]models.Sandbox, error)
+	Generation() uint64
 }
 
 // Tailer makes a host drop as durable as a proxy decision. The ring is shared with the whole host and
@@ -48,6 +49,8 @@ type Tailer struct {
 	// that has just started is the ordinary miss, and a drop names one of those and never an id.
 	holders   map[string]models.Sandbox
 	refreshed time.Time
+	// listedGen is the record generation the holders were listed at.
+	listedGen uint64
 	// live is set once the backlog is spent, and a line read after it can name a create the last list missed.
 	live bool
 
@@ -141,6 +144,11 @@ func (t *Tailer) report(fresh bool, end uint64) {
 // sandboxFor answers whose drop this is. A routed drop names the sandbox's address, and an IPv6 one
 // dies at the port before it is routed, so the port is the only thing that names it.
 func (t *Tailer) sandboxFor(keys ...string) (models.Sandbox, bool) {
+	// A pending holder can fail after the list, keep its log and give its address to the next create (SHARD-545).
+	if t.repo.Generation() != t.listedGen {
+		t.holders = nil
+		t.refreshed = time.Time{}
+	}
 	if sb, ok := t.holder(keys); ok {
 		return sb, true
 	}
@@ -150,6 +158,8 @@ func (t *Tailer) sandboxFor(keys ...string) (models.Sandbox, bool) {
 	}
 
 	listed := time.Now()
+	// The generation is read first, so a write that lands during the list moves it past this one.
+	gen := t.repo.Generation()
 	// ListReadable drops the unreadable records through the shared dedup, so a corrupt one logs once, not per drop.
 	sandboxes, err := sandboxstate.ListReadable(t.repo, t.ulog)
 	if err != nil {
@@ -158,8 +168,13 @@ func (t *Tailer) sandboxFor(keys ...string) (models.Sandbox, bool) {
 	}
 
 	t.refreshed = listed
+	t.listedGen = gen
 	t.holders = map[string]models.Sandbox{}
 	for _, each := range sandboxes {
+		// A failed create keeps the address its teardown gave back, and the next create may hold it now (SHARD-545).
+		if each.State == models.StateFailed {
+			continue
+		}
 		if each.Address.IsValid() {
 			t.holders[each.Address.Addr().String()] = each
 		}

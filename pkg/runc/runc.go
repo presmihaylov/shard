@@ -16,6 +16,7 @@ import (
 	"runtime"
 	"strconv"
 	"strings"
+	"sync"
 	"syscall"
 	"time"
 
@@ -30,9 +31,6 @@ var ErrNotRunning = errors.New("the container is not running")
 
 // waitDelay bounds how long a cancelled call waits for the output pipes after the kill signal.
 const waitDelay = 2 * time.Second
-
-// pidPoll is how often reportPID looks for the pid file the guest process writes as it forks.
-const pidPoll = 10 * time.Millisecond
 
 // diagnosticTail bounds what a failed create quotes back, because the guest shares that file with it.
 const diagnosticTail = 4 << 10
@@ -61,13 +59,15 @@ type State struct {
 	Bundle string `json:"bundle"`
 }
 
-// Runner runs one runc root. Every container under it is reachable from any shard process,
-// so nothing here is held in memory between commands.
+// Runner owns one runc root and the pinned handles of its active execs.
 type Runner struct {
 	binary       string
 	root         string
 	execDir      string
 	noNewKeyring bool
+	execMu       sync.Mutex
+	nextExec     int
+	execs        map[int]execHandle
 }
 
 // Option configures a Runner.
@@ -191,8 +191,8 @@ type ExecOptions struct {
 	Stdin  *os.File
 	Stdout *os.File
 	Stderr *os.File
-	// Report is called once with the host pid, which is the pid Signal takes to reach this exec.
-	Report func(pid int)
+	// Report gives Signal an opaque handle backed by the launch pin, so reporting requires Launch.
+	Report func(handle int)
 }
 
 // Exec needs launch proof because runc uses exit 1 for both a command exit and a launch refusal.
@@ -202,6 +202,9 @@ func (r *Runner) Exec(ctx context.Context, id string, opts ExecOptions) (code in
 	}
 	if opts.Bundle == "" {
 		return 0, fmt.Errorf("no bundle: %s exec has no process to start from", r.name())
+	}
+	if opts.Report != nil && opts.Launch == "" {
+		return 0, fmt.Errorf("%s exec: reporting a process handle requires a launch shim", r.name())
 	}
 
 	dir, err := os.MkdirTemp(r.execDir, "shard-exec-")
@@ -224,6 +227,16 @@ func (r *Runner) Exec(ctx context.Context, id string, opts ExecOptions) (code in
 			return 0, fmt.Errorf("%s exec %s: %w", r.name(), id, err)
 		}
 		defer func() { err = errors.Join(err, ch.Close()) }()
+	}
+
+	var report func(int)
+	if opts.Report != nil {
+		handle, err := r.trackExec(id, ch)
+		if err != nil {
+			return 0, fmt.Errorf("%s exec %s: %w", r.name(), id, err)
+		}
+		defer r.forgetExec(handle)
+		report = func(int) { opts.Report(handle) }
 	}
 
 	args := execArgs(id, pidFile, processFile, opts)
@@ -251,13 +264,6 @@ func (r *Runner) Exec(ctx context.Context, id string, opts ExecOptions) (code in
 		cmd.Cancel = func() error { return errors.Join(ch.Kill(), cmd.Process.Kill()) }
 	}
 
-	// The pid lets the caller signal this exec while it runs; the watch ends when the command does.
-	if opts.Report != nil && ch == nil {
-		reportCtx, stop := context.WithCancel(ctx)
-		defer stop()
-		go reportPID(reportCtx, pidFile, opts.Report)
-	}
-
 	if err := cmd.Start(); err != nil {
 		return 0, fmt.Errorf("%s exec %s: %w", r.name(), id, err)
 	}
@@ -268,7 +274,7 @@ func (r *Runner) Exec(ctx context.Context, id string, opts ExecOptions) (code in
 		if err := ch.CloseGuest(); err != nil {
 			return 0, errors.Join(err, cmd.Cancel(), cmd.Wait())
 		}
-		go func() { launched <- await(ctx, ch, pidFile, opts.Report) }()
+		go func() { launched <- await(ctx, ch, pidFile, report) }()
 	}
 
 	err = cmd.Wait()
@@ -311,7 +317,7 @@ func execArgs(id, pidFile, processFile string, opts ExecOptions) []string {
 	return append(args, "--preserve-fds", "1", id)
 }
 
-// await waits for the launch shim's verdict, and reports the pid only once the command's execve took.
+// await reports only after the trace proves the command's execve took.
 func await(ctx context.Context, ch *launch.Channel, pidFile string, report func(int)) error {
 	pid, err := ch.Await(ctx, func() (int, error) { return readPID(pidFile) })
 	if err != nil {
@@ -364,15 +370,21 @@ func (r *Runner) interrupt(cmd *exec.Cmd, id, pidFile string) error {
 	return nil
 }
 
-// Signal sends one signal to a running exec by its host pid, which runc wrote as the pid file.
-func (r *Runner) Signal(_ context.Context, id string, pid int, signal string) error {
+// Signal accepts only a handle this runner reported for this sandbox's live launch.
+func (r *Runner) Signal(_ context.Context, id string, handle int, signal string) error {
 	sig, err := signalOf(signal)
 	if err != nil {
 		return err
 	}
 
-	if err := syscall.Kill(pid, sig); err != nil {
-		return fmt.Errorf("send %s to the exec %d of %s: %w", signal, pid, id, err)
+	r.execMu.Lock()
+	e, ok := r.execs[handle]
+	r.execMu.Unlock()
+	if !ok || e.id != id {
+		return os.ErrProcessDone
+	}
+	if err := e.channel.Signal(sig); err != nil {
+		return fmt.Errorf("send %s to the exec of %s: %w", signal, id, err)
 	}
 
 	return nil
@@ -390,25 +402,7 @@ func signalOf(name string) (syscall.Signal, error) {
 	return 0, fmt.Errorf("signal %q is not one this driver sends", name)
 }
 
-// reportPID hands the caller the host pid as soon as the process forks, and gives up if the command
-// ends without one, which is how a command that never ran looks.
-func reportPID(ctx context.Context, pidFile string, report func(int)) {
-	for {
-		if pid, err := readPID(pidFile); err == nil {
-			report(pid)
-
-			return
-		}
-
-		select {
-		case <-ctx.Done():
-			return
-		case <-time.After(pidPoll):
-		}
-	}
-}
-
-// readPID reads the guest pid runc wrote, which is the only handle a signal into the container has.
+// readPID supplies the host pid whose identity the launch channel proves before execve.
 func readPID(path string) (int, error) {
 	blob, err := os.ReadFile(path)
 	if err != nil {

@@ -71,7 +71,7 @@ type harness struct {
 	provider *sysbox.Provider
 	image    image.Image
 
-	open func() (models.Provider, error)
+	open func() (*sysbox.Provider, error)
 
 	mu   sync.Mutex
 	dirs map[string]string
@@ -120,7 +120,7 @@ func newHarness(t *testing.T) *harness {
 		t.Fatalf("open the provider: %v", err)
 	}
 	// A daemon restart is a second provider over the same runner and state, which holds nothing of the first in memory.
-	h.open = func() (models.Provider, error) { return sysbox.New(runner, bundles, h.stateDir) }
+	h.open = func() (*sysbox.Provider, error) { return sysbox.New(runner, bundles, h.stateDir) }
 
 	return h
 }

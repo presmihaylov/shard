@@ -1,0 +1,75 @@
+---
+import Icon from '../Icon.astro';
+
+const command = 'curl -fsSL https://useshards.com/install | sh';
+---
+
+<div class="mt-10 max-w-2xl">
+	<div data-slot="card" class="relative flex items-center gap-2 rounded-md border border-foreground/15 py-2 pr-2 pl-4 md:py-3 md:pl-6">
+		<code class="min-w-0 flex-1 py-1 font-mono text-[0.8125rem] leading-relaxed [overflow-wrap:anywhere] sm:text-base md:text-lg">
+			<span class="select-none text-muted-foreground" aria-hidden="true">$ </span><span data-install-command>{command}</span>
+		</code>
+		<button
+			type="button"
+			class="nairi-focus-ring flex size-10 shrink-0 cursor-pointer items-center justify-center rounded-md text-muted-foreground transition-colors hover:bg-foreground/5 hover:text-foreground"
+			aria-label="Copy the install command"
+			data-copy={command}
+		>
+			<span data-copy-idle><Icon name="copy" size={20} /></span>
+			<span data-copy-done hidden><Icon name="checkCircle" size={20} /></span>
+		</button>
+		<span
+			role="status"
+			class="pointer-events-none absolute -top-9 right-0 rounded-md bg-foreground px-2.5 py-1 text-xs font-medium text-background opacity-0 transition-opacity data-[shown]:opacity-100"
+			data-copy-status
+		></span>
+	</div>
+	<p class="mt-3 text-sm leading-relaxed text-muted-foreground">
+		The installer then offers to set up this machine as a sandbox host, or to connect to a remote Shard server.{' '}
+		<a href="/docs/install/" class="text-link underline-offset-4 hover:underline nairi-focus-ring">Read the install guide</a>
+	</p>
+</div>
+
+<script>
+	const button = document.querySelector<HTMLButtonElement>('[data-copy]');
+	const status = document.querySelector<HTMLElement>('[data-copy-status]');
+	const idle = document.querySelector<HTMLElement>('[data-copy-idle]');
+	const done = document.querySelector<HTMLElement>('[data-copy-done]');
+	const code = document.querySelector<HTMLElement>('[data-install-command]');
+	let timer = 0;
+
+	function show(message: string, copied: boolean) {
+		if (!status || !idle || !done) return;
+		status.textContent = message;
+		status.toggleAttribute('data-shown', true);
+		idle.hidden = copied;
+		done.hidden = !copied;
+		window.clearTimeout(timer);
+		timer = window.setTimeout(() => {
+			status.toggleAttribute('data-shown', false);
+			idle.hidden = false;
+			done.hidden = true;
+		}, 2000);
+	}
+
+	// Without clipboard access (an http page, a denied permission), select the command so the reader can copy it by hand.
+	function selectCommand() {
+		const selection = window.getSelection();
+		if (!code || !selection) return;
+		const range = document.createRange();
+		range.selectNodeContents(code);
+		selection.removeAllRanges();
+		selection.addRange(range);
+	}
+
+	button?.addEventListener('click', async () => {
+		const text = button.dataset.copy ?? '';
+		try {
+			await navigator.clipboard.writeText(text);
+			show('Copied', true);
+		} catch {
+			selectCommand();
+			show('Selected. Copy it by hand', false);
+		}
+	});
+</script>

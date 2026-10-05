@@ -138,21 +138,32 @@ esac`, report, os.Getpid(), page.Fd(), killed, killed, labID, labID, labPid))
 
 // Guest root that replaced fd 0 loses its exit record, never the stop that only the host may give.
 func TestAStopEndsASandboxWhoseFdZeroWasReplaced(t *testing.T) {
-	lab := newChannelLab(t)
-	fifo := filepath.Join(t.TempDir(), "fifo")
-	if err := syscall.Mkfifo(fifo, 0o600); err != nil {
-		t.Fatal(err)
-	}
-	lab.pointFd0(t, fifo)
-	lab.record(t, inodeOf(t, fifo))
-	killed := filepath.Join(t.TempDir(), "killed")
-	lab.script(t, fmt.Sprintf(`case "$*" in
+	for name, target := range map[string]func(*testing.T) string{
+		"a FIFO": func(t *testing.T) string {
+			fifo := filepath.Join(t.TempDir(), "fifo")
+			if err := syscall.Mkfifo(fifo, 0o600); err != nil {
+				t.Fatal(err)
+			}
+
+			return fifo
+		},
+		"a file the daemon cannot open": unopenable,
+	} {
+		t.Run(name, func(t *testing.T) {
+			lab := newChannelLab(t)
+			path := target(t)
+			lab.pointFd0(t, path)
+			lab.record(t, inodeOf(t, path))
+			killed := filepath.Join(t.TempDir(), "killed")
+			lab.script(t, fmt.Sprintf(`case "$*" in
 *" kill "*) touch %s ;;
 *" state "*) if [ -e %s ]; then echo '{"id":%q,"status":"stopped","pid":0}'; else echo '{"id":%q,"status":"running","pid":%d}'; fi ;;
 esac`, killed, killed, labID, labID, labPid))
 
-	if err := lab.p.Stop(t.Context(), labID, time.Second); err != nil {
-		t.Errorf("Stop over a replaced fd 0 returned %v, want the sandbox stopped", err)
+			if err := lab.p.Stop(t.Context(), labID, time.Second); err != nil {
+				t.Errorf("Stop over %s on fd 0 returned %v, want the sandbox stopped", name, err)
+			}
+		})
 	}
 }
 

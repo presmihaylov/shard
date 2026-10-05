@@ -26,7 +26,7 @@ import (
 	"time"
 
 	"github.com/presmihaylov/shard/models"
-	"github.com/presmihaylov/shard/pkg/pgroup"
+	"github.com/presmihaylov/shard/pkg/reaper"
 	"github.com/presmihaylov/shard/pkg/vz"
 	"github.com/presmihaylov/shard/services/supervisor"
 )
@@ -38,7 +38,12 @@ const (
 	fakeRunEnv  = "VZVM_FAKE_RUN"
 	// impostorRole runs the binary with a shim's arguments, serving nothing, as a process that only claims a socket would.
 	impostorRole = "impostor"
+	// marksFile in a harness root takes the shim and the guest session of every sandbox the harness starts, for its cleanup and the run's reaper to end.
+	marksFile = "marks"
 )
+
+// harnessesFile takes the marks file of every harness this run opens, as the reaper's index.
+var harnessesFile string
 
 // initBinary is the shard-init the fake shim runs in place of a VM, built once per test run unless the env names one.
 var initBinary string
@@ -47,8 +52,14 @@ var initBinary string
 var guardHost func() (release func() error, err error)
 
 func TestMain(m *testing.M) {
+	if ran, code := reaper.Role(); ran {
+		os.Exit(code)
+	}
 	if os.Getenv(fakeShimEnv) == impostorRole {
-		time.Sleep(time.Hour)
+		if err := awaitRunEnd(); err != nil {
+			fmt.Fprintln(os.Stderr, "impostor:", err)
+			os.Exit(1)
+		}
 
 		return
 	}
@@ -114,6 +125,30 @@ func runTests(m *testing.M) (code int) {
 			return 1
 		}
 	}
+	dir, err := os.MkdirTemp("", "vzrun")
+	if err != nil {
+		fmt.Fprintln(os.Stderr, err)
+
+		return 1
+	}
+	defer func() {
+		if err := os.RemoveAll(dir); err != nil {
+			fmt.Fprintln(os.Stderr, "remove the run directory:", err)
+			code = 1
+		}
+	}()
+	harnessesFile = filepath.Join(dir, "harnesses")
+	if err := os.WriteFile(harnessesFile, nil, 0o600); err != nil {
+		fmt.Fprintln(os.Stderr, err)
+
+		return 1
+	}
+	reaped, err := reaper.Start(harnessesFile)
+	if err != nil {
+		fmt.Fprintln(os.Stderr, "start the reaper:", err)
+
+		return 1
+	}
 	// A shim runs in its own group, which a timeout or a kill of this run never reaches: it inherits the read end and goes at EOF.
 	var run [2]int
 	if err := syscall.Pipe(run[:]); err != nil {
@@ -127,7 +162,25 @@ func runTests(m *testing.M) (code int) {
 	os.Setenv(fakeInitEnv, initBinary)
 	os.Setenv(fakeRunEnv, strconv.Itoa(run[0]))
 
-	return m.Run()
+	code = m.Run()
+	if err := reaped(); err != nil {
+		fmt.Fprintln(os.Stderr, "the reaper:", err)
+
+		return 1
+	}
+
+	return code
+}
+
+// awaitRunEnd returns at the EOF of the run's pipe, which a frozen or killed process of this run never sends.
+func awaitRunEnd() error {
+	fd, err := strconv.Atoi(os.Getenv(fakeRunEnv))
+	if err != nil {
+		return fmt.Errorf("read %s: %w", fakeRunEnv, err)
+	}
+	_, err = io.Copy(io.Discard, os.NewFile(uintptr(fd), "run"))
+
+	return err
 }
 
 // fakeShim is cmd/shard-vz-shim without the framework: one shard-init process behind the shim socket.
@@ -149,12 +202,22 @@ func fakeShim() error {
 	syscall.CloseOnExec(fd)
 	run := os.NewFile(uintptr(fd), "run")
 
+	// The socket is <root>/s/<id>/shim.sock, and a frozen shim reads no EOF, so the marks end it by its start time.
+	marks := filepath.Join(filepath.Dir(filepath.Dir(filepath.Dir(cfg.Socket))), marksFile)
+	self, err := reaper.Process(os.Getpid())
+	if err != nil {
+		return err
+	}
+	if err := reaper.Note(marks, self.String()); err != nil {
+		return err
+	}
+
 	listener, err := vz.Listen(cfg.Socket)
 	if err != nil {
 		return err
 	}
 	listener = countingListener{Listener: listener, path: filepath.Join(filepath.Dir(cfg.Socket), acceptsFile)}
-	machine, err := bootFake(cfg)
+	machine, err := bootFake(cfg, marks)
 	if err != nil {
 		return errors.Join(err, listener.Close())
 	}
@@ -191,7 +254,7 @@ func fakeShim() error {
 			// No test is left to stop this sandbox, so the shim does.
 			return errors.Join(err, stopFake(machine, listener, served))
 		case <-machine.exited:
-			return errors.Join(listener.Close(), <-served)
+			return errors.Join(machine.ended, listener.Close(), <-served)
 		}
 	}
 }
@@ -203,15 +266,19 @@ func stopFake(machine *fakeMachine, listener net.Listener, served <-chan error) 
 	}
 	<-machine.exited
 
-	return errors.Join(listener.Close(), <-served)
+	return errors.Join(machine.ended, listener.Close(), <-served)
 }
 
-// fakeMachine is a shard-init process in its own group: a pause is SIGSTOP, a save a marker file, a stop SIGKILL.
+// fakeMachine is a shard-init process in its own session: a pause is SIGSTOP, a save a marker file, a stop SIGKILL.
 type fakeMachine struct {
 	id     string
 	dir    string
 	cmd    *exec.Cmd
 	exited chan struct{}
+	// guest marks the session shard-init leads.
+	guest reaper.Marks
+	// ended is why the guest's session outlived its power-off, read once exited is closed.
+	ended error
 
 	mu      sync.Mutex
 	state   vz.State
@@ -263,6 +330,12 @@ const floodFile = "flood-control"
 // floodEveryFile in the state directory floods every control stream past its state line, for as long as it stays there.
 const floodEveryFile = "flood-every-control"
 
+// floodEventsFile in the state directory floods every control stream past its state line with valid events, faster than the host lands them.
+const floodEventsFile = "flood-events-control"
+
+// floodEvent is what a floodEventsFile stream repeats: a restarts count, which the host lands on disk one at a time.
+var floodEvent = []byte(`{"kind":"restarts","restarts":{"count":1}}` + "\n")
+
 // dialsFile in the state directory, once a test creates it, takes one line per control stream the host dials.
 const dialsFile = "control-dials"
 
@@ -284,7 +357,7 @@ const savesFile = "saves"
 // resetHold is longer than the entrypoint the hold test runs, so its exit lands while no stream is open.
 const resetHold = 1500 * time.Millisecond
 
-func bootFake(cfg vz.Config) (*fakeMachine, error) {
+func bootFake(cfg vz.Config, marks string) (*fakeMachine, error) {
 	id := cfg.MachineID
 	if id == "" {
 		var b [8]byte
@@ -323,17 +396,25 @@ func bootFake(cfg vz.Config) (*fakeMachine, error) {
 	cmd := exec.Command(os.Getenv(fakeInitEnv), "-transport", "unix:"+dir)
 	cmd.Stdout = console
 	cmd.Stderr = console
-	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
+	// shard-init gives the entrypoint a group of its own, so only the session holds the whole guest.
+	cmd.SysProcAttr = &syscall.SysProcAttr{Setsid: true}
 	if err := cmd.Start(); err != nil {
 		return nil, fmt.Errorf("start shard-init: %w", err)
 	}
+	guest, err := reaper.Session(cmd.Process.Pid)
+	if err != nil {
+		return nil, errors.Join(err, cmd.Process.Kill())
+	}
+	if err := reaper.Note(marks, guest.String()); err != nil {
+		return nil, errors.Join(err, endGuest(guest))
+	}
 
-	m := &fakeMachine{id: id, dir: dir, cmd: cmd, exited: make(chan struct{}), state: vz.StateRunning, streams: map[net.Conn]struct{}{}}
+	m := &fakeMachine{id: id, dir: dir, cmd: cmd, guest: guest, exited: make(chan struct{}), state: vz.StateRunning, streams: map[net.Conn]struct{}{}}
 	go func() {
 		defer close(m.exited)
-		// The exit is the guest powering off; the group may still hold an entrypoint that ignored TERM.
+		// The exit is the guest powering off; the session may still hold an entrypoint that ignored TERM.
 		_ = cmd.Wait()
-		_ = syscall.Kill(-cmd.Process.Pid, syscall.SIGKILL)
+		m.ended = endGuest(guest)
 		m.mu.Lock()
 		m.state = vz.StateStopped
 		m.mu.Unlock()
@@ -590,11 +671,12 @@ func (m *fakeMachine) holdSave() error {
 }
 
 func (m *fakeMachine) Stop() error {
-	if err := pgroup.Kill(m.cmd.Process.Pid, syscall.SIGKILL); err != nil && !errors.Is(err, syscall.ESRCH) {
-		return err
-	}
+	return endGuest(m.guest)
+}
 
-	return nil
+// endGuest SIGKILLs the guest's session, which holds its entrypoint's group too.
+func endGuest(guest reaper.Marks) error {
+	return reaper.End(func() (reaper.Marks, error) { return guest, nil })
 }
 
 func (m *fakeMachine) Connect(port uint32) (net.Conn, error) {
@@ -606,7 +688,7 @@ func (m *fakeMachine) Connect(port uint32) (net.Conn, error) {
 	if err != nil {
 		return nil, errors.Join(err, conn.Close())
 	}
-	flood := false
+	flood, events := false, false
 	if port == supervisor.ControlPort {
 		if flood, err = m.take(floodFile); err != nil {
 			return nil, errors.Join(err, conn.Close())
@@ -616,6 +698,9 @@ func (m *fakeMachine) Connect(port uint32) (net.Conn, error) {
 			return nil, errors.Join(err, conn.Close())
 		}
 		flood = flood || every
+		if events, err = m.has(floodEventsFile); err != nil {
+			return nil, errors.Join(err, conn.Close())
+		}
 		if err := m.appendTo(dialsFile, "control"); err != nil {
 			return nil, errors.Join(err, conn.Close())
 		}
@@ -638,6 +723,9 @@ func (m *fakeMachine) Connect(port uint32) (net.Conn, error) {
 	s := &stream{Conn: conn, machine: m, control: true}
 	if flood {
 		return &flooded{stream: s}, nil
+	}
+	if events {
+		return &flooded{stream: s, event: floodEvent}, nil
 	}
 
 	return s, nil
@@ -761,11 +849,14 @@ func (s *stream) noteThawed(read []byte) error {
 type flooded struct {
 	*stream
 	passed bool
+	event  []byte
+	// at is how far into event the last read stopped.
+	at int
 }
 
 func (f *flooded) Read(p []byte) (int, error) {
 	if f.passed {
-		return copy(p, bytes.Repeat([]byte{'x'}, len(p))), nil
+		return f.flood(p), nil
 	}
 	n, err := f.stream.Read(p)
 	if end := bytes.IndexByte(p[:n], '\n'); end >= 0 {
@@ -775,6 +866,20 @@ func (f *flooded) Read(p []byte) (int, error) {
 	}
 
 	return n, err
+}
+
+// flood fills p with one line that never ends, or with event over and over when it is set.
+func (f *flooded) flood(p []byte) int {
+	if f.event == nil {
+		return copy(p, bytes.Repeat([]byte{'x'}, len(p)))
+	}
+	for n := 0; n < len(p); {
+		copied := copy(p[n:], f.event[f.at:])
+		n += copied
+		f.at = (f.at + copied) % len(f.event)
+	}
+
+	return len(p)
 }
 
 func (s *stream) Close() error {

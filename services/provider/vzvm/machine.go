@@ -39,6 +39,9 @@ type machine struct {
 	swap   sync.Mutex
 	link   io.Closer
 	cancel context.CancelFunc
+	// following ends once a stop found the shim gone, so a redial in flight never holds settle past its grace (SHARD-638).
+	following context.Context
+	unfollow  context.CancelFunc
 	// freezing, taken before swap, holds each freeze and thaw of the guest's root until the guest answers, so none lands inside another.
 	freezing sync.Mutex
 	// pausing, set under freezing and read bare, is a verb that froze the guest's root to pause the VM, until it stops the VM or runs it again.
@@ -129,7 +132,7 @@ func (p *Provider) lookup(ctx context.Context, id, dir string, r record) (*machi
 		return nil, err
 	}
 
-	return p.attach(ctx, id, dir, r, client, info, false)
+	return p.attachAdopted(ctx, id, dir, r, client, info)
 }
 
 // unanswered keeps a shim an adopt found silent, by the pid behind its socket, so each later lookup waits on its one request.
@@ -254,7 +257,39 @@ func (p *Provider) lookupToStop(ctx context.Context, id, dir string, r record, g
 		return nil, p.end(ctx, &machine{id: id, dir: dir, client: client, shim: shim})
 	}
 
-	return p.attach(ctx, id, dir, r, client, info, false)
+	return p.attachAdopted(ctx, id, dir, r, client, info)
+}
+
+// attachAdopted attaches to a shim met by its socket; one whose guest does not attach would fail every later lookup, stop and rm the same way, so it ends here (SHARD-577).
+func (p *Provider) attachAdopted(ctx context.Context, id, dir string, r record, client *vz.Client, info vz.Info) (*machine, error) {
+	m, err := p.attach(ctx, id, dir, r, client, info, false, adoptBound)
+	// A lookup cut short may be what failed the attach, so its guest is not judged.
+	if (errors.Is(err, errNoGuest) || errors.Is(err, errBootFailed)) && ctx.Err() == nil {
+		return nil, p.endUnattached(ctx, id, dir, err)
+	}
+
+	return m, err
+}
+
+// endUnattached ends an adopted shim whose guest does not attach and puts why on file, so the sandbox reads stopped with its reason.
+func (p *Provider) endUnattached(ctx context.Context, id, dir string, cause error) error {
+	// The shim the attach identified, so a kill never reaches a process on its pid since.
+	shim, err := p.readShim(dir)
+	if err != nil {
+		return errors.Join(cause, err)
+	}
+	if err := p.end(ctx, &machine{id: id, dir: dir, client: vz.Open(filepath.Join(dir, socketFile)), shim: shim}); err != nil {
+		return errors.Join(cause, fmt.Errorf("sandbox %s: end the shim whose guest does not attach: %w", id, err))
+	}
+	// A boot failure put its own reason and exit on file.
+	if errors.Is(cause, errBootFailed) {
+		return nil
+	}
+	if err := os.WriteFile(filepath.Join(dir, supervisorFailedFile), []byte(supervisor.OneLine(cause.Error())), 0o600); err != nil {
+		return fmt.Errorf("sandbox %s: record why its shim ended: %w", id, err)
+	}
+
+	return nil
 }
 
 // claim makes this lookup the one that adopts the sandbox's shim once any other adopt of it ends, so the shim is attached once (SHARD-422).
@@ -419,6 +454,7 @@ func (p *Provider) forget(m *machine) {
 // settle waits for the last events of a guest that went, so a death it reported on the way down is on disk before the stop returns.
 func (p *Provider) settle(ctx context.Context, m *machine) error {
 	if m.events != nil {
+		m.unfollow()
 		select {
 		case <-m.events:
 		case <-ctx.Done():
@@ -466,7 +502,7 @@ func (p *Provider) boot(ctx context.Context, id, dir string, r record, restore s
 		return nil, fmt.Errorf("boot sandbox %s: %w", id, err)
 	}
 
-	m, err := p.attach(ctx, id, dir, r, client, info, restore != "")
+	m, err := p.attach(ctx, id, dir, r, client, info, restore != "", startGrace)
 	if err != nil {
 		return nil, errors.Join(err, endShim(id, client, info.PID))
 	}
@@ -485,8 +521,14 @@ func (p *Provider) boot(ctx context.Context, id, dir string, r record, restore s
 	return m, nil
 }
 
-// attach puts the guest on the stack, opens the control connection and follows its events and its logs.
-func (p *Provider) attach(ctx context.Context, id, dir string, r record, client *vz.Client, info vz.Info, restored bool) (*machine, error) {
+// errNoGuest marks an attach the guest itself failed, which no later attach to the same shim gets past.
+var errNoGuest = errors.New("its guest does not attach")
+
+// errBootFailed marks a guest whose shard-init died at boot, with its death on file.
+var errBootFailed = errors.New("shard-init failed at boot")
+
+// attach puts the guest on the stack, opens the control connection within grace and follows its events and its logs.
+func (p *Provider) attach(ctx context.Context, id, dir string, r record, client *vz.Client, info vz.Info, restored bool, grace time.Duration) (*machine, error) {
 	shim, err := vz.Identify(info.PID)
 	if err != nil {
 		return nil, fmt.Errorf("sandbox %s: %w", id, err)
@@ -495,6 +537,7 @@ func (p *Provider) attach(ctx context.Context, id, dir string, r record, client 
 		return nil, err
 	}
 	m := &machine{id: id, dir: dir, client: client, shim: shim, machineID: info.MachineID, events: make(chan struct{}), refusals: supervisor.NewRefusals(p.cfg.Log, id)}
+	m.following, m.unfollow = context.WithCancel(context.Background())
 
 	if r.Address != "" && p.cfg.Stack == nil {
 		return nil, fmt.Errorf("sandbox %s has an address and the provider no stack to carry it", id)
@@ -507,11 +550,11 @@ func (p *Provider) attach(ctx context.Context, id, dir string, r record, client 
 		m.link = link
 	}
 
-	connectCtx, cancel := context.WithTimeout(ctx, startGrace)
+	connectCtx, cancel := context.WithTimeout(ctx, grace)
 	defer cancel()
 	control, err := supervisor.Connect(connectCtx, m.dial)
 	if err != nil {
-		return nil, errors.Join(fmt.Errorf("sandbox %s: %w", id, err), m.closeLink())
+		return nil, errors.Join(fmt.Errorf("sandbox %s: %w: %w", id, errNoGuest, err), m.closeLink())
 	}
 	m.control.Store(control)
 
@@ -523,13 +566,13 @@ func (p *Provider) attach(ctx context.Context, id, dir string, r record, client 
 		err = errors.Join(context.Cause(connectCtx), err, <-closed)
 	}
 	if err != nil {
-		return nil, errors.Join(fmt.Errorf("sandbox %s: read the supervisor state: %w", id, err), m.close())
+		return nil, errors.Join(fmt.Errorf("sandbox %s: %w: read the supervisor state: %w", id, errNoGuest, err), m.close())
 	}
 	if state.Kind == supervisor.KindSupervisorFailed {
 		return nil, errors.Join(m.failedAtBoot(state), m.close())
 	}
 	if state.Kind != supervisor.KindState {
-		return nil, errors.Join(fmt.Errorf("sandbox %s: the supervisor opened with a %q message, not its state", id, state.Kind), m.close())
+		return nil, errors.Join(fmt.Errorf("sandbox %s: %w: the supervisor opened with a %q message, not its state", id, errNoGuest, state.Kind), m.close())
 	}
 	if err := p.reconcile(m, state); err != nil {
 		return nil, errors.Join(fmt.Errorf("sandbox %s: record the supervisor state: %w", id, err), m.close())
@@ -554,7 +597,7 @@ func (p *Provider) attach(ctx context.Context, id, dir string, r record, client 
 	// The guest holds the entrypoint's output until a logs connection is open, so it is open before any run.
 	logs, err := m.dial(ctx, supervisor.LogsPort)
 	if err != nil {
-		return nil, errors.Join(fmt.Errorf("sandbox %s: open the logs connection: %w", id, err), m.close())
+		return nil, errors.Join(fmt.Errorf("sandbox %s: %w: open the logs connection: %w", id, errNoGuest, err), m.close())
 	}
 	out, err := os.OpenFile(filepath.Join(dir, logFile), os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o600)
 	if err != nil {
@@ -701,7 +744,7 @@ func (m *machine) failedAtBoot(event supervisor.Message) error {
 		return fmt.Errorf("sandbox %s: %w", m.id, err)
 	}
 
-	return fmt.Errorf("sandbox %s: shard-init failed at boot with exit %d: %s", m.id, event.Exit.Code, supervisor.OneLine(event.Error))
+	return fmt.Errorf("sandbox %s: %w with exit %d: %s", m.id, errBootFailed, event.Exit.Code, supervisor.OneLine(event.Error))
 }
 
 // reconnect dials the control stream again after dropped ends, which a sleep of the host can cause, while the shim says the VM runs.
@@ -743,6 +786,9 @@ func (p *Provider) reconnectOnce(m *machine, dropped *supervisor.Control, deadli
 	if m.control.Load() != dropped {
 		return reconnectAdopted, nil
 	}
+	if m.following.Err() != nil {
+		return reconnectGone, nil
+	}
 	state := m.vmState()
 	// A pause still in flight leaves the root frozen on the stream this puts in, since adopt thaws none under it.
 	if state == vz.StateRunning && time.Now().Before(deadline) {
@@ -763,7 +809,7 @@ func (p *Provider) reconnectOnce(m *machine, dropped *supervisor.Control, deadli
 
 // dialAgain dials the control stream once and takes it in once the guest replays its state there within bound; the caller holds freezing.
 func (p *Provider) dialAgain(m *machine, bound time.Duration) (bool, error) {
-	conn, err := m.dial(context.Background(), supervisor.ControlPort)
+	conn, err := m.dial(m.following, supervisor.ControlPort)
 	if err != nil {
 		return false, fmt.Errorf("sandbox %s: dial the control stream: %w", m.id, err)
 	}
@@ -780,6 +826,8 @@ func (p *Provider) dialAgain(m *machine, bound time.Duration) (bool, error) {
 	select {
 	case <-time.After(bound):
 		return false, errors.Join(fmt.Errorf("sandbox %s: the guest replayed no state within %s", m.id, bound), control.Close())
+	case <-m.following.Done():
+		return false, errors.Join(fmt.Errorf("sandbox %s: the stop ended the wait for a replayed state", m.id), control.Close())
 	case r := <-replayed:
 		if r.err != nil {
 			return false, errors.Join(fmt.Errorf("sandbox %s: read the replayed state: %w", m.id, r.err), control.Close())
@@ -930,6 +978,9 @@ func (m *machine) close() error {
 	if m.cancel != nil {
 		m.cancel()
 	}
+	if m.unfollow != nil {
+		m.unfollow()
+	}
 	var err error
 	if control := m.control.Load(); control != nil {
 		err = closeControl(control)
@@ -962,7 +1013,7 @@ func endShim(id string, client *vz.Client, pid int) error {
 	// The create's context may already be canceled, and the shim must go either way, so the cleanup runs on its own clock.
 	ctx, cancel := context.WithTimeout(context.Background(), 3*killGrace)
 	defer cancel()
-	// The identity comes before the stop, so a refused dial after it reads the shim gone only once this pid is (SHARD-423).
+	// The identity comes before the stop, so the wait after it follows this process and never a later one on its pid (SHARD-423).
 	shim, err := vz.Identify(pid)
 	if err != nil && !errors.Is(err, syscall.ESRCH) {
 		return fmt.Errorf("end the shim of sandbox %s after a failed boot: %w", id, err)
@@ -971,8 +1022,7 @@ func endShim(id string, client *vz.Client, pid int) error {
 	if _, err := client.Stop(ctx); err != nil && !absent(err) {
 		stopErr = fmt.Errorf("stop the vm after a failed boot: %w", err)
 	}
-	m := &machine{id: id, client: client, shim: shim}
-	ended, err := m.awaitGone(ctx, killGrace)
+	ended, err := awaitExit(ctx, id, shim, killGrace)
 	if err != nil {
 		return errors.Join(stopErr, err)
 	}
@@ -982,15 +1032,37 @@ func endShim(id string, client *vz.Client, pid int) error {
 	if err := shim.Kill(); err != nil {
 		return errors.Join(stopErr, fmt.Errorf("kill the shim of sandbox %s after a failed boot: %w", id, err))
 	}
-	ended, err = m.awaitGone(ctx, killGrace)
+	ended, err = awaitExit(ctx, id, shim, killGrace)
 	if err != nil {
 		return errors.Join(stopErr, err)
 	}
 	if !ended {
-		return errors.Join(stopErr, fmt.Errorf("the shim %d of sandbox %s still answers %s after a kill", pid, id, killGrace))
+		return errors.Join(stopErr, fmt.Errorf("the shim %d of sandbox %s still runs %s after a kill", pid, id, killGrace))
 	}
 
 	return stopErr
+}
+
+// awaitExit polls the shim's pid, since a shim drops its socket before its last connections and its VM close (SHARD-530).
+func awaitExit(ctx context.Context, id string, shim vz.Process, grace time.Duration) (bool, error) {
+	deadline := time.Now().Add(grace)
+	for {
+		alive, err := shim.Alive()
+		if err != nil {
+			return false, fmt.Errorf("sandbox %s: %w", id, err)
+		}
+		if !alive {
+			return true, nil
+		}
+		if !time.Now().Before(deadline) {
+			return false, nil
+		}
+		select {
+		case <-ctx.Done():
+			return false, fmt.Errorf("wait for the shim of sandbox %s to exit: %w", id, ctx.Err())
+		case <-time.After(pollInterval):
+		}
+	}
 }
 
 // awaitGone polls the shim until it stops answering, which is the VM powered off and the shim exited.

@@ -2,6 +2,7 @@ package supervisor
 
 import (
 	"bytes"
+	"errors"
 	"fmt"
 	"io"
 	"log"
@@ -79,5 +80,23 @@ func TestRefusalsHoldOffTheRedialLongerEachTimeUntilAQuietWindow(t *testing.T) {
 	r.tally()
 	if got := r.Note(refused); got != redialFloor {
 		t.Fatalf("a refusal after a quiet window waits %s, want the floor %s", got, redialFloor)
+	}
+}
+
+// An event flood is a refusal too: it is logged by name, and the redial after it waits like one (SHARD-550).
+func TestAnEventFloodHoldsOffTheRedial(t *testing.T) {
+	var out bytes.Buffer
+	r := &Refusals{log: log.New(&out, "", 0), id: "sb-1", window: time.Hour}
+	flood := errors.Join(ErrEventFlood, io.ErrClosedPipe)
+
+	if got := r.Note(flood); got != redialFloor {
+		t.Fatalf("the first flood waits %s, want %s", got, redialFloor)
+	}
+	if got := r.Note(flood); got != 2*redialFloor {
+		t.Fatalf("the second flood waits %s, want %s", got, 2*redialFloor)
+	}
+	r.tally()
+	if logged := out.String(); strings.Count(logged, "queued more than") != 2 {
+		t.Fatalf("the log %q, want the flood named on the first line and the tally", logged)
 	}
 }

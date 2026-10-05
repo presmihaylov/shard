@@ -1,0 +1,4 @@
+# Changesets finds the two SDKs through this file. Nothing here uses pnpm: each SDK keeps its own npm or uv lock.
+packages:
+  - typescript
+  - python

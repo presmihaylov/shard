@@ -338,7 +338,7 @@ func snapshot(t *testing.T, client *firecracker.Client) (string, string) {
 		t.Fatalf("Pause = %v", err)
 	}
 	state, memory := "/vmstate", "/memory"
-	if err := client.Snapshot(firecracker.SnapshotDiff, state, memory); err != nil {
+	if err := client.Snapshot(time.Minute, firecracker.SnapshotDiff, state, memory); err != nil {
 		t.Fatalf("Snapshot = %v", err)
 	}
 
@@ -368,7 +368,7 @@ func TestSnapshotWritesTheStateAndTheMemoryOfAPausedMicroVM(t *testing.T) {
 	j, cfg := jail(root, "a"), config(root)
 	client, _ := start(t, j, cfg)
 
-	err := client.Snapshot(firecracker.SnapshotDiff, "/vmstate", "/memory")
+	err := client.Snapshot(time.Minute, firecracker.SnapshotDiff, "/vmstate", "/memory")
 	if err == nil || !strings.Contains(err.Error(), "PUT /snapshot/create") {
 		t.Fatalf("Snapshot of a running microVM = %v, want the refusal named", err)
 	}
@@ -384,7 +384,7 @@ func TestSnapshotWritesTheStateAndTheMemoryOfAPausedMicroVM(t *testing.T) {
 		t.Fatalf("the snapshot put = %s, want %s", got, want)
 	}
 
-	if err := client.Snapshot(firecracker.SnapshotFull, state, memory); err != nil {
+	if err := client.Snapshot(time.Minute, firecracker.SnapshotFull, state, memory); err != nil {
 		t.Fatalf("Snapshot of a Full = %v", err)
 	}
 	want = `{"snapshot_type":"Full","snapshot_path":"/vmstate","mem_file_path":"/memory"}`
@@ -554,6 +554,24 @@ func TestKillEndsAVmmTooWedgedToAnswer(t *testing.T) {
 		t.Errorf("Kill took %s, want it done at the dial", took)
 	}
 	awaitRefused(t, client)
+}
+
+// A snapshot create has its own bound, so a guest whose memory takes longer than callTimeout to write still gets one (SHARD-559).
+func TestSnapshotEndsByItsOwnBoundOnAVmmThatNeverAnswers(t *testing.T) {
+	root := shortRoot(t)
+	client, info := start(t, jail(root, "a"), config(root))
+	if err := client.Pause(); err != nil {
+		t.Fatalf("Pause = %v", err)
+	}
+	freeze(t, info.PID)
+
+	begun := time.Now()
+	if err := client.Snapshot(200*time.Millisecond, firecracker.SnapshotFull, "/vmstate", "/memory"); err == nil {
+		t.Fatal("Snapshot of a stopped vmm answered")
+	}
+	if took := time.Since(begun); took > 5*time.Second {
+		t.Errorf("Snapshot took %s on a bound of 200ms", took)
+	}
 }
 
 // A state read ends by its context's deadline and names the peer it waited on, so a kill reaches that vmm and no owner since (SHARD-388, SHARD-392).

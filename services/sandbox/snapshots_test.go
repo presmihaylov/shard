@@ -208,7 +208,7 @@ func TestCreateFromASnapshotRefusesWhatTheSnapshotCannotStartOn(t *testing.T) {
 		gone bool
 		want string
 	}{
-		{"another provider", foreign, false, "made on gvisor and this daemon runs fake"},
+		{"another provider", foreign, false, "made on provider gvisor, and this server runs fake; create from it on a server that runs gvisor"},
 		{"a moved tag", moved, false, "now holds it at " + fakeDigest},
 		{"a gone image", baseSnapshot(), true, "never pulls"},
 	}
@@ -271,6 +271,36 @@ func TestCreateFromASnapshotOnAMicroVMOnlyGrowsTheDisk(t *testing.T) {
 		if sb.Resources.DiskMiB != mib {
 			t.Errorf("the record holds disk %d, want %d", sb.Resources.DiskMiB, mib)
 		}
+	}
+}
+
+// A disk smaller than the snapshot's files fails late inside the copy, so the create refuses it up front, and takes a smaller disk that holds them (SHARD-583).
+func TestCreateFromASnapshotRefusesADiskSmallerThanItsFiles(t *testing.T) {
+	r := &recorder{}
+	svc, l := newService(t, r, models.Sandbox{})
+	snap, err := l.snapshots.Create(baseSnapshot(), func(files string) error {
+		return os.WriteFile(filepath.Join(files, "upper"), make([]byte, 3<<20), 0o600)
+	})
+	if err != nil {
+		t.Fatalf("store the snapshot: %v", err)
+	}
+
+	_, err = svc.Create(t.Context(), sandbox.CreateRequest{Snapshot: "base", Resources: sandbox.ResourceRequest{DiskMiB: 1}})
+
+	var refused *sandbox.RequestError
+	if !errors.As(err, &refused) || !strings.Contains(err.Error(), "resources.disk_mib is 1 MiB") || !strings.Contains(err.Error(), "MiB or more") {
+		t.Fatalf("a 1 MiB --disk over %d bytes of files returned %v, want a refusal that names the disk that works", snap.Size, err)
+	}
+	if slices.Contains(r.calls, "repo.Create") || slices.Contains(r.calls, "provider.Create") {
+		t.Errorf("a refused create made the calls %v", r.calls)
+	}
+
+	sb, err := svc.Create(t.Context(), sandbox.CreateRequest{Snapshot: "base", Resources: sandbox.ResourceRequest{DiskMiB: 8}})
+	if err != nil {
+		t.Fatalf("an 8 MiB --disk over %d bytes of files returned %v, want it taken below the snapshot's 2048", snap.Size, err)
+	}
+	if sb.Resources.DiskMiB != 8 {
+		t.Errorf("the record holds disk %d, want 8", sb.Resources.DiskMiB)
 	}
 }
 

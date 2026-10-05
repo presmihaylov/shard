@@ -10,6 +10,7 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+	"syscall"
 )
 
 // Root is where a Linux host mounts the cgroup v2 hierarchy.
@@ -154,12 +155,16 @@ func Populated(dir string) (bool, error) {
 	return false, nil
 }
 
-// Procs lists the processes in a cgroup and in every cgroup under it; a cgroup that is gone answers ErrNotFound.
+// Procs lists the processes in a cgroup and in every cgroup under it; a cgroup that is gone answers ErrNotFound, and a child that goes mid-walk is skipped.
 func Procs(dir string) ([]int, error) {
 	var pids []int
 	err := filepath.WalkDir(dir, func(path string, entry fs.DirEntry, err error) error {
 		if err != nil && path == dir && errors.Is(err, fs.ErrNotExist) {
 			return ErrNotFound
+		}
+		// A guest may remove its own child cgroups at any time, so their ENOENT never reads as a cgroup v1 host (SHARD-637).
+		if path != dir && vanished(err) {
+			return fs.SkipDir
 		}
 		if err != nil {
 			return err
@@ -168,11 +173,14 @@ func Procs(dir string) ([]int, error) {
 			return nil
 		}
 
-		raw, err := read(path, "cgroup.procs")
-		if err != nil {
-			return err
+		raw, err := os.ReadFile(filepath.Join(path, "cgroup.procs"))
+		if path != dir && vanished(err) {
+			return fs.SkipDir
 		}
-		for field := range strings.FieldsSeq(raw) {
+		if err != nil {
+			return readFailed(path, "cgroup.procs", err)
+		}
+		for field := range strings.FieldsSeq(string(raw)) {
 			pid, err := strconv.Atoi(field)
 			if err != nil {
 				return fmt.Errorf("read %s: %q is not a pid", filepath.Join(path, "cgroup.procs"), field)
@@ -244,17 +252,26 @@ func readBound(dir, file string) (int64, error) {
 }
 
 func read(dir, file string) (string, error) {
-	path := filepath.Join(dir, file)
-
-	raw, err := os.ReadFile(path)
-	if errors.Is(err, fs.ErrNotExist) {
-		return "", fmt.Errorf("read %s: %w", path, missing(dir))
-	}
+	raw, err := os.ReadFile(filepath.Join(dir, file))
 	if err != nil {
-		return "", fmt.Errorf("read %s: %w", path, err)
+		return "", readFailed(dir, file, err)
 	}
 
 	return strings.TrimSpace(string(raw)), nil
+}
+
+func readFailed(dir, file string, err error) error {
+	path := filepath.Join(dir, file)
+	if errors.Is(err, fs.ErrNotExist) {
+		return fmt.Errorf("read %s: %w", path, missing(dir))
+	}
+
+	return fmt.Errorf("read %s: %w", path, err)
+}
+
+// vanished is how a cgroup removed under a reader fails: ENOENT once it is gone, ENODEV while the kernel tears its files down.
+func vanished(err error) bool {
+	return errors.Is(err, fs.ErrNotExist) || errors.Is(err, syscall.ENODEV)
 }
 
 // missing tells the two ways a control file goes missing apart, because they need opposite answers:

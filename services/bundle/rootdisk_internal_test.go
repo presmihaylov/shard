@@ -41,7 +41,7 @@ func TestSeedRefusalNamesTheLargestDiskThatGrows(t *testing.T) {
 	if !errors.As(err, &got) {
 		t.Fatalf("seedRefusal = %v, want the taken descriptor block under it", err)
 	}
-	if !strings.Contains(err.Error(), "at most 16384 MiB") || !strings.Contains(err.Error(), "--disk 16384MiB or less") {
+	if !strings.Contains(err.Error(), "at most 16384 MiB") || !strings.Contains(err.Error(), "set resources.disk_mib to 16384 MiB or less") {
 		t.Errorf("seedRefusal = %v, want the 16384 MiB that still grows", err)
 	}
 }

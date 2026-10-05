@@ -49,12 +49,27 @@ var (
 )
 
 func TestMain(m *testing.M) {
-	code, err := run(m)
+	code, err := isolated(m)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "cli integration tests: %v\n", err)
 	}
 
 	os.Exit(code)
+}
+
+// isolated is run under a saved connection of its own, which the shard binary under test inherits, so no run reads the user's.
+func isolated(m *testing.M) (int, error) {
+	cleanup, err := isolateConfig()
+	if err != nil {
+		return 1, err
+	}
+
+	code, err := run(m)
+	if cleanupErr := cleanup(); cleanupErr != nil {
+		return 1, errors.Join(err, cleanupErr)
+	}
+
+	return code, err
 }
 
 // run gives the package one daemon of its own, so no test speaks to the daemon of the systemd unit.
