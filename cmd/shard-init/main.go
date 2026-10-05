@@ -30,11 +30,10 @@ const usage = `shard-init - the guest supervisor, PID 1 inside a sandbox
 
 Usage:
   shard-init -ready-file <path> [-user <uid>:<gid>] [-groups <gid>,...]
-             [-restart no|on-failure|always] [-restart-file <path>] [-retries <n>] [-backoff <duration>] -- [<entrypoint> [args...]]
+             [-restart no|on-failure|always] [-retries <n>] [-backoff <duration>] -- [<entrypoint> [args...]]
   shard-init -transport vsock [-root <device> | -base <device> -overlay <device>] [-console <device>] [-reboot]
 
-The entrypoint exit status is reported to fd 0, which the host holds; the guest cannot reach it.
-An entrypoint needs -restart-file, where the count and the end of the app land.
+The entrypoint exit status, the restart count and the end of the app are reported to fd 0, which the host holds; the guest cannot reach it.
 SIGUSR1 cancels every start again and terms the entrypoint, SIGUSR2 kills it; the supervisor stays up for both.
 With -transport the host sends the entrypoint over vsock, and the exit status goes back the same way.
 -root boots one ext4 disk; -base and -overlay boot a read-only EROFS image under an overlay whose upper layer is the second disk.
@@ -113,7 +112,6 @@ func run(args []string) error {
 	user := flags.String("user", "", "uid:gid the entrypoint drops to; the supervisor keeps its own ids")
 	groups := flags.String("groups", "", "comma separated supplementary gids the entrypoint is given")
 	policy := flags.String("restart", string(models.RestartNo), "when the entrypoint is started again: no, on-failure or always")
-	restartFile := flags.String("restart-file", "", "file the count of starts again is written to, as JSON")
 	retries := flags.Int("retries", 0, "how many starts again before the supervisor gives up, 0 for unlimited")
 	backoff := flags.Duration("backoff", defaultBackoff, "the wait before the first start again; it doubles each time, up to a minute")
 	reset := flags.Duration("restart-reset", defaultReset, "how long the entrypoint must run since its last start before an exit clears the count")
@@ -132,8 +130,8 @@ func run(args []string) error {
 		return err
 	}
 	if *transport != "" {
-		if flags.NArg() != 0 || *readyFile != "" || *restartFile != "" {
-			return errors.New("-transport takes the entrypoint from the host, so no -ready-file, -restart-file or arguments")
+		if flags.NArg() != 0 || *readyFile != "" {
+			return errors.New("-transport takes the entrypoint from the host, so no -ready-file or arguments")
 		}
 
 		return serveTransport(*transport, boot)
@@ -156,11 +154,7 @@ func run(args []string) error {
 	if err != nil {
 		return err
 	}
-	if err := checkRestartFile(restart, *restartFile, flags.Args()); err != nil {
-		return err
-	}
-
-	g := newGuest(fileReporter{readyFile: *readyFile, restartFile: *restartFile}, restart)
+	g := newGuest(&fileReporter{readyFile: *readyFile}, restart)
 	err = g.launch(entrypoint{argv: flags.Args(), env: os.Environ(), credential: credential})
 	if errors.Is(err, errNoEntrypoint) {
 		return errors.Join(err, reportNotStarted(err))
@@ -232,7 +226,7 @@ type entrypoint struct {
 	bound *os.File
 }
 
-// reporter is where ready, the exit record and the restart count go: files on gVisor, the control connection in a VM.
+// reporter is where ready, the exit record and the restart count go: fd 0 and the ready file on Linux, the control connection in a VM.
 type reporter interface {
 	ready() error
 	exited(models.ExitStatus) error
@@ -620,14 +614,14 @@ func exitStatusFrom(waitStatus syscall.WaitStatus) models.ExitStatus {
 	return models.ExitStatus{Code: waitStatus.ExitStatus()}
 }
 
-// fileReporter is the gVisor transport: two files under the bind mount, and the exit record on fd 0.
+// fileReporter is the gVisor transport: the ready file under the bind mount, and one record on fd 0 that holds the exit and the count.
 type fileReporter struct {
-	readyFile   string
-	restartFile string
+	readyFile string
+	record    models.ExitReport
 }
 
 // The host has no other proof the entrypoint ran, so a supervisor that cannot say so is a failure.
-func (r fileReporter) ready() error {
+func (r *fileReporter) ready() error {
 	if err := store.WriteFile(r.readyFile, nil, 0o600); err != nil {
 		return fmt.Errorf("write %s: %w", r.readyFile, err)
 	}
@@ -636,12 +630,14 @@ func (r fileReporter) ready() error {
 }
 
 // oomKilled never reaches a file: a Linux sandbox dies whole with its cgroup, and the host reads the cgroup's own count.
-func (fileReporter) oomKilled() error {
+func (*fileReporter) oomKilled() error {
 	return errors.New("a file reporter has no memory bound to report a kill under")
 }
 
-func (fileReporter) exited(exit models.ExitStatus) error {
-	return writeReport(models.ExitReport{Kind: models.ExitReportKind, Code: exit.Code, Signal: exit.Signal})
+func (r *fileReporter) exited(exit models.ExitStatus) error {
+	r.record.Kind, r.record.Code, r.record.Signal = models.ExitReportKind, exit.Code, exit.Signal
+
+	return writeReport(r.record)
 }
 
 // writeReport frames one record onto fd 0, the channel the host holds; the newlines let a reader take whole lines only.
@@ -688,48 +684,14 @@ func writePage(f *os.File, encoded []byte) error {
 	return nil
 }
 
-func (r fileReporter) restarted(count models.RestartCount) error {
-	return writeJSON(r.restartFile, "the restart count", count)
+// The count only moves after an exit, so the record it rewrites already carries that exit.
+func (r *fileReporter) restarted(count models.RestartCount) error {
+	r.record.Restarts = count
+
+	return writeReport(r.record)
 }
 
-// A full disk is usually transient, so the budget is tens of seconds and not the length of one hiccup.
-const (
-	writeAttempts = 60
-	writeBackoff  = 500 * time.Millisecond
-)
-
-// permanentErrnos names the faults no amount of waiting clears, so retrying them only delays the message.
-var permanentErrnos = []syscall.Errno{
-	syscall.EROFS, syscall.EACCES, syscall.EPERM, syscall.ENOENT, syscall.ENOTDIR, syscall.ENOTEMPTY,
-}
-
-// Retry first: a transient full disk must not cost the restart count of an otherwise healthy sandbox.
-func writeJSON(path, what string, value any) error {
-	encoded, err := json.Marshal(value)
-	if err != nil {
-		return fmt.Errorf("marshal %s: %w", what, err)
-	}
-
-	var last error
-	for attempt := range writeAttempts {
-		if attempt > 0 {
-			time.Sleep(writeBackoff)
-		}
-
-		// pkg/store lands it through a random temp name and an fsync, so no planted path and no lost write.
-		last = store.WriteFile(path, encoded, 0o600)
-		if last == nil {
-			return nil
-		}
-		if slices.ContainsFunc(permanentErrnos, func(code syscall.Errno) bool { return errors.Is(last, code) }) {
-			return fmt.Errorf("write %s: %w", what, last)
-		}
-	}
-
-	return fmt.Errorf("write %s after %d attempts: %w", what, writeAttempts, last)
-}
-
-// PID 1 keeps its own ids, so it can always report the exit and write the restart count as root.
+// PID 1 keeps its own ids, so it can always report the exit and the restart count.
 // The host resolved the name against the image rootfs, so only numbers ever reach these flags.
 func parseCredential(user, groups string) (*syscall.Credential, error) {
 	if user == "" {

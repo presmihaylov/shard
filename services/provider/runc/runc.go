@@ -119,10 +119,8 @@ func (p *Provider) Create(ctx context.Context, spec models.SandboxSpec) error {
 // from config.json; boundMemory then sets the two OOM knobs runc leaves alone.
 func (p *Provider) create(ctx context.Context, spec models.SandboxSpec, b bundle.Bundle) (err error) {
 	// A fresh create must not inherit the old exit, readiness, restart count, or spec-change mark.
-	for _, stale := range []string{b.ExitFile, b.ReadyFile, b.RestartFile, b.ChangedFile} {
-		if err := os.Remove(stale); err != nil && !errors.Is(err, fs.ErrNotExist) {
-			return fmt.Errorf("clear %s: %w", stale, err)
-		}
+	if err := b.ClearRun(); err != nil {
+		return err
 	}
 
 	out, err := openLog(filepath.Join(spec.StateDir, logFile))
@@ -320,14 +318,14 @@ func (p *Provider) neverStarted(id string, b bundle.Bundle) error {
 }
 
 // hasStarted reports whether the supervisor wrote its handshake. The file arrives by rename, so its
-// presence is the whole answer.
+// presence is the whole answer, and a link the guest put there, even a loop, is presence too (SHARD-630).
 func hasStarted(path string) (bool, error) {
-	_, err := os.Stat(path)
+	_, err := os.Lstat(path)
 	if errors.Is(err, fs.ErrNotExist) {
 		return false, nil
 	}
 	if err != nil {
-		return false, fmt.Errorf("stat %s: %w", path, err)
+		return false, fmt.Errorf("lstat %s: %w", path, err)
 	}
 
 	return true, nil

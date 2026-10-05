@@ -1,0 +1,78 @@
+---
+title: Architecture
+description: How the shard CLI, the SDKs, shard serve, the daemon, the provider and shard-init fit together on one host.
+---
+
+Almost every shard command is a request to one daemon on the host. The exceptions are `shard setup`, `shard daemon` itself, `shard serve`, `shard info`, and the `shard tokens` commands that mint, list and revoke tokens. Help and `--version` also work without a daemon. The CLI sends each local request over a unix socket, and you can send the same request yourself:
+
+```sh
+sudo curl --unix-socket /var/lib/shard/shard.sock http://localhost/v0/version
+```
+
+On a Mac, leave out `sudo`. `shard daemon status` shows the version, the provider, the process details and the background tasks of the daemon that answers.
+
+## The parts
+
+```text
+shard CLI on the host ─────── unix socket ───────┐
+                                                 ├──> shard daemon ──> provider ──> sandbox
+CLI or SDK elsewhere ── TLS proxy ── shard serve ┘                                  └ shard-init, PID 1
+```
+
+| Part | What it does |
+| --- | --- |
+| `shard` CLI | Sends commands to the daemon and prints the answer. It holds no sandbox state. |
+| TypeScript and Python SDKs | Send the same requests from your program, through `shard serve`. |
+| `shard serve` | Checks the bearer token of each request, then passes the bytes to the daemon's socket. |
+| `shard daemon` | Owns every sandbox, image, snapshot, secret and policy, and runs every command on them. |
+| Provider | Isolates each sandbox: `runsc` for gVisor, `sysbox-runc`, `runc`, one `firecracker` process per sandbox, or one Virtualization.framework VM per sandbox on a Mac. |
+| `shard-init` | Runs as PID 1 inside every sandbox. It starts the sandbox's command, if any, and stays up. |
+
+## The daemon
+
+The daemon is the only process that writes the sandbox records, the images, the snapshots, the secrets and the policies. Every command on them, local or remote, goes through it, so these stores need no lock between processes. It keeps them under `/var/lib/shard` by default. `shard daemon --root` selects another data directory.
+
+One daemon serves one data directory. It takes a lock on `daemon.lock` there, and a second daemon on the same directory refuses to start. On Linux it runs as root. On a Mac it runs as your user, which owns the data directory.
+
+The daemon runs these background tasks. `shard daemon status` lists them:
+
+| Task | What it does |
+| --- | --- |
+| `api` | Serves the REST API on `shard.sock`. |
+| `proxy` | The egress proxy on the gateway of the sandbox network. For a sandbox with a policy or a secret, it judges each HTTP and HTTPS request by host name. It puts a secret value into the headers of an HTTPS request only when the secret is granted to that destination. |
+| `dns` | Answers DNS lookups for every sandbox that has a policy. |
+| `egress-log-tailer` | Copies the host's records of dropped packets into each sandbox's egress log. |
+| `liveness` | Every 5 seconds, checks each running sandbox against the provider and corrects the record. |
+| `restart-policy` | Copies each sandbox's restart count onto its record. |
+| `held-log-rotation` | Caps each output log that the runtime writes at about 16 MiB, and keeps one older file. |
+| `log-reopen` | Reopens the daemon's own log file, if `shard daemon --log` names one. |
+
+A failed task restarts after a backoff of up to one minute.
+
+## A sandbox outlives the daemon
+
+Sandboxes that already run normally survive a daemon restart. On startup, the daemon checks their records against the provider before it serves any request. A create, fork or restore that the restart interrupted can instead end as `failed` or `stopped`. A record that says `running` with no process behind it usually becomes `stopped`, with the reason `daemon restarted and found no process`. When the provider reports an OOM kill or a supervisor failure, the record keeps that specific reason.
+
+An `exec` session does not outlive the daemon. A restart disconnects every client and discards the daemon's output buffer and command handle. A command that already started can continue inside the sandbox, but the client cannot reconnect to that handle.
+
+A sandbox also outlives its own command. When the command exits, the sandbox stays `running`, and `shard list` shows the exit code, for example `running (exited 7)`. `shard stop` ends the sandbox without deleting its files. A forced remove, a host shutdown or a runtime failure can also end it.
+
+## Remote access
+
+The daemon never listens on TCP. To reach it from another machine, run `shard serve` on the same host. `shard serve` listens on `127.0.0.1:2376` by default, behind a proxy that terminates TLS. It rejects a request without a valid token before it connects to the daemon. It reads the request line and all the headers. Before it connects to the daemon, it checks that the token's scopes cover the route. It adds the token's scopes as a header and asks the daemon to close the connection after the answer. Then it passes the body and the answer on unchanged.
+
+On Linux, a non-root user needs membership in the `shard` group to reach the socket. Without that group, only root can reach it. On a Mac, run `shard serve` as the daemon's user.
+
+The CLI picks the daemon in this order:
+
+1. `--remote <url>`, or `SHARD_REMOTE`.
+2. The connection that `shard setup` saved.
+3. Otherwise, the local daemon's socket.
+
+For a remote connection, the CLI uses `SHARD_API_KEY` first. Otherwise, it uses the saved key only when the selected URL names the saved server. An explicit `--remote ""` selects the local socket and ignores the saved connection.
+
+The SDKs use a remote URL and API key from constructor options or the environment variables `SHARD_REMOTE` and `SHARD_API_KEY`. They ignore the saved connection and always go through `shard serve`.
+
+## Isolation and the network
+
+The provider sets how strongly each sandbox is isolated from the host. Each sandbox gets its own address. The host, not the sandbox, holds the network rules, and it writes them again on every create, start, resume, fork and policy change. A sandbox never holds a secret value. Its commands see a placeholder, and the egress proxy puts the value into the HTTPS request headers only on the way to a destination that the secret is granted to.

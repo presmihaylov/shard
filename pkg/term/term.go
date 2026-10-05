@@ -225,11 +225,16 @@ func (t *Terminal) optionLines(o Option, current bool) []string {
 	return lines
 }
 
-// Confirm asks a yes or no question; an empty answer takes yes, which the prompt shows as [Y/n] or [y/N].
+// Confirm asks a yes or no question, whose lines above the last print once; an empty answer takes yes, which the prompt shows as [Y/n] or [y/N].
 func (t *Terminal) Confirm(ctx context.Context, question string, yes bool) (bool, error) {
 	if !t.interactive {
 		return false, ErrNotTerminal
 	}
+	lines := strings.Split(question, "\n")
+	if err := t.Print(lines[:len(lines)-1]...); err != nil {
+		return false, err
+	}
+	question = lines[len(lines)-1]
 	hint := "[y/N]"
 	if yes {
 		hint = "[Y/n]"

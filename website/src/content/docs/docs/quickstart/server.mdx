@@ -105,7 +105,7 @@ Each question has a matching option, so a script runs the same checks as the wiz
 shard setup --local --provider firecracker --start-at-boot=true -y
 ```
 
-Without a terminal, every question needs its option. Setup fails on a missing one and names it, and it never picks a value for you. `-y` answers only the confirmation and skips no check. `shard setup --help` lists every option and the exit codes.
+Without a terminal, every question needs its option. Setup fails on a missing one and names it before any check runs, and it never picks a value for you. `-y` answers only the confirmation and skips no check. `shard setup --help` lists every option and the exit codes.
 
 ## Next steps
 

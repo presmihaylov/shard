@@ -1,0 +1,514 @@
+---
+title: Sandboxes
+description: The routes that create and manage sandboxes, read their output and egress decisions, grant secrets and attach policies.
+sidebar:
+  order: 2
+---
+
+This creates a sandbox named `web`, then stops it. A stopped sandbox keeps its files, and a start runs it again:
+
+```sh
+curl --unix-socket /var/lib/shard/shard.sock -X POST -H 'Content-Type: application/json' -d '{"name":"web","image":"alpine:3.20","command":["sleep","600"],"resources":{"memory_mib":512}}' 'http://localhost/v0/sandboxes?wait=true'
+curl --unix-socket /var/lib/shard/shard.sock -X POST http://localhost/v0/sandboxes/web/stop
+curl --unix-socket /var/lib/shard/shard.sock -X POST http://localhost/v0/sandboxes/web/start
+```
+
+Every `{id}` in a path takes a sandbox's id or name. A create on vz or Firecracker needs `resources.memory_mib`, because the memory of a VM is real memory on the host.
+
+{/* make openapi writes this part from the routes. Edit the routes, not this part. */}
+
+Each route answers an error with the [Error](/docs/reference/api/#error) body, unless its responses say otherwise.
+
+## List active sandboxes
+
+`GET /v0/sandboxes` · scope `sandbox:read`
+
+**Parameters**
+
+| Name | In | Type | Required | Description |
+| --- | --- | --- | --- | --- |
+| `all` | query | boolean | no | List stopped sandboxes too. |
+| `limit` | query | integer (int64) | no | The most rows a page holds; none answers the whole list. At least 1. |
+| `cursor` | query | string | no | The next of the page before; this page starts after it. |
+
+**Responses**
+
+| Status | Body |
+| --- | --- |
+| 200 | [SandboxesResponse](#sandboxesresponse) as `application/json` |
+
+## Read a sandbox and the egress rules the host enforces for it
+
+`GET /v0/sandboxes/{id}` · scope `sandbox:read`
+
+**Parameters**
+
+| Name | In | Type | Required | Description |
+| --- | --- | --- | --- | --- |
+| `id` | path | string | yes |  |
+| `wait` | query | boolean | no | Block until a pending create lands. |
+
+**Responses**
+
+| Status | Body |
+| --- | --- |
+| 200 | [Inspection](#inspection) as `application/json` |
+
+## Create a sandbox
+
+`POST /v0/sandboxes` · scope `sandbox:write`
+
+A create that names secrets also needs the secret:\* scope, and one that names a policy needs policy:\*; without it the answer is 403 forbidden.
+
+**Parameters**
+
+| Name | In | Type | Required | Description |
+| --- | --- | --- | --- | --- |
+| `wait` | query | boolean | no | Answer once the sandbox leaves pending; with Accept: application/x-ndjson the pull streams first. |
+
+**Request body**
+
+[CreateRequest](#createrequest) as `application/json`, required.
+
+**Responses**
+
+| Status | Body | Description |
+| --- | --- | --- |
+| 201 | [Sandbox](#sandbox) as `application/json`, or [CreateLine](#createline) as `application/x-ndjson` | The sandbox, or with wait and Accept: application/x-ndjson one CreateLine per pull event and then the sandbox. An error after the first line ends the stream with a CreateLine whose error is set, and no sandbox. |
+
+## Start a stopped sandbox with its saved files
+
+`POST /v0/sandboxes/{id}/start` · scope `sandbox:write`
+
+**Parameters**
+
+| Name | In | Type | Required | Description |
+| --- | --- | --- | --- | --- |
+| `id` | path | string | yes | The sandbox id or name. |
+
+**Responses**
+
+| Status | Body |
+| --- | --- |
+| 200 | [Sandbox](#sandbox) as `application/json` |
+
+## Stop a sandbox and preserve its files
+
+`POST /v0/sandboxes/{id}/stop` · scope `sandbox:write`
+
+**Parameters**
+
+| Name | In | Type | Required | Description |
+| --- | --- | --- | --- | --- |
+| `id` | path | string | yes | The sandbox id or name. |
+
+**Request body**
+
+[StopRequest](#stoprequest) as `application/json`, optional.
+
+**Responses**
+
+| Status | Body |
+| --- | --- |
+| 200 | [Sandbox](#sandbox) as `application/json` |
+
+## Delete a sandbox and its files
+
+`DELETE /v0/sandboxes/{id}` · scope `sandbox:delete`
+
+**Parameters**
+
+| Name | In | Type | Required | Description |
+| --- | --- | --- | --- | --- |
+| `id` | path | string | yes |  |
+| `force` | query | boolean | no | Stop a sandbox that is still up or paused first. |
+
+**Responses**
+
+| Status | Body |
+| --- | --- |
+| 204 | none |
+
+## Save a sandbox's state and suspend it
+
+`POST /v0/sandboxes/{id}/pause` · scope `sandbox:write`
+
+**Parameters**
+
+| Name | In | Type | Required | Description |
+| --- | --- | --- | --- | --- |
+| `id` | path | string | yes | The sandbox id or name. |
+
+**Responses**
+
+| Status | Body |
+| --- | --- |
+| 200 | [Sandbox](#sandbox) as `application/json` |
+
+## Resume a paused sandbox from its saved state
+
+`POST /v0/sandboxes/{id}/resume` · scope `sandbox:write`
+
+**Parameters**
+
+| Name | In | Type | Required | Description |
+| --- | --- | --- | --- | --- |
+| `id` | path | string | yes | The sandbox id or name. |
+
+**Responses**
+
+| Status | Body |
+| --- | --- |
+| 200 | [Sandbox](#sandbox) as `application/json` |
+
+## Create a sandbox from a running sandbox's memory and files
+
+`POST /v0/sandboxes/{id}/fork` · scope `sandbox:write`
+
+**Parameters**
+
+| Name | In | Type | Required | Description |
+| --- | --- | --- | --- | --- |
+| `id` | path | string | yes | The sandbox id or name. |
+
+**Request body**
+
+[CopyRequest](#copyrequest) as `application/json`, optional.
+
+**Responses**
+
+| Status | Body |
+| --- | --- |
+| 201 | [Sandbox](#sandbox) as `application/json` |
+
+## Read or follow the output of a sandbox
+
+`GET /v0/sandboxes/{id}/logs` · scope `sandbox:read`
+
+**Parameters**
+
+| Name | In | Type | Required | Description |
+| --- | --- | --- | --- | --- |
+| `id` | path | string | yes | The sandbox id or name. |
+| `follow` | query | boolean | no | Keep the stream open until the sandbox stops or is removed; a WebSocket upgrade requires follow=true. |
+
+**Responses**
+
+| Status | Body | Description |
+| --- | --- | --- |
+| 101 | WebSocket | A WebSocket follow with follow=true. Each binary message leads with its stream byte: 1 the output, 3 an EndMessage naming why the follow ended, 5 a FailureMessage. |
+| 200 | string as `text/plain` | The entrypoint's output as it was written; with follow the body streams until the sandbox stops or is removed. |
+
+**WebSocket messages**
+
+| Stream byte | Payload |
+| --- | --- |
+| 3 | [EndMessage](#endmessage) |
+| 5 | [FailureMessage](#failuremessage) |
+
+## Read or follow the egress decisions of a sandbox
+
+`GET /v0/sandboxes/{id}/egress-log` · scope `sandbox:read`
+
+**Parameters**
+
+| Name | In | Type | Required | Description |
+| --- | --- | --- | --- | --- |
+| `id` | path | string | yes | The sandbox id or name. |
+| `follow` | query | boolean | no | Keep the stream open until the sandbox stops or is removed; a WebSocket upgrade requires follow=true. |
+
+**Responses**
+
+| Status | Body | Description |
+| --- | --- | --- |
+| 101 | WebSocket | A WebSocket follow with follow=true: one egress decision per text message, until the sandbox stops, fails or is removed. |
+| 200 | array of [EgressDecision](#egressdecision) as `application/json`, or [EgressDecision](#egressdecision) as `application/x-ndjson` | The egress decisions, oldest first; with follow one decision per line until the sandbox stops, fails or is removed. |
+
+**Response headers**
+
+| Header | Status | Type | Description |
+| --- | --- | --- | --- |
+| `Shard-Egress-Cut` | 200 | integer | The older decisions the read left out; absent when it left out none. |
+
+## Grant a secret to a sandbox
+
+`POST /v0/sandboxes/{id}/secrets/{name}` · scope `secret:*`
+
+**Parameters**
+
+| Name | In | Type | Required |
+| --- | --- | --- | --- |
+| `id` | path | string | yes |
+| `name` | path | string | yes |
+
+**Responses**
+
+| Status | Body |
+| --- | --- |
+| 200 | [Sandbox](#sandbox) as `application/json` |
+
+## Take a secret back from a sandbox
+
+`DELETE /v0/sandboxes/{id}/secrets/{name}` · scope `secret:*`
+
+**Parameters**
+
+| Name | In | Type | Required |
+| --- | --- | --- | --- |
+| `id` | path | string | yes |
+| `name` | path | string | yes |
+
+**Responses**
+
+| Status | Body |
+| --- | --- |
+| 200 | [Sandbox](#sandbox) as `application/json` |
+
+## Attach a policy to a sandbox
+
+`PUT /v0/sandboxes/{id}/policy` · scope `policy:*`
+
+**Parameters**
+
+| Name | In | Type | Required | Description |
+| --- | --- | --- | --- | --- |
+| `id` | path | string | yes | The sandbox id or name. |
+
+**Request body**
+
+[PolicyAttachRequest](#policyattachrequest) as `application/json`, required.
+
+**Responses**
+
+| Status | Body |
+| --- | --- |
+| 200 | [Sandbox](#sandbox) as `application/json` |
+
+## Detach the policy of a sandbox
+
+`DELETE /v0/sandboxes/{id}/policy` · scope `policy:*`
+
+**Parameters**
+
+| Name | In | Type | Required | Description |
+| --- | --- | --- | --- | --- |
+| `id` | path | string | yes | The sandbox id or name. |
+
+**Responses**
+
+| Status | Body |
+| --- | --- |
+| 200 | [Sandbox](#sandbox) as `application/json` |
+
+## Objects
+
+### CopyRequest
+
+| Field | Type | Required |
+| --- | --- | --- |
+| `name` | string | no |
+
+### CreateLine
+
+| Field | Type | Required |
+| --- | --- | --- |
+| `error` | [ErrorObject](/docs/reference/api/#errorobject) | no |
+| `event` | [Event](#event) | no |
+| `sandbox` | [Sandbox](#sandbox) | no |
+
+### CreateRequest
+
+| Field | Type | Required | Description |
+| --- | --- | --- | --- |
+| `command` | array of string | no |  |
+| `env` | array of string | no |  |
+| `image` | string | no | The image to create from. A create names exactly one of image and snapshot. |
+| `name` | string | no |  |
+| `policy` | string | no |  |
+| `resources` | [ResourceRequest](#resourcerequest) | no |  |
+| `restart` | [RestartSpec](#restartspec) | no |  |
+| `secrets` | array of string | no |  |
+| `snapshot` | string | no | The snapshot id or name to create from; it takes no command and no restart. A create names exactly one of image and snapshot. |
+| `user` | string | no |  |
+| `workdir` | string | no |  |
+
+### Destination
+
+| Field | Type | Required | Description |
+| --- | --- | --- | --- |
+| `kind` | string | yes | One of `cidr`, `domain`, `domain-suffix`, `group`. |
+| `value` | string | yes |  |
+
+### Effective
+
+| Field | Type | Required |
+| --- | --- | --- |
+| `missing` | boolean | no |
+| `rules` | array of [EffectiveRule](#effectiverule) | yes |
+
+### EffectiveRule
+
+| Field | Type | Required | Description |
+| --- | --- | --- | --- |
+| `action` | string | yes | One of `allow`, `deny`. |
+| `destination` | [Destination](#destination) | yes |  |
+| `id` | string | yes |  |
+| `implied` | string | no | Set on a rule the policy did not write: dns when a name rule opened DNS, dns-rule when a dns rule did. One of `dns`, `dns-rule`. |
+| `ports` | array of integer (int64) | no |  |
+| `protocol` | string | no | Absent for a rule over every protocol. One of `tcp`, `udp`. |
+
+### EgressDecision
+
+| Field | Type | Required | Description |
+| --- | --- | --- | --- |
+| `address` | string | no |  |
+| `host` | string | no |  |
+| `port` | integer (int64) | no |  |
+| `reason` | string | no |  |
+| `rule` | string | yes |  |
+| `rule_text` | string | no |  |
+| `source` | string | yes | One of `proxy`, `host`, `dns`. |
+| `time` | string (date-time) | yes |  |
+| `verdict` | string | yes | One of `allow`, `deny`. |
+
+### EndMessage
+
+| Field | Type | Required | Description |
+| --- | --- | --- | --- |
+| `reason` | string | yes | One of `stopped`, `removed`. |
+
+### Event
+
+| Field | Type | Required | Description |
+| --- | --- | --- | --- |
+| `bytes` | integer (int64) | no |  |
+| `digest` | string | no |  |
+| `layer` | integer (int64) | no |  |
+| `layers` | integer (int64) | no |  |
+| `present` | boolean | no |  |
+| `reference` | string | no |  |
+| `status` | string | yes | cached and pulled carry reference and digest; pulling adds layers and bytes, the whole download; layer carries one layer's digest, bytes and present; unpacking carries reference, digest and layers; unpacked carries one layer's digest, layer and layers; building carries nothing more. One of `cached`, `pulling`, `layer`, `unpacking`, `unpacked`, `building`, `pulled`. |
+
+### ExitStatus
+
+| Field | Type | Required |
+| --- | --- | --- |
+| `code` | integer (int64) | yes |
+| `signal` | integer (int64) | yes |
+
+### FailureError
+
+| Field | Type | Required | Description |
+| --- | --- | --- | --- |
+| `code` | string | yes | One of the codes of ErrorObject.code. |
+| `message` | string | yes |  |
+
+### FailureMessage
+
+| Field | Type | Required |
+| --- | --- | --- |
+| `error` | [FailureError](#failureerror) | yes |
+
+### Inspection
+
+| Field | Type | Required | Description |
+| --- | --- | --- | --- |
+| `command` | array of string | no |  |
+| `created_at` | string (date-time) | yes |  |
+| `digest` | string | no |  |
+| `egress` | [Effective](#effective) | no |  |
+| `exit_status` | [ExitStatus](#exitstatus) | no |  |
+| `failed_reason` | string | no |  |
+| `id` | string | yes |  |
+| `image` | string | yes |  |
+| `kernel` | string | no |  |
+| `name` | string | no |  |
+| `policy` | string | no |  |
+| `provider` | string | yes |  |
+| `resources` | [Resources](#resources) | yes |  |
+| `restart` | [Restart](#restart) | no |  |
+| `secrets` | array of string | no |  |
+| `snapshot` | string | no |  |
+| `started_at` | string (date-time) | no |  |
+| `state` | string | yes | One of `pending`, `created`, `running`, `paused`, `unresponsive`, `stopped`, `failed`. |
+| `stopped_reason` | string | no |  |
+
+### PolicyAttachRequest
+
+| Field | Type | Required | Description |
+| --- | --- | --- | --- |
+| `policy` | string | yes | At least 1 character. |
+
+### ResourceRequest
+
+| Field | Type | Required | Description |
+| --- | --- | --- | --- |
+| `disk_mib` | integer (int64) | no | From 0 to 16777088. |
+| `memory_mib` | integer (int64) | no | From 0 to 16777216. |
+| `vcpus` | integer (int64) | no | At least 0. |
+
+### Resources
+
+| Field | Type | Required |
+| --- | --- | --- |
+| `disk_mib` | integer (int64) | yes |
+| `memory_mib` | integer (int64) | yes |
+| `vcpus` | integer (int64) | yes |
+
+### Restart
+
+| Field | Type | Required | Description |
+| --- | --- | --- | --- |
+| `backoff` | integer (int64) | yes | The first wait before a start again, in seconds; 0 or absent is 1. It doubles after each start again, up to 60. Only on-failure and always take it. From 0 to 60. |
+| `count` | integer (int64) | yes |  |
+| `ended` | boolean | yes |  |
+| `gave_up` | boolean | yes |  |
+| `last_at` | string (date-time) | no |  |
+| `policy` | string | yes | One of `no`, `on-failure`, `always`. |
+| `retries` | integer (int64) | no | The starts again in a row before the policy gives up; 0 or absent is unlimited. Only on-failure takes it. At least 0. |
+
+### RestartSpec
+
+| Field | Type | Required | Description |
+| --- | --- | --- | --- |
+| `backoff` | integer (int64) | no | The first wait before a start again, in seconds; 0 or absent is 1. It doubles after each start again, up to 60. Only on-failure and always take it. From 0 to 60. |
+| `policy` | string | yes | One of `no`, `on-failure`, `always`. |
+| `retries` | integer (int64) | no | The starts again in a row before the policy gives up; 0 or absent is unlimited. Only on-failure takes it. At least 0. |
+
+### Sandbox
+
+| Field | Type | Required | Description |
+| --- | --- | --- | --- |
+| `command` | array of string | no |  |
+| `created_at` | string (date-time) | yes |  |
+| `digest` | string | no |  |
+| `exit_status` | [ExitStatus](#exitstatus) | no |  |
+| `failed_reason` | string | no |  |
+| `id` | string | yes |  |
+| `image` | string | yes |  |
+| `kernel` | string | no |  |
+| `name` | string | no |  |
+| `policy` | string | no |  |
+| `provider` | string | yes |  |
+| `resources` | [Resources](#resources) | yes |  |
+| `restart` | [Restart](#restart) | no |  |
+| `secrets` | array of string | no |  |
+| `snapshot` | string | no |  |
+| `started_at` | string (date-time) | no |  |
+| `state` | string | yes | One of `pending`, `created`, `running`, `paused`, `unresponsive`, `stopped`, `failed`. |
+| `stopped_reason` | string | no |  |
+
+### SandboxesResponse
+
+| Field | Type | Required |
+| --- | --- | --- |
+| `next` | string or null | yes |
+| `sandboxes` | array of [Sandbox](#sandbox) | yes |
+| `warnings` | array of string | no |
+
+### StopRequest
+
+| Field | Type | Required |
+| --- | --- | --- |
+
+{/* make openapi writes everything above this line. Write by hand below it. */}

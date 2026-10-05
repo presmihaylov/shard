@@ -17,8 +17,8 @@ type Local struct {
 	StartAtBoot bool
 }
 
-// local is §5 to §10: the provider, automatic startup, preflight, review, and apply.
-func (s *Setup) local(ctx context.Context) error {
+// local is §5 to §10: the provider, automatic startup, preflight, review, and apply; h is what becomes of a saved remote.
+func (s *Setup) local(ctx context.Context, h handover) error {
 	provider, err := s.askProvider(ctx, nil)
 	if err != nil {
 		return err
@@ -31,7 +31,7 @@ func (s *Setup) local(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
-	if err := s.review(ctx, l); err != nil {
+	if err := s.review(ctx, l, h.review); err != nil {
 		return err
 	}
 	if err := s.admin(ctx); err != nil {
@@ -44,8 +44,12 @@ func (s *Setup) local(ctx context.Context) error {
 	if err := s.apply(ctx, "Setting up Shard", steps); err != nil {
 		return err
 	}
+	note, err := h.finish(ctx)
+	if err != nil {
+		return err
+	}
 
-	return s.UI.Print(localDone(s.Host, l)...)
+	return s.UI.Print(localDone(s.Host, l, note)...)
 }
 
 const exitOption = "exit"
@@ -125,8 +129,8 @@ func (s *Setup) checked(ctx context.Context, l Local) (Local, error) {
 	}
 }
 
-// review is §9: the changes setup will make, and the confirmation before any of them.
-func (s *Setup) review(ctx context.Context, l Local) error {
+// review is §9: the changes setup will make, and the confirmation before any of them; removal is the saved remote's line, if any.
+func (s *Setup) review(ctx context.Context, l Local, removal string) error {
 	title := providerTitle(l.Provider)
 	startup := "No"
 	if l.StartAtBoot {
@@ -146,7 +150,11 @@ func (s *Setup) review(ctx context.Context, l Local) error {
 	case err != nil:
 		return fmt.Errorf("check %s: %w", DataDir, err)
 	}
-	lines = append(lines, startupLine(s.Host, l), "", "Administrator access is required.", "")
+	lines = append(lines, startupLine(s.Host, l))
+	if removal != "" {
+		lines = append(lines, removal)
+	}
+	lines = append(lines, "", "Administrator access is required.", "")
 	if err := s.UI.Print(lines...); err != nil {
 		return err
 	}
@@ -178,8 +186,8 @@ func startupLine(h Host, l Local) string {
 	return "  Configure and start a systemd service."
 }
 
-// localDone closes a local setup with what to run next; on Linux the API socket belongs to root, so local commands need sudo.
-func localDone(h Host, l Local) []string {
+// localDone closes a local setup with what to run next, after note, which says what became of a saved remote; on Linux the API socket belongs to root, so local commands need sudo.
+func localDone(h Host, l Local, note []string) []string {
 	sudo := ""
 	if h.OS == "linux" {
 		sudo = "sudo "
@@ -190,6 +198,9 @@ func localDone(h Host, l Local) []string {
 	}
 	if sudo != "" {
 		lines = append(lines, "Local commands run with sudo, because the API socket belongs to root.", "")
+	}
+	if len(note) > 0 {
+		lines = append(append(lines, note...), "")
 	}
 	lines = append(lines, "Next steps:", "")
 	if !l.StartAtBoot {

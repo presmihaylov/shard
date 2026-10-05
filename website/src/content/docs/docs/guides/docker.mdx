@@ -1,0 +1,128 @@
+---
+title: How to run Docker inside a sandbox?
+description: Run dockerd as the command of a sandbox, then build and run containers inside it, on Sysbox, vz or Firecracker.
+sidebar:
+  order: 7
+---
+
+import { Tabs, TabItem } from '@astrojs/starlight/components';
+
+This example starts `dockerd` in a sandbox, waits for it, then runs a container inside the sandbox. It works on a Sysbox, vz or Firecracker server:
+
+<Tabs syncKey="lang">
+	<TabItem label="CLI">
+
+```sh
+shard run -d --name dind --memory 512MiB docker:27-dind dockerd
+until shard exec dind docker info >/dev/null 2>&1; do sleep 1; done
+shard exec dind docker run --rm alpine:3.20 echo hello from a nested container
+```
+
+	</TabItem>
+	<TabItem label="TypeScript">
+
+```ts
+import { Shard } from "useshards";
+
+const shard = new Shard();
+const app = await shard.run("docker:27-dind", ["dockerd"], { name: "dind", memoryMiB: 512 });
+try {
+  const ready = await app.sandbox.exec(
+    "for i in $(seq 30); do docker info >/dev/null 2>&1 && exit 0; sleep 1; done; exit 1",
+  );
+  if (ready.exitCode !== 0) throw new Error("dockerd did not answer");
+  const hello = await app.sandbox.exec(["docker", "run", "--rm", "alpine:3.20", "echo", "hello from a nested container"]);
+  console.log(hello.stdout);
+} finally {
+  await app.sandbox.remove({ force: true });
+  shard.close();
+}
+```
+
+	</TabItem>
+	<TabItem label="Python">
+
+```python
+from useshards import Shard
+
+with Shard() as shard:
+    app = shard.run("docker:27-dind", ["dockerd"], name="dind", memory_mib=512)
+    try:
+        ready = app.sandbox.exec(
+            "for i in $(seq 30); do docker info >/dev/null 2>&1 && exit 0; sleep 1; done; exit 1"
+        )
+        if ready.exit_code != 0:
+            raise RuntimeError("dockerd did not answer")
+        hello = app.sandbox.exec(["docker", "run", "--rm", "alpine:3.20", "echo", "hello from a nested container"])
+        print(hello.stdout)
+    finally:
+        app.sandbox.remove(force=True)
+```
+
+	</TabItem>
+</Tabs>
+
+The SDK examples connect to the server that `SHARD_REMOTE` names, with the API key in `SHARD_API_KEY`.
+
+`dockerd` takes a few seconds to open its socket, so the example waits until `docker info` answers. The nested `docker run` pulls `alpine:3.20` from Docker Hub over the sandbox's network.
+
+The SDK examples remove the sandbox when they finish. After the CLI example, `dockerd` keeps running in the background. Use `docker build` and `docker run` inside the sandbox as you would on any host. When you are done, stop and remove the sandbox:
+
+```sh
+shard stop dind
+shard remove dind
+```
+
+## Which providers run Docker
+
+| | gVisor | Sysbox | runc | vz | Firecracker |
+| --- | --- | --- | --- | --- | --- |
+| Docker inside a sandbox | no | yes | no | yes | yes |
+
+One daemon runs one provider for every sandbox on its host. `shard daemon status` on the daemon host names it. On gVisor or runc, pick another server for Docker.
+
+On a Linux host without `/dev/kvm`, the daemon picks gVisor by default, which cannot run Docker. Select Sysbox with `--provider sysbox`, and setup installs Sysbox CE 0.7.1 and sets up the daemon on it:
+
+```sh
+shard setup --local --provider sysbox --start-at-boot=true -y
+```
+
+Setup never recommends Sysbox. A daemon started without `--provider` keeps Sysbox only for a data directory that already holds Sysbox sandboxes, so name it the first time. Sysbox needs an x86_64 Linux host, root, and a kernel that Sysbox supports. There is no fallback to another provider.
+
+## Why dockerd is the command
+
+The command you give replaces the image's command. shard runs `dockerd` directly, not the entrypoint script of the `docker:dind` image, and finds it on the image's `PATH`. PID 1 of the sandbox is shard's own supervisor, and `dockerd` is its child.
+
+A sandbox outlives its command. If `dockerd` exits, the sandbox stays running and you can still exec into it. Only `shard stop` ends the sandbox. Add `--restart on-failure` to `shard run` to start `dockerd` again after a nonzero exit.
+
+## What the sandbox bounds
+
+Everything Docker starts runs inside the sandbox, so the sandbox's bounds cover it:
+
+- `dockerd` and every nested container share the sandbox's `--memory`. Give the sandbox enough memory for all of them.
+- A nested container reaches the network as the sandbox does, and the sandbox's egress policy judges its traffic too.
+- Nested images stay inside the sandbox. `shard image list` on the host never shows them.
+
+Each provider adds limits of its own.
+
+### Sysbox
+
+- **One tenant per host.** Sysbox CE maps every sandbox to the same host user range. Two Sysbox sandboxes are isolated from the host, but not from each other. Do not put the sandboxes of two customers on one Sysbox host.
+- **No pause, resume or fork.** shard refuses these verbs on Sysbox. `shard snapshot create` still works on a stopped sandbox.
+- **The disk bound does not cover Docker's data.** Sysbox keeps `/var/lib/docker` on the host, outside the `--disk` bound of the sandbox. Nested images and container layers fill the host disk, not the sandbox disk.
+- **4096 processes.** Every sandbox can hold at most 4096 processes, including the ones in nested containers. You cannot change this bound.
+
+### vz and Firecracker
+
+- **IPv4 only.** The guest kernel has no IPv6, so `dockerd` runs IPv4 only.
+- **Docker's data is under the disk bound.** Nested images and layers sit on the sandbox's disk. `--disk` sets its size, and the default is 10240 MiB.
+
+## When every container fails
+
+On a Sysbox host with kernel 6.12.107 and Sysbox 0.7.1, `dockerd` starts, but every container it runs fails with:
+
+```text
+error mounting "cgroup" to rootfs at "/sys/fs/cgroup": ... permission denied
+```
+
+This is a known issue with that kernel and Sysbox version. On kernel 6.12.101 the containers run.

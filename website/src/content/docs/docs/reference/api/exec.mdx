@@ -1,0 +1,205 @@
+---
+title: Exec
+description: The routes that run a command in a running sandbox, attach to it, signal it and resize its terminal.
+sidebar:
+  order: 4
+---
+
+This runs a command in the running sandbox `web`:
+
+```sh
+curl --unix-socket /var/lib/shard/shard.sock -X POST -H 'Content-Type: application/json' -d '{"command":["/bin/echo","hi"]}' http://localhost/v0/sandboxes/web/exec
+```
+
+The daemon answers `201` with the [Exec](#exec). Routes with `{exec}` in the path use its `exec` field as the id. This one waits for the command to end:
+
+```sh
+curl --unix-socket /var/lib/shard/shard.sock 'http://localhost/v0/sandboxes/web/exec/<exec>?wait=true'
+```
+
+{/* make openapi writes this part from the routes. Edit the routes, not this part. */}
+
+Each route answers an error with the [Error](/docs/reference/api/#error) body, unless its responses say otherwise.
+
+## Execute a command in a running sandbox
+
+`POST /v0/sandboxes/{id}/exec` · scope `exec`
+
+**Parameters**
+
+| Name | In | Type | Required | Description |
+| --- | --- | --- | --- | --- |
+| `id` | path | string | yes | The sandbox id or name. |
+
+**Request body**
+
+[ExecRequest](#execrequest) as `application/json`, required.
+
+**Responses**
+
+| Status | Body |
+| --- | --- |
+| 201 | [Exec](#exec) as `application/json` |
+
+## List the execs of a sandbox
+
+`GET /v0/sandboxes/{id}/exec` · scope `exec`
+
+**Parameters**
+
+| Name | In | Type | Required | Description |
+| --- | --- | --- | --- | --- |
+| `id` | path | string | yes | The sandbox id or name. |
+| `limit` | query | integer (int64) | no | The most rows a page holds; none answers the whole list. At least 1. |
+| `cursor` | query | string | no | The next of the page before; this page starts after it. |
+
+**Responses**
+
+| Status | Body |
+| --- | --- |
+| 200 | [ExecsResponse](#execsresponse) as `application/json` |
+
+## Read, wait for or attach to an exec
+
+`GET /v0/sandboxes/{id}/exec/{exec}` · scope `exec`
+
+**Parameters**
+
+| Name | In | Type | Required | Description |
+| --- | --- | --- | --- | --- |
+| `id` | path | string | yes | The sandbox id or name. |
+| `exec` | path | string | yes | The exec id. |
+| `wait` | query | boolean | no | Block until the exec ends. |
+
+**Responses**
+
+| Status | Body | Description |
+| --- | --- | --- |
+| 101 | WebSocket | A WebSocket attach. Each binary message leads with its stream byte: 0 stdin and 4 stdin closed from the client; 1 stdout, 2 stderr, 3 the ExitMessage and 5 a FailureMessage from the daemon. |
+| 200 | [Exec](#exec) as `application/json` | The exec as it stands, or with wait once it ends. |
+
+**WebSocket messages**
+
+| Stream byte | Payload |
+| --- | --- |
+| 3 | [ExitMessage](#exitmessage) |
+| 5 | [FailureMessage](/docs/reference/api/sandboxes/#failuremessage) |
+
+## Send a signal to a running exec
+
+`POST /v0/sandboxes/{id}/exec/{exec}/kill` · scope `exec`
+
+**Parameters**
+
+| Name | In | Type | Required | Description |
+| --- | --- | --- | --- | --- |
+| `id` | path | string | yes | The sandbox id or name. |
+| `exec` | path | string | yes | The exec id. |
+
+**Request body**
+
+[KillRequest](#killrequest) as `application/json`, optional.
+
+**Responses**
+
+| Status | Body |
+| --- | --- |
+| 204 | none |
+
+## Forget an exec that ended
+
+`DELETE /v0/sandboxes/{id}/exec/{exec}` · scope `exec`
+
+**Parameters**
+
+| Name | In | Type | Required | Description |
+| --- | --- | --- | --- | --- |
+| `id` | path | string | yes | The sandbox id or name. |
+| `exec` | path | string | yes | The exec id. |
+
+**Responses**
+
+| Status | Body |
+| --- | --- |
+| 204 | none |
+
+## Resize the terminal of an exec
+
+`POST /v0/sandboxes/{id}/exec/{exec}/resize` · scope `exec`
+
+**Parameters**
+
+| Name | In | Type | Required | Description |
+| --- | --- | --- | --- | --- |
+| `id` | path | string | yes | The sandbox id or name. |
+| `exec` | path | string | yes | The exec id. |
+
+**Request body**
+
+[TerminalSize](#terminalsize) as `application/json`, optional.
+
+**Responses**
+
+| Status | Body |
+| --- | --- |
+| 204 | none |
+
+## Objects
+
+### Exec
+
+| Field | Type | Required | Description |
+| --- | --- | --- | --- |
+| `command` | array of string | yes |  |
+| `exec` | string | yes |  |
+| `exit_status` | [ExitStatus](/docs/reference/api/sandboxes/#exitstatus) or null | yes |  |
+| `exited_at` | string (date-time) or null | yes |  |
+| `lost_bytes` | integer (int64) | yes |  |
+| `sandbox` | string | yes |  |
+| `started_at` | string (date-time) | yes |  |
+| `state` | string | yes | One of `running`, `exited`. |
+| `truncated` | boolean | yes |  |
+
+### ExecRequest
+
+| Field | Type | Required | Description |
+| --- | --- | --- | --- |
+| `attach` | boolean | no |  |
+| `command` | array of string | yes | At least 1 item. |
+| `env` | array of string | no |  |
+| `size` | [TerminalSize](#terminalsize) | no |  |
+| `stdin` | boolean | no |  |
+| `tty` | boolean | no |  |
+| `user` | string | no |  |
+| `workdir` | string | no |  |
+
+### ExecsResponse
+
+| Field | Type | Required |
+| --- | --- | --- |
+| `execs` | array of [Exec](#exec) | yes |
+| `next` | string or null | yes |
+
+### ExitMessage
+
+| Field | Type | Required | Description |
+| --- | --- | --- | --- |
+| `code` | integer (int64) | yes | The exit code, or the code a command that never started ends with. |
+| `error` | string | no | Why the command never started; absent when it started. |
+| `lost_bytes` | integer (int64) | no | The output bytes the buffer dropped before this client read them; absent when it dropped none. |
+| `signal` | integer (int64) | yes | The signal that ended the command, or 0. |
+
+### KillRequest
+
+| Field | Type | Required | Description |
+| --- | --- | --- | --- |
+| `signal` | string | no | TERM or KILL, in capitals; absent or empty is TERM. |
+
+### TerminalSize
+
+| Field | Type | Required | Description |
+| --- | --- | --- | --- |
+| `cols` | integer (int32) | no | From 0 to 65535. |
+| `rows` | integer (int32) | no | From 0 to 65535. |
+
+{/* make openapi writes everything above this line. Write by hand below it. */}

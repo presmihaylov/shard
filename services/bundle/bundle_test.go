@@ -25,7 +25,7 @@ const supervisorPath = "/usr/local/bin/shard-init"
 func TestBuildRunsTheEntrypointUnderTheSupervisor(t *testing.T) {
 	_, got := build(t, models.SandboxSpec{Entrypoint: []string{"/bin/sh", "-c", "true"}}, models.ImageConfig{})
 
-	want := []string{bundle.GuestInitPath, "-ready-file", guestReadyFile, "-restart-file", "/.shard/restarts.json", "--", "/bin/sh", "-c", "true"}
+	want := []string{bundle.GuestInitPath, "-ready-file", guestReadyFile, "--", "/bin/sh", "-c", "true"}
 	if !slices.Equal(got.Process.Args, want) {
 		t.Errorf("got args %v, want %v", got.Process.Args, want)
 	}
@@ -33,43 +33,15 @@ func TestBuildRunsTheEntrypointUnderTheSupervisor(t *testing.T) {
 
 func TestBuildHandsTheRestartPolicyToTheSupervisor(t *testing.T) {
 	restart := models.RestartSpec{Policy: models.RestartOnFailure, Retries: 3, Backoff: 2}
-	b, got := build(t, models.SandboxSpec{Restart: restart, Entrypoint: []string{"/bin/sh"}}, models.ImageConfig{})
+	_, got := build(t, models.SandboxSpec{Restart: restart, Entrypoint: []string{"/bin/sh"}}, models.ImageConfig{})
 
 	want := []string{
 		bundle.GuestInitPath, "-ready-file", guestReadyFile,
-		"-restart", "on-failure", "-retries", "3", "-backoff", "2s", "-restart-file", "/.shard/restarts.json",
+		"-restart", "on-failure", "-retries", "3", "-backoff", "2s",
 		"--", "/bin/sh",
 	}
 	if !slices.Equal(got.Process.Args, want) {
 		t.Errorf("got args %v, want %v", got.Process.Args, want)
-	}
-	if want := filepath.Join(b.ShardDir, "restarts.json"); b.RestartFile != want {
-		t.Errorf("got the restart file at %q, want %q", b.RestartFile, want)
-	}
-
-	count, err := b.RestartCount()
-	if err != nil || count != (models.RestartCount{}) {
-		t.Errorf("RestartCount() = %+v, %v before any start again, want zero and no error", count, err)
-	}
-	if err := os.WriteFile(b.RestartFile, []byte(`{"count":2,"gave_up":true}`), 0o600); err != nil {
-		t.Fatalf("write the restart file: %v", err)
-	}
-	count, err = b.RestartCount()
-	if err != nil || count.Count != 2 || !count.GaveUp {
-		t.Errorf("RestartCount() = %+v, %v, want 2 starts again and a give-up", count, err)
-	}
-}
-
-// A stop detaches the disk the count sits on, and a missing count read there as zero wrote 0 over the record (SHARD-401).
-func TestRestartCountRefusesADirectoryThatIsNotThere(t *testing.T) {
-	path := filepath.Join(t.TempDir(), "disk", "shard", "restarts.json")
-
-	count, err := bundle.Bundle{RestartFile: path}.RestartCount()
-	if err == nil {
-		t.Fatalf("RestartCount() = %+v with no directory under the file, want an error", count)
-	}
-	if !errors.Is(err, os.ErrNotExist) || !strings.Contains(err.Error(), path) {
-		t.Errorf("the refusal is %q, and it must name the file and wrap ErrNotExist", err)
 	}
 }
 

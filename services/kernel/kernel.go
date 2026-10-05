@@ -32,6 +32,8 @@ type Kernel struct {
 	Version string `json:"version"`
 	Arch    string `json:"arch"`
 	SHA256  string `json:"sha256"`
+	// Tag names the file in a sandbox record: its release tag, or local and a hash prefix for a dev kernel.
+	Tag string `json:"tag"`
 }
 
 // artifacts is the hash of every release file, the output of make kernel-reproducible at this Version and Build.
@@ -136,7 +138,13 @@ func New(root string, opts ...Option) *Service {
 // kernel that changed on disk never boots: a release file is fetched again, a local one is refused.
 func (s *Service) Ensure(ctx context.Context, arch string) (Kernel, error) {
 	if s.local != "" {
-		return s.verified(s.local, arch, s.localSHA256)
+		k, err := s.verified(s.local, arch, s.localSHA256)
+		if err != nil {
+			return Kernel{}, err
+		}
+		k.Tag = "local-" + k.SHA256[:12]
+
+		return k, nil
 	}
 
 	path, err := Path(s.root, arch)
@@ -232,5 +240,5 @@ func (s *Service) verified(path, arch, want string) (Kernel, error) {
 
 	s.log.Printf("kernel: verified %s sha256 %s", path, got)
 
-	return Kernel{Path: path, Version: Version, Arch: arch, SHA256: got}, nil
+	return Kernel{Path: path, Version: Version, Arch: arch, SHA256: got, Tag: Tag()}, nil
 }

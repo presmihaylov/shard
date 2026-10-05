@@ -158,6 +158,8 @@ type Config struct {
 	Binary string
 	Jailer string
 	Kernel string
+	// KernelTag names Kernel in the record of every sandbox this provider boots.
+	KernelTag string
 	// Init is a static linux shard-init for the host's arch, which becomes the initrd's /init.
 	Init string
 	// Dir is where the provider keeps its copies of Binary and Kernel, and the initrd it builds from Init.
@@ -256,6 +258,9 @@ func copyIn(src, dst string, perm os.FileMode) error {
 }
 
 func (p *Provider) Name() string { return Name }
+
+// GuestKernel is the tag of the kernel a fresh boot runs; a restored VM runs the one its memory image holds.
+func (p *Provider) GuestKernel() string { return p.cfg.KernelTag }
 
 // Capabilities are pause, resume and fork, which every host with /dev/kvm has: a snapshot is two files the vmm writes.
 func (p *Provider) Capabilities() models.Capabilities {
