@@ -49,7 +49,7 @@ func (s *Setup) remote(ctx context.Context) error {
 
 // connect asks for a connection, verifies it, and offers to save it; previous stays on disk until the new one is written.
 func (s *Setup) connect(ctx context.Context, path string, previous client.Config) error {
-	conn, err := s.ask(ctx)
+	conn, err := s.ask(ctx, true)
 	if err != nil {
 		return err
 	}
@@ -81,15 +81,15 @@ func (s *Setup) verify(ctx context.Context, conn client.Config) (client.Config, 
 			return client.Config{}, client.Capabilities{}, verifyErr
 		}
 		if choice == retryEdit {
-			if conn, err = s.ask(ctx); err != nil {
+			if conn, err = s.ask(ctx, false); err != nil {
 				return client.Config{}, client.Capabilities{}, err
 			}
 		}
 	}
 }
 
-// ask reads the URL and the key; a key in SHARD_API_KEY is used rather than asked for again.
-func (s *Setup) ask(ctx context.Context) (client.Config, error) {
+// ask reads the URL and the key; with envKey a key in SHARD_API_KEY is used rather than asked for, and an edit asks the person.
+func (s *Setup) ask(ctx context.Context, envKey bool) (client.Config, error) {
 	remote, err := s.UI.Text(ctx, AskURL, "Shard server URL:")
 	if err != nil {
 		return client.Config{}, err
@@ -109,7 +109,7 @@ func (s *Setup) ask(ctx context.Context) (client.Config, error) {
 		}
 	}
 
-	if key := strings.TrimSpace(s.Host.Env(client.APIKeyEnv)); key != "" {
+	if key := strings.TrimSpace(s.Host.Env(client.APIKeyEnv)); envKey && key != "" {
 		if err := s.UI.Print("Using the API key in " + client.APIKeyEnv + "."); err != nil {
 			return client.Config{}, err
 		}
@@ -225,7 +225,7 @@ func (s *Setup) offerSave(ctx context.Context, path string, previous, conn clien
 		return fmt.Errorf("resolve %s: %w", path, err)
 	}
 
-	return s.UI.Print(savedLines(abs, s.Host.Env)...)
+	return s.UI.Print(savedLines(abs, conn, s.Host.Env)...)
 }
 
 // connectedLines are the §13 result lines, then every lifecycle capability, the unsupported ones too.
@@ -254,8 +254,8 @@ func connectedLines(conn client.Config, caps client.Capabilities) []string {
 	return append(lines, "", "Capabilities show what the server supports. They do not override the permissions of your API key.", "")
 }
 
-// savedLines are the §13 completion text, with the variables that still change what the file says.
-func savedLines(path string, env func(string) string) []string {
+// savedLines are the §13 completion text, with the variables that still beat what the file says.
+func savedLines(path string, conn client.Config, env func(string) string) []string {
 	lines := []string{
 		"✓ Connection saved",
 		"",
@@ -266,6 +266,9 @@ func savedLines(path string, env func(string) string) []string {
 	}
 	if remote := strings.TrimSpace(env(client.RemoteEnv)); remote != "" {
 		lines = append(lines, "", client.RemoteEnv+" is set to "+client.Redacted(remote)+", and Shard commands use it before the saved connection.")
+	}
+	if key := strings.TrimSpace(env(client.APIKeyEnv)); key != "" && key != conn.APIKey {
+		lines = append(lines, "", client.APIKeyEnv+" is set to another key, and Shard commands use it before the saved one.")
 	}
 	if caFile := env(client.CAFileEnv); caFile != "" {
 		lines = append(lines, "", "Keep "+client.CAFileEnv+" set: the saved connection does not store the certificate authority.")

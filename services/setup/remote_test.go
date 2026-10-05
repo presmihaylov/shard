@@ -350,6 +350,32 @@ func TestEditAsksAgainAndChecksTheNewDetails(t *testing.T) {
 	}
 }
 
+// An edit asks for the key even with SHARD_API_KEY set, since that key is the one the server refused. (SHARD-657)
+func TestEditAsksForTheKeyThatSHARDAPIKEYGotWrong(t *testing.T) {
+	url, ca := tlsFront(t, testKey, nil)
+	host, path := testHost(t, map[string]string{client.CAFileEnv: ca, client.APIKeyEnv: "a-stale-key"})
+	ui := &fakeUI{
+		texts:    map[Question]string{AskURL: url},
+		secrets:  map[Question]string{AskAPIKey: testKey},
+		selects:  map[Question]string{AskRetry: "edit"},
+		confirms: map[Question]bool{AskSave: true},
+	}
+
+	err := (&Setup{Host: host, UI: ui}).remote(t.Context())
+	if err != nil {
+		t.Fatalf("remote: %v", err)
+	}
+
+	if want := []Question{AskURL, AskRetry, AskURL, AskAPIKey, AskSave}; !slices.Equal(ui.asked, want) {
+		t.Errorf("asked %v, want %v", ui.asked, want)
+	}
+	if got := savedConnection(t, path); got.APIKey != testKey {
+		t.Errorf("saved a key other than the edited one")
+	}
+	containsAll(t, ui.printed, client.APIKeyEnv+" is set to another key, and Shard commands use it before the saved one.")
+	noLeak(t, ui, err)
+}
+
 // Retry checks the same details again, without asking for them. (SHARD-657)
 func TestRetryChecksTheSameDetailsAgain(t *testing.T) {
 	var requests atomic.Int32
