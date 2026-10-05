@@ -60,6 +60,6 @@ jobs:
         run: |
           git fetch origin changeset-release/main
           python3 sdks/release/pr_body.py --base "$GITHUB_SHA" --head origin/changeset-release/main > "$RUNNER_TEMP/body.md"
-          gh pr edit "$PR" --body-file "$RUNNER_TEMP/body.md"
+          gh api --method PATCH "repos/$GITHUB_REPOSITORY/pulls/$PR" -F "body=@$RUNNER_TEMP/body.md" --silent
           gh workflow run ci.yml --ref changeset-release/main
           gh workflow run sdk-release.yml --ref changeset-release/main -f sdk=both
