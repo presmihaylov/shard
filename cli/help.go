@@ -587,7 +587,14 @@ var helps = map[string]verbHelp{
 			{"--save", "Save the remote connection", ""},
 			{"-y, --yes", "Apply changes without confirmation", ""},
 		},
-		notes: []note{{title: "Remote authentication", lines: []string{"Set " + client.APIKeyEnv + ". Do not pass the key as a command argument."}}},
+		notes: []note{
+			{title: "Remote authentication", lines: []string{"Set " + client.APIKeyEnv + ". Do not pass the key as a command argument."}},
+			{title: "Exit codes", rows: []row{
+				{"0", "setup finished, or there was nothing to do"},
+				{"1", "a check or a step failed, an option was refused, or the confirmation was declined"},
+				{"130", "Ctrl+C left setup; the steps done so far stay in place"},
+			}},
+		},
 		examples: []string{
 			"shard setup",
 			"shard setup --local --provider gvisor --start-at-boot=true -y",

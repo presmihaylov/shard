@@ -44,6 +44,16 @@ For automated setup:
   shard setup --help
 ```
 
+## Setup exit codes
+
+`shard setup` ends with one of these codes, so a script can tell the outcomes apart:
+
+| Code | When |
+| --- | --- |
+| 0 | Setup finished, or there was nothing to do |
+| 1 | A check or a step failed, an option was refused, or the confirmation was declined |
+| 130 | Ctrl+C left setup; the steps done so far stay in place |
+
 ## Upgrade
 
 Run the same command again. The installer resolves the newest release each time and replaces the binary in place.
