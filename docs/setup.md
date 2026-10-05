@@ -17,7 +17,8 @@ shard setup
 
 The wizard always lists all five providers. One this host cannot run is shown as unavailable, with
 the reason, and cannot be chosen. A runtime setup can install does not make a provider unavailable.
-Any other host, such as an Intel Mac, can still connect to a remote server.
+Any other host, such as an Intel Mac, can still connect to a remote server. On a host where no
+provider runs, the first question preselects the remote server and says why on the local choice.
 
 ## Local setup
 
