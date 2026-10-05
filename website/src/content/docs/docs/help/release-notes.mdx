@@ -38,7 +38,7 @@ shard is pre-alpha, so a release can change the API, the CLI and the SDKs withou
 - After a failed step, the retry hint names a command that runs: `shard setup`, or the full path of the binary when `shard` is not on `PATH`. With no terminal, the hint also repeats the flags of the run.
 - A menu or the step list that gets shorter no longer leaves old lines on the screen.
 - The tool download shows its progress for `runsc`, `firecracker` and `sysbox`. A download that gets no data for 30 seconds fails with `no data for 30s`.
-- A local setup ends with `shard <version> is set up`, and a repair with `shard <version> is repaired`.
+- A local setup ends with `shard <version> is set up.`, and a repair with `shard <version> is repaired.`. When the service starts at boot, both say `, and the daemon is running.` instead of the period.
 - Setup prints `sudo` only where you need it: never before a shard command on a Mac, and never when you are logged in as root.
 
 **Uninstall**
