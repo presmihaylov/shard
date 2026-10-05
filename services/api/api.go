@@ -311,7 +311,7 @@ type sandboxesResponse struct {
 
 // ErrorObject is a code for a program, a line for a human, the holders an in_use names, and the shell code a command_not_started carries.
 type ErrorObject struct {
-	Code     models.Code `json:"code" doc:"What a program matches on: invalid_request, body_too_large, not_found, sandbox_not_running, sandbox_not_stopped, sandbox_not_paused, sandbox_live, sandbox_failed, no_checkpoint, unsupported, in_use, name_taken, exec_exited, exec_running, no_app, app_ended, unauthorized, forbidden, timeout, command_not_started or internal. A later daemon may add a code, so a client must take one it does not know."`
+	Code     models.Code `json:"code" doc:"What a program matches on: invalid_request, body_too_large, not_found, sandbox_not_running, sandbox_not_stopped, sandbox_not_paused, sandbox_live, sandbox_failed, no_checkpoint, unsupported, in_use, name_taken, exec_exited, exec_running, exec_limit, no_app, app_ended, unauthorized, forbidden, timeout, command_not_started or internal. A later daemon may add a code, so a client must take one it does not know."`
 	Message  string      `json:"message"`
 	Holders  []string    `json:"holders,omitempty"`
 	ExitCode int         `json:"exit_code,omitempty"`
@@ -620,7 +620,7 @@ func (h *Handler) startSandbox(ctx context.Context, in *sandboxPath) (*reply[San
 	sb, err := h.lifecycle.Start(ctx, in.ID)
 	// A start the substrate broke, not one it refused, is named in the daemon log beside the client's answer (SHARD-416).
 	if status, _ := classify(err); err != nil && status >= http.StatusInternalServerError {
-		h.log.Printf("api: start sandbox %s: %v", in.ID, err)
+		h.logCause("start sandbox "+in.ID, err)
 	}
 
 	return publicReply(sb, err)
@@ -665,6 +665,7 @@ func classify(err error) (int, models.Code) {
 	var attached *sandbox.AttachedError
 	var execExited *sandbox.ExecExitedError
 	var execRunning *sandbox.ExecRunningError
+	var execLimit *sandbox.ExecLimitError
 	var substrateTimeout *sandbox.SubstrateTimeoutError
 	var tooLarge *http.MaxBytesError
 	var scope *scopeError
@@ -692,6 +693,8 @@ func classify(err error) (int, models.Code) {
 		return http.StatusConflict, models.CodeExecExited
 	case errors.As(err, &execRunning):
 		return http.StatusConflict, models.CodeExecRunning
+	case errors.As(err, &execLimit):
+		return http.StatusTooManyRequests, models.CodeExecLimit
 	case errors.As(err, &held), errors.As(err, &attached):
 		return http.StatusConflict, models.CodeInUse
 	case errors.Is(err, models.ErrUnsupported):
