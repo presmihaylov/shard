@@ -15,9 +15,9 @@ provider   firecracker
 reason     /dev/kvm opens
 ```
 
-`shard info` inspects the host, not the daemon, so it works before setup. On a host that already has sandboxes, run it with `sudo`, because their records under `/var/lib/shard` belong to root.
+`shard info` inspects the host, not the daemon, so it works before setup. On a Linux host that is already set up, run it with `sudo`, because `/var/lib/shard` belongs to root and other users cannot read it.
 
-`shard setup` asks which provider to use and marks the one it recommends. To skip the question, pass the provider:
+`shard setup` asks which provider to use, and the cursor starts on the one it recommends. To skip the question, pass the provider:
 
 ```sh
 shard setup --local --provider gvisor --start-at-boot=true -y
@@ -33,7 +33,7 @@ shard setup --local --provider gvisor --start-at-boot=true -y
 | Linux, one tenant, and the workload runs Docker inside the sandbox | `sysbox` |
 | Linux, one tenant, and you trust the code | `runc` |
 
-Setup recommends the first of `vz`, `firecracker` and `gvisor` that runs on the host. It never recommends `sysbox` or `runc`. A daemon started with no `--provider` never picks either of them.
+Setup recommends the first of `vz`, `firecracker` and `gvisor` that runs on the host. It never recommends `sysbox` or `runc`. A daemon started with no `--provider` picks either of them only when that provider made the sandboxes already under its root.
 
 ## Compare the providers
 
