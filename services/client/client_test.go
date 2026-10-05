@@ -204,6 +204,35 @@ func TestNoDaemonIsOneConnectLine(t *testing.T) {
 	}
 }
 
+// The CLI reads the host's setup only once a dial fails, so a verb that reaches its daemon reads nothing.
+func TestSetHintIsReadOnlyWhenNothingAnswers(t *testing.T) {
+	root := shortRoot(t)
+	c := client.New(root)
+	c.SetHint(func() (string, error) { return "is it set up? shard setup", nil })
+
+	_, err := c.Version(t.Context())
+	if want := "cannot connect to shard daemon at " + filepath.Join(root, api.SocketFile) + ": is it set up? shard setup"; err == nil || err.Error() != want {
+		t.Errorf("the error reads %v, want %q", err, want)
+	}
+
+	broken := errors.New("decode the installation manifest: unexpected EOF")
+	c.SetHint(func() (string, error) { return "", broken })
+	_, err = c.Version(t.Context())
+	var connect *client.ConnectError
+	if !errors.As(err, &connect) || !errors.Is(err, broken) {
+		t.Errorf("a hint that fails reads %v, want a ConnectError that carries the cause", err)
+	}
+
+	served := serve(t, shortRoot(t), func(w http.ResponseWriter, _ *http.Request) { w.WriteHeader(http.StatusOK) })
+	served.SetHint(func() (string, error) {
+		t.Error("the hint was read for a daemon that answered")
+		return "", nil
+	})
+	if _, err := served.Version(t.Context()); errors.As(err, &connect) {
+		t.Errorf("Version = %v", err)
+	}
+}
+
 func TestADaemonThatNeverAnswersIsCutByTheDeadline(t *testing.T) {
 	root := shortRoot(t)
 	c := serve(t, root, func(_ http.ResponseWriter, r *http.Request) { <-r.Context().Done() })

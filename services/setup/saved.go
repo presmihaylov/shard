@@ -39,7 +39,7 @@ func (s *Setup) saved(ctx context.Context, path string, saved client.Config) err
 	case savedReplace:
 		return s.connect(ctx, path, saved)
 	case savedRemove:
-		return s.forget(path)
+		return s.forget(ctx, path)
 	}
 
 	return nil
@@ -58,14 +58,21 @@ func (s *Setup) check(ctx context.Context, path string, saved client.Config) err
 	return s.UI.Print(connectedLines(conn, caps)...)
 }
 
-// forget removes the saved connection and says what normal commands use now.
-func (s *Setup) forget(path string) error {
+// forget removes the saved connection and says what normal commands use now: the local daemon, or nothing set up yet.
+func (s *Setup) forget(ctx context.Context, path string) error {
+	_, installed, err := Detect(ctx, s.Host)
+	if err != nil {
+		return err
+	}
 	if err := client.RemoveConfig(path); err != nil {
 		return err
 	}
 	lines := []string{"✓ Connection removed", ""}
 	if note := remoteEnvNote(s.Host.Env); note != nil {
 		return s.UI.Print(append(lines, note...)...)
+	}
+	if !installed {
+		return s.UI.Print(append(lines, "Shard commands now use this machine, which is not set up to run sandboxes.", "Run shard setup again to set it up.")...)
 	}
 
 	return s.UI.Print(append(lines, "Shard commands now use the local daemon.")...)
@@ -104,7 +111,7 @@ func (s *Setup) switchToLocal(ctx context.Context) (finish func(context.Context)
 			return err
 		}
 
-		return s.forget(path)
+		return s.forget(ctx, path)
 	}, nil
 }
 
