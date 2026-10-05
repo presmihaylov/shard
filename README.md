@@ -142,7 +142,7 @@ sudo shard snapshot remove job-files
 Flags go before the image or sandbox name, and the command goes after it. `--memory` and `--disk`
 take sizes such as `512MiB` or `2GiB`. `--vcpus` takes a whole number. To name a secret's
 destination, use `--destination` or its alias `--dest`. Grant a secret only to destinations that
-never return the credential in a response. See [the CLI reference](https://useshards.com/docs/reference/cli/),
+never return the credential in a response. See [the CLI reference](docs/cli.md),
 [the lifecycle](docs/state-machine.md), [secrets](docs/secrets.md), and [egress](docs/egress.md).
 
 ## API and SDKs
@@ -163,7 +163,7 @@ in those directories, and [the release guide](docs/release.md) explains how an S
 ## Documentation
 
 - [Set up a host or a remote connection](docs/setup.md)
-- [CLI commands and options](https://useshards.com/docs/reference/cli/)
+- [CLI commands and options](docs/cli.md)
 - [Daemon, REST API, and remote access](docs/daemon.md)
 - [Provider capabilities and limits](docs/provider.md)
 - [Mac setup](docs/mac.md) and [the Mac provider](docs/provider-vz.md)
