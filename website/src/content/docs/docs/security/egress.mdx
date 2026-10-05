@@ -14,7 +14,7 @@ Let a sandbox reach one host, and see what the host refuses:
 
 ```sh
 shard policy create --allow api.openai.com --deny any openai-only
-shard create --name agent --policy openai-only alpine:3.20
+shard create --name agent --memory 512MiB --policy openai-only alpine:3.20
 shard exec agent wget -q -O /dev/null http://example.com
 shard policy logs agent
 shard remove --force agent
@@ -32,7 +32,12 @@ try {
     { action: "allow", rule: "api.openai.com" },
     { action: "deny", rule: "any" },
   ]);
-  const agent = await shard.create({ name: "agent", image: "alpine:3.20", policy: "openai-only" });
+  const agent = await shard.create({
+    name: "agent",
+    image: "alpine:3.20",
+    memoryMiB: 512,
+    policy: "openai-only",
+  });
   const result = await agent.exec(["wget", "-q", "-O", "/dev/null", "http://example.com"]);
   console.log(result.exitCode);
   for (const d of await agent.egressLog()) {
@@ -55,7 +60,9 @@ with Shard() as shard:
         "openai-only",
         [PolicyRule(action="allow", rule="api.openai.com"), PolicyRule(action="deny", rule="any")],
     )
-    agent = shard.create("alpine:3.20", name="agent", policy="openai-only")
+    agent = shard.create(
+        "alpine:3.20", name="agent", memory_mib=512, policy="openai-only"
+    )
     result = agent.exec(["wget", "-q", "-O", "/dev/null", "http://example.com"])
     print(result.exit_code)
     for d in agent.egress_log():
