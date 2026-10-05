@@ -9,11 +9,14 @@ import (
 	"maps"
 	"os"
 	"os/exec"
+	"slices"
 	"strings"
 	"sync"
 	"syscall"
 	"testing"
 	"time"
+
+	"github.com/presmihaylov/shard/pkg/pidpin"
 )
 
 // roleEnv runs the test binary as the launcher or the reaper, and indexEnv names the index to the reaper.
@@ -288,12 +291,46 @@ func End(marks func() (Marks, error)) error {
 		if time.Now().After(deadline) {
 			return fmt.Errorf("processes %v are left %s after SIGKILL", left, Grace)
 		}
-		for _, pid := range left {
-			if err := syscall.Kill(pid, syscall.SIGKILL); err != nil && !errors.Is(err, syscall.ESRCH) {
-				return fmt.Errorf("kill %d: %w", pid, err)
-			}
+		if err := kill(m, left); err != nil {
+			return err
 		}
 	}
+}
+
+// kill pins each pid before Left reads the table again, so a pid a later process took since the first read is never signaled.
+func kill(m Marks, pids []int) error {
+	var pins []*pidpin.Process
+	for _, pid := range pids {
+		pin, err := pidpin.Open(pid)
+		if errors.Is(err, syscall.ESRCH) {
+			continue
+		}
+		if err != nil {
+			return errors.Join(fmt.Errorf("pin %d: %w", pid, err), release(pins))
+		}
+		pins = append(pins, pin)
+	}
+	still, err := Left(m)
+	if err != nil {
+		return errors.Join(fmt.Errorf("list the marked processes: %w", err), release(pins))
+	}
+	var errs []error
+	for _, pin := range pins {
+		if slices.Contains(still, pin.PID()) {
+			errs = append(errs, pin.Kill())
+		}
+	}
+
+	return errors.Join(append(errs, release(pins))...)
+}
+
+func release(pins []*pidpin.Process) error {
+	var errs []error
+	for _, pin := range pins {
+		errs = append(errs, pin.Close())
+	}
+
+	return errors.Join(errs...)
 }
 
 // Require skips t only where this host refuses to list the session of a live child, as a seatbelt sandbox does; any other failure fails t.
