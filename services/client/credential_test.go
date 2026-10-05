@@ -1,7 +1,9 @@
 package client_test
 
 import (
+	"crypto/tls"
 	"encoding/pem"
+	"errors"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
@@ -396,5 +398,53 @@ func TestARefusalHidesThePasswordOfTheSavedRemote(t *testing.T) {
 	_, err := client.NewRemoteFromEnv("https://other.example.com", client.Config{Remote: "https://user:" + leakKey + "@shard.example.com", APIKey: "saved-key"})
 	if err == nil || strings.Contains(err.Error(), leakKey) || !strings.Contains(err.Error(), "shard.example.com") {
 		t.Errorf("NewRemoteFromEnv returned %v, want the saved remote in it and never its password", err)
+	}
+}
+
+// Reach dials and shakes hands and sends no request, so a server that refuses the key still answers it, and an untrusted certificate fails it. (SHARD-657)
+func TestReachDialsWithoutARequest(t *testing.T) {
+	host, ca, seen := tlsFront(t, "key-token")
+	caBytes, err := client.ReadCA(host, ca)
+	if err != nil {
+		t.Fatalf("ReadCA: %v", err)
+	}
+
+	c, err := client.NewRemote(host, "not-the-key", caBytes)
+	if err != nil {
+		t.Fatalf("NewRemote: %v", err)
+	}
+	if err := c.Reach(t.Context()); err != nil {
+		t.Errorf("Reach with a key the front refuses: %v", err)
+	}
+	if sawRequest(seen) {
+		t.Error("Reach sent a request")
+	}
+
+	c, err = client.NewRemote(host, "key-token", nil)
+	if err != nil {
+		t.Fatalf("NewRemote: %v", err)
+	}
+	var untrusted *tls.CertificateVerificationError
+	if err := c.Reach(t.Context()); !errors.As(err, &untrusted) {
+		t.Errorf("Reach against a private CA with none returned %v, want an untrusted certificate", err)
+	}
+
+	listener := httptest.NewServer(http.NotFoundHandler())
+	listener.Close()
+	c, err = client.NewRemote(listener.URL, "key-token", nil)
+	if err != nil {
+		t.Fatalf("NewRemote: %v", err)
+	}
+	var connect *client.ConnectError
+	if err := c.Reach(t.Context()); !errors.As(err, &connect) {
+		t.Errorf("Reach of a closed port returned %v, want a ConnectError", err)
+	}
+}
+
+// No SHARD_CA_FILE is no certificate and no error. (SHARD-657)
+func TestReadCAWithNoFileIsNone(t *testing.T) {
+	ca, err := client.ReadCA("https://shard.example.com", "")
+	if err != nil || ca != nil {
+		t.Errorf("ReadCA with no file answered %d bytes and %v, want none", len(ca), err)
 	}
 }

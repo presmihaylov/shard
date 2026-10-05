@@ -25,7 +25,7 @@ type Config struct {
 
 // Format prints the remote alone, its password hidden, so a config in an error or a log line never shows its key.
 func (c Config) Format(f fmt.State, _ rune) {
-	fmt.Fprintf(f, "saved connection to %s", redacted(c.Remote))
+	fmt.Fprintf(f, "saved connection to %s", Redacted(c.Remote))
 }
 
 // ConfigPath is $XDG_CONFIG_HOME/shard/config.json, or ~/.config/shard/config.json; the XDG spec ignores a relative XDG_CONFIG_HOME.

@@ -32,9 +32,22 @@ func NewRemoteFromEnv(host string, saved Config) (*Client, error) {
 		return nil, err
 	}
 
-	caFile := os.Getenv(CAFileEnv)
+	ca, err := ReadCA(host, os.Getenv(CAFileEnv))
+	if err != nil {
+		return nil, err
+	}
+
+	return NewRemote(host, token, ca)
+}
+
+// ReadCA reads the certificate caFile, SHARD_CA_FILE, holds for host, or none when it is empty.
+func ReadCA(host, caFile string) ([]byte, error) {
 	if caFile == "" {
-		return NewRemote(host, token, nil)
+		return nil, nil
+	}
+	parsed, err := parseRemote(host)
+	if err != nil {
+		return nil, err
 	}
 	// Refused before the file is read, so the mismatch is the one error, whatever the file holds.
 	if parsed.Scheme == "http" {
@@ -45,7 +58,7 @@ func NewRemoteFromEnv(host string, saved Config) (*Client, error) {
 		return nil, fmt.Errorf("read the ca file %s from %s: %w", caFile, CAFileEnv, err)
 	}
 
-	return NewRemote(host, token, ca)
+	return ca, nil
 }
 
 // apiKey is SHARD_API_KEY, else the saved key when remote is the saved remote, so a key reaches no server it was not saved for; an error never quotes it.
@@ -64,7 +77,7 @@ func apiKey(remote *url.URL, saved Config) (string, error) {
 		return key, nil
 	}
 	if key != "" {
-		return "", fmt.Errorf("a remote client needs %s for %s; the saved API key is for %s and is sent to no other server", APIKeyEnv, remote.Redacted(), redacted(saved.Remote))
+		return "", fmt.Errorf("a remote client needs %s for %s; the saved API key is for %s and is sent to no other server", APIKeyEnv, remote.Redacted(), Redacted(saved.Remote))
 	}
 
 	return "", fmt.Errorf("a remote client needs %s; shard serve answers 401 without one", APIKeyEnv)
@@ -80,8 +93,8 @@ func sameRemote(remote *url.URL, saved string) bool {
 	return remote.Scheme == other.Scheme && strings.EqualFold(remoteAddress(remote), remoteAddress(other))
 }
 
-// redacted hides a password a remote url carries, as url.URL.Redacted does.
-func redacted(remote string) string {
+// Redacted is remote with the password it may carry hidden, as url.URL.Redacted prints it.
+func Redacted(remote string) string {
 	parsed, err := url.Parse(remote)
 	if err != nil {
 		return remote
