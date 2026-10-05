@@ -56,7 +56,7 @@ On a host where `/dev/kvm` does not open, `shard info` prints `gvisor` and says 
 
 [Quickstart: server](/docs/quickstart/server/) covers the wizard, the service and how to run the daemon in a terminal.
 
-The daemon prepares Firecracker the first time it needs it. It checks the version of `firecracker`. It also downloads the guest kernel from the shard release and checks its SHA-256. If the daemon cannot reach the release, it waits up to 5 minutes:
+The daemon prepares Firecracker the first time it needs it. It checks the version of `firecracker`. It also downloads the guest kernel from its own GitHub release and checks its SHA-256. If the daemon cannot reach the release, it waits up to 5 minutes:
 
 - With no sandboxes in `/var/lib/shard`, the daemon prepares Firecracker at the first command that needs it. Only that command fails.
 - With sandboxes in `/var/lib/shard`, the daemon prepares Firecracker before it answers any command. If that fails, it exits with the error, and systemd starts it again for another try.
@@ -89,7 +89,7 @@ A sandbox outlives the daemon. After a restart, the daemon picks up each running
 | Flag | On Firecracker |
 | --- | --- |
 | `--memory` | Required. `0` is refused, and the smallest is 128 MiB. A bound above the host's total memory is refused. |
-| `--vcpus` | The VM's virtual CPUs. `0`, the default, gives one for each host CPU, up to 32. A value above 32 is refused. |
+| `--vcpus` | The VM's virtual CPUs. `0`, the default, gives one for each host CPU, up to 32. A value above 32, or above the number of host CPUs, is refused. |
 | `--disk` | The size of the writable disk. `0`, the default, means 10240 MiB. A bound under 11 MiB is refused. |
 
 A sandbox that goes over its `--memory` stops, and its record says why. Nothing starts it again. As a safety net, the host also bounds the VM process at the sandbox's memory plus 64 MiB, but the guest's kernel always acts first.
@@ -129,9 +129,9 @@ The disk grows only from a clean stop, where the command exited before the grace
 
 ## The guest kernel
 
-shard ships one Linux kernel with each release, and every build of it is the same, byte for byte. It has no modules. It builds in what a sandbox needs: virtio devices, ext4, overlay and EROFS, cgroups, namespaces and seccomp. It also builds in the bridge, netfilter, NAT and nf_tables, so Docker runs inside a sandbox.
+Each shard version pins one Linux kernel, and every build of that kernel is the same, byte for byte. It has no modules. It builds in what a sandbox needs: virtio devices, ext4, overlay and EROFS, cgroups, namespaces and seccomp. It also builds in the bridge, netfilter, NAT and nf_tables, so Docker runs inside a sandbox.
 
-The daemon downloads the kernel from the shard release on GitHub when it first needs it. It keeps it in `/var/lib/shard/kernel/<tag>/vmlinux-amd64` and checks it against the SHA-256 that shard was built with. If a file fails the check, for example because a crash cut it short, the daemon downloads it again. A shard upgrade that ships a new kernel downloads it the same way.
+The daemon downloads the kernel from its own release on GitHub, such as `kernel-6.12.110-3`, when it first needs it. It keeps it in `/var/lib/shard/kernel/<tag>/vmlinux-amd64` and checks it against the SHA-256 that shard was built with. If a file fails the check, for example because a crash cut it short, the daemon downloads it again. A shard upgrade that ships a new kernel downloads it the same way.
 
 To boot a kernel you built yourself, stop the service with `sudo systemctl stop shard`, then give the daemon the kernel's path and its SHA-256:
 
@@ -148,6 +148,6 @@ Set both variables. With only one, the daemon fails when it prepares Firecracker
 - **`Firecracker mounts an XFS image over /var/lib/shard, so it must be empty on a filesystem that cannot clone a disk.`** Move the files in `/var/lib/shard` aside, then run setup again.
 - **`shard needs 1.13.0 or newer`.** An older `firecracker` is on the host. Remove it so setup installs one, or replace it.
 - **`Firecracker cannot run its jailer under /var/lib/shard.`** Its filesystem is mounted with `nodev` or `noexec`. Remount it without those options.
-- **`provider firecracker needs resources.memory_mib`.** Every create and run needs `--memory`, `128MiB` or more.
+- **`provider firecracker needs --memory`.** Every create and run needs `--memory`, `128MiB` or more.
 - **A sandbox reaches nothing on a host with `ufw`.** ufw drops the bridge's traffic by default. Let it through with `sudo ufw allow in on shard0` and `sudo ufw route allow in on shard0`.
 - **The daemon does not start.** Read its log with `sudo journalctl -u shard`.
