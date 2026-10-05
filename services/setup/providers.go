@@ -87,6 +87,17 @@ func Providers(ctx context.Context, h Host) []ProviderChoice {
 	return rows
 }
 
+// noProvider is why this machine runs no provider, or nil when one runs here; only a Mac lacks them all, so its own provider says why.
+func noProvider(rows []ProviderChoice) []string {
+	for _, r := range rows {
+		if len(r.Unavailable) == 0 {
+			return nil
+		}
+	}
+
+	return append([]string{"No provider runs on this machine."}, rows[providerIndex(VZ)].Unavailable...)
+}
+
 func providerIndex(name string) int {
 	for i, p := range providerTexts {
 		if p.name == name {

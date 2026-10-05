@@ -17,7 +17,8 @@ shard setup
 
 The wizard always lists all five providers. One this host cannot run is shown as unavailable, with
 the reason, and cannot be chosen. A runtime setup can install does not make a provider unavailable.
-Any other host, such as an Intel Mac, can still connect to a remote server.
+Any other host, such as an Intel Mac, can still connect to a remote server. On a host where no
+provider runs, the first question preselects the remote server and says why on the local choice.
 
 ## Local setup
 
@@ -37,7 +38,9 @@ what it will change, and asks once before it changes anything.
 - **Network.** Setup never exposes the HTTP API. `shard serve` stays a separate step; see
   [the daemon guide](daemon.md).
 
-Setup runs as you and uses `sudo` for the steps that need root. It installs the running binary as
+Setup runs as you and uses `sudo` for the steps that need root. The administrator check asks `sudo`
+without a prompt: a user `sudo` does not allow fails there, and a user who needs a password passes
+only when a terminal is there for `sudo` to ask on. It installs the running binary as
 `/usr/local/bin/shard`, owned by root, and `shard-init` from the same release, after it checks that
 download against the release's `SHA256SUMS`. Setup creates no `shard` group, so on Linux the API
 socket belongs to root and local commands run with `sudo`. [The API socket](daemon.md#the-api-socket)

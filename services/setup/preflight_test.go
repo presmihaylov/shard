@@ -160,7 +160,56 @@ func TestPreflightAdministratorAccess(t *testing.T) {
 		if f, _ := preflightOn(t, h, Local{Provider: GVisor}); f != nil {
 			t.Fatalf("fails %q: %q", f.check, f.lines)
 		}
+		if !slices.Contains(l.calls, "sudo -n true") {
+			t.Fatalf("calls = %q, want sudo asked without a prompt", l.calls)
+		}
 	})
+	// A cloud image's user has NOPASSWD:ALL beside the sudo group's rule, and -v wants a password from it.
+	t.Run("passwordless commands where -v wants a password", func(t *testing.T) {
+		l := newLocalHost(t)
+		l.fail["env LC_ALL=C sudo -n -v"] = "sudo: a password is required\n"
+		h := l.host()
+		h.Euid = 1000
+
+		if f, _ := preflightOn(t, h, Local{Provider: GVisor}); f != nil {
+			t.Fatalf("fails %q: %q", f.check, f.lines)
+		}
+	})
+	for _, c := range []struct {
+		name, sudo string
+		tty        bool
+		lines      []string
+	}{
+		{name: "a user outside sudoers at a terminal", sudo: "Sorry, user nosudo may not run sudo on box.\n", tty: true, lines: []string{
+			"Setup needs administrator access, and sudo does not allow this user: Sorry, user nosudo may not run sudo on box.",
+			"Ask an administrator to give your user sudo access, or run shard setup as root.",
+		}},
+		{name: "a password and a terminal", sudo: "sudo: a password is required\n", tty: true},
+		{name: "a password and no terminal", sudo: "sudo: a password is required\n", lines: []string{
+			"Setup needs administrator access, and sudo needs a password it has no terminal to ask for.",
+			"Run shard setup as root, or as a user with passwordless sudo.",
+		}},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			l := newLocalHost(t)
+			// A command wants a password from a user outside sudoers too, so only -v tells that user from one who has a password.
+			l.fail["sudo -n true"] = "sudo: a password is required\n"
+			l.fail["env LC_ALL=C sudo -n -v"] = c.sudo
+			if c.tty {
+				l.write("/dev/tty", "")
+			}
+			h := l.host()
+			h.Euid = 1000
+
+			f, _ := preflightOn(t, h, Local{Provider: GVisor})
+			if c.lines == nil && f != nil {
+				t.Fatalf("fails %q: %q", f.check, f.lines)
+			}
+			if c.lines != nil {
+				wantFinding(t, f, "Administrator access", false, c.lines...)
+			}
+		})
+	}
 }
 
 func TestPreflightInstallPaths(t *testing.T) {

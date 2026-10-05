@@ -94,13 +94,22 @@ func (s *Setup) admin(ctx context.Context) error {
 		return err
 	}
 	if _, err := run(ctx, s.Host, "sudo", "-v"); err != nil {
-		return &Problem{Lines: []string{
-			fmt.Sprintf("Administrator access failed: %v.", err),
-			"Run shard setup in a terminal where sudo can ask for your password, or as root.",
-		}}
+		return &Problem{Lines: []string{"Administrator access failed: " + strings.TrimSuffix(err.Error(), ".") + ".", sudoHint(s.Host, err)}}
 	}
 
 	return nil
+}
+
+// sudoHint names the fix for the cause sudo gave, since a terminal fixes only a missing one.
+func sudoHint(h Host, err error) string {
+	if notInSudoers(err.Error()) {
+		return notAllowedHint
+	}
+	if !terminal(h) {
+		return "Run shard setup in a terminal where sudo can ask for your password, or as root."
+	}
+
+	return "Run shard setup again and give sudo your password, or run it as root."
 }
 
 // localPlan is one local setup worked out against the host before any change, which its steps then carry out.

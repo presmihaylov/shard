@@ -8,22 +8,47 @@ import (
 	"testing"
 )
 
+// The first choice preselects remote on a machine no provider runs on, and says why on local. (SHARD-666)
 func TestRunAsksLocalOrRemoteFirst(t *testing.T) {
-	ui := &fakeUI{}
-	err := (&Setup{UI: ui}).Run(t.Context())
-	if !errors.Is(err, errUnscripted) {
-		t.Fatalf("Run without an answer: %v", err)
+	cases := []struct {
+		name    string
+		host    Host
+		want    string
+		because []string
+	}{
+		{"linux", Host{OS: "linux", Arch: "amd64"}, "local", nil},
+		{"intel mac", Host{OS: "darwin", Arch: "amd64"}, "remote", []string{
+			"No provider runs on this machine.",
+			"Requires an Apple silicon Mac with macOS 14 or later.",
+			"This Mac has an Intel processor.",
+		}},
 	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			ui := &fakeUI{}
+			err := (&Setup{Host: c.host, UI: ui}).Run(t.Context())
+			if !errors.Is(err, errUnscripted) {
+				t.Fatalf("Run without an answer: %v", err)
+			}
 
-	if !slices.Equal(ui.asked, []Question{AskMode}) {
-		t.Errorf("asked %v, want only %s", ui.asked, AskMode)
-	}
-	var names []string
-	for _, o := range ui.options[AskMode] {
-		names = append(names, o.Name)
-	}
-	if !slices.Equal(names, []string{"local", "remote"}) || !ui.options[AskMode][0].Default {
-		t.Errorf("the first choice offers %v, want local (the default) then remote", names)
+			if !slices.Equal(ui.asked, []Question{AskMode}) {
+				t.Errorf("asked %v, want only %s", ui.asked, AskMode)
+			}
+			options := ui.options[AskMode]
+			var names, defaults []string
+			for _, o := range options {
+				names = append(names, o.Name)
+				if o.Default {
+					defaults = append(defaults, o.Name)
+				}
+			}
+			if !slices.Equal(names, []string{"local", "remote"}) || !slices.Equal(defaults, []string{c.want}) {
+				t.Errorf("the first choice offers %v with %v preselected, want local then remote with %s", names, defaults, c.want)
+			}
+			if !slices.Equal(options[0].Lines, c.because) || len(options[0].Unavailable) > 0 {
+				t.Errorf("local says %q and is unavailable for %q, want %q and still a choice", options[0].Lines, options[0].Unavailable, c.because)
+			}
+		})
 	}
 }
 
