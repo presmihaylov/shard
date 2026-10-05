@@ -15,7 +15,7 @@ const (
 	redialCap   = 2 * time.Second
 )
 
-// Refusals logs the control lines one guest sends past MaxPayload: the first at once, the rest as one count a window (SHARD-390); it paces the redials after them too.
+// Refusals logs the control lines one guest sends past MaxPayload or past the event queue: the first at once, the rest as one count a window (SHARD-390); it paces the redials after them too.
 type Refusals struct {
 	log    *log.Logger
 	id     string
@@ -25,6 +25,7 @@ type Refusals struct {
 	// open says a line went out in this window, so a refusal adds to held instead of logging.
 	open bool
 	held int
+	last error
 	// wait held off the last redial; only a new window starts it at the floor again, as a clean line per stream would cost a flood nothing.
 	wait time.Duration
 }
@@ -36,12 +37,13 @@ func NewRefusals(logger *log.Logger, id string) *Refusals {
 
 // Note logs err when it is a refusal, and returns how long to wait before the redial: twice the last wait, up to the cap. Any other stream error is a reset the reconnect answers at once, quiet as before.
 func (r *Refusals) Note(err error) time.Duration {
-	if !errors.Is(err, ErrMessageTooLong) {
+	if !errors.Is(err, ErrMessageTooLong) && !errors.Is(err, ErrEventFlood) {
 		return 0
 	}
 
 	r.mu.Lock()
 	defer r.mu.Unlock()
+	r.last = err
 	if r.open {
 		r.held++
 		r.wait = min(2*r.wait, redialCap)
@@ -65,7 +67,7 @@ func (r *Refusals) tally() {
 
 		return
 	}
-	r.log.Printf("sandbox %s: refused %d more control messages from the guest in the last %s: %v", r.id, r.held, r.window, ErrMessageTooLong)
+	r.log.Printf("sandbox %s: refused %d more control messages from the guest in the last %s; the latest: %v", r.id, r.held, r.window, r.last)
 	r.held = 0
 	time.AfterFunc(r.window, r.tally)
 }

@@ -2,6 +2,7 @@ package api_test
 
 import (
 	"encoding/json"
+	"math"
 	"os"
 	"reflect"
 	"slices"
@@ -11,6 +12,7 @@ import (
 	"github.com/presmihaylov/shard/models"
 	"github.com/presmihaylov/shard/services/api"
 	"github.com/presmihaylov/shard/services/image"
+	"github.com/presmihaylov/shard/services/sandbox"
 )
 
 // A client generates from the committed file, so a route change that skips make openapi fails here and not in an SDK.
@@ -84,6 +86,43 @@ func TestTheSpecNamesEveryPublicRouteWithItsScope(t *testing.T) {
 	slices.Sort(want)
 	if !slices.Equal(got, want) {
 		t.Errorf("the spec names\n%s\nwant the public routes\n%s", strings.Join(got, "\n"), strings.Join(want, "\n"))
+	}
+}
+
+// A maximum in the spec is a literal in a tag, so it must follow the limit the service refuses past.
+func TestTheSpecMaximaAreTheServiceLimits(t *testing.T) {
+	spec, err := api.Spec()
+	if err != nil {
+		t.Fatalf("Spec: %v", err)
+	}
+
+	var doc struct {
+		Components struct {
+			Schemas map[string]struct {
+				Properties map[string]struct {
+					Maximum *float64 `json:"maximum"`
+				} `json:"properties"`
+			} `json:"schemas"`
+		} `json:"components"`
+	}
+	if err := json.Unmarshal(spec, &doc); err != nil {
+		t.Fatalf("decode the spec: %v", err)
+	}
+
+	for _, c := range []struct {
+		schema, field string
+		limit         int64
+	}{
+		{"ResourceRequest", "memory_mib", sandbox.MaxMemoryMiB},
+		{"ResourceRequest", "disk_mib", sandbox.MaxDiskMiB},
+		{"RestartSpec", "backoff", models.RestartBackoffCap},
+		{"TerminalSize", "rows", math.MaxUint16},
+		{"TerminalSize", "cols", math.MaxUint16},
+	} {
+		got := doc.Components.Schemas[c.schema].Properties[c.field].Maximum
+		if got == nil || *got != float64(c.limit) {
+			t.Errorf("%s.%s has maximum %v, want %d", c.schema, c.field, got, c.limit)
+		}
 	}
 }
 

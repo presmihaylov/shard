@@ -226,7 +226,7 @@ func TestForkPrintsTheDaemonsRefusalOfAnUnclaimedVerb(t *testing.T) {
 	d.providerSvc.(*fakeLifecycleProvider).noFork = true
 
 	err := app.Run(t.Context(), []string{"fork", "sandbox1"})
-	if err == nil || err.Error() != "provider fake does not support fork on this host" {
+	if err == nil || err.Error() != "provider fake does not support fork on this host; use a server that supports fork" {
 		t.Errorf("fork = %v, want the provider and the verb", err)
 	}
 }

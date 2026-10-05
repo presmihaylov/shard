@@ -14,7 +14,7 @@ from ...types import UNSET, Response, Unset
 
 def _get_kwargs(
     *,
-    body: CreateRequest | Unset = UNSET,
+    body: CreateRequest,
     wait: bool | Unset = UNSET,
 ) -> dict[str, Any]:
     headers: dict[str, Any] = {}
@@ -31,8 +31,7 @@ def _get_kwargs(
         "params": params,
     }
 
-    if not isinstance(body, Unset):
-        _kwargs["json"] = body.to_dict()
+    _kwargs["json"] = body.to_dict()
 
     headers["Content-Type"] = "application/json"
 
@@ -67,7 +66,7 @@ def _build_response(
 def sync_detailed(
     *,
     client: AuthenticatedClient | Client,
-    body: CreateRequest | Unset = UNSET,
+    body: CreateRequest,
     wait: bool | Unset = UNSET,
 ) -> Response[Error | Sandbox]:
     """create a sandbox"""
@@ -87,7 +86,7 @@ def sync_detailed(
 def sync(
     *,
     client: AuthenticatedClient | Client,
-    body: CreateRequest | Unset = UNSET,
+    body: CreateRequest,
     wait: bool | Unset = UNSET,
 ) -> Error | Sandbox | None:
     """create a sandbox"""
@@ -102,7 +101,7 @@ def sync(
 async def asyncio_detailed(
     *,
     client: AuthenticatedClient | Client,
-    body: CreateRequest | Unset = UNSET,
+    body: CreateRequest,
     wait: bool | Unset = UNSET,
 ) -> Response[Error | Sandbox]:
     """create a sandbox"""
@@ -120,7 +119,7 @@ async def asyncio_detailed(
 async def asyncio(
     *,
     client: AuthenticatedClient | Client,
-    body: CreateRequest | Unset = UNSET,
+    body: CreateRequest,
     wait: bool | Unset = UNSET,
 ) -> Error | Sandbox | None:
     """create a sandbox"""

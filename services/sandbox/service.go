@@ -144,17 +144,19 @@ type Service struct {
 	// execs holds every exec from its create to its end, so an attach and a resize find it by id.
 	execMu sync.Mutex
 	execs  map[string]*execSession
+	// running counts each sandbox's admitted execs until their commands end, and runningAll their sum; both under execMu.
+	running    map[string]int
+	runningAll int
 }
 
 func New(cfg Config) *Service {
-	return &Service{cfg: cfg, locks: map[string]*sandboxLock{}, pulls: map[string]context.CancelCauseFunc{}, execs: map[string]*execSession{}}
+	return &Service{cfg: cfg, locks: map[string]*sandboxLock{}, pulls: map[string]context.CancelCauseFunc{}, execs: map[string]*execSession{}, running: map[string]int{}}
 }
 
 // CreateRequest is what a create names. It is the JSON body of POST /v0/sandboxes.
 type CreateRequest struct {
-	// Image and Snapshot are exclusive, and a create names one of them.
-	Image    string   `json:"image,omitempty"`
-	Snapshot string   `json:"snapshot,omitempty"`
+	Image    string   `json:"image,omitempty" doc:"The image to create from. A create names exactly one of image and snapshot."`
+	Snapshot string   `json:"snapshot,omitempty" doc:"The snapshot id or name to create from; it takes no command and no restart. A create names exactly one of image and snapshot."`
 	Name     string   `json:"name,omitempty"`
 	Command  []string `json:"command,omitempty"`
 	Env      []string `json:"env,omitempty"`
@@ -171,9 +173,9 @@ type CreateRequest struct {
 
 // ResourceRequest is the bounds a create asks for. A nil memory is an omitted --memory, which a snapshot fills, and 0 is no bound.
 type ResourceRequest struct {
-	MemoryMiB *int64 `json:"memory_mib,omitempty"`
-	VCPUs     int    `json:"vcpus" required:"false"`
-	DiskMiB   int64  `json:"disk_mib" required:"false"`
+	MemoryMiB *int64 `json:"memory_mib,omitempty" minimum:"0" maximum:"16777216"`
+	VCPUs     int    `json:"vcpus" required:"false" minimum:"0"`
+	DiskMiB   int64  `json:"disk_mib" required:"false" minimum:"0" maximum:"16777088"`
 }
 
 // bounds is what the record keeps, where an omitted memory is no bound.
@@ -262,7 +264,9 @@ func (e *SubstrateTimeoutError) Error() string {
 	return fmt.Sprintf("the provider did not answer within %s for sandbox %s", e.Budget, e.ID)
 }
 
-func (e *SubstrateTimeoutError) Public() string { return e.Error() }
+func (e *SubstrateTimeoutError) Public() string {
+	return e.Error() + "; retry the request when the provider answers"
+}
 
 // sandboxLock is the lock of one sandbox. It counts its holder and its waiters, so the last of them frees it.
 type sandboxLock struct {
@@ -461,11 +465,11 @@ func (s *Service) Prepare(ctx context.Context, req CreateRequest) (models.Sandbo
 	}
 	// A bound past the host's memory never binds: the host runs out of memory first.
 	if s.cfg.HostMemoryMiB > 0 && res.MemoryMiB > s.cfg.HostMemoryMiB {
-		return models.Sandbox{}, &RequestError{Err: fmt.Errorf("--memory %dMiB is more than the %d MiB of memory this host has", res.MemoryMiB, s.cfg.HostMemoryMiB)}
+		return models.Sandbox{}, &RequestError{Err: fmt.Errorf("resources.memory_mib is %d MiB, more than the %d MiB of memory on this host; set it to %d MiB or less", res.MemoryMiB, s.cfg.HostMemoryMiB, s.cfg.HostMemoryMiB)}
 	}
 	// A quota past the host's CPUs never binds, and a large enough one overflows the quota to no bound at all.
 	if s.cfg.HostCPUs > 0 && res.VCPUs > s.cfg.HostCPUs {
-		return models.Sandbox{}, &RequestError{Err: fmt.Errorf("--vcpus %d is more than the %d CPUs this host has", res.VCPUs, s.cfg.HostCPUs)}
+		return models.Sandbox{}, &RequestError{Err: fmt.Errorf("resources.vcpus is %d, more than the %d CPUs on this host; set it to %d or less", res.VCPUs, s.cfg.HostCPUs, s.cfg.HostCPUs)}
 	}
 	// Record the disk bound the sandbox will actually run under, so inspect shows the enforced value, not a bare 0.
 	res.DiskMiB = bundle.DiskBound(res)
@@ -843,7 +847,7 @@ func validate(req CreateRequest) error {
 		return &RequestError{Err: errors.New("the request names both an image and a snapshot: a snapshot already names its image")}
 	}
 	if req.Snapshot != "" && (len(req.Command) != 0 || req.Restart != nil) {
-		return &RequestError{Err: errors.New("a sandbox from a snapshot runs shard-init alone, so it takes no command and no restart policy")}
+		return &RequestError{Err: errors.New("a sandbox from a snapshot cannot take command or restart; omit both fields")}
 	}
 
 	if req.Name != "" {
@@ -1394,7 +1398,7 @@ func (s *Service) record(id string) (models.Sandbox, error) {
 // proxyCA is what a fronted sandbox is built to trust. A shard without one fronts nothing, and says so.
 func (s *Service) proxyCA() ([]byte, error) {
 	if s.cfg.ProxyCA == nil {
-		return nil, &RequestError{Err: errors.New("this shard has no proxy CA, so it cannot front a sandbox")}
+		return nil, &RequestError{Err: errors.New("this server needs a proxy certificate authority for policies and secrets; ask its administrator to configure one")}
 	}
 
 	return s.cfg.ProxyCA()
