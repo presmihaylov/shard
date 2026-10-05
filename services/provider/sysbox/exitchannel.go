@@ -182,6 +182,12 @@ func (p *Provider) initPid(ctx context.Context, id string) (int, error) {
 	if err != nil {
 		return 0, err
 	}
+
+	return p.confirmInit(id, status)
+}
+
+// confirmInit is initPid for a caller that already holds the sandbox's status.
+func (p *Provider) confirmInit(id string, status models.Status) (int, error) {
 	if !status.Alive() || status.PID == 0 {
 		return 0, nil
 	}

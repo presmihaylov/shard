@@ -156,12 +156,17 @@ func TestExecTakesOnlyARunningSandbox(t *testing.T) {
 }
 
 // sysbox-runc opens the guest's passwd and group before every exec, whatever the user, so a fifo there stalls an exec that names nobody (SHARD-653).
+// The guest root is sysbox-runc's own overlay, so the check reads it through PID 1 and never the host's stale view of the layers.
 func TestExecRefusesAUserDatabaseThatIsNotAFileWhenNoUserIsNamed(t *testing.T) {
 	const id = "amber-otter-1a2b"
 	dir := t.TempDir()
 	p := newProviderIn(t, dir, `echo '{"id":"amber-otter-1a2b","status":"running","pid":42}'`)
-	rootfs := liveBundle(t, filepath.Join(dir, id))
-	if err := syscall.Mkfifo(filepath.Join(rootfs, "etc/group"), 0o600); err != nil {
+	stale := liveBundle(t, filepath.Join(dir, id))
+	if err := os.WriteFile(filepath.Join(stale, "etc/group"), []byte("root:x:0:\n"), 0o600); err != nil {
+		t.Fatalf("write the stale group: %v", err)
+	}
+	guest := placeInit(t, p, dir, id)
+	if err := syscall.Mkfifo(filepath.Join(guest, "etc/group"), 0o600); err != nil {
 		t.Fatalf("make the group fifo: %v", err)
 	}
 
@@ -170,6 +175,44 @@ func TestExecRefusesAUserDatabaseThatIsNotAFileWhenNoUserIsNamed(t *testing.T) {
 	if !ok || !strings.HasPrefix(refused.Public(), "/etc/group is a named pipe") {
 		t.Fatalf("Exec over a fifo group returned %v, want a user database refusal that names /etc/group", err)
 	}
+}
+
+// A running state whose PID 1 its cgroup does not hold has no guest root to check, so the exec is refused.
+func TestExecRefusesASandboxWhosePid1IsNotInItsCgroup(t *testing.T) {
+	const id = "amber-otter-1a2b"
+	dir := t.TempDir()
+	p := newProviderIn(t, dir, `echo '{"id":"amber-otter-1a2b","status":"running","pid":42}'`)
+	liveBundle(t, filepath.Join(dir, id))
+	p.SetCgroupRoot(filepath.Join(dir, "cgroup"))
+
+	_, err := p.Exec(t.Context(), id, models.ExecSpec{Argv: []string{"true"}})
+	if err == nil || !strings.Contains(err.Error(), "no PID 1") {
+		t.Fatalf("Exec with no PID 1 in the cgroup returned %v, want a refusal that names PID 1", err)
+	}
+}
+
+// placeInit puts PID 42 in the sandbox's cgroup and gives it a guest root under a fake /proc, and returns that root.
+func placeInit(t *testing.T, p *sysbox.Provider, dir, id string) string {
+	t.Helper()
+
+	cgroupRoot := filepath.Join(dir, "cgroup")
+	cg := filepath.Join(cgroupRoot, bundle.CgroupsPath(id))
+	if err := os.MkdirAll(cg, 0o750); err != nil {
+		t.Fatalf("create the cgroup: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(cg, "cgroup.procs"), []byte("42\n"), 0o600); err != nil {
+		t.Fatalf("write cgroup.procs: %v", err)
+	}
+	p.SetCgroupRoot(cgroupRoot)
+
+	procRoot := filepath.Join(dir, "proc")
+	guest := filepath.Join(procRoot, "42", "root")
+	if err := os.MkdirAll(filepath.Join(guest, "etc"), 0o750); err != nil {
+		t.Fatalf("create the guest root: %v", err)
+	}
+	p.SetProcRoot(procRoot)
+
+	return guest
 }
 
 // liveBundle lays out the config.json and rootfs an exec reads, and returns the rootfs.
