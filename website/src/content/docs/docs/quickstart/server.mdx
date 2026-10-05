@@ -20,7 +20,7 @@ sudo shard exec demo echo hello
 sudo shard remove --force demo
 ```
 
-That is a Linux host with gVisor. On a Mac, use `--provider vz` and leave out `sudo`. When `~/.local/bin` is not on your `PATH`, the installer prints the line that adds it.
+Those commands set up a Linux host with gVisor. On a Mac, use `--provider vz` and leave out `sudo`. When `~/.local/bin` is not on your `PATH`, the installer prints the line that adds it.
 
 ## What you need
 
@@ -99,15 +99,15 @@ Firecracker copies a disk for each fork and snapshot. That is fast only on a fil
 
 ## Script it
 
-Each question has an option, so a script takes the same path through the same checks:
+Each question has a matching option, so a script runs the same checks as the wizard:
 
 ```sh
 shard setup --local --provider firecracker --start-at-boot=true -y
 ```
 
-Without a terminal, every question needs its option: setup fails on a missing one and names it. It never picks one for you. `-y` answers the confirmation only. It skips no check. `shard setup --help` lists every option and the exit codes.
+Without a terminal, every question needs its option. Setup fails on a missing one and names it, and it never picks a value for you. `-y` answers only the confirmation and skips no check. `shard setup --help` lists every option and the exit codes.
 
 ## Next steps
 
-- **Reach the daemon from other machines.** Setup never exposes the API. `shard serve` is a separate process that checks a bearer token and passes each request to the daemon. See [the TCP front](https://github.com/presmihaylov/shard/blob/main/docs/daemon.md#the-tcp-front).
-- **Check, repair, upgrade or uninstall.** Run `shard setup` again on the same host. See [Install](/docs/install/).
+- Setup never exposes the API. To reach the daemon from other machines, use `shard serve`, a separate process that checks a bearer token and passes each request to the daemon. See [the TCP front](https://github.com/presmihaylov/shard/blob/main/docs/daemon.md#the-tcp-front).
+- To check, repair, upgrade or uninstall shard, run `shard setup` again on the same host. See [Install](/docs/install/).
