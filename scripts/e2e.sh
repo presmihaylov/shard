@@ -2016,7 +2016,7 @@ disk_bound_steps() {
 	step "refuse a negative disk bound"
 	api_call POST "/v0/sandboxes" "{\"image\":\"${IMAGE}\",\"resources\":{\"disk_mib\":-1}}"
 	[ "${REPLY_CODE}" = "400" ] || fail "a negative disk bound answered ${REPLY_CODE}, want 400"
-	grep -q 'the disk bound is in MiB and cannot be negative' <<<"${REPLY_BODY}" || fail "the refusal does not name the bound: ${REPLY_BODY}"
+	grep -qF '(body.resources.disk_mib)' <<<"${REPLY_BODY}" || fail "the refusal does not name the bound: ${REPLY_BODY}"
 	say "the API refuses a negative disk bound, 400"
 
 	step "a write past the disk bound fails in the guest and stops on the host"
