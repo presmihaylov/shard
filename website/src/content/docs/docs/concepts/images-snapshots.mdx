@@ -1,0 +1,211 @@
+---
+title: Images and snapshots
+description: How a server downloads and keeps images, and how a snapshot saves the files of a stopped sandbox for new sandboxes.
+sidebar:
+  order: 3
+---
+
+import { Tabs, TabItem } from '@astrojs/starlight/components';
+
+Write a file in a sandbox, save the sandbox as a snapshot, and start a new sandbox from it:
+
+<Tabs syncKey="lang">
+	<TabItem label="CLI">
+
+```sh
+shard create --name web alpine:3.20
+shard exec web sh -c 'echo ready > /root/state.txt'
+shard stop web
+shard snapshot create --name web-base web
+shard create --name web-2 --snapshot web-base
+shard exec web-2 cat /root/state.txt
+shard remove --force web-2
+shard remove web
+shard snapshot remove web-base
+```
+
+	</TabItem>
+	<TabItem label="TypeScript">
+
+```ts
+import { Shard } from "useshards";
+
+const shard = new Shard();
+try {
+  const web = await shard.create({ name: "web", image: "alpine:3.20" });
+  await web.exec(["sh", "-c", "echo ready > /root/state.txt"]);
+  await web.stop();
+  const snapshot = await shard.snapshots.create(web, { name: "web-base" });
+  const copy = await shard.create({ name: "web-2", snapshot: snapshot.id });
+  console.log((await copy.exec(["cat", "/root/state.txt"])).stdout);
+  await copy.remove({ force: true });
+  await web.remove();
+  await shard.snapshots.remove(snapshot.id);
+} finally {
+  shard.close();
+}
+```
+
+	</TabItem>
+	<TabItem label="Python">
+
+```python
+from useshards import Shard
+
+with Shard() as shard:
+    web = shard.create("alpine:3.20", name="web")
+    web.exec(["sh", "-c", "echo ready > /root/state.txt"])
+    web.stop()
+    snapshot = shard.snapshots.create(web, name="web-base")
+    copy = shard.create(snapshot=snapshot.id, name="web-2")
+    print(copy.exec(["cat", "/root/state.txt"]).stdout)
+    copy.remove(force=True)
+    web.remove()
+    shard.snapshots.remove(snapshot.id)
+```
+
+	</TabItem>
+</Tabs>
+
+`web-2` starts with the file that `web` wrote, because a snapshot copies the files that a stop keeps. Snapshots work on every provider.
+
+## Images
+
+An image holds the files a sandbox starts from. A server downloads images from a registry, such as Docker Hub, and keeps them on disk. It picks the Linux image for the host's architecture.
+
+The image's `ENTRYPOINT` and `CMD` never run. A sandbox from `shard create` runs no main command, and a sandbox from `shard run` runs the command you give it.
+
+`create` downloads a missing image itself. The sandbox is `pending` while the download runs, and the CLI shows the progress on stderr. To download an image before you need it, run `shard pull` on the server:
+
+```sh
+shard pull alpine:3.20
+```
+
+`shard pull` prints two lines on stdout: the full reference, and the digest. The full reference of `alpine:3.20` is `index.docker.io/library/alpine:3.20`. Each step of the download goes to stderr, so a script that reads stdout gets only the two lines.
+
+A sandbox record keeps the digest of the image it runs on, in its `digest` key.
+
+### Registries
+
+The server downloads over HTTPS only. A registry on plain HTTP fails:
+
+```text
+shard: refusing plaintext http to registry.internal:5000: start shard daemon with --insecure-registry registry.internal:5000 to allow it
+```
+
+To allow one, start the daemon with `--insecure-registry <host>`. The option is repeatable.
+
+The daemon's `--timeout` bounds each download. The default is `30m`. A registry that accepts the connection and then sends nothing for 30 seconds also fails the download.
+
+When the registry refuses access, the error says so:
+
+```text
+shard: the registry refused access to registry.internal:5000/team/app:1.0; ask the server administrator to check the registry credentials
+```
+
+### Manage images on the server
+
+`shard pull`, `shard image list`, `shard image remove` and `shard image prune` run only on the server. They refuse `--remote`, `SHARD_REMOTE` and a saved connection. Through `shard serve`, the API refuses the four image routes with `403`.
+
+`shard image list` prints the columns `REFERENCE`, `DIGEST`, `SIZE` and `CREATED`. An image the server cannot read shows `unreadable` in its size and its age. `--format json` prints the list as JSON.
+
+`shard image remove <image>` deletes an image. It refuses an image that a sandbox or a snapshot uses, with status `409` and the code `in_use`:
+
+```text
+shard: image alpine:3.20 is referenced by sandbox misty-otter-81c0: remove the sandbox first, or pass --force
+```
+
+For a snapshot, the fix names `shard snapshot remove`. `--force` deletes the image anyway. A sandbox that still needs the image then fails to start, resume or fork, and the error tells you to pull the image again.
+
+`shard image prune` deletes every image that no sandbox and no snapshot uses, and prints each reference it deleted. A stopped sandbox still uses its image, so prune keeps it. When the server cannot read a sandbox record, prune deletes nothing and fails, because that sandbox may need an image.
+
+## Snapshots
+
+A snapshot is a copy of the files of a stopped sandbox. It holds no memory and no processes. It has an id and an optional name, and it stays after you remove the sandbox it came from.
+
+The snapshot commands work from any client, the SDKs too, unlike the image commands.
+
+### Make a snapshot
+
+```sh
+shard stop web
+shard snapshot create --name web-base web
+```
+
+`snapshot create` prints the id of the new snapshot. The name is unique among snapshots. A sandbox can have the same name as a snapshot.
+
+The source must be `stopped`. A running or paused sandbox fails with status `409` and the code `sandbox_not_stopped`:
+
+```text
+shard: sandbox misty-otter-81c0 is running: stop it first with shard stop misty-otter-81c0: a snapshot copies what a stop kept
+```
+
+A name that another snapshot holds fails with `409` and the code `name_taken`. A source whose image the server no longer holds fails with `400`. So does a source whose tag the server now holds at another digest, because no sandbox could start from that snapshot.
+
+How the copy is made depends on the provider:
+
+| Provider | What `snapshot create` copies |
+| --- | --- |
+| gVisor, Sysbox, runc | the files the sandbox wrote, and `/tmp` |
+| Firecracker | the sandbox's disk, as a clone that shares blocks |
+| vz | the sandbox's disk image, as an APFS clone |
+
+### List and inspect snapshots
+
+```text
+$ shard snapshot list
+ID                 NAME       SOURCE             IMAGE                                 SIZE     CREATED
+quiet-heron-4f2a   web-base   misty-otter-81c0   index.docker.io/library/alpine:3.20   1.0 MB   2026-10-04T09:00:00Z
+```
+
+`shard snapshot inspect <snapshot>` prints the record as JSON. `--format table` prints it as fields:
+
+```text
+$ shard snapshot inspect --format table web-base
+FIELD         VALUE
+id            quiet-heron-4f2a
+name          web-base
+source        misty-otter-81c0
+source_name   web
+image         index.docker.io/library/alpine:3.20
+digest        sha256:0f1e2d3c4b5a69788796a5b4c3d2e1f00f1e2d3c4b5a69788796a5b4c3d2e1f0
+provider      gvisor
+disk_mib      10240
+memory_mib    512
+size          1048576
+created_at    2026-10-04T09:00:00Z
+```
+
+`source` is the id of the sandbox the snapshot came from. `disk_mib` and `memory_mib` are the bounds that sandbox ran with. `size` is the bytes the snapshot takes on the server. `name` and `source_name` are absent from the JSON when they are empty.
+
+### Create a sandbox from a snapshot
+
+```sh
+shard create --name web-2 --snapshot web-base
+```
+
+`--snapshot` takes the place of the image. The new sandbox gets its own copy of the files, with a new id and a new address, so many sandboxes can start from one snapshot. The answer is `running`, and the record's `snapshot` key names the snapshot.
+
+A create from a snapshot never downloads an image:
+
+- The image must be on the server at the digest the snapshot recorded. If it is not, the create fails with `400`. Pull the image again if its tag still names that digest, or make a new snapshot.
+- After a pull moves the tag to a new digest, the old snapshot cannot start. Make a new snapshot from a sandbox on the new image.
+- Only the provider that made the snapshot can start it. A server on another provider fails the create with `400`.
+
+The new sandbox runs no main command, and `shard run` does not take a snapshot. A snapshot holds no secrets and no network policy, so give `--secret` and `--policy` to the create again.
+
+Without `--memory` or `--disk`, the new sandbox gets the bounds its source ran with. On Firecracker and vz, a larger `--disk` grows the disk, and a smaller one fails with `400`, because a disk only grows. On gVisor, Sysbox and runc, a `--disk` too small for the snapshot's files fails with `400`.
+
+### Remove a snapshot
+
+```sh
+shard snapshot remove web-base
+```
+
+A sandbox made from the snapshot keeps its own files, so nothing stops the remove. A snapshot holds its image: `shard image remove` refuses that image, and `shard image prune` keeps it.
+
+## Snapshot or fork
+
+A snapshot copies the files of a stopped sandbox. It works on every provider, and the new sandbox starts fresh, with no processes.
+
+A fork copies the memory and the files of a running sandbox, and the copy carries on from the same moment. Fork needs a provider that supports it: gVisor, Firecracker, or vz on macOS 14 or later. Sysbox and runc refuse it.
