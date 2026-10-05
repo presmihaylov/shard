@@ -47,7 +47,8 @@ apex and every name under it, and only the proxy matches it too.
 A name matches in any letter case, with or without a trailing dot. The store keeps it lowercase with
 no trailing dot, so `policy show` prints `example.com` for a rule typed `ExAmPlE.com.`.
 
-Ports are a comma-separated list of numbers and ranges, such as `tcp:22,8000-8100`. A rule with no
+Ports are a comma-separated list of numbers and ranges, such as `tcp:22,8000-8100`, each port from 1
+to 65535. A rule names at most 1024 ports, and a port named twice counts twice. A rule with no
 protocol matches every protocol, ping included. An address or prefix rule with no ports opens every
 tcp and udp port to that destination, so name the ports when you want only some of them.
 
