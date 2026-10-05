@@ -73,7 +73,7 @@ Replace `https://shard.example.com` with the URL of your server and `your-api-ke
 
 ## What you need
 
-You need a server that runs `shard serve`. The daemon itself never listens on the network. `shard serve` is a separate process that checks an API key and passes each request to the daemon, usually behind an HTTPS proxy. See [the TCP front](https://github.com/presmihaylov/shard/blob/main/docs/daemon.md#the-tcp-front).
+You need a server that runs `shard serve`. The daemon itself never listens on the network. `shard serve` is a separate process that checks an API key and passes each request to the daemon, usually behind an HTTPS proxy. See [How to connect to a remote host?](/docs/guides/remote/).
 
 You also need an API key from that server. Mint one on the server, with `sudo` on Linux:
 
@@ -147,4 +147,4 @@ For HTTPS, the CLI and both SDKs always verify the server's certificate, and no 
 ## Next steps
 
 - The [TypeScript README](https://github.com/presmihaylov/shard/blob/main/sdks/typescript/README.md) and the [Python README](https://github.com/presmihaylov/shard/blob/main/sdks/python/README.md) cover background commands, files and errors.
-- To check, replace or remove the saved connection, run `shard setup` again.
+- To check, replace or remove the saved connection, run `shard setup` again. Its first screen names the saved server.

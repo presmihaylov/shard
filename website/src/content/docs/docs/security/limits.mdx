@@ -132,7 +132,7 @@ A sandbox can have four bounds: memory, CPU, processes and disk.
 - **The log does not record every drop.** A packet dropped by another firewall on the server, such as `ufw`, leaves no record. On Linux, the host logs at most 2 drops a second for each rule of a sandbox, with a burst of 10.
 - **A client that pins a certificate refuses the proxy.** The proxy reads HTTPS using its own certificate authority. Java, and Rust built with `webpki-roots`, need an extra step to trust it.
 
-For policies and the decision log, see [egress](https://github.com/presmihaylov/shard/blob/main/docs/egress.md).
+For policies and the decision log, see [egress](/docs/security/egress/).
 
 ## Secrets
 
@@ -141,7 +141,7 @@ For policies and the decision log, see [egress](https://github.com/presmihaylov/
 - **A secret does not stop misuse of the key.** A sandbox that can call a granted host can make any call the key allows. Limit what the key can do at the API provider.
 - **On runc, the proxy is the only barrier.** Code that escapes the sandbox can read the secret store just as the host does.
 
-For grants and placeholders, see [secrets](https://github.com/presmihaylov/shard/blob/main/docs/secrets.md).
+For grants and placeholders, see [secrets](/docs/security/secrets/).
 
 ## The API
 

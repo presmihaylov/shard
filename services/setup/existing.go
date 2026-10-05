@@ -24,7 +24,7 @@ import (
 
 const serviceName = "shard"
 
-// manualPaths are where docs/daemon.md and docs/mac.md put an install by hand.
+// manualPaths are where an install without setup puts the binaries and the release's service files.
 var manualPaths = []string{shardBinary, initBinary, systemdUnit, "/etc/systemd/system/shard-serve.service", launchdPlist, newsyslog}
 
 // ServiceState is the Service line of the summary.

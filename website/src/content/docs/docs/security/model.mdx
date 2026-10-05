@@ -139,7 +139,7 @@ Pass the value to `shard secret set` on stdin or at its hidden prompt. Never pas
 
 On runc, the proxy is the only thing between the sandbox and the value, and code that escapes the sandbox can read the secret store just as the host can.
 
-For grants, rotation and the placeholder rules, see [secrets](https://github.com/presmihaylov/shard/blob/main/docs/secrets.md).
+For grants, rotation and the placeholder rules, see [secrets](/docs/security/secrets/).
 
 ## The host decides network egress
 
@@ -156,7 +156,7 @@ This floor applies under every policy, and no rule can open it. A policy is an o
 
 A sandbox with a policy or a secret sends its traffic on TCP ports 80 and 443 through a proxy on the host. The proxy judges each request by host name, and it also refuses a host that resolves to one of the host's own addresses.
 
-For rules, wildcards and the egress log, see [egress](https://github.com/presmihaylov/shard/blob/main/docs/egress.md).
+For rules, wildcards and the egress log, see [egress](/docs/security/egress/).
 
 ## Who can reach the API
 
@@ -207,7 +207,7 @@ shard tokens revoke --name ci
 
 The next request with that token gets `401`. `shard serve` checks the ledger once a second for each open connection and closes any connection that uses a revoked token. Closing the connection detaches the client, but it does not stop an exec or a sandbox.
 
-To run `shard serve` as an unprivileged user and to set up the proxy, see [the TCP front](https://github.com/presmihaylov/shard/blob/main/docs/daemon.md#the-tcp-front).
+To run `shard serve` as an unprivileged user and to set up the proxy, see [How to connect to a remote host?](/docs/guides/remote/).
 
 ## What shard never writes down
 

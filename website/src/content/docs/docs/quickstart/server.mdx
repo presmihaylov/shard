@@ -35,9 +35,9 @@ Setup runs as you and uses `sudo` for the steps that need root. An Intel Mac can
 
 Run `shard setup` with no options, or answer `Y` when the installer asks `Start the setup wizard?`. The wizard asks four things:
 
-1. **How do you want to use Shard?** Choose `Run sandboxes on this machine`.
-2. **Choose how Shard isolates your sandboxes.** The wizard lists all five providers. It marks each provider this host cannot run as unavailable and says why. It recommends macOS Virtualization on a supported Mac, Firecracker on Linux with `/dev/kvm`, and gVisor on other Linux hosts.
-3. **Start Shard automatically when this machine starts?** `Yes (recommended)` installs a service that starts the daemon at boot and restarts it after a crash.
+1. **How do you want to use shard?** Choose `Run sandboxes on this machine`.
+2. **Choose how shard isolates your sandboxes:** The wizard lists all five providers. It marks each provider this host cannot run as unavailable and says why. It recommends macOS Virtualization on a supported Mac, Firecracker on Linux with `/dev/kvm`, and gVisor on other Linux hosts.
+3. **Start shard automatically when this machine starts?** `Yes (recommended)` installs a service that starts the daemon at boot and restarts it after a crash.
 4. **Continue?** Setup first checks the host and shows every change. Nothing changes until you answer.
 
 Before it asks to continue, setup checks the operating system, the provider's requirements, administrator access, the install paths, disk space, download access, any earlier installation and the service manager. A failed check changes nothing. When a provider fails its own checks, setup asks you to choose another provider or exit. It never swaps one in for you.
@@ -45,7 +45,7 @@ Before it asks to continue, setup checks the operating system, the provider's re
 On a fresh Linux host with gVisor, the review looks like this:
 
 ```text
-Ready to set up Shard
+Ready to set up shard
 
 Provider:          gVisor
 Automatic startup: Yes
@@ -53,7 +53,7 @@ Automatic startup: Yes
 Setup will:
   Install the tools required by gVisor: runsc.
   Install shard and shard-init in /usr/local/bin.
-  Create Shard's data directory.
+  Create shard's data directory.
   Configure and start a systemd service.
 
 Administrator access is required.
@@ -105,9 +105,17 @@ Each question has a matching option, so a script runs the same checks as the wiz
 shard setup --local --provider firecracker --start-at-boot=true -y
 ```
 
-Without a terminal, every question needs its option. Setup fails on a missing one and names it before any check runs, and it never picks a value for you. `-y` answers only the confirmation and skips no check. `shard setup --help` lists every option and the exit codes.
+`--provider` and `--start-at-boot` also answer the first question, so a run with either one needs no `--local`.
+
+Without a terminal, every question needs its option, and setup never picks a value for you. A local run with options missing fails before any check runs, and names them all at once:
+
+```text
+no terminal to choose a provider, choose whether shard starts at boot and confirm the changes: pass --provider, --start-at-boot and -y
+```
+
+`-y` answers only the confirmation and skips no check. `shard setup --help` lists every option and the exit codes.
 
 ## Next steps
 
-- Setup never exposes the API. To reach the daemon from other machines, use `shard serve`, a separate process that checks a bearer token and passes each request to the daemon. See [the TCP front](https://github.com/presmihaylov/shard/blob/main/docs/daemon.md#the-tcp-front).
+- Setup never exposes the API. To reach the daemon from other machines, use `shard serve`, a separate process that checks a bearer token and passes each request to the daemon. See [How to connect to a remote host?](/docs/guides/remote/).
 - To check, repair, upgrade or uninstall shard, run `shard setup` again on the same host. See [Install](/docs/install/).

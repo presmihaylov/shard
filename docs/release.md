@@ -47,7 +47,7 @@ prints its stack. Both Linux binaries build with cgo off, so they link no libc a
 distribution, and the workflow stops if `file` does not call each one statically linked and
 stripped. The workflow adds the service files from `packaging/`: `shard.service`,
 `shard-serve.service`, `shard.daemon.plist` and `shard.newsyslog.conf`. An install then takes the
-binaries and the units from one tag (`docs/daemon.md`, `docs/mac.md`). It puts all of them, with a
+binaries and the units from one tag. It puts all of them, with a
 `SHA256SUMS`, under a draft GitHub release named after the tag. `shard --version` reports the tag.
 
 The notes of the draft hold three blanks: the Mac, the macOS version and the head that the VM proof
@@ -118,7 +118,7 @@ release's files in place of its own, so the registries get the same bytes. The n
 holds no registry token.
 
 Last, the run tags `sdk-typescript-v<version>` or `sdk-python-v<version>`, the latter in PEP 440,
-and creates its GitHub release. `docs/mac.md` downloads `shard` from the latest release, so an SDK
+and creates its GitHub release. The releases/latest link must stay a shard binary release, so an SDK
 release is never marked latest.
 
 A prerelease such as `0.2.0-alpha.0` ships to npm under the dist-tag `alpha`, and to PyPI as

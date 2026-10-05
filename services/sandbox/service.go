@@ -264,7 +264,7 @@ func imageGone(id, ref, digest, verb string, err error) error {
 	return gone
 }
 
-// wrongState refuses a verb on the record's state, and names why an unresponsive one is silent, as docs/state-machine.md promises.
+// wrongState refuses a verb on the record's state, and names why an unresponsive one is silent, as https://useshards.com/docs/concepts/lifecycle/#unresponsive promises.
 func wrongState(id string, sb models.Sandbox, fix string, code models.Code) *StateError {
 	refused := &StateError{ID: id, State: sb.State, Fix: fix, Code: code}
 	if sb.State == models.StateUnresponsive {

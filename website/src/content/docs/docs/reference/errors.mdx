@@ -108,7 +108,7 @@ Every error from the API has this body:
 
 `error` is the only top-level field.
 
-An `internal` error shows only what is safe to show, which can be as little as `the daemon could not complete the request; its log has the cause`. The full cause stays in the daemon log. The host-only routes, such as the ones behind `shard pull` and `shard image list`, return the whole text.
+An `internal` error shows only what is safe to show, which can be as little as `the daemon could not complete the request; the daemon log has the cause`. The full cause stays in the daemon log. The host-only routes, such as the ones behind `shard pull` and `shard image list`, return the whole text.
 
 To read the daemon log, run `sudo journalctl -u shard` for the systemd unit, or open `/var/log/shard/daemon.log` for the Mac LaunchDaemon. A daemon you started with `shard daemon` logs to its own terminal.
 

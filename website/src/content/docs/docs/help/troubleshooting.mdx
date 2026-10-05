@@ -16,7 +16,7 @@ shard capabilities
 
 ```text
 client v0.1.2
-shard: cannot connect to shard daemon at /var/lib/shard/shard.sock: is it set up? shard setup
+shard: cannot connect to the shard daemon at /var/lib/shard/shard.sock: is it set up? shard setup
 ```
 
 `shard capabilities` lists the eight lifecycle verbs and marks each one `true` or `false` for the provider the server runs.
@@ -48,10 +48,12 @@ Setup stops at the first check or step that fails. It marks that step, says why 
   Could not download runsc: connection timed out.
 
 Setup stopped. Earlier completed steps remain in place.
-Run `shard setup` again to retry.
+Run shard setup again to retry.
 ```
 
-Every step is safe to run again. Fix the cause and run `shard setup` again, and it picks up where it stopped. A download fails if it receives no data for 30 seconds, but a slow download that is still making progress runs to the end.
+Every step is safe to run again. Fix the cause and run `shard setup` again, and it picks up where it stopped. If `shard` is not on your `PATH` yet, the last line names the full path of the binary instead. A run without a terminal also repeats its options there.
+
+While a download runs, its step shows how much has arrived. A download fails if it receives no data for 30 seconds, and its line then ends `no data for 30s; setup stops a download that sends nothing for that long`. A slow download that is still making progress runs to the end.
 
 If a check fails before setup changes anything, the output says `No installation changes were made.`
 
@@ -61,7 +63,7 @@ If a check fails before setup changes anything, the output says `No installation
 
 **Firecracker shows `Requires access to /dev/kvm.`** The host has no hardware virtualization that shard can use, and the line under it says why, for example `This machine does not provide it.` Choose gVisor, or use a host with `/dev/kvm`: bare metal, or a VM with nested virtualization.
 
-**`no terminal to ask ...: pass ...`.** Setup is running without a terminal, as in a script or over `ssh` with no TTY, so a question has no answer. The error names the option that answers the question, and setup never picks one for you. For the API key, the error is `no terminal to read the API key: set SHARD_API_KEY`.
+**`no terminal to ask ...: pass ...`.** Setup is running without a terminal, as in a script or over `ssh` with no TTY, so a question has no answer. The error names the option that answers the question, and setup never picks one for you. A local run names every missing option in one error. For the API key, the error is `no terminal to read the API key: set SHARD_API_KEY`.
 
 **`setup was cancelled; nothing changed`.** You declined the confirmation, and setup exits with code 1.
 
@@ -75,19 +77,20 @@ When a command cannot reach the daemon, its error ends with a question and the c
 
 | The line ends with | The daemon runs as | Its log |
 | --- | --- | --- |
-| `is it running? systemctl status shard` | a systemd service | `sudo journalctl -u shard` |
-| `is it running? launchctl print system/shard.daemon` | a launchd service on a Mac | `/var/log/shard/daemon.log` |
+| `is the background service running? shard setup repairs it` | the service that `shard setup` installed | `sudo journalctl -u shard`, or `/var/log/shard/daemon.log` on a Mac |
+| `is it running? systemctl status shard` | a systemd service you installed by hand | `sudo journalctl -u shard` |
+| `is it running? launchctl print system/shard.daemon` | a launchd service you installed by hand on a Mac | `/var/log/shard/daemon.log` |
 | `is it running? sudo shard daemon --provider gvisor` | a process you start | the terminal that runs it |
 | `is it set up? shard setup` | nothing yet | |
 
-To restart the service:
+For the service that setup installed, run `shard setup` and choose `Check or repair the installation`. The repair starts the service if it stopped. It also checks the tools, the files that setup installed and the provider's files in `/var/lib/shard`. It shows each change before making it, and it keeps your settings and your data.
+
+To restart a service yourself:
 
 ```sh
 sudo systemctl restart shard                      # Linux
 sudo launchctl kickstart -k system/shard.daemon   # macOS
 ```
-
-If the service is gone or does not stay up, run `shard setup` and choose `Check or repair the installation`. This checks the tools, the files that setup installed, the provider's files in `/var/lib/shard` and the service. It shows each change before making it, and it keeps your settings and your data.
 
 A daemon you started yourself stops when its terminal closes. Start it again in its own terminal.
 
@@ -104,6 +107,10 @@ On a Mac the daemon runs as your user, so local sandbox commands need no `sudo`.
 ### `another shard daemon already holds ...`
 
 A root can have only one daemon, so a second `shard daemon` on the same root refuses to start. This happens when you start a daemon by hand while the service is already running one. Use the service, or stop it first.
+
+### `task proxy failed, restart in ...`
+
+The daemon log repeats this line, and the same line for `dns`, while every `shard create` fails. The host has no `nft`. Setup installs it, so this happens after an [install by hand](/docs/install/#install-by-hand). Install the `nftables` package. The next restart of each task succeeds, and the daemon itself needs no restart.
 
 ### A sandbox is stopped after a reboot
 
@@ -136,9 +143,9 @@ sudo ufw allow in on shard0
 sudo ufw route allow in on shard0
 ```
 
-**A name does not resolve, or a request gets a `403`, in a sandbox with a network policy.** Check the policy and shard's private-address restrictions. `shard policy logs <name>` shows each decision and the rule or restriction that made it. A policy with only address rules needs `--allow dns` before names resolve. The [egress reference](https://github.com/presmihaylov/shard/blob/main/docs/egress.md) lists every rule.
+**A name does not resolve, or a request gets a `403`, in a sandbox with a network policy.** Check the policy and shard's private-address restrictions. `shard policy logs <name>` shows each decision and the rule or restriction that made it. A policy with only address rules needs `--allow dns` before names resolve. The [egress reference](/docs/security/egress/) lists every rule.
 
-**An HTTPS client fails on a certificate in a sandbox with a secret.** shard's proxy inserts the key on the host, so it presents its own certificate to the client. Most clients trust it without any change. Java and some Rust builds need an extra step, and a client that pins a certificate cannot use a secret. The [secrets reference](https://github.com/presmihaylov/shard/blob/main/docs/secrets.md) has the steps.
+**An HTTPS client fails on a certificate in a sandbox with a secret.** shard's proxy inserts the key on the host, so it presents its own certificate to the client. Most clients trust it without any change. Java and some Rust builds need an extra step, and a client that pins a certificate cannot use a secret. The [secrets reference](/docs/security/secrets/) has the steps.
 
 ## A remote server
 
@@ -154,7 +161,7 @@ export SHARD_CA_FILE=/path/to/ca.pem
 
 **`the server at ... did not accept the API key in SHARD_API_KEY`.** The server refused the key. A key in `SHARD_API_KEY` takes precedence over the saved one, so unset the variable to use the saved key. If the line names the saved key instead, run `shard setup` to replace it.
 
-**`a remote client needs SHARD_API_KEY for ...; the saved API key is for ... and is sent to no other server`.** You named a server other than the saved one, and shard sends a saved key only to the server it was saved for. Set `SHARD_API_KEY` for this server.
+**`the saved API key is for ..., so shard does not send it to ...; set SHARD_API_KEY, or run shard setup`.** You named a server other than the saved one, and shard sends a saved key only to the server it was saved for. Set `SHARD_API_KEY` for this server.
 
 **`the token lacks sandbox:write; use a token with sandbox:write`.** The key works, but its scopes do not cover the command. Ask for a key that has that scope. `shard tokens scopes` lists every scope.
 

@@ -173,7 +173,7 @@ sandbox.start()
 
 ## With a network policy
 
-A grant does not open the network to any host. If the sandbox has a network policy, that policy must also allow the granted host. See [network egress](https://github.com/presmihaylov/shard/blob/main/docs/egress.md).
+A grant does not open the network to any host. If the sandbox has a network policy, that policy must also allow the granted host. See [network egress](/docs/security/egress/).
 
 ## Rotate a key
 
@@ -199,4 +199,4 @@ To put the key in, shard terminates the TLS connection on the host with its own 
 
 A sandbox that is allowed to call `api.openai.com` with the key can make any call the key allows, so a compromised agent can run up a bill or read whatever the key can read. Scope the key at the provider, because shard only keeps it out of the sandbox.
 
-On the `runc` provider, nothing isolates the sandbox from the host: root in the sandbox is root on the host, and a process that escapes the sandbox can read the stored key. The [secrets reference](https://github.com/presmihaylov/shard/blob/main/docs/secrets.md) lists every rule.
+On the `runc` provider, nothing isolates the sandbox from the host: root in the sandbox is root on the host, and a process that escapes the sandbox can read the stored key. The [secrets reference](/docs/security/secrets/) lists every rule.

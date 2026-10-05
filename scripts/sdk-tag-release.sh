@@ -35,7 +35,7 @@ fi
 # The notes are the version's section of the changelog, below its top heading.
 git show "$REF:sdks/$SDK/CHANGELOG.md" | awk '/^## /{n++; next} n == 1' >"$RUNNER_TEMP/notes.md"
 
-# Never the latest release: docs/mac.md downloads shard itself from releases/latest.
+# Never the latest release: the releases/latest link must stay a shard binary release.
 flags=(--latest=false)
 if [ "$PRERELEASE" = true ]; then
   flags+=(--prerelease)

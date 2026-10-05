@@ -90,7 +90,7 @@ The example needs a host that runs `gvisor`, `firecracker` or `vz`. On a Mac, le
 A pause ends any `exec` that is still running in the sandbox. While the sandbox is paused, `shard exec` runs nothing, exits 1 and prints:
 
 ```text
-shard: sandbox <id> is paused: resume it with shard resume demo
+shard: sandbox <id> is paused: resume it with sudo shard resume demo
 ```
 
 A paused sandbox stays paused when the daemon restarts, as long as its checkpoint is on disk. If its checkpoint is gone, it becomes `stopped`.

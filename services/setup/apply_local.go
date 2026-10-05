@@ -706,7 +706,7 @@ const launchdPlistTemplate = `<?xml version="1.0" encoding="UTF-8"?>
 		<string>--log</string>
 		<string>/var/log/shard/daemon.log</string>
 	</array>
-	<!-- The root under /var/lib/shard belongs to this user, so nothing runs as root; docs/mac.md puts the name in. -->
+	<!-- The root under /var/lib/shard belongs to this user, so nothing runs as root; setup puts the name in. -->
 	<key>UserName</key>
 	<string>__USER__</string>
 	<key>RunAtLoad</key>

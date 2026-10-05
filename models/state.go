@@ -21,7 +21,7 @@ const (
 	StateFailed State = "failed"
 )
 
-// The whole machine, drawn in docs/state-machine.md. stopped is not terminal here; failed is.
+// The whole machine, as https://useshards.com/docs/concepts/lifecycle/#the-moves lists it. stopped is not terminal here; failed is.
 var legalTransitions = map[State][]State{
 	StatePending:      {StateRunning, StateFailed},
 	StateCreated:      {StateRunning, StateStopped, StateFailed},

@@ -43,7 +43,7 @@ Two environment variables point a client at a shard server on another host:
 	</TabItem>
 </Tabs>
 
-`SHARD_REMOTE` is the URL of `shard serve`, or of the proxy in front of it. `SHARD_API_KEY` is a token from [`shard tokens mint`](https://github.com/presmihaylov/shard/blob/main/docs/daemon.md#tokens). Without a remote, the CLI talks to the daemon on this host, over the socket under its root.
+`SHARD_REMOTE` is the URL of `shard serve`, or of the proxy in front of it. `SHARD_API_KEY` is a token from [`shard tokens mint`](/docs/reference/auth/#mint-a-token). Without a remote, the CLI talks to the daemon on this host, over the socket under its root.
 
 ## Where a client connects
 
@@ -58,7 +58,7 @@ Each setting comes from the first source that has it:
 The SDKs always need a server URL and a key. They talk to `shard serve` only, never to the socket, and they do not read the saved connection. A client with a server URL and no key fails before it sends a request. The CLI says:
 
 ```text
-shard: a remote client needs SHARD_API_KEY; shard serve answers 401 without one
+shard: --remote needs an API key: set SHARD_API_KEY, or save one with shard setup
 ```
 
 `--remote ""` sends one command to the local socket, even when `SHARD_REMOTE` or a saved connection names a server:
@@ -94,7 +94,7 @@ Global options go before the command, for example `shard --root /srv/shard list`
 With another root, the CLI talks to the daemon of that root, and its hint names that daemon:
 
 ```text
-shard: cannot connect to shard daemon at /srv/shard/shard.sock: is it running? shard --root /srv/shard daemon
+shard: cannot connect to the shard daemon at /srv/shard/shard.sock: is it running? shard --root /srv/shard daemon
 ```
 
 ## The saved connection
@@ -108,12 +108,14 @@ shard: cannot connect to shard daemon at /srv/shard/shard.sock: is it running? s
 }
 ```
 
-The file holds the key as plain text. Setup makes the directory `0700` and the file `0600`, and replaces the whole file on each save. The CLI refuses a file with any other field. Run `shard setup` again to check, replace or remove the connection.
+The file holds the key as plain text. Setup makes the directory `0700` and the file `0600`, and replaces the whole file on each save. The CLI refuses a file with any other field.
+
+Run `shard setup` again and its first screen names the saved server. It offers to check, replace or remove the connection, or to set up this machine instead. Local setup on a machine with a saved connection offers to remove it, and lists the removal among the changes. It removes the connection only once local setup succeeds. A repair or an upgrade of an existing installation makes the same offer. A `SHARD_REMOTE` in the environment still overrides the local daemon after that.
 
 The CLI sends the saved key only to the saved server: the same scheme, host and port. A `SHARD_REMOTE` or `--remote` that names another server needs its own `SHARD_API_KEY`:
 
 ```text
-shard: a remote client needs SHARD_API_KEY for https://staging.example.com; the saved API key is for https://shard.example.com and is sent to no other server
+shard: the saved API key is for https://shard.example.com, so shard does not send it to https://staging.example.com; set SHARD_API_KEY, or run shard setup
 ```
 
 Some commands run on the daemon host only, such as `shard tokens list` and `shard pull`. They refuse `--remote`, `SHARD_REMOTE` and a saved connection. Add `--remote ""` to run one of them on this host.
@@ -143,7 +145,7 @@ The main paths under the root:
 | `snapshots/`, `checkpoints/` | Saved snapshots, and the saved state of paused sandboxes. |
 | `images/` | The pulled images. |
 | `secrets/`, `policies/` | The secret and policy stores. |
-| `auth/` | The signing key and the token ledger of `shard serve`. See [Tokens](https://github.com/presmihaylov/shard/blob/main/docs/daemon.md#tokens). |
+| `auth/` | The signing key and the token ledger of `shard serve`. See [Authentication](/docs/reference/auth/#the-signing-key-and-the-ledger). |
 | `proxy/` | The certificate authority of the egress proxy. |
 | `kernel/` | The guest kernel for Firecracker and vz, fetched on first use. |
 | `.reserve` | 64 MiB kept in reserve, so the daemon can start on a full disk and serve the `remove` that frees space. |

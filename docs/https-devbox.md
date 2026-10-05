@@ -104,4 +104,4 @@ stay, because nothing listens there, or go in a nairi-infra PR.
   a rotation reuses the certificate, but every teardown deletes it, so the next deploy asks for a
   new one.
 - The front sees every client as Caddy's own connection, so its bound of 32 connections per source
-  applies to all clients together (`docs/daemon.md`).
+  applies to all clients together ([Put HTTPS in front](https://useshards.com/docs/guides/remote/#3-put-https-in-front)).
