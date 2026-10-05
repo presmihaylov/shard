@@ -72,7 +72,7 @@ shard --remote "" list
 | Variable | Read by | Description |
 | --- | --- | --- |
 | `SHARD_REMOTE` | CLI, SDKs | The server URL, as `https://shard.example.com`. It must be `http` or `https` and name a host. The SDKs take only a scheme, a host and a port. `--remote` overrides it. |
-| `SHARD_API_KEY` | CLI, SDKs | The API token. The clients trim the spaces around it and refuse a key with a control character. Do not pass the key as a command argument. |
+| `SHARD_API_KEY` | CLI, SDKs | The API token. The clients trim the spaces around it and refuse a key with a control character other than a tab. Do not pass the key as a command argument. |
 | `SHARD_CA_FILE` | CLI, SDKs | A PEM file of the certificate authority that signed the server's certificate, for an `https` server only. Without it, the system's certificate authorities verify the server. |
 | `XDG_CONFIG_HOME` | CLI | Moves the saved connection to `$XDG_CONFIG_HOME/shard/config.json`. The CLI ignores a relative path. |
 | `NO_COLOR` | CLI | Any value that is not empty turns off color in `shard setup`. |
@@ -148,4 +148,4 @@ The main paths under the root:
 | `kernel/` | The guest kernel for Firecracker and vz, fetched on first use. |
 | `.reserve` | 64 MiB kept in reserve, so the daemon can start on a full disk and serve the `remove` that frees space. |
 
-On Firecracker, the root must be on a filesystem that clones a file by sharing its blocks: XFS with `reflink=1`, or Btrfs. A daemon with `--provider firecracker` probes the root when it starts. When the root cannot clone, the daemon makes an XFS image beside it at `<root>.xfs`, mounts it over the root, and adds an `/etc/fstab` line for it. No other provider needs this.
+On Firecracker, the root must be on a filesystem that clones a file by sharing its blocks: XFS with `reflink=1`, or Btrfs. A Firecracker daemon probes the root when it starts. When the root cannot clone, the daemon makes an XFS image beside it at `<root>.xfs`, mounts it over the root, and adds an `/etc/fstab` line for it. No other provider needs this.
