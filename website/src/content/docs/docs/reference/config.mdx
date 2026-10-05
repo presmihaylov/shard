@@ -58,7 +58,7 @@ Each setting comes from the first source that has it:
 The SDKs always need a server URL and a key. They talk to `shard serve` only, never to the socket, and they do not read the saved connection. A client with a server URL and no key fails before it sends a request. The CLI says:
 
 ```text
-shard: a remote client needs SHARD_API_KEY; shard serve answers 401 without one
+shard: --remote needs an API key: set SHARD_API_KEY, or save one with shard setup
 ```
 
 `--remote ""` sends one command to the local socket, even when `SHARD_REMOTE` or a saved connection names a server:
@@ -94,7 +94,7 @@ Global options go before the command, for example `shard --root /srv/shard list`
 With another root, the CLI talks to the daemon of that root, and its hint names that daemon:
 
 ```text
-shard: cannot connect to shard daemon at /srv/shard/shard.sock: is it running? shard --root /srv/shard daemon
+shard: cannot connect to the shard daemon at /srv/shard/shard.sock: is it running? shard --root /srv/shard daemon
 ```
 
 ## The saved connection
@@ -115,7 +115,7 @@ Run `shard setup` again and its first screen names the saved server. It offers t
 The CLI sends the saved key only to the saved server: the same scheme, host and port. A `SHARD_REMOTE` or `--remote` that names another server needs its own `SHARD_API_KEY`:
 
 ```text
-shard: a remote client needs SHARD_API_KEY for https://staging.example.com; the saved API key is for https://shard.example.com and is sent to no other server
+shard: the saved API key is for https://shard.example.com, so shard does not send it to https://staging.example.com; set SHARD_API_KEY, or run shard setup
 ```
 
 Some commands run on the daemon host only, such as `shard tokens list` and `shard pull`. They refuse `--remote`, `SHARD_REMOTE` and a saved connection. Add `--remote ""` to run one of them on this host.

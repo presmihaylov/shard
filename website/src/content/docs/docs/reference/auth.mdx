@@ -70,7 +70,7 @@ Both refusals come from `shard serve` before it opens the socket, so a refused r
 | `sandbox:delete` | Remove sandboxes and snapshots | Remove a sandbox, remove a snapshot |
 | `exec` | Run commands and access sandbox files | Every exec route, and every files, ls, mkdir and archive route |
 | `secret:*` | Manage secrets and secret grants | Every secrets route, and grant and ungrant on a sandbox |
-| `policy:*` | Manage policies and their sandbox assignments | Every policies route, and attach and detach on a sandbox |
+| `policy:*` | Manage policies and attach them to sandboxes | Every policies route, and attach and detach on a sandbox |
 | `*` | All available permissions | Every route above |
 
 A token with no scopes, or with `*`, reaches every route. `GET /v0/version`, `GET /v0/capabilities` and `GET /v0/scopes` answer any valid token, so a client can check which server it talks to before it acts.
@@ -78,7 +78,7 @@ A token with no scopes, or with `*`, reaches every route. `GET /v0/version`, `GE
 A create that names a secret also needs `secret:*`, and a create that names a policy also needs `policy:*`. A fork of a sandbox with secret grants or a policy needs the same scopes, because the fork copies them. The daemon refuses the request with `403` before it builds anything:
 
 ```text
-the token does not carry the "secret:*" scope, which a create that names a secret needs
+the token does not carry the "secret:*" scope, which a create that names a secret needs; use a token that carries it
 ```
 
 `shard tokens scopes` lists the scopes. Unlike the other `tokens` commands, it follows `--remote` and `SHARD_REMOTE`, so it shows what a remote server accepts:
@@ -90,7 +90,7 @@ sandbox:write    Create sandboxes, change their state and create snapshots
 sandbox:delete   Remove sandboxes and snapshots
 exec             Run commands and access sandbox files
 secret:*         Manage secrets and secret grants
-policy:*         Manage policies and their sandbox assignments
+policy:*         Manage policies and attach them to sandboxes
 *                All available permissions
 ```
 
@@ -133,7 +133,7 @@ Revoke one token by its id, or every token of one name:
 shard tokens revoke 9f2c4e1a7b3d5f60a1b2c3d4e5f60718
 # revoked token 9f2c4e1a7b3d5f60a1b2c3d4e5f60718
 shard tokens revoke --name ci
-# revoked 1 tokens of ci
+# revoked 1 token(s) named ci
 ```
 
 A revoke takes effect on the next request, with no restart. `shard serve` also checks the ledger once a second for each open connection, such as an exec session or a log follow, and closes the connection when its token is revoked. A token with an `exp` closes its connections when it expires. A close only detaches the client: the command in the sandbox keeps running, and so does the sandbox.

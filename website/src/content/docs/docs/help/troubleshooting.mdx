@@ -16,7 +16,7 @@ shard capabilities
 
 ```text
 client v0.1.2
-shard: cannot connect to shard daemon at /var/lib/shard/shard.sock: is it set up? shard setup
+shard: cannot connect to the shard daemon at /var/lib/shard/shard.sock: is it set up? shard setup
 ```
 
 `shard capabilities` lists the eight lifecycle verbs and marks each one `true` or `false` for the provider the server runs.
@@ -48,7 +48,7 @@ Setup stops at the first check or step that fails. It marks that step, says why 
   Could not download runsc: connection timed out.
 
 Setup stopped. Earlier completed steps remain in place.
-Run `shard setup` again to retry.
+Run shard setup again to retry.
 ```
 
 Every step is safe to run again. Fix the cause and run `shard setup` again, and it picks up where it stopped. A download fails if it receives no data for 30 seconds, but a slow download that is still making progress runs to the end.
@@ -75,19 +75,20 @@ When a command cannot reach the daemon, its error ends with a question and the c
 
 | The line ends with | The daemon runs as | Its log |
 | --- | --- | --- |
-| `is it running? systemctl status shard` | a systemd service | `sudo journalctl -u shard` |
-| `is it running? launchctl print system/shard.daemon` | a launchd service on a Mac | `/var/log/shard/daemon.log` |
+| `is the background service running? shard setup repairs it` | the service that `shard setup` installed | `sudo journalctl -u shard`, or `/var/log/shard/daemon.log` on a Mac |
+| `is it running? systemctl status shard` | a systemd service you installed by hand | `sudo journalctl -u shard` |
+| `is it running? launchctl print system/shard.daemon` | a launchd service you installed by hand on a Mac | `/var/log/shard/daemon.log` |
 | `is it running? sudo shard daemon --provider gvisor` | a process you start | the terminal that runs it |
 | `is it set up? shard setup` | nothing yet | |
 
-To restart the service:
+For the service that setup installed, run `shard setup` and choose `Check or repair the installation`. The repair starts the service if it stopped. It also checks the tools, the files that setup installed and the provider's files in `/var/lib/shard`. It shows each change before making it, and it keeps your settings and your data.
+
+To restart a service yourself:
 
 ```sh
 sudo systemctl restart shard                      # Linux
 sudo launchctl kickstart -k system/shard.daemon   # macOS
 ```
-
-If the service is gone or does not stay up, run `shard setup` and choose `Check or repair the installation`. This checks the tools, the files that setup installed, the provider's files in `/var/lib/shard` and the service. It shows each change before making it, and it keeps your settings and your data.
 
 A daemon you started yourself stops when its terminal closes. Start it again in its own terminal.
 
@@ -158,7 +159,7 @@ export SHARD_CA_FILE=/path/to/ca.pem
 
 **`the server at ... did not accept the API key in SHARD_API_KEY`.** The server refused the key. A key in `SHARD_API_KEY` takes precedence over the saved one, so unset the variable to use the saved key. If the line names the saved key instead, run `shard setup` to replace it.
 
-**`a remote client needs SHARD_API_KEY for ...; the saved API key is for ... and is sent to no other server`.** You named a server other than the saved one, and shard sends a saved key only to the server it was saved for. Set `SHARD_API_KEY` for this server.
+**`the saved API key is for ..., so shard does not send it to ...; set SHARD_API_KEY, or run shard setup`.** You named a server other than the saved one, and shard sends a saved key only to the server it was saved for. Set `SHARD_API_KEY` for this server.
 
 **`the token lacks sandbox:write; use a token with sandbox:write`.** The key works, but its scopes do not cover the command. Ask for a key that has that scope. `shard tokens scopes` lists every scope.
 
