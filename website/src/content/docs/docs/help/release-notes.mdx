@@ -5,7 +5,7 @@ sidebar:
   order: 3
 ---
 
-Check which version you run:
+To check which version you are running:
 
 ```sh
 shard version
@@ -13,9 +13,9 @@ shard version
 
 It prints the version of the CLI on a `client` line, then the version of the daemon or server it reaches on a `daemon` line.
 
-To upgrade the CLI, run the installer again. To upgrade a host that setup prepared, run `shard setup` there and choose the upgrade. Each release on [GitHub](https://github.com/presmihaylov/shard/releases) holds the binaries and their `SHA256SUMS`.
+To upgrade the CLI, run the installer again. To upgrade a host that setup prepared, run `shard setup` on it and choose to upgrade. Each release on [GitHub](https://github.com/presmihaylov/shard/releases) includes the binaries and their `SHA256SUMS`.
 
-shard is pre-alpha. A release can change the API, the CLI and the SDKs with no compatibility guarantees.
+shard is pre-alpha, so a release can change the API, the CLI and the SDKs without any compatibility guarantees.
 
 ## v0.1.2
 
@@ -23,36 +23,36 @@ shard is pre-alpha. A release can change the API, the CLI and the SDKs with no c
 
 **New**
 
-- One-line install: `curl -fsSL https://useshards.com/install | sh` downloads the newest release, checks it against that release's `SHA256SUMS`, installs it to `~/.local/bin/shard`, and offers to run `shard setup`. A failed or cut install keeps the old binary.
+- One-line install: `curl -fsSL https://useshards.com/install | sh` downloads the newest release, checks it against that release's `SHA256SUMS`, installs it to `~/.local/bin/shard`, and offers to run `shard setup`. If the install fails or is interrupted, the old binary stays in place.
 
 **Install and setup**
 
-- The PATH hint also prints the `export` line for the current shell, so `shard` works without a new shell.
+- The PATH hint also prints the `export` line for the current shell, so `shard` works without opening a new shell.
 - `shard setup --help` lists the setup exit codes.
-- The administrator check fails at once for a user that `sudo` does not allow, and names the reason. A user whose `sudo` needs a password passes only when setup can ask at a terminal.
-- On a Mac where no local provider runs, setup defaults to a remote connection, and says why `vz` is not available. The provider menu marks `vz` as recommended.
-- A local setup ends with next steps, and with the foreground daemon command when the daemon does not start at boot.
-- Check or repair finds a deleted provider file. An upgrade checks that the restarted daemon answers before it reports the upgrade done.
-- A download that stalls for 30 seconds fails with `connection timed out`, instead of a spinner for about 17 minutes. A slow download that still moves completes. A failed download names its cause in plain words.
-- On a manual install, setup shows its version and provider, and the commands that move it to setup. It changes none of its files.
+- For a user that `sudo` does not allow, the administrator check fails immediately and names the reason. A user whose `sudo` needs a password passes only when setup can ask for it at a terminal.
+- On a Mac where no local provider can run, setup defaults to a remote connection and says why `vz` is not available. The provider menu marks `vz` as recommended.
+- A local setup ends by listing the next steps. When the daemon does not start at boot, it also prints the command that runs the daemon in the foreground.
+- Check or repair finds a deleted provider file. An upgrade checks that the restarted daemon answers before it reports the upgrade as done.
+- A download that stalls for 30 seconds fails with `connection timed out`, instead of showing a spinner for about 17 minutes. A slow download that is still making progress completes, and a failed download names its cause in plain words.
+- On a manual install, setup shows the install's version and provider, and the commands that move it to setup. It leaves the install's files unchanged.
 
 **Uninstall**
 
-- An uninstall removes the bridge and the nft tables when no sandbox and no proxy still use them, and says how to turn `ip_forward` off. It never changes `ip_forward` itself.
-- It names what it leaves, with the commands that remove it: the data disk image `/var/lib/shard.xfs` on Linux, and the daemon logs in `/var/log/shard` on a Mac.
+- An uninstall removes the bridge and the nft tables when no sandbox or proxy still uses them, and says how to turn `ip_forward` off. It never changes `ip_forward` itself.
+- It names what it leaves behind, with the commands that remove it: the data disk image `/var/lib/shard.xfs` on Linux, and the daemon logs in `/var/log/shard` on a Mac.
 - On Linux, the refusal that asks you to remove your sandboxes first prints its commands with `sudo`.
 
 **Remote**
 
-- A refused API key names where the key came from, `SHARD_API_KEY` or the saved connection, and how to fix it. It never prints the key.
+- When the server refuses an API key, the error names where the key came from (`SHARD_API_KEY` or the saved connection) and how to fix it. It never prints the key.
 - A failed connection names its cause, such as no answer, a self-signed certificate, or a socket that needs `sudo`.
 
 **CLI**
 
-- An error that says the daemon log has the cause names that log on this host.
-- A create refusal names the flag you type, such as `--memory`, not the API field.
-- `shard list` says on stderr how many stopped sandboxes it leaves out.
-- `shard exec` on a stopped sandbox names it by its name, not its id.
+- When an error says the cause is in the daemon log, it names where that log is on this host.
+- When shard refuses a create, the error names the flag you type, such as `--memory`, rather than the API field.
+- `shard list` prints on stderr how many stopped sandboxes it leaves out.
+- `shard exec` on a stopped sandbox refers to the sandbox by its name instead of its id.
 
 ## v0.1.1
 
@@ -60,19 +60,19 @@ shard is pre-alpha. A release can change the API, the CLI and the SDKs with no c
 
 **New**
 
-- `shard setup` sets up this host for local sandboxes: the provider, its tools, the data directory, and a systemd or launchd service. Or it saves a connection to a remote server.
-- The `useshards` SDKs 0.1.0 are on npm and PyPI. They have their own versions and their own releases.
+- `shard setup` prepares this host for local sandboxes, with the provider, its tools, the data directory, and a systemd or launchd service. It can also save a connection to a remote server instead.
+- The `useshards` SDKs 0.1.0 are on npm and PyPI. They are versioned and released separately from shard.
 
 **Fixes**
 
-- Firecracker: a create, start, fork or restore that is cut after its VM came up now ends that VM.
-- macOS and Firecracker: an image that another provider already pulled gets its missing disk format built offline, with no registry call. A pull streams `building`, then `pulled`.
-- macOS and Firecracker: a held image with missing blobs no longer heals from the registry. Remove it and pull it again.
-- macOS: `stop` no longer fails after 10 seconds while a reconnect to the guest is in flight.
+- Firecracker: if a create, start, fork or restore is interrupted after its VM has come up, shard now ends that VM.
+- macOS and Firecracker: for an image that another provider already pulled, the missing disk format is built offline, without a registry call. The pull streams `building`, then `pulled`.
+- macOS and Firecracker: an image already on the host with missing blobs no longer heals itself from the registry. Remove it and pull it again.
+- macOS: `stop` no longer fails after 10 seconds while a reconnect to the guest is still in progress.
 - Sysbox: `stop` no longer fails when the guest removes one of its own cgroups during the stop. After a daemon restart, `stop` and a forced remove no longer fail on a sandbox whose first process has its standard input on a file the daemon cannot open.
-- runc, Sysbox and gVisor: a memory count that cannot be read is now an error, and no longer reads as no out-of-memory kill.
+- runc, Sysbox and gVisor: an unreadable memory count is now an error, where before it read as no out-of-memory kill.
 - Egress: each sandbox logs its dropped packets under its own rate limit, so one sandbox can no longer silence the drop records of the others.
-- Egress: a request the proxy cannot judge gets a `502` with fixed text, and no longer shows the sandbox the host's nameserver. The daemon log keeps the cause.
+- Egress: a request that the proxy cannot judge gets a `502` with fixed text and no longer shows the host's nameserver to the sandbox. The cause goes to the daemon log.
 - Images: the cache refuses a cached manifest or config that no longer matches its digest, and `shard image ls` lists such an image as `unreadable`.
 
 ## v0.1.0
@@ -83,4 +83,4 @@ The first release:
 
 - `shard` for Linux on x86-64 and for Apple silicon Macs, and a client-only build for Intel Macs.
 - `shard-init` for Linux, the systemd units for the daemon and for `shard serve`, and the launchd service for a Mac.
-- The `useshards` SDKs 0.1.0 for TypeScript and Python, as GitHub release files. They reached npm and PyPI with v0.1.1.
+- The `useshards` SDKs 0.1.0 for TypeScript and Python, as files on the GitHub release. They reached npm and PyPI in v0.1.1.
