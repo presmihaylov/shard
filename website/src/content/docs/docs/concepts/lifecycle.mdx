@@ -109,15 +109,15 @@ A sandbox is always in one of seven states.
 
 ## What each command does
 
-**`create`** puts the sandbox in `pending`. The CLI and both SDKs then wait until it is `running` or `failed`. While it waits, the CLI shows the download on stderr. A sandbox from `shard create` has no main command. Only shard's own supervisor runs in it, and you run your commands with `exec`. `shard run` creates a sandbox with a main command. If that command cannot start, shard removes the sandbox and the create fails with `command_not_started`.
+**`create`** puts the sandbox in `pending`. The CLI and both SDKs then wait until it is `running` or `failed`. While it waits, the CLI shows the download on stderr. A sandbox from `shard create` has no main command. Only shard's own supervisor runs in it, and you run your commands with `exec`. `shard run` creates a sandbox with a main command. If that command cannot start, shard removes the sandbox and the create fails with `command_not_started`. If the removal also fails, the error says that the sandbox was not removed.
 
-**`stop`** sends SIGTERM to the main command and gives it 30 seconds to exit, then kills it. The 30 seconds are fixed. `stop` returns only once the sandbox is gone. If the provider still reports it after 5 more seconds, the stop fails and the state does not change. A `stop` on a `pending` sandbox cancels the create, and the sandbox becomes `failed` with the reason `the create was cancelled by shard stop`.
+**`stop`** sends SIGTERM to the main command and gives it 30 seconds to exit, then kills it. The 30 seconds are fixed. `stop` succeeds only once the sandbox's processes have ended. Its files stay on disk. If the provider still reports a live process after 5 more seconds, the stop fails and the state does not change. A `stop` on a `pending` sandbox cancels the create, and the sandbox becomes `failed` with the reason `the create was cancelled by shard stop`.
 
 **`start`** runs a `stopped` sandbox again, with the files the stop kept. Memory, processes and open sockets are lost at the stop. If the sandbox has a main command, it starts again from the beginning.
 
 **`pause`** saves the memory and the processes to disk and frees the memory. **`resume`** continues from that checkpoint, and the processes carry on where they left off. A `pause` ends any `exec` that is still running. An `exec` on a paused sandbox fails with `sandbox <id> is paused: resume it with shard resume <id>`.
 
-**`fork`** works only on a `running` sandbox. It freezes the source for a moment, copies its memory and files, then lets it continue. The new sandbox goes from `created` to `running`. On gVisor the freeze lasts at most 10 minutes. If the copy is not done by then, it fails and the source keeps running. Fork works on the same providers as pause.
+**`fork`** works only on a `running` sandbox. It freezes the source, copies its memory and files, then lets it continue. The new sandbox goes from `created` to `running`. On gVisor the capture has a 10-minute limit. If it exceeds that limit, the fork fails and shard tries to resume the source. Fork works on the same providers as pause.
 
 **`snapshot create`** works only on a `stopped` sandbox, and copies the files the stop kept. The sandbox stays `stopped`. On a running or paused sandbox it fails with `409 sandbox_not_stopped`. Such a sandbox holds memory that a copy of its files would miss. A snapshot is not a sandbox and has no state.
 
@@ -131,7 +131,7 @@ Only `stop` ends a sandbox. An exit does not, and no idle timer or setting does 
 
 - `the sandbox process died`
 - `ran out of memory and the host ended it`
-- `shard-init failed`
+- `shard-init failed: <cause>` on a local connection, or `the sandbox supervisor failed; remove it and create another sandbox` on a remote connection
 
 ## failed is terminal
 
@@ -154,7 +154,7 @@ If the process dies, the sandbox becomes `stopped`. If a `pause` wrote its check
 
 ## When the daemon restarts
 
-A sandbox does not depend on the daemon. When the daemon stops or restarts, every sandbox keeps running, and the next daemon picks it up again. The next daemon also corrects what the last one left behind:
+A sandbox that already runs does not depend on the daemon. When the daemon stops or restarts, running sandboxes continue, and the next daemon picks them up again. The next daemon also corrects what the last one left behind:
 
 - A `running` sandbox with no process behind it becomes `stopped`, with the reason `daemon restarted and found no process`.
 - A `paused` sandbox with no checkpoint becomes `stopped`.
