@@ -147,7 +147,7 @@ A revoke takes effect on the next request, with no restart. `shard serve` also c
 
 The first `shard serve` or `shard tokens mint` that finds no key at the default path creates one: 32 random bytes, written as 64 hex characters. Nothing rotates or replaces the key after that. shard refuses a key file that is empty, that holds fewer than 32 bytes, or that everyone on the host can read, write or execute. The error names the path. `tokens list` and `tokens revoke` never create a key.
 
-`--signing-key-file` names a key outside the root. The file must exist, because `serve` and the `tokens` commands never create a named file. `openssl rand -hex 32` prints a key that passes. Give `shard serve` and every `tokens` command the same `--root` and `--signing-key-file`, so that the tokens you mint land in the ledger that `shard serve` reads.
+`--signing-key-file` names a key outside the root. The file must exist, because `serve` and the `tokens` commands never create a named file. `openssl rand -hex 32` prints a key that passes. Give `shard serve` and the `mint`, `list` and `revoke` commands the same `--root` and `--signing-key-file`, so that the tokens you mint land in the ledger that `shard serve` reads.
 
 `shard serve` reads the signing key once, when it starts. When you replace the key, restart `shard serve`, and every token signed with the old key stops working. The daemon never reads the key or the ledger.
 
