@@ -73,7 +73,7 @@ Both refusals come from `shard serve` before it opens the socket, so a refused r
 | `policy:*` | Manage policies and their sandbox assignments | Every policies route, and attach and detach on a sandbox |
 | `*` | All available permissions | Every route above |
 
-A token with no scopes, or with `*`, reaches every route. `GET /v0/version`, `GET /v0/capabilities` and `GET /v0/scopes` answer any valid token, so a client can check which server it talks to before it acts. The [TCP front](https://github.com/presmihaylov/shard/blob/main/docs/daemon.md#the-tcp-front) names the scope of each route.
+A token with no scopes, or with `*`, reaches every route. `GET /v0/version`, `GET /v0/capabilities` and `GET /v0/scopes` answer any valid token, so a client can check which server it talks to before it acts.
 
 A create that names a secret also needs `secret:*`, and a create that names a policy also needs `policy:*`. A fork of a sandbox with secret grants or a policy needs the same scopes, because the fork copies them. The daemon refuses the request with `403` before it builds anything:
 
@@ -111,7 +111,7 @@ shard tokens mint --name build-agent --duration 24h --scopes sandbox:read,sandbo
 export SHARD_API_KEY=$(shard tokens mint --name ci --duration 24h --scopes sandbox:read | jq -r .token)
 ```
 
-`mint`, `list` and `revoke` run only on the daemon host. They refuse `--remote`, `SHARD_REMOTE` and a saved connection, and none of them talks to the daemon. [The TCP front](https://github.com/presmihaylov/shard/blob/main/docs/daemon.md#the-tcp-front) lists every option.
+`mint`, `list` and `revoke` run only on the daemon host. They refuse `--remote`, `SHARD_REMOTE` and a saved connection, and none of them talks to the daemon. `shard tokens <verb> --help` lists every option.
 
 ## List and revoke tokens
 
@@ -167,6 +167,6 @@ When `shard serve` refuses the key with `401`, the CLI prints which key it sent 
 shard: the server at https://shard.example.com did not accept the API key in SHARD_API_KEY; set SHARD_API_KEY to a valid key, or ask the server administrator for a new one
 ```
 
-The SDKs raise `AuthenticationError` for a `401` and `PermissionDeniedError` for a `403`. [The API socket](https://github.com/presmihaylov/shard/blob/main/docs/daemon.md#the-api-socket) lists every error code.
+The SDKs raise `AuthenticationError` for a `401` and `PermissionDeniedError` for a `403`. [Errors and exit codes](/docs/reference/errors/) lists every error code.
 
 Use an `https` remote for any request that crosses a network you do not trust. Over an `http` remote, the token crosses the network unencrypted.

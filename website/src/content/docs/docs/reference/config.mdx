@@ -43,7 +43,7 @@ Two environment variables point a client at a shard server on another host:
 	</TabItem>
 </Tabs>
 
-`SHARD_REMOTE` is the URL of `shard serve`, or of the proxy in front of it. `SHARD_API_KEY` is a token from [`shard tokens mint`](https://github.com/presmihaylov/shard/blob/main/docs/daemon.md#tokens). Without a remote, the CLI talks to the daemon on this host, over the socket under its root.
+`SHARD_REMOTE` is the URL of `shard serve`, or of the proxy in front of it. `SHARD_API_KEY` is a token from [`shard tokens mint`](/docs/reference/auth/#mint-a-token). Without a remote, the CLI talks to the daemon on this host, over the socket under its root.
 
 ## Where a client connects
 
@@ -143,7 +143,7 @@ The main paths under the root:
 | `snapshots/`, `checkpoints/` | Saved snapshots, and the saved state of paused sandboxes. |
 | `images/` | The pulled images. |
 | `secrets/`, `policies/` | The secret and policy stores. |
-| `auth/` | The signing key and the token ledger of `shard serve`. See [Tokens](https://github.com/presmihaylov/shard/blob/main/docs/daemon.md#tokens). |
+| `auth/` | The signing key and the token ledger of `shard serve`. See [Authentication](/docs/reference/auth/#the-signing-key-and-the-ledger). |
 | `proxy/` | The certificate authority of the egress proxy. |
 | `kernel/` | The guest kernel for Firecracker and vz, fetched on first use. |
 | `.reserve` | 64 MiB kept in reserve, so the daemon can start on a full disk and serve the `remove` that frees space. |

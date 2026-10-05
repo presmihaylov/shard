@@ -136,9 +136,9 @@ sudo ufw allow in on shard0
 sudo ufw route allow in on shard0
 ```
 
-**A name does not resolve, or a request gets a `403`, in a sandbox with a network policy.** Check the policy and shard's private-address restrictions. `shard policy logs <name>` shows each decision and the rule or restriction that made it. A policy with only address rules needs `--allow dns` before names resolve. The [egress reference](https://github.com/presmihaylov/shard/blob/main/docs/egress.md) lists every rule.
+**A name does not resolve, or a request gets a `403`, in a sandbox with a network policy.** Check the policy and shard's private-address restrictions. `shard policy logs <name>` shows each decision and the rule or restriction that made it. A policy with only address rules needs `--allow dns` before names resolve. The [egress reference](/docs/security/egress/) lists every rule.
 
-**An HTTPS client fails on a certificate in a sandbox with a secret.** shard's proxy inserts the key on the host, so it presents its own certificate to the client. Most clients trust it without any change. Java and some Rust builds need an extra step, and a client that pins a certificate cannot use a secret. The [secrets reference](https://github.com/presmihaylov/shard/blob/main/docs/secrets.md) has the steps.
+**An HTTPS client fails on a certificate in a sandbox with a secret.** shard's proxy inserts the key on the host, so it presents its own certificate to the client. Most clients trust it without any change. Java and some Rust builds need an extra step, and a client that pins a certificate cannot use a secret. The [secrets reference](/docs/security/secrets/) has the steps.
 
 ## A remote server
 

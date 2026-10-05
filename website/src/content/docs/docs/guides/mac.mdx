@@ -86,7 +86,7 @@ To use another data directory, pass `--root <dir>` to the daemon and to every co
 
 ## Use the SDKs on a Mac
 
-The SDKs talk to [`shard serve`](https://github.com/presmihaylov/shard/blob/main/docs/daemon.md#the-tcp-front) only, never to the daemon's socket. Mint a token and start `shard serve` on the Mac:
+The SDKs talk to [`shard serve`](/docs/guides/remote/) only, never to the daemon's socket. Mint a token and start `shard serve` on the Mac:
 
 ```sh
 shard tokens mint --name sdk --duration 720h
@@ -160,6 +160,6 @@ A sandbox has no route to the Mac or to the LAN. Its traffic reaches the network
 
 On an Apple silicon Mac with macOS 13, update macOS to 14 or later.
 
-An Intel Mac can still use shard as a client. Install the CLI with the same command, then connect to a shard server on another machine. See [The TCP front](https://github.com/presmihaylov/shard/blob/main/docs/daemon.md#the-tcp-front).
+An Intel Mac can still use shard as a client. Install the CLI with the same command, then connect to a shard server on another machine. See [How to connect to a remote host?](/docs/guides/remote/).
 
 To run the server on the Intel Mac itself, run a Linux x86_64 VM on it, for example with Lima, and set up the VM as a server with [Quickstart: server](/docs/quickstart/server/). Do not mount the Mac's folders in the VM. Lima mounts your home folder by default, so set `mounts: []` in its config file. Every sandbox then shares the kernel, the memory and the disk of that one VM. The provider inside still isolates the sandboxes from each other, but a sandbox that fills the VM's memory or disk starves the others.

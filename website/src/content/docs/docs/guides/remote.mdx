@@ -152,7 +152,7 @@ sudo shard tokens mint --name laptop --duration 720h \
 
 The `token` field is the client's API key. Give `shard tokens mint`, `list` and `revoke` the same `--signing-key-file`, so the token lands in the ledger that `shard serve` reads.
 
-Without `--scopes`, a token can do everything, secrets and policies included. Without `--duration`, it never expires. [The TCP front](https://github.com/presmihaylov/shard/blob/main/docs/daemon.md#the-tcp-front) lists the scopes and what each one allows.
+Without `--scopes`, a token can do everything, secrets and policies included. Without `--duration`, it never expires. [Authentication](/docs/reference/auth/#scopes) lists the scopes and what each one allows.
 
 ## 5. Connect a client
 
@@ -164,7 +164,7 @@ shard setup --remote https://shard.example.com --save -y
 
 Setup writes the server URL and the key to `~/.config/shard/config.json` by default, and only your user can read the file. To connect without saving anything, set `SHARD_REMOTE` and `SHARD_API_KEY` instead. The SDKs read the same two variables, or take `remote` and `apiKey` (`remote=` and `api_key=` in Python). They never read the saved connection.
 
-If a private CA signed the server's certificate, set `SHARD_CA_FILE` to that CA's certificate. shard always verifies the certificate, and has no option to skip it. [Tokens](https://github.com/presmihaylov/shard/blob/main/docs/daemon.md#tokens) describes `SHARD_REMOTE`, `SHARD_API_KEY` and `SHARD_CA_FILE`.
+If a private CA signed the server's certificate, set `SHARD_CA_FILE` to that CA's certificate. shard always verifies the certificate, and has no option to skip it. [Environment and config](/docs/reference/config/) describes `SHARD_REMOTE`, `SHARD_API_KEY` and `SHARD_CA_FILE`.
 
 An `http` URL works too, but nothing encrypts the key or the requests. Use it only on localhost or through an encrypted VPN. Each command then prints a warning to stderr.
 

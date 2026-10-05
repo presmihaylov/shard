@@ -207,7 +207,7 @@ shard tokens revoke --name ci
 
 The next request with that token gets `401`. `shard serve` checks the ledger once a second for each open connection and closes any connection that uses a revoked token. Closing the connection detaches the client, but it does not stop an exec or a sandbox.
 
-To run `shard serve` as an unprivileged user and to set up the proxy, see [the TCP front](https://github.com/presmihaylov/shard/blob/main/docs/daemon.md#the-tcp-front).
+To run `shard serve` as an unprivileged user and to set up the proxy, see [How to connect to a remote host?](/docs/guides/remote/).
 
 ## What shard never writes down
 
