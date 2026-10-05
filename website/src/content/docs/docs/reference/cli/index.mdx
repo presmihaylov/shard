@@ -401,4 +401,16 @@ The commands that print JSON by default have these tables:
 
 ## Exit codes
 
-See [Errors and exit codes](/docs/reference/errors/).
+| Code | When |
+| --- | --- |
+| 0 | the verb did what it says |
+| 1 | any failure of shard, or of the request, with `shard: <reason>` on stderr |
+| the command's code | `exec`, and `run` with the app's last code |
+| 126, 127 | `exec` of a command that is not executable, or not found |
+| 1 or more | `exec` whose output was lost, so a lost stream never reads as a pass |
+| 128 + n | `run` of an app that signal n ended |
+| 125 | `run` when shard itself fails, so a script tells it from an app that exits 1 |
+| 130 | `run` that Ctrl+C left; the sandbox stays running |
+| 130 | `setup` that Ctrl+C left; the steps done so far stay in place |
+
+`daemon status` exits 1 when a background task is in backoff, after it prints the whole status.
