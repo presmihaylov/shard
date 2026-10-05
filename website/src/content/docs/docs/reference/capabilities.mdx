@@ -145,11 +145,12 @@ The message names the provider and the verb. [Errors and exit codes](/docs/refer
 | The root and the host | The provider |
 | --- | --- |
 | A root that holds sandbox records | The provider that made them |
+| A root whose every record cannot be read | None. The daemon refuses to start until `--provider` names one |
 | A root with no records, beside a `<root>.xfs` image | `firecracker` |
 | A root with no records, on Linux, where `/dev/kvm` opens | `firecracker` |
 | A root with no records, on Linux, with no `/dev/kvm` or one that does not open | `gvisor` |
 | A root with no records, on macOS | `vz` |
 
-The daemon never picks `sysbox` or `runc`. To use one of them, name it with `--provider`. `shard info` prints the provider that a new daemon would pick on this host, and the reason. It runs on the daemon host only.
+On a root with no records, the daemon never picks `sysbox` or `runc`. To use one of them, name it with `--provider`. `shard info` prints the provider that a new daemon would pick on this host, and the reason. It runs on the daemon host only.
 
 A root keeps the provider that made its records, because no other provider can read them. The daemon refuses a `--provider` that names another one before it touches the root, and the error names both providers.
