@@ -37,6 +37,7 @@ make fmt                     apply formatting
 make check                   the same gates as CI; must pass before every commit
 make vuln                    govulncheck
 make openapi                 write docs/openapi.json from the routes; make test fails while it differs (SHARD-489)
+make cli-docs                write the site's CLI reference pages from cli/help.go; make test fails while they differ (SHARD-713)
 make sdk-ts                  regenerate the TypeScript SDK's private types from docs/openapi.json
 make sdk-ts-check            the TypeScript SDK's drift check, typecheck, unit tests and build; needs Node 22
 make sdk-py                  generate the Python SDK's private client from docs/openapi.json, and its sync twins (SHARD-492)
@@ -59,6 +60,7 @@ is the shape to grow into, not a checklist to build up front.
 cmd/shard/                 main only, thin: wire dependencies and exit
 cmd/shard-init/            the guest supervisor, PID 1 in every sandbox
 cmd/shard-openapi/         writes the spec of the public routes into docs/openapi.json
+cmd/shard-clidocs/         writes the site's CLI reference pages from the help
 cli/                       command definitions and flag parsing
 
 models/                    Sandbox, states, Provider, Capabilities, Policy
