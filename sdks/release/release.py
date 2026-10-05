@@ -167,6 +167,8 @@ def changeset_packages(text: str, path: str) -> set[str]:
     for line in lines[1:]:
         if line.strip() == "---":
             return names
+        if not line.strip():
+            continue
         name, sep, _ = line.partition(":")
         if not sep:
             raise ReleaseError(f"{path}: {line!r} is not 'package: bump'")

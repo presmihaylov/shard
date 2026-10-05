@@ -197,7 +197,8 @@ class CheckTest(TempRepoTest):
     def test_an_empty_changeset_covers_both(self) -> None:
         self.repo.write("sdks/typescript/src/index.ts", "export const x = 1;\n")
         self.repo.write("sdks/python/src/useshards/__init__.py", "x = 1\n")
-        self.repo.changeset("internal")
+        # The exact file `npx changeset add --empty` writes: a blank line between the fences.
+        self.repo.write("sdks/.changeset/internal.md", "---\n\n---\n\n\n")
         self.assertEqual(self.check(), [])
 
     def test_a_change_outside_the_shipped_files_needs_nothing(self) -> None:
