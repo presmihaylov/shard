@@ -10,7 +10,7 @@ with it.
 The target is Apple Silicon on macOS 14 or later. Intel Macs can build and boot the framework, but
 shard does not support them: they get no Rosetta, no `pause`, `resume` or `fork`, and no development
 attention. macOS 13 runs every verb except `pause`, `resume` and `fork`, and it is not supported
-either. `docs/mac.md` has the workaround for both. Firecracker stays unsupported on a Mac. Nothing
+either. [A Mac that cannot host sandboxes](https://useshards.com/docs/guides/mac/#a-mac-that-cannot-host-sandboxes) has the workaround for both. Firecracker stays unsupported on a Mac. Nothing
 on this page runs on Linux, because `pkg/vz` sits behind `//go:build darwin` and its stub returns
 the unsupported-platform error.
 
@@ -238,7 +238,7 @@ flow before the guest was fronted. `stack` marks a frame the forwarders never ta
 fragment, or a port the daemon serves reached on an address other than the gateway. These log
 lines have the same bound as the chains: two a second, with a burst of ten. Nothing reaches the
 Mac, the LAN or the internet except through the proxy or a flow the policy allowed.
-`docs/egress.md` has the per-substrate row.
+[On a Mac](https://useshards.com/docs/security/egress/#on-a-mac) covers vz on the egress page.
 
 Each end of the socketpair has a 1 MiB send buffer and a 4 MiB receive buffer, which is the four to
 one ratio Apple asks for. At the macOS default of 4 KiB, a full peer refuses the third 1514 byte

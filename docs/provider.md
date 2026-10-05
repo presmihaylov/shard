@@ -346,7 +346,7 @@ listens. Diff snapshots are a developer preview in Firecracker, so an upgrade of
 the memory-integrity kit of SHARD-450 again before it ships.
 
 Two more limits apply. The data dir must be able to clone a file by sharing its blocks, because
-`pause` on this provider needs that, as `docs/daemon.md` covers. The daemon probes its root and puts
+`pause` on this provider needs that, as [the data directory](https://useshards.com/docs/guides/kvm/#the-data-directory) covers. The daemon probes its root and puts
 a loopback XFS under a root that cannot, so no `pause` ever fails halfway for that reason. The other
 limit is that the vmm's state names each drive by its path in the jail, so a load opens the
 sandbox's own `overlay.raw`. A checkpoint taken before the jail existed names host paths instead, and

@@ -778,7 +778,7 @@ func TestStartRefusesASandboxThatIsNotStopped(t *testing.T) {
 	}
 }
 
-// An unresponsive record refuses a start with the reason it holds, as docs/state-machine.md promises (SHARD-424).
+// An unresponsive record refuses a start with the reason it holds, as https://useshards.com/docs/concepts/lifecycle/#unresponsive promises (SHARD-424).
 func TestStartRefusesAnUnresponsiveSandboxWithItsReason(t *testing.T) {
 	svc, l := newService(t, &recorder{}, unresponsive())
 

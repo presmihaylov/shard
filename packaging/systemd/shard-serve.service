@@ -8,7 +8,7 @@ BindsTo=shard.service
 
 [Service]
 Type=simple
-# Plain HTTP on 127.0.0.1:2376; a proxy on this host gives clients HTTPS (docs/daemon.md).
+# Plain HTTP on 127.0.0.1:2376; a proxy on this host gives clients HTTPS (https://useshards.com/docs/guides/remote/#3-put-https-in-front).
 ExecStart=/usr/local/bin/shard --root /var/lib/shard serve --signing-key-file /etc/shard/serve.secret
 # The unprivileged account of the front. Its only privilege is the group that may reach the socket.
 User=shard

@@ -334,7 +334,7 @@ func TestTokensMintRefusesTheRetiredScopes(t *testing.T) {
 	}
 }
 
-// everyScope is "*" and the six scopes docs/daemon.md names.
+// everyScope is "*" and the six scopes https://useshards.com/docs/reference/auth/#scopes names.
 var everyScope = []string{"*", "sandbox:read", "sandbox:write", "sandbox:delete", "exec", "secret:*", "policy:*"}
 
 // Mint and discovery read one table, so mint takes every scope tokens scopes lists and refuses any other.

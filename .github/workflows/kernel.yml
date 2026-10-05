@@ -61,7 +61,7 @@ jobs:
           path: dist
           merge-multiple: true
 
-      # Never the latest release: docs/mac.md downloads shard itself from releases/latest.
+      # Never the latest release: the releases/latest link must stay a shard binary release.
       - name: publish
         env:
           GH_TOKEN: ${{ github.token }}

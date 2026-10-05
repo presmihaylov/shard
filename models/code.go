@@ -1,6 +1,6 @@
 package models
 
-// Code is the half of an API error body a program reads; the table in docs/daemon.md says when each is answered.
+// Code is the half of an API error body a program reads; https://useshards.com/docs/reference/errors/#error-codes says when each is answered.
 type Code string
 
 const (
