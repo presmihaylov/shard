@@ -234,6 +234,24 @@ func (c *Client) dial(ctx context.Context) (net.Conn, error) {
 	return conn, nil
 }
 
+// Reach opens one connection to the server and closes it, the tls handshake included, so a caller tells a server it cannot reach from one that refuses its token.
+func (c *Client) Reach(ctx context.Context) error {
+	if c.Timeout != 0 {
+		var cancel context.CancelFunc
+		ctx, cancel = context.WithTimeout(ctx, c.Timeout)
+		defer cancel()
+	}
+	conn, err := c.dial(ctx)
+	if err != nil {
+		return err
+	}
+	if err := conn.Close(); err != nil {
+		return fmt.Errorf("close the connection to %s: %w", c.target, err)
+	}
+
+	return nil
+}
+
 // authorize carries the bearer token of a front. The socket takes none: its mode is the check.
 func (c *Client) authorize(header http.Header) {
 	if c.token == "" {
