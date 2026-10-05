@@ -13,7 +13,7 @@ Ask a sandbox which kernel it runs on:
 	<TabItem label="CLI">
 
 ```sh
-shard create --name probe alpine:3.20
+shard create --name probe --memory 512MiB alpine:3.20
 shard exec probe uname -r
 shard remove --force probe
 ```
@@ -26,7 +26,7 @@ import { Shard } from "useshards";
 
 const shard = new Shard();
 try {
-  const probe = await shard.create({ name: "probe", image: "alpine:3.20" });
+  const probe = await shard.create({ name: "probe", image: "alpine:3.20", memoryMiB: 512 });
   console.log((await probe.exec(["uname", "-r"])).stdout);
   await probe.remove({ force: true });
 } finally {
@@ -41,7 +41,7 @@ try {
 from useshards import Shard
 
 with Shard() as shard:
-    probe = shard.create("alpine:3.20", name="probe")
+    probe = shard.create("alpine:3.20", name="probe", memory_mib=512)
     print(probe.exec(["uname", "-r"]).stdout)
     probe.remove(force=True)
 ```
