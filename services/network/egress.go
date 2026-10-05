@@ -115,7 +115,7 @@ func mustPrefixes(cidrs []string) []netip.Prefix {
 	return prefixes
 }
 
-// ruleset is the whole host policy in two tables replaced in one transaction: inet judges, bridge keeps sandboxes apart and pins each port to its lease.
+// ruleset is the whole host policy in two tables replaced in one transaction; docs/egress.md says why two.
 func (s *Service) ruleset(chains []Chain, leases []netip.Addr) string {
 	var b strings.Builder
 

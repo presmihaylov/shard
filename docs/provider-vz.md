@@ -238,7 +238,7 @@ flow before the guest was fronted. `stack` marks a frame the forwarders never ta
 fragment, or a port the daemon serves reached on an address other than the gateway. These log
 lines have the same bound as the chains: two a second, with a burst of ten. Nothing reaches the
 Mac, the LAN or the internet except through the proxy or a flow the policy allowed.
-[Egress](https://useshards.com/docs/security/egress/) has the per-substrate row.
+`docs/egress.md` has the per-substrate row.
 
 Each end of the socketpair has a 1 MiB send buffer and a 4 MiB receive buffer, which is the four to
 one ratio Apple asks for. At the macOS default of 4 KiB, a full peer refuses the third 1514 byte

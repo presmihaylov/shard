@@ -84,7 +84,7 @@ eight of 512 MB is 4 GB.
 
 The VM has no route onto the LAN. Its network is a file handle into the daemon, where shard's own
 netstack terminates it. The only things it can reach are the egress proxy and the resolver
-([egress](https://useshards.com/docs/security/egress/)). So a `--policy` holds on a Mac the same as on Linux, and a sandbox cannot see
+(`docs/egress.md`). So a `--policy` holds on a Mac the same as on Linux, and a sandbox cannot see
 your printer.
 
 ## Keep it up

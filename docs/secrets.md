@@ -37,7 +37,7 @@ A grant opens no host. The sandbox's policy decides what it may reach, and the g
 where the value may be put in. A sandbox with a policy needs an allow for the granted host in that
 policy. A grant does make the sandbox fronted, for every host it reaches and not only the granted
 one: a TLS handshake with no server name is refused, and a request whose `Host` differs from the
-handshake name gets 400 ([egress](https://useshards.com/docs/security/egress/)).
+handshake name gets 400 (`docs/egress.md`).
 
 ## Granting after the create
 
@@ -68,7 +68,7 @@ secret, ungrant it first, remove those sandboxes, or pass `--force`.
 
 **The substitution.** The placeholder is `mock-NAME` by default. A sandbox that holds a secret is
 fronted. The host turns its HTTP on 80 and 443 to the egress proxy, and the proxy is where the value
-goes in. See [egress](https://useshards.com/docs/security/egress/) for what fronting means. On the way out, the proxy replaces the
+goes in. See `docs/egress.md` for what fronting means. On the way out, the proxy replaces the
 placeholder with the value in the request headers only, and only when the request goes over TLS to a
 granted destination. A placeholder in the path, the query or the body goes upstream as it is. The
 guest picks those fields, and an upstream that quotes one back in an error would hand the guest the
