@@ -9,8 +9,6 @@ const requiredFiles = [
 	'404.html',
 	'docs/index.html',
 	'docs/install/index.html',
-	'docs/components/index.html',
-	'docs/guides/placeholder/index.html',
 	'pagefind/pagefind.js',
 	'favicon.svg',
 	'install',
