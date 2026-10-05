@@ -13,7 +13,7 @@ npm ci
 npm run dev       # http://localhost:4321, live reload
 npm run check     # astro check: types and content
 npm run build     # static output in dist/, Pagefind index included
-npm run verify    # every route exists and every internal link in dist/ resolves
+npm run verify    # every route exists, every internal link resolves, the landing page is byte-identical
 npm run preview   # serve dist/ as Vercel would
 ```
 
@@ -23,19 +23,19 @@ request that touches `website/`.
 ## Layout
 
 ```
-src/pages/index.astro        the landing page
-src/layouts/Landing.astro    the landing shell: header, main, footer
-src/components/landing/      landing header, footer and card
+public/index.html            the landing page, with its fonts, scripts and images beside it
+public/install               the installer, served as text/plain at /install
 src/components/starlight/    the Starlight overrides: site title, social icons, theme toggle
 src/content/docs/docs/       the docs pages, served under /docs
 src/styles/tokens.css        the design tokens: every color, font, radius and shadow
-src/styles/ui/               button, badge, banner and surface styles
+src/styles/ui/               badge, banner and surface styles
 src/styles/docs.css          the Starlight skin, mapped onto the tokens
-src/styles/landing.css       the landing entry: Tailwind plus the tokens
 ```
 
-A color or a font changes in `tokens.css` only. The landing page and the docs
-share the theme through the `starlight-theme` key in `localStorage`.
+The landing page is a finished static design: no build step touches
+it, and `verify` fails when a byte of it changes. A new design replaces the
+files and the hashes in `scripts/verify-dist.mjs` together. A docs color or font
+changes in `tokens.css` only.
 
 ## Vercel
 
