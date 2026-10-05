@@ -91,6 +91,52 @@ func TestRemoveEnvDropsTheVariableAndTakesASecondCall(t *testing.T) {
 	}
 }
 
+// A created container read config.json at its create, so a start must see every later write to it (SHARD-526).
+func TestEveryWriteToTheSpecMarksItChanged(t *testing.T) {
+	cases := []struct {
+		name  string
+		write func(bundle.Bundle) error
+		want  bool
+	}{
+		{"SetEnv", func(b bundle.Bundle) error { return b.SetEnv("TOKEN", "mock-TOKEN") }, true},
+		{"RemoveEnv", func(b bundle.Bundle) error { return b.RemoveEnv("HELD") }, true},
+		{"TrustProxy", func(b bundle.Bundle) error { return b.TrustProxy([]byte(proxyCA)) }, true},
+		{"a remove of a variable the bundle does not hold", func(b bundle.Bundle) error { return b.RemoveEnv("ABSENT") }, false},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			b := built(t, "HELD=mock-HELD")
+			if !changed(t, b) {
+				t.Fatal("Build wrote config.json and left no mark")
+			}
+
+			// A create clears the mark as the substrate reads config.json.
+			if err := os.Remove(b.ChangedFile); err != nil {
+				t.Fatal(err)
+			}
+
+			if err := tc.write(b); err != nil {
+				t.Fatalf("%s: %v", tc.name, err)
+			}
+			if got := changed(t, b); got != tc.want {
+				t.Errorf("Changed = %v after %s, want %v", got, tc.name, tc.want)
+			}
+		})
+	}
+}
+
+func changed(t *testing.T, b bundle.Bundle) bool {
+	t.Helper()
+
+	changed, err := b.Changed()
+	if err != nil {
+		t.Fatalf("Changed: %v", err)
+	}
+
+	return changed
+}
+
 func TestTrustProxyPlantsTheCALateAndNeverTwice(t *testing.T) {
 	b := built(t)
 

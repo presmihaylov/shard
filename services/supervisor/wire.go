@@ -246,24 +246,31 @@ func WriteMessage(w io.Writer, value any) error {
 
 // ReadMessage takes the next JSON line into value, up to MaxPayload before its newline. A closed peer reads as io.EOF, unwrapped.
 func ReadMessage(r *bufio.Reader, value any) error {
+	_, err := readMessage(r, value)
+
+	return err
+}
+
+// readMessage is ReadMessage that also answers the bytes of the line, which the event queue counts.
+func readMessage(r *bufio.Reader, value any) (int, error) {
 	var line []byte
 	for {
 		chunk, err := r.ReadSlice('\n')
 		if len(line)+len(chunk) > MaxPayload+1 {
-			return fmt.Errorf("read a message: %w", ErrMessageTooLong)
+			return 0, fmt.Errorf("read a message: %w", ErrMessageTooLong)
 		}
 		line = append(line, chunk...)
 		if errors.Is(err, bufio.ErrBufferFull) {
 			continue
 		}
 		if errors.Is(err, io.EOF) && len(line) == 0 {
-			return io.EOF
+			return 0, io.EOF
 		}
 		if err != nil {
-			return fmt.Errorf("read a message: %w", err)
+			return 0, fmt.Errorf("read a message: %w", err)
 		}
 
-		return DecodeFrame(line, value)
+		return len(line), DecodeFrame(line, value)
 	}
 }
 

@@ -11,6 +11,7 @@ import (
 	"net"
 	"net/http"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/coder/websocket"
@@ -135,18 +136,17 @@ func (h *Handler) attachExec(w http.ResponseWriter, r *http.Request) {
 	session := &execSession{w: w, r: r, log: h.log, ctx: ctx, cancel: cancel, failure: func(err error) FailureMessage { return h.failureOf(r, err) }}
 	defer session.close()
 
-	stdin, writer := io.Pipe()
-	session.stdin = writer
+	inputCtx, stopInput := context.WithCancel(ctx)
+	session.stopInput = stopInput
+	session.input = newExecInput(inputCtx)
 
 	streams := sandbox.Streams{
-		Stdin:   stdin,
-		Stdout:  session.stream(StreamStdout),
-		Stderr:  session.stream(StreamStderr),
-		Started: session.start,
-		Warn: func(message string) {
-			h.log.Printf("api: exec %s in sandbox %s: %s", r.PathValue("exec"), r.PathValue("id"), message)
-		},
-		Detach: cancel,
+		Stdin:     session.input,
+		StopStdin: session.interruptInput,
+		Stdout:    session.stream(StreamStdout),
+		Stderr:    session.stream(StreamStderr),
+		Started:   session.start,
+		Detach:    cancel,
 	}
 
 	attached, err := h.lifecycle.Attach(ctx, r.PathValue("id"), r.PathValue("exec"), streams)
@@ -214,9 +214,14 @@ type execSession struct {
 	cancel context.CancelFunc
 
 	// answered says the handshake was answered, in the affirmative or not, so no JSON body follows it.
-	answered bool
-	conn     *websocket.Conn
-	stdin    *io.PipeWriter
+	answered    bool
+	conn        *websocket.Conn
+	stopInput   context.CancelFunc
+	input       *execInput
+	readDone    chan struct{}
+	closeMu     sync.Mutex
+	closeStatus websocket.StatusCode
+	closeReason string
 }
 
 // start answers the 101 and takes the connection, so everything after this is messages and never HTTP.
@@ -230,47 +235,58 @@ func (e *execSession) start(execID string) error {
 	conn.SetReadLimit(MaxPayload + 1)
 	e.conn = conn
 
+	e.readDone = make(chan struct{})
 	go e.read()
 
 	return nil
 }
 
-// read moves the client's messages into the guest's stdin until the client says it is done, or goes away.
 func (e *execSession) read() {
+	defer close(e.readDone)
 	for {
 		stream, payload, err := Receive(context.Background(), e.conn)
 		if err != nil {
-			// The client is gone, so this attach ends; the command runs on and a later attach replays it.
-			e.closeStdin(err)
 			e.cancel()
-
 			return
 		}
 
-		switch stream {
-		case StreamStdin:
-			if _, err := e.stdin.Write(payload); err != nil {
-				e.log.Printf("api: exec: the command stopped reading its input: %v", err)
-
-				return
-			}
-		case StreamStdinClose:
-			e.closeStdin(io.EOF)
-		default:
-			e.log.Printf("api: exec: the client sent a message of stream %d, which no client sends", stream)
-			e.closeStdin(fmt.Errorf("the client sent a message of stream %d", stream))
-			e.cancel()
-
+		if !e.handleInput(stream, payload) {
 			return
 		}
 	}
 }
 
-// closeStdin hands the guest process the end of its input; CloseWithError reports nothing on a second call.
-func (e *execSession) closeStdin(err error) {
-	if closeErr := e.stdin.CloseWithError(err); closeErr != nil {
-		e.log.Printf("api: exec: close the input of the command: %v", closeErr)
+func (e *execSession) handleInput(stream byte, payload []byte) bool {
+	switch stream {
+	case StreamStdin:
+		if err := e.input.offer(payload); err != nil {
+			e.refuseInput(err)
+			return false
+		}
+	case StreamStdinClose:
+		e.input.end()
+	default:
+		e.log.Printf("api: exec: the client sent a message of stream %d, which no client sends", stream)
+		e.cancel()
+		return false
 	}
+	return true
+}
+
+func (e *execSession) refuseInput(err error) {
+	status := websocket.StatusTryAgainLater
+	if errors.Is(err, errExecInputClosed) {
+		status = websocket.StatusPolicyViolation
+	}
+	e.closeMu.Lock()
+	e.closeStatus, e.closeReason = status, err.Error()
+	e.closeMu.Unlock()
+	e.cancel()
+}
+
+func (e *execSession) interruptInput() error {
+	e.stopInput()
+	return nil
 }
 
 // finish says how the command ended. A command that never ran exits with the code a shell answers for it.
@@ -310,16 +326,23 @@ func (e *execSession) stream(stream byte) io.Writer {
 
 // close ends the WebSocket of this attach. A client that left first closed it; the command it streamed runs on.
 func (e *execSession) close() {
-	e.closeStdin(io.EOF)
+	e.stopInput()
 
 	if e.conn == nil {
 		return
 	}
 
-	err := e.conn.Close(websocket.StatusNormalClosure, "")
+	e.closeMu.Lock()
+	status, reason := e.closeStatus, e.closeReason
+	e.closeMu.Unlock()
+	if status == 0 {
+		status = websocket.StatusNormalClosure
+	}
+	err := e.conn.Close(status, reason)
 	if err != nil && !errors.Is(err, net.ErrClosed) {
 		e.log.Printf("api: exec: close the WebSocket: %v", err)
 	}
+	<-e.readDone
 }
 
 type writerFunc func(p []byte) (int, error)

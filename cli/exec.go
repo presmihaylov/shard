@@ -136,9 +136,12 @@ type resizes struct {
 	execIDs chan string
 	done    chan struct{}
 	exited  chan struct{}
+	// cancel ends a resize in flight, which would otherwise hold stop, and the raw terminal, for the client's whole timeout.
+	cancel context.CancelFunc
 }
 
 func forwardResize(ctx context.Context, app App, c *client.Client, ref string, terminal *os.File) *resizes {
+	ctx, cancel := context.WithCancel(ctx)
 	r := &resizes{
 		app:      app,
 		client:   c,
@@ -148,6 +151,7 @@ func forwardResize(ctx context.Context, app App, c *client.Client, ref string, t
 		execIDs:  make(chan string, 1),
 		done:     make(chan struct{}),
 		exited:   make(chan struct{}),
+		cancel:   cancel,
 	}
 	signal.Notify(r.changed, syscall.SIGWINCH)
 
@@ -194,13 +198,16 @@ func (r *resizes) resize(ctx context.Context, execID string) {
 		return
 	}
 
-	if err := r.client.ResizeExec(ctx, r.ref, execID, sandbox.TerminalSize{Rows: size.Rows, Cols: size.Cols}); err != nil {
+	err = r.client.ResizeExec(ctx, r.ref, execID, sandbox.TerminalSize{Rows: size.Rows, Cols: size.Cols})
+	// A resize the exit cancelled is moot, since the command is over, and a warning would land on the raw terminal.
+	if err != nil && ctx.Err() == nil {
 		r.app.warn(fmt.Sprintf("resize the command's terminal: %v", err))
 	}
 }
 
 func (r *resizes) stop() {
 	signal.Stop(r.changed)
+	r.cancel()
 	close(r.done)
 	<-r.exited
 }

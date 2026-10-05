@@ -263,6 +263,12 @@ const floodFile = "flood-control"
 // floodEveryFile in the state directory floods every control stream past its state line, for as long as it stays there.
 const floodEveryFile = "flood-every-control"
 
+// floodEventsFile in the state directory floods every control stream past its state line with valid events, faster than the host lands them.
+const floodEventsFile = "flood-events-control"
+
+// floodEvent is what a floodEventsFile stream repeats: a restarts count, which the host lands on disk one at a time.
+var floodEvent = []byte(`{"kind":"restarts","restarts":{"count":1}}` + "\n")
+
 // dialsFile in the state directory, once a test creates it, takes one line per control stream the host dials.
 const dialsFile = "control-dials"
 
@@ -606,7 +612,7 @@ func (m *fakeMachine) Connect(port uint32) (net.Conn, error) {
 	if err != nil {
 		return nil, errors.Join(err, conn.Close())
 	}
-	flood := false
+	flood, events := false, false
 	if port == supervisor.ControlPort {
 		if flood, err = m.take(floodFile); err != nil {
 			return nil, errors.Join(err, conn.Close())
@@ -616,6 +622,9 @@ func (m *fakeMachine) Connect(port uint32) (net.Conn, error) {
 			return nil, errors.Join(err, conn.Close())
 		}
 		flood = flood || every
+		if events, err = m.has(floodEventsFile); err != nil {
+			return nil, errors.Join(err, conn.Close())
+		}
 		if err := m.appendTo(dialsFile, "control"); err != nil {
 			return nil, errors.Join(err, conn.Close())
 		}
@@ -638,6 +647,9 @@ func (m *fakeMachine) Connect(port uint32) (net.Conn, error) {
 	s := &stream{Conn: conn, machine: m, control: true}
 	if flood {
 		return &flooded{stream: s}, nil
+	}
+	if events {
+		return &flooded{stream: s, event: floodEvent}, nil
 	}
 
 	return s, nil
@@ -761,11 +773,14 @@ func (s *stream) noteThawed(read []byte) error {
 type flooded struct {
 	*stream
 	passed bool
+	event  []byte
+	// at is how far into event the last read stopped.
+	at int
 }
 
 func (f *flooded) Read(p []byte) (int, error) {
 	if f.passed {
-		return copy(p, bytes.Repeat([]byte{'x'}, len(p))), nil
+		return f.flood(p), nil
 	}
 	n, err := f.stream.Read(p)
 	if end := bytes.IndexByte(p[:n], '\n'); end >= 0 {
@@ -775,6 +790,20 @@ func (f *flooded) Read(p []byte) (int, error) {
 	}
 
 	return n, err
+}
+
+// flood fills p with one line that never ends, or with event over and over when it is set.
+func (f *flooded) flood(p []byte) int {
+	if f.event == nil {
+		return copy(p, bytes.Repeat([]byte{'x'}, len(p)))
+	}
+	for n := 0; n < len(p); {
+		copied := copy(p[n:], f.event[f.at:])
+		n += copied
+		f.at = (f.at + copied) % len(f.event)
+	}
+
+	return len(p)
 }
 
 func (s *stream) Close() error {
