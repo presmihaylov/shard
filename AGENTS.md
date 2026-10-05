@@ -36,7 +36,7 @@ make lint-fix                apply the fixes golangci-lint can make
 make fmt                     apply formatting
 make check                   the same gates as CI; must pass before every commit
 make vuln                    govulncheck
-make openapi                 write docs/openapi.json from the routes; make test fails while it differs (SHARD-489)
+make openapi                 write docs/openapi.json and the REST API reference pages from the routes; make test fails while either differs (SHARD-489, SHARD-714)
 make sdk-ts                  regenerate the TypeScript SDK's private types from docs/openapi.json
 make sdk-ts-check            the TypeScript SDK's drift check, typecheck, unit tests and build; needs Node 22
 make sdk-py                  generate the Python SDK's private client from docs/openapi.json, and its sync twins (SHARD-492)
@@ -59,6 +59,7 @@ is the shape to grow into, not a checklist to build up front.
 cmd/shard/                 main only, thin: wire dependencies and exit
 cmd/shard-init/            the guest supervisor, PID 1 in every sandbox
 cmd/shard-openapi/         writes the spec of the public routes into docs/openapi.json
+cmd/shard-apidocs/         writes the REST API reference pages of the site from the public route spec
 cli/                       command definitions and flag parsing
 
 models/                    Sandbox, states, Provider, Capabilities, Policy
@@ -86,6 +87,7 @@ services/secret/           grants and destination binding
 services/datadir/          the root on a reflink filesystem: probe, provision the image, or refuse
 services/daemon/           shard daemon: the wiring of every layer, and the background work
 services/api/              the REST handlers the daemon serves over its unix socket
+services/apiref/           renders the spec as the site's REST API reference, one page per tag
 services/client/           the typed client of that API, which the thin CLI verbs call
 services/serve/            the TCP front: a bearer token, and the bytes onto that socket
 services/setup/            shard setup: inspect this host, install a provider and the daemon, or save a remote
