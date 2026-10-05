@@ -81,7 +81,7 @@ shard remove dind
 
 One daemon runs one provider for every sandbox on its host. `shard daemon status` on the daemon host names it. On gVisor or runc, pick another server for Docker.
 
-On a Linux host without `/dev/kvm`, Sysbox is the provider for Docker. Setup installs Sysbox CE 0.7.1 and sets up the daemon on it:
+On a Linux host without `/dev/kvm`, the daemon picks gVisor by default, which cannot run Docker. Select Sysbox with `--provider sysbox`, and setup installs Sysbox CE 0.7.1 and sets up the daemon on it:
 
 ```sh
 shard setup --local --provider sysbox --start-at-boot=true -y
