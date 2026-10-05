@@ -71,7 +71,7 @@ Use `Shard` in a `with` block, or call `shard.close()` when you are done, so it 
 
 ## Sandboxes
 
-`shard.create()` makes a sandbox and waits until it is running, which can take minutes while the server pulls the image. The new sandbox runs no command of its own. `create()` returns a `Sandbox` in state `running`, or in state `failed` with the reason in `sandbox.info.failed_reason`.
+`shard.create()` makes a sandbox and waits until it is running, which can take minutes while the server pulls the image. The new sandbox runs no command of its own. `create()` returns a `Sandbox` in state `running`. When the create fails, it raises an error, or it returns a `Sandbox` in state `failed` with the reason in `sandbox.info.failed_reason`.
 
 | Argument | Value |
 | --- | --- |
@@ -200,19 +200,19 @@ The sandbox never holds the secret value. Its commands see a placeholder, and th
 | --- | --- |
 | `secrets.set(name, value=, destinations=, placeholder=)` | Stores a secret, or replaces its value. |
 | `secrets.list()` | Returns `SecretList(secrets, warnings)`. |
-| `secrets.remove(name, force=)` | Deletes a secret that no sandbox holds. `force=True` takes it from every sandbox first. |
-| `secrets.grant(sandbox, name)`, `secrets.ungrant(sandbox, name)` | Grant a secret to a sandbox, or take it away. The sandbox must not be running. |
+| `secrets.remove(name, force=)` | Deletes a secret that no sandbox holds. `force=True` deletes it even when a sandbox holds it. That sandbox keeps the grant, but its placeholder no longer gets a value. |
+| `secrets.grant(sandbox, name)`, `secrets.ungrant(sandbox, name)` | Grant a secret to a sandbox, or take it away. The sandbox must be stopped. |
 | `policies.set(name, rules)` | Makes a policy, or replaces all its rules. A sandbox that holds the policy enforces the new rules. |
 | `policies.get(name)`, `policies.list()`, `policies.remove(name)` | Read policies, or delete one that no sandbox holds. |
-| `policies.attach(sandbox, name)`, `policies.detach(sandbox)` | Give a sandbox a policy, or take it away. The sandbox must not be running. |
+| `policies.attach(sandbox, name)`, `policies.detach(sandbox)` | Give a sandbox a policy, or take it away. The sandbox must be stopped. |
 | `snapshots.create(sandbox, name=)` | Copies the files of a stopped sandbox into a snapshot, which outlives the sandbox. |
 | `snapshots.list()`, `snapshots.inspect(ref)`, `snapshots.remove(ref)` | Read snapshots, or delete one. |
 
-A `PolicyRule(action, rule)` takes `"allow"` or `"deny"` and a rule in the form the CLI uses, such as `suffix:example.com tcp:443`. `sandbox.egress_log()` returns the network decisions the daemon holds for a sandbox, and `sandbox.follow_egress_log()` yields each one as it happens.
+A `PolicyRule(action, rule)` takes `"allow"` or `"deny"` and a rule in the form the CLI uses, such as `suffix:example.com tcp:443`. `sandbox.egress_log()` returns the network decisions the daemon holds for a sandbox, and `sandbox.follow_egress_log()` yields the newest decisions the daemon holds, then each new one as it happens.
 
 ## Asyncio
 
-`AsyncShard` takes the same arguments as `Shard`, and every method that calls the server is a coroutine:
+`AsyncShard` takes the same arguments as `Shard`. With none, it reads `SHARD_REMOTE` and `SHARD_API_KEY`. Every method that calls the server is a coroutine:
 
 ```python
 import asyncio
