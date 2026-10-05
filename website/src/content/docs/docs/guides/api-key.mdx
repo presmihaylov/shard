@@ -63,26 +63,26 @@ with Shard() as shard:
 	</TabItem>
 </Tabs>
 
-The sandbox prints `mock-OPENAI_API_KEY`. That placeholder is all the sandbox ever holds. Code in the sandbox uses it as it would use the key. When a request goes to `api.openai.com` over HTTPS, shard puts the real key into its headers on the host, outside the sandbox.
+The sandbox prints `mock-OPENAI_API_KEY`. That placeholder is all the sandbox ever holds, and code in the sandbox uses it just as it would use the real key. When a request goes to `api.openai.com` over HTTPS, shard puts the real key into its headers on the host, outside the sandbox.
 
-So an agent that reads its environment, dumps its memory, or posts everything it finds to another host gives away only the placeholder.
+As a result, an agent that reads its environment, dumps its memory, or posts everything it finds to another host gives away only the placeholder.
 
-**Caution: grant a key only to hosts that never send it back.** shard reads nothing out of a response. A granted host that echoes the headers it got, such as a debug page, returns the real key to the sandbox.
+**Caution: grant a key only to hosts that never send it back.** shard does not inspect responses. A granted host that echoes back the headers it received, such as a debug page, returns the real key to the sandbox.
 
 ## Keep the key out of your shell
 
-`shard secret set` reads the key from a pipe, as above. With no pipe and no value, it asks for the key with the echo off. Do not put the key on the command line: `ps` shows it while the command runs, and `shard secret set` warns you when you do.
+`shard secret set` reads the key from a pipe, as in the example above. If there is no pipe and no value, it prompts for the key with echo turned off. Do not put the key on the command line: `ps` shows it while the command runs, and `shard secret set` warns you if you do.
 
-The key goes into one file on the host, readable by root only. `shard secret list` prints each name, its destinations and its placeholder, never the key.
+The key is stored in a single file on the host that only root can read. `shard secret list` prints each name with its destinations and placeholder, but never the key.
 
 ## Make the request the right way
 
-shard puts the key in only when the request matches all of these:
+shard puts the key in only when the request meets all of these conditions:
 
-- **It goes over HTTPS on port 443.** Plain HTTP, and any other port, carries the placeholder. So does a database password on 5432, or SMTP on 587.
+- **It goes over HTTPS on port 443.** A request over plain HTTP, or to any other port, carries the placeholder. The same goes for a database password on 5432 or SMTP on 587.
 - **It goes to a granted destination.** A request to any other host carries the placeholder.
 - **The placeholder is in a header.** shard never puts the key in the path, the query or the body, because a host can quote those back in an error. API SDKs put the key in a header.
-- **The placeholder is there as it is.** HTTP Basic auth works, so `https://api:mock-KEY@host` works. Any other encoding or signing of the key does not.
+- **The placeholder appears unchanged.** HTTP Basic auth works too, as in `https://api:mock-KEY@host`. Any other encoding or signing of the key does not.
 
 ## Choose the destinations
 
@@ -96,7 +96,7 @@ shard refuses `*.com`, `*.co.uk`, `*.github.io`, a bare `*` and a `*` that is no
 
 ## A key whose shape the SDK checks
 
-Some SDKs check the shape of a key before they send it, and never send `mock-NAME`. Give those a placeholder of the right shape:
+Some SDKs check the shape of a key before they send it, and never send `mock-NAME`. For those SDKs, set a placeholder of the right shape:
 
 <Tabs syncKey="lang">
 	<TabItem label="CLI">
@@ -131,11 +131,11 @@ shard.secrets.set(
 	</TabItem>
 </Tabs>
 
-A placeholder has 8 characters or more, and only letters, digits, `_`, `-` and `.`. It must not hold the key, and the key must not hold it.
+A placeholder must be 8 characters or more, and contain only letters, digits, `_`, `-` and `.`. It must not contain the key, and the key must not contain it.
 
 ## Grant a key to a sandbox that exists
 
-A grant takes a stopped sandbox. A running one holds its environment in its processes, so the grant is refused with `sandbox <id> is running: secret grant takes a created or stopped sandbox: stop it first`:
+A grant needs a stopped sandbox. A running sandbox holds its environment in its processes, so the grant is refused with `sandbox <id> is running: secret grant takes a created or stopped sandbox: stop it first`:
 
 <Tabs syncKey="lang">
 	<TabItem label="CLI">
@@ -167,34 +167,34 @@ sandbox.start()
 	</TabItem>
 </Tabs>
 
-`shard secret ungrant` takes the grant back, also from a stopped sandbox. A fork keeps the grants of its source. A snapshot holds none, so a create from a snapshot names its own `--secret`.
+`shard secret ungrant` takes the grant back, and it too needs a stopped sandbox. A fork keeps the grants of its source. A snapshot holds no grants, so a create from a snapshot must name its own `--secret`.
 
 ## With a network policy
 
-A grant opens no host. If the sandbox has a network policy, the policy must also allow the granted host. See [network egress](https://github.com/presmihaylov/shard/blob/main/docs/egress.md).
+A grant does not open the network to any host. If the sandbox has a network policy, that policy must also allow the granted host. See [network egress](https://github.com/presmihaylov/shard/blob/main/docs/egress.md).
 
 ## Rotate a key
 
-Run `shard secret set` again with the same name and the new key. It keeps the destinations and the placeholder. A running sandbox uses the new key on its next request, and sees no change.
+Run `shard secret set` again with the same name and the new key. The destinations and the placeholder stay the same. A running sandbox uses the new key on its next request, and the sandbox itself sees no change.
 
-A change of the placeholder is refused while a sandbox holds the secret. Ungrant it there first.
+shard refuses to change the placeholder while a sandbox holds the secret, so ungrant the secret from that sandbox first.
 
 ## Clients that do not trust the proxy
 
-To put the key in, shard ends the TLS connection on the host with its own certificate authority. shard puts that certificate where the image reads its roots, and points `SSL_CERT_FILE`, `REQUESTS_CA_BUNDLE`, `NODE_EXTRA_CA_CERTS` and `CURL_CA_BUNDLE` at it. curl, Python, Node, Deno, Bun, Go, Ruby, PHP and .NET trust it with no change. Three kinds of client do not:
+To put the key in, shard terminates the TLS connection on the host with its own certificate authority. It puts that certificate where the image reads its root certificates, and points `SSL_CERT_FILE`, `REQUESTS_CA_BUNDLE`, `NODE_EXTRA_CA_CERTS` and `CURL_CA_BUNDLE` at it. curl, Python, Node, Deno, Bun, Go, Ruby, PHP and .NET trust it without any change. Three kinds of client do not:
 
-- **Java** trusts its own keystore. Import the last certificate of `$SSL_CERT_FILE` into it, on JDK 9 or later:
+- **Java** trusts its own keystore. On JDK 9 or later, import the last certificate in `$SSL_CERT_FILE` into it:
 
   ```sh
   awk '/-BEGIN CERTIFICATE-/{c=""} {c=c $0 "\n"} END{printf "%s", c}' "$SSL_CERT_FILE" > /tmp/shard-proxy-ca.pem
   keytool -importcert -noprompt -cacerts -storepass changeit -alias shard-proxy -file /tmp/shard-proxy-ca.pem
   ```
 
-- **Rust with `webpki-roots`** compiles its roots in. Build with `rustls-native-certs` instead.
+- **Rust with `webpki-roots`** compiles its root certificates into the binary. Build with `rustls-native-certs` instead.
 - **A client that pins a certificate** refuses the proxy. Its request fails with a certificate error, and the key never goes out.
 
 ## What this does not stop
 
-A sandbox that may call `api.openai.com` with the key may make any call the key allows. A compromised agent can run up a bill or read what the key can read. Scope the key at the provider: shard only keeps it out of the sandbox.
+A sandbox that is allowed to call `api.openai.com` with the key can make any call the key allows, so a compromised agent can run up a bill or read whatever the key can read. Scope the key at the provider, because shard only keeps it out of the sandbox.
 
-On the `runc` provider, nothing isolates the sandbox from the host. Root in the sandbox is root on the host, and can read the stored key. The [secrets reference](https://github.com/presmihaylov/shard/blob/main/docs/secrets.md) has every rule.
+On the `runc` provider, nothing isolates the sandbox from the host: root in the sandbox is root on the host, and it can read the stored key. The [secrets reference](https://github.com/presmihaylov/shard/blob/main/docs/secrets.md) lists every rule.
