@@ -8,12 +8,12 @@ sidebar:
 This creates a sandbox named `web`, then stops it. A stopped sandbox keeps its files, and a start runs it again:
 
 ```sh
-curl --unix-socket /var/lib/shard/shard.sock -X POST -d '{"name":"web","image":"alpine:3.20","command":["sleep","600"]}' http://localhost/v0/sandboxes
+curl --unix-socket /var/lib/shard/shard.sock -X POST -d '{"name":"web","image":"alpine:3.20","command":["sleep","600"],"resources":{"memory_mib":512}}' http://localhost/v0/sandboxes
 curl --unix-socket /var/lib/shard/shard.sock -X POST http://localhost/v0/sandboxes/web/stop
 curl --unix-socket /var/lib/shard/shard.sock -X POST http://localhost/v0/sandboxes/web/start
 ```
 
-Every `{id}` in a path takes the id or the name of a sandbox.
+Every `{id}` in a path takes the id or the name of a sandbox. A create on vz or Firecracker needs `resources.memory_mib`, because the memory of a VM is real memory on the host.
 
 {/* make openapi writes this part from the routes. Edit the routes, not this part. */}
 
