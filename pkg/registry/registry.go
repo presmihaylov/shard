@@ -159,9 +159,30 @@ func (i Image) Config() (*v1.ConfigFile, error) {
 		return nil, i.Broken
 	}
 
-	cfg, err := i.img.ConfigFile()
+	return verifiedConfig(i.img, i.Reference)
+}
+
+// verifiedConfig parses the config only once its bytes hash to the digest the manifest names, as the layout reads a blob by file name alone.
+func verifiedConfig(img v1.Image, ref string) (*v1.ConfigFile, error) {
+	manifest, err := img.Manifest()
 	if err != nil {
-		return nil, fmt.Errorf("read the config of %s: %w", i.Reference, err)
+		return nil, fmt.Errorf("parse the manifest of %s: %w", ref, err)
+	}
+	raw, err := img.RawConfigFile()
+	if err != nil {
+		return nil, fmt.Errorf("read the config of %s: %w", ref, err)
+	}
+	got, _, err := v1.SHA256(bytes.NewReader(raw))
+	if err != nil {
+		return nil, fmt.Errorf("hash the config of %s: %w", ref, err)
+	}
+	if got != manifest.Config.Digest {
+		return nil, fmt.Errorf("the cached config of %s hashes to %s, not the %s its manifest names: remove the image and pull it again", ref, got, manifest.Config.Digest)
+	}
+
+	cfg, err := v1.ParseConfigFile(bytes.NewReader(raw))
+	if err != nil {
+		return nil, fmt.Errorf("parse the config of %s: %w", ref, err)
 	}
 
 	return cfg, nil
@@ -231,18 +252,20 @@ func (e *FetchError) Public() string {
 
 	answer, ok := errors.AsType[*transport.Error](e.Err)
 	if !ok {
-		return e.Ref + " could not be fetched from its registry"
+		return e.Ref + unreachable
 	}
 
 	switch {
 	case answer.StatusCode == http.StatusUnauthorized, answer.StatusCode == http.StatusForbidden:
-		return "the registry refused access to " + e.Ref
+		return "the registry refused access to " + e.Ref + "; ask the server administrator to check the registry credentials"
 	case answer.StatusCode == http.StatusNotFound, slices.ContainsFunc(answer.Errors, unknown):
-		return e.Ref + " is not in its registry"
+		return e.Ref + " is not in its registry; check the image name and tag"
 	}
 
-	return e.Ref + " could not be fetched from its registry"
+	return e.Ref + unreachable
 }
+
+const unreachable = " could not be fetched from its registry; check that the registry is up, then retry"
 
 func unknown(d transport.Diagnostic) bool {
 	return d.Code == transport.ManifestUnknownErrorCode || d.Code == transport.NameUnknownErrorCode
@@ -571,6 +594,15 @@ func (s *Store) image(desc v1.Descriptor) (Image, error) {
 		return Image{}, fmt.Errorf("read %s from the store: %w", ref, err)
 	}
 
+	// The manifest stays in memory once read, so the hash checked here is the one every later read sees.
+	got, err := img.Digest()
+	if err != nil {
+		return Image{}, fmt.Errorf("hash the manifest of %s: %w", ref, err)
+	}
+	if got != desc.Digest {
+		return Image{}, fmt.Errorf("the cached manifest of %s hashes to %s, not the %s the index names: remove the image and pull it again", ref, got, desc.Digest)
+	}
+
 	manifest, err := img.Manifest()
 	if err != nil {
 		return Image{}, fmt.Errorf("parse the manifest of %s: %w", ref, err)
@@ -581,9 +613,9 @@ func (s *Store) image(desc v1.Descriptor) (Image, error) {
 		size += layer.Size
 	}
 
-	cfg, err := img.ConfigFile()
+	cfg, err := verifiedConfig(img, ref)
 	if err != nil {
-		return Image{}, fmt.Errorf("parse the config of %s: %w", ref, err)
+		return Image{}, err
 	}
 
 	return Image{
@@ -603,6 +635,31 @@ func Canonical(ref string) (string, error) {
 	}
 
 	return parsed.Name(), nil
+}
+
+// Pinned is ref's repository at digest, so a pull fetches those files whatever a tag in ref names now.
+func Pinned(ref, digest string) (string, error) {
+	parsed, err := parseRef(ref)
+	if err != nil {
+		return "", err
+	}
+
+	return parsed.Context().Digest(digest).Name(), nil
+}
+
+// DigestOf is the digest a by-digest reference names, so a holder found by digest matches an rm by tag.
+func DigestOf(ref string) (string, bool) {
+	parsed, err := parseRef(ref)
+	if err != nil {
+		return "", false
+	}
+
+	digest, ok := parsed.(name.Digest)
+	if !ok {
+		return "", false
+	}
+
+	return digest.DigestStr(), true
 }
 
 // parseRef also rejects what ParseReference accepts and a later path join would not: a . or .. segment.

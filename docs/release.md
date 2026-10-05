@@ -43,7 +43,9 @@ Push a tag of the form `v*` on `main`. `release.yml` first checks that the tagge
 `shard-linux-amd64` and `shard-init-linux-amd64` on a Linux runner, and `shard-darwin-arm64` and
 `shard-darwin-amd64` on a macOS runner, each with `RELEASE=1`. That builds with `-trimpath` and links
 with `-s -w`, so a release binary has no symbol table, no DWARF and no build paths. A panic still
-prints its stack. The workflow adds the service files from `packaging/`: `shard.service`,
+prints its stack. Both Linux binaries build with cgo off, so they link no libc and run on any
+distribution, and the workflow stops if `file` does not call each one statically linked and
+stripped. The workflow adds the service files from `packaging/`: `shard.service`,
 `shard-serve.service`, `shard.daemon.plist` and `shard.newsyslog.conf`. An install then takes the
 binaries and the units from one tag (`docs/daemon.md`, `docs/mac.md`). It puts all of them, with a
 `SHA256SUMS`, under a draft GitHub release named after the tag. `shard --version` reports the tag.
@@ -69,10 +71,79 @@ dropped. A user downloads the binary for their Mac from the release.
 
 The guest kernel has its own workflow and its own release tag, which `docs/kernel.md` describes.
 
-## The Python SDK
+## The SDKs
 
-`useshards` has its own version, in `sdks/python/src/useshards/_version.py`, and its own tag:
-`useshards-v<version>` on `main`. `release-sdk-python.yml` checks that the commit is on `main` and
-that the tag names the package version, runs `make sdk-py-check`, builds the wheel and the sdist, and
-installs the wheel into a clean venv. It keeps the wheel and the sdist as the `useshards-dist`
-workflow artifact and uploads nothing to PyPI, because publication needs Pres's approval.
+The TypeScript SDK goes to npm and the Python SDK to PyPI, both as `useshards`. Each has its own
+version. A release goes through one pull request, and an ordinary merge publishes nothing.
+
+### Add a release note
+
+A PR that changes an SDK's source (`src/`, `package.json` or `pyproject.toml`) carries a changeset: a
+short note, and a patch, minor or major bump for each SDK it names. The Changesets root is `sdks/`,
+where the TypeScript SDK is `useshards` and the Python SDK is `useshards-python`:
+
+```
+cd sdks
+npm ci
+npx changeset           # pick the SDKs, the bump, and write the note
+npx changeset --empty   # a change that needs no release
+```
+
+The `sdk changeset` job in `ci.yml` fails a PR that changes an SDK without a changeset that names it.
+It also fails a PR that edits an SDK version, because only the release PR changes one.
+
+### Review the release PR
+
+After a merge to `main` that brings changesets, the `release-pr` job of `sdk-publish.yml` opens or
+updates one PR titled `Release SDKs`, from the branch `changeset-release/main`. It runs
+`changeset version`, which bumps each named SDK and writes its `CHANGELOG.md`. Then
+`sdks/release/release.py sync` writes the Python version into `_version.py` in PEP 440, and the
+TypeScript version into its lockfile and `src/version.ts`. The PR body names each SDK, its old and
+new version, its notes and its registry.
+
+The job uses `GITHUB_TOKEN`, and a push by that token starts no workflow. So the job dispatches
+`ci.yml` and `sdk-release.yml` on the branch, and their runs show on the PR's head commit. Check the
+versions and the notes, wait for green, and merge.
+
+### Publication
+
+The merge runs `sdk-publish.yml` on `main`, one run at a time. `release.py plan` takes the top
+heading of each SDK's `CHANGELOG.md` as its release record, fails when it differs from the version,
+and skips an SDK whose GitHub release and registry files are both there already. For each SDK left,
+`sdk-release.yml` builds the commit that set its version. It runs the shared gate (`make sdk-gate`
+against a fresh runc daemon behind a TLS front), the SDK's check, the pack or build, and a clean
+install and import. When the version already has a published GitHub release, the build ships that
+release's files in place of its own, so the registries get the same bytes. The npm job (environment
+`npm`) and the PyPI job (environment `pypi`) then publish those exact files by trusted publishing. Each job gets an OIDC token, and the repository
+holds no registry token.
+
+Last, the run tags `sdk-typescript-v<version>` or `sdk-python-v<version>`, the latter in PEP 440,
+and creates its GitHub release. `docs/mac.md` downloads `shard` from the latest release, so an SDK
+release is never marked latest.
+
+A prerelease such as `0.2.0-alpha.0` ships to npm under the dist-tag `alpha`, and to PyPI as
+`0.2.0a0`. A stable version goes to npm under `latest`. To release prereleases, run
+`npx changeset pre enter alpha` in `sdks/` in a PR. `npx changeset pre exit` ends them.
+
+### Recover from a partial failure
+
+Every publish step checks before it writes. A version already on its registry with the same files
+is skipped, and one with different files fails the run. An existing tag or release is reused. To
+retry, re-run the failed jobs, or run `gh workflow run sdk-publish.yml --ref main`. If npm took a
+version and PyPI failed, the retry publishes only to PyPI. A failure on different files means the
+registry holds another build of that version. A registry never replaces a version, so release a new
+one with a changeset.
+
+The first release, 0.1.0, ships the files of the GitHub releases `sdk-typescript-v0.1.0` and
+`sdk-python-v0.1.0`, and keeps those tags and releases as they are.
+
+### Setup
+
+This is in place:
+
+- the environments `npm` and `pypi`, each limited to the branch `main`;
+- Settings > Actions > General > "Allow GitHub Actions to create and approve pull requests";
+- the trusted publishers: npm and PyPI `useshards` trust `presmihaylov/shard`, the workflow
+  `sdk-publish.yml`, and the environment `npm` or `pypi`.
+
+If the `release-pr` job fails because Actions may not create a pull request, it names that setting.

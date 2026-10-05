@@ -388,24 +388,19 @@ func parsePorts(text string) ([]int, error) {
 	}
 
 	var ports []int
+	named := 0
 	for part := range strings.SplitSeq(text, ",") {
-		first, last, isRange := strings.Cut(part, "-")
-
-		from, err := strconv.Atoi(first)
+		from, to, err := portRange(part)
 		if err != nil {
-			return nil, fmt.Errorf("the port %q is not a number", first)
-		}
-		to := from
-		if isRange {
-			if to, err = strconv.Atoi(last); err != nil {
-				return nil, fmt.Errorf("the port %q is not a number", last)
-			}
-		}
-		if to < from {
-			return nil, fmt.Errorf("the port range %q runs backwards", part)
+			return nil, err
 		}
 		if to-from+1 > maxPorts {
 			return nil, fmt.Errorf("the port range %q is wider than %d ports", part, maxPorts)
+		}
+		// Counted as typed and before the append, so a body of repeated ranges never expands past the bound (SHARD-627).
+		named += to - from + 1
+		if named > maxPorts {
+			return nil, fmt.Errorf("the rule names more than %d ports, and a port named twice counts twice", maxPorts)
 		}
 
 		for port := from; port <= to; port++ {
@@ -416,6 +411,40 @@ func parsePorts(text string) ([]int, error) {
 	slices.Sort(ports)
 
 	return slices.Compact(ports), nil
+}
+
+// portRange bounds both ends before any arithmetic, so a huge end can neither wrap the width nor the loop (SHARD-627).
+func portRange(part string) (int, int, error) {
+	first, last, isRange := strings.Cut(part, "-")
+	if !isRange {
+		last = first
+	}
+
+	from, err := parsePort(first)
+	if err != nil {
+		return 0, 0, err
+	}
+	to, err := parsePort(last)
+	if err != nil {
+		return 0, 0, err
+	}
+	if to < from {
+		return 0, 0, fmt.Errorf("the port range %q runs backwards", part)
+	}
+
+	return from, to, nil
+}
+
+func parsePort(text string) (int, error) {
+	n, err := strconv.Atoi(text)
+	if err != nil {
+		return 0, fmt.Errorf("the port %q is not a number", text)
+	}
+	if n < 1 || n > 65535 {
+		return 0, fmt.Errorf("the port %d is not between 1 and 65535", n)
+	}
+
+	return n, nil
 }
 
 // validHostValue checks the name a rule carries; only a domain rule may carry a wildcard.

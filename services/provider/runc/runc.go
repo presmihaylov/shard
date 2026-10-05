@@ -118,9 +118,8 @@ func (p *Provider) Create(ctx context.Context, spec models.SandboxSpec) error {
 // create runs runc create over the log the container inherits. runc applies the memory bound
 // from config.json; boundMemory then sets the two OOM knobs runc leaves alone.
 func (p *Provider) create(ctx context.Context, spec models.SandboxSpec, b bundle.Bundle) (err error) {
-	// A create over a state directory that already ran must not let the previous run answer a wait,
-	// a start or a restart count, so the supervisor's files go before anything else runs.
-	for _, stale := range []string{b.ExitFile, b.ReadyFile, b.RestartFile} {
+	// A fresh create must not inherit the old exit, readiness, restart count, or spec-change mark.
+	for _, stale := range []string{b.ExitFile, b.ReadyFile, b.RestartFile, b.ChangedFile} {
 		if err := os.Remove(stale); err != nil && !errors.Is(err, fs.ErrNotExist) {
 			return fmt.Errorf("clear %s: %w", stale, err)
 		}
@@ -206,7 +205,13 @@ func (p *Provider) Start(ctx context.Context, id string) error {
 		return err
 	}
 
-	if !status.Alive() {
+	changed, err := b.Changed()
+	if err != nil {
+		return err
+	}
+
+	// A created container holds the config.json of its create, so a grant since then reaches the guest only through a new one.
+	if !status.Alive() || (status.State == models.StateCreated && changed) {
 		if err := p.recreate(ctx, id, dir, b, status.Exists); err != nil {
 			return err
 		}
@@ -219,8 +224,7 @@ func (p *Provider) Start(ctx context.Context, id string) error {
 	return p.awaitStarted(ctx, id, b)
 }
 
-// recreate is how a stopped sandbox runs again: the old container goes and a new one comes up over
-// the same bundle, whose writable layer and config.json the stop kept.
+// recreate gives a stopped or changed created sandbox a fresh runtime over its preserved bundle.
 func (p *Provider) recreate(ctx context.Context, id, dir string, b bundle.Bundle, held bool) error {
 	if err := orphaned(b, id, held); err != nil {
 		return err
@@ -521,7 +525,7 @@ func (p *Provider) Exec(ctx context.Context, id string, spec models.ExecSpec) (m
 	return models.ExitStatus{Code: code}, nil
 }
 
-// Signal sends one signal to a running exec by the host pid the driver reported for it.
+// Signal passes back the handle the driver reported for this sandbox's exec.
 func (p *Provider) Signal(ctx context.Context, id string, pid int, signal string) error {
 	if err := p.runner.Signal(ctx, id, pid, signal); err != nil {
 		return fmt.Errorf("sandbox %s: %w", id, err)
@@ -562,6 +566,9 @@ func notStarted(id string, err error) error {
 func execOptions(b bundle.Bundle, spec models.ExecSpec) (runccli.ExecOptions, error) {
 	runtime, err := b.Runtime()
 	if err != nil {
+		return runccli.ExecOptions{}, err
+	}
+	if err := bundle.CheckUserDatabases(b.RootFS); err != nil {
 		return runccli.ExecOptions{}, err
 	}
 
@@ -661,15 +668,24 @@ func (p *Provider) ExitStatus(_ context.Context, id string) (*models.ExitStatus,
 func (p *Provider) Status(ctx context.Context, id string) (models.Status, error) {
 	state, err := p.runner.State(ctx, id)
 	if errors.Is(err, runccli.ErrNotFound) {
-		return models.Status{OOMKilled: p.oomKilled(id)}, nil
+		oom, err := p.oomKilled(id)
+		if err != nil {
+			return models.Status{}, err
+		}
+
+		return models.Status{OOMKilled: oom}, nil
 	}
 	if err != nil {
 		return models.Status{}, err
 	}
 
 	status := models.Status{Exists: true, State: stateOf(state.Status), PID: state.PID}
+	status.Unstarted = status.State == models.StateCreated
 	if !status.Alive() {
-		status.OOMKilled = p.oomKilled(id)
+		status.OOMKilled, err = p.oomKilled(id)
+		if err != nil {
+			return models.Status{}, err
+		}
 	}
 
 	return status, nil
@@ -688,14 +704,18 @@ func (p *Provider) Restarts(_ context.Context, id string) (models.RestartCount, 
 // oomKilled asks the cgroup why a sandbox is gone. The OOM killer takes a guest process without
 // running any of runc's cleanup, so the cgroup and its counters outlive the sandbox and are the only
 // record. A stop leaves the cgroup too, count and all, so a record that says stopped outranks this answer.
-func (p *Provider) oomKilled(id string) bool {
+func (p *Provider) oomKilled(id string) (bool, error) {
 	// The local count alone: a nested container that hits its own bound in the guest is not the sandbox's OOM (SHARD-364).
 	events, err := cgroup.LocalMemoryEvents(cgroupDir(p.cgroupRoot, id))
+	// A cgroup that is gone, or that has no memory controller, counted no OOM.
+	if errors.Is(err, cgroup.ErrNotFound) || errors.Is(err, cgroup.ErrNoController) {
+		return false, nil
+	}
 	if err != nil {
-		return false
+		return false, fmt.Errorf("read why sandbox %s ended: %w", id, err)
 	}
 
-	return events.OOM > 0
+	return events.OOM > 0, nil
 }
 
 // cgroupDir is the host side of the path the bundle names.
@@ -753,8 +773,8 @@ func imageOf(b bundle.Bundle, id string) (bundle.Runtime, error) {
 	if rt.RootFS == "" {
 		return bundle.Runtime{}, fmt.Errorf("sandbox %s records no image rootfs, so nothing says what its writable layer stacks over", id)
 	}
-	if _, err := os.Stat(rt.RootFS); err != nil {
-		return bundle.Runtime{}, fmt.Errorf("sandbox %s stacks over an image rootfs that is gone: %w", id, err)
+	if err := bundle.CheckImage(rt.RootFS); err != nil {
+		return bundle.Runtime{}, fmt.Errorf("sandbox %s: %w", id, err)
 	}
 
 	return rt, nil

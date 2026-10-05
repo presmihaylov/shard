@@ -27,6 +27,7 @@ import (
 	"time"
 
 	"github.com/presmihaylov/shard/models"
+	"github.com/presmihaylov/shard/pkg/reaper"
 	"github.com/presmihaylov/shard/services/supervisor"
 )
 
@@ -79,6 +80,9 @@ const (
 var initBinary string
 
 func TestMain(m *testing.M) {
+	if ran, code := reaper.Role(); ran {
+		os.Exit(code)
+	}
 	// The vmm passes its whole environment to the guest, so only the -transport argv says which one this is.
 	if os.Getenv(failingGuestEnv) == "1" && len(os.Args) == 3 && os.Args[1] == "-transport" {
 		if err := failingGuest(strings.TrimPrefix(os.Args[2], "unix:")); err != nil {
@@ -119,7 +123,7 @@ func TestMain(m *testing.M) {
 	os.Exit(runTests(m))
 }
 
-func runTests(m *testing.M) int {
+func runTests(m *testing.M) (exit int) {
 	initBinary = os.Getenv(fakeInitEnv)
 	if initBinary == "" {
 		dir, err := os.MkdirTemp("", "fcinit")
@@ -138,11 +142,43 @@ func runTests(m *testing.M) int {
 			return 1
 		}
 	}
+	run, err := os.MkdirTemp("", "fcrun")
+	if err != nil {
+		fmt.Fprintln(os.Stderr, err)
+
+		return 1
+	}
+	defer func() {
+		if err := os.RemoveAll(run); err != nil {
+			fmt.Fprintln(os.Stderr, "remove the run directory:", err)
+			exit = 1
+		}
+	}()
+	harnessesFile = filepath.Join(run, "harnesses")
+	if err := os.WriteFile(harnessesFile, nil, 0o600); err != nil {
+		fmt.Fprintln(os.Stderr, err)
+
+		return 1
+	}
+	reaped, err := reaper.Start(harnessesFile)
+	if err != nil {
+		fmt.Fprintln(os.Stderr, "start the reaper:", err)
+
+		return 1
+	}
 	// Every vmm the provider starts from here is this binary, and inherits the switch.
 	os.Setenv(fakeVMMEnv, "1")
+	os.Setenv(fakeRunEnv, strconv.Itoa(os.Getpid()))
 	os.Setenv(fakeInitEnv, initBinary)
 
-	return m.Run()
+	code := m.Run()
+	if err := reaped(); err != nil {
+		fmt.Fprintln(os.Stderr, "the reaper:", err)
+
+		return 1
+	}
+
+	return code
 }
 
 // jailerArgs is what the fake jailer was run with.
@@ -187,8 +223,21 @@ func fakeJailer() error {
 	if err := vmm.Start(); err != nil {
 		return err
 	}
-	if err := note(filepath.Join(filepath.Dir(*base), sessionsFile), strconv.Itoa(vmm.Process.Pid)); err != nil {
+	session, err := reaper.Session(vmm.Process.Pid)
+	if err != nil {
 		return err
+	}
+	if held := os.Getenv(heldJailerEnv); held != "" {
+		if err := holdUntilOrphaned(held, session); err != nil {
+			return err
+		}
+	}
+	if err := reaper.Note(filepath.Join(filepath.Dir(*base), sessionsFile), session.String()); err != nil {
+		return err
+	}
+	// A test binary that died before the note may have had its reaper scan without it, so this jailer ends the session itself.
+	if orphaned() {
+		return reaper.End(func() (reaper.Marks, error) { return session, nil })
 	}
 	pidFile, err := os.OpenFile(filepath.Join(chroot, filepath.Base(*execFile)+".pid"), os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0o600)
 	if err != nil {
@@ -205,73 +254,27 @@ func fakeJailer() error {
 func endSessions(t *testing.T, path string) {
 	t.Helper()
 
-	blob, err := os.ReadFile(path)
-	if err != nil {
-		t.Errorf("read the vmm sessions: %v", err)
-
-		return
-	}
-	sids := map[int]bool{}
-	for field := range strings.FieldsSeq(string(blob)) {
-		sid, err := strconv.Atoi(field)
-		if err != nil {
-			t.Errorf("read the vmm sessions: %v", err)
-
-			return
-		}
-		sids[sid] = true
-	}
-	for deadline := time.Now().Add(stopGrace); ; time.Sleep(20 * time.Millisecond) {
-		left, err := inSessions(sids)
-		if err != nil {
-			t.Errorf("list the vmm sessions: %v", err)
-
-			return
-		}
-		if len(left) == 0 {
-			return
-		}
-		if time.Now().After(deadline) {
-			t.Errorf("processes %v are left in the vmm sessions %s after SIGKILL", left, stopGrace)
-
-			return
-		}
-		if err := killAll(left); err != nil {
-			t.Errorf("end the vmm sessions: %v", err)
-
-			return
-		}
+	if err := reaper.End(func() (reaper.Marks, error) { return reaper.Read(path) }); err != nil {
+		t.Error(err)
 	}
 }
 
-// killAll SIGKILLs every pid; one that has exited since the scan is no error.
-func killAll(pids []int) error {
-	for _, pid := range pids {
-		if err := syscall.Kill(pid, syscall.SIGKILL); err != nil && !errors.Is(err, syscall.ESRCH) {
-			return fmt.Errorf("kill %d: %w", pid, err)
-		}
-	}
-
-	return nil
-}
-
-// requireProcessTable skips t only where this host refuses to read a live child in the process table, as a seatbelt sandbox refuses ps; any other failure to read it fails t.
+// requireProcessTable skips t only where this host refuses to list the session of a live child or read its state, as a seatbelt sandbox refuses ps; any other failure fails t.
 func requireProcessTable(t *testing.T) {
 	t.Helper()
-	refusal, err := tableRefusal()
+	reaper.Require(t)
+	refusal, err := stateRefusal()
 	if err != nil {
-		t.Fatalf("read a live child in the process table: %v", err)
+		t.Fatalf("read the state of a live child: %v", err)
 	}
 	if refusal != "" {
 		t.Skip(refusal)
 	}
 }
 
-// tableRefusal is why this host refuses to read a live child in the process table, or "" where it reads one; a run asks once, as every harness would pay a full scan.
-var tableRefusal = sync.OnceValues(func() (string, error) {
+// stateRefusal is why this host refuses to read the state of a live child the way freezeVMM does, or "" where it reads one; a run asks once.
+var stateRefusal = sync.OnceValues(func() (string, error) {
 	child := exec.Command("sleep", "60")
-	// A session of its own, so the child alone is in it.
-	child.SysProcAttr = &syscall.SysProcAttr{Setsid: true}
 	if err := child.Start(); err != nil {
 		return "", err
 	}
@@ -287,18 +290,7 @@ var tableRefusal = sync.OnceValues(func() (string, error) {
 	return refusal, err
 })
 
-// readLiveChild lists the session of a live child and reads its state the way endSessions and freezeVMM do, and names a refusal of either.
 func readLiveChild(pid int) (string, error) {
-	left, err := inSessions(map[int]bool{pid: true})
-	if errors.Is(err, os.ErrPermission) {
-		return fmt.Sprintf("this host refuses to list the session of a live child, so no test can end what its vmm sessions leave: %v", err), nil
-	}
-	if err != nil {
-		return "", fmt.Errorf("list the session of live child %d: %w", pid, err)
-	}
-	if !slices.Equal(left, []int{pid}) {
-		return "", fmt.Errorf("the session of live child %d lists %v", pid, left)
-	}
 	done, err := stopped(pid)
 	if errors.Is(err, os.ErrPermission) {
 		return fmt.Sprintf("this host refuses to read the state of a live child, so no test can see a vmm stop: %v", err), nil
@@ -864,6 +856,12 @@ func (f *fake) let(conn net.Conn) {
 // floodEveryFile in the state directory floods every control stream past its state line, for as long as it stays there.
 const floodEveryFile = "flood-every-control"
 
+// floodEventsFile in the state directory floods every control stream past its state line with valid events, faster than the host lands them.
+const floodEventsFile = "flood-events-control"
+
+// floodEvent is what a floodEventsFile stream repeats: a restarts count, which the host lands on disk one at a time.
+var floodEvent = []byte(`{"kind":"restarts","restarts":{"count":1}}` + "\n")
+
 // dialsFile in the state directory, once a test creates it, takes one line per control stream the host dials.
 const dialsFile = "control-dials"
 
@@ -1056,26 +1054,33 @@ func (f *fake) answers(port int, guest net.Conn) (io.Reader, error) {
 	if err := note(filepath.Join(f.dir, dialsFile), "control"); err != nil {
 		return nil, err
 	}
-	_, err := os.Stat(filepath.Join(f.dir, floodEveryFile))
-	if errors.Is(err, fs.ErrNotExist) {
-		return guest, nil
-	}
-	if err != nil {
-		return nil, err
+	for name, event := range map[string][]byte{floodEveryFile: nil, floodEventsFile: floodEvent} {
+		_, err := os.Stat(filepath.Join(f.dir, name))
+		if errors.Is(err, fs.ErrNotExist) {
+			continue
+		}
+		if err != nil {
+			return nil, err
+		}
+
+		return &flooded{guest: guest, event: event}, nil
 	}
 
-	return &flooded{guest: guest}, nil
+	return guest, nil
 }
 
-// flooded passes the guest's state line, then reads as one line that never ends.
+// flooded passes the guest's state line, then reads as the flood.
 type flooded struct {
 	guest  io.Reader
 	passed bool
+	event  []byte
+	// at is how far into event the last read stopped.
+	at int
 }
 
 func (f *flooded) Read(p []byte) (int, error) {
 	if f.passed {
-		return copy(p, bytes.Repeat([]byte{'x'}, len(p))), nil
+		return f.flood(p), nil
 	}
 	n, err := f.guest.Read(p)
 	if end := bytes.IndexByte(p[:n], '\n'); end >= 0 {
@@ -1085,6 +1090,20 @@ func (f *flooded) Read(p []byte) (int, error) {
 	}
 
 	return n, err
+}
+
+// flood fills p with one line that never ends, or with event over and over when it is set.
+func (f *flooded) flood(p []byte) int {
+	if f.event == nil {
+		return copy(p, bytes.Repeat([]byte{'x'}, len(p)))
+	}
+	for n := 0; n < len(p); {
+		copied := copy(p[n:], f.event[f.at:])
+		n += copied
+		f.at = (f.at + copied) % len(f.event)
+	}
+
+	return len(p)
 }
 
 // closeWrite passes a half-close through, so a guest that reads to EOF sees the host's, and the host the guest's.

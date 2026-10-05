@@ -2,12 +2,14 @@ package api_test
 
 import (
 	"bufio"
+	"context"
 	"encoding/json"
 	"errors"
 	"io"
 	"net/http"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/coder/websocket"
 
@@ -143,6 +145,68 @@ func TestEgressLogFollowOverAWebSocketEndsWhenTheSandboxStops(t *testing.T) {
 	}
 	if closeErr.Code != websocket.StatusNormalClosure || !strings.Contains(closeErr.Reason, "stopped") {
 		t.Errorf("the follow ended with %d %q, want 1000 saying the sandbox stopped", closeErr.Code, closeErr.Reason)
+	}
+}
+
+func TestEgressLogFollowWithoutTheHandshakeEndsWhenTheSandboxFails(t *testing.T) {
+	s := seed(t)
+	s.egress.holds = true
+	ctx, cancel := context.WithTimeout(t.Context(), 5*time.Second)
+	defer cancel()
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, s.server.URL+"/v0/sandboxes/"+s.running.ID+"/egress-log?follow=true", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	resp, err := s.server.Client().Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		if err := resp.Body.Close(); err != nil {
+			t.Error(err)
+		}
+	})
+	body := bufio.NewReader(resp.Body)
+	if _, err := body.ReadString('\n'); err != nil {
+		t.Fatalf("read the first record from the running sandbox: %v", err)
+	}
+
+	failFollowSandbox(t, s)
+
+	rest, err := io.ReadAll(body)
+	if err != nil || len(rest) != 0 {
+		t.Fatalf("the failed sandbox's follow ended with %q, %v, want a clean EOF", rest, err)
+	}
+}
+
+func TestEgressLogFollowOverAWebSocketEndsWhenTheSandboxFails(t *testing.T) {
+	s := seed(t)
+	s.egress.holds = true
+	ctx, cancel := context.WithTimeout(t.Context(), 5*time.Second)
+	defer cancel()
+	conn := open(t, s, "/v0/sandboxes/"+s.running.ID+"/egress-log?follow=true")
+	if _, _, err := conn.Read(ctx); err != nil {
+		t.Fatalf("read the first record from the running sandbox: %v", err)
+	}
+
+	failFollowSandbox(t, s)
+
+	_, _, err := conn.Read(ctx)
+	var closeErr websocket.CloseError
+	if !errors.As(err, &closeErr) || closeErr.Code != websocket.StatusNormalClosure || closeErr.Reason != "the sandbox failed" {
+		t.Fatalf("the failed sandbox's follow ended with %v, want 1000 with the public reason", err)
+	}
+}
+
+func failFollowSandbox(t *testing.T, s seeded) {
+	t.Helper()
+	if err := s.repo.Update(s.running.ID, func(sb *models.Sandbox) error {
+		sb.State = models.StateFailed
+		sb.FailedReason = "checkpoint /synthetic/private/state failed"
+
+		return nil
+	}); err != nil {
+		t.Fatal(err)
 	}
 }
 

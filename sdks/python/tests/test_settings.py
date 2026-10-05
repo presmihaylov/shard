@@ -58,6 +58,17 @@ def test_remote_refused(remote: str, reason: str) -> None:
         resolve(remote, "k", None, env={})
 
 
+# A broken bracketed host raised a bare ValueError that quoted part of the value, or became port 80 (SHARD-631).
+@pytest.mark.parametrize("remote", ["http://[::1", "https://[::1", "http://[", "http://[zz]:80", "http://[::1]x"])
+@pytest.mark.parametrize("source", ["remote", "SHARD_REMOTE"])
+def test_a_broken_host_is_refused(remote: str, source: str) -> None:
+    arg, env = (remote, {}) if source == "remote" else (None, {"SHARD_REMOTE": remote})
+    with pytest.raises(ConfigurationError, match=f"^{source} must be an http or https url with a host") as caught:
+        resolve(arg, "k", None, env=env)
+    assert remote not in str(caught.value)
+    assert "zz" not in str(caught.value)
+
+
 def test_no_remote() -> None:
     with pytest.raises(ConfigurationError, match="no remote"):
         resolve(None, "k", None, env={})
@@ -156,6 +167,8 @@ def test_stream_failure_takes_the_status_of_its_code() -> None:
     assert err.status == 409
     assert isinstance(failure_error("no_such_code", "m"), ServerError)
     assert failure_error("timeout", "the provider did not answer").status == 504
+    limit = failure_error("exec_limit", "sandbox web runs 32 execs")
+    assert (type(limit), limit.status) == (APIError, 429)
 
 
 def test_capture_keeps_the_newest_bytes_across_streams() -> None:

@@ -129,6 +129,9 @@ const (
 	adoptBound = 4 * time.Second
 	// startGrace bounds the wait for the supervisor to answer on vsock once the vmm is up.
 	startGrace = 30 * time.Second
+	// snapshotFloor and snapshotRate bound one snapshot create: a Full writes the guest's whole memory, which any disk that writes snapshotRate MiB a second finishes (SHARD-559).
+	snapshotFloor = 30 * time.Second
+	snapshotRate  = 8
 )
 
 // redialGrace bounds the control stream a snapshot's run dials again, past which the source is reported frozen; a test shortens it.
@@ -194,8 +197,8 @@ type Provider struct {
 	// chown and ownTap give a jail's files and the tap to the vmm's uid; a test without root swaps them.
 	chown  func(path string, uid, gid int) error
 	ownTap func(namespace, name string, uid, gid int) error
-	// lostRuns keeps the loss of a forgotten machine, so every later verb still answers with it until rm (SHARD-290).
-	lostRuns map[string]error
+	// lostRuns keeps the loss of a forgotten machine, so every later verb answers with it until a start or rm (SHARD-290, SHARD-578).
+	lostRuns map[string]lostRun
 }
 
 func New(cfg Config) (*Provider, error) {
@@ -233,7 +236,7 @@ func New(cfg Config) (*Provider, error) {
 
 	return &Provider{
 		cfg: cfg, exec: exec, kernel: kernel, initrd: initrd, cgroupRoot: cgroup.Root,
-		machines: map[string]*machine{}, spawning: map[string]bool{}, lostRuns: map[string]error{},
+		machines: map[string]*machine{}, spawning: map[string]bool{}, lostRuns: map[string]lostRun{},
 		unadopted: map[string]*machine{}, adopting: map[string]chan struct{}{},
 		chown: os.Chown, ownTap: netns.ChownTapIn,
 	}, nil
@@ -275,8 +278,10 @@ func (p *Provider) Close() error {
 	p.mu.Lock()
 	held := p.machines
 	unadopted := p.unadopted
+	lostRuns := p.lostRuns
 	p.machines = map[string]*machine{}
 	p.unadopted = map[string]*machine{}
+	p.lostRuns = map[string]lostRun{}
 	p.mu.Unlock()
 
 	var errs []error
@@ -285,6 +290,11 @@ func (p *Provider) Close() error {
 			if err := m.close(); err != nil {
 				errs = append(errs, fmt.Errorf("sandbox %s: %w", m.id, err))
 			}
+		}
+	}
+	for id, run := range lostRuns {
+		if err := run.pin.Close(); err != nil {
+			errs = append(errs, fmt.Errorf("sandbox %s: let the pin of its lost vmm go: %w", id, err))
 		}
 	}
 

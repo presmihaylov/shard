@@ -55,6 +55,9 @@ func (p *Provider) fill(j fcapi.Jail, dir string, r record, snap string) error {
 		// The memory holds the kernel and the initrd, so a restore takes the checkpoint's two files in their place.
 		shared = [][2]string{{jailBase, r.BaseDisk}, {jailState, filepath.Join(snap, checkpointState)}, {jailMemory, filepath.Join(snap, memoryFile)}}
 	}
+	if err := bundle.CheckImage(r.BaseDisk); err != nil {
+		return fmt.Errorf("sandbox %s: %w", j.ID, err)
+	}
 	for _, file := range shared {
 		if err := bundle.Reflink(file[1], j.Host(file[0])); err != nil {
 			return fmt.Errorf("put %s in the jail: %w", file[0], err)

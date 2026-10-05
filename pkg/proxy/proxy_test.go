@@ -334,17 +334,34 @@ func TestProxyTerminatesTLSAndInsistsOnOneName(t *testing.T) {
 	}
 }
 
+// SHARD-629: the director's error named the host's nameserver, so the guest gets a fixed body and the log keeps the cause.
 func TestProxyAnswers502WhenTheDirectorCannotJudge(t *testing.T) {
-	h := newHarness(t, http.HandlerFunc(echoHandler))
-	h.director.fail = errors.New("no sandbox holds the address")
+	refused := "no nameserver answered: dial udp 10.9.9.9:53: connect: connection refused"
+	for name, tc := range map[string]struct {
+		fail error
+		want string
+	}{
+		"no sandbox":    {errors.New("read /var/lib/shard/sandboxes: permission denied"), `{"error":"the proxy could not judge the request","host":"api.test"}`},
+		"no such host":  {fmt.Errorf("resolve api.test: %w", &net.DNSError{Err: "no such host", Name: "api.test", Server: "10.9.9.9:53", IsNotFound: true}), `{"error":"the proxy could not judge the request","host":"api.test","reason":"no such host"}`},
+		"no nameserver": {fmt.Errorf("resolve api.test: %w", &net.DNSError{Err: refused, Name: "api.test", Server: "10.9.9.9:53"}), `{"error":"the proxy could not judge the request","host":"api.test","reason":"the lookup failed"}`},
+	} {
+		t.Run(name, func(t *testing.T) {
+			h := newHarness(t, http.HandlerFunc(echoHandler))
+			h.director.fail = tc.fail
 
-	resp, err := h.client().Get("http://api.test/")
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer resp.Body.Close()
-	if resp.StatusCode != http.StatusBadGateway {
-		t.Errorf("a director error got %d, want 502", resp.StatusCode)
+			resp, err := h.client().Get("http://api.test/")
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer resp.Body.Close()
+			body, err := io.ReadAll(resp.Body)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if resp.StatusCode != http.StatusBadGateway || string(body) != tc.want+"\n" {
+				t.Errorf("a director error got %d %s, want 502 %s", resp.StatusCode, body, tc.want)
+			}
+		})
 	}
 }
 
@@ -583,6 +600,68 @@ func TestProxyNeverEchoesTheRewrittenRequestInA502(t *testing.T) {
 			}
 		})
 	}
+}
+
+// An upstream's headers past maxResponseHeaderBytes get the fixed 502, so no connection holds the transport's 10 MiB default.
+func TestProxyBoundsTheHeadersOfAnUpstream(t *testing.T) {
+	for name, tc := range map[string]struct {
+		size int
+		want int
+	}{
+		"half the bound": {maxResponseHeaderBytes / 2, http.StatusOK},
+		"the bound":      {maxResponseHeaderBytes, http.StatusBadGateway},
+	} {
+		t.Run(name, func(t *testing.T) {
+			h := newHarness(t, http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+				w.Header().Set("X-Large", strings.Repeat("a", tc.size))
+			}))
+
+			if got := getStatus(t, h); got != tc.want {
+				t.Errorf("a %d byte header got %d, want %d", tc.size, got, tc.want)
+			}
+		})
+	}
+}
+
+func TestProxyGivesUpOnAnUpstreamThatSendsNoHeaders(t *testing.T) {
+	previous := responseHeaderTimeout
+	responseHeaderTimeout = 100 * time.Millisecond
+	t.Cleanup(func() { responseHeaderTimeout = previous })
+
+	h := newHarness(t, http.HandlerFunc(func(_ http.ResponseWriter, r *http.Request) {
+		select {
+		case <-r.Context().Done():
+		case <-time.After(5 * time.Second):
+		}
+	}))
+
+	start := time.Now()
+	if got := getStatus(t, h); got != http.StatusBadGateway {
+		t.Errorf("an upstream that sent no headers got %d, want 502", got)
+	}
+	if waited := time.Since(start); waited > 2*time.Second {
+		t.Errorf("the proxy waited %s on the upstream's headers", waited)
+	}
+}
+
+// getStatus sends one GET through the proxy and returns the status the guest got.
+func getStatus(t *testing.T, h *harness) int {
+	t.Helper()
+
+	req, err := http.NewRequestWithContext(t.Context(), http.MethodGet, "http://api.test/", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	resp, err := h.client().Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+	if _, err := io.Copy(io.Discard, resp.Body); err != nil {
+		t.Fatal(err)
+	}
+
+	return resp.StatusCode
 }
 
 // A held body takes the value up to BodyCap, whether it names its length or not; past the cap it goes as it was.

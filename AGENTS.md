@@ -74,6 +74,7 @@ pkg/reflink/               one clone by reference, and whether a directory's fil
 pkg/xfs/                   mkfs.xfs, the loop mount and the fstab line of one image
 pkg/vz/                    the Virtualization.framework driver: the shim protocol, its client and its server
 pkg/vzshim/                the shim binary embedded in the daemon, installed and ad-hoc signed on first use
+pkg/term/                  the terminal prompts and the live checklist shard setup draws
 
 services/sandbox/          the orchestrator: the lifecycle verbs the daemon serves
 services/image/            pull, unpack, cache policy
@@ -87,6 +88,7 @@ services/daemon/           shard daemon: the wiring of every layer, and the back
 services/api/              the REST handlers the daemon serves over its unix socket
 services/client/           the typed client of that API, which the thin CLI verbs call
 services/serve/            the TCP front: a bearer token, and the bytes onto that socket
+services/setup/            shard setup: inspect this host, install a provider and the daemon, or save a remote
 services/provider/gvisor/       implements models.Provider on gVisor
 services/provider/sysbox/       implements models.Provider on Sysbox
 services/provider/runc/         implements models.Provider on bare runc
@@ -111,9 +113,10 @@ website/                   useshards.com: Astro + Starlight, landing at /, docs 
   a driver and it belongs in `services/`. `depguard` enforces this in CI.
 - **Dependencies point one way: `cli` to `services` to `pkg`.** `models` sits
   under all of them.
-- **`cli/` imports `services/client`, `pkg/pty`, `pkg/vzshim`, `models`, the request
-  types in `services/sandbox`, and `services/daemon` and `services/serve` for the
-  two verbs that are a process rather than a client. Nothing else.** A verb holds no
+- **`cli/` imports `services/client`, `pkg/pty`, `pkg/term`, `pkg/vzshim`, `models`, the
+  request types in `services/sandbox`, and `services/daemon`, `services/serve` and
+  `services/setup` for the three verbs that are a process rather than a client.
+  Nothing else.** A verb holds no
   store and no provider: it asks the socket.
   `depguard` enforces the allow list in CI.
 - **`models/` is one package with several files, and it is a leaf.** It imports

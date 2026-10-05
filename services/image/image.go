@@ -173,6 +173,19 @@ func (s *Service) pullLocked(ctx context.Context, ref string) (Image, error) {
 		return Image{}, err
 	}
 
+	// A held tag is never resolved again, so the format this provider lacks comes from its layers, and a failed build leaves it held.
+	held, err := s.store.Get(ref)
+	if err == nil {
+		if err := s.unpack(ctx, held); err != nil {
+			return Image{}, err
+		}
+
+		return s.finish(progress, held)
+	}
+	if !errors.Is(err, registry.ErrNotCached) {
+		return Image{}, err
+	}
+
 	pulled, err := s.store.Pull(ctx, ref, pullReport{p: progress})
 	if err != nil {
 		return Image{}, errors.Join(err, s.reclaim())
@@ -183,7 +196,11 @@ func (s *Service) pullLocked(ctx context.Context, ref string) (Image, error) {
 		return Image{}, errors.Join(err, s.store.Remove(ref))
 	}
 
-	img, err = s.describe(pulled)
+	return s.finish(progress, pulled)
+}
+
+func (s *Service) finish(progress *Progress, unpacked registry.Image) (Image, error) {
+	img, err := s.describe(unpacked)
 	if err != nil {
 		return Image{}, err
 	}
@@ -244,6 +261,16 @@ func (s *Service) reclaim() error {
 // Canonical names the image the way a sandbox record does, so a reference an operator typed compares to it.
 func Canonical(ref string) (string, error) {
 	return registry.Canonical(ref)
+}
+
+// Pinned names ref's repository at digest, the reference a pull restores one image's exact files from.
+func Pinned(ref, digest string) (string, error) {
+	return registry.Pinned(ref, digest)
+}
+
+// DigestOf is the digest a by-digest reference names, empty when the reference names a tag.
+func DigestOf(ref string) (string, bool) {
+	return registry.DigestOf(ref)
 }
 
 // List returns every pulled image, ordered by reference.
@@ -320,16 +347,22 @@ func (s *Service) unindex(ref string, free func() error) error {
 	}
 
 	// The artifacts go first: index.json is the record of what the store holds, so it changes last.
-	for _, digest := range orphaned {
-		for _, path := range []string{s.rootfsDir(digest), s.diskPath(digest), s.erofsPath(digest)} {
-			staged := filepath.Join(filepath.Dir(path), stagingPrefix+"rm-"+filepath.Base(path))
-			if err := os.Rename(path, staged); err != nil && !errors.Is(err, os.ErrNotExist) {
-				return fmt.Errorf("stage %s for removal: %w", path, err)
-			}
-		}
+	moved, err := s.stageRemoval(orphaned)
+	if err != nil {
+		return errors.Join(err, restoreRemoval(moved))
+	}
+	err = s.store.Remove(ref)
+	if err == nil || errors.Is(err, ErrNotReclaimed) {
+		return err
 	}
 
-	return s.store.Remove(ref)
+	// The index rename can succeed before its directory sync fails.
+	_, indexErr := s.store.Orphaned(ref)
+	if errors.Is(indexErr, ErrNotFound) {
+		return err
+	}
+
+	return errors.Join(err, indexErr, restoreRemoval(moved))
 }
 
 func (s *Service) describe(img registry.Image) (Image, error) {

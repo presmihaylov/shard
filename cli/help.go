@@ -26,6 +26,8 @@ type verbHelp struct {
 	summary string
 	// about is the sentence its own help opens with, when it says more than the summary does.
 	about string
+	// intro is the paragraph after about, ahead of the options.
+	intro []string
 	args  []row
 	flags []flagHelp
 	// env is the variables it reads, which only the top level lists.
@@ -33,6 +35,8 @@ type verbHelp struct {
 	notes []note
 	// examples print as written, one call per line, so each pastes whole however wide it is.
 	examples []string
+	// spaced puts a blank line between the examples.
+	spaced bool
 }
 
 // row is one line of a two-column list: an argument, a flag or a verb, and what it is.
@@ -86,7 +90,7 @@ var verbGroups = []struct {
 }{
 	{"Sandboxes", []string{"create", "run", "exec", "list", "logs", "inspect", "stop", "start", "remove", "pause", "resume", "fork", "cp"}},
 	{"Images, snapshots, secrets and network policies", []string{"pull", "image", "snapshot", "secret", "policy"}},
-	{"Host and access", []string{"capabilities", "daemon", "info", "serve", "tokens", "version"}},
+	{"Host and access", []string{"capabilities", "daemon", "info", "serve", "setup", "tokens", "version"}},
 }
 
 // sandboxFlagHelps are the flags create and run share, as sandboxFlags parses them.
@@ -98,7 +102,7 @@ var sandboxFlagHelps = []flagHelp{
 	{"--workdir <dir>", "default directory for commands", ""},
 	{"--user <user>", "default user for commands", ""},
 	{"--memory <size>", "memory limit", ""},
-	{"--vcpus <n>", "CPU count; 0 uses all available host CPUs", ""},
+	{"--vcpus <n>", "CPU count; 0 uses all available host CPUs, up to 32 on Firecracker", ""},
 	{"--disk <size>", "disk limit; 0 uses the default", ""},
 }
 
@@ -126,6 +130,7 @@ var (
 	}}
 	limitsNote     = note{title: "Resource limits", lines: []string{"Use sizes such as 512MiB or 2GiB, and whole numbers for CPUs."}}
 	signingKeyNote = para("The default signing key is created automatically on first use.", "A custom signing key file must already exist.")
+	hostOnlyNote   = para("Runs only on the daemon host and refuses --remote, " + client.RemoteEnv + " and a saved connection.")
 )
 
 const noPolicyLine = "Without a policy, the sandbox can access the internet but not private networks."
@@ -146,7 +151,9 @@ var helps = map[string]verbHelp{
 			{client.CAFileEnv, "custom CA certificate file; HTTPS only"},
 		},
 		notes: []note{
-			para(fmt.Sprintf("Set %s and %s for remote access.", client.RemoteEnv, client.APIKeyEnv), "Without a remote URL, Shard connects to the local daemon."),
+			para(fmt.Sprintf("Set %s and %s for remote access.", client.RemoteEnv, client.APIKeyEnv), "Without a remote URL or a saved connection, Shard connects to the local daemon."),
+			{title: "Get started", lines: []string{"shard setup"}},
+			{title: "For automated setup options", lines: []string{"shard setup --help"}},
 		},
 	},
 	"create": {
@@ -177,7 +184,7 @@ var helps = map[string]verbHelp{
 		flags: append(slices.Clone(sandboxFlagHelps),
 			flagHelp{"--restart <policy>", "restart policy: no, on-failure or always", ""},
 			flagHelp{"--restart-retries <n>", "maximum restarts; default unlimited", ""},
-			flagHelp{"--restart-backoff <duration>", "initial restart delay", seconds(sandbox.DefaultRestartBackoff)},
+			flagHelp{"--restart-backoff <duration>", "initial restart delay, up to " + seconds(models.RestartBackoffCap), seconds(sandbox.DefaultRestartBackoff)},
 			flagHelp{"-d, --detach", "run in the background and print the sandbox ID", ""},
 		),
 		notes: []note{
@@ -324,7 +331,7 @@ var helps = map[string]verbHelp{
 		usage:    []string{"pull IMAGE"},
 		summary:  "download an image",
 		args:     []row{{"IMAGE", "image reference, such as python:3.12"}},
-		notes:    []note{para("Prints the image reference and digest when the download finishes.")},
+		notes:    []note{para("Prints the image reference and digest when the download finishes."), hostOnlyNote},
 		examples: []string{"shard pull python:3.12"},
 	},
 	"image": {
@@ -335,6 +342,7 @@ var helps = map[string]verbHelp{
 		usage:    []string{"image list [OPTIONS]"},
 		summary:  "list downloaded images",
 		flags:    []flagHelp{formatTableHelp},
+		notes:    []note{hostOnlyNote},
 		examples: []string{"shard image list", "shard image list --format json"},
 	},
 	"image remove": {
@@ -342,13 +350,14 @@ var helps = map[string]verbHelp{
 		summary:  "delete a downloaded image",
 		args:     []row{{"IMAGE", "image reference"}},
 		flags:    []flagHelp{{"--force", "delete the image even if a sandbox or snapshot uses it", ""}},
+		notes:    []note{hostOnlyNote},
 		examples: []string{"shard image remove python:3.12"},
 	},
 	"image prune": {
 		usage:    []string{"image prune"},
 		summary:  "delete unused images",
 		about:    "Delete images that no sandbox or snapshot uses.",
-		notes:    []note{para("Images used by stopped sandboxes are also kept.")},
+		notes:    []note{para("Images used by stopped sandboxes are also kept."), hostOnlyNote},
 		examples: []string{"shard image prune"},
 	},
 	"snapshot": {
@@ -465,18 +474,21 @@ var helps = map[string]verbHelp{
 	"policy create": {
 		usage:   []string{"policy create [OPTIONS] NAME"},
 		summary: "store a network policy",
-		args:    []row{{"NAME", "policy name; lower-case letters, digits and hyphens"}},
+		args:    []row{{"NAME", "policy name; up to 64 lower-case letters, digits and hyphens"}},
 		flags: []flagHelp{
 			{"--allow <rule>", "allow matching traffic; repeatable", ""},
 			{"--deny <rule>", "deny matching traffic; repeatable", ""},
 		},
 		notes: []note{
+			para("The name starts with a letter or a digit."),
 			para("Rules apply in the order given. The first match decides access.", "Traffic that no rule allows is denied."),
 			{title: "Rules", lines: []string{
 				"Use a destination with an optional protocol and ports:",
 				"  DESTINATION [tcp|udp[:PORTS]]",
 				"",
 				"Destinations can be domains, IP addresses, network ranges, 'any' or 'dns'.",
+				"'*.example.com' matches the names under example.com, not example.com itself.",
+				"'suffix:example.com' matches example.com and every name under it.",
 				"Ports can be numbers or ranges, separated by commas.",
 				"Domain rules default to TCP ports 80 and 443.",
 				"Domain rules also allow the DNS access needed to resolve their names.",
@@ -525,7 +537,7 @@ var helps = map[string]verbHelp{
 		summary:  "remove a sandbox's policy",
 		about:    "Remove a sandbox's network policy.",
 		args:     []row{sandboxArg},
-		notes:    []note{para("Secret access remains unchanged.", noPolicyLine)},
+		notes:    []note{para("The sandbox must be created or stopped.", "Secret access remains unchanged.", noPolicyLine)},
 		examples: []string{"shard policy detach web"},
 	},
 	"policy logs": {
@@ -545,19 +557,50 @@ var helps = map[string]verbHelp{
 			{"--insecure-registry <host>", "allow HTTP for a registry; repeatable", ""},
 			{"--log <path>", "daemon log file (macOS only)", ""},
 		},
-		notes: []note{para(
-			"The daemon manages local sandboxes and stays active until stopped.",
-			"An existing data directory must use its original provider.",
-			"Use 'shard info' to see the default provider for this host.",
-		)},
+		notes: []note{
+			para(
+				"The daemon manages local sandboxes and stays active until stopped.",
+				"An existing data directory must use its original provider.",
+				"Use 'shard info' to see the default provider for this host.",
+			),
+			hostOnlyNote,
+		},
 		examples: []string{"shard daemon", "shard daemon --provider gvisor"},
 	},
 	"daemon status": {
 		usage:    []string{"daemon status [OPTIONS]"},
 		summary:  "show daemon status",
 		flags:    []flagHelp{formatTableHelp},
-		notes:    []note{para("Shows the version, provider, process details and background tasks.")},
+		notes:    []note{para("Shows the version, provider, process details and background tasks."), hostOnlyNote},
 		examples: []string{"shard daemon status", "shard daemon status --format json"},
+	},
+	"setup": {
+		usage:   []string{"setup [OPTIONS]"},
+		summary: "configure a local sandbox host or a remote connection",
+		about:   "Set up Shard on this machine or connect to a remote server.",
+		intro:   []string{"Run without options to start the interactive wizard.", "For automated setup, specify the choices below."},
+		flags: []flagHelp{
+			{"--local", "Set up this machine to run sandboxes", ""},
+			{"--remote <url>", "Connect to a remote Shard server", ""},
+			{"--provider <name>", "firecracker, gvisor, sysbox, runc or vz", ""},
+			{"--start-at-boot <true|false>", "Configure automatic daemon startup", ""},
+			{"--save", "Save the remote connection", ""},
+			{"-y, --yes", "Apply changes without confirmation", ""},
+		},
+		notes: []note{
+			{title: "Remote authentication", lines: []string{"Set " + client.APIKeyEnv + ". Do not pass the key as a command argument."}},
+			{title: "Exit codes", rows: []row{
+				{"0", "setup finished, or there was nothing to do"},
+				{"1", "a check or a step failed, an option was refused, or the confirmation was declined"},
+				{"130", "Ctrl+C left setup; the steps done so far stay in place"},
+			}},
+		},
+		examples: []string{
+			"shard setup",
+			"shard setup --local --provider gvisor --start-at-boot=true -y",
+			"shard setup --remote https://shard.example.com --save -y",
+		},
+		spaced: true,
 	},
 	"capabilities": {
 		usage:   []string{"capabilities [OPTIONS]"},
@@ -574,10 +617,13 @@ var helps = map[string]verbHelp{
 		usage:   []string{"info [OPTIONS]"},
 		summary: "show available providers and the default for this host",
 		flags:   []flagHelp{formatTableHelp},
-		notes: []note{para(
-			"Works without an active daemon.",
-			"Use 'shard daemon status' to see the provider the current daemon uses.",
-		)},
+		notes: []note{
+			para(
+				"Works without an active daemon.",
+				"Use 'shard daemon status' to see the provider the current daemon uses.",
+			),
+			hostOnlyNote,
+		},
 		examples: []string{"shard info", "shard info --format json"},
 	},
 	"serve": {
@@ -591,13 +637,17 @@ var helps = map[string]verbHelp{
 			para("The local daemon must be active.", "Use 'shard tokens mint' to create API tokens."),
 			para("Use an HTTPS proxy or tunnel for public access.", "HTTP is suitable for local access or an encrypted VPN."),
 			signingKeyNote,
+			hostOnlyNote,
 		},
 		examples: []string{"shard serve"},
 	},
 	"tokens": {
 		usage:   []string{"tokens COMMAND [OPTIONS] [ARGS...]"},
 		summary: "create, list and revoke API tokens",
-		notes:   []note{para("mint, list and revoke run locally.")},
+		notes: []note{para(
+			"mint, list and revoke run only on the daemon host and refuse --remote.",
+			"scopes follows --remote and "+client.RemoteEnv+".",
+		)},
 	},
 	"tokens mint": {
 		usage:   []string{"tokens mint [OPTIONS]"},
@@ -613,6 +663,7 @@ var helps = map[string]verbHelp{
 			para("Run shard tokens scopes to list available scopes."),
 			signingKeyNote,
 			para("The response includes the API token.", "Use its 'token' value as "+client.APIKeyEnv+"."),
+			hostOnlyNote,
 		},
 		examples: []string{
 			"shard tokens mint --name build-agent --duration 24h",
@@ -623,10 +674,13 @@ var helps = map[string]verbHelp{
 		usage:   []string{"tokens list [OPTIONS]"},
 		summary: "list API tokens and their status",
 		flags:   []flagHelp{registryKeyHelp, formatTableHelp},
-		notes: []note{para(
-			"Table columns: ID, NAME, ISSUED, EXPIRES, SCOPES and STATUS.",
-			"Does not create a signing key.",
-		)},
+		notes: []note{
+			para(
+				"Table columns: ID, NAME, ISSUED, EXPIRES, SCOPES and STATUS.",
+				"Does not create a signing key.",
+			),
+			hostOnlyNote,
+		},
 		examples: []string{"shard tokens list", "shard tokens list --format json"},
 	},
 	"tokens revoke": {
@@ -637,13 +691,14 @@ var helps = map[string]verbHelp{
 			{"--name <name>", "revoke all tokens with this name", ""},
 			registryKeyHelp,
 		},
-		notes:    []note{para("Revoked tokens are rejected on subsequent requests.")},
+		notes:    []note{para("Revoked tokens are rejected on subsequent requests."), hostOnlyNote},
 		examples: []string{"shard tokens revoke 0123456789abcdef", "shard tokens revoke --name build-agent"},
 	},
 	"tokens scopes": {
-		usage:   []string{"tokens scopes [OPTIONS]"},
-		summary: "list available token scopes",
-		flags:   []flagHelp{formatTableHelp},
+		usage:    []string{"tokens scopes [OPTIONS]"},
+		summary:  "list available token scopes",
+		flags:    []flagHelp{formatTableHelp},
+		examples: []string{"shard tokens scopes", "shard tokens scopes --format json"},
 	},
 	"version": {
 		usage:    []string{"version [OPTIONS]"},
@@ -668,6 +723,9 @@ func helpText(key string) string {
 		usage = append(usage, lead+line)
 	}
 	sections := []string{strings.Join(usage, "\n"), wrap("", 0, h.opening())}
+	if len(h.intro) > 0 {
+		sections = append(sections, wrapLines("", 0, h.intro))
+	}
 
 	if key == "" {
 		sections = append(sections, topLevel()...)
@@ -699,7 +757,11 @@ func helpText(key string) string {
 		if len(h.examples) == 1 {
 			heading = "Example:\n  "
 		}
-		sections = append(sections, heading+strings.Join(h.examples, "\n  "))
+		between := "\n  "
+		if h.spaced {
+			between = "\n\n  "
+		}
+		sections = append(sections, heading+strings.Join(h.examples, between))
 	}
 
 	return strings.Join(sections, "\n\n")

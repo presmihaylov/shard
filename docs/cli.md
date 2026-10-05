@@ -14,12 +14,15 @@ This is the final shape of every verb, flag and output of `shard`. The SDKs buil
 | 128 + n | `run` of an app that signal n ended |
 | 125 | `run` when shard itself fails, so a script tells it from an app that exits 1 |
 | 130 | `run` that Ctrl+C left; the sandbox stays running |
+| 130 | `setup` that Ctrl+C left; the steps done so far stay in place |
 
 `daemon status` exits 1 when a background task is in backoff, after it prints the whole status.
 
 ## Global options
 
-They go before the verb.
+They go before the verb. One typed after it fails, and the error shows where it goes. A verb's own
+options go before its arguments, as `shard logs -f web`: one typed after an argument is an argument,
+and the error says to put the options first.
 
 | flag | what |
 | --- | --- |
@@ -31,8 +34,8 @@ A remote client reads three environment variables.
 
 | variable | what |
 | --- | --- |
-| `SHARD_REMOTE` | the API server URL; `--remote` overrides it |
-| `SHARD_API_KEY` | the API token, the `token` field of a `shard tokens mint` record |
+| `SHARD_REMOTE` | the API server URL; `--remote` overrides it, and it overrides the connection `shard setup` saved |
+| `SHARD_API_KEY` | the API token, the `token` field of a `shard tokens mint` record; it overrides the saved key |
 | `SHARD_CA_FILE` | a custom CA certificate file, for `https` only; unset, the host's trust store decides |
 
 An `http` remote encrypts nothing, so every command over one prints one warning to stderr and never
@@ -40,8 +43,10 @@ to stdout. Use it only on localhost or through a trusted encrypted network. `SHA
 `http` remote is refused before the client dials.
 
 `pull`, `image list`, `image remove`, `image prune` and `daemon status` run on the daemon host only,
-because `shard serve` refuses their routes. With `--remote` or `SHARD_REMOTE` set, each one fails
-before it dials, and its error names the verb.
+because `shard serve` refuses their routes. `daemon`, `serve`, `info`, `tokens mint`, `tokens list`
+and `tokens revoke` act on the files and the processes of this host, so they run there only too.
+With `--remote`, `SHARD_REMOTE` or a saved connection, each one fails before it dials or touches the
+host, and its error names the verb. `--remote ""` runs one on this host past a saved connection. `tokens scopes` asks the server, so it follows the remote.
 
 ## Names and aliases
 
@@ -50,7 +55,8 @@ A verb has one name. `list` and `remove` take `ls` and `rm` as aliases, at the t
 prints the same help. The help never lists an alias.
 
 `exec` takes `-i` and `--interactive`, `-t` and `--tty`, and `-it` for both. `logs` and
-`policy logs` take `-f` and `--follow`. `run` takes `-d` and `--detach`.
+`policy logs` take `-f` and `--follow`. `run` takes `-d` and `--detach`. `secret set` takes `--dest`
+and `--destination`.
 
 ## Verbs
 
@@ -120,6 +126,7 @@ shard: sandbox <id> is paused: resume it with shard resume <id>
 | `daemon status` | `--format` | table | the daemon's state and its tasks |
 | `info` | `--format` | table | the provider a daemon would pick, and why |
 | `serve` | `--listen --signing-key-file` | - | its log |
+| `setup` | `--local --remote --provider --start-at-boot --save -y/--yes` | - | the wizard, or the checklist of a run with every answer given; see [setup](setup.md) |
 | `tokens mint` | `--name --signing-key-file --duration --scopes --format` | json | the token record |
 | `tokens list` | `--signing-key-file --format` | table | the ledger |
 | `tokens revoke <id>` | `--name --signing-key-file` | - | `revoked token <id>`, or `revoked <n> tokens of <sub>` with `--name` |
@@ -132,10 +139,10 @@ shard: sandbox <id> is paused: resume it with shard resume <id>
 nothing: `list --format table` prints what `list` prints.
 
 **A `--format json` call writes one value or nothing.** JSON is one value, indented by two spaces, and a list verb
-prints an array. A failure to parse, to reach the daemon, or to encode writes nothing to stdout. A
-list with warnings, or a `daemon status` with a task in backoff, still writes the whole value, then
-the warnings or the error on stderr, and exits 1. `version --format json` with no daemon writes
-nothing and fails.
+prints an array. `tokens mint` is the one exception, and writes its value on one line. A failure to
+parse, to reach the daemon, or to encode writes nothing to stdout. A list with warnings, or a
+`daemon status` with a task in backoff, still writes the whole value, then the warnings or the error
+on stderr, and exits 1. `version --format json` with no daemon writes nothing and fails.
 
 ### JSON
 
@@ -170,7 +177,6 @@ absent when empty:
 | field | present when |
 | --- | --- |
 | `name` | the sandbox has a `--name` |
-| `kernel` | a microVM provider booted it; the guest kernel release tag |
 | `exit_status` | the entrypoint exited at least once: `{"code": 0, "signal": 0}` |
 | `stopped_reason` | shard stopped it with no operator, or `shard-init` died on a stop |
 | `failed_reason` | `state` is `failed` |
@@ -184,7 +190,8 @@ absent when empty:
 
 `restart.policy` is `no`, `on-failure` or `always`. `retries` is absent for no cap, `backoff` is the
 first wait in seconds, `count` is the starts again on this run, and `last_at` is absent before the
-first one.
+first one. `gave_up` says an exit asked for a start again after the retries were spent, and `ended`
+says no start again follows the last exit.
 
 `inspect` prints one sandbox record, and adds `egress` when the record names a policy:
 
@@ -268,7 +275,7 @@ rule the policy did not write: `dns` when a name rule opened DNS, `dns-rule` whe
 `info`. `unreadable` is absent when the root holds no record shard cannot read:
 
 ```json
-{"provider": "gvisor", "reason": "no /dev/kvm on this host"}
+{"provider": "gvisor", "reason": "no /dev/kvm"}
 ```
 
 `daemon status` is the body of `GET /v0/daemon`:

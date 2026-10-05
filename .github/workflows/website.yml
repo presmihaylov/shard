@@ -47,3 +47,7 @@ jobs:
       # Every route, the search index and every internal link, against the built dist.
       - name: verify
         run: npm run verify
+
+      # The installer at /install, against a fake GitHub release server, in sh, dash and bash.
+      - name: test
+        run: npm test

@@ -156,3 +156,51 @@ func TestKillAfterCloseSignalsNothing(t *testing.T) {
 		t.Fatalf("the child was hit by a Kill after Close: %v", err)
 	}
 }
+
+func TestExitedTurnsTrueOnceTheHeldProcessEnds(t *testing.T) {
+	requirePin(t)
+	pid, wait := child(t)
+	p := pinned(t, pid)
+	if done, err := p.Exited(); err != nil || done {
+		t.Fatalf("Exited of a live child = %v, %v, want false", done, err)
+	}
+	if err := syscall.Kill(pid, syscall.SIGKILL); err != nil {
+		t.Fatal(err)
+	}
+
+	// A zombie has exited, so the probe says so before the reap.
+	deadline := time.Now().Add(5 * time.Second)
+	for {
+		done, err := p.Exited()
+		if err != nil {
+			t.Fatal(err)
+		}
+		if done {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("Exited still says false 5s after the kill")
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	killedBy(t, wait)
+	if done, err := p.Exited(); err != nil || !done {
+		t.Fatalf("Exited after the reap = %v, %v, want true", done, err)
+	}
+}
+
+func TestExitedAfterCloseIsAnError(t *testing.T) {
+	requirePin(t)
+	pid, _ := child(t)
+	p, err := Open(pid)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := p.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	if _, err := p.Exited(); err == nil {
+		t.Fatal("Exited after Close = nil, want an error")
+	}
+}

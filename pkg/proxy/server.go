@@ -39,6 +39,8 @@ const (
 	MaxSourceConns = 1024
 	// maxHeaderBytes bounds one request's headers, where net/http's default of 1 MiB let a guest write a megabyte of log per request (SHARD-345).
 	maxHeaderBytes = 64 << 10
+	// maxResponseHeaderBytes bounds an upstream's headers as tightly, where the transport's default of 10 MiB times MaxSourceConns could fill the daemon (SHARD-547).
+	maxResponseHeaderBytes = 64 << 10
 	// maxHostLen is the longest DNS name, and so the longest host the proxy judges or prints.
 	maxHostLen = 253
 )
@@ -51,6 +53,8 @@ var (
 	heldReadTimeout = 30 * time.Second
 	// heldBudget bounds what one source holds at once to put secrets in, its bodies and what a value adds, so it cannot fill the daemon (SHARD-348).
 	heldBudget = 32 << 20
+	// responseHeaderTimeout ends an upstream wait that held a goroutine for ever; a model API sends no header until a call that is not streamed ends, and its SDKs wait 10 minutes (SHARD-547).
+	responseHeaderTimeout = 10 * time.Minute
 )
 
 var (
@@ -139,8 +143,10 @@ func New(cfg Config) (*Server, error) {
 				return dialer.DialContext(ctx, "tcp", upstream.String())
 			},
 			// A pooled connection would outlive the decision that opened it, so every request dials afresh.
-			DisableKeepAlives: true,
-			TLSClientConfig:   &tls.Config{MinVersion: tls.VersionTLS12},
+			DisableKeepAlives:      true,
+			TLSClientConfig:        &tls.Config{MinVersion: tls.VersionTLS12},
+			ResponseHeaderTimeout:  responseHeaderTimeout,
+			MaxResponseHeaderBytes: maxResponseHeaderBytes,
 		},
 	}, nil
 }
@@ -250,7 +256,7 @@ func (s *Server) handle(stopped context.Context, w http.ResponseWriter, r *http.
 	decision, err := s.cfg.Director.Decide(ctx, req)
 	if err != nil {
 		s.log.Printf(req.Source, "proxy: %s %s %s:%d: %v", req.Source, clip(r.Method), req.Host, req.Port, err)
-		writeJSON(w, http.StatusBadGateway, map[string]string{"error": err.Error()})
+		writeJSON(w, http.StatusBadGateway, undecided(req, err))
 
 		return
 	}
@@ -495,6 +501,21 @@ func (s *Server) forward(source netip.Addr) *httputil.ReverseProxy {
 func (s *Server) refuse(w http.ResponseWriter, r *http.Request, status int, message string) {
 	s.log.Printf(sourceOf(r.RemoteAddr), "proxy: %s %s: %d %s", r.RemoteAddr, clip(r.Method), status, message)
 	writeJSON(w, status, map[string]string{"error": message})
+}
+
+// undecided is the guest's 502 when no decision came back: the error can name the host's nameserver or a host path (SHARD-629).
+func undecided(req Request, err error) map[string]string {
+	body := map[string]string{"error": "the proxy could not judge the request", "host": req.Host}
+	var lookup *net.DNSError
+	if !errors.As(err, &lookup) {
+		return body
+	}
+	body["reason"] = "the lookup failed"
+	if lookup.IsNotFound {
+		body["reason"] = "no such host"
+	}
+
+	return body
 }
 
 func deny(w http.ResponseWriter, req Request, decision Decision) {

@@ -51,6 +51,9 @@ func (p *Provider) Create(ctx context.Context, spec models.SandboxSpec) error {
 func writeDisk(spec models.SandboxSpec) error {
 	to := filepath.Join(spec.StateDir, diskFile)
 	if spec.Seed == "" {
+		if err := bundle.CheckImage(spec.RootDisk); err != nil {
+			return err
+		}
 		_, err := bundle.CloneRootDisk(spec.RootDisk, to, spec.Resources)
 
 		return err
@@ -114,10 +117,10 @@ func checkMemory(spec models.SandboxSpec) error {
 
 func checkResources(res models.Resources) error {
 	if res.MemoryMiB == 0 {
-		return fmt.Errorf("provider %s takes no --memory 0, a VM's memory is real memory on the host; set --memory %dMiB or more", Name, MinMemoryMiB)
+		return fmt.Errorf("provider %s needs resources.memory_mib, as a VM's memory is real memory on the host; set it to %d MiB or more", Name, MinMemoryMiB)
 	}
 	if res.MemoryMiB < MinMemoryMiB {
-		return fmt.Errorf("%s needs at least %d MiB of memory, got %d", Name, MinMemoryMiB, res.MemoryMiB)
+		return fmt.Errorf("resources.memory_mib is %d MiB, under the %d MiB provider %s needs; set it to %d MiB or more", res.MemoryMiB, MinMemoryMiB, Name, MinMemoryMiB)
 	}
 	if err := bundle.CheckGrowBound(bundle.DiskBound(res)); err != nil {
 		return fmt.Errorf("%s: %w", Name, err)
@@ -536,7 +539,7 @@ func (p *Provider) lost(id string) error {
 		return nil
 	}
 
-	return fmt.Errorf("sandbox %s lost its lifecycle state: %w", id, m.lost)
+	return fmt.Errorf("sandbox %s %w: %w", id, models.ErrLostState, m.lost)
 }
 
 // Status asks the shim, because a record saying running or paused can outlive a restart of the daemon.

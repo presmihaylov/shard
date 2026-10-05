@@ -3,7 +3,7 @@ from __future__ import annotations
 import json
 import os
 
-from useshards import AsyncSandbox, AsyncShard, AuthenticationError, ConfigurationError
+from useshards import AsyncSandbox, AsyncShard, AuthenticationError, ConfigurationError, SandboxList
 
 from .._shared import env, equal, ok, raw
 from .harness import AsyncContext, Check, rejects
@@ -23,20 +23,20 @@ LOCAL_PROBES = [
 WILDCARD_KEY_ENV = "SHARD_SUITE_WILDCARD_KEY"
 
 
-async def listed(remote: str | None = None, api_key: str | None = None) -> list[AsyncSandbox]:
+async def listed(remote: str | None = None, api_key: str | None = None) -> SandboxList[AsyncSandbox]:
     async with AsyncShard(remote=remote, api_key=api_key) as shard:
         return await shard.list()
 
 
 async def env_defaults(ctx: AsyncContext) -> None:
-    ok(isinstance(await listed(), list), "a client from SHARD_REMOTE and SHARD_API_KEY lists sandboxes")
+    ok(isinstance(await listed(), SandboxList), "a client from SHARD_REMOTE and SHARD_API_KEY lists sandboxes")
 
 
 async def explicit_overrides(ctx: AsyncContext) -> None:
     remote = os.environ.get("SHARD_REMOTE")
     api_key = os.environ.get("SHARD_API_KEY")
     with env(SHARD_REMOTE="https://shard.invalid", SHARD_API_KEY="shard_not_a_key"):
-        ok(isinstance(await listed(remote, api_key), list), "explicit settings win over bad env")
+        ok(isinstance(await listed(remote, api_key), SandboxList), "explicit settings win over bad env")
     await rejects(AuthenticationError, lambda: listed(api_key="shard_not_a_key"))
 
 

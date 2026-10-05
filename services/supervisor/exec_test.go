@@ -126,3 +126,51 @@ func unreadDialer(t *testing.T) supervisor.Dialer {
 		return host, nil
 	}
 }
+
+// A cancel the guest never reads leaves the command running there, so the exec says so rather than end as a plain cancel (SHARD-562).
+func TestACancelTheGuestNeverReadsIsReported(t *testing.T) {
+	dial := guestDialer(t, func(guest net.Conn) error {
+		return supervisor.WriteJSONFrame(guest, supervisor.StreamStarted, supervisor.StartedFrame{PID: 42})
+	})
+
+	ctx, cancel := context.WithCancel(t.Context())
+	defer cancel()
+	began := time.Now()
+	_, err := supervisor.Exec(ctx, dial, "sb", supervisor.ExecHeader{Argv: []string{"sleep"}}, models.ExecSpec{Report: func(int) { cancel() }})
+	if !errors.Is(err, context.Canceled) || !errors.Is(err, os.ErrDeadlineExceeded) || !strings.Contains(err.Error(), "the command may run on") {
+		t.Fatalf("exec gave %v, want the cancel's own failure beside the context's", err)
+	}
+	if took := time.Since(began); took > 5*time.Second {
+		t.Errorf("exec took %s to give up a cancel bounded by a second", took)
+	}
+}
+
+// A command whose input the host could not read may still exit 0, so the exec answers with the read that cut it short.
+func TestAStdinTheHostCannotReadFailsTheExec(t *testing.T) {
+	stdin, err := os.Open(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer stdin.Close()
+	dial := guestDialer(t, func(guest net.Conn) error {
+		if err := supervisor.WriteJSONFrame(guest, supervisor.StreamStarted, supervisor.StartedFrame{PID: 42}); err != nil {
+			return err
+		}
+		for {
+			kind, _, err := supervisor.ReadFrame(guest)
+			if err != nil {
+				return err
+			}
+			if kind == supervisor.StreamStdinClose {
+				return supervisor.WriteJSONFrame(guest, supervisor.StreamExit, supervisor.ExitFrame{Code: 0})
+			}
+		}
+	})
+
+	ctx, cancel := context.WithTimeout(t.Context(), 5*time.Second)
+	defer cancel()
+	_, err = supervisor.Exec(ctx, dial, "sb", supervisor.ExecHeader{Argv: []string{"cat"}}, models.ExecSpec{Stdin: stdin})
+	if err == nil || !strings.Contains(err.Error(), "read the exec's stdin") {
+		t.Fatalf("exec gave %v, want the failed stdin read", err)
+	}
+}

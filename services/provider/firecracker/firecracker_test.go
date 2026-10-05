@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"io/fs"
+	"net/netip"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -23,6 +24,7 @@ import (
 	"github.com/presmihaylov/shard/models"
 	fcapi "github.com/presmihaylov/shard/pkg/firecracker"
 	"github.com/presmihaylov/shard/pkg/pidpin/pidpintest"
+	"github.com/presmihaylov/shard/pkg/reaper"
 	"github.com/presmihaylov/shard/services/bundle"
 	"github.com/presmihaylov/shard/services/provider/conformance"
 	"github.com/presmihaylov/shard/services/provider/firecracker"
@@ -59,6 +61,9 @@ func newHarness(t *testing.T) *harness {
 	requireReflink(t, root)
 	sessions := filepath.Join(root, sessionsFile)
 	if err := os.WriteFile(sessions, nil, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := reaper.Note(harnessesFile, sessions); err != nil {
 		t.Fatal(err)
 	}
 	// Registered after the RemoveAll, so it runs before it and after every spec's stop.
@@ -452,6 +457,42 @@ func TestCreateRefusesAnImageWithoutAnErofsImage(t *testing.T) {
 	}
 }
 
+// An image an rm deleted before the create leaves no disk to boot from, and the refusal carries the sentinel a route answers (SHARD-585).
+func TestCreateRefusesAnImageGoneFromTheHost(t *testing.T) {
+	h := newHarness(t)
+	spec := h.newSpec(t, "/bin/sh", "-c", "exit 0")
+	spec.BaseDisk = filepath.Join(t.TempDir(), "gone.erofs")
+
+	if err := h.provider.Create(t.Context(), spec); !errors.Is(err, models.ErrImageGone) {
+		t.Fatalf("Create over a gone image = %v, want models.ErrImageGone", err)
+	}
+}
+
+// Every boot puts the image in a new jail, so a start after an rm deleted it is refused by the same sentinel (SHARD-585).
+func TestStartRefusesAnImageGoneFromTheHost(t *testing.T) {
+	h := newHarness(t)
+	spec := h.newSpec(t, "/bin/sh", "-c", "exit 0")
+	if err := h.provider.Create(t.Context(), spec); err != nil {
+		t.Fatal(err)
+	}
+	if err := h.provider.Start(t.Context(), spec.ID); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := h.provider.Wait(t.Context(), spec.ID); err != nil {
+		t.Fatal(err)
+	}
+	if err := h.provider.Stop(t.Context(), spec.ID, stopGrace); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Remove(h.erofs); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := h.provider.Start(t.Context(), spec.ID); !errors.Is(err, models.ErrImageGone) {
+		t.Fatalf("Start over a gone image = %v, want models.ErrImageGone", err)
+	}
+}
+
 // The bound needs room under the 32 MiB headroom, so a VM too small for one is refused by name.
 func TestCreateRefusesAMemoryBoundBelowTheMinimum(t *testing.T) {
 	h := newHarness(t)
@@ -463,10 +504,10 @@ func TestCreateRefusesAMemoryBoundBelowTheMinimum(t *testing.T) {
 		t.Fatalf("Create = %v, want a refusal that names the sandbox and the minimum", err)
 	}
 
-	// Zero is unbounded on Linux; a VM has no unbounded memory, so the refusal names the provider and the flag instead of a default.
+	// Zero is unbounded on Linux; a VM has no unbounded memory, so the refusal names the provider and the field instead of a default.
 	spec.Resources.MemoryMiB = 0
 	err = h.provider.Create(t.Context(), spec)
-	for _, want := range []string{spec.ID, "provider firecracker", "--memory 0", "--memory 128MiB"} {
+	for _, want := range []string{spec.ID, "provider firecracker", "needs resources.memory_mib", "set it to 128 MiB or more"} {
 		if err == nil || !strings.Contains(err.Error(), want) {
 			t.Fatalf("Create with --memory 0 = %v, want %q named", err, want)
 		}
@@ -491,7 +532,7 @@ func TestCheckResourcesRefusesWhatCreateRefuses(t *testing.T) {
 	if err := h.provider.CheckResources(models.Resources{MemoryMiB: 128, VCPUs: 32}); err != nil {
 		t.Fatalf("CheckResources(128, 32) = %v, want nil", err)
 	}
-	for disk, want := range map[int64]string{1: "at least 11 MiB of disk", 10: "at least 11 MiB of disk", 129: "use 128 or 131 MiB"} {
+	for disk, want := range map[int64]string{1: "under the 11 MiB provider firecracker needs", 10: "under the 11 MiB provider firecracker needs", 129: "set resources.disk_mib to 128 MiB or 131 MiB"} {
 		err := h.provider.CheckResources(models.Resources{MemoryMiB: 128, DiskMiB: disk})
 		if err == nil || !strings.Contains(err.Error(), want) {
 			t.Fatalf("CheckResources(--disk %d) = %v, want %q", disk, err, want)
@@ -622,11 +663,19 @@ func TestADroppedControlStreamIsDialedAgain(t *testing.T) {
 	}
 }
 
-// A guest that floods every control stream is dialed a few times a second at most, and exec and stop still answer (SHARD-408).
+// A guest that floods every control stream, by oversized lines or by queued events, is dialed a few times a second at most, and exec and stop still answer (SHARD-408, SHARD-550).
 func TestAGuestThatFloodsEveryControlStreamIsDialedAFewTimesASecondAtMost(t *testing.T) {
+	for _, flooding := range []string{floodEveryFile, floodEventsFile} {
+		t.Run(flooding, func(t *testing.T) {
+			floodEveryControlStream(t, flooding)
+		})
+	}
+}
+
+func floodEveryControlStream(t *testing.T, flooding string) {
 	h := newHarness(t)
 	spec, pid := h.runLong(t)
-	for _, marker := range []string{dialsFile, floodEveryFile} {
+	for _, marker := range []string{dialsFile, flooding} {
 		if err := os.WriteFile(filepath.Join(spec.StateDir, marker), nil, 0o600); err != nil {
 			t.Fatal(err)
 		}
@@ -1444,7 +1493,7 @@ func TestASourceAForkHoldsReadsRunningAndRefusesAnExec(t *testing.T) {
 	}
 }
 
-// requireHeld proves a source a fork holds reads running at once, and refuses an exec by the fork's name.
+// requireHeld proves a source a fork holds reads running at once, and refuses an exec, a signal and an app stop by the fork's name.
 func (h *harness) requireHeld(t *testing.T, id string, pid int, window string) {
 	t.Helper()
 
@@ -1457,6 +1506,16 @@ func (h *harness) requireHeld(t *testing.T, id string, pid int, window string) {
 	want := fmt.Sprintf("sandbox %s could not run the command: a fork holds the sandbox frozen, and nothing starts in it until that ends: run the command again", id)
 	if err == nil || err.Error() != want {
 		t.Fatalf("Exec on the source in %s = %v, want %q", window, err, want)
+	}
+	err = h.provider.Signal(t.Context(), id, 1, "TERM")
+	want = fmt.Sprintf("sandbox %s: a fork holds the sandbox frozen, so the signal was not sent: send it again once that ends", id)
+	if err == nil || err.Error() != want {
+		t.Fatalf("Signal on the source in %s = %v, want %q", window, err, want)
+	}
+	err = h.provider.StopApp(t.Context(), id, false)
+	want = fmt.Sprintf("sandbox %s: a fork holds the sandbox frozen, so the app stop was not sent: send it again once that ends", id)
+	if err == nil || err.Error() != want {
+		t.Fatalf("StopApp on the source in %s = %v, want %q", window, err, want)
 	}
 }
 
@@ -1586,6 +1645,34 @@ func TestASourceTheForkCouldNotResumeRunsAgain(t *testing.T) {
 	}
 	if _, err := os.Stat(filepath.Join(spec.StateDir, firecracker.CaptureFile)); !errors.Is(err, os.ErrNotExist) {
 		t.Errorf("the capture marker after the adopt: %v, want gone", err)
+	}
+}
+
+// A run again that fails leaves the VM paused, so the live daemon lets the machine go and the next lookup resumes it as a new daemon would (SHARD-560).
+func TestASourceTheForkCouldNotResumeRunsAgainWithoutARestart(t *testing.T) {
+	h := newHarness(t)
+	spec, pid := h.runLong(t)
+	refuse := filepath.Join(spec.StateDir, refuseResumeFile)
+	if err := os.WriteFile(refuse, nil, 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	err := h.provider.Fork(t.Context(), spec.ID, h.forkSpec(t))
+	if err == nil || !strings.Contains(err.Error(), "refused by the test") {
+		t.Fatalf("Fork over a refused resume = %v, want the refusal", err)
+	}
+	if err := os.Remove(refuse); err != nil {
+		t.Fatal(err)
+	}
+
+	status, err := h.provider.Status(t.Context(), spec.ID)
+	if err != nil || status.State != models.StateRunning || status.PID != pid {
+		t.Fatalf("Status of the source = %+v, %v, want running again as pid %d", status, err, pid)
+	}
+	ctx, cancel := context.WithTimeout(t.Context(), 10*time.Second)
+	defer cancel()
+	if exit, err := h.provider.Exec(ctx, spec.ID, models.ExecSpec{Argv: []string{"/bin/sh", "-c", "exit 0"}}); err != nil || exit.Code != 0 {
+		t.Fatalf("Exec on the source = %+v, %v, want code 0", exit, err)
 	}
 }
 
@@ -2150,6 +2237,91 @@ func TestAnUnloadedVMMLeftByACutForkIsEnded(t *testing.T) {
 	requireUnloadedEnded(t, h.reopen(t), spec, exited, h.jail(spec.ID))
 }
 
+// A verb cut once its vmm came up ends the vmm on its own clock, so no machine outlives the record the failed verb drops (SHARD-622).
+func TestAVerbCutAfterItsAttachLeavesNoMachine(t *testing.T) {
+	address := models.NetworkSpec{Address: netip.MustParsePrefix("10.87.0.9/16"), Gateway: netip.MustParseAddr("10.87.0.1")}
+	t.Run("a create at its readdress", func(t *testing.T) {
+		h := newHarness(t)
+		spec := h.newSpec(t, "/bin/sh", "-c", "while true; do sleep 1; done")
+		spec.Network = address
+		answerEveryRequest(t)
+		requireCutLeavesNoMachine(t, h, spec, false, func(ctx context.Context) error { return h.provider.Create(ctx, spec) })
+	})
+	for _, readdress := range []bool{false, true} {
+		t.Run(fmt.Sprintf("a fork, at its readdress %v", readdress), func(t *testing.T) {
+			h := newHarness(t)
+			source, _ := h.runLong(t)
+			fork := h.forkSpec(t)
+			if readdress {
+				fork.Network = address
+			}
+			answerEveryRequest(t)
+			requireCutLeavesNoMachine(t, h, fork, readdress, func(ctx context.Context) error { return h.provider.Fork(ctx, source.ID, fork) })
+		})
+	}
+}
+
+// answerEveryRequest makes the next guest the failing one, which answers a readdress without touching any interface; no stop reaches it here.
+func answerEveryRequest(t *testing.T) {
+	t.Helper()
+
+	self, err := os.Executable()
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv(fakeInitEnv, self)
+	t.Setenv(failingGuestEnv, "1")
+}
+
+// requireCutLeavesNoMachine cuts verb once the attach opened the log, or once the reseed after it is in too, and requires the provider to hold nothing for spec.
+func requireCutLeavesNoMachine(t *testing.T, h *harness, spec models.SandboxSpec, reseeded bool, verb func(context.Context) error) {
+	t.Helper()
+
+	ctx := newCutCtx(func() bool {
+		if _, err := os.Stat(filepath.Join(spec.StateDir, "output.log")); err != nil {
+			return false
+		}
+		_, err := os.Stat(filepath.Join(spec.StateDir, firecracker.ReseedFile))
+
+		return !reseeded || errors.Is(err, fs.ErrNotExist)
+	})
+	if err := verb(ctx); !errors.Is(err, context.Canceled) {
+		t.Fatalf("the verb = %v, want the cut", err)
+	}
+	if h.provider.Holds(spec.ID) {
+		t.Fatal("the provider still holds a machine for the cut verb, which no record names and no verb reaches")
+	}
+}
+
+// cutCtx is a context cut the moment its condition holds, read on every check so the cut lands at an exact step.
+type cutCtx struct {
+	context.Context
+	cut  func() bool
+	once sync.Once
+	done chan struct{}
+}
+
+func newCutCtx(cut func() bool) *cutCtx {
+	return &cutCtx{Context: context.Background(), cut: cut, done: make(chan struct{})}
+}
+
+func (c *cutCtx) Done() <-chan struct{} {
+	if c.cut() {
+		c.once.Do(func() { close(c.done) })
+	}
+
+	return c.done
+}
+
+func (c *cutCtx) Err() error {
+	select {
+	case <-c.Done():
+		return context.Canceled
+	default:
+		return nil
+	}
+}
+
 // A vmm a daemon before the jail spawned answers in the state directory, and the next daemon still finds it there and ends it (SHARD-306).
 func TestAVMMFromBeforeTheJailIsFoundAtItsOldSocket(t *testing.T) {
 	h := newHarness(t)
@@ -2515,6 +2687,119 @@ func TestAnAdoptFailsWhenTheLogCannotOpen(t *testing.T) {
 	}
 }
 
+// guestGone has a daemon restart find the vmm of spec answering and its guest out of reach, and returns the fresh provider and the vmm's pid.
+func (h *harness) guestGone(t *testing.T) (models.SandboxSpec, *firecracker.Provider, int) {
+	t.Helper()
+
+	spec, pid := h.runLong(t)
+	if err := h.provider.Close(); err != nil {
+		t.Fatal(err)
+	}
+	_, vsock := h.sockets(spec.ID)
+	if err := os.Rename(vsock, vsock+".off"); err != nil {
+		t.Fatal(err)
+	}
+
+	return spec, h.open(t), pid
+}
+
+// An adopt whose guest does not attach ends the vmm and puts why on file, so a start boots the sandbox again (SHARD-557).
+func TestAnAdoptWhoseGuestDoesNotAttachEndsTheVMM(t *testing.T) {
+	h := newHarness(t)
+	spec, p, pid := h.guestGone(t)
+
+	status, err := p.Status(t.Context(), spec.ID)
+	if err != nil || status.Alive() || !strings.Contains(status.SupervisorFailed, "its guest does not attach") {
+		t.Fatalf("Status over a guest that does not attach = %+v, %v, want it stopped with the reason", status, err)
+	}
+	awaitReaped(t, pid)
+	if _, err := os.Stat(h.jail(spec.ID)); !errors.Is(err, fs.ErrNotExist) {
+		t.Errorf("the jail of the vmm the adopt ended: %v, want it removed", err)
+	}
+	if err := p.Start(t.Context(), spec.ID); err != nil {
+		t.Fatalf("Start after the adopt ended the vmm: %v", err)
+	}
+	status, err = p.Status(t.Context(), spec.ID)
+	if err != nil || status.State != models.StateRunning || status.SupervisorFailed != "" {
+		t.Fatalf("Status after the start = %+v, %v, want it running with no failure", status, err)
+	}
+}
+
+// A rm over a restart that finds the guest out of reach ends the vmm and removes the sandbox (SHARD-557).
+func TestRemoveEndsAnAdoptedVMMWhoseGuestDoesNotAttach(t *testing.T) {
+	h := newHarness(t)
+	spec, p, pid := h.guestGone(t)
+
+	if err := p.Remove(t.Context(), spec.ID); err != nil {
+		t.Fatalf("Remove over a guest that does not attach: %v", err)
+	}
+	awaitReaped(t, pid)
+	if _, err := os.Stat(h.jail(spec.ID)); !errors.Is(err, fs.ErrNotExist) {
+		t.Errorf("the jail after the rm: %v, want it removed", err)
+	}
+}
+
+// The end of a vmm whose guest does not attach kills through the pin its attach took, so a process on its pid since is never hit (SHARD-557).
+func TestAnUnattachedVMMEndsThroughItsPinNotItsPid(t *testing.T) {
+	h := newHarness(t)
+	spec, p, pid := h.guestGone(t)
+	innocent := exec.Command("sleep", "60")
+	if err := innocent.Start(); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		if err := innocent.Process.Kill(); err != nil && !errors.Is(err, os.ErrProcessDone) {
+			t.Error(err)
+		}
+		var exit *exec.ExitError
+		if err := innocent.Wait(); err != nil && !errors.As(err, &exit) {
+			t.Error(err)
+		}
+	})
+
+	if err := p.EndUnattachedAs(t.Context(), spec.ID, innocent.Process.Pid); err != nil {
+		t.Fatalf("the end of a vmm whose guest does not attach: %v", err)
+	}
+	awaitReaped(t, pid)
+	if err := syscall.Kill(innocent.Process.Pid, 0); err != nil {
+		t.Fatalf("the process on the vmm's pid since was hit: %v", err)
+	}
+}
+
+// A status during a boot waits for it, so the guest gives its one control stream to one machine (SHARD-558).
+func TestAStatusDuringABootAttachesNoSecondMachine(t *testing.T) {
+	h := newHarness(t)
+	spec, _ := h.runLong(t)
+	if err := h.provider.Stop(t.Context(), spec.ID, stopGrace); err != nil {
+		t.Fatal(err)
+	}
+	watchControls(t, spec)
+
+	ctx, cancel := context.WithCancel(t.Context())
+	polled := make(chan error, 1)
+	go func() {
+		for ctx.Err() == nil {
+			if _, err := h.provider.Status(ctx, spec.ID); err != nil && ctx.Err() == nil {
+				polled <- err
+
+				return
+			}
+		}
+		polled <- nil
+	}()
+	err := h.provider.Start(t.Context(), spec.ID)
+	cancel()
+	if pollErr := <-polled; pollErr != nil {
+		t.Errorf("Status during the boot: %v", pollErr)
+	}
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := controls(t, spec.StateDir, "attach"); len(got) != 1 {
+		t.Fatalf("the guest took %d control streams over one boot and the statuses beside it, want 1", len(got))
+	}
+}
+
 // Daemon restarts and a dropped stream under an entrypoint that never stops writing lose no line of the log and repeat none.
 func TestTheLogKeepsEveryLineAcrossDaemonRestarts(t *testing.T) {
 	h := newHarness(t)
@@ -2622,5 +2907,25 @@ func TestAdoptStagingDropsACutPauseStage(t *testing.T) {
 
 	if _, err := os.Stat(tmp); !errors.Is(err, os.ErrNotExist) {
 		t.Errorf("the staging %s survived adopt, want it dropped (err %v)", tmp, err)
+	}
+}
+
+// A restore whose checkpoint overlay is missing must leave the live overlay in place, so a failed copy never bricks a sandbox (SHARD-589).
+func TestRestoreFilesKeepsTheLiveOverlayWhenTheCopyFails(t *testing.T) {
+	stateDir, checkpoint := t.TempDir(), t.TempDir()
+	live := filepath.Join(stateDir, bundle.OverlayDiskFile)
+	if err := os.WriteFile(live, []byte("live"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	// The checkpoint has no overlay, so the copy fails and the swap never runs.
+	if err := firecracker.RestoreFiles(checkpoint, stateDir); err == nil {
+		t.Fatal("restoreFiles with no checkpoint overlay = nil, want an error")
+	}
+	got, err := os.ReadFile(live)
+	if err != nil {
+		t.Fatalf("the live overlay after a failed restore: %v, want it kept", err)
+	}
+	if string(got) != "live" {
+		t.Errorf("the live overlay = %q, want it unchanged", got)
 	}
 }

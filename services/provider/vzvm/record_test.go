@@ -309,6 +309,8 @@ func TestReconnectOnceKeepsAFailedStateReadLostNotGone(t *testing.T) {
 		t.Fatalf("identify this process as the shim: %v", err)
 	}
 	m := &machine{id: "sandbox1", client: vz.Open(filepath.Join(t.TempDir(), "absent.sock")), shim: shim}
+	m.following, m.unfollow = context.WithCancel(context.Background())
+	t.Cleanup(m.unfollow)
 	var dropped supervisor.Control
 	m.control.Store(&dropped)
 

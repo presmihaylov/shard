@@ -96,7 +96,8 @@ export class Files {
 
   async remove(path: string, options: { recursive?: boolean } = {}): Promise<void> {
     const params = { path: { id: this.sandboxId }, query: { path, recursive: options.recursive || undefined } };
-    await this.transport.api.DELETE("/v0/sandboxes/{id}/files", { params });
+    // A recursive remove waits on the guest for as long as the tree takes, so no bound cuts it.
+    await this.transport.api.DELETE("/v0/sandboxes/{id}/files", { params, fetch: this.transport.waiting });
   }
 
   /** copy a file into a running sandbox */

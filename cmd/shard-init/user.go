@@ -11,6 +11,7 @@ import (
 	"strings"
 	"syscall"
 
+	"github.com/presmihaylov/shard/pkg/filemode"
 	"github.com/presmihaylov/shard/services/supervisor"
 )
 
@@ -134,7 +135,7 @@ func readDatabase(path string, minFields int) (entries [][]string, err error) {
 		return nil, fmt.Errorf("stat %s: %w", path, err)
 	}
 	if !info.Mode().IsRegular() {
-		return nil, fmt.Errorf("%s is a %s, and a user database must be a regular file", path, info.Mode().Type())
+		return nil, fmt.Errorf("%s is a %s, and a user database must be a regular file", path, filemode.Name(info.Mode()))
 	}
 
 	scanner := bufio.NewScanner(f)

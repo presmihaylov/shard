@@ -237,6 +237,20 @@ func TestDiskAWhiteoutOfALinkTargetKeepsOnlyTheLink(t *testing.T) {
 	missing(t, got, "bin/tool")
 }
 
+// The target is the first header of the first layer, whose version is the zero value a missing name reads as.
+func TestDiskAWhiteoutOfAFirstHeaderLinkTargetKeepsOnlyTheLink(t *testing.T) {
+	alias := entry{hdr: tar.Header{Name: "alias", Typeflag: tar.TypeLink, Linkname: "tool"}}
+	base := layerOf(t, reg("tool", "tool-body"), alias)
+	top := layerOf(t, reg(".wh.tool", ""))
+
+	got := stream(t, base, top)
+
+	missing(t, got, "tool")
+	if f := file(t, got, "alias"); f.hdr.Typeflag != tar.TypeReg || f.body != "tool-body" {
+		t.Errorf("alias is type %q link %q body %q, want the file itself", f.hdr.Typeflag, f.hdr.Linkname, f.body)
+	}
+}
+
 // Two links to a lost target share one body: the first carries it, the second links to the first.
 func TestDiskTwoLinksToALostTargetShareOneBody(t *testing.T) {
 	alias := entry{hdr: tar.Header{Name: "bin/alias", Typeflag: tar.TypeLink, Linkname: "bin/tool"}}
@@ -388,6 +402,23 @@ func TestDiskAnOpaqueWhiteoutAtTheRootTakesEveryLowerLayer(t *testing.T) {
 	missing(t, got, "top")
 	if body := bodyOf(t, got, "fresh"); body != "f" {
 		t.Errorf("fresh is %q", body)
+	}
+}
+
+// An opaque marker with no directory entry beside it empties the lower directory and keeps its mode and owner.
+func TestDiskAnOpaqueWhiteoutKeepsItsDirectory(t *testing.T) {
+	cache := entry{hdr: tar.Header{Name: "cache/", Mode: 0o700, Uid: 1000, Gid: 1000, Typeflag: tar.TypeDir}}
+	base := layerOf(t, cache, reg("cache/old", "old"))
+	top := layerOf(t, reg("cache/.wh..wh..opq", ""), reg("cache/new", "new"))
+
+	got := stream(t, base, top)
+
+	missing(t, got, "cache/old")
+	if body := bodyOf(t, got, "cache/new"); body != "new" {
+		t.Errorf("cache/new is %q", body)
+	}
+	if f := file(t, got, "cache"); f.hdr.Typeflag != tar.TypeDir || f.hdr.Mode != 0o700 || f.hdr.Uid != 1000 || f.hdr.Gid != 1000 {
+		t.Errorf("cache type %q mode %o owner %d:%d, want the lower directory's 700 and 1000:1000", f.hdr.Typeflag, f.hdr.Mode, f.hdr.Uid, f.hdr.Gid)
 	}
 }
 
