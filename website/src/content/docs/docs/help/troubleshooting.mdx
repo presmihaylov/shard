@@ -44,7 +44,7 @@ The installer prints `error:` and a reason, and exits with code 1.
 Setup stops at the first check or step that fails. It marks that step, says why it failed, and makes no further changes:
 
 ```text
-✗ Install gVisor
+✗ Download and verify required tools
   Could not download runsc: connection timed out.
 
 Setup stopped. Earlier completed steps remain in place.
@@ -53,9 +53,9 @@ Run `shard setup` again to retry.
 
 Every step is safe to run again. Fix the cause and run `shard setup` again, and it picks up where it stopped. A download fails if it receives no data for 30 seconds, but a slow download that is still making progress runs to the end.
 
-If a check fails before setup changes anything, the output ends with `No installation changes were made.`
+If a check fails before setup changes anything, the output says `No installation changes were made.`
 
-**`Setup needs administrator access, and sudo does not allow this user`.** Setup uses `sudo` for the steps that need root. Ask an administrator to give your user `sudo` access, or run `shard setup` as root.
+**`Setup needs administrator access, and sudo does not allow this user: ...`.** Setup uses `sudo` for the steps that need root. Ask an administrator to give your user `sudo` access, or run `shard setup` as root.
 
 **`Setup needs administrator access, and sudo needs a password it has no terminal to ask for`.** Run `shard setup` in a terminal, as root, or as a user with passwordless `sudo`.
 
@@ -87,7 +87,7 @@ sudo systemctl restart shard                      # Linux
 sudo launchctl kickstart -k system/shard.daemon   # macOS
 ```
 
-If the service is gone or does not stay up, run `shard setup` and choose `Check or repair the installation`. This checks the tools, the files in `/var/lib/shard`, the permissions and the service. It shows each change before making it, and it keeps your settings and your data.
+If the service is gone or does not stay up, run `shard setup` and choose `Check or repair the installation`. This checks the tools, the files that setup installed, the provider's files in `/var/lib/shard` and the service. It shows each change before making it, and it keeps your settings and your data.
 
 A daemon you started yourself stops when its terminal closes. Start it again in its own terminal.
 
