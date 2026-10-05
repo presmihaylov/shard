@@ -22,6 +22,8 @@ shard remove --force demo
 
 If `~/.local/bin` is not on your `PATH`, the installer prints the line that adds it.
 
+A binary that a browser downloaded carries the quarantine flag, and macOS refuses to run it. `xattr -d com.apple.quarantine shard` clears the flag. `curl` does not set it.
+
 Each sandbox is a Linux micro VM with a kernel of its own. shard drives Apple's Virtualization.framework directly, so you do not need Docker or Homebrew. The daemon runs as your user, and every shard command runs without `sudo`.
 
 ## What you need
@@ -79,6 +81,8 @@ shard daemon --provider vz
 The daemon stays in the foreground. Run your commands in a second terminal. When you close the first terminal, the daemon ends, but the sandboxes keep running until a daemon picks them up again.
 
 Only one daemon can use a data directory. A second daemon on `/var/lib/shard` refuses to start, so stop the LaunchDaemon before you run one in a terminal.
+
+To use another data directory, pass `--root <dir>` to the daemon and to every command. On a Mac, the path can be at most 58 bytes, because each VM's socket lives under it. A directory that your user owns needs no `sudo`.
 
 ## Use the SDKs on a Mac
 

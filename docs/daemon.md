@@ -41,8 +41,8 @@ names another path. Install the provider's runtime first: `runsc`, `sysbox-runc`
 (`docs/provider.md`). From a checkout, `make build-linux build-shard-init-linux` builds the same two
 binaries into `bin/`, and the unit is the file in `packaging/systemd`.
 
-On a Mac the equivalent is the LaunchDaemon in `packaging/launchd`, which `shard setup` installs
-(https://useshards.com/docs/guides/mac/).
+On a Mac the equivalent is the LaunchDaemon in `packaging/launchd`, which `docs/mac.md` explains
+how to install.
 
 ## What the daemon owns
 
@@ -1082,7 +1082,7 @@ A Go program gets the same rules from `client.NewRemoteFromEnv` in `services/cli
 `SHARD_REMOTE`, `SHARD_API_KEY` and `SHARD_CA_FILE`. `client.NewRemote` takes a host, a raw token
 and the CA bytes. The warning is the CLI's own. The switch is one transport change inside
 `services/client`, and nothing else changes. The typed calls, the messages and the errors stay the
-same. The daemon runs on Linux, and on macOS over the `vz` provider as https://useshards.com/docs/guides/mac/ explains, so
+same. The daemon runs on Linux, and on macOS over the `vz` provider as `docs/mac.md` explains, so
 a client on any other system drives sandboxes only through a remote.
 
 ### A proxy in front
