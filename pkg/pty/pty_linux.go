@@ -26,7 +26,7 @@ func open() (*Pty, error) {
 		return nil, errors.Join(err, master.Close())
 	}
 
-	return pair, nil
+	return pollableMaster(pair)
 }
 
 func replicaOf(master *os.File) (*Pty, error) {
