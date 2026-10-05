@@ -1,4 +1,4 @@
-/* The vbanner callout, copied from @nairi/ui; docs.css reuses its tone wash for asides. */
+/* The vbanner callout, copied from @nairi/ui and recolored for winter; docs.css reuses its tone wash for asides. */
 @layer components {
 	.vbanner {
 		position: relative;
@@ -60,14 +60,14 @@
 	.vbanner--sm { padding: 12px 16px; gap: 12px; }
 	.vbanner--sm .vbanner-icon svg { width: 18px; height: 18px; }
 
-	.vbanner--neutral { --vbn-tone: #8A8177; --vbn-surface: color-mix(in srgb, #8A8177 10%, var(--vbn-base)); --vbn-wash: color-mix(in srgb, #8A8177 18%, var(--color-background)); }
-	.vbanner--blue    { --vbn-tone: #3E57DE; --vbn-surface: color-mix(in srgb, #3E57DE 12%, var(--vbn-base)); --vbn-wash: color-mix(in srgb, #3E57DE 24%, var(--color-background)); }
+	.vbanner--neutral { --vbn-tone: #6F8399; --vbn-surface: color-mix(in srgb, #6F8399 10%, var(--vbn-base)); --vbn-wash: color-mix(in srgb, #6F8399 18%, var(--color-background)); }
+	.vbanner--blue    { --vbn-tone: #2A74B8; --vbn-surface: color-mix(in srgb, #2A74B8 12%, var(--vbn-base)); --vbn-wash: color-mix(in srgb, #2A74B8 24%, var(--color-background)); }
 	.vbanner--emerald { --vbn-tone: #15BD7E; --vbn-surface: color-mix(in srgb, #15BD7E 13%, var(--vbn-base)); --vbn-wash: color-mix(in srgb, #15BD7E 26%, var(--color-background)); }
 	.vbanner--orange  { --vbn-tone: #F5BE2E; --vbn-surface: color-mix(in srgb, #F5BE2E 12%, var(--vbn-base)); --vbn-wash: color-mix(in srgb, #F5BE2E 24%, var(--color-background)); }
 	.vbanner--rose    { --vbn-tone: #EA3E67; --vbn-surface: color-mix(in srgb, #EA3E67 12%, var(--vbn-base)); --vbn-wash: color-mix(in srgb, #EA3E67 24%, var(--color-background)); }
 
-	[data-theme="dark"] .vbanner--neutral { --vbn-tone: #B8B0A4; --vbn-surface: color-mix(in srgb, #B8B0A4 14%, var(--vbn-base)); --vbn-wash: color-mix(in srgb, #B8B0A4 24%, var(--color-background)); }
-	[data-theme="dark"] .vbanner--blue    { --vbn-tone: #7E8FEA; --vbn-surface: color-mix(in srgb, #7E8FEA 20%, var(--vbn-base)); --vbn-wash: color-mix(in srgb, #7E8FEA 34%, var(--color-background)); }
+	[data-theme="dark"] .vbanner--neutral { --vbn-tone: #A9BACB; --vbn-surface: color-mix(in srgb, #A9BACB 14%, var(--vbn-base)); --vbn-wash: color-mix(in srgb, #A9BACB 24%, var(--color-background)); }
+	[data-theme="dark"] .vbanner--blue    { --vbn-tone: #7DBCEB; --vbn-surface: color-mix(in srgb, #7DBCEB 20%, var(--vbn-base)); --vbn-wash: color-mix(in srgb, #7DBCEB 34%, var(--color-background)); }
 	[data-theme="dark"] .vbanner--emerald { --vbn-tone: #3FD79A; --vbn-surface: color-mix(in srgb, #3FD79A 20%, var(--vbn-base)); --vbn-wash: color-mix(in srgb, #3FD79A 34%, var(--color-background)); }
 	[data-theme="dark"] .vbanner--orange  { --vbn-tone: #F7D262; --vbn-surface: color-mix(in srgb, #F7D262 20%, var(--vbn-base)); --vbn-wash: color-mix(in srgb, #F7D262 34%, var(--color-background)); }
 	[data-theme="dark"] .vbanner--rose    { --vbn-tone: #F1748F; --vbn-surface: color-mix(in srgb, #F1748F 20%, var(--vbn-base)); --vbn-wash: color-mix(in srgb, #F1748F 34%, var(--color-background)); }
