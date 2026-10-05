@@ -160,8 +160,19 @@ func TestPreflightAdministratorAccess(t *testing.T) {
 		if f, _ := preflightOn(t, h, Local{Provider: GVisor}); f != nil {
 			t.Fatalf("fails %q: %q", f.check, f.lines)
 		}
-		if !slices.Contains(l.calls, "env LC_ALL=C sudo -n -l") {
+		if !slices.Contains(l.calls, "sudo -n true") {
 			t.Fatalf("calls = %q, want sudo asked without a prompt", l.calls)
+		}
+	})
+	// A cloud image's user has NOPASSWD:ALL beside the sudo group's rule, and -v wants a password from it.
+	t.Run("passwordless commands where -v wants a password", func(t *testing.T) {
+		l := newLocalHost(t)
+		l.fail["env LC_ALL=C sudo -n -v"] = "sudo: a password is required\n"
+		h := l.host()
+		h.Euid = 1000
+
+		if f, _ := preflightOn(t, h, Local{Provider: GVisor}); f != nil {
+			t.Fatalf("fails %q: %q", f.check, f.lines)
 		}
 	})
 	for _, c := range []struct {
@@ -169,7 +180,7 @@ func TestPreflightAdministratorAccess(t *testing.T) {
 		tty        bool
 		lines      []string
 	}{
-		{name: "a user sudo does not allow", sudo: "Sorry, user nosudo may not run sudo on box.\n", tty: true, lines: []string{
+		{name: "a user outside sudoers at a terminal", sudo: "Sorry, user nosudo may not run sudo on box.\n", tty: true, lines: []string{
 			"Setup needs administrator access, and sudo does not allow this user: Sorry, user nosudo may not run sudo on box.",
 			"Ask an administrator to give your user sudo access, or run shard setup as root.",
 		}},
@@ -181,7 +192,9 @@ func TestPreflightAdministratorAccess(t *testing.T) {
 	} {
 		t.Run(c.name, func(t *testing.T) {
 			l := newLocalHost(t)
-			l.fail["env LC_ALL=C sudo -n -l"] = c.sudo
+			// A command wants a password from a user outside sudoers too, so only -v tells that user from one who has a password.
+			l.fail["sudo -n true"] = "sudo: a password is required\n"
+			l.fail["env LC_ALL=C sudo -n -v"] = c.sudo
 			if c.tty {
 				l.write("/dev/tty", "")
 			}

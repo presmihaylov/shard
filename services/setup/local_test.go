@@ -489,15 +489,30 @@ func TestNotReadyIsTheDaemonsReason(t *testing.T) {
 }
 
 func TestAdminEndsSudosRefusalOnce(t *testing.T) {
-	l := newLocalHost(t)
-	l.fail["sudo -n true"] = "sudo: a password is required\n"
-	l.fail["sudo -v"] = "Sorry, user nosudo may not run sudo on box.\n"
-	h := l.host()
-	h.Euid = 1000
+	for _, c := range []struct {
+		name, sudo string
+		tty        bool
+		hint       string
+	}{
+		{name: "a user outside sudoers at a terminal", sudo: "Sorry, user nosudo may not run sudo on box.", tty: true, hint: "Ask an administrator to give your user sudo access, or run shard setup as root."},
+		{name: "a wrong password at a terminal", sudo: "sudo: 3 incorrect password attempts", tty: true, hint: "Run shard setup again and give sudo your password, or run it as root."},
+		{name: "no terminal", sudo: "sudo: a terminal is required to read the password", hint: "Run shard setup in a terminal where sudo can ask for your password, or as root."},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			l := newLocalHost(t)
+			l.fail["sudo -n true"] = "sudo: a password is required\n"
+			l.fail["sudo -v"] = c.sudo + "\n"
+			if c.tty {
+				l.write("/dev/tty", "")
+			}
+			h := l.host()
+			h.Euid = 1000
 
-	err := (&Setup{Host: h, UI: &fakeUI{}}).admin(t.Context())
-	var p *Problem
-	if !errors.As(err, &p) || p.Lines[0] != "Administrator access failed: sudo -v: exit status 1: Sorry, user nosudo may not run sudo on box." {
-		t.Fatalf("admin = %v, want the refusal with one period", err)
+			err := (&Setup{Host: h, UI: &fakeUI{}}).admin(t.Context())
+			var p *Problem
+			if !errors.As(err, &p) || !slices.Equal(p.Lines, []string{"Administrator access failed: sudo -v: exit status 1: " + strings.TrimSuffix(c.sudo, ".") + ".", c.hint}) {
+				t.Fatalf("admin = %v, want the refusal with one period and %q", err, c.hint)
+			}
+		})
 	}
 }
