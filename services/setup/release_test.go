@@ -201,3 +201,19 @@ func TestFetchAssetNamesAMissingTag(t *testing.T) {
 		t.Fatalf("FetchAsset error = %v, want the missing tag and 404 named", err)
 	}
 }
+
+func TestAssetURLNamesAMissingFile(t *testing.T) {
+	rs := newReleaseServer(t)
+	rs.add("v0.2.0", false, false, true, map[string]string{"shard-init-linux-amd64": "init"})
+
+	got, err := AssetURL(context.Background(), rs.host(), "v0.2.0", "shard-init-linux-amd64")
+	if err != nil || got != rs.URL+"/download/v0.2.0/shard-init-linux-amd64" {
+		t.Fatalf("AssetURL = %q, %v", got, err)
+	}
+	if rs.downloads.Load() != 0 {
+		t.Fatalf("AssetURL downloaded %d files", rs.downloads.Load())
+	}
+	if _, err := AssetURL(context.Background(), rs.host(), "v0.2.0", "shard-init-linux-arm64"); err == nil || !strings.Contains(err.Error(), "shard-init-linux-arm64") {
+		t.Fatalf("AssetURL error = %v, want the missing file named", err)
+	}
+}
