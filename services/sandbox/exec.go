@@ -1226,11 +1226,11 @@ func (s *Service) ResizeExec(_ context.Context, ref, execID string, size Termina
 
 	// An exec that ended, or one that runs on pipes, has no terminal to resize.
 	if session.pair == nil {
-		return &models.NotFoundError{Err: sandboxstate.ErrNotFound, Text: fmt.Sprintf("exec %s of sandbox %s has no terminal to resize; only an exec created with tty has one", execID, id)}
+		return models.NotFound(sandboxstate.ErrNotFound, fmt.Sprintf("exec %s of sandbox %s has no terminal to resize; only an exec created with tty has one", execID, id))
 	}
 	select {
 	case <-session.done:
-		return &models.NotFoundError{Err: sandboxstate.ErrNotFound, Text: fmt.Sprintf("exec %s of sandbox %s has ended; it has no terminal to resize", execID, id)}
+		return models.NotFound(sandboxstate.ErrNotFound, fmt.Sprintf("exec %s of sandbox %s has ended; it has no terminal to resize", execID, id))
 	default:
 	}
 
@@ -1288,7 +1288,7 @@ func (s *Service) execOf(id, execID string) (*execSession, error) {
 
 	session := s.execs[execID]
 	if session == nil || session.sandboxID != id || !session.shown {
-		return nil, &models.NotFoundError{Err: sandboxstate.ErrNotFound, Text: fmt.Sprintf("exec %s not found in sandbox %s", execID, id)}
+		return nil, models.NotFound(sandboxstate.ErrNotFound, fmt.Sprintf("exec %s not found in sandbox %s", execID, id))
 	}
 
 	return session, nil
@@ -1552,7 +1552,7 @@ func (s *Service) endedUnderExec(id string, session *execSession, err error) err
 
 	sb, getErr := s.cfg.Repo.Get(id)
 	if errors.Is(getErr, sandboxstate.ErrNotFound) {
-		return &models.NotFoundError{Err: sandboxstate.ErrNotFound, Text: fmt.Sprintf("sandbox %s not found", id)}
+		return models.NotFound(sandboxstate.ErrNotFound, fmt.Sprintf("sandbox %s not found", id))
 	}
 	if getErr != nil {
 		return errors.Join(err, getErr)

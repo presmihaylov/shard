@@ -58,6 +58,9 @@ type App struct {
 
 	// remoteFlag says --remote was passed, so even an empty one names the target and the saved connection names none.
 	remoteFlag bool
+
+	// asSudo replaces the check for sudo. A test sets it: go test runs neither as root nor under sudo.
+	asSudo func() bool
 }
 
 // stdin is what exec hands the guest and what secret set reads the value from.
@@ -78,7 +81,7 @@ func (a App) Run(ctx context.Context, args []string) error {
 		return a.print(exit.text)
 	}
 
-	return err
+	return a.forUser(err)
 }
 
 // printExit carries the text a verb means to print before it exits 0, as --help and --version do.
@@ -304,7 +307,8 @@ func names(cmds []command) []string {
 	return out
 }
 
-func (a App) run(ctx context.Context, args []string) error {
+// run parses the globals into a, so Run words its error for the target they name.
+func (a *App) run(ctx context.Context, args []string) error {
 	args, err := a.parseGlobals(args)
 	if err != nil {
 		return err

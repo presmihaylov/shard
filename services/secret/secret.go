@@ -379,7 +379,7 @@ func (s *Store) read(name string) (record, error) {
 
 	blob, err := os.ReadFile(s.path(name))
 	if errors.Is(err, fs.ErrNotExist) {
-		return record{}, &models.NotFoundError{Err: ErrNotFound, Text: fmt.Sprintf("secret %s not found", name)}
+		return record{}, models.NotFound(ErrNotFound, fmt.Sprintf("secret %s not found", name))
 	}
 	if err != nil {
 		return record{}, fmt.Errorf("read secret %s: %w", name, err)

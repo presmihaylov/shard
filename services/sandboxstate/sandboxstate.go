@@ -352,7 +352,7 @@ func (r *Repository) Get(id string) (models.Sandbox, error) {
 
 	data, err := os.ReadFile(path)
 	if errors.Is(err, os.ErrNotExist) {
-		return models.Sandbox{}, &models.NotFoundError{Err: ErrNotFound, Text: fmt.Sprintf("sandbox %s not found", id)}
+		return models.Sandbox{}, models.NotFound(ErrNotFound, fmt.Sprintf("sandbox %s not found", id))
 	}
 	if err != nil {
 		return models.Sandbox{}, fmt.Errorf("read %s: %w", path, err)
