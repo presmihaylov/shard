@@ -9,13 +9,51 @@ sidebar:
 
 shard is a sandbox manager for a single host. One binary is both the CLI and the daemon. It creates sandboxes from OCI images and keeps each one running between commands:
 
+<Tabs syncKey="lang">
+	<TabItem label="CLI">
+
 ```sh
 shard create --name demo --memory 512MiB alpine:3.20
 shard exec demo sh -c 'echo hello from shard > /tmp/hello.txt'
 shard exec demo cat /tmp/hello.txt
+shard remove --force demo
 ```
 
-The last command prints `hello from shard`. The file is still there because the sandbox outlives each command. On Linux, run local commands with `sudo`.
+	</TabItem>
+	<TabItem label="TypeScript">
+
+```ts
+import { Shard } from "useshards";
+
+const shard = new Shard();
+try {
+  const demo = await shard.create({ name: "demo", image: "alpine:3.20", memoryMiB: 512 });
+  await demo.exec(["sh", "-c", "echo hello from shard > /tmp/hello.txt"]);
+  const result = await demo.exec(["cat", "/tmp/hello.txt"]);
+  console.log(result.stdout);
+  await demo.remove({ force: true });
+} finally {
+  shard.close();
+}
+```
+
+	</TabItem>
+	<TabItem label="Python">
+
+```python
+from useshards import Shard
+
+with Shard() as shard:
+    demo = shard.create("alpine:3.20", name="demo", memory_mib=512)
+    demo.exec(["sh", "-c", "echo hello from shard > /tmp/hello.txt"])
+    print(demo.exec(["cat", "/tmp/hello.txt"]).stdout)
+    demo.remove(force=True)
+```
+
+	</TabItem>
+</Tabs>
+
+The last command prints `hello from shard`. The file is still there because the sandbox outlives each command. The TypeScript and Python examples reach `shard serve` at `SHARD_REMOTE`, with the API key in `SHARD_API_KEY`.
 
 ## Who is it for?
 
@@ -90,7 +128,7 @@ Its files do. A reboot ends its processes, and when the daemon comes back it mar
 
 ## Why do local commands need sudo on Linux?
 
-The daemon's socket belongs to root. On a Mac the daemon runs as your user, and no command needs `sudo`.
+On the default Linux install, the daemon socket belongs to root, so local commands need `sudo`. An administrator can grant access to the `shard` group instead. On a Mac the daemon runs as your user, and local commands need no `sudo`.
 
 ## How do I use shard from another machine?
 
