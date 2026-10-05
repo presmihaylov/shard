@@ -9,6 +9,8 @@ import (
 	"slices"
 	"strings"
 	"testing"
+
+	"github.com/presmihaylov/shard/services/client"
 )
 
 // fakeHost runs file commands for real under a temp root and answers the service managers from canned output.
@@ -507,5 +509,40 @@ func TestUninstallRunsAgainAfterAHalfDoneOne(t *testing.T) {
 	}
 	if _, ok, err := LoadManifest(f.host(nil)); err != nil || ok {
 		t.Fatalf("the manifest outlived the uninstall: %v, %v", ok, err)
+	}
+}
+
+// A repair is local setup too, so it offers to drop a saved remote and drops it once the repair succeeds; Exit asks nothing.
+func TestTheExistingMenuOffersToDropASavedRemote(t *testing.T) {
+	saved := client.Config{Remote: "https://shard.example.com", APIKey: testKey}
+
+	for _, tc := range []struct {
+		choice string
+		asks   bool
+		want   client.Config
+	}{
+		{choice: "repair", asks: true, want: client.Config{}},
+		{choice: "exit", want: saved},
+	} {
+		t.Run(tc.choice, func(t *testing.T) {
+			f := newFakeHost(t)
+			m := linuxInstall("v0.1.0")
+			f.installed(t, m)
+			env, path := testHost(t, nil)
+			saveConnection(t, path, saved)
+			host := f.host(nil)
+			host.Env = env.Env
+			ui := &fakeUI{selects: map[Question]string{AskExisting: tc.choice}, confirms: map[Question]bool{AskSwitch: true}}
+
+			if err := (&Setup{Host: host, UI: ui}).existing(t.Context(), Installation{Manifest: &m, Service: ServiceActive}); err != nil {
+				t.Fatalf("existing: %v", err)
+			}
+			if got := slices.Contains(ui.asked, AskSwitch); got != tc.asks {
+				t.Errorf("asked %v, want the switch asked: %v", ui.asked, tc.asks)
+			}
+			if got := savedConnection(t, path); got != tc.want {
+				t.Errorf("the saved connection is %v, want %v", got, tc.want)
+			}
+		})
 	}
 }

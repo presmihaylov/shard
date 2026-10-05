@@ -155,7 +155,7 @@ func (s *Setup) Run(ctx context.Context) error {
 	return s.runLocal(ctx)
 }
 
-// runLocal offers the existing installation's menu when there is one, and keeps a saved remote until local setup succeeds.
+// runLocal offers the existing installation's menu when there is one, else a fresh local setup.
 func (s *Setup) runLocal(ctx context.Context) error {
 	inst, found, err := Detect(ctx, s.Host)
 	if err != nil {
@@ -165,11 +165,16 @@ func (s *Setup) runLocal(ctx context.Context) error {
 		return s.existing(ctx, inst)
 	}
 
+	return s.switched(ctx, s.local)
+}
+
+// switched runs a local job after the offer to drop a saved remote, and drops it only once the job succeeds.
+func (s *Setup) switched(ctx context.Context, job func(context.Context) error) error {
 	finish, err := s.switchToLocal(ctx)
 	if err != nil {
 		return err
 	}
-	if err := s.local(ctx); err != nil {
+	if err := job(ctx); err != nil {
 		return err
 	}
 

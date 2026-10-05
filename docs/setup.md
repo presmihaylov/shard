@@ -116,9 +116,10 @@ only, and replaces the file whole. A command resolves its server and key in this
 | API key | `SHARD_API_KEY` | | the saved connection |
 
 A verb that runs on the daemon host only refuses a saved connection, and `--remote ""` runs it on
-this host. Run `shard setup` again to check, replace or remove the saved connection. Choosing local setup while
-a connection is saved offers to remove it, and removes it only once local setup succeeds. A
-`SHARD_REMOTE` in the environment still overrides the local daemon after that.
+this host. Run `shard setup` again to check, replace or remove the saved connection. Choosing local
+setup while a connection is saved offers to remove it, and removes it only once local setup
+succeeds; a repair or an upgrade of an existing installation makes the same offer. A `SHARD_REMOTE`
+in the environment still overrides the local daemon after that.
 
 ## Automated setup
 

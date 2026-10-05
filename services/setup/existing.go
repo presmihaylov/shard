@@ -89,9 +89,9 @@ func (s *Setup) existing(ctx context.Context, inst Installation) error {
 
 	switch choice {
 	case 0:
-		return s.repair(ctx, m, inst.Service)
+		return s.switched(ctx, func(ctx context.Context) error { return s.repair(ctx, m, inst.Service) })
 	case 1:
-		return s.upgrade(ctx, m, inst.Service)
+		return s.switched(ctx, func(ctx context.Context) error { return s.upgrade(ctx, m, inst.Service) })
 	case 2:
 		return s.uninstall(ctx, m)
 	}
