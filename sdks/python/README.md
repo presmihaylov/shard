@@ -3,16 +3,14 @@
 The Python SDK for [shard](https://github.com/presmihaylov/shard), the sandbox manager. `Shard` is for
 blocking code and `AsyncShard` is for asyncio. Both have the same verbs.
 
-`useshards` is not on PyPI. Until its GitHub release is published, install it from the repository:
+```
+pip install useshards
+```
+
+To run the code on `main` instead, install it from the repository:
 
 ```
 pip install "useshards @ git+https://github.com/presmihaylov/shard#subdirectory=sdks/python"
-```
-
-Once the GitHub release is published, install its wheel:
-
-```
-pip install https://github.com/presmihaylov/shard/releases/download/sdk-python-v0.1.0/useshards-0.1.0-py3-none-any.whl
 ```
 
 Python 3.11 or later. The runtime dependencies are HTTPX, attrs and typing-extensions.

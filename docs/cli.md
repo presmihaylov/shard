@@ -14,6 +14,7 @@ This is the final shape of every verb, flag and output of `shard`. The SDKs buil
 | 128 + n | `run` of an app that signal n ended |
 | 125 | `run` when shard itself fails, so a script tells it from an app that exits 1 |
 | 130 | `run` that Ctrl+C left; the sandbox stays running |
+| 130 | `setup` that Ctrl+C left; the steps done so far stay in place |
 
 `daemon status` exits 1 when a background task is in backoff, after it prints the whole status.
 
@@ -33,8 +34,8 @@ A remote client reads three environment variables.
 
 | variable | what |
 | --- | --- |
-| `SHARD_REMOTE` | the API server URL; `--remote` overrides it |
-| `SHARD_API_KEY` | the API token, the `token` field of a `shard tokens mint` record |
+| `SHARD_REMOTE` | the API server URL; `--remote` overrides it, and it overrides the connection `shard setup` saved |
+| `SHARD_API_KEY` | the API token, the `token` field of a `shard tokens mint` record; it overrides the saved key |
 | `SHARD_CA_FILE` | a custom CA certificate file, for `https` only; unset, the host's trust store decides |
 
 An `http` remote encrypts nothing, so every command over one prints one warning to stderr and never
@@ -44,8 +45,8 @@ to stdout. Use it only on localhost or through a trusted encrypted network. `SHA
 `pull`, `image list`, `image remove`, `image prune` and `daemon status` run on the daemon host only,
 because `shard serve` refuses their routes. `daemon`, `serve`, `info`, `tokens mint`, `tokens list`
 and `tokens revoke` act on the files and the processes of this host, so they run there only too.
-With `--remote` or `SHARD_REMOTE` set, each one fails before it dials or touches the host, and its
-error names the verb. `tokens scopes` asks the server, so it follows the remote.
+With `--remote`, `SHARD_REMOTE` or a saved connection, each one fails before it dials or touches the
+host, and its error names the verb. `--remote ""` runs one on this host past a saved connection. `tokens scopes` asks the server, so it follows the remote.
 
 ## Names and aliases
 
@@ -125,6 +126,7 @@ shard: sandbox <id> is paused: resume it with shard resume <id>
 | `daemon status` | `--format` | table | the daemon's state and its tasks |
 | `info` | `--format` | table | the provider a daemon would pick, and why |
 | `serve` | `--listen --signing-key-file` | - | its log |
+| `setup` | `--local --remote --provider --start-at-boot --save -y/--yes` | - | the wizard, or the checklist of a run with every answer given; see [setup](setup.md) |
 | `tokens mint` | `--name --signing-key-file --duration --scopes --format` | json | the token record |
 | `tokens list` | `--signing-key-file --format` | table | the ledger |
 | `tokens revoke <id>` | `--name --signing-key-file` | - | `revoked token <id>`, or `revoked <n> tokens of <sub>` with `--name` |

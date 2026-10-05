@@ -13,6 +13,7 @@ require (
 	github.com/danielgtaylor/huma/v2 v2.39.1
 	github.com/golang-jwt/jwt/v5 v5.3.1
 	github.com/google/go-containerregistry v0.21.9
+	github.com/klauspost/compress v1.19.1
 	github.com/moby/profiles/apparmor v0.2.3
 	github.com/moby/profiles/seccomp v0.2.4
 	github.com/opencontainers/runtime-spec v1.3.0
@@ -36,7 +37,6 @@ require (
 	github.com/gogo/protobuf v1.3.2 // indirect
 	github.com/golang/groupcache v0.0.0-20241129210726-2c02b8208cf8 // indirect
 	github.com/google/btree v1.1.2 // indirect
-	github.com/klauspost/compress v1.19.1 // indirect
 	github.com/moby/sys/sequential v0.6.0 // indirect
 	github.com/moby/sys/userns v0.1.0 // indirect
 	github.com/opencontainers/go-digest v1.0.0 // indirect
