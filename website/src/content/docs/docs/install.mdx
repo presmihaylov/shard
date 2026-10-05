@@ -42,7 +42,7 @@ The TypeScript SDK needs Node.js 20.3 or later, and the Python SDK needs Python 
 3. Downloads this platform's binary and the release's `SHA256SUMS` from that same release into a temporary directory.
 4. Verifies the binary's checksum, and stops if it does not match.
 5. Checks that the new binary reports the expected version, then moves it over `~/.local/bin/shard`.
-6. Prints the install path and, if `~/.local/bin` is not on `PATH`, the line that adds it for new shells and the `export` that adds it to the current one.
+6. Prints the install path and, if `~/.local/bin` is not on `PATH`, the line that adds it for new shells and the `export` that adds it to the current one. Under fish, it prints one `fish_add_path` line instead.
 
 An existing `shard` stays in place until the installer has downloaded and verified the new binary. On a failure or an interrupt, the installer removes its temporary files and leaves the old binary as it was.
 
@@ -54,7 +54,7 @@ An existing `shard` stays in place until the installer has downloaded and verifi
 | macOS, Apple silicon | Yes | Yes |
 | macOS, Intel | No | Yes |
 
-On another CPU architecture, the installer stops with an error that lists the builds in the release. On another operating system, it stops with an error that names the system. On Windows, run it inside WSL 2. Under Rosetta, an Apple silicon Mac gets the native arm64 build.
+A Mac needs macOS 14 or later to host sandboxes. On another CPU architecture, the installer stops with an error that lists the builds in the release. On another operating system, it stops with an error that names the system. On Windows, run it inside WSL 2. Under Rosetta, an Apple silicon Mac gets the native arm64 build.
 
 ## Set up later
 
@@ -82,15 +82,15 @@ For automated setup:
 
 On a machine that only connects to a remote server, run the installer again. It finds the newest release each time and replaces `~/.local/bin/shard` in place.
 
-On a sandbox host, run `shard setup` and choose **Upgrade Shard**. The daemon runs the copy that setup installed in `/usr/local/bin`, so the installer alone does not upgrade it. Setup downloads and verifies the new release before it replaces anything. It replaces `/usr/local/bin/shard`, `/usr/local/bin/shard-init` and the `shard` you ran it from, and keeps the provider. If the installed version is already the newest, setup says so and changes nothing.
+On a sandbox host, run `shard setup`, choose **Run sandboxes on this machine**, then **Upgrade Shard**. The daemon runs the copy that setup installed in `/usr/local/bin`, so the installer alone does not upgrade it. Setup downloads and verifies the new release before it replaces anything. It replaces `/usr/local/bin/shard`, `/usr/local/bin/shard-init` on Linux, and the `shard` you ran it from, and keeps the provider. If the installed version is already the newest, setup says so and changes nothing.
 
 Setup tells you before it restarts the daemon. A running background service restarts on the new version, and the upgrade waits until the daemon answers. Your sandboxes keep running while the daemon restarts. Open `shard exec` sessions disconnect, and their commands keep running. If you start the daemon yourself, restart `shard daemon` after the upgrade.
 
 ## Uninstall
 
-On a sandbox host, remove your sandboxes first, then run `shard setup` and choose **Uninstall Shard**. If any sandbox is left, uninstall refuses and prints the commands that list and remove sandboxes.
+On a sandbox host, remove your sandboxes first. Then run `shard setup`, choose **Run sandboxes on this machine**, then **Uninstall Shard**. If any sandbox is left, uninstall refuses and prints the commands that list and remove sandboxes.
 
-Uninstall stops and removes the background service, removes the files that setup installed, and on Linux removes the network bridge and firewall tables when no sandbox and no shard daemon still use them. Your data in `/var/lib/shard` stays, and so do tools that other software may also use. The closing note names each thing that stays and the command that removes it: on Linux the `/var/lib/shard.xfs` disk image and its `/etc/fstab` line, on a Mac the daemon logs in `/var/log/shard`, and every `shard` command that is left. Uninstall never turns IP forwarding off. On Linux, if forwarding is on, the note prints the command that turns it off.
+Uninstall stops and removes the background service, removes the files that setup installed, and on Linux removes the network bridge and firewall tables when no sandbox and no shard daemon still use them. Your data in `/var/lib/shard` stays, and so do tools that other software may also use. The closing note names what stays, and the command that removes each of these: on Linux the `/var/lib/shard.xfs` disk image and its `/etc/fstab` line, on a Mac the daemon logs in `/var/log/shard`, each shared tool that setup installed, and every `shard` command that is left. Uninstall never turns IP forwarding off. On Linux, if forwarding is on and no shard daemon still uses the bridge, the note prints the command that turns it off.
 
 On a machine that only connects to a remote server, run `shard setup`, choose **Connect to a remote server**, then **Remove this connection**. Then remove the CLI:
 
