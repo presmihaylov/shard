@@ -52,7 +52,7 @@ curl --unix-socket /var/lib/shard/shard.sock 'http://localhost/v0/sandboxes?limi
 
 ## Errors
 
-A refused request gets a `4xx` or `5xx` status and the [Error](#error) body. A `HEAD` request gets the status alone. Match on the `code`, never on the `message`. The error table in [docs/daemon.md](https://github.com/presmihaylov/shard/blob/main/docs/daemon.md#the-api-socket) lists every code and when the daemon returns it.
+A refused request gets a `4xx` or `5xx` status and the [Error](#error) body. A `HEAD` request gets the status alone. Match on the `code`, never on the `message`. [Errors and exit codes](/docs/reference/errors/#error-codes) lists every code and when the daemon returns it.
 
 ## WebSockets
 
