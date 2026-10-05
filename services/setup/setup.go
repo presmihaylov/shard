@@ -55,7 +55,7 @@ func NewHost(version string) (Host, error) {
 		Executable: executable,
 		Version:    version,
 		Releases:   releases,
-		HTTP:       http.DefaultClient,
+		HTTP:       newHTTPClient(idleTimeout),
 		Env:        os.Getenv,
 		Run: func(ctx context.Context, name string, args ...string) ([]byte, error) {
 			return exec.CommandContext(ctx, name, args...).CombinedOutput()

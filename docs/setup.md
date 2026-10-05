@@ -65,6 +65,9 @@ Setup stopped. Earlier completed steps remain in place.
 Run `shard setup` again to retry.
 ```
 
+A download fails once it receives nothing for 30 seconds. A slow download that still moves runs to
+the end.
+
 Every step is safe to run again, so a second `shard setup` picks up where the first stopped.
 
 ## An existing installation

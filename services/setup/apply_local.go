@@ -207,9 +207,9 @@ func (p *localPlan) download(ctx context.Context) (err error) {
 	return nil
 }
 
-// downloadCause words a network failure as client.DialCause does, so no socket address reaches the screen.
+// downloadCause words a network failure as client.DialCause does, so no socket address reaches the screen and every timeout reads the same.
 func downloadCause(err error) string {
-	if _, ok := errors.AsType[*net.OpError](err); ok {
+	if _, ok := errors.AsType[net.Error](err); ok {
 		return client.DialCause(err)
 	}
 
