@@ -1,0 +1,200 @@
+---
+title: How to give a sandbox an API key safely?
+description: Store a key on the host, grant it to the one host that needs it, and let the sandbox hold only a placeholder.
+sidebar:
+  order: 5
+---
+
+import { Tabs, TabItem } from '@astrojs/starlight/components';
+
+Store a key on the host, grant it to `api.openai.com`, and look at what the sandbox holds:
+
+<Tabs syncKey="lang">
+	<TabItem label="CLI">
+
+```sh
+printf '%s' "$OPENAI_API_KEY" | shard secret set --destination api.openai.com OPENAI_API_KEY
+shard create --name agent --memory 512MiB --secret OPENAI_API_KEY python:3.12
+shard exec agent sh -c 'echo $OPENAI_API_KEY'
+```
+
+	</TabItem>
+	<TabItem label="TypeScript">
+
+```ts
+import { Shard } from "useshards";
+
+const shard = new Shard();
+try {
+  await shard.secrets.set("OPENAI_API_KEY", {
+    value: process.env.OPENAI_API_KEY!,
+    destinations: ["api.openai.com"],
+  });
+  const sandbox = await shard.create({
+    name: "agent",
+    image: "python:3.12",
+    memoryMiB: 512,
+    secrets: ["OPENAI_API_KEY"],
+  });
+  const result = await sandbox.exec(["sh", "-c", "echo $OPENAI_API_KEY"]);
+  console.log(result.stdout);
+} finally {
+  shard.close();
+}
+```
+
+	</TabItem>
+	<TabItem label="Python">
+
+```python
+import os
+from useshards import Shard
+
+with Shard() as shard:
+    shard.secrets.set(
+        "OPENAI_API_KEY", value=os.environ["OPENAI_API_KEY"], destinations=["api.openai.com"]
+    )
+    sandbox = shard.create(
+        "python:3.12", name="agent", memory_mib=512, secrets=["OPENAI_API_KEY"]
+    )
+    print(sandbox.exec(["sh", "-c", "echo $OPENAI_API_KEY"]).stdout)
+```
+
+	</TabItem>
+</Tabs>
+
+The sandbox prints `mock-OPENAI_API_KEY`. That placeholder is all the sandbox ever holds. Code in the sandbox uses it as it would use the key. When a request goes to `api.openai.com` over HTTPS, shard puts the real key into its headers on the host, outside the sandbox.
+
+So an agent that reads its environment, dumps its memory, or posts everything it finds to another host gives away only the placeholder.
+
+**Caution: grant a key only to hosts that never send it back.** shard reads nothing out of a response. A granted host that echoes the headers it got, such as a debug page, returns the real key to the sandbox.
+
+## Keep the key out of your shell
+
+`shard secret set` reads the key from a pipe, as above. With no pipe and no value, it asks for the key with the echo off. Do not put the key on the command line: `ps` shows it while the command runs, and `shard secret set` warns you when you do.
+
+The key goes into one file on the host, readable by root only. `shard secret list` prints each name, its destinations and its placeholder, never the key.
+
+## Make the request the right way
+
+shard puts the key in only when the request matches all of these:
+
+- **It goes over HTTPS on port 443.** Plain HTTP, and any other port, carries the placeholder. So does a database password on 5432, or SMTP on 587.
+- **It goes to a granted destination.** A request to any other host carries the placeholder.
+- **The placeholder is in a header.** shard never puts the key in the path, the query or the body, because a host can quote those back in an error. API SDKs put the key in a header.
+- **The placeholder is there as it is.** HTTP Basic auth works, so `https://api:mock-KEY@host` works. Any other encoding or signing of the key does not.
+
+## Choose the destinations
+
+Repeat `--destination` for each host that needs the key. A destination may start with `*.` to cover every host under a domain that its owner controls:
+
+```sh
+printf '%s' "$GITHUB_TOKEN" | shard secret set --destination '*.github.com' GITHUB_TOKEN
+```
+
+shard refuses `*.com`, `*.co.uk`, `*.github.io`, a bare `*` and a `*` that is not the leftmost label.
+
+## A key whose shape the SDK checks
+
+Some SDKs check the shape of a key before they send it, and never send `mock-NAME`. Give those a placeholder of the right shape:
+
+<Tabs syncKey="lang">
+	<TabItem label="CLI">
+
+```sh
+printf '%s' "$STRIPE_KEY" | shard secret set --destination api.stripe.com --placeholder sk_test_placeholder01 STRIPE_KEY
+```
+
+	</TabItem>
+	<TabItem label="TypeScript">
+
+```ts
+await shard.secrets.set("STRIPE_KEY", {
+  value: process.env.STRIPE_KEY!,
+  destinations: ["api.stripe.com"],
+  placeholder: "sk_test_placeholder01",
+});
+```
+
+	</TabItem>
+	<TabItem label="Python">
+
+```python
+shard.secrets.set(
+    "STRIPE_KEY",
+    value=os.environ["STRIPE_KEY"],
+    destinations=["api.stripe.com"],
+    placeholder="sk_test_placeholder01",
+)
+```
+
+	</TabItem>
+</Tabs>
+
+A placeholder has 8 characters or more, and only letters, digits, `_`, `-` and `.`. It must not hold the key, and the key must not hold it.
+
+## Grant a key to a sandbox that exists
+
+A grant takes a stopped sandbox. A running one holds its environment in its processes, so the grant is refused with `sandbox <id> is running: secret grant takes a created or stopped sandbox: stop it first`:
+
+<Tabs syncKey="lang">
+	<TabItem label="CLI">
+
+```sh
+shard stop agent
+shard secret grant agent OPENAI_API_KEY
+shard start agent
+```
+
+	</TabItem>
+	<TabItem label="TypeScript">
+
+```ts
+await sandbox.stop();
+await shard.secrets.grant(sandbox, "OPENAI_API_KEY");
+await sandbox.start();
+```
+
+	</TabItem>
+	<TabItem label="Python">
+
+```python
+sandbox.stop()
+shard.secrets.grant(sandbox, "OPENAI_API_KEY")
+sandbox.start()
+```
+
+	</TabItem>
+</Tabs>
+
+`shard secret ungrant` takes the grant back, also from a stopped sandbox. A fork keeps the grants of its source. A snapshot holds none, so a create from a snapshot names its own `--secret`.
+
+## With a network policy
+
+A grant opens no host. If the sandbox has a network policy, the policy must also allow the granted host. See [network egress](https://github.com/presmihaylov/shard/blob/main/docs/egress.md).
+
+## Rotate a key
+
+Run `shard secret set` again with the same name and the new key. It keeps the destinations and the placeholder. A running sandbox uses the new key on its next request, and sees no change.
+
+A change of the placeholder is refused while a sandbox holds the secret. Ungrant it there first.
+
+## Clients that do not trust the proxy
+
+To put the key in, shard ends the TLS connection on the host with its own certificate authority. shard puts that certificate where the image reads its roots, and points `SSL_CERT_FILE`, `REQUESTS_CA_BUNDLE`, `NODE_EXTRA_CA_CERTS` and `CURL_CA_BUNDLE` at it. curl, Python, Node, Deno, Bun, Go, Ruby, PHP and .NET trust it with no change. Three kinds of client do not:
+
+- **Java** trusts its own keystore. Import the last certificate of `$SSL_CERT_FILE` into it, on JDK 9 or later:
+
+  ```sh
+  awk '/-BEGIN CERTIFICATE-/{c=""} {c=c $0 "\n"} END{printf "%s", c}' "$SSL_CERT_FILE" > /tmp/shard-proxy-ca.pem
+  keytool -importcert -noprompt -cacerts -storepass changeit -alias shard-proxy -file /tmp/shard-proxy-ca.pem
+  ```
+
+- **Rust with `webpki-roots`** compiles its roots in. Build with `rustls-native-certs` instead.
+- **A client that pins a certificate** refuses the proxy. Its request fails with a certificate error, and the key never goes out.
+
+## What this does not stop
+
+A sandbox that may call `api.openai.com` with the key may make any call the key allows. A compromised agent can run up a bill or read what the key can read. Scope the key at the provider: shard only keeps it out of the sandbox.
+
+On the `runc` provider, nothing isolates the sandbox from the host. Root in the sandbox is root on the host, and can read the stored key. The [secrets reference](https://github.com/presmihaylov/shard/blob/main/docs/secrets.md) has every rule.
