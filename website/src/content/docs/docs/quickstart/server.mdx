@@ -1,0 +1,113 @@
+---
+title: 'Quickstart: server'
+description: Set up a Linux host or a Mac to run sandboxes, with the shard daemon started at boot.
+sidebar:
+  order: 3
+---
+
+Install shard, then set up this machine to run sandboxes:
+
+```sh
+curl -fsSL https://useshards.com/install | sh
+shard setup --local --provider gvisor --start-at-boot=true -y
+```
+
+Then create a sandbox, run a command in it, and remove it:
+
+```sh
+sudo shard create --name demo --memory 512MiB alpine:3.20
+sudo shard exec demo echo hello
+sudo shard remove --force demo
+```
+
+Those commands set up a Linux host with gVisor. On a Mac, use `--provider vz` and leave out `sudo`. When `~/.local/bin` is not on your `PATH`, the installer prints the line that adds it.
+
+## What you need
+
+| Host | Providers | Background service |
+| --- | --- | --- |
+| Linux, x86_64 | `firecracker` (needs `/dev/kvm`), `gvisor`, `sysbox`, `runc` | systemd |
+| macOS 14 or later, Apple silicon | `vz` | launchd |
+
+Setup runs as you and uses `sudo` for the steps that need root. An Intel Mac cannot host sandboxes, but it can connect to a remote server.
+
+## Run the wizard
+
+Run `shard setup` with no options, or answer `Y` when the installer asks `Start the setup wizard?`. The wizard asks four things:
+
+1. **How do you want to use Shard?** Choose `Run sandboxes on this machine`.
+2. **Choose how Shard isolates your sandboxes.** The wizard lists all five providers. It marks each provider this host cannot run as unavailable and says why. It recommends macOS Virtualization on a supported Mac, Firecracker on Linux with `/dev/kvm`, and gVisor on other Linux hosts.
+3. **Start Shard automatically when this machine starts?** `Yes (recommended)` installs a service that starts the daemon at boot and restarts it after a crash.
+4. **Continue?** Setup first checks the host and shows every change. Nothing changes until you answer.
+
+Before it asks to continue, setup checks the operating system, the provider's requirements, administrator access, the install paths, disk space, download access, any earlier installation and the service manager. A failed check changes nothing. When a provider fails its own checks, setup asks you to choose another provider or exit. It never swaps one in for you.
+
+On a fresh Linux host with gVisor, the review looks like this:
+
+```text
+Ready to set up Shard
+
+Provider:          gVisor
+Automatic startup: Yes
+
+Setup will:
+  Install the tools required by gVisor: runsc.
+  Install shard and shard-init in /usr/local/bin.
+  Create Shard's data directory.
+  Configure and start a systemd service.
+
+Administrator access is required.
+
+Continue? [Y/n]
+```
+
+Setup then runs each step and ends with the commands to try next. If a step fails, setup says why and stops. Every step is safe to run again, so a second `shard setup` picks up where the first stopped.
+
+## Start at boot
+
+With `Yes`, setup installs a service and checks that the daemon answers before it reports success.
+
+| | Linux | macOS |
+| --- | --- | --- |
+| Service file | `/etc/systemd/system/shard.service` | `/Library/LaunchDaemons/shard.daemon.plist` |
+| Check it | `systemctl status shard` | `launchctl print system/shard.daemon` |
+| Logs | `sudo journalctl -u shard` | `/var/log/shard/daemon.log` |
+| Daemon runs as | root | your user |
+| Local commands | with `sudo` | without `sudo` |
+
+Both services restart the daemon one second after a crash, and leave it stopped after a clean exit. On Linux the API socket belongs to root, so local commands run with `sudo`. On a Mac the daemon runs as you and owns its data, so it needs no root.
+
+A sandbox outlives the daemon. When the daemon stops or restarts, every sandbox keeps running, and the next daemon takes them back.
+
+`shard daemon status`, with `sudo` on Linux, shows the version, the provider, the process details and the background tasks of the running daemon.
+
+## Run the daemon yourself
+
+With `No`, setup installs the provider's tools and the data directory, but no service. Start the daemon in a terminal of its own, and run your commands in another one:
+
+```sh
+sudo shard daemon --provider gvisor
+```
+
+On a Mac, run `shard daemon --provider vz` without `sudo`. Closing the terminal ends the daemon. The sandboxes keep running until a daemon takes them back.
+
+## The data directory
+
+The daemon keeps its state in `/var/lib/shard`: the sandbox records, the images, the secrets and the policies. Setup never asks for another directory.
+
+Firecracker copies a disk for each fork and snapshot. That is fast only on a filesystem that clones a file by sharing its blocks: XFS or Btrfs. On any other filesystem, the daemon makes an XFS image at `/var/lib/shard.xfs` and mounts it over `/var/lib/shard`. The image takes half the free space beside it, up to 100 GiB. Setup refuses Firecracker there when that filesystem has less than 20 GiB free, or when `/var/lib/shard` already holds files.
+
+## Script it
+
+Each question has a matching option, so a script runs the same checks as the wizard:
+
+```sh
+shard setup --local --provider firecracker --start-at-boot=true -y
+```
+
+Without a terminal, every question needs its option. Setup fails on a missing one and names it, and it never picks a value for you. `-y` answers only the confirmation and skips no check. `shard setup --help` lists every option and the exit codes.
+
+## Next steps
+
+- Setup never exposes the API. To reach the daemon from other machines, use `shard serve`, a separate process that checks a bearer token and passes each request to the daemon. See [the TCP front](https://github.com/presmihaylov/shard/blob/main/docs/daemon.md#the-tcp-front).
+- To check, repair, upgrade or uninstall shard, run `shard setup` again on the same host. See [Install](/docs/install/).
