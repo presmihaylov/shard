@@ -43,6 +43,27 @@ const sidebar = [
 	{ label: 'Help', items: dir('docs/help') },
 ].filter((entry) => entry.items.length > 0);
 
+// The landing's code panel and its Prism token colors, as a Shiki theme.
+const terminal = {
+	name: 'shard-terminal',
+	type: 'dark',
+	colors: {
+		'editor.background': '#030b13',
+		'editor.foreground': '#edf7ff',
+		'editor.selectionBackground': '#2D81BE66',
+	},
+	tokenColors: [
+		{ scope: ['comment', 'punctuation.definition.comment'], settings: { foreground: '#9eb9ce' } },
+		{ scope: ['keyword', 'storage', 'storage.type', 'storage.modifier'], settings: { foreground: '#91C4ED' } },
+		{ scope: ['string', 'string.quoted', 'punctuation.definition.string'], settings: { foreground: '#efe4dc' } },
+		{ scope: ['entity.name.function', 'support.function', 'meta.function-call'], settings: { foreground: '#d0f0ff' } },
+		{ scope: ['constant.numeric', 'constant.language', 'constant.language.boolean'], settings: { foreground: '#b9dcff' } },
+		{ scope: ['keyword.operator', 'punctuation'], settings: { foreground: '#d1e2ef' } },
+		{ scope: ['entity.name.type', 'entity.name.class', 'support.class', 'support.type'], settings: { foreground: '#ffffff' } },
+		{ scope: ['support.function.builtin', 'variable.language', 'entity.name.command'], settings: { foreground: '#badff9' } },
+	],
+};
+
 export default defineConfig({
 	site: 'https://useshards.com',
 	output: 'static',
@@ -51,42 +72,47 @@ export default defineConfig({
 		starlight({
 			title: 'shard',
 			description: 'Placeholder description for the shard documentation.',
+			favicon: '/shard-mark.svg',
 			customCss: [
-					'@fontsource-variable/geist/wght.css',
-					'@fontsource-variable/outfit/wght.css',
-					'@fontsource-variable/jetbrains-mono/wght.css',
-					'@fontsource/dela-gothic-one/latin-400.css',
-					'./src/styles/docs.css',
-				],
+				'@fontsource-variable/geist/wght.css',
+				'@fontsource-variable/jetbrains-mono/wght.css',
+				'@fontsource/gugi/latin-400.css',
+				'./src/styles/docs.css',
+			],
 			components: {
 				SiteTitle: './src/components/starlight/SiteTitle.astro',
 				SocialIcons: './src/components/starlight/SocialIcons.astro',
 				ThemeSelect: './src/components/starlight/ThemeSelect.astro',
 			},
 			sidebar,
-			// One night code panel in both themes, as the nairi docs do.
+			// The landing's terminal panel, dark in both themes.
 			expressiveCode: {
-				themes: ['github-dark'],
+				themes: [terminal],
 				useStarlightDarkModeSwitch: false,
 				useStarlightUiThemeColors: false,
 				styleOverrides: {
-					borderRadius: '8px',
-					borderColor: 'color-mix(in oklab, #dce6f0 14%, transparent)',
-					codeBackground: '#172230',
+					borderRadius: '11px',
+					borderColor: '#416a86',
+					codeBackground: '#030b13',
 					codeFontFamily: "'JetBrains Mono Variable', ui-monospace, monospace",
-					uiFontFamily: "'Geist Variable', ui-sans-serif, system-ui, sans-serif",
+					uiFontFamily: "'JetBrains Mono Variable', ui-monospace, monospace",
+					uiFontSize: '0.75rem',
 					frames: {
-						editorBackground: '#172230',
-						editorTabBarBackground: '#172230',
-						editorActiveTabBackground: '#172230',
-						editorActiveTabIndicatorBottomColor: 'transparent',
-						editorTabBarBorderBottomColor: 'color-mix(in oklab, #dce6f0 10%, transparent)',
-						terminalBackground: '#172230',
-						terminalTitlebarBackground: '#172230',
-						terminalTitlebarBorderBottomColor: 'color-mix(in oklab, #dce6f0 10%, transparent)',
-						terminalTitlebarForeground: 'color-mix(in oklab, #dce6f0 72%, transparent)',
+						editorBackground: '#030b13',
+						editorTabBarBackground: '#030b13',
+						editorTabBarBorderBottomColor: '#20384b',
+						editorActiveTabBackground: '#030b13',
+						editorActiveTabForeground: '#e2f4ff',
+						editorActiveTabIndicatorTopColor: 'transparent',
+						editorActiveTabIndicatorBottomColor: '#91C4ED',
+						editorActiveTabIndicatorHeight: '2px',
+						terminalBackground: '#030b13',
+						terminalTitlebarBackground: '#0c1c29',
+						terminalTitlebarForeground: '#a9c7dc',
+						terminalTitlebarBorderBottomColor: 'transparent',
+						terminalTitlebarDotsOpacity: '0',
 						frameBoxShadowCssValue: 'none',
-						inlineButtonForeground: 'color-mix(in oklab, #dce6f0 72%, transparent)',
+						inlineButtonForeground: '#91C4ED',
 						inlineButtonBorder: 'transparent',
 					},
 				},
