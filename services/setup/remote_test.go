@@ -9,6 +9,7 @@ import (
 	"io"
 	"log"
 	"maps"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -16,6 +17,7 @@ import (
 	"slices"
 	"strings"
 	"sync/atomic"
+	"syscall"
 	"testing"
 
 	"github.com/presmihaylov/shard/services/client"
@@ -428,6 +430,49 @@ func TestAnUntrustedCertificateExplainsSHARDCAFILE(t *testing.T) {
 		t.Errorf("offered %v, want no choice beyond retry, edit and exit", got)
 	}
 	noLeak(t, ui, err)
+}
+
+// A server nothing answers on fails the first step in the §10 shape: what failed, why, and what to check. (SHARD-657)
+func TestAnUnreachableServerSaysWhyAndWhatToCheck(t *testing.T) {
+	server := front(testKey, nil)
+	server.StartTLS()
+	url := server.URL
+	server.Close()
+	host, _ := testHost(t, nil)
+	ui := &fakeUI{
+		texts:   map[Question]string{AskURL: url},
+		secrets: map[Question]string{AskAPIKey: testKey},
+		selects: map[Question]string{AskRetry: "exit"},
+	}
+
+	err := (&Setup{Host: host, UI: ui}).remote(t.Context())
+
+	var stopped *StoppedError
+	if !errors.As(err, &stopped) || stopped.Step != "Reach the server" {
+		t.Fatalf("remote returned %v, want it stopped at the first step", err)
+	}
+	want := []string{"start 0", "fail 0: Could not reach " + url + ": connection refused. / Check the URL, and that shard serve or the proxy in front of it runs."}
+	if !slices.Equal(ui.lists[0].marks, want) {
+		t.Errorf("marked %v, want %v", ui.lists[0].marks, want)
+	}
+}
+
+// The dial failures a person meets most are worded plainly, and any other keeps the dialer's text. (SHARD-657)
+func TestDialCause(t *testing.T) {
+	for _, tc := range []struct {
+		err  error
+		want string
+	}{
+		{&net.OpError{Op: "dial", Net: "tcp", Err: &net.DNSError{Err: "no such host", Name: "shard.invalid", IsNotFound: true}}, "no such host"},
+		{&net.OpError{Op: "dial", Net: "tcp", Err: os.NewSyscallError("connect", syscall.ECONNREFUSED)}, "connection refused"},
+		{&net.OpError{Op: "dial", Net: "tcp", Err: context.DeadlineExceeded}, "connection timed out"},
+		{&net.OpError{Op: "dial", Net: "tcp", Err: &net.DNSError{Err: "i/o timeout", Name: "shard.example.com", IsTimeout: true}}, "connection timed out"},
+		{errors.New("remote error: tls: handshake failure"), "remote error: tls: handshake failure"},
+	} {
+		if got := dialCause(tc.err); got != tc.want {
+			t.Errorf("dialCause(%v) = %q, want %q", tc.err, got, tc.want)
+		}
+	}
 }
 
 // A declined save writes nothing and says how to use the connection, with the key as a placeholder. (SHARD-657)
