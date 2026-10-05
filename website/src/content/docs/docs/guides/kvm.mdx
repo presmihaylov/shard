@@ -73,10 +73,10 @@ The jailer makes `/dev/kvm` in each VM's jail under `/var/lib/shard` and starts 
 
 Each sandbox is one `firecracker` process. The daemon starts it through Firecracker's jailer, never as root:
 
-- **Its own user.** Each sandbox gets a uid and gid of its own, from 1879048192 up, so they do not overlap the usual system and subordinate ranges.
-- **Its own jail.** The VM runs chrooted in `/var/lib/shard/jail/firecracker/<id>/root`, in new pid and mount namespaces, with no capabilities and under Firecracker's seccomp filter.
-- **Its own disks.** The VM boots a read-only image of the sandbox's image, which shard builds once per image, and a writable disk of its own for everything the sandbox writes.
-- **shard's supervisor as PID 1.** Your command is its child. The sandbox stays `running` after the command exits, until `shard stop`.
+- Each sandbox gets a uid and gid of its own, from 1879048192 up, so they do not overlap the usual system and subordinate ranges.
+- The VM runs chrooted in `/var/lib/shard/jail/firecracker/<id>/root`, in new pid and mount namespaces, with no capabilities and under Firecracker's seccomp filter.
+- The VM boots a read-only image of the sandbox's image, which shard builds once per image, and a writable disk of its own for everything the sandbox writes.
+- shard's supervisor is PID 1 in the guest, and your command is its child. The sandbox stays `running` after the command exits, until `shard stop`.
 
 The guest's network joins the same bridge, `shard0`, as on the other Linux providers. An egress policy applies and logs the same way. The guest kernel has no IPv6, so a sandbox and any Docker inside it run IPv4 only.
 
@@ -139,7 +139,7 @@ To boot a kernel you built yourself, stop the service with `sudo systemctl stop 
 sudo env SHARD_KERNEL=/path/to/vmlinux-amd64 SHARD_KERNEL_SHA256=<its sha256> shard daemon --provider firecracker
 ```
 
-Set both variables. The daemon refuses to start with only one. The daemon still checks the hash, and refuses a file that does not match with `kernel checksum mismatch`. This is for kernel development only.
+Set both variables. With only one, the daemon fails when it prepares Firecracker, with `SHARD_KERNEL and SHARD_KERNEL_SHA256 must be set together`. The daemon still checks the hash, and refuses a file that does not match with `kernel checksum mismatch`. This is for kernel development only.
 
 ## When something fails
 
