@@ -234,8 +234,7 @@ A `--format json` call writes one value or nothing:
 | `name` | the sandbox has a `--name` |
 | `digest` | the provider created it; the image digest |
 | `snapshot` | `create --snapshot` made it; the snapshot id |
-| `kernel` | a microVM provider booted it; the guest kernel release tag |
-| `exit_status` | the main command exited at least once: `{"code": 0, "signal": 0}` |
+| `exit_status` | the main command exited since the last start: `{"code": 0, "signal": 0}` |
 | `stopped_reason` | shard stopped it with no operator, or `shard-init` died on a stop |
 | `failed_reason` | `state` is `failed` |
 | `command` | `run` made it; the app's argv |
@@ -244,7 +243,7 @@ A `--format json` call writes one value or nothing:
 | `policy` | it holds a network policy |
 | `started_at` | the daemon started it at least once |
 
-`restart.policy` is `no`, `on-failure` or `always`. `retries` is absent when there is no cap. `backoff` is the first wait in seconds. `count` is the number of restarts in this run, and `last_at` is absent before the first one. `gave_up` is true when an exit asked for a restart after the retries ran out. `ended` is true when no restart follows the last exit.
+`restart.policy` is `on-failure` or `always`. `retries` is absent when there is no cap. `backoff` is the first wait in seconds. `count` is the number of restarts in this run, and `last_at` is absent before the first one. `gave_up` is true when an exit asked for a restart after the retries ran out. `ended` is true when no restart follows the last exit.
 
 `inspect` prints one sandbox record. It adds `egress` when the record names a network policy:
 
@@ -326,14 +325,14 @@ A `--format json` call writes one value or nothing:
 [{"name": "api-only", "rule_count": 2}]
 ```
 
-`policy show` prints `{name, rules, dns, holders}`. `dns` is `open` or `closed`, and `holders` names the sandboxes whose record names the policy.
+`policy show` prints `{name, rules, dns, holders}`. `dns` is `open` or `closed`. `holders` names the sandboxes whose record names the policy, and is absent when there are none.
 
 `tokens list` prints the token ledger. `expires_at` is `null` for a token that never expires, and `status` is `active`, `revoked` or `expired`:
 
 ```json
 [
   {
-    "id": "0123456789abcdef",
+    "id": "0123456789abcdef0123456789abcdef",
     "name": "build-agent",
     "issued_at": "2026-10-01T09:30:00Z",
     "expires_at": null,
