@@ -25,8 +25,10 @@ func TestRunAsksLocalOrRemoteFirst(t *testing.T) {
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
+			host, _ := testHost(t, nil)
+			host.OS, host.Arch = c.host.OS, c.host.Arch
 			ui := &fakeUI{}
-			err := (&Setup{Host: c.host, UI: ui}).Run(t.Context())
+			err := (&Setup{Host: host, UI: ui}).Run(t.Context())
 			if !errors.Is(err, errUnscripted) {
 				t.Fatalf("Run without an answer: %v", err)
 			}

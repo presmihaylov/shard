@@ -95,9 +95,9 @@ func (s *Setup) existing(ctx context.Context, inst Installation) error {
 
 	switch choice {
 	case 0:
-		return s.switched(ctx, func(ctx context.Context) error { return s.repair(ctx, m, inst.Service) })
+		return s.switched(ctx, func(ctx context.Context, removal string) error { return s.repair(ctx, m, inst.Service, removal) })
 	case 1:
-		return s.switched(ctx, func(ctx context.Context) error { return s.upgrade(ctx, m, inst.Service) })
+		return s.switched(ctx, func(ctx context.Context, removal string) error { return s.upgrade(ctx, m, inst.Service, removal) })
 	case 2:
 		return s.uninstall(ctx, m)
 	}
@@ -105,8 +105,8 @@ func (s *Setup) existing(ctx context.Context, inst Installation) error {
 	return nil
 }
 
-// repair re-runs the steps of the recorded choices, so the provider and the startup setting stay what they were.
-func (s *Setup) repair(ctx context.Context, m Manifest, service ServiceState) error {
+// repair re-runs the steps of the recorded choices, so the provider and the startup setting stay what they were; removal is the saved remote's review line, if any.
+func (s *Setup) repair(ctx context.Context, m Manifest, service ServiceState, removal string) error {
 	var problems []string
 	gone := map[string]bool{}
 	for _, f := range m.Files {
@@ -159,6 +159,9 @@ func (s *Setup) repair(ctx context.Context, m Manifest, service ServiceState) er
 	lines = append(lines, "", "Setup will run these steps again:")
 	for _, st := range steps {
 		lines = append(lines, "  "+st.Title)
+	}
+	if removal != "" {
+		lines = append(lines, "", "Then setup will:", removal)
 	}
 	if len(runtime) > 0 && service == ServiceNone {
 		lines = append(lines, "", "Then restart `shard daemon` and run `shard daemon status`, which puts back the files it keeps in "+DataDir+".")
@@ -256,8 +259,8 @@ type replacement struct {
 	tmp  string
 }
 
-// upgrade fetches and verifies every binary before it asks, and replaces none until all of them passed.
-func (s *Setup) upgrade(ctx context.Context, m Manifest, service ServiceState) (err error) {
+// upgrade fetches and verifies every binary before it asks, and replaces none until all of them passed; removal is the saved remote's review line, if any.
+func (s *Setup) upgrade(ctx context.Context, m Manifest, service ServiceState, removal string) (err error) {
 	h := s.Host
 	rel, err := LatestRelease(ctx, h)
 	if err != nil {
@@ -304,6 +307,9 @@ func (s *Setup) upgrade(ctx context.Context, m Manifest, service ServiceState) (
 	lines := []string{"", "Setup will replace:"}
 	for _, t := range targets {
 		lines = append(lines, "  "+t.path)
+	}
+	if removal != "" {
+		lines = append(lines, "", "Then setup will:", removal)
 	}
 	lines = append(lines, "", "The provider stays "+providerTitle(m.Provider)+".")
 	switch service {

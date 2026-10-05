@@ -90,6 +90,8 @@ type Config struct {
 	// Shim is the shard-vz-shim binary, and Kernel the guest kernel it boots.
 	Shim   string
 	Kernel string
+	// KernelTag names Kernel in the record of every sandbox this provider boots.
+	KernelTag string
 	// Init is a static linux/arm64 shard-init, which becomes the initrd's /init.
 	Init string
 	// Dir is where the provider writes the initrd it builds from Init.
@@ -138,6 +140,9 @@ func New(cfg Config) (*Provider, error) {
 }
 
 func (p *Provider) Name() string { return Name }
+
+// GuestKernel is the tag of the kernel a fresh boot runs; a restored VM runs the one its memory image holds.
+func (p *Provider) GuestKernel() string { return p.cfg.KernelTag }
 
 // CheckResources is checkMemory before any record exists, so a refused --memory leaves no failed sandbox in ls.
 func (p *Provider) CheckResources(res models.Resources) error { return checkResources(res) }

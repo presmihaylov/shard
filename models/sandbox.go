@@ -19,7 +19,7 @@ type Sandbox struct {
 	// Snapshot is the id of the snapshot the sandbox was created from, empty for one made from an image.
 	Snapshot string `json:"snapshot,omitempty"`
 	Provider string `json:"provider"`
-	// Kernel is the guest kernel a microVM substrate booted, as its release tag; empty on a container substrate.
+	// Kernel is the guest kernel a microVM substrate last booted, as its release tag or local-<sha12>; empty on a container substrate.
 	Kernel string `json:"kernel,omitempty"`
 	State  State  `json:"state"`
 	// ExitStatus is the last entrypoint exit, nil until one happens. A sandbox has none of its own.

@@ -161,8 +161,18 @@ func (s *Service) lastRestarts(ctx context.Context, sb models.Sandbox) (models.R
 	}
 
 	count, err := s.cfg.Provider.Restarts(ctx, sb.ID)
+	// Pres ruled to log and continue: the host empties an oversized exit file, so this sandbox keeps its last recorded count.
+	if errors.Is(err, models.ErrExitFileTooLarge) {
+		s.report(fmt.Sprintf("sandbox %s: %v; the record keeps its last restart count", sb.ID, err))
+
+		return sb.Restart.RestartCount, nil
+	}
 	if err != nil {
 		return models.RestartCount{}, fmt.Errorf("read the restart count of sandbox %s: %w", sb.ID, err)
+	}
+	// A run's count is zero only while its record's is, so a zero read is shard-init's rewrite of the exit record in flight (SHARD-634).
+	if count == (models.RestartCount{}) {
+		return sb.Restart.RestartCount, nil
 	}
 
 	return count, nil

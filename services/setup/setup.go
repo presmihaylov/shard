@@ -13,6 +13,7 @@ import (
 	"strings"
 
 	"github.com/presmihaylov/shard/pkg/term"
+	"github.com/presmihaylov/shard/services/client"
 )
 
 // DataDir is the one data directory setup provisions; it never asks for another.
@@ -140,18 +141,37 @@ const (
 	modeRemote
 )
 
-// Run asks the first question and runs the local or the remote half.
+// localOption is the first screen's choice to set up this machine; why says what no provider here can run.
+func localOption(why []string) term.Option {
+	return term.Option{Name: "local", Label: "Run sandboxes on this machine", Lines: why}
+}
+
+// Run asks the first question: the saved connection's menu when there is one, else local or remote.
 func (s *Setup) Run(ctx context.Context) error {
+	path, err := client.ConfigPath(s.Host.Env)
+	if err != nil {
+		return err
+	}
+	saved, err := client.LoadConfig(path)
+	if err != nil {
+		return err
+	}
 	why := noProvider(Providers(ctx, s.Host))
+	if saved.Remote != "" {
+		return s.saved(ctx, path, saved, why)
+	}
+
+	local := localOption(why)
+	local.Default = why == nil
 	mode, err := s.UI.Select(ctx, AskMode, "How do you want to use Shard?", []term.Option{
-		modeLocal:  {Name: "local", Label: "Run sandboxes on this machine", Lines: why, Default: why == nil},
+		modeLocal:  local,
 		modeRemote: {Name: "remote", Label: "Connect to a remote server", Default: why != nil},
 	})
 	if err != nil {
 		return err
 	}
 	if mode == modeRemote {
-		return s.remote(ctx)
+		return s.connect(ctx, path, client.Config{})
 	}
 
 	return s.runLocal(ctx)
@@ -166,21 +186,32 @@ func (s *Setup) runLocal(ctx context.Context) error {
 	if found {
 		return s.existing(ctx, inst)
 	}
-
-	return s.switched(ctx, s.local)
-}
-
-// switched runs a local job after the offer to drop a saved remote, and drops it only once the job succeeds.
-func (s *Setup) switched(ctx context.Context, job func(context.Context) error) error {
-	finish, err := s.switchToLocal(ctx)
+	h, err := s.switchToLocal(ctx)
 	if err != nil {
 		return err
 	}
-	if err := job(ctx); err != nil {
+
+	return s.local(ctx, h)
+}
+
+// switched runs a local job after the offer to drop a saved remote, and drops it only once the job succeeds; removal is the job's review line.
+func (s *Setup) switched(ctx context.Context, job func(ctx context.Context, removal string) error) error {
+	h, err := s.switchToLocal(ctx)
+	if err != nil {
 		return err
 	}
+	if err := job(ctx, h.review); err != nil {
+		return err
+	}
+	lines, err := h.finish(ctx)
+	if err != nil {
+		return err
+	}
+	if len(lines) == 0 {
+		return nil
+	}
 
-	return finish(ctx)
+	return s.UI.Print(append([]string{""}, lines...)...)
 }
 
 // apply runs the steps under a live checklist, and on a failure marks the step, says what stays and stops.

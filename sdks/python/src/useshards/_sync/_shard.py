@@ -270,7 +270,7 @@ class Secrets:
         return SecretList(secrets, builtins.list(warnings))
 
     def remove(self, name: str, *, force: bool = False) -> None:
-        """Remove a secret no sandbox is granted; force ungrants it from each first."""
+        """Remove a secret no sandbox is granted; force removes it anyway, and a grant left redeems nothing."""
         self._transport.send(
             lambda: remove_secret.sync_detailed(name, client=self._transport.api, force=force or UNSET)
         )

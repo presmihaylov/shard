@@ -1,0 +1,116 @@
+---
+title: Snapshots
+description: The routes that save a stopped sandbox's files as a snapshot and manage snapshots.
+sidebar:
+  order: 5
+---
+
+This saves the files of the stopped sandbox `web` as a snapshot, then creates a new sandbox from it:
+
+```sh
+curl --unix-socket /var/lib/shard/shard.sock -X POST -H 'Content-Type: application/json' -d '{"sandbox":"web","name":"web-base"}' http://localhost/v0/snapshots
+curl --unix-socket /var/lib/shard/shard.sock -X POST -H 'Content-Type: application/json' -d '{"snapshot":"web-base","name":"web-3","resources":{"memory_mib":512}}' http://localhost/v0/sandboxes
+```
+
+To create a sandbox from a snapshot, use the create route in [Sandboxes](/docs/reference/api/sandboxes/#create-a-sandbox).
+
+{/* make openapi writes this part from the routes. Edit the routes, not this part. */}
+
+Each route answers an error with the [Error](/docs/reference/api/#error) body, unless its responses say otherwise.
+
+## Snapshot a sandbox
+
+`POST /v0/snapshots` · scope `sandbox:write`
+
+**Request body**
+
+[SnapshotRequest](#snapshotrequest) as `application/json`, required.
+
+**Responses**
+
+| Status | Body |
+| --- | --- |
+| 201 | [Snapshot](#snapshot) as `application/json` |
+
+## List snapshots
+
+`GET /v0/snapshots` · scope `sandbox:read`
+
+**Parameters**
+
+| Name | In | Type | Required | Description |
+| --- | --- | --- | --- | --- |
+| `limit` | query | integer (int64) | no | The most rows a page holds; none answers the whole list. At least 1. |
+| `cursor` | query | string | no | The next of the page before; this page starts after it. |
+
+**Responses**
+
+| Status | Body |
+| --- | --- |
+| 200 | [SnapshotsResponse](#snapshotsresponse) as `application/json` |
+
+## Read a snapshot
+
+`GET /v0/snapshots/{ref}` · scope `sandbox:read`
+
+**Parameters**
+
+| Name | In | Type | Required | Description |
+| --- | --- | --- | --- | --- |
+| `ref` | path | string | yes | The snapshot id or name. |
+
+**Responses**
+
+| Status | Body |
+| --- | --- |
+| 200 | [Snapshot](#snapshot) as `application/json` |
+
+## Remove a snapshot
+
+`DELETE /v0/snapshots/{ref}` · scope `sandbox:delete`
+
+**Parameters**
+
+| Name | In | Type | Required | Description |
+| --- | --- | --- | --- | --- |
+| `ref` | path | string | yes | The snapshot id or name. |
+
+**Responses**
+
+| Status | Body |
+| --- | --- |
+| 204 | none |
+
+## Objects
+
+### Snapshot
+
+| Field | Type | Required | Description |
+| --- | --- | --- | --- |
+| `created_at` | string (date-time) | yes |  |
+| `digest` | string | yes |  |
+| `disk_mib` | integer (int64) | yes |  |
+| `id` | string | yes |  |
+| `image` | string | yes |  |
+| `memory_mib` | integer (int64) | yes |  |
+| `name` | string | no |  |
+| `provider` | string | yes |  |
+| `size` | integer (int64) | yes | The storage bytes the copy takes on the host, which is neither disk\_mib nor the logical size of its files. |
+| `source` | string | yes |  |
+| `source_name` | string | no |  |
+
+### SnapshotRequest
+
+| Field | Type | Required | Description |
+| --- | --- | --- | --- |
+| `name` | string | no |  |
+| `sandbox` | string | yes | At least 1 character. |
+
+### SnapshotsResponse
+
+| Field | Type | Required |
+| --- | --- | --- |
+| `next` | string or null | yes |
+| `snapshots` | array of [Snapshot](#snapshot) | yes |
+
+{/* make openapi writes everything above this line. Write by hand below it. */}

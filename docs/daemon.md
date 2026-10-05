@@ -23,7 +23,13 @@ terminal that runs `shard daemon` otherwise.
 `shard daemon` itself is the one exception, because it is the daemon process rather than a client
 of one. No verb starts the daemon. A resident root process is installed on purpose, through the
 systemd unit in `packaging/systemd/shard.service`. A release carries the unit beside the two Linux
-binaries, so an install needs no checkout. As root:
+binaries, so an install needs no checkout.
+
+Install the host tools and the provider's runtime first. Every Linux provider runs `ip`, `nft` and
+`mkfs.ext4`, from the packages `iproute2`, `nftables` and `e2fsprogs`. Without `nft` the daemon
+still starts, but every `shard create` fails and the `proxy` and `dns` tasks restart in a loop. An
+install of `nftables` fixes it with no restart. The runtime is `runsc`, `sysbox-runc` or `runc`
+(`docs/provider.md`). Then, as root:
 
 ```
 base=https://github.com/presmihaylov/shard/releases/latest/download
@@ -37,8 +43,7 @@ systemctl enable --now shard
 ```
 
 The daemon looks for the guest supervisor at `/usr/local/bin/shard-init`, and `SHARD_INIT_PATH`
-names another path. Install the provider's runtime first: `runsc`, `sysbox-runc` or `runc`
-(`docs/provider.md`). From a checkout, `make build-linux build-shard-init-linux` builds the same two
+names another path. From a checkout, `make build-linux build-shard-init-linux` builds the same two
 binaries into `bin/`, and the unit is the file in `packaging/systemd`.
 
 On a Mac the equivalent is the LaunchDaemon in `packaging/launchd`, which `docs/mac.md` explains
@@ -330,13 +335,17 @@ that ignores TERM ends too. So what the app forked ends with it, while `shard-in
 session run on. A process that leaves the group, with `setsid`, runs until `stop`.
 
 The policy is fixed at create. `shard-init` gets it as flags in the bundle and has no control
-channel, so nothing can change it on a running sandbox. `shard-init` counts every start again in a
-file. Every second, the `restart-policy` task reads that file for every running sandbox that has a
-policy, and copies the count onto the record. The record is therefore at most a second behind. A
-`stop` reads the count once more before it writes the stopped record, and the wait of a run copies
-it as soon as the policy ends. On gVisor, runc and Sysbox
-that file sits under `/.shard`, where the guest can write it. The daemon therefore reads only a
-regular file of at most 4 KiB, and refuses a symbolic link, a fifo or a device.
+channel, so nothing can change it on a running sandbox. `shard-init` counts every start again on
+its exit record, beside the exit status. Every second, the `restart-policy` task reads that count for
+every running sandbox that has a policy, and copies it onto the record. The record is therefore at
+most a second behind. A `stop` reads the count once more before it writes the stopped record, and
+the wait of a run copies it as soon as the policy ends. On gVisor, runc and Sysbox the record rides
+fd 0, the exit channel the host holds, so the count and `ended` have the same boundary as the exit
+code. Nothing under `/.shard` feeds them, and on Sysbox they are guest-attested as the exit code is
+(see `docs/provider.md`). An exit file over 4 KiB never holds up a stop: the host empties it, the
+record keeps its last count, and the daemon logs one line. A start clears the supervisor's files
+whatever their type, so a directory or a link the guest leaves at the ready file never fails the
+next start.
 The record carries `restart`: `{"policy", "retries", "backoff",
 "count", "last_at", "gave_up", "ended"}`, absent on a sandbox without a policy, and `retries` is omitted when
 the count is unlimited. `shard list` shows it in the `RESTART` column:

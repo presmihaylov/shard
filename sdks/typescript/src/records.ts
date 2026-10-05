@@ -69,6 +69,7 @@ export interface SandboxInfo {
   /** The snapshot the sandbox was made from. */
   snapshot: string | null;
   provider: string;
+  /** The tag of the guest kernel a microVM last booted; null on a container substrate. */
   kernel: string | null;
   state: SandboxState;
   stoppedReason: string | null;
