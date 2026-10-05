@@ -1,4 +1,4 @@
-/* The nairi design tokens, copied from @nairi/ui: the one place a color, radius, font or shadow is defined. */
+/* The design tokens, in the winter palette: the one place a color, radius, font or shadow is defined. */
 @custom-variant dark (&:where([data-theme=dark], [data-theme=dark] *));
 
 /* static, so every token reaches :root even when no utility names it; the Starlight mapping in docs.css reads them. */
@@ -26,53 +26,53 @@
 	--shadow-md: 0 4px 12px rgba(0, 0, 0, 0.08), 0 1px 3px rgba(0, 0, 0, 0.04);
 	--shadow-lg: 0 8px 24px rgba(0, 0, 0, 0.10), 0 2px 6px rgba(0, 0, 0, 0.04);
 
-	--color-background: #FAFAFA;
-	--color-foreground: #413f3c;
+	--color-background: #F7FAFC;
+	--color-foreground: #1E2B3A;
 	--color-card: #FFFFFF;
-	--color-card-foreground: #413f3c;
-	--color-primary: #413f3c;
-	--color-primary-foreground: #FAFAFA;
-	--color-muted: #F3F2F0;
-	--color-muted-foreground: #63605A;
-	--color-accent: #413f3c;
-	--color-accent-foreground: #FAFAFA;
-	--color-destructive: #EA3E67;
+	--color-card-foreground: #1E2B3A;
+	--color-primary: #1E2B3A;
+	--color-primary-foreground: #F7FAFC;
+	--color-muted: #E9F0F6;
+	--color-muted-foreground: #4A5D71;
+	--color-accent: #1E2B3A;
+	--color-accent-foreground: #F7FAFC;
+	--color-destructive: #CC3659;
 	--color-destructive-foreground: #FFFFFF;
-	--color-scrim: rgba(43, 40, 36, 0.42);
-	--color-link: #4C6FC9;
-	--color-border: #E8E7E4;
-	--color-input: #E8E7E4;
-	--color-ring: #413f3c;
-	--color-surface: #F5F4F2;
-	--color-border-medium: #DDDCD9;
+	--color-scrim: rgba(14, 24, 36, 0.42);
+	--color-link: #1D6FB8;
+	--color-border: #DCE5EE;
+	--color-input: #DCE5EE;
+	--color-ring: #1E2B3A;
+	--color-surface: #EEF3F8;
+	--color-border-medium: #C9D5E1;
 }
 
 :root {
-	--docs-surface: #FAF8F3;
+	--docs-surface: #F3F7FB;
 }
 
 /* Unlayered, because the Starlight layer order puts base before theme and a layered dark block would lose to the light tokens. */
 [data-theme="dark"] {
-	--color-background: #241f1b;
-	--color-foreground: #DED6C9;
-	--color-card: #322b26;
-	--color-card-foreground: #DED6C9;
-	--color-primary: #DED6C9;
-	--color-primary-foreground: #241f1b;
-	--color-muted: #37302a;
-	--color-muted-foreground: #A49A8D;
-	--color-accent: #DED6C9;
-	--color-accent-foreground: #241f1b;
-	--color-destructive: #F1748F;
-	--color-destructive-foreground: #241f1b;
-	--color-scrim: rgba(8, 6, 5, 0.58);
-	--color-link: #93A8EF;
-	--color-border: #47403a;
-	--color-input: #47403a;
-	--color-ring: #DED6C9;
-	--color-surface: #211c18;
-	--color-border-medium: #574d45;
-	--docs-surface: #241f1b;
+	--color-background: #0E1621;
+	--color-foreground: #DCE6F0;
+	--color-card: #172230;
+	--color-card-foreground: #DCE6F0;
+	--color-primary: #DCE6F0;
+	--color-primary-foreground: #0E1621;
+	--color-muted: #1C2938;
+	--color-muted-foreground: #93A6BA;
+	--color-accent: #DCE6F0;
+	--color-accent-foreground: #0E1621;
+	--color-destructive: #F27891;
+	--color-destructive-foreground: #0E1621;
+	--color-scrim: rgba(3, 7, 12, 0.6);
+	--color-link: #8CC6EF;
+	--color-border: #25344A;
+	--color-input: #25344A;
+	--color-ring: #DCE6F0;
+	--color-surface: #0B121B;
+	--color-border-medium: #32465C;
+	--docs-surface: #0E1621;
 }
 
 @layer base {
