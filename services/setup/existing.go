@@ -10,6 +10,7 @@ import (
 	"path/filepath"
 	"slices"
 	"strings"
+	"time"
 
 	"github.com/presmihaylov/shard/pkg/term"
 	"github.com/presmihaylov/shard/pkg/vzshim"
@@ -145,6 +146,9 @@ func (s *Setup) repair(ctx context.Context, m Manifest, service ServiceState) er
 		restart := Step{Title: "Restart the daemon", Do: func(ctx context.Context) error { return restartService(ctx, s.Host, m) }}
 		steps = slices.Insert(steps, len(steps)-1, restart)
 	}
+	if len(runtime) > 0 && service != ServiceNone {
+		steps = append(steps, Step{Title: "Restore the provider's files", Do: func(ctx context.Context) error { return s.restoreRuntime(ctx, m.Provider) }})
+	}
 	lines := []string{"Setup found these problems:", ""}
 	for _, p := range problems {
 		lines = append(lines, "  "+p)
@@ -154,7 +158,7 @@ func (s *Setup) repair(ctx context.Context, m Manifest, service ServiceState) er
 		lines = append(lines, "  "+st.Title)
 	}
 	if len(runtime) > 0 && service == ServiceNone {
-		lines = append(lines, "", "Then restart `shard daemon`, which puts back the files it keeps in "+DataDir+".")
+		lines = append(lines, "", "Then restart `shard daemon` and run `shard daemon status`, which puts back the files it keeps in "+DataDir+".")
 	}
 	lines = append(lines, "", "Your settings and sandbox data stay in place.", "")
 	if err := s.UI.Print(lines...); err != nil {
@@ -185,6 +189,26 @@ func runtimeFiles(h Host, provider string) ([]string, error) {
 	}
 
 	return append(files, k), nil
+}
+
+// restoreRuntime asks the daemon for its status, which builds its provider and so writes the runtime files, then checks each is back.
+func (s *Setup) restoreRuntime(ctx context.Context, provider string) error {
+	ask := privileged
+	if s.Host.OS == "darwin" {
+		ask = run
+	}
+	if out, err := ask(ctx, s.Host, shardBinary, "--remote", "", "daemon", "status"); err != nil {
+		return &Problem{Lines: []string{fmt.Sprintf("The daemon could not start %s: %s.", providerTitle(provider), notReady(out, err))}}
+	}
+	missing, err := s.missingRuntime(ctx, provider)
+	if err != nil {
+		return err
+	}
+	if len(missing) > 0 {
+		return &Problem{Lines: []string{"The daemon did not put back " + strings.Join(missing, ", ") + "."}}
+	}
+
+	return nil
 }
 
 // missingRuntime is each runtime file that is gone; on Linux the data root is root's, so the check runs with administrator access.
@@ -405,6 +429,9 @@ func stage(ctx context.Context, h Host, t replacement, next string) error {
 	return err
 }
 
+// restartWait covers the moment after the restart command returns, while the service manager still brings the daemon up.
+var restartWait = 30 * time.Second
+
 func restartService(ctx context.Context, h Host, m Manifest) error {
 	cmd := []string{"systemctl", "restart", serviceName}
 	if h.OS == "darwin" {
@@ -414,15 +441,24 @@ func restartService(ctx context.Context, h Host, m Manifest) error {
 		return fmt.Errorf("restart the daemon: %w", err)
 	}
 
-	state, err := serviceState(ctx, h, m)
-	if err != nil {
-		return err
+	deadline := time.Now().Add(restartWait)
+	for {
+		state, err := serviceState(ctx, h, m)
+		if err != nil {
+			return err
+		}
+		if state == ServiceActive {
+			return nil
+		}
+		if time.Now().After(deadline) {
+			return fmt.Errorf("the daemon is %s %s after the restart", strings.ToLower(string(state)), restartWait)
+		}
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case <-time.After(verifyPoll):
+		}
 	}
-	if state != ServiceActive {
-		return fmt.Errorf("the daemon is %s after the restart", strings.ToLower(string(state)))
-	}
-
-	return nil
 }
 
 // uninstall refuses while a sandbox is left, and keeps saved data and shared tools.

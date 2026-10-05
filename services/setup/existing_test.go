@@ -9,7 +9,9 @@ import (
 	"slices"
 	"strings"
 	"testing"
+	"time"
 
+	"github.com/presmihaylov/shard/pkg/vzshim"
 	"github.com/presmihaylov/shard/services/client"
 	"github.com/presmihaylov/shard/services/kernel"
 )
@@ -23,6 +25,10 @@ type fakeHost struct {
 	launchd  string
 	// launchdErr makes launchctl print fail with launchd as its output.
 	launchdErr bool
+	// starting is how many state reads still find the daemon coming up.
+	starting int
+	// rebuilt are the files daemon status writes, as a provider build does.
+	rebuilt []string
 }
 
 func newFakeHost(t *testing.T) *fakeHost {
@@ -44,9 +50,18 @@ func (f *fakeHost) run(ctx context.Context, name string, args ...string) ([]byte
 	f.calls = append(f.calls, strings.Join(append([]string{name}, args...), " "))
 
 	switch name {
+	case shardBinary:
+		for _, p := range f.rebuilt {
+			f.write(f.t, p, "rebuilt")
+		}
+		return nil, nil
 	case "systemctl":
 		if args[0] != "is-active" {
 			return nil, nil
+		}
+		if f.starting > 0 {
+			f.starting--
+			return []byte("activating\n"), errors.New("exit status 3")
 		}
 		if f.isActive == "active" {
 			return []byte("active\n"), nil
@@ -55,6 +70,10 @@ func (f *fakeHost) run(ctx context.Context, name string, args ...string) ([]byte
 	case "launchctl":
 		if args[0] == "print" && f.launchdErr {
 			return []byte(f.launchd), errors.New("exit status 113")
+		}
+		if args[0] == "print" && f.starting > 0 {
+			f.starting--
+			return []byte("state = spawn scheduled\n"), nil
 		}
 		return []byte(f.launchd), nil
 	case "mkdir", "install", "mv", "rm", "rmdir", "find", "sh":
@@ -344,6 +363,86 @@ func TestRepairFindsADeletedVMShimAndKernel(t *testing.T) {
 	if restart < 0 || verify < restart {
 		t.Fatalf("a running daemon is not restarted before the verify: %q", ui.printed)
 	}
+	if restore := slices.Index(ui.printed, "  Restore the provider's files"); restore != verify+1 {
+		t.Fatalf("the files are not restored right after the verify: %q", ui.printed)
+	}
+}
+
+func TestRepairRestoresTheRuntimeFiles(t *testing.T) {
+	k, err := kernel.Path(DataDir, "arm64")
+	if err != nil {
+		t.Fatal(err)
+	}
+	files := append(vzshim.Paths(filepath.Join(DataDir, vzshim.Dir)), k)
+	for _, c := range []struct {
+		name    string
+		rebuilt []string
+		want    string
+	}{
+		{name: "all back", rebuilt: files},
+		{name: "kernel still gone", rebuilt: files[:len(files)-1], want: "The daemon did not put back " + k + "."},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			f := newFakeHost(t)
+			f.rebuilt = c.rebuilt
+			h := f.host(nil)
+			h.OS, h.Arch = "darwin", "arm64"
+
+			err := (&Setup{Host: h, UI: &fakeUI{}}).restoreRuntime(t.Context(), VZ)
+			if !f.called(shardBinary + " --remote  daemon status") {
+				t.Fatalf("calls = %v, want a daemon status that builds the provider", f.calls)
+			}
+			if c.want == "" && err != nil {
+				t.Fatalf("restore = %v", err)
+			}
+			if c.want != "" && (err == nil || !strings.Contains(err.Error(), c.want)) {
+				t.Fatalf("restore = %v, want %q", err, c.want)
+			}
+		})
+	}
+}
+
+func TestRestartServiceWaitsForTheDaemon(t *testing.T) {
+	wait, poll := restartWait, verifyPoll
+	restartWait, verifyPoll = 50*time.Millisecond, time.Millisecond
+	t.Cleanup(func() { restartWait, verifyPoll = wait, poll })
+	for _, c := range []struct {
+		name, os, restart string
+		starting          int
+		// up is the state the daemon settles in once it stops starting.
+		up   bool
+		want string
+	}{
+		{name: "systemd", os: "linux", restart: "systemctl restart shard", starting: 3, up: true},
+		{name: "launchd", os: "darwin", restart: "launchctl kickstart -k " + launchdLabel, starting: 3, up: true},
+		{name: "systemd never up", os: "linux", restart: "systemctl restart shard", want: "the daemon is inactive 50ms after the restart"},
+		{name: "launchd never up", os: "darwin", restart: "launchctl kickstart -k " + launchdLabel, want: "the daemon is inactive 50ms after the restart"},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			f := newFakeHost(t)
+			f.starting = c.starting
+			f.isActive, f.launchd = "failed", "state = not running"
+			if c.up {
+				f.isActive, f.launchd = "active", "state = running"
+			}
+			h := f.host(nil)
+			h.OS = c.os
+
+			err := restartService(t.Context(), h, Manifest{StartAtBoot: true})
+			if !f.called(c.restart) {
+				t.Fatalf("calls = %v, want %q", f.calls, c.restart)
+			}
+			if c.want == "" && err != nil {
+				t.Fatalf("restart = %v", err)
+			}
+			if c.want != "" && (err == nil || err.Error() != c.want) {
+				t.Fatalf("restart = %v, want %q", err, c.want)
+			}
+			if f.starting != 0 {
+				t.Fatalf("restart returned with %d state reads left of the start", f.starting)
+			}
+		})
+	}
 }
 
 func TestRepairFindsADeletedTool(t *testing.T) {
@@ -377,6 +476,9 @@ func TestRepairFindsADeletedTool(t *testing.T) {
 			said(t, ui, "  "+c.tool+" is missing.", c.restart)
 			if restarts := slices.Contains(ui.printed, "  Restart the daemon"); restarts != (c.restart != "") {
 				t.Errorf("restart the daemon = %t, want %t: %q", restarts, c.restart != "", ui.printed)
+			}
+			if restores := slices.Contains(ui.printed, "  Restore the provider's files"); restores != (c.restart != "") {
+				t.Errorf("restore the provider's files = %t, want %t: %q", restores, c.restart != "", ui.printed)
 			}
 		})
 	}

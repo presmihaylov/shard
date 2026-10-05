@@ -69,8 +69,8 @@ Every step is safe to run again, so a second `shard setup` picks up where the fi
 On a host it set up before, `shard setup` shows the version, the provider and the service, and
 offers to check or repair the installation, upgrade Shard, uninstall it, or exit.
 
-- **Check or repair** inspects the tools, the permissions and the service, and shows each change
-  before it makes one. It keeps the settings and the data.
+- **Check or repair** inspects the tools, the provider's files in `/var/lib/shard`, the permissions
+  and the service, and shows each change before it makes one. It keeps the settings and the data.
 - **Upgrade** downloads and verifies the new release before it replaces anything, keeps the old
   binary until the new one checks out, and says before it restarts the daemon.
 - **Uninstall** stops and removes the service and the files setup installed. It refuses while
