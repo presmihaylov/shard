@@ -27,6 +27,9 @@ func (a App) tokensMint(_ context.Context, args []string) error {
 	if flags.NArg() != 0 {
 		return fmt.Errorf("tokens mint takes no arguments, got %s", gotArgs(flags.Args()))
 	}
+	if err := a.hostOnly("tokens mint"); err != nil {
+		return err
+	}
 	if *name == "" {
 		return errors.New("tokens mint needs --name: it is the subject of the token")
 	}
@@ -72,6 +75,9 @@ func (a App) tokensList(_ context.Context, args []string) error {
 	if flags.NArg() != 0 {
 		return fmt.Errorf("tokens list takes no arguments, got %s", gotArgs(flags.Args()))
 	}
+	if err := a.hostOnly("tokens list"); err != nil {
+		return err
+	}
 	path, err := a.ledgerPath(*signingKeyFile)
 	if err != nil {
 		return fmt.Errorf("tokens list: %w", err)
@@ -97,13 +103,15 @@ func (a App) tokensList(_ context.Context, args []string) error {
 }
 
 // tokensRevoke marks a token revoked by its id, or every token of a subject with --name, so the next request fails.
-// Put the flags before the id: flag parsing stops at the first argument.
 func (a App) tokensRevoke(_ context.Context, args []string) error {
 	flags := newFlags("tokens revoke")
 	signingKeyFile := flags.String("signing-key-file", "", "")
 	name := flags.String("name", "", "")
 
 	if err := parseVerb(flags, args); err != nil {
+		return err
+	}
+	if err := a.hostOnly("tokens revoke"); err != nil {
 		return err
 	}
 
@@ -124,7 +132,7 @@ func (a App) tokensRevoke(_ context.Context, args []string) error {
 	}
 
 	if flags.NArg() != 1 {
-		return fmt.Errorf("tokens revoke takes one token id, got %s; put the flags before the id", gotArgs(flags.Args()))
+		return fmt.Errorf("tokens revoke takes one token id, got %s", gotArgs(flags.Args()))
 	}
 	id := flags.Arg(0)
 	found, err := serve.RevokeToken(path, id)

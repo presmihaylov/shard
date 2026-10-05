@@ -301,13 +301,13 @@ values. `no` is the default. `on-failure` starts the entrypoint again after an e
 after a signal. `always` starts it again after every exit. `--restart-retries` (`retries`) caps the
 starts again in one run. With no cap, `on-failure` starts the entrypoint again without end. `always`
 never gives up and takes no retries at all. `--restart-backoff` (`backoff`, in whole seconds,
-default 1) is the wait before the first start again, and it doubles each time, up to 60 s. Both
-flags need a policy. The three flags go on `shard run` only, and `shard create` and `shard exec`
-refuse each one by name. A body with a policy other than `no` and no `command` answers 400 naming
-`restart.policy`. A run that lasts ten seconds since its last start clears the count, so a
-slow crash loop never spends a finite cap. At the cap, `on-failure` gives up and the entrypoint
-stays exited. A stop then puts its last exit in `exit_status`, as after any exit. A stop during the
-wait ends the sandbox at once and drops the start that was due.
+default 1) is the wait before the first start again, and it doubles each time, up to 60 s. A backoff
+over 60 answers 400. Both flags need a policy. The three flags go on `shard run` only, and
+`shard create` and `shard exec` refuse each one by name. A body with a policy other than `no` and no
+`command` answers 400 naming `restart.policy`. A run that lasts ten seconds since its last start
+clears the count, so a slow crash loop never spends a finite cap. At the cap, `on-failure` gives up
+and the entrypoint stays exited. A stop then puts its last exit in `exit_status`, as after any exit.
+A stop during the wait ends the sandbox at once and drops the start that was due.
 
 The policy ends when no start again follows an exit: any exit under `no`, a clean exit under
 `on-failure`, the give-up at the cap, or a stop of the app. `shard-init` then writes `ended`, and that

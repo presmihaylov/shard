@@ -392,7 +392,7 @@ func selfSigned(t *testing.T, dir string) (string, string) {
 	return certPath, keyPath
 }
 
-// A front refuses every local route, so a local-only verb under --remote fails before it dials, naming itself, never as a bare 403. (SHARD-488)
+// A front refuses every local route and a host verb would report this host as the server, so either fails under --remote before it dials or touches the root. (SHARD-488, SHARD-598)
 func TestALocalOnlyVerbUnderARemoteFailsBeforeItDials(t *testing.T) {
 	accepted := acceptCount(t)
 
@@ -404,11 +404,28 @@ func TestALocalOnlyVerbUnderARemoteFailsBeforeItDials(t *testing.T) {
 		"image remove":  {"image", "remove", "alpine:3.20"},
 		"image prune":   {"image", "prune"},
 		"daemon status": {"daemon", "status"},
+		"daemon":        {"daemon"},
+		"serve":         {"serve", "--listen", "127.0.0.1:0"},
+		"info":          {"info"},
+		"tokens mint":   {"tokens", "mint", "--name", "ci"},
+		"tokens list":   {"tokens", "list"},
+		"tokens revoke": {"tokens", "revoke", "0123456789abcdef"},
 	} {
-		app := App{Version: "test", Root: t.TempDir(), Remote: remote, Out: io.Discard}
-		err := app.Run(t.Context(), args)
+		root := t.TempDir()
+		app := App{Version: "test", Root: root, Remote: remote, Out: io.Discard}
+		// A regression runs the daemon or the front, so the deadline ends it rather than the test.
+		ctx, cancel := context.WithTimeout(t.Context(), 5*time.Second)
+		err := app.Run(ctx, args)
+		cancel()
 		if want := "shard " + verb + " runs on the daemon host only"; err == nil || !strings.Contains(err.Error(), want) {
 			t.Errorf("%s under --remote returned %v, want %q", verb, err, want)
+		}
+		entries, err := os.ReadDir(root)
+		if err != nil {
+			t.Fatalf("read the root: %v", err)
+		}
+		if len(entries) != 0 {
+			t.Errorf("%s under --remote left %d entries in the root, want none", verb, len(entries))
 		}
 	}
 
