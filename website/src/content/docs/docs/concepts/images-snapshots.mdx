@@ -97,7 +97,7 @@ refusing plaintext http to <host>: start shard daemon with --insecure-registry <
 
 To allow such a registry, start the daemon with `--insecure-registry <host>`. You can repeat the option for more registries.
 
-The daemon's `--timeout` limits each download, and the default is `30m`. The download also fails if a registry accepts the connection and then sends nothing for 30 seconds.
+The daemon's `--timeout` limits each download, and the default is `30m`. A registry request also fails if the server does not send its response headers within 30 seconds.
 
 When the registry refuses access, `shard create` fails, and the error says so:
 
@@ -150,7 +150,7 @@ How the copy is made depends on the provider:
 | --- | --- |
 | gVisor, Sysbox, runc | the files the sandbox wrote, and `/tmp` |
 | Firecracker | the sandbox's disk, as a clone that shares blocks |
-| vz | the sandbox's disk image, as an APFS clone |
+| vz | the sandbox's disk image, as an APFS clone where supported, or a full copy otherwise |
 
 ### List and inspect snapshots
 
@@ -210,4 +210,4 @@ A sandbox made from the snapshot keeps its own files, so nothing stops the remov
 
 A snapshot copies the files of a stopped sandbox. It works on every provider, and the new sandbox starts fresh, with no processes.
 
-A fork copies the memory and the files of a running sandbox, and the copy continues from the same moment. Fork needs a provider that supports it: gVisor, Firecracker, or vz on macOS 14 or later. Sysbox and runc refuse it.
+A fork copies the memory and the files of a running sandbox, and the copy continues from the same moment. Fork needs a provider that supports it: gVisor, Firecracker, or vz on Apple silicon with macOS 14 or later. Sysbox and runc refuse it.
