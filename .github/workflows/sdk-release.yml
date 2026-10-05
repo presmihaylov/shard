@@ -1,38 +1,47 @@
 name: sdk release
 
-# Builds one SDK under its sdk-<language>-v<version> tag on main into a draft GitHub release; nothing goes to npm or PyPI.
+# Builds, checks and packs the SDKs at one commit into the artifacts sdk-typescript and sdk-python; sdk-publish.yml publishes them.
 on:
-  push:
-    tags: ['sdk-typescript-v*', 'sdk-python-v*']
+  workflow_call:
+    inputs:
+      sdk:
+        description: typescript, python or both
+        type: string
+        required: true
+      ref:
+        description: the commit to build, the run's own when empty
+        type: string
+        default: ''
+  workflow_dispatch:
+    inputs:
+      sdk:
+        description: the SDK to build
+        type: choice
+        options: [both, typescript, python]
+        default: both
+      ref:
+        description: the commit to build, the run's own when empty
+        type: string
+        default: ''
 
 permissions:
   contents: read
 
 env:
   UV_VERSION: 0.5.9
+  REF: ${{ inputs.ref || github.sha }}
 
 jobs:
-  # A tag on a feature head must release nothing, so every build waits on this.
-  on-main:
-    name: the tag is on main
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-        with:
-          fetch-depth: 0
-
-      - name: check
-        run: git merge-base --is-ancestor "$GITHUB_SHA" origin/main || { echo "$GITHUB_SHA is not on main"; exit 1; }
-
   sdk-gate:
     name: sdk release gate
-    needs: on-main
     runs-on: ubuntu-latest
     env:
       SHARD_REMOTE: https://127.0.0.1:8443
       SHARD_GATE_HOST_PATHS: /mnt/reflink
     steps:
       - uses: actions/checkout@v4
+        with:
+          ref: ${{ env.REF }}
 
       - uses: actions/setup-go@v5
         with:
@@ -105,7 +114,7 @@ jobs:
       - uses: actions/upload-artifact@v4
         if: failure()
         with:
-          name: sdk-gate
+          name: sdk-gate-${{ inputs.sdk }}
           path: ${{ runner.temp }}/gate
           if-no-files-found: ignore
 
@@ -119,11 +128,13 @@ jobs:
 
   typescript:
     name: typescript
-    needs: [on-main, sdk-gate]
-    if: startsWith(github.ref_name, 'sdk-typescript-v')
+    needs: sdk-gate
+    if: inputs.sdk == 'typescript' || inputs.sdk == 'both'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+        with:
+          ref: ${{ env.REF }}
 
       - uses: actions/setup-node@v4
         with:
@@ -131,100 +142,124 @@ jobs:
           cache: npm
           cache-dependency-path: sdks/typescript/package-lock.json
 
-      - name: the tag names the package version
-        working-directory: sdks/typescript
-        run: |
-          version=$(node -p 'require("./package.json").version')
-          if [ "sdk-typescript-v$version" != "$GITHUB_REF_NAME" ]; then
-            echo "the tag is $GITHUB_REF_NAME, but the package says $version"
-            exit 1
-          fi
-
       - name: check
         run: make sdk-ts-check
 
       - name: pack
         working-directory: sdks/typescript
-        run: npm pack
+        run: |
+          echo "VERSION=$(node -p 'require("./package.json").version')" >>"$GITHUB_ENV"
+          mkdir "$RUNNER_TEMP/sdk"
+          npm pack --pack-destination "$RUNNER_TEMP/sdk"
+
+      # A published GitHub release is the record of its version's files, so the registries get those bytes.
+      - name: take the files of a published release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: sdk-typescript-v${{ env.VERSION }}
+        run: |
+          if ! gh api "repos/$GITHUB_REPOSITORY/releases/tags/$TAG" >/dev/null 2>"$RUNNER_TEMP/err"; then
+            grep -q 'HTTP 404' "$RUNNER_TEMP/err" || { cat "$RUNNER_TEMP/err"; exit 1; }
+            echo "no release holds $TAG, so this build ships"
+            exit 0
+          fi
+          rm -r "$RUNNER_TEMP/sdk"
+          gh release download "$TAG" --repo "$GITHUB_REPOSITORY" --dir "$RUNNER_TEMP/sdk"
+          cd "$RUNNER_TEMP/sdk"
+          sha256sum -c SHA256SUMS
+          rm SHA256SUMS
+          echo "the release $TAG holds the files that ship"
+
+      - name: the tarball names the package version
+        working-directory: ${{ runner.temp }}/sdk
+        run: |
+          [ "$(ls)" = "useshards-$VERSION.tgz" ] || { echo "expected only useshards-$VERSION.tgz, found: $(ls)"; exit 1; }
+          packed=$(tar -xOzf "useshards-$VERSION.tgz" package/package.json | jq -er .version)
+          [ "$packed" = "$VERSION" ] || { echo "the tarball says $packed, but the package says $VERSION"; exit 1; }
 
       # A clean project proves the tarball installs and imports with only the dependencies it declares.
       - name: install the tarball into a clean project
         run: |
-          mkdir /tmp/clean
-          cd /tmp/clean
+          mkdir "$RUNNER_TEMP/clean"
+          cd "$RUNNER_TEMP/clean"
           npm init -y
-          npm install --no-audit --no-fund "$GITHUB_WORKSPACE"/sdks/typescript/useshards-*.tgz
-          node --input-type=module -e 'import { version } from "useshards"; console.log(version)'
+          npm install --no-audit --no-fund "$RUNNER_TEMP/sdk/useshards-$VERSION.tgz"
+          imported=$(node --input-type=module -e 'import { version } from "useshards"; console.log(version)')
+          [ "$imported" = "$VERSION" ] || { echo "the installed package says $imported, not $VERSION"; exit 1; }
+
+      - name: sums
+        working-directory: ${{ runner.temp }}/sdk
+        run: sha256sum -- * >SHA256SUMS
 
       - uses: actions/upload-artifact@v4
         with:
-          name: sdk
-          path: sdks/typescript/useshards-*.tgz
+          name: sdk-typescript
+          path: ${{ runner.temp }}/sdk
+          if-no-files-found: error
 
   python:
     name: python
-    needs: [on-main, sdk-gate]
-    if: startsWith(github.ref_name, 'sdk-python-v')
+    needs: sdk-gate
+    if: inputs.sdk == 'python' || inputs.sdk == 'both'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+        with:
+          ref: ${{ env.REF }}
 
       - uses: astral-sh/setup-uv@v10.2.0
         with:
           version: ${{ env.UV_VERSION }}
-
-      - name: the tag names the package version
-        working-directory: sdks/python
-        run: |
-          version=$(uv run --locked python -c 'import useshards; print(useshards.__version__)')
-          if [ "sdk-python-v$version" != "$GITHUB_REF_NAME" ]; then
-            echo "the tag is $GITHUB_REF_NAME, but the package says $version"
-            exit 1
-          fi
 
       - name: check
         run: make sdk-py-check
 
       - name: build
         working-directory: sdks/python
-        run: uv build
+        run: |
+          echo "VERSION=$(uv run --locked python -c 'import useshards; print(useshards.__version__)')" >>"$GITHUB_ENV"
+          uv build --out-dir "$RUNNER_TEMP/sdk"
+
+      # A published GitHub release is the record of its version's files, so the registries get those bytes.
+      - name: take the files of a published release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: sdk-python-v${{ env.VERSION }}
+        run: |
+          if ! gh api "repos/$GITHUB_REPOSITORY/releases/tags/$TAG" >/dev/null 2>"$RUNNER_TEMP/err"; then
+            grep -q 'HTTP 404' "$RUNNER_TEMP/err" || { cat "$RUNNER_TEMP/err"; exit 1; }
+            echo "no release holds $TAG, so this build ships"
+            exit 0
+          fi
+          rm -r "$RUNNER_TEMP/sdk"
+          gh release download "$TAG" --repo "$GITHUB_REPOSITORY" --dir "$RUNNER_TEMP/sdk"
+          cd "$RUNNER_TEMP/sdk"
+          sha256sum -c SHA256SUMS
+          rm SHA256SUMS
+          echo "the release $TAG holds the files that ship"
+
+      - name: the wheel and the sdist name the package version
+        working-directory: ${{ runner.temp }}/sdk
+        run: |
+          want=$(printf '%s\n' "useshards-$VERSION-py3-none-any.whl" "useshards-$VERSION.tar.gz" | sort)
+          [ "$(ls | sort)" = "$want" ] || { echo "expected $want, found: $(ls)"; exit 1; }
+          sdist=$(tar -xOzf "useshards-$VERSION.tar.gz" "useshards-$VERSION/PKG-INFO" | sed -n 's/^Version: //p')
+          [ "$sdist" = "$VERSION" ] || { echo "the sdist says $sdist, but the package says $VERSION"; exit 1; }
 
       # The wheel must install and import with only its declared dependencies.
       - name: install the wheel into a clean venv
-        working-directory: sdks/python
         run: |
-          uv venv /tmp/clean
-          uv pip install --python /tmp/clean dist/*.whl
-          /tmp/clean/bin/python -c 'import useshards; print(useshards.__version__)'
+          uv venv "$RUNNER_TEMP/clean"
+          uv pip install --python "$RUNNER_TEMP/clean" "$RUNNER_TEMP/sdk/useshards-$VERSION-py3-none-any.whl"
+          imported=$("$RUNNER_TEMP/clean/bin/python" -c 'import useshards; print(useshards.__version__)')
+          [ "$imported" = "$VERSION" ] || { echo "the installed package says $imported, not $VERSION"; exit 1; }
+
+      - name: sums
+        working-directory: ${{ runner.temp }}/sdk
+        run: sha256sum -- * >SHA256SUMS
 
       - uses: actions/upload-artifact@v4
         with:
-          name: sdk
-          path: sdks/python/dist/
-
-  # Only this job can write, so no package script ever runs with a token that can.
-  release:
-    name: draft the release
-    needs: [typescript, python]
-    if: ${{ !cancelled() && (needs.typescript.result == 'success' || needs.python.result == 'success') }}
-    runs-on: ubuntu-latest
-    permissions:
-      contents: write
-    steps:
-      - uses: actions/download-artifact@v4
-        with:
-          name: sdk
-          path: dist
-
-      # Never the latest release: docs/mac.md downloads shard itself from releases/latest.
-      - name: draft the release
-        env:
-          GH_TOKEN: ${{ github.token }}
-        run: |
-          case "$GITHUB_REF_NAME" in
-            sdk-typescript-v*) title="useshards (TypeScript) ${GITHUB_REF_NAME#sdk-typescript-v}" ;;
-            sdk-python-v*) title="useshards (Python) ${GITHUB_REF_NAME#sdk-python-v}" ;;
-          esac
-          cd dist
-          sha256sum * > SHA256SUMS
-          gh release create "$GITHUB_REF_NAME" --repo "$GITHUB_REPOSITORY" --target "$GITHUB_SHA" --title "$title" --draft --latest=false --notes "Built by sdk-release.yml from $GITHUB_SHA. Install from these assets: the SDK is on neither npm nor PyPI." *
+          name: sdk-python
+          path: ${{ runner.temp }}/sdk
+          if-no-files-found: error
