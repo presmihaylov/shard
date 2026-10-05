@@ -655,8 +655,8 @@ func checkLocalRoutesRefused(t *testing.T, address, name, token string, locals [
 	t.Helper()
 
 	unknown := readAll(t, askRoute(t, address, token, http.MethodGet, "/v0/nonesuch")) //nolint:bodyclose // askRoute closes the body in a cleanup
-	if unknown != forbidden+"\n" {
-		t.Fatalf("%s: an unknown route answered %q, want the forbidden body", name, unknown)
+	if unknown != unrouted+"\n" {
+		t.Fatalf("%s: an unknown route answered %q, want the unrouted body", name, unknown)
 	}
 	for _, r := range locals {
 		path := strings.NewReplacer("{id}", "s1", "{ref...}", "alpine").Replace(r.Pattern)

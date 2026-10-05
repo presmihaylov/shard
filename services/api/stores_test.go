@@ -221,7 +221,7 @@ func TestSecretListCarriesNoValue(t *testing.T) {
 	}
 
 	warnings, ok := body["warnings"].([]any)
-	if !ok || len(warnings) != 1 || warnings[0] != "secret broken: its record cannot be read" {
+	if !ok || len(warnings) != 1 || warnings[0] != "secret broken cannot be read; ask the server administrator to check the daemon log" {
 		t.Errorf("the warnings are %v, want the one secret that does not decode, by name alone", body["warnings"])
 	}
 	if !strings.Contains(s.log.String(), "/var/lib/shard/secrets/broken") {

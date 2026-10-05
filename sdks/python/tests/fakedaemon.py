@@ -149,11 +149,18 @@ class FakeDaemon:
         self.requests: list[tuple[str, str, bytes]] = []
         self.targets: list[str] = []
         self.routes: dict[tuple[str, str], Answer | Callable[[], Answer | None]] = {}
-        self.outcomes: list[Any] = []
+        self._outcomes: list[Any] = []
         self.errors: list[BaseException] = []
         self._threads: list[threading.Thread] = []
         self._lock = threading.Lock()
         threading.Thread(target=self._accept, daemon=True).start()
+
+    @property
+    def outcomes(self) -> list[Any]:
+        """Each session's result once its connection ends: the client can return before the session does."""
+        for thread in list(self._threads):
+            thread.join(5.0)
+        return self._outcomes
 
     def close(self, timeout: float = 5.0) -> None:
         self._server.close()
@@ -217,7 +224,7 @@ class FakeDaemon:
             "HTTP/1.1 101 Switching Protocols\r\nUpgrade: websocket\r\nConnection: Upgrade\r\n"
             f"Sec-WebSocket-Accept: {accept}\r\n\r\n".encode()
         )
-        self.outcomes.append(entry(Peer(conn)))
+        self._outcomes.append(entry(Peer(conn)))
 
 
 def _answer(conn: Conn, status: int, body: Any) -> None:

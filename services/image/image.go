@@ -246,6 +246,11 @@ func Canonical(ref string) (string, error) {
 	return registry.Canonical(ref)
 }
 
+// DigestOf is the digest a by-digest reference names, empty when the reference names a tag.
+func DigestOf(ref string) (string, bool) {
+	return registry.DigestOf(ref)
+}
+
 // List returns every pulled image, ordered by reference.
 func (s *Service) List() ([]Image, error) {
 	cached, err := s.store.List()
@@ -320,16 +325,22 @@ func (s *Service) unindex(ref string, free func() error) error {
 	}
 
 	// The artifacts go first: index.json is the record of what the store holds, so it changes last.
-	for _, digest := range orphaned {
-		for _, path := range []string{s.rootfsDir(digest), s.diskPath(digest), s.erofsPath(digest)} {
-			staged := filepath.Join(filepath.Dir(path), stagingPrefix+"rm-"+filepath.Base(path))
-			if err := os.Rename(path, staged); err != nil && !errors.Is(err, os.ErrNotExist) {
-				return fmt.Errorf("stage %s for removal: %w", path, err)
-			}
-		}
+	moved, err := s.stageRemoval(orphaned)
+	if err != nil {
+		return errors.Join(err, restoreRemoval(moved))
+	}
+	err = s.store.Remove(ref)
+	if err == nil || errors.Is(err, ErrNotReclaimed) {
+		return err
 	}
 
-	return s.store.Remove(ref)
+	// The index rename can succeed before its directory sync fails.
+	_, indexErr := s.store.Orphaned(ref)
+	if errors.Is(indexErr, ErrNotFound) {
+		return err
+	}
+
+	return errors.Join(err, indexErr, restoreRemoval(moved))
 }
 
 func (s *Service) describe(img registry.Image) (Image, error) {

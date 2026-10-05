@@ -463,10 +463,10 @@ func TestCreateRefusesAMemoryBoundBelowTheMinimum(t *testing.T) {
 		t.Fatalf("Create = %v, want a refusal that names the sandbox and the minimum", err)
 	}
 
-	// Zero is unbounded on Linux; a VM has no unbounded memory, so the refusal names the provider and the flag instead of a default.
+	// Zero is unbounded on Linux; a VM has no unbounded memory, so the refusal names the provider and the field instead of a default.
 	spec.Resources.MemoryMiB = 0
 	err = h.provider.Create(t.Context(), spec)
-	for _, want := range []string{spec.ID, "provider firecracker", "--memory 0", "--memory 128MiB"} {
+	for _, want := range []string{spec.ID, "provider firecracker", "needs resources.memory_mib", "set it to 128 MiB or more"} {
 		if err == nil || !strings.Contains(err.Error(), want) {
 			t.Fatalf("Create with --memory 0 = %v, want %q named", err, want)
 		}
@@ -491,7 +491,7 @@ func TestCheckResourcesRefusesWhatCreateRefuses(t *testing.T) {
 	if err := h.provider.CheckResources(models.Resources{MemoryMiB: 128, VCPUs: 32}); err != nil {
 		t.Fatalf("CheckResources(128, 32) = %v, want nil", err)
 	}
-	for disk, want := range map[int64]string{1: "at least 11 MiB of disk", 10: "at least 11 MiB of disk", 129: "use 128 or 131 MiB"} {
+	for disk, want := range map[int64]string{1: "under the 11 MiB provider firecracker needs", 10: "under the 11 MiB provider firecracker needs", 129: "set resources.disk_mib to 128 MiB or 131 MiB"} {
 		err := h.provider.CheckResources(models.Resources{MemoryMiB: 128, DiskMiB: disk})
 		if err == nil || !strings.Contains(err.Error(), want) {
 			t.Fatalf("CheckResources(--disk %d) = %v, want %q", disk, err, want)
@@ -622,11 +622,19 @@ func TestADroppedControlStreamIsDialedAgain(t *testing.T) {
 	}
 }
 
-// A guest that floods every control stream is dialed a few times a second at most, and exec and stop still answer (SHARD-408).
+// A guest that floods every control stream, by oversized lines or by queued events, is dialed a few times a second at most, and exec and stop still answer (SHARD-408, SHARD-550).
 func TestAGuestThatFloodsEveryControlStreamIsDialedAFewTimesASecondAtMost(t *testing.T) {
+	for _, flooding := range []string{floodEveryFile, floodEventsFile} {
+		t.Run(flooding, func(t *testing.T) {
+			floodEveryControlStream(t, flooding)
+		})
+	}
+}
+
+func floodEveryControlStream(t *testing.T, flooding string) {
 	h := newHarness(t)
 	spec, pid := h.runLong(t)
-	for _, marker := range []string{dialsFile, floodEveryFile} {
+	for _, marker := range []string{dialsFile, flooding} {
 		if err := os.WriteFile(filepath.Join(spec.StateDir, marker), nil, 0o600); err != nil {
 			t.Fatal(err)
 		}
@@ -2622,5 +2630,25 @@ func TestAdoptStagingDropsACutPauseStage(t *testing.T) {
 
 	if _, err := os.Stat(tmp); !errors.Is(err, os.ErrNotExist) {
 		t.Errorf("the staging %s survived adopt, want it dropped (err %v)", tmp, err)
+	}
+}
+
+// A restore whose checkpoint overlay is missing must leave the live overlay in place, so a failed copy never bricks a sandbox (SHARD-589).
+func TestRestoreFilesKeepsTheLiveOverlayWhenTheCopyFails(t *testing.T) {
+	stateDir, checkpoint := t.TempDir(), t.TempDir()
+	live := filepath.Join(stateDir, bundle.OverlayDiskFile)
+	if err := os.WriteFile(live, []byte("live"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	// The checkpoint has no overlay, so the copy fails and the swap never runs.
+	if err := firecracker.RestoreFiles(checkpoint, stateDir); err == nil {
+		t.Fatal("restoreFiles with no checkpoint overlay = nil, want an error")
+	}
+	got, err := os.ReadFile(live)
+	if err != nil {
+		t.Fatalf("the live overlay after a failed restore: %v, want it kept", err)
+	}
+	if string(got) != "live" {
+		t.Errorf("the live overlay = %q, want it unchanged", got)
 	}
 }

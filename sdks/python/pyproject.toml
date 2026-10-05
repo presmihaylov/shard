@@ -4,6 +4,7 @@ dynamic = ["version"]
 description = "The Python SDK for shard, the sandbox manager."
 readme = "README.md"
 license = "Apache-2.0"
+license-files = ["LICENSE", "NOTICE"]
 requires-python = ">=3.11"
 dependencies = [
     "httpx>=0.27,<1",
@@ -38,7 +39,7 @@ path = "src/useshards/_version.py"
 packages = ["src/useshards"]
 
 [tool.hatch.build.targets.sdist]
-include = ["src/useshards", "README.md"]
+include = ["src/useshards", "README.md", "LICENSE", "NOTICE"]
 
 [tool.ruff]
 line-length = 120

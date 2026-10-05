@@ -44,7 +44,7 @@ func fail(err error) error {
 // newError answers Huma's own refusals in the daemon's shape: a bad request is invalid_request whatever status Huma picked.
 func newError(status int, msg string, errs ...error) huma.StatusError {
 	if status == http.StatusRequestEntityTooLarge {
-		return &apiError{status: status, Object: ErrorObject{Code: models.CodeBodyTooLarge, Message: "decode the request body: http: request body too large"}}
+		return &apiError{status: status, Object: ErrorObject{Code: models.CodeBodyTooLarge, Message: bodyTooLarge}}
 	}
 	if status >= http.StatusInternalServerError {
 		return &apiError{status: status, Object: ErrorObject{Code: models.CodeInternal, Message: internalText}, cause: errors.New(withDetails(msg, errs))}
@@ -272,6 +272,8 @@ func (h *Handler) register(mux *http.ServeMux) huma.API {
 		}
 		e.serve(api, op)
 	}
+	// A record carries the backoff its request may leave out, and the two share one field.
+	registry.Map()["Restart"].Required = append(registry.Map()["Restart"].Required, "backoff")
 	nullStructs(registry)
 
 	// The mux answers an unknown path with a JSON error, like every other error body on this socket.
