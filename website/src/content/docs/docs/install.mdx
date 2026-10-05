@@ -1,20 +1,44 @@
 ---
 title: Install
-description: Install the Shard CLI with one command, on Linux or macOS.
+description: Install the shard CLI with one command on Linux or macOS, and the TypeScript and Python SDKs from npm and PyPI.
 ---
 
-Install the Shard CLI with one command:
+import { TabItem, Tabs } from '@astrojs/starlight/components';
+
+Install the shard CLI with one command, or add an SDK to your project:
+
+<Tabs syncKey="lang">
+<TabItem label="CLI">
 
 ```sh
 curl -fsSL https://useshards.com/install | sh
 ```
 
-The installer puts the CLI at `~/.local/bin/shard`. It needs no root and changes nothing else on the machine. When a terminal is attached, it then offers to start `shard setup`, which sets up this machine as a sandbox host or connects it to a remote Shard server.
+</TabItem>
+<TabItem label="TypeScript">
+
+```sh
+npm install useshards
+```
+
+</TabItem>
+<TabItem label="Python">
+
+```sh
+pip install useshards
+```
+
+</TabItem>
+</Tabs>
+
+The installer puts the CLI at `~/.local/bin/shard`. It needs no root and changes nothing else on the machine. When a terminal is attached, it then offers to start `shard setup`, which sets up this machine as a sandbox host or connects it to a remote shard server.
+
+The TypeScript SDK needs Node.js 20.3 or later, and the Python SDK needs Python 3.11 or later. Both talk to a host through `shard serve`.
 
 ## What the installer does
 
 1. Detects the operating system and the CPU architecture.
-2. Asks the GitHub releases API for the newest stable Shard release, a `vX.Y.Z` tag that is neither a draft nor a prerelease, and prints that version.
+2. Asks the GitHub releases API for the newest stable shard release, a `vX.Y.Z` tag that is neither a draft nor a prerelease, and prints that version.
 3. Downloads the binary for this platform and the release's `SHA256SUMS` from that one release, into a temporary directory.
 4. Verifies the binary's checksum, and refuses to install on a mismatch.
 5. Checks that the new binary reports the expected version, then moves it over `~/.local/bin/shard`.
@@ -56,7 +80,23 @@ For automated setup:
 
 ## Upgrade
 
-Run the same command again. The installer resolves the newest release each time and replaces the binary in place.
+On a machine that only connects to a remote server, run the installer again. It resolves the newest release each time and replaces `~/.local/bin/shard` in place.
+
+On a sandbox host, run `shard setup` and choose **Upgrade Shard**. The daemon runs the copy that setup installed in `/usr/local/bin`, so the installer alone does not upgrade it. Setup downloads and verifies the new release before it replaces anything. It replaces `/usr/local/bin/shard`, `/usr/local/bin/shard-init` and the `shard` you ran it from, and keeps the provider. When the installed version is already the newest, it says so and changes nothing.
+
+Setup says before it restarts the daemon. A running background service restarts on the new version, and the upgrade waits until the daemon answers. Your sandboxes keep running while the daemon restarts. Open `shard exec` sessions disconnect, and their commands keep running. When you start the daemon yourself, restart `shard daemon` after the upgrade.
+
+## Uninstall
+
+On a sandbox host, remove your sandboxes first, then run `shard setup` and choose **Uninstall Shard**. While a sandbox is left, uninstall refuses and prints the commands that list and remove them.
+
+Uninstall stops and removes the background service, removes the files that setup installed, and on Linux removes the network bridge and firewall tables when no sandbox and no shard daemon still use them. Your data in `/var/lib/shard` stays, and so do tools that other software may share. The closing note names each thing that stays and the command that removes it: on Linux the `/var/lib/shard.xfs` disk image and its `/etc/fstab` line, on a Mac the daemon logs in `/var/log/shard`, and every `shard` command that is left. Uninstall never turns IP forwarding off. On Linux, when it is on, the note prints the command that turns it off.
+
+On a machine that only connects to a remote server, run `shard setup`, choose **Connect to a remote server**, then **Remove this connection**. Then remove the CLI:
+
+```sh
+rm ~/.local/bin/shard
+```
 
 ## Output
 
