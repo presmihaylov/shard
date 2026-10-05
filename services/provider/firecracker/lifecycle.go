@@ -69,7 +69,7 @@ func (p *Provider) launch(ctx context.Context, id, dir string, r record, run boo
 		return errors.Join(err, os.Remove(filepath.Join(dir, recordFile)))
 	}
 	if err := m.readdress(ctx, r); err != nil {
-		return errors.Join(err, p.end(ctx, m), os.Remove(filepath.Join(dir, recordFile)))
+		return errors.Join(err, p.endAnyway(ctx, m), os.Remove(filepath.Join(dir, recordFile)))
 	}
 	if !run {
 		return nil
@@ -224,7 +224,7 @@ func (p *Provider) Start(ctx context.Context, id string) error {
 		return errors.Join(err, p.end(ctx, m))
 	}
 	if err := m.readdress(ctx, r); err != nil {
-		return errors.Join(err, p.end(ctx, m))
+		return errors.Join(err, p.endAnyway(ctx, m))
 	}
 
 	return p.run(ctx, m, r)
@@ -363,6 +363,11 @@ func (p *Provider) end(ctx context.Context, m *machine) error {
 	}
 
 	return p.settle(ctx, m)
+}
+
+// endAnyway ends the vmm of a verb that failed after it came up, on its own clock: the failure may be the verb's cut, and the vmm must go either way (SHARD-622).
+func (p *Provider) endAnyway(ctx context.Context, m *machine) error {
+	return p.end(context.WithoutCancel(ctx), m)
 }
 
 // endSilent kills a silent vmm through the pin its attach or adopt took, never by a pid or the socket, either of which may name a vmm begun since.

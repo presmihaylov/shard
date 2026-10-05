@@ -405,7 +405,7 @@ func (p *Provider) restore(ctx context.Context, id, stateDir string, r record, d
 		return nil, err
 	}
 	if err := m.reseed(ctx); err != nil {
-		return nil, errors.Join(err, p.end(ctx, m))
+		return nil, errors.Join(err, p.endAnyway(ctx, m))
 	}
 
 	// Only a running sandbox is ever paused, so what a checkpoint brings back is running and Status says so.
@@ -507,7 +507,7 @@ func (p *Provider) forkCheckpoint(ctx context.Context, dir string, spec models.S
 	}
 	// The restored guest still answers to the source's address and MAC, which the readdress replaces in place.
 	if err := m.readdress(ctx, r); err != nil {
-		return errors.Join(err, p.end(ctx, m), os.Remove(filepath.Join(spec.StateDir, recordFile)))
+		return errors.Join(err, p.endAnyway(ctx, m), os.Remove(filepath.Join(spec.StateDir, recordFile)))
 	}
 
 	return nil

@@ -25,6 +25,16 @@ func fakeMkfsErofs(t *testing.T) string {
 	return log
 }
 
+// failingMkfsErofs puts a mkfs.erofs stand-in first on PATH that fails the way a full disk does.
+func failingMkfsErofs(t *testing.T) {
+	t.Helper()
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, "mkfs.erofs"), []byte("#!/bin/sh\necho 'no space' >&2; exit 1\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PATH", dir+string(os.PathListSeparator)+os.Getenv("PATH"))
+}
+
 func TestPullWithErofsBuildsOneImagePerDigestFromTheTree(t *testing.T) {
 	log := fakeMkfsErofs(t)
 	server, ref := servedImage(t, "app:1.0", map[string]string{"etc/hostname": "box"})
@@ -70,8 +80,8 @@ func TestPullWithErofsBuildsOneImagePerDigestFromTheTree(t *testing.T) {
 		t.Fatalf("second Pull: %v", err)
 	}
 	again.Close()
-	// The tree is already there, so the rebuild says building alone and never unpacking (SHARD-385).
-	want := []string{image.StatusPulling, image.StatusLayer, image.StatusBuilding, image.StatusPulled}
+	// The tree and the tag are already held, so the rebuild never unpacks (SHARD-385) and never asks the registry.
+	want := []string{image.StatusBuilding, image.StatusPulled}
 	if got := statuses(events(t, again)); !slices.Equal(got, want) {
 		t.Errorf("the rebuild of the image said %v, want %v", got, want)
 	}
@@ -81,11 +91,7 @@ func TestPullWithErofsBuildsOneImagePerDigestFromTheTree(t *testing.T) {
 }
 
 func TestPullWithErofsFailsWhenTheToolDoes(t *testing.T) {
-	dir := t.TempDir()
-	if err := os.WriteFile(filepath.Join(dir, "mkfs.erofs"), []byte("#!/bin/sh\necho 'no space' >&2; exit 1\n"), 0o755); err != nil {
-		t.Fatal(err)
-	}
-	t.Setenv("PATH", dir+string(os.PathListSeparator)+os.Getenv("PATH"))
+	failingMkfsErofs(t)
 	server, ref := servedImage(t, "app:1.0", map[string]string{"etc/hostname": "box"})
 	root := t.TempDir()
 	svc := newServiceAt(t, root, server, image.WithErofs())

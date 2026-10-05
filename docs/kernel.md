@@ -43,8 +43,9 @@ with Docker builds it faster.
 The `kernel` workflow (`.github/workflows/kernel.yml`) runs on manual dispatch only. It builds each
 arch twice and compares the hashes. It checks them against the hashes that `services/kernel` was
 built with, then publishes `Image-arm64`, `vmlinux-amd64` and `SHA256SUMS` under the release tag
-`kernel-<version>-<build>`. A hash that does not match what the Go code expects fails the workflow,
-so a release can never carry a kernel that the daemon would refuse.
+`kernel-<version>-<build>`, titled `guest-kernel-<version>-<build>`. A hash that does not match what
+the Go code expects fails the workflow, so a release can never carry a kernel that the daemon would
+refuse.
 
 When the daemon creates a microVM provider, it checks the kernel file for the host arch. On first
 use, it fetches the file into `<root>/kernel/<tag>/` and fsyncs the file and its directory. At this
