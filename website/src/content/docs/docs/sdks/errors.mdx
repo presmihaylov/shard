@@ -7,7 +7,7 @@ sidebar:
 
 import { TabItem, Tabs } from '@astrojs/starlight/components';
 
-Catch a refusal by its class, and read the daemon's code from it:
+Catch a refusal by its class, and read the daemon's code from it. Each client below reads the server's address from `SHARD_REMOTE` and the API key from `SHARD_API_KEY`:
 
 <Tabs syncKey="lang">
 <TabItem label="TypeScript">
@@ -86,18 +86,18 @@ The daemon gives every refusal one of these codes:
 
 | Code | Status | Class | When |
 | --- | --- | --- | --- |
-| `invalid_request` | 400 | `InvalidRequestError` | A field is not valid, or a named secret, policy or image is unknown. |
+| `invalid_request` | 400 | `InvalidRequestError` | A field is not valid, an image reference does not parse, or a named secret or policy is unknown. |
 | `body_too_large` | 413 | `InvalidRequestError` | A JSON body is over 1 MiB. |
 | `unauthorized` | 401 | `AuthenticationError` | The request has no valid API key. |
 | `forbidden` | 403 | `PermissionDeniedError` | The key's scopes do not cover the request. |
-| `not_found` | 404 | `NotFoundError` | Nothing matches that ID, prefix or name. |
+| `not_found` | 404 | `NotFoundError` | Nothing matches that ID or name. |
 | `name_taken` | 409 | `ConflictError` | Another sandbox, or another snapshot, already has the name. |
 | `sandbox_not_running` | 409 | `ConflictError` | An exec, a pause, a fork or an app call on a sandbox that is not running. |
 | `sandbox_not_stopped` | 409 | `ConflictError` | A start, a remove without force, or a snapshot of a sandbox that is not stopped. |
 | `sandbox_not_paused` | 409 | `ConflictError` | A resume of a sandbox that is not paused. |
 | `no_checkpoint` | 409 | `ConflictError` | A resume of a paused sandbox that has no saved state. |
 | `sandbox_live` | 409 | `ConflictError` | A secret grant or a policy attach, or their opposites, while the sandbox is running or paused. |
-| `sandbox_failed` | 409 | `ConflictError` | Any verb except a read or a remove, on a sandbox whose create failed. The message holds the reason. |
+| `sandbox_failed` | 409 | `ConflictError` | Any verb except a get or a remove, on a sandbox whose create failed. The message holds the reason. |
 | `in_use` | 409 | `ConflictError` | A remove of a secret, a policy or an image that sandboxes hold. `holders` lists their IDs. |
 | `unsupported` | 409 | `UnsupportedError` | The provider does not have the verb. |
 | `exec_exited` | 409 | `ConflictError` | A kill of a command that has already ended. |
@@ -130,6 +130,7 @@ Calls that wait on the sandbox have no bound, because they take as long as the s
 - `snapshots.create()`.
 - The app's `wait()` and `stop()`.
 - A file remove, and a directory upload.
+- `exec()`, a command's `wait()` and the follow methods, once the stream is open.
 
 To bound one of these waits yourself:
 
