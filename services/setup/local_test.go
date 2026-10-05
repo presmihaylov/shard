@@ -9,11 +9,14 @@ import (
 	"errors"
 	"fmt"
 	"maps"
+	"net"
+	"net/http"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"slices"
 	"strings"
+	"syscall"
 	"testing"
 
 	"github.com/klauspost/compress/zstd"
@@ -485,5 +488,46 @@ func TestNotReadyIsTheDaemonsReason(t *testing.T) {
 		if got := notReady([]byte(out), err); got != want {
 			t.Errorf("notReady(%q) = %q, want %q", out, got, want)
 		}
+	}
+}
+
+// transportFunc answers a request without a network.
+type transportFunc func(*http.Request) (*http.Response, error)
+
+func (f transportFunc) RoundTrip(r *http.Request) (*http.Response, error) { return f(r) }
+
+// cutBody hands out a few bytes, then the read error of a connection the network dropped, socket addresses and all.
+type cutBody struct{ sent bool }
+
+func (b *cutBody) Read(p []byte) (int, error) {
+	if !b.sent {
+		b.sent = true
+
+		return copy(p, "partial"), nil
+	}
+
+	return 0, &net.OpError{
+		Op:     "read",
+		Net:    "tcp",
+		Source: &net.TCPAddr{IP: net.IPv4(192, 0, 2, 10), Port: 51234},
+		Addr:   &net.TCPAddr{IP: net.IPv4(192, 0, 2, 20), Port: 443},
+		Err:    os.NewSyscallError("read", syscall.ETIMEDOUT),
+	}
+}
+
+func (b *cutBody) Close() error { return nil }
+
+// A download the network cuts says why as a person reads it, never with the socket addresses. (SHARD-673)
+func TestACutDownloadNamesTheCause(t *testing.T) {
+	h := newLocalHost(t).host()
+	h.HTTP = &http.Client{Transport: transportFunc(func(r *http.Request) (*http.Response, error) {
+		return &http.Response{StatusCode: http.StatusOK, Status: "200 OK", Body: &cutBody{}, Request: r}, nil
+	})}
+	p := &localPlan{h: h, missing: missing{downloads: []*download{{Title: "gVisor", URL: "https://releases.example.com/gvisor.tar.zstd", SHA256: "00"}}}}
+
+	err := p.download(t.Context())
+
+	if got, want := problemLines(err), []string{"Could not download gVisor: connection timed out."}; !slices.Equal(got, want) {
+		t.Errorf("the download failed with %q, want %q", got, want)
 	}
 }

@@ -66,8 +66,9 @@ an exec's does. The cost is one exec per file op on a container substrate. A `ru
 ## Stopped and paused sandboxes
 
 A stopped and a paused sandbox both get 409 `sandbox_not_running`. A stopped one says
-`sandbox <id> is stopped: start it again with shard start <id>`, and a paused one says
-`sandbox <id> is paused: resume it with shard resume <id>`. Every file op needs a running guest.
+`sandbox <id> is stopped: start it again with shard start <name>`, and a paused one says
+`sandbox <id> is paused: resume it with shard resume <name>`, where `<name>` is the id of a sandbox
+created without one. Every file op needs a running guest.
 Host access to a stopped sandbox's writable layer, the way `snapshot create` reads it, means a
 different layout on each provider: an overlay upper on gVisor, Sysbox and runc, and a disk image on
 Firecracker and vz.

@@ -1,6 +1,7 @@
 package sandbox
 
 import (
+	"cmp"
 	"context"
 	"crypto/rand"
 	"errors"
@@ -1435,12 +1436,12 @@ func (s *Service) readyForExec(ctx context.Context, ref string) (string, error) 
 
 	// A record that says stopped outranks the oom count the cgroup kept, and a paused one never has a cgroup.
 	if sb.State == models.StateStopped {
-		return "", &StateError{ID: id, State: sb.State, Fix: "start it again with shard start " + id, Code: models.CodeSandboxNotRunning}
+		return "", &StateError{ID: id, State: sb.State, Fix: "start it again with shard start " + nameOf(id, sb), Code: models.CodeSandboxNotRunning}
 	}
 
 	// The provider holds nothing of a paused sandbox, and gone is the wrong word for one a resume brings back.
 	if sb.State == models.StatePaused {
-		return "", pausedRefusal(id)
+		return "", pausedRefusal(id, sb)
 	}
 
 	status, err := s.cfg.Provider.Status(ctx, id)
@@ -1454,7 +1455,7 @@ func (s *Service) readyForExec(ctx context.Context, ref string) (string, error) 
 			return "", err
 		}
 
-		return "", &UnavailableError{ID: id, Why: "is unresponsive", Detail: status.Reason, Fix: "wait for it to answer, or end it with shard stop " + id}
+		return "", &UnavailableError{ID: id, Why: "is unresponsive", Detail: status.Reason, Fix: "wait for it to answer, or end it with shard stop " + nameOf(id, sb)}
 	}
 	if status.Alive() {
 		return id, nil
@@ -1466,20 +1467,20 @@ func (s *Service) readyForExec(ctx context.Context, ref string) (string, error) 
 		return "", err
 	}
 	if paused {
-		return "", pausedRefusal(id)
+		return "", pausedRefusal(id, sb)
 	}
 
 	// The exit file records a 137 for this, which is what a plain kill -9 records too, so the reason
 	// is named here or an operator never learns it.
 	if status.OOMKilled {
-		return "", &UnavailableError{ID: id, Why: OOMKilledReason, Fix: fmt.Sprintf("start it again with shard start %s, over the files it kept; more memory needs a new sandbox with a larger resources.memory_mib", id)}
+		return "", &UnavailableError{ID: id, Why: OOMKilledReason, Fix: fmt.Sprintf("start it again with shard start %s, over the files it kept; more memory needs a new sandbox with a larger resources.memory_mib", nameOf(id, sb))}
 	}
 
 	if !status.Exists {
-		return "", &UnavailableError{ID: id, Why: "is gone from " + s.cfg.Provider.Name(), Fix: fmt.Sprintf("remove it with shard remove %s and create another", id)}
+		return "", &UnavailableError{ID: id, Why: "is gone from " + s.cfg.Provider.Name(), Fix: fmt.Sprintf("remove it with shard remove %s and create another", nameOf(id, sb))}
 	}
 
-	return "", &StateError{ID: id, State: status.State, Fix: "start it again with shard start " + id, Code: models.CodeSandboxNotRunning}
+	return "", &StateError{ID: id, State: status.State, Fix: "start it again with shard start " + nameOf(id, sb), Code: models.CodeSandboxNotRunning}
 }
 
 // pausedMeanwhile says a pause that holds no lock against an exec completed since the record was read, recorded or not yet.
@@ -1500,9 +1501,12 @@ func (s *Service) pausedMeanwhile(id string) (bool, error) {
 }
 
 // pausedRefusal is the one text of every exec a pause refuses, whichever layer met the pause first (SHARD-482).
-func pausedRefusal(id string) *StateError {
-	return &StateError{ID: id, State: models.StatePaused, Fix: "resume it with shard resume " + id, Code: models.CodeSandboxNotRunning}
+func pausedRefusal(id string, sb models.Sandbox) *StateError {
+	return &StateError{ID: id, State: models.StatePaused, Fix: "resume it with shard resume " + nameOf(id, sb), Code: models.CodeSandboxNotRunning}
 }
+
+// nameOf is the sandbox as its user knows it: the name they gave it, or its id when it has none.
+func nameOf(id string, sb models.Sandbox) string { return cmp.Or(sb.Name, id) }
 
 // refusedByPause names a command that never started inside a pause by that pause, whatever the substrate or the guest said.
 func (s *Service) refusedByPause(id string, session *execSession, err error) error {
@@ -1524,7 +1528,7 @@ func (s *Service) pauseOutranks(id string, err error) error {
 		return err
 	}
 
-	return pausedRefusal(id)
+	return pausedRefusal(id, sb)
 }
 
 // endedUnderExec swaps a launch error for not_found or sandbox_not_running when a concurrent stop or remove tore the runtime down under the exec, so a racing rm answers a code, never a 500 (SHARD-563).
@@ -1554,7 +1558,7 @@ func (s *Service) endedUnderExec(id string, session *execSession, err error) err
 		return errors.Join(err, getErr)
 	}
 	if sb.State != models.StateRunning {
-		return &StateError{ID: id, State: sb.State, Fix: "start it again with shard start " + id, Code: models.CodeSandboxNotRunning}
+		return &StateError{ID: id, State: sb.State, Fix: "start it again with shard start " + nameOf(id, sb), Code: models.CodeSandboxNotRunning}
 	}
 
 	return err

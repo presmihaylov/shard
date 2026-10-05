@@ -5,12 +5,10 @@ import (
 	"crypto/tls"
 	"errors"
 	"fmt"
-	"net"
 	"net/http"
 	"net/url"
 	"path/filepath"
 	"strings"
-	"syscall"
 
 	"github.com/presmihaylov/shard/pkg/term"
 	"github.com/presmihaylov/shard/services/client"
@@ -193,28 +191,12 @@ func reachDetail(remote string, err error) []string {
 	var unreachable *client.ConnectError
 	if errors.As(err, &unreachable) {
 		return []string{
-			"Could not reach " + client.Redacted(remote) + ": " + dialCause(unreachable.Err) + ".",
+			"Could not reach " + client.Redacted(remote) + ": " + client.DialCause(unreachable.Err) + ".",
 			"Check the URL, and that shard serve or the proxy in front of it runs.",
 		}
 	}
 
 	return []string{err.Error()}
-}
-
-// dialCause words the common dial failures as a person reads them, and leaves any other as the dialer said it.
-func dialCause(err error) string {
-	var dns *net.DNSError
-	var timeout net.Error
-	switch {
-	case errors.As(err, &dns) && dns.IsNotFound:
-		return "no such host"
-	case errors.Is(err, syscall.ECONNREFUSED):
-		return "connection refused"
-	case errors.Is(err, context.DeadlineExceeded), errors.As(err, &timeout) && timeout.Timeout():
-		return "connection timed out"
-	}
-
-	return err.Error()
 }
 
 // authDetail words the 401 of a server that refused the key.
@@ -227,10 +209,9 @@ func authDetail(err error) []string {
 	return []string{err.Error()}
 }
 
-// offerSave shows the verified connection and saves it on the user's word.
+// offerSave shows the verified connection and saves it on the user's word; the plain-text note comes only with a save.
 func (s *Setup) offerSave(ctx context.Context, path string, previous, conn client.Config, caps client.Capabilities) error {
-	lines := append(connectedLines(conn, caps), "Saving stores your API key as plain text in a file only your user can read.", "")
-	if err := s.UI.Print(lines...); err != nil {
+	if err := s.UI.Print(connectedLines(caps)...); err != nil {
 		return err
 	}
 
@@ -253,15 +234,9 @@ func (s *Setup) offerSave(ctx context.Context, path string, previous, conn clien
 	return s.UI.Print(savedLines(abs, conn, s.Host.Env)...)
 }
 
-// connectedLines are the §13 result lines, then every lifecycle capability, the unsupported ones too.
-func connectedLines(conn client.Config, caps client.Capabilities) []string {
-	lines := []string{
-		"✓ Connected to " + client.Redacted(conn.Remote),
-		"✓ API key accepted",
-		"✓ Server capabilities retrieved",
-		"",
-		"Server capabilities:",
-	}
+// connectedLines are every lifecycle capability, the unsupported ones too; the checklist above them already marked each step.
+func connectedLines(caps client.Capabilities) []string {
+	lines := []string{"", "Server capabilities:"}
 	for _, capability := range []struct {
 		verb      string
 		supported bool
@@ -286,7 +261,7 @@ func savedLines(path string, conn client.Config, env func(string) string) []stri
 		"",
 		"Configuration: " + path,
 		"",
-		"The file contains your API key and is accessible only to your user.",
+		"The file stores your API key as plain text and is accessible only to your user.",
 		"Shard will use this connection automatically.",
 	}
 	if remote := strings.TrimSpace(env(client.RemoteEnv)); remote != "" {

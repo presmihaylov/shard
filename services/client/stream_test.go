@@ -377,8 +377,8 @@ func TestAnUntrustedRemoteNamesOnlyItsHTTPSURL(t *testing.T) {
 	}
 	for name, call := range calls {
 		err := call()
-		if err == nil || !strings.Contains(err.Error(), "the tls certificate of "+server.URL+" is not trusted") {
-			t.Errorf("%s gave %v, want the untrusted certificate of %s", name, err, server.URL)
+		if err == nil || !strings.Contains(err.Error(), server.URL+": the server certificate is not trusted") || !strings.Contains(err.Error(), "set "+client.CAFileEnv) {
+			t.Errorf("%s gave %v, want the untrusted certificate of %s and %s", name, err, server.URL, client.CAFileEnv)
 		}
 		if err != nil && strings.Contains(err.Error(), "http://") {
 			t.Errorf("%s quotes an http:// url over tls: %v", name, err)

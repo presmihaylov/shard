@@ -27,7 +27,7 @@ func NewRemoteFromEnv(host string, saved Config) (*Client, error) {
 		return nil, err
 	}
 
-	token, err := apiKey(parsed, saved)
+	token, refused, err := apiKey(parsed, saved)
 	if err != nil {
 		return nil, err
 	}
@@ -37,7 +37,13 @@ func NewRemoteFromEnv(host string, saved Config) (*Client, error) {
 		return nil, err
 	}
 
-	return NewRemote(host, token, ca)
+	c, err := NewRemote(host, token, ca)
+	if err != nil {
+		return nil, err
+	}
+	c.refused = refused
+
+	return c, nil
 }
 
 // ReadCA reads the certificate caFile, SHARD_CA_FILE, holds for host, or none when it is empty.
@@ -61,26 +67,31 @@ func ReadCA(host, caFile string) ([]byte, error) {
 	return ca, nil
 }
 
-// apiKey is SHARD_API_KEY, else the saved key when remote is the saved remote, so a key reaches no server it was not saved for; an error never quotes it.
-func apiKey(remote *url.URL, saved Config) (string, error) {
-	key := strings.TrimSpace(os.Getenv(APIKeyEnv))
+// apiKey is SHARD_API_KEY, else the saved key when remote is the saved remote, so a key reaches no server it was not saved for, and refused is what a 401 of it says; an error never quotes it.
+func apiKey(remote *url.URL, saved Config) (key, refused string, err error) {
+	key = strings.TrimSpace(os.Getenv(APIKeyEnv))
 	if key != "" {
 		if err := checkToken(key); err != nil {
-			return "", fmt.Errorf("%s %w", APIKeyEnv, err)
+			return "", "", fmt.Errorf("%s %w", APIKeyEnv, err)
 		}
 
-		return key, nil
+		return key, refusedKey(remote.String(), "the API key in "+APIKeyEnv, "set "+APIKeyEnv+" to a valid key"), nil
 	}
 
 	key = strings.TrimSpace(saved.APIKey)
 	if key != "" && sameRemote(remote, saved.Remote) {
-		return key, nil
+		path, err := ConfigPath(os.Getenv)
+		if err != nil {
+			return "", "", err
+		}
+
+		return key, refusedKey(remote.String(), "the API key saved in "+path, "run shard setup to replace it"), nil
 	}
 	if key != "" {
-		return "", fmt.Errorf("a remote client needs %s for %s; the saved API key is for %s and is sent to no other server", APIKeyEnv, remote.Redacted(), Redacted(saved.Remote))
+		return "", "", fmt.Errorf("a remote client needs %s for %s; the saved API key is for %s and is sent to no other server", APIKeyEnv, remote.Redacted(), Redacted(saved.Remote))
 	}
 
-	return "", fmt.Errorf("a remote client needs %s; shard serve answers 401 without one", APIKeyEnv)
+	return "", "", fmt.Errorf("a remote client needs %s; shard serve answers 401 without one", APIKeyEnv)
 }
 
 // sameRemote compares what the client dials, the scheme and the host and port, so a path or the case of a host name makes no other server.

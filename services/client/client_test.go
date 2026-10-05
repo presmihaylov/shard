@@ -204,6 +204,34 @@ func TestNoDaemonIsOneConnectLine(t *testing.T) {
 	}
 }
 
+// A socket this user may not open says permission denied and names sudo, since a daemon is behind it. (SHARD-672)
+func TestADeniedSocketNamesSudo(t *testing.T) {
+	if os.Geteuid() == 0 {
+		t.Skip("root opens a socket of any mode")
+	}
+	root := shortRoot(t)
+	socket := filepath.Join(root, api.SocketFile)
+	listener, err := net.Listen("unix", socket)
+	if err != nil {
+		t.Fatalf("listen: %v", err)
+	}
+	t.Cleanup(func() {
+		if err := listener.Close(); err != nil {
+			t.Errorf("close the listener: %v", err)
+		}
+	})
+	if err := os.Chmod(socket, 0o000); err != nil {
+		t.Fatalf("chmod the socket: %v", err)
+	}
+
+	_, err = client.New(root).Version(t.Context())
+
+	want := "cannot connect to shard daemon at " + socket + ": permission denied; run the command again with sudo"
+	if err == nil || err.Error() != want {
+		t.Errorf("Version on a denied socket returned %v, want %q", err, want)
+	}
+}
+
 func TestADaemonThatNeverAnswersIsCutByTheDeadline(t *testing.T) {
 	root := shortRoot(t)
 	c := serve(t, root, func(_ http.ResponseWriter, r *http.Request) { <-r.Context().Done() })

@@ -19,6 +19,7 @@ func keyed(out io.Writer, typed string) *Terminal {
 	return &Terminal{
 		out:         out,
 		interactive: true,
+		width:       func() (int, error) { return 80, nil },
 		input:       func(context.Context) io.Reader { return keys },
 		raw:         func() (pty.Restore, error) { return func() error { return nil }, nil },
 	}
@@ -145,5 +146,27 @@ func TestSecretEchoesOneDotPerCharacter(t *testing.T) {
 func TestSecretEndsOnInterrupt(t *testing.T) {
 	if _, err := keyed(&bytes.Buffer{}, "ab\x03").Secret(t.Context(), "API key"); !errors.Is(err, ErrInterrupted) {
 		t.Errorf("Ctrl-C gave %v, want ErrInterrupted", err)
+	}
+}
+
+func TestARedrawMovesUpPastEveryRowAWrappedLineTook(t *testing.T) {
+	var out bytes.Buffer
+	term := keyed(&out, "")
+	term.width = func() (int, error) { return 20, nil }
+	colored := "\x1b[32m" + strings.Repeat("y", 20) + "\x1b[0m"
+	drawn, err := term.redraw(0, []string{colored, strings.Repeat("x", 50)}, "\n")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if drawn != 4 {
+		t.Fatalf("drew %d rows, want 4: one for the colored line that fits, three for the wrapped one", drawn)
+	}
+
+	out.Reset()
+	if _, err := term.redraw(drawn, []string{"short"}, "\n"); err != nil {
+		t.Fatal(err)
+	}
+	if !strings.HasPrefix(out.String(), "\r\x1b[4A") {
+		t.Errorf("the redraw began %q, want it to move up 4 rows", out.String())
 	}
 }

@@ -283,7 +283,7 @@ func TestAKeyTheFrontDoesNotHonourIsRefusedByTheFront(t *testing.T) {
 			t.Setenv(client.APIKeyEnv, key)
 
 			err := app.Run(t.Context(), []string{"list"})
-			if err == nil || !strings.Contains(err.Error(), "the bearer token is missing or invalid") || strings.Contains(err.Error(), key) {
+			if err == nil || !strings.Contains(err.Error(), "did not accept the API key in "+client.APIKeyEnv) || strings.Contains(err.Error(), key) {
 				t.Errorf("list with %s returned %v, want the refusal of the front and never the key", name, err)
 			}
 			if strings.Contains(frontLog.String(), key) {

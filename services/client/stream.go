@@ -197,7 +197,7 @@ func (c *Client) open(ctx context.Context, path, what string) (*websocket.Conn, 
 			return nil, fmt.Errorf("read the refusal of %s: %w", what, readErr)
 		}
 
-		return nil, decodeError(resp.StatusCode, answer)
+		return nil, c.decodeError(resp.StatusCode, answer)
 	}
 	if err != nil {
 		return nil, fmt.Errorf("open %s on %s: %w", what, c.target, unquoted(err))
@@ -412,7 +412,7 @@ func (c *Client) Logs(ctx context.Context, ref string, follow bool, w io.Writer)
 			return fmt.Errorf("read the refusal of the output of sandbox %s: %w", ref, err)
 		}
 
-		return missing(ref, decodeError(resp.StatusCode, answer))
+		return missing(ref, c.decodeError(resp.StatusCode, answer))
 	}
 
 	if _, err := io.Copy(w, resp.Body); err != nil {

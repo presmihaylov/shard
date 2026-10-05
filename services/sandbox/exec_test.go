@@ -364,6 +364,16 @@ func TestExecThatRacesAHeldTeardownAnswersTimeout(t *testing.T) {
 	}
 }
 
+// A user who named the sandbox knows it by that name, never by the id shard gave it.
+func TestExecOfAStoppedSandboxNamesItAsTheUserDid(t *testing.T) {
+	svc, l := newService(t, &recorder{}, stopped())
+
+	_, _, _, err := execOf(t, l, svc, "web", sandbox.ExecRequest{Command: []string{"true"}}, "")
+	if err == nil || !strings.HasSuffix(err.Error(), "start it again with shard start web") {
+		t.Fatalf("Exec of the stopped sandbox web returned %v, want the start hint by its name", err)
+	}
+}
+
 // A record that says stopped outranks the oom count the cgroup kept: the user stopped this one.
 func TestExecRefusesAStoppedSandboxWithoutTheProvider(t *testing.T) {
 	r := &recorder{}

@@ -76,7 +76,7 @@ func progress[L, T any](ctx context.Context, c *Client, path string, in any, rep
 			return zero, c.wrap(ctx, http.MethodPost, path, 0, fmt.Errorf("read the answer: %w", err))
 		}
 
-		return zero, decodeError(resp.StatusCode, body)
+		return zero, c.decodeError(resp.StatusCode, body)
 	}
 
 	decoder := json.NewDecoder(resp.Body)

@@ -51,9 +51,10 @@ func listed() []models.Sandbox {
 }
 
 func TestListShowsWhatIsUp(t *testing.T) {
-	var out bytes.Buffer
+	var out, stderr bytes.Buffer
 
 	app := newListApp(t, &out, listed(), nil)
+	app.Err = &stderr
 
 	if err := app.Run(t.Context(), []string{"list"}); err != nil {
 		t.Fatalf("list: %v", err)
@@ -70,6 +71,9 @@ func TestListShowsWhatIsUp(t *testing.T) {
 		if !strings.Contains(lines[1], want) {
 			t.Errorf("the line %q lacks %q", lines[1], want)
 		}
+	}
+	if want := "1 stopped sandbox; shard list --all\n"; stderr.String() != want {
+		t.Errorf("list said %q on stderr, want %q", stderr.String(), want)
 	}
 }
 

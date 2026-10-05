@@ -332,7 +332,7 @@ func downloadAccess(ctx context.Context, h Host, l Local) *finding {
 	if h.OS == "linux" {
 		u, err := AssetURL(ctx, h, h.Version, "shard-init-linux-"+h.Arch)
 		if err != nil {
-			return failed(fmt.Sprintf("Setup could not find shard-init for Shard %s: %v.", h.Version, err))
+			return failed(fmt.Sprintf("Setup could not find shard-init for Shard %s: %s.", h.Version, downloadCause(err)))
 		}
 		urls = append(urls, u)
 	}
@@ -345,7 +345,7 @@ func downloadAccess(ctx context.Context, h Host, l Local) *finding {
 	}
 	for _, u := range urls {
 		if err := reach(ctx, h, u); err != nil {
-			return failed(fmt.Sprintf("Could not download %s: %v.", path.Base(u), err), "Check the network connection and run shard setup again.")
+			return failed(fmt.Sprintf("Could not download %s: %s.", path.Base(u), downloadCause(err)), "Check the network connection and run shard setup again.")
 		}
 	}
 

@@ -10,6 +10,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"io/fs"
 	"net"
 	"net/http"
 	"net/url"
@@ -43,7 +44,9 @@ type Client struct {
 	token string
 	// hint is what a connect error tells the operator to check for this target.
 	hint string
-	http *http.Client
+	// refused is what a 401 says: which key the server refused and how to replace it, never the key.
+	refused string
+	http    *http.Client
 	// Timeout bounds one call. It is not http.Client.Timeout, which would cut a stream; zero is no bound.
 	Timeout time.Duration
 }
@@ -66,15 +69,25 @@ type ListResult struct {
 	Warnings  []string  `json:"warnings,omitempty"`
 }
 
-// ConnectError is a socket nothing answers on. Its text is the one line the operator needs.
+// ConnectError is a socket or a server nothing answers on. Its text is the one line the operator needs.
 type ConnectError struct {
 	Path string
 	// Hint is what to check: the unit serves the default root only, so any other root names its own daemon.
 	Hint string
 	Err  error
+	// Remote is a server over the network, whose Hint is the cause and the fix: there is no local daemon to check.
+	Remote bool
 }
 
 func (e *ConnectError) Error() string {
+	if e.Remote {
+		return fmt.Sprintf("cannot connect to the shard server at %s: %s", e.Path, e.Hint)
+	}
+	// A socket this user may not open has a daemon behind it, so asking whether it runs misleads.
+	if errors.Is(e.Err, fs.ErrPermission) {
+		return fmt.Sprintf("cannot connect to shard daemon at %s: permission denied; run the command again with sudo", e.Path)
+	}
+
 	return fmt.Sprintf("cannot connect to shard daemon at %s: is it running? %s", e.Path, e.Hint)
 }
 
@@ -142,7 +155,7 @@ func NewRemote(host, token string, ca []byte) (*Client, error) {
 	}
 
 	address := remoteAddress(parsed)
-	c := &Client{target: host, authority: parsed.Host, token: token, hint: "shard serve at " + parsed.Host + ", or the proxy in front of it", Timeout: DefaultTimeout}
+	c := &Client{target: host, authority: parsed.Host, token: token, refused: refusedKey(host, "the API key", "check the key"), Timeout: DefaultTimeout}
 
 	if parsed.Scheme == "http" {
 		if len(ca) > 0 {
@@ -225,7 +238,13 @@ func (c *Client) dial(ctx context.Context) (net.Conn, error) {
 	// A certificate the client does not trust is its own error: nothing about the daemon is wrong.
 	var untrusted *tls.CertificateVerificationError
 	if errors.As(err, &untrusted) {
-		return nil, fmt.Errorf("the tls certificate of %s is not trusted: %w", c.target, err)
+		hint := fmt.Sprintf("the server certificate is not trusted (%v); for a private certificate authority, set %s to its PEM file", untrusted.Err, CAFileEnv)
+		return nil, &ConnectError{Path: Redacted(c.target), Hint: hint, Err: err, Remote: true}
+	}
+	// Only a remote carries a token.
+	if err != nil && c.token != "" {
+		hint := DialCause(err) + "; check the URL, and that shard serve or the proxy in front of it runs"
+		return nil, &ConnectError{Path: Redacted(c.target), Hint: hint, Err: err, Remote: true}
 	}
 	if err != nil {
 		return nil, &ConnectError{Path: c.target, Hint: c.hint, Err: err}
@@ -540,7 +559,7 @@ func (c *Client) exchange(ctx context.Context, method, path string, in, out any,
 	}
 
 	if resp.StatusCode >= http.StatusBadRequest {
-		return nil, decodeError(resp.StatusCode, body)
+		return nil, c.decodeError(resp.StatusCode, body)
 	}
 
 	if out == nil {
@@ -573,8 +592,13 @@ func unquoted(err error) error {
 	return err
 }
 
+// refusedKey is the line of a 401 from the server at host: which key it refused and how to replace it, never the key itself.
+func refusedKey(host, key, fix string) string {
+	return fmt.Sprintf("the server at %s did not accept %s; %s, or ask the server administrator for a new one", Redacted(host), key, fix)
+}
+
 // decodeError reads the daemon's error object; a body that is not one is quoted as it came, under internal.
-func decodeError(status int, body []byte) error {
+func (c *Client) decodeError(status int, body []byte) error {
 	var answer struct {
 		Error struct {
 			Code     models.Code `json:"code"`
@@ -582,6 +606,10 @@ func decodeError(status int, body []byte) error {
 			Holders  []string    `json:"holders"`
 			ExitCode int         `json:"exit_code"`
 		} `json:"error"`
+	}
+	// A front's 401 names the wire header; the operator needs to know which key to replace.
+	if status == http.StatusUnauthorized && c.token != "" {
+		return &APIError{Status: status, Code: models.CodeUnauthorized, Message: c.refused}
 	}
 	if err := json.Unmarshal(body, &answer); err != nil || answer.Error.Message == "" {
 		return &APIError{Status: status, Code: models.CodeInternal, Message: fmt.Sprintf("the daemon answered %d: %q", status, body)}

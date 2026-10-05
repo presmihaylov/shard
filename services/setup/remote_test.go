@@ -9,7 +9,6 @@ import (
 	"io"
 	"log"
 	"maps"
-	"net"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -17,7 +16,6 @@ import (
 	"slices"
 	"strings"
 	"sync/atomic"
-	"syscall"
 	"testing"
 
 	"github.com/presmihaylov/shard/services/client"
@@ -150,7 +148,7 @@ var allDone = []string{"start 0", "done 0", "start 1", "done 1", "start 2", "don
 
 // The §13 completion text, quoted from the spec, after the path line.
 var completion = []string{
-	"The file contains your API key and is accessible only to your user.",
+	"The file stores your API key as plain text and is accessible only to your user.",
 	"Shard will use this connection automatically.",
 	"",
 	"Next steps:",
@@ -207,13 +205,16 @@ func TestRemoteVerifiesThenSavesTheConnection(t *testing.T) {
 	}
 
 	containsAll(t, ui.printed,
-		"✓ Connected to "+url, "✓ API key accepted", "✓ Server capabilities retrieved",
+		"Server capabilities:",
 		"  create     supported", "  resume     supported", "  fork       not supported", "  snapshot   not supported",
 		"Capabilities show what the server supports. They do not override the permissions of your API key.",
-		"Saving stores your API key as plain text in a file only your user can read.",
 		"✓ Connection saved", "Configuration: "+path,
 		"Keep "+client.CAFileEnv+" set: the saved connection does not store the certificate authority.",
 	)
+	// The checklist marks each step once, so the text after it repeats none of them. (SHARD-672)
+	if checks := slices.DeleteFunc(slices.Clone(ui.printed), func(line string) bool { return !strings.HasPrefix(line, "✓ ") }); !slices.Equal(checks, []string{"✓ Connection saved"}) {
+		t.Errorf("printed the check lines %q, want the save alone", checks)
+	}
 	for _, block := range [][]string{completion[:2], completion[2:]} {
 		if !strings.Contains(strings.Join(ui.printed, "\n"), strings.Join(block, "\n")) {
 			t.Errorf("printed %q, want the §13 completion text %q", ui.printed, block)
@@ -457,24 +458,6 @@ func TestAnUnreachableServerSaysWhyAndWhatToCheck(t *testing.T) {
 	}
 }
 
-// The dial failures a person meets most are worded plainly, and any other keeps the dialer's text. (SHARD-657)
-func TestDialCause(t *testing.T) {
-	for _, tc := range []struct {
-		err  error
-		want string
-	}{
-		{&net.OpError{Op: "dial", Net: "tcp", Err: &net.DNSError{Err: "no such host", Name: "shard.invalid", IsNotFound: true}}, "no such host"},
-		{&net.OpError{Op: "dial", Net: "tcp", Err: os.NewSyscallError("connect", syscall.ECONNREFUSED)}, "connection refused"},
-		{&net.OpError{Op: "dial", Net: "tcp", Err: context.DeadlineExceeded}, "connection timed out"},
-		{&net.OpError{Op: "dial", Net: "tcp", Err: &net.DNSError{Err: "i/o timeout", Name: "shard.example.com", IsTimeout: true}}, "connection timed out"},
-		{errors.New("remote error: tls: handshake failure"), "remote error: tls: handshake failure"},
-	} {
-		if got := dialCause(tc.err); got != tc.want {
-			t.Errorf("dialCause(%v) = %q, want %q", tc.err, got, tc.want)
-		}
-	}
-}
-
 // A declined save writes nothing and says how to use the connection, with the key as a placeholder. (SHARD-657)
 func TestADeclinedSaveWritesNothing(t *testing.T) {
 	url, ca := tlsFront(t, testKey, nil)
@@ -499,6 +482,10 @@ func TestADeclinedSaveWritesNothing(t *testing.T) {
 		"  export "+client.APIKeyEnv+"=<your API key>",
 		"  export "+client.CAFileEnv+"="+ca,
 	)
+	// The plain-text note is about the file, so a run that writes none never shows it. (SHARD-672)
+	if slices.ContainsFunc(ui.printed, func(line string) bool { return strings.Contains(line, "plain text") }) {
+		t.Errorf("printed %q, want no plain-text note without a save", ui.printed)
+	}
 	noLeak(t, ui, err)
 }
 
@@ -527,7 +514,7 @@ func TestASavedConnectionCanBeChecked(t *testing.T) {
 	if len(ui.lists) != 1 || !slices.Equal(ui.lists[0].marks, allDone) {
 		t.Errorf("drew %d checklists, want one that passes", len(ui.lists))
 	}
-	containsAll(t, ui.printed, "✓ Connected to "+url, "  snapshot   not supported")
+	containsAll(t, ui.printed, "Server capabilities:", "  snapshot   not supported")
 	if got := savedConnection(t, path); got != saved {
 		t.Errorf("a check changed the saved connection to %v", got)
 	}

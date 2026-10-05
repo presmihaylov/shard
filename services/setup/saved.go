@@ -55,7 +55,7 @@ func (s *Setup) check(ctx context.Context, path string, saved client.Config) err
 		return s.offerSave(ctx, path, saved, conn, caps)
 	}
 
-	return s.UI.Print(connectedLines(conn, caps)...)
+	return s.UI.Print(connectedLines(caps)...)
 }
 
 // forget removes the saved connection and says what normal commands use now.

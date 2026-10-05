@@ -10,6 +10,7 @@ import (
 	"io"
 	"io/fs"
 	"maps"
+	"net"
 	"net/http"
 	"os"
 	"path"
@@ -21,6 +22,7 @@ import (
 	"github.com/klauspost/compress/zstd"
 
 	"github.com/presmihaylov/shard/pkg/tarball"
+	"github.com/presmihaylov/shard/services/client"
 )
 
 // The paths a local setup installs; a root service only ever runs root-owned files from them.
@@ -183,17 +185,26 @@ func (p *localPlan) download(ctx context.Context) (err error) {
 
 	for _, d := range p.missing.downloads {
 		if err := fetchPinned(ctx, p.h, d, stage); err != nil {
-			return &Problem{Lines: []string{fmt.Sprintf("Could not download %s: %v.", d.Title, err)}}
+			return &Problem{Lines: []string{fmt.Sprintf("Could not download %s: %s.", d.Title, downloadCause(err))}}
 		}
 	}
 	if p.initAsset == "" {
 		return nil
 	}
 	if err := FetchAsset(ctx, p.h, p.h.Version, p.initAsset, filepath.Join(stage, "shard-init"), 0o755); err != nil {
-		return &Problem{Lines: []string{fmt.Sprintf("Could not download shard-init: %v.", err)}}
+		return &Problem{Lines: []string{fmt.Sprintf("Could not download shard-init: %s.", downloadCause(err))}}
 	}
 
 	return nil
+}
+
+// downloadCause words a network failure as client.DialCause does, so no socket address reaches the screen.
+func downloadCause(err error) string {
+	if _, ok := errors.AsType[*net.OpError](err); ok {
+		return client.DialCause(err)
+	}
+
+	return err.Error()
 }
 
 func (p *localPlan) clean() error {

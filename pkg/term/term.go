@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"regexp"
 	"strings"
 	"sync"
 	"time"
@@ -67,6 +68,8 @@ type Terminal struct {
 	out         io.Writer
 	interactive bool
 	color       bool
+	// width is the columns of the terminal, so a redraw moves up past every row a wrapped line took.
+	width func() (int, error)
 	// input reads the keys; a cancel ends a read that would block.
 	input func(ctx context.Context) io.Reader
 	raw   func() (pty.Restore, error)
@@ -81,9 +84,20 @@ func New(in *os.File, out io.Writer, getenv func(string) string) *Terminal {
 		out:         out,
 		interactive: interactive,
 		color:       interactive && getenv("NO_COLOR") == "",
+		width:       func() (int, error) { return columns(file) },
 		input:       func(ctx context.Context) io.Reader { return pty.Input(ctx, in) },
 		raw:         func() (pty.Restore, error) { return pty.MakeRaw(in) },
 	}
+}
+
+// columns is the width of the terminal f, and 0 when it reports none.
+func columns(f *os.File) (int, error) {
+	size, err := pty.SizeOf(f)
+	if err != nil {
+		return 0, fmt.Errorf("read the terminal size: %w", err)
+	}
+
+	return int(size.Cols), nil
 }
 
 // Interactive reports whether a person can answer, so a caller without one asks for an option instead.
@@ -323,20 +337,39 @@ func wrapWrite(err error) error {
 	return nil
 }
 
-// redraw replaces the lines it drew last time, and returns how many it drew now.
+// redraw replaces the rows it drew last time, and returns how many rows it drew now.
 func (t *Terminal) redraw(drawn int, lines []string, newline string) (int, error) {
+	cols, err := t.width()
+	if err != nil {
+		return 0, err
+	}
 	var b strings.Builder
 	if drawn > 0 {
 		fmt.Fprintf(&b, "\r\x1b[%dA", drawn)
 	}
+	used := 0
 	for _, line := range lines {
 		b.WriteString(clearLine + line + newline)
+		used += rows(line, cols)
 	}
 	if _, err := io.WriteString(t.out, b.String()); err != nil {
 		return 0, wrapWrite(err)
 	}
 
-	return len(lines), nil
+	return used, nil
+}
+
+// escape is a color or cursor sequence, which takes no column.
+var escape = regexp.MustCompile("\x1b\\[[0-9;]*[A-Za-z]")
+
+// rows is how many terminal rows line takes at cols columns; a terminal that reports no width counts one.
+func rows(line string, cols int) int {
+	width := utf8.RuneCountInString(escape.ReplaceAllString(line, ""))
+	if cols <= 0 || width <= cols {
+		return 1
+	}
+
+	return (width + cols - 1) / cols
 }
 
 func (t *Terminal) paint(color, s string) string {

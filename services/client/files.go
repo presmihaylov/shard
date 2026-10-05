@@ -31,7 +31,7 @@ func (c *Client) PutFile(ctx context.Context, ref string, req sandbox.FileWrite,
 	}
 	defer resp.Body.Close()
 
-	return refusal(resp)
+	return c.refusal(resp)
 }
 
 // GetFile answers the guest file's stat and its bytes. The caller closes the body; a cut one reads as io.ErrUnexpectedEOF.
@@ -41,7 +41,7 @@ func (c *Client) GetFile(ctx context.Context, ref, guestPath string) (models.Fil
 		return models.FileStat{}, nil, err
 	}
 
-	if err := refusal(resp); err != nil {
+	if err := c.refusal(resp); err != nil {
 		return models.FileStat{}, nil, errors.Join(err, resp.Body.Close())
 	}
 	stat, err := statOf(resp)
@@ -108,7 +108,7 @@ func (c *Client) PutArchive(ctx context.Context, ref, guestPath, user string, sr
 	}
 	defer resp.Body.Close()
 
-	return refusal(resp)
+	return c.refusal(resp)
 }
 
 // GetArchive answers the guest path's stat and a tar of it, whose top entry is the path's base name. The caller closes the body.
@@ -118,7 +118,7 @@ func (c *Client) GetArchive(ctx context.Context, ref, guestPath string) (models.
 		return models.FileStat{}, nil, err
 	}
 
-	if err := refusal(resp); err != nil {
+	if err := c.refusal(resp); err != nil {
 		return models.FileStat{}, nil, errors.Join(err, resp.Body.Close())
 	}
 	stat, err := statOf(resp)
@@ -164,7 +164,7 @@ func (c *Client) fileRequest(ctx context.Context, method, ref, route string, que
 	return resp, nil
 }
 
-func refusal(resp *http.Response) error {
+func (c *Client) refusal(resp *http.Response) error {
 	if resp.StatusCode < http.StatusBadRequest {
 		return nil
 	}
@@ -174,7 +174,7 @@ func refusal(resp *http.Response) error {
 		return fmt.Errorf("read the daemon's refusal: %w", err)
 	}
 
-	return decodeError(resp.StatusCode, answer)
+	return c.decodeError(resp.StatusCode, answer)
 }
 
 func statOf(resp *http.Response) (models.FileStat, error) {

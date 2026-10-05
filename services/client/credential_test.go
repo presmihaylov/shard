@@ -5,6 +5,7 @@ import (
 	"encoding/pem"
 	"errors"
 	"fmt"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -253,8 +254,11 @@ func TestNoErrorHoldsTheKey(t *testing.T) {
 				t.Fatalf("NewRemoteFromEnv: %v", err)
 			}
 			_, err = c.Version(t.Context())
-			if err == nil || strings.Contains(err.Error(), leakKey) || !strings.Contains(err.Error(), "the bearer token is missing or invalid") {
-				t.Errorf("Version with the wrong key returned %v, want the refusal of the front and never the key", err)
+			if err == nil || strings.Contains(err.Error(), leakKey) || !strings.Contains(err.Error(), "did not accept the API key in "+client.APIKeyEnv+"; set "+client.APIKeyEnv+" to a valid key") {
+				t.Errorf("Version with the wrong key returned %v, want the key's source and fix, and never the key", err)
+			}
+			if err != nil && strings.Contains(strings.ToLower(err.Error()), "bearer") {
+				t.Errorf("Version with the wrong key returned %v, which names the wire header", err)
 			}
 
 			for _, verb := range []string{"%v", "%+v", "%#v", "%s", "%d", "%x", "%q"} {
@@ -263,6 +267,51 @@ func TestNoErrorHoldsTheKey(t *testing.T) {
 				}
 			}
 		})
+	}
+}
+
+// A saved key the server refuses names the file it came from and how to replace it, never the key or the header. (SHARD-672)
+func TestARefusedSavedKeyNamesItsFile(t *testing.T) {
+	host, _ := plainFront(t, "key-token")
+	noRemoteEnv(t)
+	config := t.TempDir()
+	t.Setenv(client.ConfigHomeEnv, config)
+
+	c, err := client.NewRemoteFromEnv("", client.Config{Remote: host, APIKey: leakKey})
+	if err != nil {
+		t.Fatalf("NewRemoteFromEnv: %v", err)
+	}
+	_, err = c.Version(t.Context())
+
+	want := "the server at " + host + " did not accept the API key saved in " + filepath.Join(config, "shard", "config.json") + "; run shard setup to replace it"
+	if err == nil || !strings.Contains(err.Error(), want) {
+		t.Errorf("Version with a refused saved key returned %v, want %q in it", err, want)
+	}
+	if err != nil && (strings.Contains(err.Error(), leakKey) || strings.Contains(strings.ToLower(err.Error()), "bearer")) {
+		t.Errorf("Version with a refused saved key returned %v, which holds the key or the header", err)
+	}
+}
+
+// A remote that does not answer names the cause and the fix, and never a local daemon to check. (SHARD-672)
+func TestARemoteThatDoesNotAnswerNamesTheCause(t *testing.T) {
+	listener, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("listen: %v", err)
+	}
+	host := "http://" + listener.Addr().String()
+	if err := listener.Close(); err != nil {
+		t.Fatalf("close the listener: %v", err)
+	}
+	c, err := client.NewRemote(host, "key-token", nil)
+	if err != nil {
+		t.Fatalf("NewRemote: %v", err)
+	}
+
+	_, err = c.Version(t.Context())
+
+	want := "cannot connect to the shard server at " + host + ": connection refused; check the URL, and that shard serve or the proxy in front of it runs"
+	if err == nil || err.Error() != want {
+		t.Errorf("Version against a closed port returned %v, want %q", err, want)
 	}
 }
 
