@@ -73,7 +73,7 @@ fronted.
 
 The proxy is an HTTP proxy for 80 and 443 only. The host chain alone allows or drops every other port
 and never brokers it, so a secret sent on such a port leaves as the placeholder. See
-`docs/secrets.md`.
+[secrets](https://useshards.com/docs/security/secrets/).
 
 The proxy runs only in `shard daemon`, as its `proxy` task. Every verb goes over the daemon socket,
 so only the process that runs the proxy ever creates, starts or forks a fronted sandbox. No path can
