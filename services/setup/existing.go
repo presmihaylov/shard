@@ -13,6 +13,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/presmihaylov/shard/pkg/mountinfo"
 	"github.com/presmihaylov/shard/pkg/proxy"
 	"github.com/presmihaylov/shard/pkg/term"
 	"github.com/presmihaylov/shard/pkg/vzshim"
@@ -809,8 +810,20 @@ func dataLeft(h Host) ([]string, error) {
 		}
 	}
 
-	if !imaged && len(mounts) == 0 {
+	_, mounted, err := mountinfo.Under(h.Root, DataDir)
+	if err != nil && !errors.Is(err, fs.ErrNotExist) {
+		return nil, fmt.Errorf("check the mount at %s: %w", DataDir, err)
+	}
+	// A mount outlives its deleted image, and rm -r would empty it, then fail on the busy mount point.
+	var unmount []string
+	if mounted {
+		unmount = []string{"  " + sudo + "umount " + DataDir}
+	}
+	if !imaged && len(mounts) == 0 && !mounted {
 		return []string{"To delete the saved data, run: " + remove}, nil
+	}
+	if !imaged && len(mounts) == 0 {
+		return slices.Concat([]string{"To delete the saved data, run:"}, unmount, []string{"  " + remove}), nil
 	}
 	// systemd keeps the mount unit it made from the fstab line until a reload. (SHARD-730)
 	dropLine := []string{"  " + sudo + "sed -i '\\|^" + regexp.QuoteMeta(image) + "[[:space:]]|d' " + fstabPath, "  " + sudo + "systemctl daemon-reload"}
@@ -818,7 +831,7 @@ func dataLeft(h Host) ([]string, error) {
 	if !imaged {
 		return slices.Concat(
 			[]string{"The disk image " + image + " is gone, but this line in " + fstabPath + " still mounts it at boot:"}, mounts,
-			[]string{"To remove the line and delete the saved data, run:"}, dropLine, []string{"  " + remove},
+			[]string{"To remove the line and delete the saved data, run:"}, unmount, dropLine, []string{"  " + remove},
 		), nil
 	}
 

@@ -980,6 +980,25 @@ func TestUninstallNamesTheDataItKeeps(t *testing.T) {
 			"  sudo systemctl daemon-reload",
 			"  sudo rm -r /var/lib/shard",
 		}},
+		"linux mount left of a deleted image": {os: "linux", files: map[string]string{
+			"/proc/self/mountinfo": "36 25 7:0 / /var/lib/shard rw,relatime shared:1 - xfs /dev/loop0 rw,attr2,inode64\n",
+		}, want: []string{
+			"To delete the saved data, run:",
+			"  sudo umount /var/lib/shard",
+			"  sudo rm -r /var/lib/shard",
+		}},
+		"linux fstab line and mount without its image": {os: "linux", files: map[string]string{
+			"/etc/fstab":           "/var/lib/shard.xfs /var/lib/shard xfs loop,nofail 0 0\n",
+			"/proc/self/mountinfo": "36 25 7:0 / /var/lib/shard rw,relatime shared:1 - xfs /dev/loop0 rw,attr2,inode64\n",
+		}, want: []string{
+			"The disk image /var/lib/shard.xfs is gone, but this line in /etc/fstab still mounts it at boot:",
+			"  /var/lib/shard.xfs /var/lib/shard xfs loop,nofail 0 0",
+			"To remove the line and delete the saved data, run:",
+			"  sudo umount /var/lib/shard",
+			`  sudo sed -i '\|^/var/lib/shard\.xfs[[:space:]]|d' /etc/fstab`,
+			"  sudo systemctl daemon-reload",
+			"  sudo rm -r /var/lib/shard",
+		}},
 		"linux image with its lock": {os: "linux", files: map[string]string{"/var/lib/shard.xfs": "img", "/var/lib/shard.xfs.lock": ""}, want: []string{
 			"It lives in the 0.0 GiB disk image /var/lib/shard.xfs.",
 			"To free the disk and delete the saved data, run:",
