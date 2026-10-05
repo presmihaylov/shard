@@ -58,6 +58,8 @@ with Shard() as shard:
 	</TabItem>
 </Tabs>
 
+The SDK examples connect to the server that `SHARD_REMOTE` names, with the API key in `SHARD_API_KEY`.
+
 `dockerd` takes a few seconds to open its socket, so the example waits until `docker info` answers. The nested `docker run` pulls `alpine:3.20` from Docker Hub over the sandbox's network.
 
 `dockerd` keeps running in the background. Use `docker build` and `docker run` inside the sandbox as you would on any host. When you are done, stop and remove the sandbox:
@@ -73,7 +75,7 @@ shard remove dind
 | --- | --- | --- | --- | --- | --- |
 | Docker inside a sandbox | no | yes | no | yes | yes |
 
-One daemon runs one provider for every sandbox on its host. `shard daemon status` names it. On gVisor or runc, pick another server for Docker.
+One daemon runs one provider for every sandbox on its host. `shard daemon status` on the daemon host names it. On gVisor or runc, pick another server for Docker.
 
 On a Linux host without `/dev/kvm`, Sysbox is the provider for Docker. Setup installs Sysbox CE 0.7.1 and sets up the daemon on it:
 
@@ -119,4 +121,4 @@ On a Sysbox host with kernel 6.12.107 and Sysbox 0.7.1, `dockerd` starts, but ev
 error mounting "cgroup" to rootfs at "/sys/fs/cgroup": ... permission denied
 ```
 
-This is a known issue with that kernel. On kernel 6.12.101 the containers run.
+This is a known issue with that kernel and Sysbox version. On kernel 6.12.101 the containers run.
