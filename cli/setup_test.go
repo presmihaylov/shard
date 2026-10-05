@@ -35,6 +35,14 @@ func TestSetupRefusesWhatItCannotRun(t *testing.T) {
 // noTerminal is the answers of these flags with stdin a pipe, the way a script runs setup.
 func noTerminal(t *testing.T, opts setupFlags) *answers {
 	t.Helper()
+	ui, _ := noTerminalOut(t, opts)
+
+	return ui
+}
+
+// noTerminalOut is noTerminal with the buffer its lines go to.
+func noTerminalOut(t *testing.T, opts setupFlags) (*answers, *bytes.Buffer) {
+	t.Helper()
 	in, w, err := os.Pipe()
 	if err != nil {
 		t.Fatal(err)
@@ -46,8 +54,9 @@ func noTerminal(t *testing.T, opts setupFlags) *answers {
 	})
 
 	none := func(string) string { return "" }
+	out := &bytes.Buffer{}
 
-	return &answers{opts: opts, t: term.New(in, &bytes.Buffer{}, none), env: none}
+	return &answers{opts: opts, t: term.New(in, out, none), env: none}, out
 }
 
 var providers = []term.Option{
@@ -141,6 +150,17 @@ func TestYesConfirmsButMakesNoChoice(t *testing.T) {
 	}
 	if mode, ok := ui.flagged(setup.AskMode); !ok || mode != "local" {
 		t.Errorf("--local picked %q", mode)
+	}
+}
+
+// A flag that answers yes still prints the warning above the question (SHARD-739).
+func TestASaveFlagStillPrintsThePlainTextWarning(t *testing.T) {
+	ui, out := noTerminalOut(t, setupFlags{remote: "https://shard.example.com", save: true})
+	if save, err := ui.Confirm(t.Context(), setup.AskSave, "The key is plain text.\nSave?", true); err != nil || !save {
+		t.Fatalf("--save answered %v, %v; want a save", save, err)
+	}
+	if got := out.String(); got != "The key is plain text.\n" {
+		t.Errorf("--save printed %q, want the warning alone", got)
 	}
 }
 

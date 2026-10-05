@@ -194,13 +194,13 @@ func (s *Setup) runLocal(ctx context.Context) error {
 	return s.local(ctx, h)
 }
 
-// switched runs a local job after the offer to drop a saved remote, and drops it only once the job succeeds.
-func (s *Setup) switched(ctx context.Context, job func(context.Context) error) error {
+// switched runs a local job after the offer to drop a saved remote, and drops it only once the job succeeds; removal is the job's review line.
+func (s *Setup) switched(ctx context.Context, job func(ctx context.Context, removal string) error) error {
 	h, err := s.switchToLocal(ctx)
 	if err != nil {
 		return err
 	}
-	if err := job(ctx); err != nil {
+	if err := job(ctx, h.review); err != nil {
 		return err
 	}
 	lines, err := h.finish(ctx)

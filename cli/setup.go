@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"os"
 	"slices"
+	"strings"
 
 	"github.com/presmihaylov/shard/pkg/term"
 	"github.com/presmihaylov/shard/services/client"
@@ -184,9 +185,11 @@ func pick(q setup.Question, options []term.Option, name string) (int, error) {
 func (a *answers) Confirm(ctx context.Context, q setup.Question, text string, yes bool) (bool, error) {
 	switch {
 	case slices.Contains(confirmations, q) && a.opts.yes:
-		return true, nil
-	case q == setup.AskSave && (a.opts.save || a.opts.yes || !a.t.Interactive()):
-		return a.opts.save, nil
+		return true, a.note(text)
+	case q == setup.AskSave && a.opts.save:
+		return true, a.note(text)
+	case q == setup.AskSave && (a.opts.yes || !a.t.Interactive()):
+		return false, nil
 	case !slices.Contains(confirmations, q) && !a.t.Interactive():
 		// A choice no flag names keeps things as they are when nobody is there to ask.
 		return false, nil
@@ -194,6 +197,13 @@ func (a *answers) Confirm(ctx context.Context, q setup.Question, text string, ye
 	answer, err := a.t.Confirm(ctx, text, yes)
 
 	return answer, need(q, err)
+}
+
+// note prints the lines above a question a flag answered yes, so a warning there reaches the reader all the same.
+func (a *answers) note(text string) error {
+	lines := strings.Split(text, "\n")
+
+	return a.t.Print(lines[:len(lines)-1]...)
 }
 
 func (a *answers) Text(ctx context.Context, q setup.Question, prompt, initial string) (string, error) {
