@@ -17,6 +17,7 @@ import (
 	"time"
 
 	"github.com/presmihaylov/shard/models"
+	"github.com/presmihaylov/shard/pkg/vz"
 	"github.com/presmihaylov/shard/services/bundle"
 	"github.com/presmihaylov/shard/services/supervisor"
 )
@@ -296,5 +297,30 @@ func TestAnExecNamesItsUserForTheGuestToResolve(t *testing.T) {
 	}
 	if header.User != "1000:1000" || !reflect.DeepEqual(header.Groups, []uint32{1000, 10}) || header.Lookup {
 		t.Errorf("unnamed exec header: user %q, groups %v, lookup %v; want the entrypoint's resolved ids", header.User, header.Groups, header.Lookup)
+	}
+}
+
+// A failed state read on reconnect is unknown, so it stays lost within and past grace, never gone, so Stop still stops a live VM (SHARD-618).
+func TestReconnectOnceKeepsAFailedStateReadLostNotGone(t *testing.T) {
+	p := &Provider{}
+	// A live shim keeps the failed read unknown; without it vmState would read the gone shim as a stopped VM (SHARD-618).
+	shim, err := vz.Identify(os.Getpid())
+	if err != nil {
+		t.Fatalf("identify this process as the shim: %v", err)
+	}
+	m := &machine{id: "sandbox1", client: vz.Open(filepath.Join(t.TempDir(), "absent.sock")), shim: shim}
+	m.following, m.unfollow = context.WithCancel(context.Background())
+	t.Cleanup(m.unfollow)
+	var dropped supervisor.Control
+	m.control.Store(&dropped)
+
+	within, err := p.reconnectOnce(m, &dropped, time.Now().Add(time.Minute))
+	if within != reconnectRetry || err == nil {
+		t.Fatalf("within grace: step=%v err=%v; want reconnectRetry with the read error", within, err)
+	}
+
+	past, err := p.reconnectOnce(m, &dropped, time.Now().Add(-time.Second))
+	if past != reconnectLost || err == nil {
+		t.Fatalf("past grace: step=%v err=%v; want reconnectLost with the read error", past, err)
 	}
 }
