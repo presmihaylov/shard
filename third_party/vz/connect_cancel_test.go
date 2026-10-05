@@ -25,8 +25,12 @@ func TestConnectCancelKeepsHandleForLateCompletion(t *testing.T) {
 	if !ok {
 		t.Fatalf("handle resolved to %T; want *managedConnect", handle.Value())
 	}
-	if !got.dead.Load() {
+	fn, dead := got.take()
+	if !dead {
 		t.Error("cancel did not mark the dial dead, so a late callback would deliver to a gone caller")
+	}
+	if fn != nil {
+		t.Error("cancel did not drop the callback, so the dial still retains it and the channel it closes over")
 	}
 	handle.Delete() // the callback owns the delete
 }

@@ -214,10 +214,14 @@ func awaitConnect(port uint32, timeout time.Duration, start func(fn func(net.Con
 		mu.Lock()
 		abandoned = true
 		mu.Unlock()
-		// A callback that filled the buffer just before abandoned was set closed nothing, so drain and close it here.
+		// A buffered answer was written before abandoned was set, so it arrived before the deadline; honor it rather than close a healthy connection (SHARD-619).
 		select {
 		case r := <-done:
-			closeLate(port, r.conn)
+			if r.err != nil {
+				return nil, fmt.Errorf("connect to guest vsock port %d: %w", port, r.err)
+			}
+
+			return r.conn, nil
 		default:
 		}
 

@@ -14,7 +14,6 @@ import (
 	"runtime"
 	"runtime/cgo"
 	"sync"
-	"sync/atomic"
 	"syscall"
 	"time"
 	"unsafe"
@@ -131,12 +130,13 @@ func connectionHandler(connPtr, errPtr unsafe.Pointer, cgoHandleUintptr C.uintpt
 	case *managedConnect:
 		// The callback is the sole owner of the handle, so a completion that lands after a cancel still reads a live handle instead of panicking on a freed one (SHARD-619).
 		defer cgoHandle.Delete()
-		if handler.dead.Load() {
+		fn, dead := handler.take()
+		if dead {
 			dropConn(connPtr, errPtr)
 
 			return
 		}
-		deliver(handler.fn, connPtr, errPtr)
+		deliver(fn, connPtr, errPtr)
 	case func(*VirtioSocketConnection, error):
 		defer cgoHandle.Delete()
 		deliver(handler, connPtr, errPtr)
@@ -161,6 +161,9 @@ func dropConn(connPtr, errPtr unsafe.Pointer) {
 	}
 	conn, err := newVirtioSocketConnection(connPtr)
 	if err != nil {
+		// Pres ruled 2026-10-05: log and return; a cancelled dial has no caller to take the error, and a conn we could not build has nothing to close.
+		log.Printf("vsock: build a connection that completed after the dial was cancelled: %v", err)
+
 		return
 	}
 	if err := conn.Close(); err != nil {
@@ -194,12 +197,26 @@ func (v *VirtioSocketDevice) Connect(port uint32) (*VirtioSocketConnection, erro
 
 // managedConnect carries a connect's callback and whether the caller cancelled the dial; the framework callback alone frees the cgo handle (SHARD-619).
 type managedConnect struct {
+	mu   sync.Mutex
 	fn   func(*VirtioSocketConnection, error)
-	dead atomic.Bool
+	dead bool
 }
 
-// cancel marks the dial dead so a late callback drops the conn instead of delivering it; it never frees the handle, which the callback owns (SHARD-619).
-func (m *managedConnect) cancel() { m.dead.Store(true) }
+// cancel marks the dial dead and drops the callback, so a guest that never answers no longer retains the callback or the channel it closes over; a late callback still reads a live handle and drops the conn (SHARD-619).
+func (m *managedConnect) cancel() {
+	m.mu.Lock()
+	m.dead = true
+	m.fn = nil
+	m.mu.Unlock()
+}
+
+// take reads the callback and the dead flag together, so the callback and cancel never race over fn (SHARD-619).
+func (m *managedConnect) take() (func(*VirtioSocketConnection, error), bool) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
+	return m.fn, m.dead
+}
 
 // ConnectHandler starts a connect and runs fn once from the framework's callback, on the VM queue; the returned cancel marks a timed-out dial dead so its late callback drops the conn (SHARD-619).
 func (v *VirtioSocketDevice) ConnectHandler(port uint32, fn func(*VirtioSocketConnection, error)) (cancel func()) {

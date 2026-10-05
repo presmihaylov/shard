@@ -79,6 +79,27 @@ func TestAwaitConnectReturnsAnAnswerWithinTheTimeout(t *testing.T) {
 	}
 }
 
+// A callback that completes before start returns still reaches the caller, not a false timeout that closes a healthy connection (SHARD-619).
+func TestAwaitConnectDeliversAFastAnswer(t *testing.T) {
+	want := &recordConn{}
+	start := func(fn func(net.Conn, error)) func() {
+		fn(want, nil) // the framework can call back before ConnectHandler returns
+
+		return func() {}
+	}
+
+	got, err := awaitConnect(9, 20*time.Millisecond, start)
+	if err != nil {
+		t.Fatalf("connect: %v", err)
+	}
+	if got != net.Conn(want) {
+		t.Errorf("got %v; want the answered connection", got)
+	}
+	if want.closed.Load() {
+		t.Error("the answered connection was closed")
+	}
+}
+
 // Each end of the frames pair holds a burst of full frames nobody reads, where the macOS default refuses the third (SHARD-384).
 func TestTheFramesPairHoldsABurstEitherWay(t *testing.T) {
 	guest, host, err := frames()
