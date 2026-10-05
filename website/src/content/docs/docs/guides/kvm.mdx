@@ -18,14 +18,14 @@ sudo shard resume demo
 sudo shard remove --force demo
 ```
 
-When `~/.local/bin` is not on your `PATH`, the installer prints the line that adds it.
+If `~/.local/bin` is not on your `PATH`, the installer prints the line that adds it.
 
-Each sandbox is a Firecracker microVM. It boots a Linux kernel that shard ships, never the kernel of the host, so `uname -r` prints the version of that kernel. Every lifecycle verb works on Firecracker, including `pause`, `resume` and `fork`. The daemon runs as root, so local commands run with `sudo`.
+Each sandbox is a Firecracker microVM. It boots a Linux kernel that shard ships, never the host's kernel, so `uname -r` prints the version of shard's kernel. Every lifecycle verb works on Firecracker, including `pause`, `resume` and `fork`. The daemon runs as root, so you run local commands with `sudo`.
 
 ## What you need
 
 - **Linux on x86_64.** A shard release ships its Linux build for x86_64 only.
-- **`/dev/kvm`.** A bare-metal server has it. A cloud VM has it only when the cloud offers nested virtualization. Hetzner Cloud, for example, has none.
+- **`/dev/kvm`.** A bare-metal server has it. A cloud VM has it only when the cloud offers nested virtualization. Hetzner Cloud, for example, does not offer it.
 - **Room for the data directory.** `/var/lib/shard` on XFS or Btrfs, or 20 GiB free on its filesystem. See [The data directory](#the-data-directory).
 - **Enough memory.** A VM's memory is real memory on the host. Eight sandboxes of 512 MiB use 4 GiB.
 
@@ -49,17 +49,17 @@ On a host where `/dev/kvm` does not open, `shard info` prints `gvisor` and says 
 
 `shard setup --local --provider firecracker` runs as your user and uses `sudo` for the steps that need root. It:
 
-1. Installs the tools that Firecracker needs. When they are absent, it downloads Firecracker 1.17.0 and its jailer into `/usr/local/bin`. It keeps a `firecracker` that is already there when it is 1.13.0 or newer, and refuses an older one.
+1. Installs the tools that Firecracker needs. When they are absent, it downloads Firecracker 1.17.0 and its jailer into `/usr/local/bin`. It keeps an existing `firecracker` of 1.13.0 or newer, and refuses an older one.
 2. Installs `shard` and `shard-init` in `/usr/local/bin`.
 3. Creates the data directory `/var/lib/shard`.
 4. With `--start-at-boot=true`, installs the systemd unit `/etc/systemd/system/shard.service`, starts the daemon, and checks that it answers.
 
 [Quickstart: server](/docs/quickstart/server/) covers the wizard, the service and how to run the daemon in a terminal.
 
-The daemon prepares Firecracker the first time it needs it. It checks the version of `firecracker`. It also downloads the guest kernel from the shard release and checks its SHA-256. A release that the daemon cannot reach holds it for up to 5 minutes:
+The daemon prepares Firecracker the first time it needs it. It checks the version of `firecracker`. It also downloads the guest kernel from the shard release and checks its SHA-256. If the daemon cannot reach the release, it waits up to 5 minutes:
 
 - With no sandboxes in `/var/lib/shard`, the daemon prepares Firecracker at the first command that needs it. Only that command fails.
-- With sandboxes in `/var/lib/shard`, the daemon prepares Firecracker before it answers any command. It then exits with the error, and systemd starts it again to try again.
+- With sandboxes in `/var/lib/shard`, the daemon prepares Firecracker before it answers any command. If that fails, it exits with the error, and systemd starts it again for another try.
 
 ### The data directory
 
@@ -73,16 +73,16 @@ The jailer makes `/dev/kvm` in each VM's jail under `/var/lib/shard` and starts 
 
 Each sandbox is one `firecracker` process. The daemon starts it through Firecracker's jailer, never as root:
 
-- **Its own user.** Each sandbox gets a uid and gid of its own, from 1879048192 up, clear of the usual system and subordinate ranges.
-- **Its own jail.** The VM runs chrooted in `/var/lib/shard/jail/firecracker/<id>/root`, in new pid and mount namespaces, with no capability and under Firecracker's seccomp filter.
+- **Its own user.** Each sandbox gets a uid and gid of its own, from 1879048192 up, so they do not overlap the usual system and subordinate ranges.
+- **Its own jail.** The VM runs chrooted in `/var/lib/shard/jail/firecracker/<id>/root`, in new pid and mount namespaces, with no capabilities and under Firecracker's seccomp filter.
 - **Its own disks.** The VM boots a read-only image of the sandbox's image, which shard builds once per image, and a writable disk of its own for everything the sandbox writes.
 - **shard's supervisor as PID 1.** Your command is its child. The sandbox stays `running` after the command exits, until `shard stop`.
 
 The guest's network joins the same bridge, `shard0`, as on the other Linux providers. An egress policy applies and logs the same way. The guest kernel has no IPv6, so a sandbox and any Docker inside it run IPv4 only.
 
-`shard stop` asks the guest to end the command and shut down cleanly. After a grace of 30 seconds it kills the VM. A guest `fsync` returns only after the data reaches the host disk.
+`shard stop` asks the guest to end the command and shut down cleanly. After a grace period of 30 seconds, it kills the VM. A guest `fsync` returns only after the data reaches the host disk.
 
-A sandbox outlives the daemon. A restart of the daemon takes each running VM back. A VM that does not answer within 4 seconds reads `unresponsive`, keeps running, and reads `running` again when it answers.
+A sandbox outlives the daemon. After a restart, the daemon picks up each running VM again. A VM that does not answer within 4 seconds shows as `unresponsive` and keeps running. It shows as `running` again when it answers.
 
 ## Bounds
 
@@ -92,9 +92,9 @@ A sandbox outlives the daemon. A restart of the daemon takes each running VM bac
 | `--vcpus` | The VM's virtual CPUs. `0`, the default, gives one for each host CPU, up to 32. A value above 32 is refused. |
 | `--disk` | The size of the writable disk. `0`, the default, means 10240 MiB. A bound under 11 MiB is refused. |
 
-A sandbox that passes its `--memory` stops, and its record says why. Nothing starts it again. The host also bounds the VM process at the sandbox's memory plus 64 MiB, for its own safety, but the guest's kernel always acts first.
+A sandbox that goes over its `--memory` stops, and its record says why. Nothing starts it again. As a safety net, the host also bounds the VM process at the sandbox's memory plus 64 MiB, but the guest's kernel always acts first.
 
-A few `--disk` sizes just above a multiple of 128 MiB are refused, because the disk cannot grow to them. The error names the nearest sizes that work.
+shard refuses a few `--disk` sizes just above a multiple of 128 MiB, because the disk cannot grow to them. The error names the nearest sizes that work.
 
 There is no process bound. A process in the guest is a process inside the VM, so a fork bomb stays there and hits the VM's memory.
 
@@ -102,7 +102,7 @@ There is no process bound. A process in the guest is a process inside the VM, so
 
 `shard pause` saves the guest's memory and state under `/var/lib/shard/checkpoints/<id>`, beside a copy of its disk, then ends the VM. A paused sandbox holds disk space, but no memory and no CPU. In most cases, a pause writes only the memory pages that the guest changed since it booted or last resumed.
 
-`shard resume` loads that state into a new VM, and the processes go on where they stopped. On every load of saved state, by `resume` or `fork`, shard corrects the guest's clock. It also gives the guest fresh random seed from the host before any process runs again. So a fork never shares random numbers with its source.
+`shard resume` loads that state into a new VM, and the processes carry on where they left off. On every load of saved state, by `resume` or `fork`, shard corrects the guest's clock. It also gives the guest a fresh random seed from the host before any process runs again. So a fork never shares random numbers with its source.
 
 `shard fork` copies a running sandbox, memory included:
 
@@ -110,10 +110,10 @@ There is no process bound. A process in the guest is a process inside the VM, so
 sudo shard fork --name demo-copy demo
 ```
 
-The source freezes for the copy, then runs on in the same VM. Two things fail while the copy runs:
+The source freezes during the copy, then keeps running in the same VM. Two things fail while the copy runs:
 
-- An `exec` that runs across the copy loses its output, and its command runs on in the sandbox. The CLI fails with an error that names the verb.
-- An `exec` that starts while the source is frozen is refused with `a fork holds the sandbox frozen, and nothing starts in it until that ends: run the command again`. Nothing queues it, so run it again.
+- An `exec` that is running during the copy loses its output, but its command keeps running in the sandbox. The CLI fails with an error that names the verb.
+- An `exec` that starts while the source is frozen is refused with `a fork holds the sandbox frozen, and nothing starts in it until that ends: run the command again`. shard does not queue it, so run it again.
 
 ### Snapshots and a larger disk
 
@@ -125,13 +125,13 @@ sudo shard snapshot create --name web-base web
 sudo shard create --name web-big --memory 512MiB --disk 20GiB --snapshot web-base
 ```
 
-The disk grows only from a clean stop, where the command exited before the grace ran out. A sandbox that `shard stop` had to kill leaves a disk that cannot grow. To fix it, start the sandbox, let its command exit or end it from `shard exec`, then stop the sandbox and take a new snapshot.
+The disk grows only from a clean stop, where the command exited before the grace period ran out. A sandbox that `shard stop` had to kill leaves a disk that cannot grow. To fix it, start the sandbox, let its command exit or end it from `shard exec`, then stop the sandbox and take a new snapshot.
 
 ## The guest kernel
 
 shard ships one Linux kernel with each release, and every build of it is the same, byte for byte. It has no modules. It builds in what a sandbox needs: virtio devices, ext4, overlay and EROFS, cgroups, namespaces and seccomp. It also builds in the bridge, netfilter, NAT and nf_tables, so Docker runs inside a sandbox.
 
-The daemon downloads the kernel from the shard release on GitHub when it first needs it. It keeps it in `/var/lib/shard/kernel/<tag>/vmlinux-amd64` and checks it against the SHA-256 that shard was built with. A file that fails the check, for example one that a crash cut short, is downloaded again. A shard upgrade that ships a new kernel downloads it the same way.
+The daemon downloads the kernel from the shard release on GitHub when it first needs it. It keeps it in `/var/lib/shard/kernel/<tag>/vmlinux-amd64` and checks it against the SHA-256 that shard was built with. If a file fails the check, for example because a crash cut it short, the daemon downloads it again. A shard upgrade that ships a new kernel downloads it the same way.
 
 To boot a kernel you built yourself, stop the service with `sudo systemctl stop shard`, then give the daemon the kernel's path and its SHA-256:
 
@@ -139,7 +139,7 @@ To boot a kernel you built yourself, stop the service with `sudo systemctl stop 
 sudo env SHARD_KERNEL=/path/to/vmlinux-amd64 SHARD_KERNEL_SHA256=<its sha256> shard daemon --provider firecracker
 ```
 
-Set both variables, because one alone is an error at start. The daemon still checks the hash, and refuses a file that does not match with `kernel checksum mismatch`. This is for kernel development only.
+Set both variables. The daemon refuses to start with only one. The daemon still checks the hash, and refuses a file that does not match with `kernel checksum mismatch`. This is for kernel development only.
 
 ## When something fails
 
