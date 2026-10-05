@@ -5,9 +5,13 @@ import (
 	"context"
 	"fmt"
 	"io"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -158,5 +162,96 @@ func TestABrokenSavedConnectionNamesTheFile(t *testing.T) {
 	}
 	if strings.Contains(out.String(), "up-1") {
 		t.Error("list with a broken saved connection read the socket")
+	}
+}
+
+// bearerFront is a plain http server that only records the bearer of each request, so a row can tell which server a verb dialed.
+func bearerFront(t *testing.T) (string, func() []string) {
+	t.Helper()
+
+	var mu sync.Mutex
+	var bearers []string
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		mu.Lock()
+		bearers = append(bearers, strings.TrimPrefix(r.Header.Get("Authorization"), "Bearer "))
+		mu.Unlock()
+		http.Error(w, `{"error":"recorded"}`, http.StatusUnauthorized)
+	}))
+	t.Cleanup(server.Close)
+
+	return server.URL, func() []string {
+		mu.Lock()
+		defer mu.Unlock()
+
+		return slices.Clone(bearers)
+	}
+}
+
+// The §13 order: --remote, then SHARD_REMOTE, then the saved connection, then the socket; an explicit empty --remote is the socket. (SHARD-657)
+func TestTheRemoteComesFromTheFlagThenTheEnvironmentThenTheSavedConnection(t *testing.T) {
+	const envKey, savedKey = "shard657-synthetic-env-key", "shard657-synthetic-saved-key"
+	for _, tc := range []struct {
+		name                   string
+		flag, env, saved, key  bool
+		emptyFlag              bool
+		wantServer, wantBearer string
+	}{
+		{name: "flag over env and saved", flag: true, env: true, saved: true, key: true, wantServer: "flag", wantBearer: envKey},
+		{name: "flag over saved", flag: true, saved: true, key: true, wantServer: "flag", wantBearer: envKey},
+		{name: "env over saved", env: true, saved: true, key: true, wantServer: "env", wantBearer: envKey},
+		{name: "env alone", env: true, key: true, wantServer: "env", wantBearer: envKey},
+		{name: "saved alone, with its key", saved: true, wantServer: "saved", wantBearer: savedKey},
+		{name: "SHARD_API_KEY over the saved key", saved: true, key: true, wantServer: "saved", wantBearer: envKey},
+		{name: "empty flag over env and saved", emptyFlag: true, env: true, saved: true, key: true},
+		{name: "none"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			var out bytes.Buffer
+			app := newListApp(t, &out, listed(), nil)
+			noRemoteEnv(t)
+			t.Setenv(client.ConfigHomeEnv, t.TempDir())
+
+			urls := map[string]string{}
+			bearers := map[string]func() []string{}
+			for _, name := range []string{"flag", "env", "saved"} {
+				urls[name], bearers[name] = bearerFront(t)
+			}
+			if tc.saved {
+				saveConnection(t, urls["saved"], savedKey)
+			}
+			if tc.env {
+				t.Setenv(client.RemoteEnv, urls["env"])
+			}
+			if tc.key {
+				t.Setenv(client.APIKeyEnv, envKey)
+			}
+			args := []string{"list"}
+			if tc.flag {
+				args = append([]string{"--remote", urls["flag"]}, args...)
+			}
+			if tc.emptyFlag {
+				args = append([]string{"--remote", ""}, args...)
+			}
+
+			err := app.Run(t.Context(), args)
+			for name, got := range bearers {
+				if name != tc.wantServer && len(got()) != 0 {
+					t.Errorf("the %s server got %d requests, want none", name, len(got()))
+				}
+			}
+			if tc.wantServer == "" {
+				if err != nil || !strings.Contains(out.String(), "up-1") {
+					t.Errorf("list returned %v and printed %q, want the sandbox the socket holds", err, out.String())
+				}
+				return
+			}
+			got := bearers[tc.wantServer]()
+			if len(got) == 0 || got[0] != tc.wantBearer {
+				t.Errorf("the %s server got bearers %q, want %q", tc.wantServer, got, tc.wantBearer)
+			}
+			if strings.Contains(out.String(), "up-1") {
+				t.Error("list read the socket, want the remote")
+			}
+		})
 	}
 }

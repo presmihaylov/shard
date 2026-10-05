@@ -447,7 +447,7 @@ func (a App) client() (*client.Client, error) {
 	if err != nil {
 		return nil, err
 	}
-	// The key and the certificate are read here, so a bad one fails before the verb dials.
+	// a.Remote is already --remote or SHARD_REMOTE (fromEnv), so the saved remote comes last; a bad key or certificate fails before the dial.
 	if remote := cmp.Or(a.Remote, saved.Remote); remote != "" {
 		c, err := client.NewRemoteFromEnv(remote, saved)
 		if err != nil {
