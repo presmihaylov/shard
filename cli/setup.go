@@ -1,0 +1,214 @@
+package cli
+
+import (
+	"context"
+	"errors"
+	"fmt"
+	"os"
+	"slices"
+
+	"github.com/presmihaylov/shard/pkg/term"
+	"github.com/presmihaylov/shard/services/client"
+	"github.com/presmihaylov/shard/services/setup"
+)
+
+// setupFlags are the choices a command line gives shard setup ahead of the wizard.
+type setupFlags struct {
+	local       bool
+	remote      string
+	provider    string
+	startAtBoot boolChoice
+	save        bool
+	yes         bool
+}
+
+// boolChoice is a flag that takes true or false as its value, so a bare --start-at-boot is refused.
+type boolChoice struct {
+	set   bool
+	value bool
+}
+
+func (b *boolChoice) String() string {
+	if !b.set {
+		return ""
+	}
+
+	return fmt.Sprint(b.value)
+}
+
+func (b *boolChoice) Set(value string) error {
+	switch value {
+	case "true":
+		b.set, b.value = true, true
+	case "false":
+		b.set, b.value = true, false
+	default:
+		return fmt.Errorf("want true or false, got %q", value)
+	}
+
+	return nil
+}
+
+func (a App) setup(ctx context.Context, args []string) error {
+	var opts setupFlags
+	flags := newFlags("setup")
+	flags.BoolVar(&opts.local, "local", false, "")
+	flags.StringVar(&opts.remote, "remote", "", "")
+	flags.StringVar(&opts.provider, "provider", "", "")
+	flags.Var(&opts.startAtBoot, "start-at-boot", "")
+	flags.BoolVar(&opts.save, "save", false, "")
+	flags.BoolVar(&opts.yes, "y", false, "")
+	flags.BoolVar(&opts.yes, "yes", false, "")
+	if err := parseVerb(flags, args); err != nil {
+		return err
+	}
+	if flags.NArg() > 0 {
+		return fmt.Errorf("setup takes no arguments, got %s", gotArgs(flags.Args()))
+	}
+	if err := opts.check(); err != nil {
+		return err
+	}
+
+	host, err := setup.NewHost(a.Version)
+	if err != nil {
+		return err
+	}
+	run := setup.Setup{Host: host, UI: &answers{opts: opts, t: term.New(a.stdin(), a.Out, os.Getenv)}}
+
+	return run.Run(ctx)
+}
+
+// check refuses a local choice beside a remote one, so neither half guesses which was meant.
+func (o setupFlags) check() error {
+	localOnly := o.provider != "" || o.startAtBoot.set
+	if o.remote != "" && (o.local || localOnly) {
+		return errors.New("--remote connects to a server; --local, --provider and --start-at-boot set up this machine")
+	}
+	if o.save && (o.local || localOnly) {
+		return errors.New("--save saves a remote connection; it does not apply to --local")
+	}
+
+	return nil
+}
+
+// answers puts the flags in front of the terminal: a flag answers its question, else a person does, else the error names the flag.
+type answers struct {
+	opts setupFlags
+	t    *term.Terminal
+}
+
+// flagged is the option name a flag picks for a question, and whether one does.
+func (a *answers) flagged(q setup.Question) (string, bool) {
+	switch q {
+	case setup.AskMode:
+		if a.opts.remote != "" || a.opts.save {
+			return "remote", true
+		}
+		if a.opts.local || a.opts.provider != "" || a.opts.startAtBoot.set {
+			return "local", true
+		}
+	case setup.AskProvider:
+		return a.opts.provider, a.opts.provider != ""
+	case setup.AskStartAtBoot:
+		return a.opts.startAtBoot.String(), a.opts.startAtBoot.set
+	}
+
+	return "", false
+}
+
+func (a *answers) Select(ctx context.Context, q setup.Question, title string, options []term.Option) (int, error) {
+	if name, ok := a.flagged(q); ok {
+		return pick(q, options, name)
+	}
+	chosen, err := a.t.Select(ctx, title, options)
+
+	return chosen, need(q, err)
+}
+
+// pick is the option a flag names; an unavailable one is refused with its reason, never swapped for another.
+func pick(q setup.Question, options []term.Option, name string) (int, error) {
+	var names []string
+	for i, o := range options {
+		if o.Name != name {
+			names = append(names, o.Name)
+			continue
+		}
+		if len(o.Unavailable) > 0 {
+			return 0, fmt.Errorf("%s %s: %s is unavailable: %s", setupFlag[q], name, o.Label, o.Unavailable[0])
+		}
+
+		return i, nil
+	}
+
+	return 0, fmt.Errorf("%s %q: want %s", setupFlag[q], name, orList(names))
+}
+
+func (a *answers) Confirm(ctx context.Context, q setup.Question, text string, yes bool) (bool, error) {
+	switch {
+	case slices.Contains(confirmations, q) && a.opts.yes:
+		return true, nil
+	case q == setup.AskSave && (a.opts.save || a.opts.yes || !a.t.Interactive()):
+		return a.opts.save, nil
+	case !slices.Contains(confirmations, q) && !a.t.Interactive():
+		// A choice no flag names keeps things as they are when nobody is there to ask.
+		return false, nil
+	}
+	answer, err := a.t.Confirm(ctx, text, yes)
+
+	return answer, need(q, err)
+}
+
+func (a *answers) Text(ctx context.Context, q setup.Question, prompt string) (string, error) {
+	if q == setup.AskURL && a.opts.remote != "" {
+		return a.opts.remote, nil
+	}
+	answer, err := a.t.Text(ctx, prompt)
+
+	return answer, need(q, err)
+}
+
+func (a *answers) Secret(ctx context.Context, q setup.Question, prompt string) (string, error) {
+	answer, err := a.t.Secret(ctx, prompt)
+
+	return answer, need(q, err)
+}
+
+func (a *answers) Checklist(title string, steps []string) (setup.Checklist, error) {
+	list, err := a.t.Checklist(title, steps)
+	if err != nil {
+		return nil, err
+	}
+
+	return list, nil
+}
+
+func (a *answers) Print(lines ...string) error { return a.t.Print(lines...) }
+
+// confirmations are the questions -y answers; the rest are choices it never makes.
+var confirmations = []setup.Question{setup.AskConfirm, setup.AskHTTP}
+
+// setupFlag is the option that answers each question, which a run without a terminal must name.
+var setupFlag = map[setup.Question]string{
+	setup.AskMode:        "--local or --remote <url>",
+	setup.AskProvider:    "--provider",
+	setup.AskStartAtBoot: "--start-at-boot",
+	setup.AskConfirm:     "-y",
+	setup.AskHTTP:        "-y",
+	setup.AskURL:         "--remote",
+	setup.AskAPIKey:      client.APIKeyEnv,
+}
+
+// need words a question asked without a terminal as the option that answers it.
+func need(q setup.Question, err error) error {
+	if !errors.Is(err, term.ErrNotTerminal) {
+		return err
+	}
+	switch flag, ok := setupFlag[q]; {
+	case q == setup.AskAPIKey:
+		return fmt.Errorf("no terminal to read the API key: set %s", flag)
+	case ok:
+		return fmt.Errorf("no terminal to ask %s: pass %s", q, flag)
+	}
+
+	return fmt.Errorf("no terminal to ask %s: run shard setup in a terminal", q)
+}
