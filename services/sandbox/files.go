@@ -10,7 +10,6 @@ import (
 	"time"
 
 	"github.com/presmihaylov/shard/models"
-	"github.com/presmihaylov/shard/services/bundle"
 	"github.com/presmihaylov/shard/services/supervisor"
 )
 
@@ -302,10 +301,9 @@ func checkGuestPath(guestPath string) error {
 
 // fileError maps the guest's refusal to the error the API answers: not_found is 404, invalid is 400, the rest is 500.
 func fileError(err error) error {
-	// The exec plumbing around an unknown user says nothing the caller can fix, so only the user goes back.
-	var unknown *bundle.UnknownUserError
-	if errors.As(err, &unknown) {
-		return &RequestError{Err: unknown}
+	// The exec plumbing around a user refusal says nothing the caller can fix, so only the refusal goes back.
+	if refused, ok := userRefusal(err); ok {
+		return refused
 	}
 
 	var refusal *supervisor.FileError

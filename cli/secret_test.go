@@ -2,11 +2,15 @@ package cli
 
 import (
 	"bytes"
+	"context"
+	"errors"
+	"io"
 	"os"
 	"path/filepath"
 	"slices"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/presmihaylov/shard/models"
 	"github.com/presmihaylov/shard/services/bundle"
@@ -118,14 +122,14 @@ func TestSecretSetListRemoveRoundTrip(t *testing.T) {
 func TestSecretSetRefusesAnEmptyStdinAndNoDestination(t *testing.T) {
 	var out bytes.Buffer
 
-	app, _ := newSecretApp(t, &out, "\n", nil)
+	app, _ := newSecretApp(t, &out, "\n", &fakeLifecycleRepo{r: &recorder{}})
 
 	err := app.Run(t.Context(), []string{"secret", "set", "--destination", "api.example.com", "KEY"})
 	if err == nil || !strings.Contains(err.Error(), "empty") {
 		t.Errorf("set with an empty stdin = %v", err)
 	}
 
-	app, _ = newSecretApp(t, &out, "value-123456\n", nil)
+	app, _ = newSecretApp(t, &out, "value-123456\n", &fakeLifecycleRepo{r: &recorder{}})
 
 	err = app.Run(t.Context(), []string{"secret", "set", "KEY"})
 	if err == nil || !strings.Contains(err.Error(), "no destination") {
@@ -141,12 +145,13 @@ func TestSecretSetRefusesAnEmptyStdinAndNoDestination(t *testing.T) {
 func TestSecretSetRefusesToMoveAPlaceholderASandboxHolds(t *testing.T) {
 	var out bytes.Buffer
 
-	repo := &fakeLifecycleRepo{r: &recorder{}, left: []models.Sandbox{{ID: "sb1", Secrets: []string{"KEY"}}}}
+	repo := &fakeLifecycleRepo{r: &recorder{}}
 	app, root := newSecretApp(t, &out, "value-654321\n", repo)
 
 	if err := app.Run(t.Context(), []string{"secret", "set", "--destination", "api.example.com", "KEY"}); err != nil {
 		t.Fatal(err)
 	}
+	repo.left = []models.Sandbox{{ID: "sb1", Secrets: []string{"KEY"}}}
 
 	app, _ = newSecretApp(t, &out, "value-654321\n", repo)
 	app.Root = root
@@ -219,6 +224,105 @@ func TestParseSecretSetTakesADashValueAfterADoubleDash(t *testing.T) {
 	}
 }
 
+// A flag after the name is refused rather than stored as the credential, and a -- still lets a value start with -.
+func TestParseSecretSetRefusesAFlagAfterTheNameUnlessADoubleDashGuardsIt(t *testing.T) {
+	for _, args := range [][]string{
+		{"KEY", "--placeholder=sk_test_next01"},
+		{"KEY", "--destination=api.example.com"},
+		{"KEY", "--dest=api.example.com"},
+		{"KEY", "--to=api.example.com"},
+		{"KEY", "--"},
+		{"KEY", "s3cr3t-value", "--dest=api.example.com"},
+		// This -- is the placeholder, not the end of the flags.
+		{"--placeholder", "--", "KEY", "--dest=api.example.com"},
+	} {
+		_, err := parseSecretSet(args)
+		if err == nil || !strings.Contains(err.Error(), "flags before the name") || strings.Contains(err.Error(), "example.com") || strings.Contains(err.Error(), "s3cr3t") {
+			t.Errorf("parseSecretSet(%v) = %v, want the flag order named and no argument echoed", args, err)
+		}
+	}
+
+	for _, args := range [][]string{
+		{"--", "KEY", "--placeholder=sk_test_next01"},
+		{"KEY", "--", "--placeholder=sk_test_next01"},
+	} {
+		opts, err := parseSecretSet(args)
+		if err != nil || opts.value != "--placeholder=sk_test_next01" {
+			t.Errorf("parseSecretSet(%v) = %+v, %v, want the guarded value", args, opts, err)
+		}
+	}
+
+	opts, err := parseSecretSet([]string{"KEY", "-"})
+	if err != nil || opts.valueOnArgv() {
+		t.Errorf("parseSecretSet(KEY -) = %+v, %v, want the value from stdin", opts, err)
+	}
+}
+
+// The verb refuses before it reaches the store, so the value already there survives the typo.
+func TestSecretSetKeepsTheStoredValueWhenAFlagFollowsTheName(t *testing.T) {
+	var out bytes.Buffer
+
+	app, root := newSecretApp(t, &out, "", &fakeLifecycleRepo{r: &recorder{}})
+	store, err := secret.New(filepath.Join(root, "secrets"), func(string) ([]string, error) { return nil, nil })
+	if err != nil {
+		t.Fatalf("secret.New: %v", err)
+	}
+	if _, err := store.Set("KEY", "synthetic-before", []string{"api.example.com"}, ""); err != nil {
+		t.Fatalf("Set: %v", err)
+	}
+
+	if err := app.Run(t.Context(), []string{"secret", "set", "KEY", "--placeholder=sk_test_next01"}); err == nil {
+		t.Fatal("secret set KEY --placeholder=... was taken")
+	}
+
+	got, err := store.Value("KEY")
+	if err != nil || got != "synthetic-before" {
+		t.Errorf("the stored value is %q, %v, want it unchanged", got, err)
+	}
+}
+
+// The first stop signal cancels ctx, and a pipe whose writer never closes must not hold the verb past it.
+func TestSecretSetEndsItsStdinReadOnCancel(t *testing.T) {
+	input, writer, err := os.Pipe()
+	if err != nil {
+		t.Fatalf("os.Pipe: %v", err)
+	}
+	t.Cleanup(func() {
+		if err := errors.Join(input.Close(), writer.Close()); err != nil {
+			t.Errorf("close the pipe: %v", err)
+		}
+	})
+
+	var out bytes.Buffer
+	app := App{Version: "test", Root: shortRoot(t), Out: &out, Err: &out, in: input}
+
+	ctx, cancel := context.WithCancel(t.Context())
+	defer cancel()
+	done := make(chan error, 1)
+	go func() { done <- app.Run(ctx, []string{"secret", "set", "--destination", "api.example.com", "KEY"}) }()
+
+	time.Sleep(50 * time.Millisecond)
+	cancel()
+
+	select {
+	case err := <-done:
+		if !errors.Is(err, context.Canceled) {
+			t.Fatalf("a cancelled set returned %v, want context.Canceled", err)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("a cancelled set still waits on a pipe nobody closed")
+	}
+
+	// A goroutine still parked on the pipe would take these bytes before the test does.
+	if _, err := writer.WriteString("late\n"); err != nil {
+		t.Fatalf("write the pipe: %v", err)
+	}
+	got := make([]byte, 5)
+	if _, err := io.ReadFull(input, got); err != nil || string(got) != "late\n" {
+		t.Errorf("the pipe gave %q, %v, want what was written after the set returned", got, err)
+	}
+}
+
 // --dest is the short spelling of --destination, and the two add to one list.
 func TestParseSecretSetTakesDestAsDestination(t *testing.T) {
 	opts, err := parseSecretSet([]string{"--dest", "api.example.com", "--destination", "uploads.example.com", "KEY"})
@@ -276,14 +380,15 @@ func TestSecretListListsTheReadableOnesAndFails(t *testing.T) {
 func TestSecretRemoveRefusesWhileASandboxHoldsIt(t *testing.T) {
 	var out bytes.Buffer
 
-	repo := &fakeLifecycleRepo{r: &recorder{}, left: []models.Sandbox{
-		{ID: "sandbox1", State: models.StateStopped, Secrets: []string{"KEY"}},
-		{ID: "sandbox2", State: models.StateRunning, Secrets: []string{"OTHER"}},
-	}}
+	repo := &fakeLifecycleRepo{r: &recorder{}}
 	app, root := newSecretApp(t, &out, "value-123456\n", repo)
 
 	if err := app.Run(t.Context(), []string{"secret", "set", "--destination", "api.example.com", "KEY"}); err != nil {
 		t.Fatal(err)
+	}
+	repo.left = []models.Sandbox{
+		{ID: "sandbox1", State: models.StateStopped, Secrets: []string{"KEY"}},
+		{ID: "sandbox2", State: models.StateRunning, Secrets: []string{"OTHER"}},
 	}
 
 	err := app.Run(t.Context(), []string{"secret", "remove", "KEY"})
@@ -305,12 +410,13 @@ func TestSecretRemoveRefusesWhileASandboxHoldsIt(t *testing.T) {
 func TestSecretRemoveRefusesWhenARecordIsUnreadable(t *testing.T) {
 	var out bytes.Buffer
 
-	repo := &fakeLifecycleRepo{r: &recorder{}, unreadable: os.ErrPermission}
+	repo := &fakeLifecycleRepo{r: &recorder{}}
 	app, _ := newSecretApp(t, &out, "value-123456\n", repo)
 
 	if err := app.Run(t.Context(), []string{"secret", "set", "--destination", "api.example.com", "KEY"}); err != nil {
 		t.Fatal(err)
 	}
+	repo.unreadable = os.ErrPermission
 
 	err := app.Run(t.Context(), []string{"secret", "remove", "KEY"})
 	if err == nil || !strings.Contains(err.Error(), "cannot tell") {

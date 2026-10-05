@@ -185,14 +185,19 @@ func (p *Provider) snapshotInto(m *machine, r record, verb, snap, tmp string) er
 			return err
 		}
 	}
-	// Once shard attempts a create, it conservatively treats the next snapshot as Full.
-	m.wholeLog = false
-	// The create resets every vsock stream of the guest, so the run after it dials the control stream again, and no exec waits on a dead one.
-	m.resetBy = verb
-	if err := m.client.Snapshot(kind, jailSnap+jailState, jailSnap+jailMemory); err != nil {
-		return errors.Join(fmt.Errorf("capture the vm: %w", err), m.cutExecs(verb))
-	}
-	if err := m.cutExecs(verb); err != nil {
+	// The memory lands beside disks other sandboxes were promised room for, so it is admitted like one (SHARD-562).
+	err := bundle.AdmitMemory(filepath.Join(m.dir, bundle.OverlayDiskFile), bundle.MemoryBound(r.Resources), func() error {
+		// Once shard attempts a create, it conservatively treats the next snapshot as Full.
+		m.wholeLog = false
+		// The create resets every vsock stream of the guest, so the run after it dials the control stream again, and no exec waits on a dead one.
+		m.resetBy = verb
+		if err := m.client.Snapshot(snapshotWithin(r.Resources.MemoryMiB), kind, jailSnap+jailState, jailSnap+jailMemory); err != nil {
+			return errors.Join(fmt.Errorf("capture the vm: %w", err), m.cutExecs(verb))
+		}
+
+		return m.cutExecs(verb)
+	})
+	if err != nil {
 		return err
 	}
 	// The vmm wrote both as its own uid and with its own umask; out of the jail they are root's, as every other checkpoint file is.
@@ -210,6 +215,11 @@ func (p *Provider) snapshotInto(m *machine, r record, verb, snap, tmp string) er
 	}
 
 	return nil
+}
+
+// snapshotWithin bounds one snapshot create of a guest with memoryMiB of memory.
+func snapshotWithin(memoryMiB int64) time.Duration {
+	return snapshotFloor + time.Duration(memoryMiB/snapshotRate)*time.Second
 }
 
 // abandon gives up a pause that could not complete: the VM and its guest run on and the staging directory goes.
@@ -239,11 +249,11 @@ func (p *Provider) runAgain(m *machine) error {
 
 	info, err := m.client.State(context.Background())
 	if err != nil {
-		return fmt.Errorf("sandbox %s: %w", m.id, err)
+		return p.letGo(m, fmt.Errorf("sandbox %s: %w", m.id, err))
 	}
 	if info.State == fcapi.StatePaused {
 		if err := m.client.Resume(); err != nil {
-			return fmt.Errorf("resume sandbox %s: %w", m.id, err)
+			return p.letGo(m, fmt.Errorf("resume sandbox %s: %w", m.id, err))
 		}
 	}
 	if verb == "" {
@@ -257,6 +267,17 @@ func (p *Provider) runAgain(m *machine) error {
 	m.kickLogs()
 
 	return p.redial(m, verb)
+}
+
+// letGo drops a machine whose VM may still be paused, so the next lookup adopts it as a new daemon would, and resumes a VM no checkpoint stands for (SHARD-560).
+func (p *Provider) letGo(m *machine, err error) error {
+	// A vmm gone is the follower's to settle.
+	if absent(err) {
+		return err
+	}
+	p.forget(m)
+
+	return errors.Join(err, m.close())
 }
 
 // redial puts in a control stream dialed again after verb's snapshot create, whose replay has adopt thaw the guest; the caller holds freezing.
@@ -350,6 +371,12 @@ func restoreFiles(dir, stateDir string) error {
 
 // restore boots the checkpoint in dir in a fresh jail; foreign marks a fork, which a cut before its readdress must not resume (SHARD-321).
 func (p *Provider) restore(ctx context.Context, id, stateDir string, r record, dir string, foreign bool) (*machine, error) {
+	// A lookup beside the restore waits for its machine, as one beside a boot does (SHARD-558).
+	release, err := p.claim(ctx, id)
+	if err != nil {
+		return nil, err
+	}
+	defer release()
 	if err := p.bound(id, r.Resources); err != nil {
 		return nil, fmt.Errorf("restore sandbox %s: %w", id, err)
 	}

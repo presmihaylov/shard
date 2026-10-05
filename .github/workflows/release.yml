@@ -37,11 +37,12 @@ jobs:
       - name: build
         run: make build-linux build-shard-init-linux VERSION=${{ github.ref_name }} RELEASE=1
 
-      # file(1) reads the ELF itself, so this proves RELEASE=1 reached both links.
+      # file(1) reads the ELF itself, so this proves RELEASE=1 and CGO_ENABLED=0 reached both links.
       - name: check the binaries
         run: |
           for b in bin/shard-linux-amd64 bin/shard-init-linux-amd64; do
             file "$b" | grep -q ', stripped' || { echo "$b is not stripped"; exit 1; }
+            file "$b" | grep -q 'statically linked' || { echo "$b is not statically linked"; exit 1; }
           done
 
       - uses: actions/upload-artifact@v4

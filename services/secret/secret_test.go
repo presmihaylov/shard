@@ -177,11 +177,16 @@ func TestSetWithOnlyAValueRotatesAndKeepsTheRest(t *testing.T) {
 func TestSetRefusesToMoveAPlaceholderASandboxHolds(t *testing.T) {
 	dir := filepath.Join(t.TempDir(), "secrets")
 
-	held, err := New(dir, func(string) ([]string, error) { return []string{"sandbox1"}, nil })
+	free, err := New(dir, func(string) ([]string, error) { return nil, nil })
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := held.Set("TOKEN", "old-value-1", []string{"a.example.com"}, "sk_test_first001"); err != nil {
+	if _, err := free.Set("TOKEN", "old-value-1", []string{"a.example.com"}, "sk_test_first001"); err != nil {
+		t.Fatal(err)
+	}
+
+	held, err := New(dir, func(string) ([]string, error) { return []string{"sandbox1"}, nil })
+	if err != nil {
 		t.Fatal(err)
 	}
 
@@ -208,10 +213,6 @@ func TestSetRefusesToMoveAPlaceholderASandboxHolds(t *testing.T) {
 	}
 
 	// With the holders gone the change lands.
-	free, err := New(dir, func(string) ([]string, error) { return nil, nil })
-	if err != nil {
-		t.Fatal(err)
-	}
 	if _, err := free.Set("TOKEN", "new-value-3", nil, "sk_test_second02"); err != nil {
 		t.Fatalf("a change once ungranted: %v", err)
 	}
@@ -221,6 +222,54 @@ func TestSetRefusesToMoveAPlaceholderASandboxHolds(t *testing.T) {
 	}
 	if sec.Placeholder != "sk_test_second02" {
 		t.Errorf("the placeholder after the change is %q", sec.Placeholder)
+	}
+}
+
+func TestSetRefusesASecretRemovedWhileASandboxHeldIt(t *testing.T) {
+	dir := filepath.Join(t.TempDir(), "secrets")
+
+	free, err := New(dir, func(string) ([]string, error) { return nil, nil })
+	if err != nil {
+		t.Fatal(err)
+	}
+	held, err := New(dir, func(string) ([]string, error) { return []string{"sandbox1"}, nil })
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := free.Set("TOKEN", "old-value-1", []string{"a.example.com"}, "sk_test_first001"); err != nil {
+		t.Fatal(err)
+	}
+	if err := held.Remove("TOKEN"); err != nil {
+		t.Fatal(err)
+	}
+
+	// The guest still holds sk_test_first001, and no record says so, so even that placeholder is refused.
+	for _, placeholder := range []string{"sk_test_second02", "sk_test_first001", ""} {
+		_, err := held.Set("TOKEN", "new-value-2", []string{"a.example.com"}, placeholder)
+		var holders *HeldError
+		if !errors.As(err, &holders) || !holders.Removed || !slices.Equal(holders.Holders, []string{"sandbox1"}) {
+			t.Fatalf("a set with %q after a forced remove = %v, want a HeldError for a removed secret naming sandbox1", placeholder, err)
+		}
+		if !strings.Contains(err.Error(), "was removed while sandbox sandbox1 held it") {
+			t.Errorf("the refusal reads %q", err.Error())
+		}
+	}
+	if _, err := held.Get("TOKEN"); !errors.Is(err, ErrNotFound) {
+		t.Errorf("a refused set wrote a record: %v", err)
+	}
+
+	// With the holders ungranted the set lands.
+	if _, err := free.Set("TOKEN", "new-value-2", []string{"a.example.com"}, "sk_test_second02"); err != nil {
+		t.Fatalf("a set once ungranted: %v", err)
+	}
+
+	// A store with no holders callback cannot tell a first set from one after a forced remove.
+	blind, err := New(filepath.Join(t.TempDir(), "secrets"), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := blind.Set("TOKEN", "first-value-1", []string{"a.example.com"}, ""); err != nil {
+		t.Errorf("a first set on a blind store: %v", err)
 	}
 }
 
@@ -249,6 +298,9 @@ func TestSetRefusesToMoveAPlaceholderItCannotAccountFor(t *testing.T) {
 	}
 	if _, err := broken.Set("TOKEN", "new-value-2", nil, "sk_test_second02"); !errors.Is(err, os.ErrPermission) {
 		t.Errorf("a change with unreadable holders = %v, want the read error", err)
+	}
+	if _, err := broken.Set("FRESH", "new-value-3", nil, ""); !errors.Is(err, os.ErrPermission) {
+		t.Errorf("a first set with unreadable holders = %v, want the read error", err)
 	}
 }
 

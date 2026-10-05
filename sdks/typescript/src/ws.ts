@@ -48,11 +48,14 @@ export class WebSocket {
   private closeFrame: Buffer | undefined;
   private dropped = false;
   private closeSent = false;
+  // An ES private field: an upgraded TLS socket keeps its connect options, the Authorization header among them.
+  readonly #socket: Duplex;
 
   private constructor(
-    private readonly socket: Duplex,
+    socket: Duplex,
     private readonly what: string,
   ) {
+    this.#socket = socket;
     socket.on("data", (data: Buffer) => this.received(data));
     socket.on("end", () => this.drop(undefined));
     socket.on("close", () => this.drop(undefined));
@@ -130,7 +133,7 @@ export class WebSocket {
   private take(): Message | undefined {
     const message = this.inbox.shift();
     if (message && this.inbox.length < highWater) {
-      this.socket.resume();
+      this.#socket.resume();
     }
 
     return message;
@@ -152,10 +155,10 @@ export class WebSocket {
         this.peerClosed = true;
         continue;
       }
-      this.socket.resume();
+      this.#socket.resume();
       await this.waitFor(deadline - Date.now());
     }
-    this.socket.destroy();
+    this.#socket.destroy();
   }
 
   private received(data: Buffer): void {
@@ -164,7 +167,7 @@ export class WebSocket {
       messages = this.reader.feed(data);
     } catch (err) {
       this.drop(err instanceof Error ? err : new ProtocolError(String(err)));
-      this.socket.destroy();
+      this.#socket.destroy();
 
       return;
     }
@@ -179,7 +182,7 @@ export class WebSocket {
       this.inbox.push(message);
     }
     if (this.inbox.length >= highWater) {
-      this.socket.pause();
+      this.#socket.pause();
     }
     this.notify();
   }
@@ -212,7 +215,7 @@ export class WebSocket {
 
   private write(frame: Buffer): Promise<void> {
     return new Promise((resolve, reject) => {
-      this.socket.write(frame, (err) => {
+      this.#socket.write(frame, (err) => {
         if (err) {
           reject(streamEnd(`${this.what}: the stream to the daemon dropped`, { cause: err }));
 

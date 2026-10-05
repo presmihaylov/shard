@@ -176,6 +176,58 @@ func TestAStopWaitsForTheSupervisorsReportToLand(t *testing.T) {
 // A report the host could not write fails the stop, so a lost 125 never reads as an ordinary stop (SHARD-290).
 func TestAStopFailsWhenTheSupervisorsReportCannotLand(t *testing.T) {
 	h := newHarness(t)
+	spec := h.lostReport(t)
+
+	// The vmm is gone and forgotten, and Stop and Status answer with the loss until a start boots a fresh run (SHARD-578).
+	if err := h.provider.Stop(t.Context(), spec.ID, stopGrace); err == nil || !strings.Contains(err.Error(), "lost its lifecycle state") {
+		t.Errorf("a second Stop = %v, want the lost report", err)
+	}
+	status, err := h.provider.Status(t.Context(), spec.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if status.Alive() || !strings.Contains(status.SupervisorFailed, "lost its lifecycle state") {
+		t.Errorf("Status = %+v, want a dead sandbox whose supervisor failure names the loss", status)
+	}
+	if err := h.provider.Start(t.Context(), spec.ID); err != nil {
+		t.Errorf("Start = %v, want a fresh run past the loss", err)
+	}
+	if err := h.provider.Remove(t.Context(), spec.ID); err != nil {
+		t.Fatalf("Remove = %v, want the loss dropped with the sandbox", err)
+	}
+}
+
+// A start answers a loss the same whether the daemon that held it restarted or not: it boots a fresh run (SHARD-578).
+func TestAStartAfterALostReportIsTheSameAcrossARestart(t *testing.T) {
+	for _, restart := range []bool{false, true} {
+		t.Run(fmt.Sprintf("restart=%t", restart), func(t *testing.T) {
+			h := newHarness(t)
+			spec := h.lostReport(t)
+			if restart {
+				h.reopen(t)
+			}
+
+			if err := h.provider.Start(t.Context(), spec.ID); err != nil {
+				t.Fatalf("Start = %v, want a fresh run past the loss", err)
+			}
+			status, err := h.provider.Status(t.Context(), spec.ID)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if !status.Alive() || status.SupervisorFailed != "" {
+				t.Errorf("Status after Start = %+v, want a live sandbox with no loss", status)
+			}
+			if err := h.provider.Remove(t.Context(), spec.ID); err != nil {
+				t.Fatalf("Remove = %v", err)
+			}
+		})
+	}
+}
+
+// lostReport runs a sandbox whose guest dies on the stop with a report the host cannot write, and stops it.
+func (h *harness) lostReport(t *testing.T) models.SandboxSpec {
+	t.Helper()
+
 	spec := h.newSpec(t, "/bin/sh", "-c", "while true; do sleep 1; done")
 	self, err := os.Executable()
 	if err != nil {
@@ -197,29 +249,11 @@ func TestAStopFailsWhenTheSupervisorsReportCannotLand(t *testing.T) {
 	if err := os.Mkdir(filepath.Join(dir, firecracker.SupervisorFailedFile), 0o700); err != nil {
 		t.Fatal(err)
 	}
-
-	err = h.provider.Stop(t.Context(), spec.ID, stopGrace)
-	if err == nil || !strings.Contains(err.Error(), "lost its lifecycle state") {
+	if err := h.provider.Stop(t.Context(), spec.ID, stopGrace); err == nil || !strings.Contains(err.Error(), "lost its lifecycle state") {
 		t.Fatalf("Stop = %v, want the lost report", err)
 	}
 
-	// The vmm is gone and forgotten, and every later verb still answers with the loss until rm.
-	if err := h.provider.Stop(t.Context(), spec.ID, stopGrace); err == nil || !strings.Contains(err.Error(), "lost its lifecycle state") {
-		t.Errorf("a second Stop = %v, want the lost report", err)
-	}
-	if err := h.provider.Start(t.Context(), spec.ID); err == nil || !strings.Contains(err.Error(), "lost its lifecycle state") {
-		t.Errorf("Start = %v, want the lost report", err)
-	}
-	status, err := h.provider.Status(t.Context(), spec.ID)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if status.Alive() || !strings.Contains(status.SupervisorFailed, "lost its lifecycle state") {
-		t.Errorf("Status = %+v, want a dead sandbox whose supervisor failure names the loss", status)
-	}
-	if err := h.provider.Remove(t.Context(), spec.ID); err != nil {
-		t.Fatalf("Remove = %v, want the loss dropped with the sandbox", err)
-	}
+	return spec
 }
 
 // bootFailingGuestEnv makes the test binary a guest whose boot failed before it could listen for more, as a root disk that will not mount does.

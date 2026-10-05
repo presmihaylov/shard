@@ -57,10 +57,20 @@ func run() error {
 	signals := make(chan os.Signal, 1)
 	signal.Notify(signals, syscall.SIGTERM, syscall.SIGINT, syscall.SIGUSR1)
 	changed := machine.Changed()
+	// A kernel panic reboots the guest in place, which VZ reports through no state change, so the console drain is the only signal (SHARD-641).
+	panicked := machine.Panicked()
 	// A stop the framework accepted but never reports past this ends the shim anyway: the VM dies with its process.
 	var overdue <-chan time.Time
 	for {
 		select {
+		case <-panicked:
+			logger.Printf("the guest kernel panicked: stopping the vm")
+			if err := machine.Stop(); err != nil {
+				return err
+			}
+			// The channel stays closed, so drop it or this case spins until the stop reports.
+			panicked = nil
+			overdue = time.After(stopGrace)
 		case sig := <-signals:
 			// SIGUSR1 forces a collection, so a test can prove the device files outlive one.
 			if sig == syscall.SIGUSR1 {

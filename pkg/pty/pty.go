@@ -3,10 +3,10 @@
 package pty
 
 import (
+	"context"
 	"errors"
+	"io"
 	"os"
-
-	"golang.org/x/term"
 )
 
 // ErrUnsupported names the hosts with a driver; it is not models.ErrUnsupported, since a missing kernel is not a refused verb.
@@ -44,9 +44,53 @@ func IsTerminal(f *os.File) bool { return isTerminal(f) }
 // SizeOf reads the window size of a terminal.
 func SizeOf(f *os.File) (Size, error) { return sizeOf(f) }
 
-// ReadPassword reads one line from a terminal with the echo off, so a secret lands on no screen.
-func ReadPassword(f *os.File) ([]byte, error) {
-	return term.ReadPassword(int(f.Fd())) //nolint:gosec // a file descriptor is small enough for an int
+// ReadPassword reads one line with the echo off, so a secret lands on no screen; a cancel ends it with the echo back on.
+func ReadPassword(ctx context.Context, f *os.File) ([]byte, error) { return readPassword(ctx, f) }
+
+// Input reads f only once it has something to read, so a cancel ends a read that would block and parks no goroutine.
+func Input(ctx context.Context, f *os.File) io.Reader { return input{ctx: ctx, f: f} }
+
+type input struct {
+	ctx context.Context
+	f   *os.File
+}
+
+func (i input) Read(p []byte) (int, error) {
+	if err := awaitInput(i.ctx, i.f); err != nil {
+		return 0, err
+	}
+
+	return i.f.Read(p)
+}
+
+// readPasswordLine is the line discipline of x/term's ReadPassword, read through Input.
+func readPasswordLine(r io.Reader) ([]byte, error) {
+	var b [1]byte
+	var line []byte
+	for {
+		n, err := r.Read(b[:])
+		if n > 0 {
+			switch b[0] {
+			case '\b':
+				if len(line) > 0 {
+					line = line[:len(line)-1]
+				}
+			case '\n':
+				return line, nil
+			case '\r':
+			default:
+				line = append(line, b[0])
+			}
+
+			continue
+		}
+		if errors.Is(err, io.EOF) && len(line) > 0 {
+			return line, nil
+		}
+		if err != nil {
+			return nil, err
+		}
+	}
 }
 
 // MakeRaw hands every keystroke through untouched, so Ctrl-C reaches the guest instead of shard.

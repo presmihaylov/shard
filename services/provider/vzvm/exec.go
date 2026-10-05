@@ -78,6 +78,16 @@ func holdRefusal(id, verb string) error {
 	return &models.CommandNotStartedError{Sandbox: id, Reason: fmt.Sprintf("a %s holds the sandbox frozen, and nothing starts in it until that ends: run the command again", verb), Code: models.CommandNotExecutableExitCode}
 }
 
+// refuseHeld names the verb that holds the guest, whose save sends nothing through, so the caller knows what went unsent rather than wait out its context (SHARD-580).
+func refuseHeld(m *machine, what string) error {
+	verb := m.holder.Load()
+	if verb == nil {
+		return nil
+	}
+
+	return fmt.Errorf("sandbox %s: a %s holds the sandbox frozen, so %s was not sent: send it again once that ends", m.id, *verb, what)
+}
+
 // openExec tracks an exec stream, so a save that resets it can end it.
 func (m *machine) openExec(conn net.Conn) {
 	m.execsMu.Lock()
@@ -206,6 +216,9 @@ func (p *Provider) Signal(ctx context.Context, id string, pid int, signal string
 	if err != nil {
 		return err
 	}
+	if err := refuseHeld(m, "the signal"); err != nil {
+		return err
+	}
 	if err := m.control.Load().Signal(ctx, pid, signal); err != nil {
 		return fmt.Errorf("sandbox %s: %w", id, err)
 	}
@@ -217,6 +230,9 @@ func (p *Provider) Signal(ctx context.Context, id string, pid int, signal string
 func (p *Provider) StopApp(ctx context.Context, id string, force bool) error {
 	m, _, err := p.running(ctx, id)
 	if err != nil {
+		return err
+	}
+	if err := refuseHeld(m, "the app stop"); err != nil {
 		return err
 	}
 	if err := m.control.Load().StopApp(ctx, force); err != nil {
