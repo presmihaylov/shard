@@ -82,6 +82,8 @@ with Shard() as shard:
 	</TabItem>
 </Tabs>
 
+The TypeScript and Python examples reach `shard serve` at the address in `SHARD_REMOTE`, with the API key in `SHARD_API_KEY`.
+
 The sandbox prints a placeholder, not the key:
 
 ```text
@@ -117,7 +119,7 @@ The provider decides how strongly a sandbox is isolated from the host and from o
 
 **Caution: Sysbox sandboxes are not isolated from each other.** Every Sysbox sandbox maps to the same host uid range, `0 165536 65536`. A process that escapes one sandbox has the same uid as root in every other sandbox. Run one tenant per Sysbox host.
 
-**Caution: runc isolates nothing.** Root in the sandbox is root on the host. Use runc only for code you trust, or on a host you can afford to lose. shard never picks runc or Sysbox for you, and only `--provider` can select either one.
+**Caution: runc isolates nothing.** Root in the sandbox is root on the host. Use runc only for code you trust, or on a host you can afford to lose. shard never picks runc or Sysbox for you. Only `--provider` selects one, and a later daemon keeps it on a root that already holds its sandboxes.
 
 For each provider in detail, see [the provider matrix](https://github.com/presmihaylov/shard/blob/main/docs/provider.md#the-substrates).
 
