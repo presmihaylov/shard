@@ -47,12 +47,12 @@ func TestTheRulesetGivesEveryPolicyItsOwnChain(t *testing.T) {
 		"iifname \"shard0\" ip saddr 10.87.0.3 tcp dport 80 dnat ip to 10.87.0.1:30080",
 		"oifname \"shard0\" drop\n\t\tmeta nfproto ipv6 limit rate 2/second burst 10 packets log prefix \"shard-egress rule=ipv6 \"\n\t\tmeta nfproto ipv6 drop",
 		"iifname \"shard0\" ip saddr 10.87.0.2 ip daddr 10.87.0.1 tcp dport { 30080, 30443 } ct count over 1024 drop\n\t\tiifname \"shard0\" ip saddr 10.87.0.2 ip daddr 10.87.0.1 tcp dport { 30080, 30443 } accept",
-		"iifname \"shard0\" ip saddr 10.87.0.3 ip daddr 10.87.0.1 tcp dport { 30080, 30443 } ct count over 1024 limit rate 2/second burst 10 packets log prefix \"shard-egress rule=limit \"\n\t\tiifname \"shard0\" ip saddr 10.87.0.3 ip daddr 10.87.0.1 tcp dport { 30080, 30443 } ct count over 1024 drop\n\t\tiifname \"shard0\" ip saddr 10.87.0.3 ip daddr 10.87.0.1 tcp dport { 30080, 30443 } accept\n\t\tiifname \"shard0\" ip daddr 10.87.0.1 udp dport 53 accept\n\t\tiifname \"shard0\" ip daddr 10.87.0.1 tcp dport 53 accept\n\t\tiifname \"shard0\" limit rate 2/second burst 10 packets log prefix \"shard-egress rule=local \"\n\t\tiifname \"shard0\" drop",
+		"iifname \"shard0\" ip saddr 10.87.0.3 ip daddr 10.87.0.1 tcp dport { 30080, 30443 } ct count over 1024 limit rate 2/second burst 10 packets log prefix \"shard-egress rule=limit \"\n\t\tiifname \"shard0\" ip saddr 10.87.0.3 ip daddr 10.87.0.1 tcp dport { 30080, 30443 } ct count over 1024 drop\n\t\tiifname \"shard0\" ip saddr 10.87.0.3 ip daddr 10.87.0.1 tcp dport { 30080, 30443 } accept\n\t\tiifname \"shard0\" ip daddr 10.87.0.1 udp dport 53 accept\n\t\tiifname \"shard0\" ip daddr 10.87.0.1 tcp dport 53 accept\n\t\tiifname \"shard0\" ip saddr 10.87.0.2 limit rate 2/second burst 10 packets log prefix \"shard-egress rule=local \"\n\t\tiifname \"shard0\" ip saddr 10.87.0.3 limit rate 2/second burst 10 packets log prefix \"shard-egress rule=local \"\n\t\tiifname \"shard0\" drop",
 		"table bridge shard\ndelete table bridge shard",
 		"table bridge shard {\n\tchain forward {\n\t\ttype filter hook forward priority filter; policy accept;\n\t\tmeta ibrname \"shard0\" drop\n\t}",
 		"type filter hook prerouting priority filter; policy accept;\n\t\tiifname \"shardv2\" ether type ip6 limit rate 2/second burst 10 packets log prefix \"shard-egress rule=ipv6 \"\n\t\tiifname \"shardv2\" ether type ip6 drop\n\t\tiifname \"shardv2\" ether type ip ip saddr != 10.87.0.2 drop\n\t\tiifname \"shardv2\" arp saddr ip != 10.87.0.2 drop",
 		"iifname \"shardv3\" ether type ip ip saddr != 10.87.0.3 drop",
-		"ip daddr { 10.0.0.0/8, 172.16.0.0/12, 192.168.0.0/16, 169.254.0.0/16, 127.0.0.0/8, 100.64.0.0/10 } limit rate 2/second burst 10 packets log prefix \"shard-egress rule=private \"\n\t\tip daddr { 10.0.0.0/8, 172.16.0.0/12, 192.168.0.0/16, 169.254.0.0/16, 127.0.0.0/8, 100.64.0.0/10 } drop\n\t\tip saddr 10.87.0.2 jump egress_shardv2",
+		"ip saddr 10.87.0.2 ip daddr { 10.0.0.0/8, 172.16.0.0/12, 192.168.0.0/16, 169.254.0.0/16, 127.0.0.0/8, 100.64.0.0/10 } limit rate 2/second burst 10 packets log prefix \"shard-egress rule=private \"\n\t\tip saddr 10.87.0.3 ip daddr { 10.0.0.0/8, 172.16.0.0/12, 192.168.0.0/16, 169.254.0.0/16, 127.0.0.0/8, 100.64.0.0/10 } limit rate 2/second burst 10 packets log prefix \"shard-egress rule=private \"\n\t\tip daddr { 10.0.0.0/8, 172.16.0.0/12, 192.168.0.0/16, 169.254.0.0/16, 127.0.0.0/8, 100.64.0.0/10 } drop\n\t\tip saddr 10.87.0.2 jump egress_shardv2",
 		"chain egress_shardv2 {\n\t\tip daddr { 93.184.216.34/32 } meta l4proto tcp tcp dport { 80, 443 } accept\n\t\tip daddr { 0.0.0.0/0 } limit rate 2/second burst 10 packets log prefix \"shard-egress rule=2 \"\n\t\tip daddr { 0.0.0.0/0 } drop\n\t\t# no address\n\t\tlimit rate 2/second burst 10 packets log prefix \"shard-egress rule=default \"\n\t\tdrop\n\t}",
 	} {
 		if !strings.Contains(got, want) {
@@ -66,6 +66,37 @@ func TestTheRulesetGivesEveryPolicyItsOwnChain(t *testing.T) {
 	}
 	if strings.Contains(got, "ip saddr 10.87.0.3 udp dport 53") || strings.Contains(got, "ip saddr 10.87.0.3 tcp dport 53") {
 		t.Errorf("the secret-only sandbox had its DNS caught:\n%s", got)
+	}
+}
+
+// SHARD-628: a shared limit let one sandbox probing the floor spend every other sandbox's drop records.
+func TestEverySandboxLogsTheFloorUnderItsOwnLimit(t *testing.T) {
+	leases := []netip.Addr{netip.MustParseAddr("10.87.0.2"), netip.MustParseAddr("10.87.0.3")}
+	got := newService(t, Config{}).ruleset(nil, leases)
+
+	for _, rule := range []string{RuleLocal, RulePrivate} {
+		checkFloorLog(t, got, rule, leases)
+	}
+}
+
+// checkFloorLog wants one log rule for the floor rule per lease, in lease order, each naming its sandbox.
+func checkFloorLog(t *testing.T, ruleset, rule string, leases []netip.Addr) {
+	t.Helper()
+
+	var lines []string
+	for line := range strings.Lines(ruleset) {
+		if strings.Contains(line, "rule="+rule+" ") {
+			lines = append(lines, line)
+		}
+	}
+	if len(lines) != len(leases) {
+		t.Errorf("rule=%s has %d log rules, want one per sandbox:\n%s", rule, len(lines), ruleset)
+		return
+	}
+	for i, address := range leases {
+		if !strings.Contains(lines[i], "ip saddr "+address.String()+" ") {
+			t.Errorf("rule=%s log rule %q does not name sandbox %s", rule, lines[i], address)
+		}
 	}
 }
 

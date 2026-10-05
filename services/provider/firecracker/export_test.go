@@ -110,5 +110,14 @@ func SetRedialGrace(grace time.Duration) (restore func()) {
 	return func() { redialGrace = was }
 }
 
+// Holds says whether the provider keeps a machine for id, which a verb that failed must not leave behind.
+func (p *Provider) Holds(id string) bool {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	_, held := p.machines[id]
+
+	return held
+}
+
 // RestoreFiles swaps the checkpoint's overlay under the sandbox, which a test drives directly to prove a failed copy keeps the live overlay.
 func RestoreFiles(dir, stateDir string) error { return restoreFiles(dir, stateDir) }

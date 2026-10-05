@@ -799,7 +799,12 @@ func (p *Provider) ExitStatus(_ context.Context, id string) (*models.ExitStatus,
 func (p *Provider) Status(ctx context.Context, id string) (models.Status, error) {
 	state, err := p.runsc.State(ctx, id)
 	if errors.Is(err, runsc.ErrNotFound) {
-		return models.Status{OOMKilled: p.oomKilled(id)}, nil
+		oom, err := p.oomKilled(id)
+		if err != nil {
+			return models.Status{}, err
+		}
+
+		return models.Status{OOMKilled: oom}, nil
 	}
 	if err != nil {
 		return models.Status{}, err
@@ -828,7 +833,10 @@ func (p *Provider) Status(ctx context.Context, id string) (models.Status, error)
 	}
 	status.Unstarted = status.State == models.StateCreated
 	if !status.Alive() {
-		status.OOMKilled = p.oomKilled(id)
+		status.OOMKilled, err = p.oomKilled(id)
+		if err != nil {
+			return models.Status{}, err
+		}
 	}
 
 	return status, nil
@@ -897,13 +905,17 @@ func zombieStat(stat string) bool {
 // oomKilled asks the cgroup why a sandbox is gone. The OOM killer takes the sentry without running
 // any of runsc's cleanup, so the cgroup and its counters outlive the sandbox and are the only record.
 // A stop leaves the cgroup too, count and all, so a record that says stopped outranks this answer.
-func (p *Provider) oomKilled(id string) bool {
+func (p *Provider) oomKilled(id string) (bool, error) {
 	events, err := cgroup.MemoryEvents(cgroupDir(p.cgroupRoot, id))
+	// A cgroup that is gone, or that has no memory controller, counted no OOM.
+	if errors.Is(err, cgroup.ErrNotFound) || errors.Is(err, cgroup.ErrNoController) {
+		return false, nil
+	}
 	if err != nil {
-		return false
+		return false, fmt.Errorf("read why sandbox %s ended: %w", id, err)
 	}
 
-	return events.OOM > 0
+	return events.OOM > 0, nil
 }
 
 // stateOf maps the five runsc statuses onto the four shard states. A container runsc is still

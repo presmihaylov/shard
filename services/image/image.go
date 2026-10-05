@@ -173,6 +173,19 @@ func (s *Service) pullLocked(ctx context.Context, ref string) (Image, error) {
 		return Image{}, err
 	}
 
+	// A held tag is never resolved again, so the format this provider lacks comes from its layers, and a failed build leaves it held.
+	held, err := s.store.Get(ref)
+	if err == nil {
+		if err := s.unpack(ctx, held); err != nil {
+			return Image{}, err
+		}
+
+		return s.finish(progress, held)
+	}
+	if !errors.Is(err, registry.ErrNotCached) {
+		return Image{}, err
+	}
+
 	pulled, err := s.store.Pull(ctx, ref, pullReport{p: progress})
 	if err != nil {
 		return Image{}, errors.Join(err, s.reclaim())
@@ -183,7 +196,11 @@ func (s *Service) pullLocked(ctx context.Context, ref string) (Image, error) {
 		return Image{}, errors.Join(err, s.store.Remove(ref))
 	}
 
-	img, err = s.describe(pulled)
+	return s.finish(progress, pulled)
+}
+
+func (s *Service) finish(progress *Progress, unpacked registry.Image) (Image, error) {
+	img, err := s.describe(unpacked)
 	if err != nil {
 		return Image{}, err
 	}

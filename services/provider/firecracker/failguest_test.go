@@ -3,6 +3,7 @@ package firecracker_test
 import (
 	"bufio"
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"net"
@@ -46,10 +47,20 @@ func failingGuest(dir string) error {
 		}
 	}()
 
-	conn, err := control.Accept()
-	if err != nil {
-		return fmt.Errorf("accept control: %w", err)
+	// A restore's refreeze speaks first and hangs up, so every host connection is answered in turn.
+	for {
+		conn, err := control.Accept()
+		if err != nil {
+			return fmt.Errorf("accept control: %w", err)
+		}
+		if err := answerUntilStop(conn); !errors.Is(err, io.EOF) {
+			return err
+		}
 	}
+}
+
+// answerUntilStop sends the state, answers every request, and reports the death on the stop.
+func answerUntilStop(conn net.Conn) error {
 	if err := supervisor.WriteMessage(conn, supervisor.Message{Kind: supervisor.KindState, Logs: supervisor.LogsVersion}); err != nil {
 		return fmt.Errorf("send the state: %w", err)
 	}

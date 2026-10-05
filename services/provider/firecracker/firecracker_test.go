@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"io/fs"
+	"net/netip"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -2233,6 +2234,91 @@ func TestAnUnloadedVMMLeftByACutForkIsEnded(t *testing.T) {
 	spec := h.forkSpec(t)
 	exited := h.leaveUnloaded(t, spec, os.Args[0], h.jail(spec.ID))
 	requireUnloadedEnded(t, h.reopen(t), spec, exited, h.jail(spec.ID))
+}
+
+// A verb cut once its vmm came up ends the vmm on its own clock, so no machine outlives the record the failed verb drops (SHARD-622).
+func TestAVerbCutAfterItsAttachLeavesNoMachine(t *testing.T) {
+	address := models.NetworkSpec{Address: netip.MustParsePrefix("10.87.0.9/16"), Gateway: netip.MustParseAddr("10.87.0.1")}
+	t.Run("a create at its readdress", func(t *testing.T) {
+		h := newHarness(t)
+		spec := h.newSpec(t, "/bin/sh", "-c", "while true; do sleep 1; done")
+		spec.Network = address
+		answerEveryRequest(t)
+		requireCutLeavesNoMachine(t, h, spec, false, func(ctx context.Context) error { return h.provider.Create(ctx, spec) })
+	})
+	for _, readdress := range []bool{false, true} {
+		t.Run(fmt.Sprintf("a fork, at its readdress %v", readdress), func(t *testing.T) {
+			h := newHarness(t)
+			source, _ := h.runLong(t)
+			fork := h.forkSpec(t)
+			if readdress {
+				fork.Network = address
+			}
+			answerEveryRequest(t)
+			requireCutLeavesNoMachine(t, h, fork, readdress, func(ctx context.Context) error { return h.provider.Fork(ctx, source.ID, fork) })
+		})
+	}
+}
+
+// answerEveryRequest makes the next guest the failing one, which answers a readdress without touching any interface; no stop reaches it here.
+func answerEveryRequest(t *testing.T) {
+	t.Helper()
+
+	self, err := os.Executable()
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv(fakeInitEnv, self)
+	t.Setenv(failingGuestEnv, "1")
+}
+
+// requireCutLeavesNoMachine cuts verb once the attach opened the log, or once the reseed after it is in too, and requires the provider to hold nothing for spec.
+func requireCutLeavesNoMachine(t *testing.T, h *harness, spec models.SandboxSpec, reseeded bool, verb func(context.Context) error) {
+	t.Helper()
+
+	ctx := newCutCtx(func() bool {
+		if _, err := os.Stat(filepath.Join(spec.StateDir, "output.log")); err != nil {
+			return false
+		}
+		_, err := os.Stat(filepath.Join(spec.StateDir, firecracker.ReseedFile))
+
+		return !reseeded || errors.Is(err, fs.ErrNotExist)
+	})
+	if err := verb(ctx); !errors.Is(err, context.Canceled) {
+		t.Fatalf("the verb = %v, want the cut", err)
+	}
+	if h.provider.Holds(spec.ID) {
+		t.Fatal("the provider still holds a machine for the cut verb, which no record names and no verb reaches")
+	}
+}
+
+// cutCtx is a context cut the moment its condition holds, read on every check so the cut lands at an exact step.
+type cutCtx struct {
+	context.Context
+	cut  func() bool
+	once sync.Once
+	done chan struct{}
+}
+
+func newCutCtx(cut func() bool) *cutCtx {
+	return &cutCtx{Context: context.Background(), cut: cut, done: make(chan struct{})}
+}
+
+func (c *cutCtx) Done() <-chan struct{} {
+	if c.cut() {
+		c.once.Do(func() { close(c.done) })
+	}
+
+	return c.done
+}
+
+func (c *cutCtx) Err() error {
+	select {
+	case <-c.Done():
+		return context.Canceled
+	default:
+		return nil
+	}
 }
 
 // A vmm a daemon before the jail spawned answers in the state directory, and the next daemon still finds it there and ends it (SHARD-306).

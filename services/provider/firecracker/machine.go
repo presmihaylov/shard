@@ -175,7 +175,7 @@ func (p *Provider) lookup(ctx context.Context, id, dir string, r record) (*machi
 	}
 	// A daemon cut between a restore's attach and its reseed left the guest on the checkpoint's key, and no other step gives it one.
 	if err := m.reseed(ctx); err != nil {
-		return nil, errors.Join(err, p.end(ctx, m))
+		return nil, errors.Join(err, p.endAnyway(ctx, m))
 	}
 	// The attach thawed a guest the cut capture left frozen, so the source runs again and the marker is spent.
 	if err := os.Remove(filepath.Join(dir, captureFile)); err != nil && !errors.Is(err, fs.ErrNotExist) {

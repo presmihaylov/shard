@@ -271,6 +271,26 @@ func TestOnlyTheSandboxsOwnBoundIsAnOOM(t *testing.T) {
 	}
 }
 
+// A count that does not parse is a read to report, never a sandbox that no OOM ended (SHARD-615).
+func TestAnOOMCountThatDoesNotParseFailsTheStatus(t *testing.T) {
+	const id = "amber-otter-1a2b"
+
+	root := t.TempDir()
+	dir := filepath.Join(root, bundle.CgroupsPath(id))
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "memory.events.local"), []byte("oom x\noom_kill 0\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	p := newProviderOver(t, `echo '{"id":"amber-otter-1a2b","status":"stopped","pid":0}'`)
+	p.SetCgroupRoot(root)
+
+	if status, err := p.Status(t.Context(), id); err == nil {
+		t.Errorf("Status over an OOM count that does not parse returned %+v, want an error", status)
+	}
+}
+
 // stopRunc is a runc whose sandbox runs until a KILL ends it, and until a TERM does too when honoursTerm says so.
 func stopRunc(work string, honoursTerm bool) string {
 	onTerm := ":"
