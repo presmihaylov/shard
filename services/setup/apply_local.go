@@ -153,7 +153,7 @@ func (s *Setup) localSteps(_ context.Context, l Local) ([]Step, error) {
 	return append(steps,
 		Step{Title: "Configure the background service", Do: p.service},
 		Step{Title: "Start the daemon", Do: p.start},
-		Step{Title: "Verify the daemon connection", Do: p.verify},
+		Step{Title: "Verify the daemon connection", Do: func(ctx context.Context) error { return verifyDaemon(ctx, p.h) }},
 	), nil
 }
 
@@ -508,22 +508,22 @@ func (p *localPlan) start(ctx context.Context) error {
 	return nil
 }
 
-// verify asks the daemon for its status until it answers, through sudo on Linux where the socket is root's; --remote "" keeps any remote out of it.
-func (p *localPlan) verify(ctx context.Context) error {
+// verifyDaemon asks the daemon for its status until it answers, through sudo on Linux where the socket is root's; --remote "" keeps any remote out of it.
+func verifyDaemon(ctx context.Context, h Host) error {
 	ask := privileged
-	if p.h.OS == "darwin" {
+	if h.OS == "darwin" {
 		ask = run
 	}
 	deadline := time.Now().Add(verifyWait)
 	for {
-		out, err := ask(ctx, p.h, shardBinary, "--remote", "", "daemon", "status")
+		out, err := ask(ctx, h, shardBinary, "--remote", "", "daemon", "status")
 		if err == nil {
 			return nil
 		}
 		if time.Now().After(deadline) {
 			return &Problem{Lines: []string{
 				fmt.Sprintf("The daemon is not ready after %s: %s.", verifyWait, notReady(out, err)),
-				p.logHint(),
+				logHint(h),
 			}}
 		}
 		select {
@@ -543,8 +543,8 @@ func notReady(out []byte, err error) string {
 	return err.Error()
 }
 
-func (p *localPlan) logHint() string {
-	if p.h.OS == "darwin" {
+func logHint(h Host) string {
+	if h.OS == "darwin" {
 		return "Read its log in " + macLogDir + "/daemon.log."
 	}
 

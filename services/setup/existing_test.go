@@ -62,6 +62,9 @@ func (f *fakeHost) run(ctx context.Context, name string, args ...string) ([]byte
 
 	switch name {
 	case shardBinary:
+		if slices.Equal(args, []string{"--version"}) {
+			return []byte("client v0.0.9\n"), nil
+		}
 		for _, p := range f.rebuilt {
 			f.write(f.t, p, "rebuilt")
 		}
@@ -306,22 +309,131 @@ func TestExistingShowsTheSummaryAndExits(t *testing.T) {
 func TestManualInstallChangesNothing(t *testing.T) {
 	f := newFakeHost(t)
 	f.write(t, "/usr/local/bin/shard", "bin")
-	f.write(t, "/etc/systemd/system/shard.service", "unit")
-	inst, _, err := Detect(t.Context(), f.host(nil))
+	f.write(t, "/etc/systemd/system/shard.service", "[Service]\nKillMode=process\n")
+	f.write(t, "/var/lib/shard/sandboxes/sb_1/sandbox.json", `{"id":"sb_1","provider":"gvisor"}`)
+	h := f.host(nil)
+	inst, _, err := Detect(t.Context(), h)
 	if err != nil {
 		t.Fatalf("Detect: %v", err)
 	}
 	ui := &fakeUI{}
 
-	if err := (&Setup{Host: f.host(nil), UI: ui}).existing(t.Context(), inst); err != nil {
+	if err := (&Setup{Host: h, UI: ui}).existing(t.Context(), inst); err != nil {
 		t.Fatalf("existing: %v", err)
 	}
-	said(t, ui, "Manual installation detected.", "sudo systemctl disable --now shard", "sudo rm /etc/systemd/system/shard.service /usr/local/bin/shard")
-	if len(f.calls) != 0 || len(ui.asked) != 0 {
-		t.Fatalf("a manual install ran %v and asked %v", f.calls, ui.asked)
+	want := []string{"Manual installation detected.", "",
+		"Installed:      Shard v0.0.9",
+		"Setup installs: Shard v0.1.0", "",
+		"Found:", "  /usr/local/bin/shard", "  /etc/systemd/system/shard.service", "",
+		"Setup did not install these files, so it does not change or remove them.", "",
+		"Inspect the installation:", "  sudo shard version", "  systemctl status shard", "",
+		"In setup, choose gVisor, the provider your sandboxes use.",
+		"Your sandboxes keep running: the service ends only the daemon, and the new daemon adopts them.", "",
+		"To move it to setup, run:",
+		"  sudo systemctl disable --now shard",
+		"  sudo rm /etc/systemd/system/shard.service /usr/local/bin/shard",
+		"  sudo systemctl daemon-reload",
+		"  " + h.Executable + " setup", "",
+		"To remove it instead, remove every sandbox first (sudo shard list --all), then run the lines above without the last.", "",
+		"Your saved data in /var/lib/shard is not part of this."}
+	if !slices.Equal(ui.printed, want) {
+		t.Fatalf("output = %q, want %q", ui.printed, want)
+	}
+	if !slices.Equal(f.calls, []string{"/usr/local/bin/shard --version"}) || len(ui.asked) != 0 {
+		t.Fatalf("a manual install ran %v and asked %v, want only the version read", f.calls, ui.asked)
 	}
 	if _, ok := f.read(t, "/usr/local/bin/shard"); !ok {
 		t.Fatal("a manual install lost its binary")
+	}
+}
+
+func TestManualInstallClaimsOnlyWhatItFound(t *testing.T) {
+	const record = `{"id":"sb_1","provider":"gvisor"}`
+	const keep = "Your sandboxes keep running"
+	tests := []struct {
+		name  string
+		os    string
+		files map[string]string
+		// fromManual runs setup from the manual binary, which the route's rm removes.
+		fromManual bool
+		// locked makes the sandboxes unreadable, as they are to a user who is not root.
+		locked bool
+		want   []string
+		never  []string
+	}{
+		{name: "unit without KillMode", os: "linux",
+			files: map[string]string{systemdUnit: "[Service]\nExecStart=/usr/local/bin/shard daemon\n", "/var/lib/shard/sandboxes/sb_1/sandbox.json": record},
+			want:  []string{"Your sandboxes stop with the daemon, because the service does not keep them (no KillMode=process)."},
+			never: []string{keep}},
+		{name: "a later KillMode wins", os: "linux",
+			files: map[string]string{systemdUnit: "[Service]\nKillMode=process\nKillMode = control-group\n", "/var/lib/shard/sandboxes/sb_1/sandbox.json": record},
+			want:  []string{"(no KillMode=process)"},
+			never: []string{keep}},
+		{name: "plist that abandons the group", os: "darwin",
+			files: map[string]string{launchdPlist: "<dict>\n\t<key>AbandonProcessGroup</key>\n\t<true/>\n</dict>\n", "/var/lib/shard/sandboxes/sb_1/sandbox.json": `{"id":"sb_1","provider":"vz"}`},
+			want:  []string{"  shard version", "sudo launchctl print " + launchdLabel, keep, "  sudo launchctl bootout " + launchdLabel, "(shard list --all)"},
+			never: []string{"sudo shard", "systemctl"}},
+		{name: "plist that keeps the group", os: "darwin",
+			files: map[string]string{launchdPlist: "<dict></dict>\n", "/var/lib/shard/sandboxes/sb_1/sandbox.json": `{"id":"sb_1","provider":"vz"}`},
+			want:  []string{"Your sandboxes stop with the daemon, because the service does not keep them (no AbandonProcessGroup)."},
+			never: []string{keep}},
+		{name: "no service", os: "linux",
+			files: map[string]string{"/var/lib/shard/sandboxes/sb_1/sandbox.json": record},
+			want:  []string{"Stop the daemon you started by hand first. Setup cannot tell whether your sandboxes outlive it."},
+			never: []string{keep, "systemctl disable"}},
+		{name: "no sandboxes", os: "linux",
+			files: map[string]string{systemdUnit: "KillMode=process\n"},
+			never: []string{"Your sandboxes", "In setup, choose"}},
+		{name: "unreadable sandboxes", os: "linux", locked: true,
+			files: map[string]string{systemdUnit: "KillMode=process\n", "/var/lib/shard/sandboxes/sb_1/sandbox.json": record},
+			want:  []string{"In setup, choose the provider your sandboxes use: sudo shard daemon status names it.", keep}},
+		{name: "setup runs from the manual binary", os: "linux", fromManual: true,
+			files: map[string]string{systemdUnit: "KillMode=process\n"},
+			want:  []string{"  sudo rm /etc/systemd/system/shard.service /usr/local/bin/shard", "  curl -fsSL https://useshards.com/install | sh"},
+			never: []string{"bin/shard setup"}},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			f := newFakeHost(t)
+			f.write(t, shardBinary, "bin")
+			for path, body := range tt.files {
+				f.write(t, path, body)
+			}
+			if tt.locked {
+				if os.Geteuid() == 0 {
+					t.Skip("root reads a directory whatever its mode")
+				}
+				dir := filepath.Join(f.root, DataDir, "sandboxes")
+				if err := os.Chmod(dir, 0); err != nil {
+					t.Fatalf("lock: %v", err)
+				}
+				t.Cleanup(func() {
+					if err := os.Chmod(dir, 0o755); err != nil {
+						t.Errorf("unlock: %v", err)
+					}
+				})
+			}
+			h := f.host(nil)
+			h.OS = tt.os
+			if tt.fromManual {
+				h.Executable = filepath.Join(f.root, shardBinary)
+			}
+			inst, _, err := Detect(t.Context(), h)
+			if err != nil {
+				t.Fatalf("Detect: %v", err)
+			}
+			ui := &fakeUI{}
+
+			if err := (&Setup{Host: h, UI: ui}).manual(t.Context(), inst); err != nil {
+				t.Fatalf("manual: %v", err)
+			}
+			said(t, ui, tt.want...)
+			for _, line := range tt.never {
+				if slices.ContainsFunc(ui.printed, func(p string) bool { return strings.Contains(p, line) }) {
+					t.Errorf("output %q says %q", ui.printed, line)
+				}
+			}
+		})
 	}
 }
 
@@ -540,7 +652,15 @@ func TestUpgradeVerifiesBeforeItReplaces(t *testing.T) {
 	if !f.called("systemctl restart shard") || f.called("systemctl enable") {
 		t.Fatalf("calls = %v, want one restart and no unit change", f.calls)
 	}
-	said(t, ui.fakeUI, "Your sandboxes keep running while the daemon restarts.")
+	said(t, ui.fakeUI, "Your sandboxes keep running while the daemon restarts.", "Shard v0.2.0 is installed, and the daemon is running.")
+	steps := ui.lists[len(ui.lists)-1].steps
+	if !slices.Equal(steps[len(steps)-2:], []string{"Restart the daemon", "Verify the daemon connection"}) {
+		t.Fatalf("the steps are %q, want the restart and then the verify last", steps)
+	}
+	restart, verify := slices.Index(f.calls, "systemctl restart shard"), slices.Index(f.calls, "/usr/local/bin/shard --remote  daemon status")
+	if restart < 0 || verify < restart {
+		t.Fatalf("calls = %v, want the daemon asked after the restart", f.calls)
+	}
 }
 
 func TestUpgradeKeepsTheOldBinaries(t *testing.T) {
@@ -609,9 +729,12 @@ func TestUpgradeLeavesAnInactiveServiceStopped(t *testing.T) {
 	if err := (&Setup{Host: f.host(rs), UI: ui}).upgrade(t.Context(), m, ServiceInactive); err != nil {
 		t.Fatalf("upgrade: %v", err)
 	}
-	said(t, ui, "Setup does not start it.")
-	if f.called("systemctl restart") || f.called("systemctl start") {
+	said(t, ui, "Setup does not start it.", "Shard v0.2.0 is installed.")
+	if f.called("systemctl restart") || f.called("systemctl start") || f.called("/usr/local/bin/shard --remote") {
 		t.Fatalf("calls = %v", f.calls)
+	}
+	if slices.ContainsFunc(ui.printed, func(l string) bool { return strings.Contains(l, "the daemon is running") }) {
+		t.Fatalf("output %q says a stopped daemon runs", ui.printed)
 	}
 }
 
@@ -802,6 +925,63 @@ func TestUninstallLeavesANetworkADaemonStillUses(t *testing.T) {
 }
 
 // Uninstall names each shard command still on disk, with its rm line, and none that is gone. (SHARD-668)
+func TestUninstallNamesTheDataItKeeps(t *testing.T) {
+	const kept = "Your saved data remains in /var/lib/shard."
+	cases := map[string]struct {
+		os    string
+		files map[string]string
+		// want are the lines right after kept, in order.
+		want  []string
+		never []string
+	}{
+		"mac logs": {os: "darwin", files: map[string]string{"/var/log/shard/daemon.log": "log"},
+			want: []string{"The daemon's logs remain in /var/log/shard.", "Remove them with: sudo rm -r /var/log/shard"}},
+		"mac without logs": {os: "darwin", never: []string{"/var/log/shard"}},
+		"linux image with its fstab line": {os: "linux", files: map[string]string{
+			"/var/lib/shard.xfs": "img",
+			"/etc/fstab":         "UUID=1 / ext4 defaults 0 1\n/var/lib/shard.xfs /var/lib/shard xfs loop,nofail 0 0\n",
+		}, want: []string{
+			"It lives in the 0.0 GiB disk image /var/lib/shard.xfs, which this line in /etc/fstab mounts at boot:",
+			"  /var/lib/shard.xfs /var/lib/shard xfs loop,nofail 0 0",
+			"To free the disk and delete the saved data, run:",
+			"  sudo umount /var/lib/shard",
+			`  sudo sed -i '\|^/var/lib/shard\.xfs[[:space:]]|d' /etc/fstab`,
+			"  sudo rm /var/lib/shard.xfs",
+		}},
+		"linux image without an fstab line": {os: "linux", files: map[string]string{"/var/lib/shard.xfs": "img"}, want: []string{
+			"It lives in the 0.0 GiB disk image /var/lib/shard.xfs.",
+			"To free the disk and delete the saved data, run:",
+			"  sudo umount /var/lib/shard",
+			"  sudo rm /var/lib/shard.xfs",
+		}},
+		"linux on a filesystem that clones": {os: "linux", never: []string{"disk image", "/etc/fstab"}},
+	}
+	for name, tc := range cases {
+		t.Run(name, func(t *testing.T) {
+			f := newFakeHost(t)
+			for path, body := range tc.files {
+				f.write(t, path, body)
+			}
+			h := f.host(nil)
+			h.OS = tc.os
+
+			lines, err := uninstalled(h, linuxInstall("v0.1.0"), false)
+			if err != nil {
+				t.Fatalf("uninstalled: %v", err)
+			}
+			i := slices.Index(lines, kept)
+			if i < 0 || len(lines) < i+1+len(tc.want) || !slices.Equal(lines[i+1:i+1+len(tc.want)], tc.want) {
+				t.Fatalf("output = %q, want %q right after %q", lines, tc.want, kept)
+			}
+			for _, line := range tc.never {
+				if slices.ContainsFunc(lines, func(l string) bool { return strings.Contains(l, line) }) {
+					t.Errorf("output %q names %q", lines, line)
+				}
+			}
+		})
+	}
+}
+
 func TestUninstallNamesTheShardCommandsLeft(t *testing.T) {
 	cases := map[string]struct {
 		executable string

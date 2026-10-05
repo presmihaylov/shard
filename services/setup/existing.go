@@ -8,6 +8,7 @@ import (
 	"io/fs"
 	"os"
 	"path/filepath"
+	"regexp"
 	"slices"
 	"strings"
 	"time"
@@ -15,6 +16,7 @@ import (
 	"github.com/presmihaylov/shard/pkg/proxy"
 	"github.com/presmihaylov/shard/pkg/term"
 	"github.com/presmihaylov/shard/pkg/vzshim"
+	"github.com/presmihaylov/shard/services/datadir"
 	"github.com/presmihaylov/shard/services/kernel"
 	"github.com/presmihaylov/shard/services/sandboxstate"
 )
@@ -74,7 +76,7 @@ func Detect(ctx context.Context, h Host) (Installation, bool, error) {
 // existing is the §11 menu over an installation Detect found.
 func (s *Setup) existing(ctx context.Context, inst Installation) error {
 	if inst.Manifest == nil {
-		return s.manual(inst)
+		return s.manual(ctx, inst)
 	}
 
 	m := *inst.Manifest
@@ -331,11 +333,19 @@ func (s *Setup) upgrade(ctx context.Context, m Manifest, service ServiceState) (
 			return saveManifest(ctx, h, m)
 		}},
 	}
+	done := "Shard " + rel.Tag + " is installed."
 	if service == ServiceActive {
-		steps = append(steps, Step{Title: "Restart the daemon", Do: func(ctx context.Context) error { return restartService(ctx, h, m) }})
+		steps = append(steps,
+			Step{Title: "Restart the daemon", Do: func(ctx context.Context) error { return restartService(ctx, h, m) }},
+			Step{Title: "Verify the daemon connection", Do: func(ctx context.Context) error { return verifyDaemon(ctx, h) }},
+		)
+		done = "Shard " + rel.Tag + " is installed, and the daemon is running."
+	}
+	if err := s.apply(ctx, "Upgrading Shard", steps); err != nil {
+		return err
 	}
 
-	return s.apply(ctx, "Upgrading Shard", steps)
+	return s.UI.Print("", done)
 }
 
 // upgradeTargets is every binary the manifest owns, and the CLI that runs setup when the manifest does not own it.
@@ -688,6 +698,20 @@ func removeNetwork(ctx context.Context, h Host) (held bool, err error) {
 // uninstalled names what stays and how to remove it, since uninstall removes no shared tool and no data.
 func uninstalled(h Host, m Manifest, netHeld bool) ([]string, error) {
 	lines := []string{"", "Shard was uninstalled.", "", "Your saved data remains in " + DataDir + "."}
+	if h.OS == "darwin" {
+		logs, err := macLogsLeft(h)
+		if err != nil {
+			return nil, err
+		}
+		lines = append(lines, logs...)
+	}
+	if h.OS == "linux" {
+		image, err := dataImageLeft(h)
+		if err != nil {
+			return nil, err
+		}
+		lines = append(lines, image...)
+	}
 
 	var tools []string
 	for _, f := range m.Files {
@@ -750,6 +774,54 @@ func networkLeft(h Host, held bool) ([]string, error) {
 	return []string{"", "IP forwarding remains on (net.ipv4.ip_forward = 1). Other software may need it.", "Turn it off with: sudo sysctl -w net.ipv4.ip_forward=0"}, nil
 }
 
+const fstabPath = "/etc/fstab"
+
+// dataImageLeft names the disk image the daemon made for a data dir that cannot clone, and the fstab line that mounts it, which uninstall keeps with the data.
+func dataImageLeft(h Host) ([]string, error) {
+	image := datadir.ImagePath(DataDir)
+	info, err := os.Lstat(rooted(h, image))
+	if errors.Is(err, fs.ErrNotExist) {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, fmt.Errorf("check %s: %w", image, err)
+	}
+	fstab, err := os.ReadFile(rooted(h, fstabPath))
+	if err != nil && !errors.Is(err, fs.ErrNotExist) {
+		return nil, fmt.Errorf("read %s: %w", fstabPath, err)
+	}
+	var mounts []string
+	for line := range strings.SplitSeq(string(fstab), "\n") {
+		if fields := strings.Fields(line); len(fields) > 1 && fields[0] == image {
+			mounts = append(mounts, "  "+strings.TrimSpace(line))
+		}
+	}
+
+	where := fmt.Sprintf("It lives in the %.1f GiB disk image %s", float64(info.Size())/(1<<30), image)
+	free := "To free the disk and delete the saved data, run:"
+	if len(mounts) == 0 {
+		return []string{where + ".", free, "  sudo umount " + DataDir, "  sudo rm " + image}, nil
+	}
+
+	return slices.Concat(
+		[]string{where + ", which this line in " + fstabPath + " mounts at boot:"}, mounts,
+		[]string{free, "  sudo umount " + DataDir, "  sudo sed -i '\\|^" + regexp.QuoteMeta(image) + "[[:space:]]|d' " + fstabPath, "  sudo rm " + image},
+	), nil
+}
+
+// macLogsLeft names the log directory the LaunchDaemon wrote, which uninstall keeps as it keeps the data.
+func macLogsLeft(h Host) ([]string, error) {
+	_, err := os.Lstat(rooted(h, macLogDir))
+	if errors.Is(err, fs.ErrNotExist) {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, fmt.Errorf("check %s: %w", macLogDir, err)
+	}
+
+	return []string{"The daemon's logs remain in " + macLogDir + ".", "Remove them with: sudo rm -r " + macLogDir}, nil
+}
+
 // leftCommands are the shard commands that still exist: the one that ran setup, and the copy the installer put in ~/.local/bin.
 func leftCommands(h Host) ([]string, error) {
 	paths := []string{h.Executable}
@@ -775,9 +847,19 @@ func leftCommands(h Host) ([]string, error) {
 	return left, nil
 }
 
-// manual reports an install setup did not make, and changes nothing in it.
-func (s *Setup) manual(inst Installation) error {
-	lines := []string{"Manual installation detected.", "", "Found:"}
+// manual reports an install setup did not make, changes nothing in it, and names the route that moves it to setup.
+func (s *Setup) manual(ctx context.Context, inst Installation) error {
+	h := s.Host
+	lines := []string{"Manual installation detected.", ""}
+	if slices.Contains(inst.Manual, shardBinary) {
+		out, err := run(ctx, h, shardBinary, "--version")
+		if err != nil {
+			return fmt.Errorf("read the installed version of %s: %w", shardBinary, err)
+		}
+		lines = append(lines, "Installed:      Shard "+strings.TrimPrefix(strings.TrimSpace(string(out)), "client "))
+	}
+	lines = append(lines, "Setup installs: Shard "+h.Version, "", "Found:")
+
 	var bins, units, others []string
 	for _, p := range inst.Manual {
 		lines = append(lines, "  "+p)
@@ -790,19 +872,31 @@ func (s *Setup) manual(inst Installation) error {
 			others = append(others, p)
 		}
 	}
-	lines = append(lines, "", "Setup did not install these files, so it does not change or remove them.", "", "Inspect the installation:", "  shard version")
-	if s.Host.OS == "darwin" {
+
+	// The API socket is root's on Linux, so a command that asks the daemon needs sudo there.
+	sudo := ""
+	if h.OS == "linux" {
+		sudo = "sudo "
+	}
+	lines = append(lines, "", "Setup did not install these files, so it does not change or remove them.", "", "Inspect the installation:", "  "+sudo+"shard version")
+	if h.OS == "darwin" {
 		lines = append(lines, "  sudo launchctl print "+launchdLabel)
 	}
-	if s.Host.OS == "linux" {
+	if h.OS == "linux" {
 		lines = append(lines, "  systemctl status shard")
 	}
 
-	lines = append(lines, "", "To remove it, remove every sandbox first (shard list --all), then run:")
+	sandboxes, err := manualSandboxes(h, inst.Manual, sudo)
+	if err != nil {
+		return err
+	}
+	lines = append(lines, sandboxes...)
+
+	lines = append(lines, "", "To move it to setup, run:")
 	for _, u := range units {
 		lines = append(lines, "  sudo systemctl disable --now "+strings.TrimSuffix(filepath.Base(u), ".service"))
 	}
-	if slices.Contains(others, "/Library/LaunchDaemons/shard.daemon.plist") {
+	if slices.Contains(others, launchdPlist) {
 		lines = append(lines, "  sudo launchctl bootout "+launchdLabel)
 	}
 	if files := slices.Concat(units, others, bins); len(files) > 0 {
@@ -811,8 +905,74 @@ func (s *Setup) manual(inst Installation) error {
 	if len(units) > 0 {
 		lines = append(lines, "  sudo systemctl daemon-reload")
 	}
+	// The rm above takes a setup run from the manual binary with it, so the installer fetches one again.
+	next := h.Executable + " setup"
+	if h.Executable == rooted(h, shardBinary) {
+		next = "curl -fsSL https://useshards.com/install | sh"
+	}
+	lines = append(lines, "  "+next,
+		"", "To remove it instead, remove every sandbox first ("+sudo+"shard list --all), then run the lines above without the last.",
+		"", "Your saved data in "+DataDir+" is not part of this.")
 
-	return s.UI.Print(append(lines, "", "Your saved data in "+DataDir+" is not part of this.")...)
+	return s.UI.Print(lines...)
+}
+
+// manualSandboxes names the provider the recorded sandboxes use and whether they outlive the manual daemon, and says nothing when there are none.
+func manualSandboxes(h Host, found []string, sudo string) ([]string, error) {
+	recorded, err := sandboxstate.RecordedProvider(rooted(h, DataDir))
+	if err != nil && !errors.Is(err, fs.ErrPermission) {
+		return nil, fmt.Errorf("read the sandboxes in %s: %w", DataDir, err)
+	}
+	if err == nil && recorded == "" {
+		return nil, nil
+	}
+	provider := "In setup, choose " + providerTitle(recorded) + ", the provider your sandboxes use."
+	if err != nil {
+		provider = "In setup, choose the provider your sandboxes use: " + sudo + "shard daemon status names it."
+	}
+
+	keeps, err := manualKeeps(h, found)
+	if err != nil {
+		return nil, err
+	}
+
+	return []string{"", provider, keeps}, nil
+}
+
+// manualKeeps reads the found daemon service for the setting that leaves the sandboxes running when it stops.
+func manualKeeps(h Host, found []string) (string, error) {
+	const keep = "Your sandboxes keep running: the service ends only the daemon, and the new daemon adopts them."
+	if slices.Contains(found, systemdUnit) {
+		body, err := os.ReadFile(rooted(h, systemdUnit))
+		if err != nil {
+			return "", fmt.Errorf("read %s: %w", systemdUnit, err)
+		}
+		mode := ""
+		for line := range strings.SplitSeq(string(body), "\n") {
+			key, value, ok := strings.Cut(strings.TrimSpace(line), "=")
+			if ok && strings.TrimSpace(key) == "KillMode" {
+				mode = strings.TrimSpace(value)
+			}
+		}
+		if mode == "process" {
+			return keep, nil
+		}
+
+		return "Your sandboxes stop with the daemon, because the service does not keep them (no KillMode=process).", nil
+	}
+	if slices.Contains(found, launchdPlist) {
+		body, err := os.ReadFile(rooted(h, launchdPlist))
+		if err != nil {
+			return "", fmt.Errorf("read %s: %w", launchdPlist, err)
+		}
+		if strings.Contains(strings.Join(strings.Fields(string(body)), ""), "<key>AbandonProcessGroup</key><true/>") {
+			return keep, nil
+		}
+
+		return "Your sandboxes stop with the daemon, because the service does not keep them (no AbandonProcessGroup).", nil
+	}
+
+	return "Stop the daemon you started by hand first. Setup cannot tell whether your sandboxes outlive it.", nil
 }
 
 func serviceState(ctx context.Context, h Host, m Manifest) (ServiceState, error) {

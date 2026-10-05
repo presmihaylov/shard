@@ -72,14 +72,20 @@ offers to check or repair the installation, upgrade Shard, uninstall it, or exit
 - **Check or repair** inspects the tools, the provider's files in `/var/lib/shard`, the permissions
   and the service, and shows each change before it makes one. It keeps the settings and the data.
 - **Upgrade** downloads and verifies the new release before it replaces anything, keeps the old
-  binary until the new one checks out, and says before it restarts the daemon.
+  binary until the new one checks out, and says before it restarts the daemon. A running daemon
+  is restarted and must answer before the upgrade reports the new version.
 - **Uninstall** stops and removes the service and the files setup installed. It refuses while
   sandboxes exist and names the commands that remove them. The data in `/var/lib/shard` and any
-  tool another program may share stay.
+  tool another program may share stay. When that data lives in the `/var/lib/shard.xfs` disk
+  image, uninstall names the image and its `/etc/fstab` line, and the commands that free the disk
+  and delete the data. On a Mac it names the daemon's logs in `/var/log/shard`, which also stay.
 
 Setup records what it created in `/var/lib/shard-setup/manifest.json`, and removes only what that
 file lists. An installation setup did not make is reported as a manual installation; setup then
-explains what it found and changes none of it.
+explains what it found and changes none of it. It shows the installed version beside the one it
+installs, names the provider the existing sandboxes use, and says whether the found service keeps
+them running when it stops. It then prints the commands that move the installation to setup: they
+stop the service, remove the files it found, and run `shard setup` again.
 
 ## Remote setup
 
