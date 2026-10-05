@@ -25,7 +25,7 @@ func TestFileReporterOverwritesTheSealedPage(t *testing.T) {
 	t.Cleanup(func() { os.Stdin = stdin })
 
 	for _, code := range []int{255, 5, 7} {
-		if err := (fileReporter{}).exited(models.ExitStatus{Code: code}); err != nil {
+		if err := (&fileReporter{}).exited(models.ExitStatus{Code: code}); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -41,7 +41,7 @@ func TestFileReporterOverwritesTheSealedPage(t *testing.T) {
 	if _, err := f.ReadAt(page, 0); err != nil {
 		t.Fatal(err)
 	}
-	if exit, found := bundle.DecodeExitPage(page); !found || exit != (models.ExitStatus{Code: 7}) {
-		t.Errorf("the page reads %+v (found %v), want only the last exit {code:7}", exit, found)
+	if report, found := bundle.DecodeExitPage(page); !found || report != (models.ExitReport{Kind: models.ExitReportKind, Code: 7}) {
+		t.Errorf("the page reads %+v (found %v), want only the last exit {code:7}", report, found)
 	}
 }

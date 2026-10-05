@@ -104,7 +104,7 @@ func TestEveryCommandHasItsHelp(t *testing.T) {
 // The key is read when a verb calls the daemon, so a real verb under a broken --remote setup still fails on it.
 func TestAVerbUnderABadRemoteFailsOnTheMissingKey(t *testing.T) {
 	err := badRemote(t).Run(t.Context(), []string{"list"})
-	if want := "a remote client needs SHARD_API_KEY"; err == nil || !strings.Contains(err.Error(), want) {
+	if want := "--remote needs an API key: set SHARD_API_KEY, or save one with shard setup"; err == nil || !strings.Contains(err.Error(), want) {
 		t.Errorf("list with no key returned %v, want %q", err, want)
 	}
 	if top := helpUnder(t, badRemote(t), "--help").text; !strings.HasPrefix(top, "Usage: shard ") {
@@ -115,18 +115,17 @@ func TestAVerbUnderABadRemoteFailsOnTheMissingKey(t *testing.T) {
 // The top level ends with the global options, the variables a remote reads and how to reach one, as SHARD-503 words them.
 func TestTheTopLevelEndsWithTheRemoteSetupAndGetStarted(t *testing.T) {
 	want := `Global options:
-  --root <dir>    directory for local Shard data (default ` + DefaultRoot + `)
-  --remote <url>  URL of the Shard API server; HTTP/HTTPS supported,
-                  HTTPS recommended
+  --root <dir>    directory for local shard data (default ` + DefaultRoot + `)
+  --remote <url>  URL of the shard API server; HTTPS recommended
   --version       show the client version
 
 Environment variables:
   SHARD_REMOTE   API server URL; --remote overrides it
-  SHARD_API_KEY  API token from shard tokens mint
+  SHARD_API_KEY  API key from shard tokens mint
   SHARD_CA_FILE  custom CA certificate file; HTTPS only
 
 Set SHARD_REMOTE and SHARD_API_KEY for remote access.
-Without a remote URL or a saved connection, Shard connects to the local daemon.
+Without a remote URL or a saved connection, shard connects to the local daemon.
 
 Get started:
   shard setup
@@ -248,7 +247,7 @@ func TestADoubleDashPassesANameThatLooksLikeAFlag(t *testing.T) {
 	app := App{Version: "test", Root: shortRoot(t)}
 
 	err := app.Run(t.Context(), []string{"pause", "--", "-web"})
-	if err == nil || !strings.Contains(err.Error(), "cannot connect to shard daemon") {
+	if err == nil || !strings.Contains(err.Error(), "cannot connect to the shard daemon") {
 		t.Errorf("pause -- -web returned %v, want it to reach for the daemon", err)
 	}
 }

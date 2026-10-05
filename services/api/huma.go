@@ -377,7 +377,7 @@ func text() *huma.Schema {
 
 // statHeader documents X-Shard-Stat, the guest path's stat as JSON.
 func statHeader() map[string]*huma.Header {
-	return map[string]*huma.Header{StatHeader: {Description: "The guest path's stat as JSON: type is file, dir, symlink or other; size is the logical size in bytes; mode is the permission bits as a number, at most 0o7777; then uid, gid and mtime.", Schema: text()}}
+	return map[string]*huma.Header{StatHeader: {Description: "The stat of the path as JSON: type is file, dir, symlink or other; size is the logical size in bytes; mode is the permission bits as a number, at most 0o7777; then uid, gid and mtime.", Schema: text()}}
 }
 
 // binaryBody is the request body of a raw PUT, which Huma never reads.

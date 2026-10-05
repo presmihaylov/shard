@@ -47,10 +47,10 @@ function baseUrl(remote: string | undefined, env: Env): string {
   try {
     url = new URL(value);
   } catch {
-    throw new ConfigurationError(`${source} must be an http or https url with a host, ${example}`);
+    throw new ConfigurationError(`${source} must be an http or https URL with a host, ${example}`);
   }
   if ((url.protocol !== "https:" && url.protocol !== "http:") || !url.hostname) {
-    throw new ConfigurationError(`${source} must be an http or https url with a host, ${example}`);
+    throw new ConfigurationError(`${source} must be an http or https URL with a host, ${example}`);
   }
   if (url.username || url.password || url.search || url.hash || url.pathname !== "/") {
     throw new ConfigurationError(`${source} must name only a scheme, a host and a port, ${example}`);
@@ -89,7 +89,7 @@ function ca(caFile: string | undefined, env: Env, remote: string): Buffer | unde
     return undefined;
   }
   if (remote.startsWith("http:")) {
-    throw new ConfigurationError(`${source} is set, and the remote ${remote} is http: a CA certificate verifies an https remote only`);
+    throw new ConfigurationError(`${source} applies only to an https remote, and ${remote} is http; use https, or unset ${source}`);
   }
   let pem: Buffer;
   try {
@@ -101,7 +101,7 @@ function ca(caFile: string | undefined, env: Env, remote: string): Buffer | unde
   try {
     new X509Certificate(pem);
   } catch {
-    throw new ConfigurationError(`${source}: the CA file ${path} holds no certificate`);
+    throw new ConfigurationError(`${source}: the CA file ${path} holds no PEM certificate`);
   }
 
   return pem;

@@ -53,6 +53,11 @@ check, a changed release file, for example one that a host crash truncated, is f
 changed `SHARD_KERNEL` file is refused with `kernel checksum mismatch`. The daemon reuses the
 provider and its kernel path for later boots, without another hash check.
 
+A sandbox record names the kernel its guest booted in `kernel`, by release tag, for example
+`kernel-6.12.110-3`. A create and a start after a stop record the kernel they boot. A resume or a
+fork keeps the tag it had, because it runs a memory image of that kernel. A container substrate
+leaves `kernel` empty.
+
 ### The dev path
 
 Before the first release, or to boot a kernel that is not released, a daemon can take a kernel from
@@ -67,6 +72,9 @@ setting just one of them is an error at start. The override is meant for a devel
 build, and an install should not use it. Every microVM substrate takes the same override. On a KVM
 host, `SHARD_KERNEL` names `vmlinux-amd64` for amd64 or `Image-arm64` for arm64. The Firecracker
 provider boots the kernel for the host's architecture, as vz does.
+
+A sandbox that boots a dev kernel records `local-` and the first 12 characters of its hash in
+`kernel`, so two dev builds stay apart.
 
 ## Bumping it
 

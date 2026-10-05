@@ -52,7 +52,7 @@ func TestDirectoryVerbsOnTheGuest(t *testing.T) {
 		t.Fatalf("ls after delete -r = %+v, %v; want nothing", entries, err)
 	}
 
-	if err := c.DeleteFile(t.Context(), id, "/", true); err == nil || !strings.Contains(err.Error(), "whole root") {
+	if err := c.DeleteFile(t.Context(), id, "/", true); err == nil || !strings.Contains(err.Error(), "would remove every file in the sandbox") {
 		t.Fatalf("a delete of / gave %v, want a refusal", err)
 	}
 }

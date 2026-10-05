@@ -84,7 +84,7 @@ func publicStoppedReason(reason string) string {
 		return "the sandbox lost its lifecycle state; start it again"
 	}
 	if reason == sandbox.SupervisorFailedReason || strings.HasPrefix(reason, sandbox.SupervisorFailedReason+":") {
-		return "the sandbox supervisor failed; remove it and create another sandbox"
+		return "the init process of the sandbox failed; remove it and create another sandbox"
 	}
 
 	return "the sandbox stopped; the daemon log has the cause"

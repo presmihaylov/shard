@@ -1,5 +1,5 @@
 #!/bin/sh
-# Installs the Shard CLI into ~/.local/bin: curl -fsSL https://useshards.com/install | sh
+# Installs the shard CLI into ~/.local/bin: curl -fsSL https://useshards.com/install | sh
 set -u
 
 REPO=presmihaylov/shard
@@ -78,9 +78,9 @@ EOF
 Run isolated sandboxes on your own infrastructure.
 
 Create sandboxes, run commands, and save or fork their state.
-Run them locally or connect to a Shard server.
+Run them locally or connect to a shard server.
 
-Installing the Shard CLI...
+Installing the shard CLI...
 EOF
 }
 
@@ -89,8 +89,8 @@ detect_platform() {
 	case "$kernel" in
 	Linux) os=linux ;;
 	Darwin) os=darwin ;;
-	MINGW* | MSYS* | CYGWIN*) fail "Shard does not run on Windows. Run this installer inside WSL 2." ;;
-	*) fail "Shard runs on Linux and macOS, and this system is $kernel." ;;
+	MINGW* | MSYS* | CYGWIN*) fail "Windows cannot run shard. Run this installer inside WSL 2." ;;
+	*) fail "this system is $kernel, and shard runs on Linux and macOS only." ;;
 	esac
 	arch=$(uname -m)
 	case "$arch" in
@@ -146,7 +146,7 @@ resolve_version() {
 	esac
 	version=$(pick_version <"$tmp/releases.json")
 	if [ -z "$version" ]; then
-		fail "found no published Shard release on GitHub."
+		fail "found no published shard release on GitHub."
 	fi
 }
 
@@ -169,20 +169,20 @@ pick_hasher() {
 
 download() {
 	curl -fsSL -o "$tmp/SHA256SUMS" "$DOWNLOAD_URL/$version/SHA256SUMS" ||
-		fail "could not download the checksums of Shard $version."
+		fail "could not download the checksums of shard $version."
 	expected=$(awk -v name="$asset" '$2 == name || $2 == "*" name { print $1 }' "$tmp/SHA256SUMS")
 	if [ -z "$expected" ]; then
 		builds=$(awk '{ sub(/^\*/, "", $2) } $2 ~ /^shard-[a-z0-9]+-[a-z0-9]+$/ { sub(/^shard-/, "", $2); printf "%s%s", sep, $2; sep = ", " }' "$tmp/SHA256SUMS")
-		fail "Shard $version has no build for $os-$arch. Its builds are: $builds."
+		fail "shard $version has no build for $os-$arch. Its builds are: $builds."
 	fi
 	curl -fsSL -o "$tmp/$asset" "$DOWNLOAD_URL/$version/$asset" ||
-		fail "could not download $asset from Shard $version."
+		fail "could not download $asset from shard $version."
 	actual=$(sha256 "$tmp/$asset")
 	if [ -z "$actual" ]; then
 		fail "could not compute the checksum of $asset."
 	fi
 	if [ "$actual" != "$expected" ]; then
-		fail "the checksum of $asset is $actual, and SHA256SUMS of Shard $version says $expected. Nothing was installed."
+		fail "the checksum of $asset is $actual, and SHA256SUMS of shard $version says $expected. Nothing was installed."
 	fi
 }
 
@@ -233,7 +233,7 @@ path_hint() {
 
 setup_later() {
 	cat <<'EOF'
-Set up Shard later:
+Set up shard later:
   shard setup
 
 For automated setup:
@@ -267,9 +267,9 @@ main() {
 
 	resolve_version
 	echo
-	echo "Downloading Shard $version for $os-$arch..."
+	echo "Downloading shard $version for $os-$arch..."
 	if [ "$os" = darwin ] && [ "$arch" = amd64 ]; then
-		echo "An Intel Mac can connect to a remote Shard server. It cannot host sandboxes itself."
+		echo "An Intel Mac can connect to a remote shard server. It cannot host sandboxes itself."
 	fi
 	download
 
@@ -288,7 +288,7 @@ main() {
 	if [ "$color" = 1 ]; then
 		check="$green$check"'\033[0m'
 	fi
-	printf "$check Shard installed\n"
+	printf "$check Installed shard\n"
 	printf '\nInstalled at: %s\n\n' "$bin"
 	path_hint
 

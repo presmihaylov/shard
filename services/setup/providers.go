@@ -53,7 +53,7 @@ var providerTexts = []providerText{
 		"Choose this when your workload needs its own Docker environment.",
 	}},
 	{Runc, "runc", []string{
-		"Run standard Linux containers that share the host kernel.",
+		"Run sandboxes as standard Linux processes that share the host kernel.",
 		"Choose this for trusted workloads that need standard container behavior.",
 	}},
 	{VZ, "macOS Virtualization", []string{

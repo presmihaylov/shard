@@ -17,7 +17,7 @@ import (
 func (c *Client) AttachApp(ctx context.Context, ref string, w io.Writer) (exit models.AppExit, err error) {
 	path := "/v0/sandboxes/" + url.PathEscape(ref) + "/attach"
 
-	conn, err := c.open(ctx, path, "the app of sandbox "+ref)
+	conn, err := c.open(ctx, path, "the main command of sandbox "+ref)
 	if err != nil {
 		return models.AppExit{}, missing(ref, err)
 	}
@@ -26,7 +26,7 @@ func (c *Client) AttachApp(ctx context.Context, ref string, w io.Writer) (exit m
 	for {
 		stream, payload, err := api.Receive(ctx, conn)
 		if err != nil {
-			return models.AppExit{}, dropped("attach to the app of sandbox "+ref, err)
+			return models.AppExit{}, dropped("attach to the main command of sandbox "+ref, err)
 		}
 
 		switch stream {
@@ -36,14 +36,14 @@ func (c *Client) AttachApp(ctx context.Context, ref string, w io.Writer) (exit m
 			}
 		case api.StreamExit:
 			if err := json.Unmarshal(payload, &exit); err != nil {
-				return models.AppExit{}, fmt.Errorf("the daemon answered %q as how the app of sandbox %s ended", payload, ref)
+				return models.AppExit{}, fmt.Errorf("the daemon answered %q as how the main command of sandbox %s ended", payload, ref)
 			}
 
 			return exit, nil
 		case api.StreamFailure:
 			return models.AppExit{}, failureOf(payload, ref)
 		default:
-			return models.AppExit{}, fmt.Errorf("the daemon sent a message of stream %d, which no daemon sends", stream)
+			return models.AppExit{}, fmt.Errorf("the daemon sent an unknown stream %d; upgrade shard to match the daemon", stream)
 		}
 	}
 }

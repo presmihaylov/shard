@@ -66,13 +66,13 @@ export function logChunk(message: Message, what: string): Uint8Array | undefined
 
 export function egressLogEntry(message: Message, what: string): EgressDecision {
   if (message.opcode !== opText) {
-    throw new ProtocolError(`${what}: the daemon sent a binary message where a record belongs`);
+    throw new ProtocolError(`${what}: the daemon sent a binary message where a decision belongs`);
   }
   let record: unknown;
   try {
     record = JSON.parse(message.payload.toString("utf8"));
   } catch {
-    throw new ProtocolError(`${what}: the daemon sent a record that is not JSON`);
+    throw new ProtocolError(`${what}: the daemon sent a decision that is not JSON`);
   }
 
   return egressDecision(record);

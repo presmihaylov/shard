@@ -138,7 +138,7 @@ func TestPolicyRemoveRefusesWhileARecordDoesNotReadBack(t *testing.T) {
 	if !errors.As(err, &held) || !slices.Equal(held.Users, []string{"sb-1", "broken-1", "broken-2"}) {
 		t.Fatalf("RemovePolicy = %v, want a refusal that names the holder and the records it could not read", err)
 	}
-	if !strings.Contains(err.Error(), "unreadable record of broken-1, broken-2") {
+	if !strings.Contains(err.Error(), "the unreadable sandbox broken-1, broken-2") {
 		t.Errorf("the refusal reads %q, which does not say which records are unknown", err.Error())
 	}
 	if policies.removed != "" {

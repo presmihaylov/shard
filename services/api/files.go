@@ -204,8 +204,8 @@ func (h *Handler) makeDir(ctx context.Context, in *sandboxRequest[sandbox.MkdirR
 
 type deleteFileInput struct {
 	ID        string `path:"id" doc:"The sandbox id or name."`
-	Path      string `query:"path" required:"true" doc:"The absolute guest path."`
-	Recursive bool   `query:"recursive" doc:"Take a directory and everything in it."`
+	Path      string `query:"path" required:"true" doc:"The absolute path inside the sandbox."`
+	Recursive bool   `query:"recursive" doc:"Delete a directory and everything in it."`
 }
 
 // deleteFile removes the guest path at ?path=; ?recursive=true takes a directory and everything in it.
@@ -215,9 +215,9 @@ func (h *Handler) deleteFile(ctx context.Context, in *deleteFileInput) (*struct{
 
 type writeFileInput struct {
 	ID      string `path:"id" doc:"The sandbox id or name."`
-	Path    string `query:"path" required:"true" doc:"The absolute guest path."`
-	Mode    string `query:"mode" doc:"The file mode in octal, at most 0777; none is 0644."`
-	User    string `query:"user" doc:"Who writes and owns the file; none is the entrypoint's user."`
+	Path    string `query:"path" required:"true" doc:"The absolute path inside the sandbox."`
+	Mode    string `query:"mode" doc:"The permission bits in octal, at most 0777; absent is 0644."`
+	User    string `query:"user" doc:"The user who writes and owns the file; absent is the entrypoint's user."`
 	Parents bool   `query:"parents" doc:"Make the missing parent directories."`
 }
 

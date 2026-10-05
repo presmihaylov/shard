@@ -90,7 +90,7 @@ func TestRunExitsWith125WhenShardFails(t *testing.T) {
 
 	var exit *ExitError
 	// The create route is public, so the cause stays in the daemon log.
-	if !errors.As(err, &exit) || exit.Code != runFailedExitCode || !strings.Contains(exit.Message, "its log has the cause") || strings.Contains(exit.Message, "forced failure") {
+	if !errors.As(err, &exit) || exit.Code != runFailedExitCode || !strings.Contains(exit.Message, "the daemon log has the cause") || strings.Contains(exit.Message, "forced failure") {
 		t.Fatalf("run returned %v, want 125 with the public text", err)
 	}
 }
@@ -170,7 +170,7 @@ func TestRunStopsTheAppOnTheFirstInterruptAndExitsWithItsCode(t *testing.T) {
 	if got := provider.stops(); !slices.Equal(got, []bool{false}) {
 		t.Errorf("run asked for stops %v, want one without force", got)
 	}
-	if !strings.Contains(out.String(), "shard: stopping the app; Ctrl+C again to kill it") {
+	if !strings.Contains(out.String(), "shard: stopping the main command; Ctrl+C again to kill it") {
 		t.Errorf("run printed %q, want the note on the stop", out.String())
 	}
 	if slices.Contains(r.seen(), "provider.Stop") {
@@ -200,7 +200,7 @@ func TestRunKillsOnTheSecondInterruptAndLeavesOnTheThird(t *testing.T) {
 	if got := provider.stops(); !slices.Equal(got, []bool{false, true}) {
 		t.Errorf("run asked for stops %v, want a term then a kill", got)
 	}
-	if !strings.Contains(out.String(), "shard: killing the app; Ctrl+C again to leave") {
+	if !strings.Contains(out.String(), "shard: killing the main command; Ctrl+C again to leave") {
 		t.Errorf("run printed %q, want the note on the kill", out.String())
 	}
 }
@@ -215,12 +215,12 @@ func TestRunStopsTheAppOfACreateItInterrupted(t *testing.T) {
 		note     string
 		stops    []bool
 	}{
-		{name: "cached", presses: 1, note: "stopping the app once the sandbox is up; Ctrl+C again to kill it", stops: []bool{false}},
-		{name: "cached detached", detach: true, presses: 1, note: "stopping the app once the sandbox is up; Ctrl+C again to kill it", stops: []bool{false}},
-		{name: "cached pressed three times", presses: 3, note: "killing the app once the sandbox is up", stops: []bool{true}},
-		{name: "uncached", uncached: true, presses: 1, note: "stopping the app once the sandbox is up; Ctrl+C again to kill it", stops: []bool{false}},
-		{name: "uncached detached", uncached: true, detach: true, presses: 1, note: "stopping the app once the sandbox is up; Ctrl+C again to kill it", stops: []bool{false}},
-		{name: "uncached pressed three times", uncached: true, presses: 3, note: "killing the app once the sandbox is up", stops: []bool{true}},
+		{name: "cached", presses: 1, note: "stopping the main command once the sandbox is up; Ctrl+C again to kill it", stops: []bool{false}},
+		{name: "cached detached", detach: true, presses: 1, note: "stopping the main command once the sandbox is up; Ctrl+C again to kill it", stops: []bool{false}},
+		{name: "cached pressed three times", presses: 3, note: "killing the main command once the sandbox is up", stops: []bool{true}},
+		{name: "uncached", uncached: true, presses: 1, note: "stopping the main command once the sandbox is up; Ctrl+C again to kill it", stops: []bool{false}},
+		{name: "uncached detached", uncached: true, detach: true, presses: 1, note: "stopping the main command once the sandbox is up; Ctrl+C again to kill it", stops: []bool{false}},
+		{name: "uncached pressed three times", uncached: true, presses: 3, note: "killing the main command once the sandbox is up", stops: []bool{true}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			var out bytes.Buffer
@@ -259,7 +259,7 @@ func TestRunStopsTheAppOfACreateItInterrupted(t *testing.T) {
 
 			err := <-done
 			var exit *ExitError
-			if !errors.As(err, &exit) || exit.Code != InterruptedExitCode || exit.Message != "interrupted; the app of sandbox sandbox2 ended, and the sandbox stays running" {
+			if !errors.As(err, &exit) || exit.Code != InterruptedExitCode || exit.Message != "interrupted; the main command of sandbox sandbox2 ended, and the sandbox stays running" {
 				t.Fatalf("run returned %v, want 130 once the app ended", err)
 			}
 			if got := provider.stops(); !slices.Equal(got, tc.stops) {

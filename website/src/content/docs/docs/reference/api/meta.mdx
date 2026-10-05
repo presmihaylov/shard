@@ -1,0 +1,85 @@
+---
+title: Meta
+description: The routes that read the daemon version, the verbs its provider supports and the scopes a token can carry.
+sidebar:
+  order: 8
+---
+
+This reads the daemon's version and its API version:
+
+```sh
+curl --unix-socket /var/lib/shard/shard.sock http://localhost/v0/version
+```
+
+Every route on this page accepts any valid token.
+
+{/* make openapi writes this part from the routes. Edit the routes, not this part. */}
+
+Each route answers an error with the [Error](/docs/reference/api/#error) body, unless its responses say otherwise.
+
+## Read the daemon and API versions
+
+`GET /v0/version` · scope any token
+
+**Responses**
+
+| Status | Body |
+| --- | --- |
+| 200 | [VersionResponse](#versionresponse) as `application/json` |
+
+## List the lifecycle verbs and whether this server supports each
+
+`GET /v0/capabilities` · scope any token
+
+**Responses**
+
+| Status | Body |
+| --- | --- |
+| 200 | [Capabilities](#capabilities) as `application/json` |
+
+## List the scopes a token can carry
+
+`GET /v0/scopes` · scope any token
+
+**Responses**
+
+| Status | Body |
+| --- | --- |
+| 200 | [ScopesResponse](#scopesresponse) as `application/json` |
+
+## Objects
+
+### Capabilities
+
+| Field | Type | Required |
+| --- | --- | --- |
+| `create` | boolean | yes |
+| `fork` | boolean | yes |
+| `pause` | boolean | yes |
+| `remove` | boolean | yes |
+| `resume` | boolean | yes |
+| `snapshot` | boolean | yes |
+| `start` | boolean | yes |
+| `stop` | boolean | yes |
+
+### Scope
+
+| Field | Type | Required |
+| --- | --- | --- |
+| `description` | string | yes |
+| `name` | string | yes |
+
+### ScopesResponse
+
+| Field | Type | Required |
+| --- | --- | --- |
+| `scopes` | array of [Scope](#scope) | yes |
+
+### VersionResponse
+
+| Field | Type | Required |
+| --- | --- | --- |
+| `api_version` | string | yes |
+| `version` | string | yes |
+
+{/* make openapi writes everything above this line. Write by hand below it. */}

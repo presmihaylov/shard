@@ -58,6 +58,9 @@ type App struct {
 
 	// remoteFlag says --remote was passed, so even an empty one names the target and the saved connection names none.
 	remoteFlag bool
+
+	// asSudo replaces the check for sudo. A test sets it: go test runs neither as root nor under sudo.
+	asSudo func() bool
 }
 
 // stdin is what exec hands the guest and what secret set reads the value from.
@@ -78,7 +81,7 @@ func (a App) Run(ctx context.Context, args []string) error {
 		return a.print(exit.text)
 	}
 
-	return err
+	return a.forUser(err)
 }
 
 // printExit carries the text a verb means to print before it exits 0, as --help and --version do.
@@ -304,7 +307,8 @@ func names(cmds []command) []string {
 	return out
 }
 
-func (a App) run(ctx context.Context, args []string) error {
+// run parses the globals into a, so Run words its error for the target they name.
+func (a *App) run(ctx context.Context, args []string) error {
 	args, err := a.parseGlobals(args)
 	if err != nil {
 		return err
@@ -496,7 +500,7 @@ func (a App) hostOnly(verb string) error {
 		return nil
 	}
 
-	return fmt.Errorf("shard %s runs on the daemon host only and cannot reach the %v; remove it with shard setup to run it here", verb, saved)
+	return fmt.Errorf("shard %s runs on the daemon host only and cannot reach the %v; remove it with shard setup to run it on this host", verb, saved)
 }
 
 // noRemote is hostOnly for daemon and serve: the saved connection names where commands go, never where a daemon runs.
@@ -505,7 +509,7 @@ func (a App) noRemote(verb string) error {
 		return nil
 	}
 
-	return fmt.Errorf("shard %s runs on the daemon host only and cannot reach %s; unset --remote and %s to run it there", verb, a.Remote, client.RemoteEnv)
+	return fmt.Errorf("shard %s runs on the daemon host only and cannot reach %s; unset --remote and %s to run it on this host", verb, a.Remote, client.RemoteEnv)
 }
 
 // saved is the connection shard setup saved; an explicit --remote "" asks for the socket, so it reads none.

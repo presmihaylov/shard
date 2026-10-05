@@ -56,7 +56,7 @@ def sync_detailed(
     *,
     client: AuthenticatedClient | Client,
 ) -> Response[Error | Sandbox]:
-    """Take a secret back from a sandbox"""
+    """Ungrant a secret from a sandbox"""
 
     kwargs = _get_kwargs(
         id=id,
@@ -76,7 +76,7 @@ def sync(
     *,
     client: AuthenticatedClient | Client,
 ) -> Error | Sandbox | None:
-    """Take a secret back from a sandbox"""
+    """Ungrant a secret from a sandbox"""
 
     return sync_detailed(
         id=id,
@@ -91,7 +91,7 @@ async def asyncio_detailed(
     *,
     client: AuthenticatedClient | Client,
 ) -> Response[Error | Sandbox]:
-    """Take a secret back from a sandbox"""
+    """Ungrant a secret from a sandbox"""
 
     kwargs = _get_kwargs(
         id=id,
@@ -109,7 +109,7 @@ async def asyncio(
     *,
     client: AuthenticatedClient | Client,
 ) -> Error | Sandbox | None:
-    """Take a secret back from a sandbox"""
+    """Ungrant a secret from a sandbox"""
 
     return (
         await asyncio_detailed(

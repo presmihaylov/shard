@@ -64,7 +64,7 @@ def sync_detailed(
     client: AuthenticatedClient | Client,
     body: ExecRequest,
 ) -> Response[Error | Exec]:
-    """execute a command in a running sandbox"""
+    """Execute a command in a running sandbox"""
 
     kwargs = _get_kwargs(
         id=id,
@@ -84,7 +84,7 @@ def sync(
     client: AuthenticatedClient | Client,
     body: ExecRequest,
 ) -> Error | Exec | None:
-    """execute a command in a running sandbox"""
+    """Execute a command in a running sandbox"""
 
     return sync_detailed(
         id=id,
@@ -99,7 +99,7 @@ async def asyncio_detailed(
     client: AuthenticatedClient | Client,
     body: ExecRequest,
 ) -> Response[Error | Exec]:
-    """execute a command in a running sandbox"""
+    """Execute a command in a running sandbox"""
 
     kwargs = _get_kwargs(
         id=id,
@@ -117,7 +117,7 @@ async def asyncio(
     client: AuthenticatedClient | Client,
     body: ExecRequest,
 ) -> Error | Exec | None:
-    """execute a command in a running sandbox"""
+    """Execute a command in a running sandbox"""
 
     return (
         await asyncio_detailed(

@@ -94,7 +94,7 @@ func TestApplyStopsAtTheFailedStepAndSaysWhatStays(t *testing.T) {
 	if want := []string{"start 0", "done 0", "start 1", "fail 1: it broke"}; !slices.Equal(ui.lists[0].marks, want) {
 		t.Errorf("marked %v, want %v", ui.lists[0].marks, want)
 	}
-	if want := []string{"", "Setup stopped. Earlier completed steps remain in place.", "Run `shard setup` again to retry."}; !slices.Equal(ui.printed, want) {
+	if want := []string{"", "Setup stopped. Earlier completed steps remain in place.", "Run shard setup again to retry."}; !slices.Equal(ui.printed, want) {
 		t.Errorf("printed %q, want %q", ui.printed, want)
 	}
 }
@@ -107,8 +107,8 @@ func TestTheRetryHintNamesAReachableCommand(t *testing.T) {
 		host Host
 		want string
 	}{
-		{"on PATH", Host{LookPath: func(string) (string, error) { return "/usr/local/bin/shard", nil }, Executable: "/tmp/build/shard"}, "Run `shard setup` again to retry."},
-		{"not on PATH", Host{LookPath: func(string) (string, error) { return "", errors.New("not found") }, Executable: "/tmp/build/shard"}, "Run `/tmp/build/shard setup` again to retry."},
+		{"on PATH", Host{LookPath: func(string) (string, error) { return "/usr/local/bin/shard", nil }, Executable: "/tmp/build/shard"}, "Run shard setup again to retry."},
+		{"not on PATH", Host{LookPath: func(string) (string, error) { return "", errors.New("not found") }, Executable: "/tmp/build/shard"}, "Run /tmp/build/shard setup again to retry."},
 	} {
 		t.Run(c.name, func(t *testing.T) {
 			ui := &fakeUI{}
@@ -131,7 +131,7 @@ func TestTheRetryHintRepeatsTheRunsFlags(t *testing.T) {
 	if err := s.apply(t.Context(), "Setting up", []Step{{"only", broke}}); err == nil {
 		t.Fatal("apply of a failing step returned no error")
 	}
-	want := "Run `shard setup --local --provider gvisor --start-at-boot=true -y` again to retry."
+	want := "Run shard setup --local --provider gvisor --start-at-boot=true -y again to retry."
 	if !slices.Contains(ui.printed, want) {
 		t.Errorf("printed %q, want it to contain %q", ui.printed, want)
 	}

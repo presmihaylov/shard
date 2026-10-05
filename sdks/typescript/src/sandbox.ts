@@ -14,6 +14,7 @@ export interface FollowOptions {
   signal?: AbortSignal;
 }
 
+/** Sandbox is one sandbox; info is the sandbox as the last call on this handle returned it. */
 export class Sandbox {
   readonly commands: Commands;
   readonly files: Files;
@@ -28,7 +29,7 @@ export class Sandbox {
     this.files = new Files(transport, info.id);
   }
 
-  /** info is the record as the last verb on this handle answered it; inspect() reads it again. */
+  /** info is the sandbox as the last call on this handle returned it; inspect() reads it again. */
   get info(): SandboxInfo {
     return this.current;
   }
@@ -79,7 +80,7 @@ export class Sandbox {
     return new Sandbox(this.transport, sandboxInfo(data));
   }
 
-  /** delete a sandbox and its files */
+  /** remove a sandbox and its files */
   async remove(options: { force?: boolean } = {}): Promise<void> {
     const params = { ...this.params, query: { force: options.force || undefined } };
     await this.transport.api.DELETE("/v0/sandboxes/{id}", { params, fetch: this.transport.waiting });
@@ -97,19 +98,19 @@ export class Sandbox {
     return this.commands.run(command, rest);
   }
 
-  /** logs answers the app's output so far, stdout and stderr as the daemon wrote them. */
+  /** logs returns the app's output so far, stdout and stderr as the daemon wrote them. */
   async logs(): Promise<string> {
     const { data } = await this.transport.api.GET("/v0/sandboxes/{id}/logs", { params: this.params, headers: { Accept: "text/plain" }, parseAs: "text" });
 
     return data ?? "";
   }
 
-  /** followLogs yields the app's output from the start of the log, then as it comes, and ends when the sandbox stops. */
+  /** followLogs yields the app's output from the start of the log, then as it arrives, and ends when the sandbox stops. */
   followLogs(options: FollowOptions = {}): AsyncGenerator<Uint8Array> {
     return follow(this.transport, wire.path("sandboxes", this.id, "logs"), `the logs of sandbox ${this.id}`, logChunk, options.signal);
   }
 
-  /** egressLog answers the egress decisions the daemon still holds, oldest first. */
+  /** egressLog returns the egress decisions the daemon still holds, oldest first. */
   async egressLog(): Promise<EgressDecision[]> {
     const { data } = await this.transport.api.GET("/v0/sandboxes/{id}/egress-log", { params: this.params });
 

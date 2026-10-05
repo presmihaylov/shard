@@ -5,13 +5,14 @@ verb goes over the socket, and no verb reads or writes the state itself. Without
 verb fails fast with one line:
 
 ```
-shard: cannot connect to shard daemon at /var/lib/shard/shard.sock: is it running? systemctl status shard
+shard: cannot connect to shard daemon at /var/lib/shard/shard.sock: is the background service running? shard setup repairs it
 ```
 
-The hint follows what `shard setup` left on this host: `systemctl status shard` for the systemd
-unit, `launchctl print system/shard.daemon` for the Mac LaunchDaemon, the command that starts the
-daemon by hand when setup installed no service (`sudo shard daemon --provider gvisor`), and
-`shard setup` on a host with no setup. A service serves `/var/lib/shard` only. Under any other
+The hint follows what `shard setup` left on this host: `shard setup` for the systemd unit and the
+Mac LaunchDaemon it installed, whose repair starts a service that stopped, the service's own check
+(`systemctl status shard`, `launchctl print system/shard.daemon`) for one installed by hand, the
+command that starts the daemon by hand when setup installed no service (`sudo shard daemon
+--provider gvisor`), and `shard setup` on a host with no setup. A service serves `/var/lib/shard` only. Under any other
 `--root`, the hint names that root's own daemon (`is it running? shard --root /srv/shard-e2e
 daemon`). Under `--remote`, it names the front (`is it running? shard serve at shard.example.com,
 or the proxy in front of it`).
@@ -335,13 +336,17 @@ that ignores TERM ends too. So what the app forked ends with it, while `shard-in
 session run on. A process that leaves the group, with `setsid`, runs until `stop`.
 
 The policy is fixed at create. `shard-init` gets it as flags in the bundle and has no control
-channel, so nothing can change it on a running sandbox. `shard-init` counts every start again in a
-file. Every second, the `restart-policy` task reads that file for every running sandbox that has a
-policy, and copies the count onto the record. The record is therefore at most a second behind. A
-`stop` reads the count once more before it writes the stopped record, and the wait of a run copies
-it as soon as the policy ends. On gVisor, runc and Sysbox
-that file sits under `/.shard`, where the guest can write it. The daemon therefore reads only a
-regular file of at most 4 KiB, and refuses a symbolic link, a fifo or a device.
+channel, so nothing can change it on a running sandbox. `shard-init` counts every start again on
+its exit record, beside the exit status. Every second, the `restart-policy` task reads that count for
+every running sandbox that has a policy, and copies it onto the record. The record is therefore at
+most a second behind. A `stop` reads the count once more before it writes the stopped record, and
+the wait of a run copies it as soon as the policy ends. On gVisor, runc and Sysbox the record rides
+fd 0, the exit channel the host holds, so the count and `ended` have the same boundary as the exit
+code. Nothing under `/.shard` feeds them, and on Sysbox they are guest-attested as the exit code is
+(see `docs/provider.md`). An exit file over 4 KiB never holds up a stop: the host empties it, the
+record keeps its last count, and the daemon logs one line. A start clears the supervisor's files
+whatever their type, so a directory or a link the guest leaves at the ready file never fails the
+next start.
 The record carries `restart`: `{"policy", "retries", "backoff",
 "count", "last_at", "gave_up", "ended"}`, absent on a sandbox without a policy, and `retries` is omitted when
 the count is unlimited. `shard list` shows it in the `RESTART` column:
@@ -792,7 +797,7 @@ else that a refusal carries lives inside `error`, and the root never holds anyth
 
 | code | status | when |
 |---|---|---|
-| `invalid_request` | 400 | the body does not decode, a field does not validate, or a named secret, policy or image is unknown. Also the TCP front, when the request line does not parse as net/http parses it, and then the front dials nothing |
+| `invalid_request` | 400 | the body does not decode, a field does not validate, a named secret or policy is unknown, or an image reference does not parse. Also the TCP front, when the request line does not parse as net/http parses it, and then the front dials nothing |
 | `body_too_large` | 413 | a JSON body over 1 MiB. The daemon reads no further, and closes the connection after the answer |
 | `not_found` | 404 | no sandbox, snapshot, policy, secret, image or exec has the reference, or no route has the path. Also a create, start, resume or fork whose image files left the host: the message names the image pinned to its digest, which a pull brings back, and the verb to run again |
 | `sandbox_not_running` | 409 | exec, pause, fork, attach or app stop on a sandbox that is not running, one the substrate no longer holds, or one whose substrate process does not answer |

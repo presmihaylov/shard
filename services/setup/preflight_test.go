@@ -46,7 +46,7 @@ func TestPreflightPassesAReadyHost(t *testing.T) {
 	want := []string{
 		"Supported operating system and CPU", "Provider requirements", "Administrator access",
 		"Installation paths and permissions", "Available disk space and filesystem support", "Download access",
-		"Existing Shard installation", "Background service support",
+		"Existing shard installation", "Background service support",
 	}
 	if list.title != "Checking this machine" || !slices.Equal(list.steps, want) {
 		t.Fatalf("checklist %q %q", list.title, list.steps)
@@ -67,8 +67,8 @@ func TestPreflightStopsAtTheFirstFailure(t *testing.T) {
 	f, list := preflightOn(t, h, Local{Provider: GVisor, StartAtBoot: true})
 
 	wantFinding(t, f, "Supported operating system and CPU", false,
-		"Shard runs on Linux on x86_64, and on Macs with Apple silicon.", "This machine runs Linux on arm64.")
-	want := []string{"start 0", "fail 0: Shard runs on Linux on x86_64, and on Macs with Apple silicon. / This machine runs Linux on arm64."}
+		"Supported hosts: Linux on x86_64, and Macs with Apple silicon.", "This machine runs Linux on arm64.")
+	want := []string{"start 0", "fail 0: Supported hosts: Linux on x86_64, and Macs with Apple silicon. / This machine runs Linux on arm64."}
 	if !slices.Equal(list.marks, want) {
 		t.Fatalf("marks %q, want %q", list.marks, want)
 	}
@@ -224,7 +224,7 @@ func TestPreflightInstallPaths(t *testing.T) {
 		f, _ := preflightOn(t, l.host(), Local{Provider: GVisor})
 
 		wantFinding(t, f, "Installation paths and permissions", false,
-			"/usr/local/bin can be changed by a user other than root, and the root daemon runs Shard from it.",
+			"/usr/local/bin can be changed by a user other than root, and the root daemon runs shard from it.",
 			"Make root its owner and remove group and other write access, then run shard setup again.")
 	})
 	t.Run("a data dir that is a file", func(t *testing.T) {
@@ -316,7 +316,7 @@ func TestPreflightDownloadAccess(t *testing.T) {
 
 		f, _ := preflightOn(t, h, Local{Provider: GVisor})
 
-		if f == nil || f.check != "Download access" || !strings.HasPrefix(f.lines[0], "Setup could not find shard-init for Shard v0.2.0: ") {
+		if f == nil || f.check != "Download access" || !strings.HasPrefix(f.lines[0], "Setup could not find shard-init for shard v0.2.0: ") {
 			t.Fatalf("finding %+v", f)
 		}
 	})
@@ -341,17 +341,19 @@ func TestPreflightDownloadAccess(t *testing.T) {
 	})
 }
 
-// runcOverGVisor is the refusal of runc over a data dir whose sandboxes use gVisor, with both ways out (SHARD-742).
-var runcOverGVisor = []string{
-	"The sandboxes in /var/lib/shard use gVisor.",
-	"The daemon cannot start with runc over that data, and setup never changes its provider.",
-	"To keep the data, choose gVisor.",
-	"To delete the saved data, first remove its sandboxes so their network and cgroups go too:", "",
-	"  Start the daemon on that data:", "    sudo shard daemon --provider gvisor", "",
-	"  List sandboxes:", "    sudo shard list --all", "",
-	"  Remove a sandbox:", "    sudo shard remove --force <name>", "",
-	"  Then stop that daemon and delete the data:", "    sudo rm -r /var/lib/shard",
-	"Then run shard setup again.",
+// runcOverGVisor is the refusal of runc over a data dir whose sandboxes use gVisor, with both ways out, prefixing root commands with sudo (SHARD-742).
+func runcOverGVisor(sudo string) []string {
+	return []string{
+		"The sandboxes in /var/lib/shard use gVisor.",
+		"The daemon cannot start with runc over that data, and setup never changes its provider.",
+		"To keep the data, choose gVisor.",
+		"To delete the saved data, first remove its sandboxes so their network and cgroups go too:", "",
+		"  Start the daemon on that data:", "    " + sudo + "shard daemon --provider gvisor", "",
+		"  List sandboxes:", "    " + sudo + "shard list --all", "",
+		"  Remove a sandbox:", "    " + sudo + "shard remove --force <name>", "",
+		"  Then stop that daemon and delete the data:", "    " + sudo + "rm -r /var/lib/shard",
+		"Then run shard setup again.",
+	}
 }
 
 func TestPreflightExistingSandboxes(t *testing.T) {
@@ -359,7 +361,7 @@ func TestPreflightExistingSandboxes(t *testing.T) {
 	l.sandbox(GVisor)
 
 	f, _ := preflightOn(t, l.host(), Local{Provider: Runc})
-	wantFinding(t, f, "Existing Shard installation", true, runcOverGVisor...)
+	wantFinding(t, f, "Existing shard installation", true, runcOverGVisor("")...)
 
 	if f, _ := preflightOn(t, l.host(), Local{Provider: GVisor}); f != nil {
 		t.Fatalf("the recorded provider fails %q: %q", f.check, f.lines)
@@ -372,18 +374,19 @@ func TestPreflightExistingDataImage(t *testing.T) {
 	l.write("/var/lib/shard.xfs", "")
 
 	f, _ := preflightOn(t, l.host(), Local{Provider: GVisor})
-	wantFinding(t, f, "Existing Shard installation", true,
+	wantFinding(t, f, "Existing shard installation", true,
 		"The data in /var/lib/shard belongs to Firecracker.",
 		"The daemon cannot start with gVisor over that data, and setup never changes its provider.",
 		"To keep the data, choose Firecracker.",
 		"It lives in the 0.0 GiB disk image /var/lib/shard.xfs.",
 		"To delete the saved data, first remove its sandboxes so their network and cgroups go too:", "",
-		"  Start the daemon on that data:", "    sudo shard daemon --provider firecracker", "",
-		"  List sandboxes:", "    sudo shard list --all", "",
-		"  Remove a sandbox:", "    sudo shard remove --force <name>", "",
+		"  Start the daemon on that data:", "    shard daemon --provider firecracker", "",
+		"  List sandboxes:", "    shard list --all", "",
+		"  Remove a sandbox:", "    shard remove --force <name>", "",
 		"  Then stop that daemon and free the disk:",
-		"    sudo umount /var/lib/shard",
-		"    sudo rm /var/lib/shard.xfs",
+		"    umount /var/lib/shard",
+		"    rm /var/lib/shard.xfs",
+		"    rm -r /var/lib/shard",
 		"Then run shard setup again.",
 	)
 }

@@ -581,11 +581,15 @@ func TestForkRefusesASourceThatDoesNotRun(t *testing.T) {
 	}
 }
 
+// A bad name is the caller's spelling, so the API answers it 400, never 500. (SHARD-736)
 func TestForkRefusesABadName(t *testing.T) {
 	svc, _ := newService(t, &recorder{}, forkSource())
 
-	if _, err := svc.Fork(t.Context(), "sandbox1", sandbox.CopyRequest{Name: "Web 2"}); err == nil {
-		t.Error("fork accepted a name no verb could take back")
+	for _, name := range []string{"Web 2", "brave-otter-1a2b"} {
+		var invalid *sandboxstate.ValidationError
+		if _, err := svc.Fork(t.Context(), "sandbox1", sandbox.CopyRequest{Name: name}); !errors.As(err, &invalid) {
+			t.Errorf("fork named %q got %T %v, want a ValidationError", name, err, err)
+		}
 	}
 }
 
@@ -750,7 +754,7 @@ func TestForkCarriesThePolicyAndTellsTheHostBeforeTheRestore(t *testing.T) {
 }
 
 // copyRunState is every record field a copy does not take from its source: its own identity, its run, and what the substrate reports.
-var copyRunState = []string{"ID", "Name", "Provider", "Kernel", "State", "ExitStatus", "StoppedReason", "FailedReason", "FailedPublic", "UnresponsiveReason", "Checkpoint", "Pausing", "Snapshot",
+var copyRunState = []string{"ID", "Name", "Provider", "State", "ExitStatus", "StoppedReason", "FailedReason", "FailedPublic", "UnresponsiveReason", "Checkpoint", "Pausing", "Snapshot",
 	"PID", "NetnsPath", "Address", "HostInterface", "ExitChannel",
 	"Restart", "StartedAt", "CreatedAt"}
 
@@ -763,6 +767,8 @@ func withEveryPolicy(sb models.Sandbox) models.Sandbox {
 	sb.Policy = "locked"
 	sb.Command = []string{"python", "-m", "http.server"}
 	sb.Restart = &models.Restart{RestartSpec: models.RestartSpec{Policy: models.RestartOnFailure, Retries: 5, Backoff: 1}}
+	// No create asks for it, but a fork runs the source's memory image and so its kernel (SHARD-745).
+	sb.Kernel = "kernel-6.12.110-3"
 
 	return sb
 }

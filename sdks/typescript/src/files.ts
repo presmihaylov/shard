@@ -18,7 +18,7 @@ export type FileType = "file" | "dir" | "symlink" | "other";
 
 const fileTypes: readonly FileType[] = ["file", "dir", "symlink", "other"];
 
-/** FileInfo is one sandbox path as the guest sees it; mode is the permission bits with setuid, setgid and sticky. */
+/** FileInfo is one sandbox path as the sandbox sees it; mode is the permission bits with setuid, setgid and sticky. */
 export interface FileInfo {
   type: FileType;
   size: number;
@@ -44,13 +44,14 @@ export interface WriteOptions {
 
 type Route = "files" | "ls" | "mkdir" | "archive";
 
+/** Files are the files of one sandbox. A sandbox path is absolute; a local path is on this host. */
 export class Files {
   constructor(
     private readonly transport: Transport,
     private readonly sandboxId: string,
   ) {}
 
-  /** copy a file out of a running sandbox */
+  /** copy a file out of a running sandbox, and return its bytes, or its text with encoding utf8 */
   read(path: string): Promise<Uint8Array>;
   read(path: string, options: { encoding: "utf8" }): Promise<string>;
   async read(path: string, options?: { encoding: "utf8" }): Promise<Uint8Array | string> {
@@ -62,17 +63,18 @@ export class Files {
     return body;
   }
 
-  /** copy a file into a running sandbox */
+  /** copy a file into a running sandbox, from a string or bytes */
   async write(path: string, data: string | Uint8Array, options: WriteOptions = {}): Promise<void> {
     const body = typeof data === "string" ? Buffer.from(data) : data;
     await this.put(path, body, body.length, options);
   }
 
+  /** stat returns the type, size, mode, owner and mtime of a sandbox path. */
   async stat(path: string): Promise<FileInfo> {
     return statOf(await this.transport.head(this.route("files"), `a stat of ${path}`, { query: { path } }), `stat ${path}`);
   }
 
-  /** list answers the entries of the directory at path, each with its own stat. */
+  /** list returns the entries of the directory at path, each with its own stat. */
   async list(path: string): Promise<FileEntry[]> {
     const { body } = await this.transport.fetch("GET", this.route("ls"), { query: { path } });
     let listing: unknown;
@@ -88,19 +90,21 @@ export class Files {
       .map((entry) => ({ name: entry.string("name"), ...fileInfo(entry) }));
   }
 
+  /** mkdir makes a directory in the sandbox; parents makes the missing parents too. */
   async mkdir(path: string, options: WriteOptions = {}): Promise<void> {
     const { mode, parents, user } = options;
     const body = { path, mode: mode?.toString(8), parents, user };
     await this.transport.api.POST("/v0/sandboxes/{id}/mkdir", { params: { path: { id: this.sandboxId } }, body });
   }
 
+  /** remove deletes a path in the sandbox; recursive deletes a directory and everything under it. */
   async remove(path: string, options: { recursive?: boolean } = {}): Promise<void> {
     const params = { path: { id: this.sandboxId }, query: { path, recursive: options.recursive || undefined } };
     // A recursive remove waits on the guest for as long as the tree takes, so no bound cuts it.
     await this.transport.api.DELETE("/v0/sandboxes/{id}/files", { params, fetch: this.transport.waiting });
   }
 
-  /** copy a file into a running sandbox */
+  /** copy a local file into a running sandbox */
   async upload(local: string, remote: string, options: WriteOptions = {}): Promise<void> {
     const handle = await fs.open(local, "r");
     try {
@@ -115,7 +119,7 @@ export class Files {
     }
   }
 
-  /** copy a file out of a running sandbox */
+  /** copy a file out of a running sandbox into a local file */
   async download(remote: string, local: string): Promise<void> {
     const target = path.resolve(local);
     const temp = path.join(path.dirname(target), `.${path.basename(target)}.useshards-${randomBytes(8).toString("hex")}`);
@@ -130,7 +134,7 @@ export class Files {
     }
   }
 
-  /** copy a directory into a running sandbox */
+  /** copy a local directory into a running sandbox */
   async uploadDir(local: string, remote: string, options: { user?: string } = {}): Promise<void> {
     const { parent, name } = split(remote);
     if (!(await fs.stat(local)).isDirectory()) {
@@ -144,7 +148,7 @@ export class Files {
     });
   }
 
-  /** copy a directory out of a running sandbox */
+  /** copy a directory out of a running sandbox into a local directory */
   async downloadDir(remote: string, local: string): Promise<void> {
     const { clean, name } = split(remote);
     const target = path.resolve(local);
@@ -236,7 +240,7 @@ function accepted(headers: IncomingHttpHeaders, remote: string, directory: boole
 
 /** exactly yields size bytes of handle, and fails on a file that ended short or grew, so the daemon lands neither. */
 async function* exactly(handle: fs.FileHandle, size: number, what: string): AsyncGenerator<Uint8Array> {
-  const grew = (): UnknownLengthError => new UnknownLengthError(`${what}: the file grew past the ${size} bytes it held at the start`);
+  const grew = (): UnknownLengthError => new UnknownLengthError(`${what}: the source grew past the ${size} bytes it held at the start`);
   for (let left = size; left > 0; ) {
     // The last read asks one byte more, so a file that grew fails before the daemon has every byte.
     const want = Math.min(chunkSize, left + 1);
@@ -245,7 +249,7 @@ async function* exactly(handle: fs.FileHandle, size: number, what: string): Asyn
       throw grew();
     }
     if (bytesRead === 0) {
-      throw new UnknownLengthError(`${what}: the file ended ${left} bytes short of the ${size} it held at the start`);
+      throw new UnknownLengthError(`${what}: the source ended ${left} bytes short of the ${size} it held at the start`);
     }
     left -= bytesRead;
     yield buffer.subarray(0, bytesRead);

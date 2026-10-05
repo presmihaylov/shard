@@ -32,6 +32,17 @@ func (a App) create(ctx context.Context, args []string) error {
 		return err
 	}
 
+	return a.printCreated(sb)
+}
+
+// printCreated keeps stdout the id alone for a script, and names the new sandbox on stderr for a person.
+func (a App) printCreated(sb client.Sandbox) error {
+	if sb.Name != "" && a.Err != nil {
+		if _, err := fmt.Fprintln(a.Err, "created sandbox "+sb.Name); err != nil {
+			return fmt.Errorf("write the output: %w", err)
+		}
+	}
+
 	return a.print(sb.ID)
 }
 
@@ -102,7 +113,7 @@ func parseCreate(args []string) (sandbox.CreateRequest, error) {
 		return req, nil
 	}
 	if len(rest) == 0 {
-		return sandbox.CreateRequest{}, errors.New("create takes one image reference or --snapshot <id|name>, got none")
+		return sandbox.CreateRequest{}, errors.New("create takes one image reference or --snapshot SNAPSHOT, got none")
 	}
 
 	req.Image = rest[0]
@@ -153,7 +164,7 @@ func checkSandbox(flags *flag.FlagSet, req sandbox.CreateRequest) error {
 	for _, entry := range req.Env {
 		key, _, _ := strings.Cut(entry, "=")
 		if slices.Contains(req.Secrets, key) {
-			return fmt.Errorf("--secret %s and --env %s name the same variable: the guest gets the placeholder as $%s, so drop the --env", key, key, key)
+			return fmt.Errorf("--secret %s and --env %s name the same variable: the sandbox gets the placeholder as $%s, so drop the --env", key, key, key)
 		}
 	}
 
@@ -182,7 +193,7 @@ func (r runFlag) refused() {}
 
 func (r runFlag) Set(value string) error {
 	if *r.refusal == nil {
-		*r.refusal = fmt.Errorf("--%s is a run flag: shard run --%s %s <image> <command>", r.name, r.name, value)
+		*r.refusal = fmt.Errorf("--%s is a run flag: shard run --%s %s IMAGE COMMAND", r.name, r.name, value)
 	}
 
 	return nil
@@ -250,7 +261,7 @@ func (c *cpuCount) String() string { return strconv.Itoa(int(*c)) }
 func (c *cpuCount) Set(value string) error {
 	n, err := strconv.Atoi(value)
 	if err != nil {
-		return errors.New("want a whole number of cpus; a fraction is never rounded")
+		return errors.New("want a whole number of vCPUs; a fraction is never rounded")
 	}
 	*c = cpuCount(n)
 

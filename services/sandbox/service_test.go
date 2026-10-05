@@ -245,7 +245,7 @@ func TestCreateRefusedByTheDiskAdmissionLeavesNoRecord(t *testing.T) {
 	_, err := svc.Create(t.Context(), alpine())
 
 	var refused *sandbox.RequestError
-	if !errors.As(err, &refused) || !strings.Contains(err.Error(), "does not fit on the root") {
+	if !errors.As(err, &refused) || !strings.Contains(err.Error(), "does not fit on the host disk") {
 		t.Fatalf("create = %v, want a request error with the admission's reason", err)
 	}
 	if slices.Contains(r.calls, "repo.Create") || slices.Contains(r.calls, "images.Pull") {
@@ -634,7 +634,7 @@ func TestCreateRefusesAPolicyTheStoreDoesNotHoldBeforeThePull(t *testing.T) {
 	_, err := svc.Create(t.Context(), req)
 
 	var refused *sandbox.RequestError
-	if !errors.As(err, &refused) || !strings.Contains(err.Error(), "policy not found") {
+	if !errors.As(err, &refused) || !strings.Contains(err.Error(), "policy ghost does not exist: run shard policy create ghost first") {
 		t.Fatalf("create = %v, want a request error naming the policy", err)
 	}
 	if slices.Contains(r.calls, "images.Pull") {

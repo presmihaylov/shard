@@ -118,7 +118,7 @@ If the daemon fails after the WebSocket of a command stream such as `shard exec`
 
 | Code | Status | When |
 | --- | --- | --- |
-| `invalid_request` | 400 | The body does not decode, a field does not validate, or a named secret, policy or image is unknown. Also `shard serve`, when the request line does not parse. |
+| `invalid_request` | 400 | The body does not decode, a field does not validate, a named secret or policy is unknown, or an image reference does not parse. Also `shard serve`, when the request line does not parse. |
 | `body_too_large` | 413 | A JSON body over 1 MiB. The daemon stops reading and closes the connection after it answers. |
 | `not_found` | 404 | No sandbox, snapshot, policy, secret, image or exec has the reference, or no route has the path. Also a create, start, resume or fork whose image files are no longer on the host. The message names the image by its digest, and `shard pull` brings it back. |
 | `sandbox_not_running` | 409 | Exec, pause, fork, attach or app stop on a sandbox that is not running, that the provider no longer holds, or whose provider process does not answer. |

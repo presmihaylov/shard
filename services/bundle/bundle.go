@@ -34,9 +34,6 @@ const exitChannelFileName = "exit-channel.json"
 // nothing back, so this file is the only proof the entrypoint ever ran.
 const readyFileName = "started"
 
-// restartFileName is the count of starts again shard-init keeps under a restart policy.
-const restartFileName = "restarts.json"
-
 // changedFileName marks a config.json written since the substrate last created the container from it.
 const changedFileName = "spec-changed"
 
@@ -45,14 +42,13 @@ type Bundle struct {
 	// Dir holds config.json and the rootfs mount point. It is what runsc is pointed at.
 	Dir    string
 	RootFS string
-	// ShardDir is bind mounted at guestShardDir, and shard-init writes ReadyFile and RestartFile into it.
+	// ShardDir is bind mounted at guestShardDir, and shard-init writes ReadyFile into it.
 	ShardDir string
 	// ExitFile sits at the state directory root, off every bind mount, so the guest cannot forge an exit.
 	ExitFile string
 	// ExitChannelFile names the sealed memfd a sysbox PID 1 holds as fd 0, beside ExitFile for the same reason.
 	ExitChannelFile string
 	ReadyFile       string
-	RestartFile     string
 	// ChangedFile sits beside ExitFile, off every bind mount, so the guest cannot clear it.
 	ChangedFile string
 
@@ -246,7 +242,6 @@ func newBundle(stateDir string) (Bundle, error) {
 		ExitFile:        filepath.Join(stateDir, exitFileName),
 		ExitChannelFile: filepath.Join(stateDir, exitChannelFileName),
 		ReadyFile:       filepath.Join(shardDir, readyFileName),
-		RestartFile:     filepath.Join(shardDir, restartFileName),
 		ChangedFile:     filepath.Join(stateDir, changedFileName),
 		Upper:           filepath.Join(disk, "upper"),
 		Work:            filepath.Join(disk, "work"),
@@ -384,10 +379,6 @@ func supervisorArgv(spec models.SandboxSpec) ([]string, error) {
 			"-retries", strconv.Itoa(spec.Restart.Retries),
 			"-backoff", strconv.Itoa(spec.Restart.Backoff)+"s",
 		)
-	}
-	// Every app gets the file, because its end lands there under any policy and a run waits on it.
-	if len(spec.Entrypoint) != 0 {
-		argv = append(argv, "-restart-file", path.Join(guestShardDir, restartFileName))
 	}
 
 	return append(append(argv, "--"), spec.Entrypoint...), nil
