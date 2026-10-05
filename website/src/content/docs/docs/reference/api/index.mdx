@@ -1,0 +1,167 @@
+---
+title: Overview
+description: The shard REST API, with how to reach it, its tokens, every route and the error body.
+sidebar:
+  order: 1
+---
+
+The shard command line and the SDKs talk to the daemon over this API. This request creates a sandbox named `web`, over the daemon's socket:
+
+```sh
+curl --unix-socket /var/lib/shard/shard.sock -X POST -H 'Content-Type: application/json' -d '{"name":"web","image":"alpine:3.20","command":["sleep","600"],"resources":{"memory_mib":512}}' http://localhost/v0/sandboxes
+```
+
+The daemon answers `201` with the [Sandbox](/docs/reference/api/sandboxes/#sandbox) as JSON. Each page under REST API covers one group of routes, and the [Routes](#routes) tables below list them all.
+
+## Reach the API
+
+On the host, the daemon listens on a unix socket, `/var/lib/shard/shard.sock` by default, and never on TCP. The socket needs no token, and a request on it can do anything. If the host has a `shard` group, its members can open the socket without root.
+
+From another host, you reach the API through `shard serve`. It listens on `127.0.0.1:2376` by default, checks each request's token, then passes the request to the socket. Put a proxy that terminates TLS in front of it. Mint a token on the host, then send it in the `Authorization` header:
+
+```sh
+export SHARD_API_KEY=$(shard tokens mint --name ci --scopes sandbox:read,exec | jq -r .token)
+curl -H "Authorization: Bearer $SHARD_API_KEY" http://127.0.0.1:2376/v0/sandboxes
+```
+
+A client on another host sends the same header to the proxy.
+
+## Scopes
+
+Each route names the scope a token needs to reach it. A token with no scopes, or with `*`, reaches every route in this reference. A route marked "any token" accepts every valid token. `GET /v0/scopes` lists the scopes, and `shard tokens mint --scopes` takes them.
+
+`shard serve` refuses some requests before they reach the daemon:
+
+| Status | Code | When |
+| --- | --- | --- |
+| 401 | `unauthorized` | The token is missing, does not verify, has expired, or was revoked. |
+| 403 | `forbidden` | The token's scopes do not cover the route, or the route is unknown or local. |
+
+A create that names a secret also needs `secret:*`, and one that names a policy also needs `policy:*`. A fork of a sandbox that holds a secret or a policy needs the same scope. Without it, the daemon answers `403` with `forbidden`.
+
+The local routes answer only on the socket, and this reference leaves them out. They are `GET /v0/daemon`, which `shard daemon status` reads, and the four `images` routes, which `shard pull` and `shard image` use.
+
+## Lists
+
+A list returns every row unless the request passes `limit`. With `limit`, it returns at most that many rows, and `next` names the last row when more remain. Pass `next` as `cursor` to read the page after it. On the last page, `next` is `null`.
+
+```sh
+curl --unix-socket /var/lib/shard/shard.sock 'http://localhost/v0/sandboxes?limit=20'
+curl --unix-socket /var/lib/shard/shard.sock 'http://localhost/v0/sandboxes?limit=20&cursor=<next>'
+```
+
+## Errors
+
+A refused request gets a `4xx` or `5xx` status and the [Error](#error) body. A `HEAD` request gets the status alone. Match on the `code`, never on the `message`. The error table in [docs/daemon.md](https://github.com/presmihaylov/shard/blob/main/docs/daemon.md#the-api-socket) lists every code and when the daemon returns it.
+
+## WebSockets
+
+The routes that follow a stream, such as an exec attach or a `logs` follow, upgrade to a WebSocket and answer `101`. Their sections list the messages. An exec, an app attach and a `logs` follow send binary messages, and each message starts with a stream byte. An `egress-log` follow sends one text message per decision.
+
+{/* make openapi writes this part from the routes. Edit the routes, not this part. */}
+
+## Routes
+
+**Sandboxes**
+
+| Method | Path | Scope | Description |
+| --- | --- | --- | --- |
+| `GET` | `/v0/sandboxes` | `sandbox:read` | [List active sandboxes](/docs/reference/api/sandboxes/#list-active-sandboxes) |
+| `GET` | `/v0/sandboxes/{id}` | `sandbox:read` | [Read a sandbox and the egress rules the host enforces for it](/docs/reference/api/sandboxes/#read-a-sandbox-and-the-egress-rules-the-host-enforces-for-it) |
+| `POST` | `/v0/sandboxes` | `sandbox:write` | [Create a sandbox](/docs/reference/api/sandboxes/#create-a-sandbox) |
+| `POST` | `/v0/sandboxes/{id}/start` | `sandbox:write` | [Start a stopped sandbox with its saved files](/docs/reference/api/sandboxes/#start-a-stopped-sandbox-with-its-saved-files) |
+| `POST` | `/v0/sandboxes/{id}/stop` | `sandbox:write` | [Stop a sandbox and preserve its files](/docs/reference/api/sandboxes/#stop-a-sandbox-and-preserve-its-files) |
+| `DELETE` | `/v0/sandboxes/{id}` | `sandbox:delete` | [Delete a sandbox and its files](/docs/reference/api/sandboxes/#delete-a-sandbox-and-its-files) |
+| `POST` | `/v0/sandboxes/{id}/pause` | `sandbox:write` | [Save a sandbox's state and suspend it](/docs/reference/api/sandboxes/#save-a-sandboxs-state-and-suspend-it) |
+| `POST` | `/v0/sandboxes/{id}/resume` | `sandbox:write` | [Resume a paused sandbox from its saved state](/docs/reference/api/sandboxes/#resume-a-paused-sandbox-from-its-saved-state) |
+| `POST` | `/v0/sandboxes/{id}/fork` | `sandbox:write` | [Create a sandbox from a running sandbox's memory and files](/docs/reference/api/sandboxes/#create-a-sandbox-from-a-running-sandboxs-memory-and-files) |
+| `GET` | `/v0/sandboxes/{id}/logs` | `sandbox:read` | [Read or follow the output of a sandbox](/docs/reference/api/sandboxes/#read-or-follow-the-output-of-a-sandbox) |
+| `GET` | `/v0/sandboxes/{id}/egress-log` | `sandbox:read` | [Read or follow the egress decisions of a sandbox](/docs/reference/api/sandboxes/#read-or-follow-the-egress-decisions-of-a-sandbox) |
+| `POST` | `/v0/sandboxes/{id}/secrets/{name}` | `secret:*` | [Grant a secret to a sandbox](/docs/reference/api/sandboxes/#grant-a-secret-to-a-sandbox) |
+| `DELETE` | `/v0/sandboxes/{id}/secrets/{name}` | `secret:*` | [Take a secret back from a sandbox](/docs/reference/api/sandboxes/#take-a-secret-back-from-a-sandbox) |
+| `PUT` | `/v0/sandboxes/{id}/policy` | `policy:*` | [Attach a policy to a sandbox](/docs/reference/api/sandboxes/#attach-a-policy-to-a-sandbox) |
+| `DELETE` | `/v0/sandboxes/{id}/policy` | `policy:*` | [Detach the policy of a sandbox](/docs/reference/api/sandboxes/#detach-the-policy-of-a-sandbox) |
+
+**Files**
+
+| Method | Path | Scope | Description |
+| --- | --- | --- | --- |
+| `PUT` | `/v0/sandboxes/{id}/files` | `exec` | [Copy a file into a running sandbox](/docs/reference/api/files/#copy-a-file-into-a-running-sandbox) |
+| `GET` | `/v0/sandboxes/{id}/files` | `exec` | [Copy a file out of a running sandbox](/docs/reference/api/files/#copy-a-file-out-of-a-running-sandbox) |
+| `HEAD` | `/v0/sandboxes/{id}/files` | `exec` | [Stat a path](/docs/reference/api/files/#stat-a-path) |
+| `DELETE` | `/v0/sandboxes/{id}/files` | `exec` | [Delete a path](/docs/reference/api/files/#delete-a-path) |
+| `GET` | `/v0/sandboxes/{id}/ls` | `exec` | [List a directory](/docs/reference/api/files/#list-a-directory) |
+| `POST` | `/v0/sandboxes/{id}/mkdir` | `exec` | [Make a directory](/docs/reference/api/files/#make-a-directory) |
+| `PUT` | `/v0/sandboxes/{id}/archive` | `exec` | [Copy a directory into a running sandbox](/docs/reference/api/files/#copy-a-directory-into-a-running-sandbox) |
+| `GET` | `/v0/sandboxes/{id}/archive` | `exec` | [Copy a directory out of a running sandbox](/docs/reference/api/files/#copy-a-directory-out-of-a-running-sandbox) |
+
+**Exec**
+
+| Method | Path | Scope | Description |
+| --- | --- | --- | --- |
+| `POST` | `/v0/sandboxes/{id}/exec` | `exec` | [Execute a command in a running sandbox](/docs/reference/api/exec/#execute-a-command-in-a-running-sandbox) |
+| `GET` | `/v0/sandboxes/{id}/exec` | `exec` | [List the execs of a sandbox](/docs/reference/api/exec/#list-the-execs-of-a-sandbox) |
+| `GET` | `/v0/sandboxes/{id}/exec/{exec}` | `exec` | [Read, wait for or attach to an exec](/docs/reference/api/exec/#read-wait-for-or-attach-to-an-exec) |
+| `POST` | `/v0/sandboxes/{id}/exec/{exec}/kill` | `exec` | [Send a signal to a running exec](/docs/reference/api/exec/#send-a-signal-to-a-running-exec) |
+| `DELETE` | `/v0/sandboxes/{id}/exec/{exec}` | `exec` | [Forget an exec that ended](/docs/reference/api/exec/#forget-an-exec-that-ended) |
+| `POST` | `/v0/sandboxes/{id}/exec/{exec}/resize` | `exec` | [Resize the terminal of an exec](/docs/reference/api/exec/#resize-the-terminal-of-an-exec) |
+
+**Snapshots**
+
+| Method | Path | Scope | Description |
+| --- | --- | --- | --- |
+| `POST` | `/v0/snapshots` | `sandbox:write` | [Snapshot a sandbox](/docs/reference/api/snapshots/#snapshot-a-sandbox) |
+| `GET` | `/v0/snapshots` | `sandbox:read` | [List snapshots](/docs/reference/api/snapshots/#list-snapshots) |
+| `GET` | `/v0/snapshots/{ref}` | `sandbox:read` | [Read a snapshot](/docs/reference/api/snapshots/#read-a-snapshot) |
+| `DELETE` | `/v0/snapshots/{ref}` | `sandbox:delete` | [Remove a snapshot](/docs/reference/api/snapshots/#remove-a-snapshot) |
+
+**Policies**
+
+| Method | Path | Scope | Description |
+| --- | --- | --- | --- |
+| `GET` | `/v0/policies` | `policy:*` | [List policies](/docs/reference/api/policies/#list-policies) |
+| `GET` | `/v0/policies/{name}` | `policy:*` | [Read a policy](/docs/reference/api/policies/#read-a-policy) |
+| `PUT` | `/v0/policies/{name}` | `policy:*` | [Create or replace a policy](/docs/reference/api/policies/#create-or-replace-a-policy) |
+| `DELETE` | `/v0/policies/{name}` | `policy:*` | [Remove a policy](/docs/reference/api/policies/#remove-a-policy) |
+
+**Secrets**
+
+| Method | Path | Scope | Description |
+| --- | --- | --- | --- |
+| `GET` | `/v0/secrets` | `secret:*` | [List secrets, never their values](/docs/reference/api/secrets/#list-secrets-never-their-values) |
+| `PUT` | `/v0/secrets/{name}` | `secret:*` | [Create or rotate a secret](/docs/reference/api/secrets/#create-or-rotate-a-secret) |
+| `DELETE` | `/v0/secrets/{name}` | `secret:*` | [Remove a secret](/docs/reference/api/secrets/#remove-a-secret) |
+
+**Meta**
+
+| Method | Path | Scope | Description |
+| --- | --- | --- | --- |
+| `GET` | `/v0/version` | any token | [Read the daemon and API versions](/docs/reference/api/meta/#read-the-daemon-and-api-versions) |
+| `GET` | `/v0/capabilities` | any token | [List the lifecycle verbs and whether this server supports each](/docs/reference/api/meta/#list-the-lifecycle-verbs-and-whether-this-server-supports-each) |
+| `GET` | `/v0/scopes` | any token | [List the scopes a token can carry](/docs/reference/api/meta/#list-the-scopes-a-token-can-carry) |
+
+**App**
+
+| Method | Path | Scope | Description |
+| --- | --- | --- | --- |
+| `GET` | `/v0/sandboxes/{id}/attach` | `sandbox:read` | [Wait for or attach to the app of a run](/docs/reference/api/app/#wait-for-or-attach-to-the-app-of-a-run) |
+| `POST` | `/v0/sandboxes/{id}/app/stop` | `sandbox:write` | [Stop the app of a run](/docs/reference/api/app/#stop-the-app-of-a-run) |
+
+## Objects
+
+### Error
+
+| Field | Type | Required |
+| --- | --- | --- |
+| `error` | [ErrorObject](#errorobject) | yes |
+
+### ErrorObject
+
+| Field | Type | Required | Description |
+| --- | --- | --- | --- |
+| `code` | string | yes | What a program matches on: invalid\_request, body\_too\_large, not\_found, sandbox\_not\_running, sandbox\_not\_stopped, sandbox\_not\_paused, sandbox\_live, sandbox\_failed, no\_checkpoint, unsupported, in\_use, name\_taken, exec\_exited, exec\_running, exec\_limit, no\_app, app\_ended, unauthorized, forbidden, timeout, command\_not\_started or internal. A later daemon may add a code, so a client must take one it does not know. |
+| `exit_code` | integer (int64) | no |  |
+| `holders` | array of string | no |  |
+| `message` | string | yes |  |
+
+{/* make openapi writes everything above this line. Write by hand below it. */}
