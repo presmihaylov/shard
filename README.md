@@ -167,7 +167,7 @@ in those directories, and [the release guide](docs/release.md) explains how an S
 - [Daemon, REST API, and remote access](docs/daemon.md)
 - [Provider capabilities and limits](docs/provider.md)
 - [Mac setup](docs/mac.md) and [the Mac provider](docs/provider-vz.md)
-- [Lifecycle](docs/state-machine.md), [files](docs/files.md), [secrets](docs/secrets.md), and [egress](docs/egress.md)
+- [Lifecycle](docs/state-machine.md), [files](https://useshards.com/docs/guides/files/), [secrets](docs/secrets.md), and [egress](docs/egress.md)
 
 ## Status and contributions
 
