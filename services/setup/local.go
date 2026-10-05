@@ -132,7 +132,7 @@ func (s *Setup) review(ctx context.Context, l Local) error {
 	if l.StartAtBoot {
 		startup = "Yes"
 	}
-	lines := []string{"Ready to set up Shard", "", "Provider:          " + title, "Automatic startup: " + startup, "", "Setup will:"}
+	lines := []string{"", "Ready to set up Shard", "", "Provider:          " + title, "Automatic startup: " + startup, "", "Setup will:"}
 	if names := missingTools(s.Host, l.Provider).names(); len(names) > 0 {
 		lines = append(lines, fmt.Sprintf("  Install the tools required by %s: %s.", title, strings.Join(names, ", ")))
 	}
@@ -178,22 +178,23 @@ func startupLine(h Host, l Local) string {
 	return "  Configure and start a systemd service."
 }
 
-// localDone closes a local setup with what to run next; on Linux the socket belongs to root, so local commands need sudo.
+// localDone closes a local setup with what to run next; on Linux the API socket belongs to root, so local commands need sudo.
 func localDone(h Host, l Local) []string {
 	sudo := ""
-	lines := []string{""}
 	if h.OS == "linux" {
 		sudo = "sudo "
 	}
-	if l.StartAtBoot {
-		lines = append(lines, "Shard is set up, and the daemon is running.")
-	}
+	lines := []string{"", "Shard is set up, and the daemon is running.", ""}
 	if !l.StartAtBoot {
-		lines = append(lines, "Shard is set up.", "Start the daemon with:", "  "+sudo+"shard daemon --provider "+l.Provider, "")
+		lines = []string{"", "Shard is set up.", ""}
 	}
 	if sudo != "" {
-		lines = append(lines, "Local commands run with sudo, for example `sudo shard ls`.")
+		lines = append(lines, "Local commands run with sudo, because the API socket belongs to root.", "")
+	}
+	lines = append(lines, "Next steps:", "")
+	if !l.StartAtBoot {
+		lines = append(lines, "  Start the daemon, and run the next steps in another terminal:", "    "+sudo+"shard daemon --provider "+l.Provider, "")
 	}
 
-	return lines
+	return append(lines, nextSteps(sudo)...)
 }

@@ -15,7 +15,6 @@ import (
 	"net/http"
 	"net/url"
 	"path/filepath"
-	"runtime"
 	"time"
 
 	"github.com/presmihaylov/shard/models"
@@ -27,7 +26,7 @@ import (
 // DefaultTimeout bounds one call that answers in full. A call that streams passes zero.
 const DefaultTimeout = 30 * time.Second
 
-// DefaultRoot is where shard keeps everything on the box, and the one root the systemd unit serves.
+// DefaultRoot is where shard keeps everything on the box, and the one root a setup service serves.
 const DefaultRoot = "/var/lib/shard"
 
 // Client talks to one daemon. It is safe for concurrent use.
@@ -42,8 +41,8 @@ type Client struct {
 	authority string
 	// token is the bearer token a front checks. The socket takes none: its mode is the check.
 	token string
-	// hint is what a connect error tells the operator to check for this target.
-	hint string
+	// hint is what a connect error tells the operator to check for this target, read only once a dial fails.
+	hint func() (string, error)
 	// refused is what a 401 says: which key the server refused and how to replace it, never the key.
 	refused string
 	http    *http.Client
@@ -72,7 +71,7 @@ type ListResult struct {
 // ConnectError is a socket or a server nothing answers on. Its text is the one line the operator needs.
 type ConnectError struct {
 	Path string
-	// Hint is what to check: the unit serves the default root only, so any other root names its own daemon.
+	// Hint is the question and the command that answers it, as is it running? systemctl status shard.
 	Hint string
 	Err  error
 	// Remote is a server over the network, whose Hint is the cause and the fix: there is no local daemon to check.
@@ -88,27 +87,22 @@ func (e *ConnectError) Error() string {
 		return fmt.Sprintf("cannot connect to shard daemon at %s: permission denied; run the command again with sudo", e.Path)
 	}
 
-	return fmt.Sprintf("cannot connect to shard daemon at %s: is it running? %s", e.Path, e.Hint)
+	return fmt.Sprintf("cannot connect to shard daemon at %s: %s", e.Path, e.Hint)
 }
 
 func (e *ConnectError) Unwrap() error { return e.Err }
 
-// hint is what to check when nothing answers under root: the unit, or the daemon someone starts by hand elsewhere.
-func hint(root string) string {
-	return hintFor(root, runtime.GOOS)
+// rootHint is the daemon of root, which someone starts by hand unless setup installed a service for the default root.
+func rootHint(root string) string {
+	return "is it running? shard --root " + root + " daemon"
 }
 
-// hintFor names the unit of the host: a Mac has no systemctl, and its default root is the LaunchDaemon's.
-func hintFor(root, goos string) string {
-	if root != DefaultRoot {
-		return "shard --root " + root + " daemon"
-	}
-	if goos == "darwin" {
-		return "launchctl print system/shard.daemon"
-	}
-
-	return "systemctl status shard"
+func fixed(hint string) func() (string, error) {
+	return func() (string, error) { return hint, nil }
 }
+
+// SetHint replaces the connect hint with one read only once a dial fails, as the CLI reads the host's setup for the default root.
+func (c *Client) SetHint(hint func() (string, error)) { c.hint = hint }
 
 // NotFoundError is the daemon's 404: nothing holds the reference.
 type NotFoundError struct {
@@ -132,7 +126,7 @@ func (e *APIError) Error() string { return e.Message }
 func New(root string) *Client {
 	socket := filepath.Join(root, api.SocketFile)
 
-	c := &Client{target: socket, authority: "shard", hint: hint(root), Timeout: DefaultTimeout}
+	c := &Client{target: socket, authority: "shard", hint: fixed(rootHint(root)), Timeout: DefaultTimeout}
 	c.dialer = func(ctx context.Context) (net.Conn, error) {
 		return (&net.Dialer{}).DialContext(ctx, "unix", socket)
 	}
@@ -247,7 +241,12 @@ func (c *Client) dial(ctx context.Context) (net.Conn, error) {
 		return nil, &ConnectError{Path: Redacted(c.target), Hint: hint, Err: err, Remote: true}
 	}
 	if err != nil {
-		return nil, &ConnectError{Path: c.target, Hint: c.hint, Err: err}
+		hint, hintErr := c.hint()
+		if hintErr != nil {
+			return nil, &ConnectError{Path: c.target, Hint: "cannot tell how this host runs it: " + hintErr.Error(), Err: errors.Join(err, hintErr)}
+		}
+
+		return nil, &ConnectError{Path: c.target, Hint: hint, Err: err}
 	}
 
 	return conn, nil

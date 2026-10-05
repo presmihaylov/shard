@@ -20,7 +20,7 @@ import (
 	"github.com/presmihaylov/shard/services/client"
 )
 
-// DefaultRoot is where shard keeps everything on the box. The client owns it: its connect hint names the unit there only.
+// DefaultRoot is where shard keeps everything on the box, and the one root a connect hint names the host's setup for.
 const DefaultRoot = client.DefaultRoot
 
 // DefaultTimeout bounds one pull inside the daemon. Without it a registry that accepts and stalls pins it.
@@ -319,7 +319,7 @@ func (a App) run(ctx context.Context, args []string) error {
 		return fmt.Errorf("unknown command %q; run shard help", args[0])
 	}
 
-	return a.dispatch(ctx, cmd, args[1:])
+	return a.located(a.dispatch(ctx, cmd, args[1:]))
 }
 
 // dispatch runs a verb, or the subcommand its first argument names; a noun with none names the ones it takes.
@@ -461,6 +461,12 @@ func (a App) client() (*client.Client, error) {
 	}
 
 	c := client.New(a.Root)
+	if a.Root == DefaultRoot {
+		c.SetHint(func() (string, error) {
+			daemon, err := a.localDaemon()
+			return daemon.Hint, err
+		})
+	}
 	if a.clientTimeout != 0 {
 		c.Timeout = a.clientTimeout
 	}

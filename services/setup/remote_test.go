@@ -73,7 +73,7 @@ func testHost(t *testing.T, vars map[string]string) (Host, string) {
 
 	env := map[string]string{client.ConfigHomeEnv: t.TempDir()}
 	maps.Copy(env, vars)
-	host := Host{Env: func(name string) string { return env[name] }}
+	host := Host{Root: t.TempDir(), Env: func(name string) string { return env[name] }}
 	path, err := client.ConfigPath(host.Env)
 	if err != nil {
 		t.Fatalf("ConfigPath: %v", err)
@@ -626,14 +626,16 @@ func TestReplaceKeepsTheOldConnectionUntilTheNewOneIsSaved(t *testing.T) {
 	}
 }
 
-// Remove deletes the saved connection, and names SHARD_REMOTE when it still beats the local daemon. (SHARD-657)
+// Remove deletes the saved connection, names SHARD_REMOTE when it still beats the local daemon, and shard setup when nothing local is set up. (SHARD-657, SHARD-662)
 func TestRemoveDeletesTheSavedConnection(t *testing.T) {
 	for _, tc := range []struct {
-		name string
-		vars map[string]string
-		want []string
+		name      string
+		vars      map[string]string
+		installed bool
+		want      []string
 	}{
-		{name: "local", want: []string{"✓ Connection removed", "", "Shard commands now use the local daemon."}},
+		{name: "local", installed: true, want: []string{"✓ Connection removed", "", "Shard commands now use the local daemon."}},
+		{name: "nothing local", want: []string{"✓ Connection removed", "", "Shard commands now use this machine, which is not set up to run sandboxes.", "Run shard setup again to set it up."}},
 		{name: "SHARD_REMOTE", vars: map[string]string{client.RemoteEnv: "https://other.example.com"}, want: []string{
 			"✓ Connection removed", "", "SHARD_REMOTE is still set to https://other.example.com, and it overrides the local default.", "Unset it to use the local daemon.",
 		}},
@@ -641,6 +643,9 @@ func TestRemoveDeletesTheSavedConnection(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			host, path := testHost(t, tc.vars)
 			saveConnection(t, path, client.Config{Remote: "https://shard.example.com", APIKey: testKey})
+			if tc.installed {
+				put(t, host, shardBinary, nil)
+			}
 			ui := &fakeUI{selects: map[Question]string{AskSaved: "remove"}}
 
 			if err := (&Setup{Host: host, UI: ui}).remote(t.Context()); err != nil {
@@ -701,6 +706,7 @@ func TestSwitchToLocalRemovesTheConnectionOnlyAtTheEnd(t *testing.T) {
 				t.Fatalf("the connection changed before local setup finished: %v", got)
 			}
 
+			put(t, host, shardBinary, nil)
 			if err := finish(t.Context()); err != nil {
 				t.Fatalf("finish: %v", err)
 			}

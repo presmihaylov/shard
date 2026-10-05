@@ -147,7 +147,7 @@ func (t *Terminal) Select(ctx context.Context, title string, options []Option) (
 		}
 		switch key {
 		case "\r", "\n":
-			return at, nil
+			return at, t.answered("\r\n")
 		case string(rune(ctrlC)):
 			return 0, ErrInterrupted
 		case keyUp, "k":
@@ -246,11 +246,11 @@ func (t *Terminal) Confirm(ctx context.Context, question string, yes bool) (bool
 		}
 		switch strings.ToLower(strings.TrimSpace(answer)) {
 		case "":
-			return yes, nil
+			return yes, t.answered("\n")
 		case "y", "yes":
-			return true, nil
+			return true, t.answered("\n")
 		case "n", "no":
-			return false, nil
+			return false, t.answered("\n")
 		}
 	}
 }
@@ -301,9 +301,11 @@ func (t *Terminal) line(ctx context.Context, prompt, initial string, masked bool
 		echo := ""
 		switch {
 		case b == '\r' || b == '\n':
-			_, err := io.WriteString(t.out, "\r\n")
+			if _, err := io.WriteString(t.out, "\r\n"); err != nil {
+				return "", wrapWrite(err)
+			}
 
-			return string(value), wrapWrite(err)
+			return string(value), t.answered("\r\n")
 		case b == ctrlC:
 			return "", ErrInterrupted
 		case b == ctrlD && len(value) == 0:
@@ -329,6 +331,13 @@ func (t *Terminal) line(ctx context.Context, prompt, initial string, masked bool
 			return "", wrapWrite(err)
 		}
 	}
+}
+
+// answered leaves a blank line under an answered question, so the next block stands apart from it.
+func (t *Terminal) answered(newline string) error {
+	_, err := io.WriteString(t.out, newline)
+
+	return wrapWrite(err)
 }
 
 // shown is what the screen shows of one typed byte: the byte, or one dot per character so the dots count runes and not bytes.

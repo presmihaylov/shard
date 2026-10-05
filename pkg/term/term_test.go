@@ -150,7 +150,7 @@ func TestTextStartsAsTheInitialLine(t *testing.T) {
 	if err != nil || got != "https://a.example" {
 		t.Fatalf("Text = %q, %v; want the initial line", got, err)
 	}
-	if want := "URL\r\n> https://a.example\r\n"; out.String() != want {
+	if want := "URL\r\n> https://a.example\r\n\r\n"; out.String() != want {
 		t.Errorf("drew %q, want %q", out.String(), want)
 	}
 }
@@ -191,5 +191,28 @@ func TestARedrawMovesUpPastEveryRowAWrappedLineTook(t *testing.T) {
 	}
 	if !strings.HasPrefix(out.String(), "\r\x1b[4A") {
 		t.Errorf("the redraw began %q, want it to move up 4 rows", out.String())
+	}
+}
+
+func TestAnAnsweredQuestionLeavesABlankLine(t *testing.T) {
+	ask := map[string]func(*Terminal) error{
+		"select": func(term *Terminal) error {
+			_, err := term.Select(t.Context(), "pick", []Option{{Name: "a", Label: "A"}})
+			return err
+		},
+		"confirm": func(term *Terminal) error { _, err := term.Confirm(t.Context(), "sure?", true); return err },
+		"text":    func(term *Terminal) error { _, err := term.Text(t.Context(), "url", ""); return err },
+		"secret":  func(term *Terminal) error { _, err := term.Secret(t.Context(), "key"); return err },
+	}
+	typed := map[string]string{"select": "\r", "confirm": "\n", "text": "u\r", "secret": "k\r"}
+	ends := map[string]string{"select": "\r\n\r\n", "confirm": "[Y/n] \n", "text": "u\r\n\r\n", "secret": "•\r\n\r\n"}
+	for name, question := range ask {
+		var out bytes.Buffer
+		if err := question(keyed(&out, typed[name])); err != nil {
+			t.Fatalf("%s: %v", name, err)
+		}
+		if !strings.HasSuffix(out.String(), ends[name]) {
+			t.Errorf("%s printed %q, want it to end %q", name, out.String(), ends[name])
+		}
 	}
 }

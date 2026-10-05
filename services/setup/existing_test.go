@@ -9,8 +9,11 @@ import (
 	"slices"
 	"strings"
 	"testing"
+	"time"
 
+	"github.com/presmihaylov/shard/pkg/vzshim"
 	"github.com/presmihaylov/shard/services/client"
+	"github.com/presmihaylov/shard/services/kernel"
 )
 
 // fakeHost runs file commands for real under a temp root and answers the service managers from canned output.
@@ -22,6 +25,10 @@ type fakeHost struct {
 	launchd  string
 	// launchdErr makes launchctl print fail with launchd as its output.
 	launchdErr bool
+	// starting is how many state reads still find the daemon coming up.
+	starting int
+	// rebuilt are the files daemon status writes, as a provider build does.
+	rebuilt []string
 	// listeners is what ss prints for the proxy ports, and tables what nft list tables prints.
 	listeners string
 	tables    string
@@ -54,9 +61,18 @@ func (f *fakeHost) run(ctx context.Context, name string, args ...string) ([]byte
 	f.calls = append(f.calls, strings.Join(append([]string{name}, args...), " "))
 
 	switch name {
+	case shardBinary:
+		for _, p := range f.rebuilt {
+			f.write(f.t, p, "rebuilt")
+		}
+		return nil, nil
 	case "systemctl":
 		if args[0] != "is-active" {
 			return nil, nil
+		}
+		if f.starting > 0 {
+			f.starting--
+			return []byte("activating\n"), errors.New("exit status 3")
 		}
 		if f.isActive == "active" {
 			return []byte("active\n"), nil
@@ -65,6 +81,10 @@ func (f *fakeHost) run(ctx context.Context, name string, args ...string) ([]byte
 	case "launchctl":
 		if args[0] == "print" && f.launchdErr {
 			return []byte(f.launchd), errors.New("exit status 113")
+		}
+		if args[0] == "print" && f.starting > 0 {
+			f.starting--
+			return []byte("state = spawn scheduled\n"), nil
 		}
 		return []byte(f.launchd), nil
 	case "ss":
@@ -76,7 +96,7 @@ func (f *fakeHost) run(ctx context.Context, name string, args ...string) ([]byte
 		return nil, nil
 	case "ip":
 		return nil, nil
-	case "mkdir", "install", "mv", "rm", "rmdir", "find":
+	case "mkdir", "install", "mv", "rm", "rmdir", "find", "sh":
 		return exec.CommandContext(ctx, name, args...).CombinedOutput()
 	}
 	if filepath.IsAbs(name) {
@@ -115,13 +135,18 @@ func (f *fakeHost) read(t *testing.T, path string) (string, bool) {
 	return string(data), true
 }
 
-// installed writes the files of a setup install, the manifest that names them, and the shard the user runs.
+// installed writes the files of a setup install, the manifest that names them, the provider's tools and the shard the user runs.
 func (f *fakeHost) installed(t *testing.T, m Manifest) {
 	t.Helper()
 	f.write(t, "/home/u/.local/bin/shard", "old cli")
 	for _, o := range m.Files {
 		if o.Kind != KindData {
 			f.write(t, o.Path, "old "+filepath.Base(o.Path))
+		}
+	}
+	for _, tl := range toolsFor(f.host(nil), m.Provider) {
+		if _, ok := lookPath(f.host(nil), tl.Name); !ok {
+			f.write(t, "/usr/bin/"+tl.Name, "#!/bin/sh\n")
 		}
 	}
 	if err := saveManifest(t.Context(), f.host(nil), m); err != nil {
@@ -331,6 +356,154 @@ func TestRepairShowsTheProblemsBeforeItAsks(t *testing.T) {
 	said(t, ui, "/usr/local/bin/shard-init is missing.", "The background service is not running.")
 }
 
+func TestRepairFindsADeletedVMShimAndKernel(t *testing.T) {
+	f := newFakeHost(t)
+	h := f.host(nil)
+	h.OS, h.Arch, h.Env = "darwin", "arm64", func(string) string { return "u" }
+	m := Manifest{Version: "v0.1.0", Provider: VZ, StartAtBoot: true, Files: []Owned{
+		{Path: "/usr/local/bin/shard", Kind: KindBinary},
+		{Path: launchdPlist, Kind: KindService},
+	}}
+	f.installed(t, m)
+	f.write(t, "/var/lib/shard/vz/shard-init", "init")
+	k, err := kernel.Path(DataDir, "arm64")
+	if err != nil {
+		t.Fatal(err)
+	}
+	ui := confirming(false)
+
+	if err := (&Setup{Host: h, UI: ui}).repair(t.Context(), m, ServiceActive); !errors.Is(err, ErrDeclined) {
+		t.Fatalf("repair = %v, want ErrDeclined", err)
+	}
+	said(t, ui, "/var/lib/shard/vz/shard-vz-shim is missing.", k+" is missing.")
+	if slices.Contains(ui.printed, "  /var/lib/shard/vz/shard-init is missing.") {
+		t.Errorf("repair reports the guest init it has: %q", ui.printed)
+	}
+	restart, verify := slices.Index(ui.printed, "  Restart the daemon"), slices.Index(ui.printed, "  Verify the daemon connection")
+	if restart < 0 || verify < restart {
+		t.Fatalf("a running daemon is not restarted before the verify: %q", ui.printed)
+	}
+	if restore := slices.Index(ui.printed, "  Restore the provider's files"); restore != verify+1 {
+		t.Fatalf("the files are not restored right after the verify: %q", ui.printed)
+	}
+}
+
+func TestRepairRestoresTheRuntimeFiles(t *testing.T) {
+	k, err := kernel.Path(DataDir, "arm64")
+	if err != nil {
+		t.Fatal(err)
+	}
+	files := append(vzshim.Paths(filepath.Join(DataDir, vzshim.Dir)), k)
+	for _, c := range []struct {
+		name    string
+		rebuilt []string
+		want    string
+	}{
+		{name: "all back", rebuilt: files},
+		{name: "kernel still gone", rebuilt: files[:len(files)-1], want: "The daemon did not put back " + k + "."},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			f := newFakeHost(t)
+			f.rebuilt = c.rebuilt
+			h := f.host(nil)
+			h.OS, h.Arch = "darwin", "arm64"
+
+			err := (&Setup{Host: h, UI: &fakeUI{}}).restoreRuntime(t.Context(), VZ)
+			if !f.called(shardBinary + " --remote  daemon status") {
+				t.Fatalf("calls = %v, want a daemon status that builds the provider", f.calls)
+			}
+			if c.want == "" && err != nil {
+				t.Fatalf("restore = %v", err)
+			}
+			if c.want != "" && (err == nil || !strings.Contains(err.Error(), c.want)) {
+				t.Fatalf("restore = %v, want %q", err, c.want)
+			}
+		})
+	}
+}
+
+func TestRestartServiceWaitsForTheDaemon(t *testing.T) {
+	wait, poll := restartWait, verifyPoll
+	restartWait, verifyPoll = 50*time.Millisecond, time.Millisecond
+	t.Cleanup(func() { restartWait, verifyPoll = wait, poll })
+	for _, c := range []struct {
+		name, os, restart string
+		starting          int
+		// up is the state the daemon settles in once it stops starting.
+		up   bool
+		want string
+	}{
+		{name: "systemd", os: "linux", restart: "systemctl restart shard", starting: 3, up: true},
+		{name: "launchd", os: "darwin", restart: "launchctl kickstart -k " + launchdLabel, starting: 3, up: true},
+		{name: "systemd never up", os: "linux", restart: "systemctl restart shard", want: "the daemon is inactive 50ms after the restart"},
+		{name: "launchd never up", os: "darwin", restart: "launchctl kickstart -k " + launchdLabel, want: "the daemon is inactive 50ms after the restart"},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			f := newFakeHost(t)
+			f.starting = c.starting
+			f.isActive, f.launchd = "failed", "state = not running"
+			if c.up {
+				f.isActive, f.launchd = "active", "state = running"
+			}
+			h := f.host(nil)
+			h.OS = c.os
+
+			err := restartService(t.Context(), h, Manifest{StartAtBoot: true})
+			if !f.called(c.restart) {
+				t.Fatalf("calls = %v, want %q", f.calls, c.restart)
+			}
+			if c.want == "" && err != nil {
+				t.Fatalf("restart = %v", err)
+			}
+			if c.want != "" && (err == nil || err.Error() != c.want) {
+				t.Fatalf("restart = %v, want %q", err, c.want)
+			}
+			if f.starting != 0 {
+				t.Fatalf("restart returned with %d state reads left of the start", f.starting)
+			}
+		})
+	}
+}
+
+func TestRepairFindsADeletedTool(t *testing.T) {
+	k, err := kernel.Path(DataDir, "amd64")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, c := range []struct {
+		provider, tool string
+		// restart is the runtime file the daemon puts back once it is restarted, if the provider keeps one.
+		restart string
+	}{
+		{provider: GVisor, tool: "runsc"},
+		{provider: Sysbox, tool: "sysbox-runc"},
+		{provider: Runc, tool: "runc"},
+		{provider: Firecracker, tool: "jailer", restart: k},
+	} {
+		t.Run(c.provider, func(t *testing.T) {
+			f := newFakeHost(t)
+			m := linuxInstall("v0.1.0")
+			m.Provider = c.provider
+			f.installed(t, m)
+			if err := os.Remove(filepath.Join(f.root, "/usr/bin", c.tool)); err != nil {
+				t.Fatalf("remove: %v", err)
+			}
+			ui := confirming(false)
+
+			if err := (&Setup{Host: f.host(nil), UI: ui}).repair(t.Context(), m, ServiceActive); !errors.Is(err, ErrDeclined) {
+				t.Fatalf("repair = %v, want ErrDeclined", err)
+			}
+			said(t, ui, "  "+c.tool+" is missing.", c.restart)
+			if restarts := slices.Contains(ui.printed, "  Restart the daemon"); restarts != (c.restart != "") {
+				t.Errorf("restart the daemon = %t, want %t: %q", restarts, c.restart != "", ui.printed)
+			}
+			if restores := slices.Contains(ui.printed, "  Restore the provider's files"); restores != (c.restart != "") {
+				t.Errorf("restore the provider's files = %t, want %t: %q", restores, c.restart != "", ui.printed)
+			}
+		})
+	}
+}
+
 func TestUpgradeVerifiesBeforeItReplaces(t *testing.T) {
 	rs := newReleaseServer(t)
 	rs.add("v0.1.0", false, false, true, nil)
@@ -445,28 +618,37 @@ func TestUpgradeLeavesAnInactiveServiceStopped(t *testing.T) {
 // The commands the refusal names reach the daemon: on Linux its socket is root's, so they carry sudo. (SHARD-675)
 func TestUninstallRefusesWhileASandboxRemains(t *testing.T) {
 	for _, tt := range []struct {
+		name string
 		os   string
+		ids  []string
+		left string
 		want []string
 	}{
-		{"linux", []string{"    sudo shard list --all", "    sudo shard remove --force <name>"}},
-		{"darwin", []string{"    shard list --all", "    shard remove --force <name>"}},
+		{"one on linux", "linux", []string{"sb_1"}, "1 sandbox left", []string{
+			"Shard has 1 sandbox on this machine.", "Remove it before you uninstall Shard:",
+			"    sudo shard list --all", "    sudo shard remove --force <name>",
+		}},
+		{"two on darwin", "darwin", []string{"sb_1", "sb_2"}, "2 sandboxes left", []string{
+			"Shard has 2 sandboxes on this machine.", "Remove them before you uninstall Shard:",
+			"    shard list --all", "    shard remove --force <name>",
+		}},
 	} {
-		t.Run(tt.os, func(t *testing.T) {
+		t.Run(tt.name, func(t *testing.T) {
 			f := newFakeHost(t)
 			m := linuxInstall("v0.1.0")
 			f.installed(t, m)
-			f.write(t, "/var/lib/shard/sandboxes/sb_1/sandbox.json", "{}")
-			f.write(t, "/var/lib/shard/sandboxes/sb_2/sandbox.json", "{}")
+			for _, id := range tt.ids {
+				f.write(t, "/var/lib/shard/sandboxes/"+id+"/sandbox.json", "{}")
+			}
 			f.write(t, "/var/lib/shard/images/sb_3/sandbox.json", "{}")
 			ui := &fakeUI{}
 			h := f.host(nil)
 			h.OS = tt.os
 
 			err := (&Setup{Host: h, UI: ui}).uninstall(t.Context(), m)
-			if err == nil || !strings.Contains(err.Error(), "2 sandboxes left") {
-				t.Fatalf("uninstall = %v, want 2 sandboxes named", err)
+			if err == nil || !strings.Contains(err.Error(), tt.left) {
+				t.Fatalf("uninstall = %v, want %q", err, tt.left)
 			}
-			said(t, ui, "Shard has 2 sandboxes on this machine.")
 			for _, line := range tt.want {
 				if !slices.Contains(ui.printed, line) {
 					t.Errorf("output %q lacks the line %q", ui.printed, line)
