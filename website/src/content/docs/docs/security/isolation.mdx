@@ -53,7 +53,7 @@ Compare the answer with `uname -r` on the server. On gVisor, the sandbox reports
 
 ## The five providers
 
-The provider is the boundary between a sandbox and the host. One server runs one provider for every sandbox on it.
+The provider is the boundary between a sandbox and the host. A server runs one provider, and every sandbox on it uses that provider.
 
 | Provider | Between the sandbox and the host kernel | Tenants on one host | Exit code |
 | --- | --- | --- | --- |
@@ -63,60 +63,60 @@ The provider is the boundary between a sandbox and the host. One server runs one
 | `sysbox` | a Linux user namespace, with its own `/proc` and `/sys` | one | reported by the sandbox |
 | `runc` | nothing: namespaces and cgroups on the host kernel | trusted code only | reported by the sandbox |
 
-The exit code is the `exit_status` that `shard inspect` reports for the main command. On Sysbox and runc, the sandbox reports it, so the host cannot verify it.
+The exit code is the `exit_status` that `shard inspect` reports for the main command. On Sysbox and runc, the sandbox itself reports it, so the host cannot verify it.
 
 To see the provider of a server, run `shard info` or `shard daemon status` on the server.
 
 ## gVisor
 
-gVisor puts a kernel that runs in user space, the sentry, between the sandbox and the host kernel. The sandbox starts with runc's default capabilities and can never gain more, and the sentry enforces them.
+gVisor puts a kernel that runs in user space, called the sentry, between the sandbox and the host kernel. The sandbox starts with runc's default capabilities and can never gain more, and the sentry enforces those capabilities.
 
-This is the default on a Linux host without `/dev/kvm`. Many tenants can share one host. The cost is speed: file-heavy work, such as `npm install` or `git clone`, runs slower than on the other providers. Docker does not run inside a gVisor sandbox.
+gVisor is the default on a Linux host without `/dev/kvm`, and many tenants can share one host. The trade-off is speed: file-heavy work such as `npm install` or `git clone` runs slower than on the other providers. Docker does not run inside a gVisor sandbox.
 
 ## Firecracker
 
-Each sandbox is a microVM with its own kernel. The host needs `/dev/kvm`.
+Each sandbox is a microVM with its own kernel, and the host needs `/dev/kvm`.
 
-The daemon starts every virtual machine process through Firecracker's `jailer`, and never as root. Each process gets:
+The daemon starts every virtual machine process through Firecracker's `jailer` and never runs it as root. Each process gets:
 
-- a uid and a gid of its own, from `1879048192` to `2147352575`, a range clear of Sysbox, the `/etc/subuid` defaults and the systemd ranges
+- its own uid and gid, from `1879048192` to `2147352575`, a range that does not overlap Sysbox, the `/etc/subuid` defaults or the systemd ranges
 - new pid and mount namespaces, and a chroot into a directory of its own
 - no capabilities, and Firecracker's seccomp filter
 
-The virtual machine process shares no network namespace with the host. A process inside the virtual machine is not a host process, so a fork bomb stays inside the virtual machine and hits its memory bound.
+The virtual machine process does not share a network namespace with the host. Processes inside the virtual machine are not host processes, so a fork bomb stays inside the virtual machine and runs into its memory bound.
 
 Docker runs inside a Firecracker sandbox.
 
 ## vz
 
-Each sandbox is a virtual machine on Apple's Virtualization framework, with its own kernel. It needs an Apple silicon Mac. On a Mac, the daemon and every virtual machine run as your user, not root.
+Each sandbox is a virtual machine on Apple's Virtualization framework, with its own kernel. The vz provider needs an Apple silicon Mac. On a Mac, the daemon and every virtual machine run as your user, not as root.
 
-The virtual machine has no network bridge. Its one network device leads into a network stack inside the daemon. That stack judges every flow with the same rules as the Linux host, and a sandbox never sees another sandbox's traffic.
+The virtual machine has no network bridge. Its only network device connects to a network stack inside the daemon, which judges every flow with the same rules as the Linux host. A sandbox never sees another sandbox's traffic.
 
 Docker runs inside a vz sandbox.
 
 ## Sysbox
 
-Each sandbox runs in its own Linux user namespace, with its own view of `/proc` and `/sys`. Docker runs inside a Sysbox sandbox. A process in the sandbox is a host process, under a host uid that is not root. Root in the sandbox holds every capability inside its user namespace.
+Each sandbox runs in its own Linux user namespace, with its own view of `/proc` and `/sys`. Docker runs inside a Sysbox sandbox. A process in the sandbox is a host process that runs under a host uid other than root. Root in the sandbox has every capability inside its user namespace.
 
-**Caution: Sysbox sandboxes are not isolated from each other.** Every Sysbox sandbox maps to the same host uid range, `0 165536 65536`. A process that escapes one sandbox has the uid of the root of every other sandbox. Run one tenant per Sysbox host.
+**Caution: Sysbox sandboxes are not isolated from each other.** Every Sysbox sandbox maps to the same host uid range, `0 165536 65536`. A process that escapes one sandbox has the same uid as root in every other sandbox. Run one tenant per Sysbox host.
 
 shard never picks Sysbox for you. Only `shard daemon --provider sysbox`, or the records that a Sysbox daemon made, can select it.
 
 ## runc
 
-**Caution: runc isolates nothing.** The sandbox runs on the host kernel, with only namespaces and cgroups around it. Root in the sandbox is root on the host. Use runc only for code you trust, or on a host you can lose.
+**Caution: runc isolates nothing.** The sandbox runs on the host kernel, with only namespaces and cgroups around it. Root in the sandbox is root on the host. Use runc only for code you trust, or on a host you can afford to lose.
 
-A runc sandbox starts with runc's default capabilities and can never gain more. It runs under Docker's default seccomp profile. Where the host has the AppArmor module on, it also runs under Docker's AppArmor profile, loaded as `shard-default`. If the module is on and `apparmor_parser` is missing, the daemon refuses the runc provider rather than run sandboxes without a profile.
+A runc sandbox starts with runc's default capabilities and can never gain more. It runs under Docker's default seccomp profile and, where the host has the AppArmor module enabled, also under Docker's AppArmor profile, loaded as `shard-default`. If the module is enabled but `apparmor_parser` is missing, the daemon refuses the runc provider rather than run sandboxes without a profile.
 
 shard never picks runc for you. Only `shard daemon --provider runc`, or the records that a runc daemon made, can select it.
 
 ## What every provider shares
 
-- **shard-init is PID 1.** shard's own supervisor is PID 1 in every sandbox, and the main command runs as its child.
-- **The host decides the network.** Each sandbox has its own address and can send only from it. The host drops traffic to private networks and to other sandboxes. Rules live on the host, never in the sandbox. See [egress](https://github.com/presmihaylov/shard/blob/main/docs/egress.md).
-- **A process bound.** On gVisor, Sysbox and runc, a sandbox holds at most 4096 processes, so a fork bomb stops far below the host's limit. On Firecracker and vz, the bound is the virtual machine itself.
-- **A memory bound.** A sandbox past its memory bound ends as a whole, and the rest of the host keeps running.
+- shard's own supervisor, shard-init, is PID 1 in every sandbox, and the main command runs as its child.
+- The host decides the network. Each sandbox has its own address and can send traffic only from it. The host drops traffic to private networks and to other sandboxes, and the rules live on the host, never in the sandbox. See [egress](https://github.com/presmihaylov/shard/blob/main/docs/egress.md).
+- On gVisor, Sysbox and runc, a sandbox can hold at most 4096 processes, so a fork bomb stops far below the host's limit. On Firecracker and vz, the virtual machine itself is the bound.
+- A sandbox that goes past its memory bound ends as a whole, and the rest of the host keeps running.
 
 ## Which provider for which code
 
