@@ -45,3 +45,14 @@ func TestASignalThroughAnEarlierHoldersTokenReachesNobody(t *testing.T) {
 		t.Fatal("the live holder of the pid was hit")
 	}
 }
+
+func TestExitedSaysAnEarlierHoldersTokenIsGone(t *testing.T) {
+	requirePin(t)
+	pid, _ := child(t)
+	p := pinned(t, pid)
+	p.handle.token[pidVersion]--
+
+	if done, err := p.Exited(); err != nil || !done {
+		t.Fatalf("Exited through an earlier token = %v, %v, want true", done, err)
+	}
+}

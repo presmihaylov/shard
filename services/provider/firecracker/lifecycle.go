@@ -194,9 +194,6 @@ func (p *Provider) Start(ctx context.Context, id string) error {
 	if err != nil {
 		return err
 	}
-	if err := p.lost(id); err != nil {
-		return err
-	}
 
 	m, err := p.lookup(ctx, id, dir, r)
 	if err != nil {
@@ -208,10 +205,14 @@ func (p *Provider) Start(ctx context.Context, id string) error {
 			return fmt.Errorf("sandbox %s is %s on %s%s", id, status.State, Name, because(status))
 		}
 		if status.Alive() {
-			return p.run(ctx, m, r)
+			return p.runLive(ctx, m, r)
 		}
 	}
-	if err := p.release(ctx, m); err != nil {
+	// A loss names the run that ended, so a fresh boot leaves it behind once that run's vmm is gone (SHARD-578).
+	if err := p.release(ctx, m); err != nil && !errors.Is(err, models.ErrLostState) {
+		return err
+	}
+	if err := p.passLoss(ctx, id); err != nil {
 		return err
 	}
 
@@ -219,8 +220,20 @@ func (p *Provider) Start(ctx context.Context, id string) error {
 	if err != nil {
 		return err
 	}
+	if err := p.dropLoss(id); err != nil {
+		return errors.Join(err, p.end(ctx, m))
+	}
 	if err := m.readdress(ctx, r); err != nil {
 		return errors.Join(err, p.end(ctx, m))
+	}
+
+	return p.run(ctx, m, r)
+}
+
+// runLive runs the entrypoint on a VM still up, unless its run was lost, which only a fresh boot leaves behind.
+func (p *Provider) runLive(ctx context.Context, m *machine, r record) error {
+	if err := p.lost(m.id); err != nil {
+		return err
 	}
 
 	return p.run(ctx, m, r)
@@ -365,7 +378,7 @@ func (p *Provider) endSilent(ctx context.Context, m *machine) error {
 // Remove ends the VM and drops the overlay, the record and the jail, and what a daemon before the jail left; the state directory itself is the repository's.
 func (p *Provider) Remove(ctx context.Context, id string) error {
 	// A loss comes back only once the vmm is gone, and rm drops it with the files that cannot answer for the run.
-	if err := p.Stop(ctx, id, 0); err != nil && !errors.Is(err, errLostState) {
+	if err := p.Stop(ctx, id, 0); err != nil && !errors.Is(err, models.ErrLostState) {
 		return err
 	}
 	dir, err := p.dir(id)
@@ -383,9 +396,9 @@ func (p *Provider) Remove(ctx context.Context, id string) error {
 	if err := removeJail(jailRoot(p.cfg.JailBase, id)); err != nil {
 		return err
 	}
-	p.mu.Lock()
-	delete(p.lostRuns, id)
-	p.mu.Unlock()
+	if err := p.dropLoss(id); err != nil {
+		return err
+	}
 
 	// A stopped sandbox keeps its cgroup, empty, because the start that brings it back boots into that one.
 	return p.sweep(ctx, id)
@@ -497,14 +510,11 @@ func (p *Provider) Restarts(_ context.Context, id string) (models.RestartCount, 
 	return bundle.Bundle{RestartFile: filepath.Join(dir, restartsFile)}.RestartCount()
 }
 
-// errLostState marks a run whose files say nothing true, since the loop could not land one of its events.
-var errLostState = errors.New("lost its lifecycle state")
-
 // lost is the first event the loop could not land, which the files would otherwise answer for as if it never came.
 func (p *Provider) lost(id string) error {
 	p.mu.Lock()
 	defer p.mu.Unlock()
-	cause := p.lostRuns[id]
+	cause := p.lostRuns[id].cause
 	if m, held := p.machines[id]; held && m.lost != nil {
 		cause = m.lost
 	}
@@ -512,7 +522,56 @@ func (p *Provider) lost(id string) error {
 		return nil
 	}
 
-	return fmt.Errorf("sandbox %s %w: %w", id, errLostState, cause)
+	return lossOf(id, cause)
+}
+
+func lossOf(id string, cause error) error {
+	return fmt.Errorf("sandbox %s %w: %w", id, models.ErrLostState, cause)
+}
+
+// passLoss lets a start past a loss once the pin proves the lost run's vmm exited; a saved pid may name a vmm begun since (SHARD-578).
+func (p *Provider) passLoss(ctx context.Context, id string) error {
+	p.mu.Lock()
+	run, found := p.lostRuns[id]
+	p.mu.Unlock()
+	if !found {
+		return nil
+	}
+	// The socket goes before the process does, so the exit gets the grace a kill gets.
+	deadline := time.Now().Add(killGrace)
+	for {
+		exited, err := run.pin.Exited()
+		if err != nil {
+			return errors.Join(lossOf(id, run.cause), err)
+		}
+		if exited {
+			return nil
+		}
+		if !time.Now().Before(deadline) {
+			return fmt.Errorf("%w, and its vmm has not exited %s after it went", lossOf(id, run.cause), killGrace)
+		}
+		select {
+		case <-ctx.Done():
+			return errors.Join(lossOf(id, run.cause), ctx.Err())
+		case <-time.After(pollInterval):
+		}
+	}
+}
+
+// dropLoss forgets a loss and lets the pin of its vmm go.
+func (p *Provider) dropLoss(id string) error {
+	p.mu.Lock()
+	run, found := p.lostRuns[id]
+	delete(p.lostRuns, id)
+	p.mu.Unlock()
+	if !found {
+		return nil
+	}
+	if err := run.pin.Close(); err != nil {
+		return fmt.Errorf("sandbox %s: let the pin of its lost vmm go: %w", id, err)
+	}
+
+	return nil
 }
 
 // Status asks the vmm, because a record saying running can outlive a restart of the daemon.

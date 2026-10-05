@@ -327,26 +327,48 @@ func Exec(ctx context.Context, dial Dialer, id string, header ExecHeader, spec m
 		return models.ExitStatus{}, fmt.Errorf("exec %q: bound the start: %w", header.Argv[0], err)
 	}
 	var writes sync.Mutex
+	canceled := make(chan error, 1)
 	// A cancelled context cancels the exec and closes, which is what unblocks the header write and the frame reader below.
-	stop := context.AfterFunc(ctx, func() { cancelExec(conn, &writes) })
+	stop := context.AfterFunc(ctx, func() { canceled <- cancelExec(conn, &writes) })
 	defer stop()
 	if err := WriteMessage(conn, header); err != nil {
 		return models.ExitStatus{}, execFailure(ctx, header, err)
 	}
 
-	go feedStdin(conn, &writes, spec.Stdin)
+	fed, unread := make(chan error, 1), make(chan error, 1)
+	go func() { fed <- feedStdin(conn, &writes, spec.Stdin, unread) }()
 	go feedResizes(ctx, conn, &writes, spec.Resizes)
 
 	exit, err := readExec(ctx, conn, id, spec)
-	if err != nil && stop() {
-		// A host that gives up on the exec ends the command with it; only a daemon that dies leaves one running.
-		cancelExec(conn, &writes)
-	}
 	if err != nil {
-		return models.ExitStatus{}, execFailure(ctx, header, err)
+		return models.ExitStatus{}, errors.Join(execFailure(ctx, header, err), giveUp(stop, conn, &writes, canceled), stdinFault(fed))
+	}
+	// A command fed only part of its input may still exit 0, so the read that cut it short is the exec's answer.
+	if err := stdinFault(unread); err != nil {
+		return models.ExitStatus{}, fmt.Errorf("exec %q: %w", header.Argv[0], err)
 	}
 
 	return exit, nil
+}
+
+// giveUp ends the command of an exec the host stopped reading, or answers how the context's cancel of it went.
+func giveUp(stop func() bool, conn net.Conn, writes *sync.Mutex, canceled <-chan error) error {
+	// A host that gives up on the exec ends the command with it; only a daemon that dies leaves one running.
+	if stop() {
+		return cancelExec(conn, writes)
+	}
+
+	return <-canceled
+}
+
+// stdinFault is the stdin feed's error, if it has ended; one still reading the caller's stdin has none yet.
+func stdinFault(fed <-chan error) error {
+	select {
+	case err := <-fed:
+		return err
+	default:
+		return nil
+	}
 }
 
 // execFailure names why an exec ended early: the caller's context, the start bound, or the guest's own error.
@@ -362,23 +384,23 @@ func execFailure(ctx context.Context, header ExecHeader, err error) error {
 }
 
 // cancelExec tells the guest to kill the command, then closes: a connection that only drops is a host that went away, and the command runs on.
-func cancelExec(conn net.Conn, writes *sync.Mutex) {
+func cancelExec(conn net.Conn, writes *sync.Mutex) error {
 	// The deadline comes first, so a write held by a guest that stopped reading frees the lock within the budget.
-	_ = conn.SetWriteDeadline(time.Now().Add(cancelBudget))
+	err := conn.SetWriteDeadline(time.Now().Add(cancelBudget))
 	writes.Lock()
-	_ = WriteFrame(conn, StreamCancel, nil)
+	err = errors.Join(err, WriteFrame(conn, StreamCancel, nil))
 	writes.Unlock()
-	_ = conn.Close()
+	if err := errors.Join(err, conn.Close()); err != nil {
+		return fmt.Errorf("the guest may not have the cancel, so the command may run on: %w", err)
+	}
+
+	return nil
 }
 
-// feedStdin frames stdin until it ends, then tells the guest so, at once for a nil one; a failed write is the guest gone, which the frame reader reports.
-func feedStdin(conn net.Conn, writes *sync.Mutex, stdin *os.File) {
+// feedStdin frames stdin until it ends, then tells the guest so, at once for a nil one; a failed read lands in unread before the guest hears of the end.
+func feedStdin(conn net.Conn, writes *sync.Mutex, stdin *os.File, unread chan<- error) error {
 	if stdin == nil {
-		writes.Lock()
-		_ = WriteFrame(conn, StreamStdinClose, nil)
-		writes.Unlock()
-
-		return
+		return closeStdin(conn, writes, nil)
 	}
 	buf := make([]byte, 32<<10)
 	for {
@@ -388,17 +410,37 @@ func feedStdin(conn net.Conn, writes *sync.Mutex, stdin *os.File) {
 			werr := WriteFrame(conn, StreamStdin, buf[:n])
 			writes.Unlock()
 			if werr != nil {
-				return
+				return stdinWrite(werr)
 			}
 		}
+		if errors.Is(err, io.EOF) {
+			return closeStdin(conn, writes, nil)
+		}
 		if err != nil {
-			writes.Lock()
-			_ = WriteFrame(conn, StreamStdinClose, nil)
-			writes.Unlock()
+			cause := fmt.Errorf("read the exec's stdin: %w", err)
+			unread <- cause
 
-			return
+			return closeStdin(conn, writes, cause)
 		}
 	}
+}
+
+// closeStdin tells the guest stdin ended, for the reason cause gives if it is not the end of the file.
+func closeStdin(conn net.Conn, writes *sync.Mutex, cause error) error {
+	writes.Lock()
+	err := WriteFrame(conn, StreamStdinClose, nil)
+	writes.Unlock()
+
+	return errors.Join(cause, stdinWrite(err))
+}
+
+// stdinWrite names a failed stdin write, but not one the host's own close cut, which is the exec ending.
+func stdinWrite(err error) error {
+	if err == nil || errors.Is(err, net.ErrClosed) {
+		return nil
+	}
+
+	return fmt.Errorf("feed the exec's stdin: %w", err)
 }
 
 // feedResizes frames each new window until the exec ends; a nil channel is an exec with no terminal to resize.

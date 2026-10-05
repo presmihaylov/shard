@@ -453,9 +453,21 @@ func (p *Provider) forget(m *machine) {
 		return
 	}
 	delete(p.machines, m.id)
-	if m.lost != nil {
-		p.lostRuns[m.id] = m.lost
+	// The first loss stands, as keep holds the first error; a later machine's pin stays with it for close.
+	if _, kept := p.lostRuns[m.id]; kept || m.lost == nil {
+		return
 	}
+	// The pin goes with the loss, so a start drops the loss only once that vmm is proven gone (SHARD-578).
+	m.swap.Lock()
+	p.lostRuns[m.id] = lostRun{cause: m.lost, pin: m.pinned}
+	m.pinned = nil
+	m.swap.Unlock()
+}
+
+// lostRun is the loss of a forgotten machine, with the pin of its vmm.
+type lostRun struct {
+	cause error
+	pin   *pidpin.Process
 }
 
 // spawn marks the sandbox as one this process brings a vmm up for, until the returned done.

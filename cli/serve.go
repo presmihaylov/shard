@@ -19,6 +19,9 @@ func (a App) serve(ctx context.Context, args []string) error {
 	if flags.NArg() != 0 {
 		return fmt.Errorf("serve takes no arguments, got %s", gotArgs(flags.Args()))
 	}
+	if err := a.hostOnly("serve"); err != nil {
+		return err
+	}
 
 	return serve.Run(ctx, serve.Config{
 		Listen:         *listen,

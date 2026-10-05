@@ -757,8 +757,8 @@ func imageOf(b bundle.Bundle, id string) (bundle.Runtime, error) {
 	if rt.RootFS == "" {
 		return bundle.Runtime{}, fmt.Errorf("sandbox %s records no image rootfs, so nothing says what its writable layer stacks over", id)
 	}
-	if _, err := os.Stat(rt.RootFS); err != nil {
-		return bundle.Runtime{}, fmt.Errorf("sandbox %s stacks over an image rootfs that is gone: %w", id, err)
+	if err := bundle.CheckImage(rt.RootFS); err != nil {
+		return bundle.Runtime{}, fmt.Errorf("sandbox %s: %w", id, err)
 	}
 
 	return rt, nil

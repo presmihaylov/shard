@@ -26,8 +26,10 @@ import (
 // recorder logs what the fakes were asked in order; a name in fail fails every call, a name#N the Nth only.
 // The exec tests drive the service concurrently, so mu guards every access to calls and live.
 type recorder struct {
-	mu    sync.Mutex
-	fail  []string
+	mu   sync.Mutex
+	fail []string
+	// cause is what a forced failure wraps, so a test can fail a call with a typed substrate error.
+	cause error
 	calls []string
 	live  map[string]bool
 }
@@ -45,6 +47,10 @@ func (r *recorder) record(name string) error {
 	r.calls = append(r.calls, name)
 
 	if slices.Contains(r.fail, name) || slices.Contains(r.fail, fmt.Sprintf("%s#%d", name, nth)) {
+		if r.cause != nil {
+			return fmt.Errorf("forced failure at %s: %w", name, r.cause)
+		}
+
 		return fmt.Errorf("forced failure at %s", name)
 	}
 

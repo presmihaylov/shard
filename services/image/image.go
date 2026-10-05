@@ -246,6 +246,11 @@ func Canonical(ref string) (string, error) {
 	return registry.Canonical(ref)
 }
 
+// Pinned names ref's repository at digest, the reference a pull restores one image's exact files from.
+func Pinned(ref, digest string) (string, error) {
+	return registry.Pinned(ref, digest)
+}
+
 // DigestOf is the digest a by-digest reference names, empty when the reference names a tag.
 func DigestOf(ref string) (string, bool) {
 	return registry.DigestOf(ref)

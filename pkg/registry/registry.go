@@ -607,6 +607,16 @@ func Canonical(ref string) (string, error) {
 	return parsed.Name(), nil
 }
 
+// Pinned is ref's repository at digest, so a pull fetches those files whatever a tag in ref names now.
+func Pinned(ref, digest string) (string, error) {
+	parsed, err := parseRef(ref)
+	if err != nil {
+		return "", err
+	}
+
+	return parsed.Context().Digest(digest).Name(), nil
+}
+
 // DigestOf is the digest a by-digest reference names, so a holder found by digest matches an rm by tag.
 func DigestOf(ref string) (string, bool) {
 	parsed, err := parseRef(ref)

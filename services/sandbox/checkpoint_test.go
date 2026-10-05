@@ -768,3 +768,25 @@ func TestForkCarriesEveryPolicyField(t *testing.T) {
 		t.Errorf("the fork holds the restart %+v, want the source's policy %+v", sb.Restart, source.Restart.RestartSpec)
 	}
 }
+
+// A resume over an image an rm deleted names the pull that brings it back, and the record stays paused (SHARD-585).
+func TestResumeOverAGoneImageNamesThePullThatBringsItBack(t *testing.T) {
+	svc, l := newService(t, &recorder{fail: []string{"provider.Resume"}, cause: goneImage()}, withImage(pausedSandbox()))
+	l.provider.status = models.Status{}
+
+	_, err := svc.Resume(t.Context(), "sandbox1")
+
+	imageGone(t, err, "resume")
+	if l.repo.sb.State != models.StatePaused {
+		t.Errorf("the record is %s after the refused resume, want paused", l.repo.sb.State)
+	}
+}
+
+// A fork mounts the source's image afresh, so one an rm deleted names the pull that brings it back (SHARD-585).
+func TestForkOverAGoneImageNamesThePullThatBringsItBack(t *testing.T) {
+	svc, _ := newService(t, &recorder{fail: []string{"provider.Fork"}, cause: goneImage()}, withImage(forkSource()))
+
+	_, err := svc.Fork(t.Context(), "sandbox1", sandbox.CopyRequest{})
+
+	imageGone(t, err, "fork")
+}

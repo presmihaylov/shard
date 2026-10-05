@@ -22,6 +22,9 @@ chmod +x shard && sudo install -d -m0755 /usr/local/bin && sudo install -m0755 s
 sudo install -d -o "$USER" /var/lib/shard
 ```
 
+On an Intel Mac, which is not supported, download `shard-darwin-amd64` in place of
+`shard-darwin-arm64`.
+
 A Mac without the developer tools has no `/usr/local/bin`, so the first `install -d` makes it. The
 root is where the daemon keeps every record, disk and kernel, and it defaults to `/var/lib/shard`.
 The second `install -d` gives it to your user, so nothing runs as root. `--root <dir>` on every

@@ -301,13 +301,13 @@ values. `no` is the default. `on-failure` starts the entrypoint again after an e
 after a signal. `always` starts it again after every exit. `--restart-retries` (`retries`) caps the
 starts again in one run. With no cap, `on-failure` starts the entrypoint again without end. `always`
 never gives up and takes no retries at all. `--restart-backoff` (`backoff`, in whole seconds,
-default 1) is the wait before the first start again, and it doubles each time, up to 60 s. Both
-flags need a policy. The three flags go on `shard run` only, and `shard create` and `shard exec`
-refuse each one by name. A body with a policy other than `no` and no `command` answers 400 naming
-`restart.policy`. A run that lasts ten seconds since its last start clears the count, so a
-slow crash loop never spends a finite cap. At the cap, `on-failure` gives up and the entrypoint
-stays exited. A stop then puts its last exit in `exit_status`, as after any exit. A stop during the
-wait ends the sandbox at once and drops the start that was due.
+default 1) is the wait before the first start again, and it doubles each time, up to 60 s. A backoff
+over 60 answers 400. Both flags need a policy. The three flags go on `shard run` only, and
+`shard create` and `shard exec` refuse each one by name. A body with a policy other than `no` and no
+`command` answers 400 naming `restart.policy`. A run that lasts ten seconds since its last start
+clears the count, so a slow crash loop never spends a finite cap. At the cap, `on-failure` gives up
+and the entrypoint stays exited. A stop then puts its last exit in `exit_status`, as after any exit.
+A stop during the wait ends the sandbox at once and drops the start that was due.
 
 The policy ends when no start again follows an exit: any exit under `no`, a clean exit under
 `on-failure`, the give-up at the cap, or a stop of the app. `shard-init` then writes `ended`, and that
@@ -490,7 +490,8 @@ curl --unix-socket /var/lib/shard/shard.sock -X POST http://localhost/v0/images/
   for that refusal or that 500. The create is a public route, so an `{"event"}` line carries no
   `path`. The create answers 400 when the body does not decode, when a field does not validate, or
   when the body names a secret or a policy the host does not hold. It answers 400 `invalid_request`
-  naming the user when `user` names a user or group the image does not list, on the plain create,
+  naming the user when `user` names a user or group the image does not list, and naming the guest
+  path when the image's `/etc/passwd` or `/etc/group` is not a regular file, on the plain create,
   the wait and the NDJSON wait, whose last line carries the error once an event is out. An uncached
   image is read only after the pull, so there the plain create answers the `pending` record and the
   user lands in the `failed_reason`, while both waits still answer the 400. It answers 409
@@ -574,8 +575,10 @@ and `image prune` leaves it.
   the exec record once the command's `execve` took:
   `{"exec", "sandbox", "command", "state": "running"|"exited", "exit_status": {"code",
   "signal"} or null, "started_at", "exited_at", "truncated", "lost_bytes"}`. Errors: 400 for a body that does not decode or
-  a request that names no command, 404, 409 when no command can run in the sandbox, and 429
-  `exec_limit` while the sandbox runs 32 execs or the daemon runs 256. A command
+  a request that names no command, 400 naming the user for a `user` the sandbox's tree does not
+  list, or the guest path when its `/etc/passwd` or `/etc/group` is not a regular file, 404, 409
+  when no command can run in the sandbox, and 429 `exec_limit` while the sandbox runs 32 execs or
+  the daemon runs 256. A command
   that is not there or cannot run answers 422 `command_not_started`, and the daemon keeps no record
   of it. A launch that 20 s (`DefaultExecStartBudget`) does not prove answers 504
   `timeout`, and the daemon ends the command.
@@ -771,7 +774,7 @@ else that a refusal carries lives inside `error`, and the root never holds anyth
 |---|---|---|
 | `invalid_request` | 400 | the body does not decode, a field does not validate, or a named secret, policy or image is unknown. Also the TCP front, when the request line does not parse as net/http parses it, and then the front dials nothing |
 | `body_too_large` | 413 | a JSON body over 1 MiB. The daemon reads no further, and closes the connection after the answer |
-| `not_found` | 404 | no sandbox, snapshot, policy, secret, image or exec has the reference, or no route has the path |
+| `not_found` | 404 | no sandbox, snapshot, policy, secret, image or exec has the reference, or no route has the path. Also a create, start, resume or fork whose image files left the host: the message names the image pinned to its digest, which a pull brings back, and the verb to run again |
 | `sandbox_not_running` | 409 | exec, pause, fork, attach or app stop on a sandbox that is not running, one the substrate no longer holds, or one whose substrate process does not answer |
 | `sandbox_not_stopped` | 409 | start or remove without force on a sandbox that is up, remove without force on a paused one, whose checkpoint a resume needs, and snapshot create on any sandbox that is not stopped |
 | `sandbox_not_paused` | 409 | resume on a sandbox that is not paused |
