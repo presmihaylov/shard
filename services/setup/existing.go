@@ -74,6 +74,9 @@ func Detect(ctx context.Context, h Host) (Installation, bool, error) {
 	return Installation{Manual: found}, len(found) > 0, nil
 }
 
+// uninstallLabel is the §11 menu label, quoted by the delete hint so the two cannot drift. (SHARD-742)
+const uninstallLabel = "Uninstall shard"
+
 // existing is the §11 menu over an installation Detect found.
 func (s *Setup) existing(ctx context.Context, inst Installation) error {
 	if inst.Manifest == nil {
@@ -87,7 +90,7 @@ func (s *Setup) existing(ctx context.Context, inst Installation) error {
 	choice, err := s.UI.Select(ctx, AskExisting, "What would you like to do?", []term.Option{
 		{Name: "repair", Label: "Check or repair the installation", Default: true},
 		{Name: "upgrade", Label: "Upgrade shard"},
-		{Name: "uninstall", Label: "Uninstall shard"},
+		{Name: "uninstall", Label: uninstallLabel},
 		{Name: "exit", Label: "Exit"},
 	})
 	if err != nil {

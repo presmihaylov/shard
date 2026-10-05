@@ -568,7 +568,7 @@ func deleteAfterReinstall(owner string, where, free []string, sudo string) []str
 		"To delete the saved data, let setup install shard first, so its daemon can remove the sandboxes:", "",
 		"  Choose "+providerTitle(owner)+". Setup installs shard and starts its daemon over this data.", "",
 		"  Remove every sandbox:", "    "+sudo+"shard list --all", "    "+sudo+"shard remove --force <name>", "",
-		"  Then uninstall shard and free the disk:", "    shard setup   (choose Uninstall Shard)",
+		"  Then uninstall shard and free the disk:", "    shard setup   (choose "+uninstallLabel+")",
 	)
 	if where == nil {
 		return append(lines, "    "+sudo+"rm -r "+DataDir)

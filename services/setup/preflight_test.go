@@ -363,7 +363,7 @@ func runcOverGVisor(sudo string, installed bool) []string {
 		"To delete the saved data, let setup install shard first, so its daemon can remove the sandboxes:", "",
 		"  Choose gVisor. Setup installs shard and starts its daemon over this data.", "",
 		"  Remove every sandbox:", "    " + sudo + "shard list --all", "    " + sudo + "shard remove --force <name>", "",
-		"  Then uninstall shard and free the disk:", "    shard setup   (choose Uninstall Shard)",
+		"  Then uninstall shard and free the disk:", "    shard setup   (choose " + uninstallLabel + ")",
 		"    " + sudo + "rm -r /var/lib/shard",
 	}, tail)
 }
@@ -405,7 +405,7 @@ func TestPreflightExistingDataImage(t *testing.T) {
 		"To delete the saved data, let setup install shard first, so its daemon can remove the sandboxes:", "",
 		"  Choose Firecracker. Setup installs shard and starts its daemon over this data.", "",
 		"  Remove every sandbox:", "    shard list --all", "    shard remove --force <name>", "",
-		"  Then uninstall shard and free the disk:", "    shard setup   (choose Uninstall Shard)",
+		"  Then uninstall shard and free the disk:", "    shard setup   (choose "+uninstallLabel+")",
 		"    umount /var/lib/shard",
 		"    rm /var/lib/shard.xfs",
 		"    rm -r /var/lib/shard /var/lib/shard.xfs.lock",
