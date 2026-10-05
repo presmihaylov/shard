@@ -258,6 +258,7 @@ func commands() []command {
 		{name: "daemon", run: App.daemon, subs: []command{{name: "status", run: App.daemonStatus}}},
 		{name: "info", run: App.info},
 		{name: "serve", run: App.serve},
+		{name: "setup", run: App.setup},
 		{name: "tokens", subs: []command{
 			{name: "mint", run: App.tokensMint},
 			{name: "list", aliases: []string{"ls"}, run: App.tokensList},

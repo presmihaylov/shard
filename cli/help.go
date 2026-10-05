@@ -26,6 +26,8 @@ type verbHelp struct {
 	summary string
 	// about is the sentence its own help opens with, when it says more than the summary does.
 	about string
+	// intro is the paragraph after about, ahead of the options.
+	intro []string
 	args  []row
 	flags []flagHelp
 	// env is the variables it reads, which only the top level lists.
@@ -33,6 +35,8 @@ type verbHelp struct {
 	notes []note
 	// examples print as written, one call per line, so each pastes whole however wide it is.
 	examples []string
+	// spaced puts a blank line between the examples.
+	spaced bool
 }
 
 // row is one line of a two-column list: an argument, a flag or a verb, and what it is.
@@ -86,7 +90,7 @@ var verbGroups = []struct {
 }{
 	{"Sandboxes", []string{"create", "run", "exec", "list", "logs", "inspect", "stop", "start", "remove", "pause", "resume", "fork", "cp"}},
 	{"Images, snapshots, secrets and network policies", []string{"pull", "image", "snapshot", "secret", "policy"}},
-	{"Host and access", []string{"capabilities", "daemon", "info", "serve", "tokens", "version"}},
+	{"Host and access", []string{"capabilities", "daemon", "info", "serve", "setup", "tokens", "version"}},
 }
 
 // sandboxFlagHelps are the flags create and run share, as sandboxFlags parses them.
@@ -148,6 +152,8 @@ var helps = map[string]verbHelp{
 		},
 		notes: []note{
 			para(fmt.Sprintf("Set %s and %s for remote access.", client.RemoteEnv, client.APIKeyEnv), "Without a remote URL, Shard connects to the local daemon."),
+			{title: "Get started", lines: []string{"shard setup"}},
+			{title: "For automated setup options", lines: []string{"shard setup --help"}},
 		},
 	},
 	"create": {
@@ -568,6 +574,27 @@ var helps = map[string]verbHelp{
 		notes:    []note{para("Shows the version, provider, process details and background tasks."), hostOnlyNote},
 		examples: []string{"shard daemon status", "shard daemon status --format json"},
 	},
+	"setup": {
+		usage:   []string{"setup [OPTIONS]"},
+		summary: "configure a local sandbox host or a remote connection",
+		about:   "Set up Shard on this machine or connect to a remote server.",
+		intro:   []string{"Run without options to start the interactive wizard.", "For automated setup, specify the choices below."},
+		flags: []flagHelp{
+			{"--local", "Set up this machine to run sandboxes", ""},
+			{"--remote <url>", "Connect to a remote Shard server", ""},
+			{"--provider <name>", "firecracker, gvisor, sysbox, runc or vz", ""},
+			{"--start-at-boot <true|false>", "Configure automatic daemon startup", ""},
+			{"--save", "Save the remote connection", ""},
+			{"-y, --yes", "Apply changes without confirmation", ""},
+		},
+		notes: []note{{title: "Remote authentication", lines: []string{"Set " + client.APIKeyEnv + ". Do not pass the key as a command argument."}}},
+		examples: []string{
+			"shard setup",
+			"shard setup --local --provider gvisor --start-at-boot=true -y",
+			"shard setup --remote https://shard.example.com --save -y",
+		},
+		spaced: true,
+	},
 	"capabilities": {
 		usage:   []string{"capabilities [OPTIONS]"},
 		summary: "show the lifecycle verbs the server supports",
@@ -689,6 +716,9 @@ func helpText(key string) string {
 		usage = append(usage, lead+line)
 	}
 	sections := []string{strings.Join(usage, "\n"), wrap("", 0, h.opening())}
+	if len(h.intro) > 0 {
+		sections = append(sections, wrapLines("", 0, h.intro))
+	}
 
 	if key == "" {
 		sections = append(sections, topLevel()...)
@@ -720,7 +750,11 @@ func helpText(key string) string {
 		if len(h.examples) == 1 {
 			heading = "Example:\n  "
 		}
-		sections = append(sections, heading+strings.Join(h.examples, "\n  "))
+		between := "\n  "
+		if h.spaced {
+			between = "\n\n  "
+		}
+		sections = append(sections, heading+strings.Join(h.examples, between))
 	}
 
 	return strings.Join(sections, "\n\n")
