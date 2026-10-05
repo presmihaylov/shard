@@ -91,31 +91,31 @@ Run `shard COMMAND --help` for options and examples.
 
 ## Option order
 
-Global options go before the command. One typed after it fails, and the error shows where it goes:
+Global options go before the command. If you type one after it, the command fails, and the error shows where the option goes:
 
 ```text
 shard: --remote goes before the verb: shard --remote <url> list
 ```
 
-A command's own options go before its arguments, as in `shard logs -f web`. An option typed after an argument counts as an argument, and the error says to put the flags before the arguments.
+A command's own options go before its arguments, as in `shard logs -f web`. shard reads an option after an argument as an argument, and the error says to put the flags before the arguments.
 
 ## Remote and local commands
 
 With `--remote`, `SHARD_REMOTE` or a connection that `shard setup` saved, a command goes to that server. `--remote` overrides `SHARD_REMOTE`, and `SHARD_REMOTE` overrides the saved connection. `SHARD_API_KEY` overrides the saved key.
 
-An `http` remote encrypts nothing. Every command over one prints this line once to stderr, never to stdout:
+An `http` remote encrypts nothing. Every command that uses one prints this line once, to stderr and never to stdout:
 
 ```text
 Warning: HTTP does not encrypt this connection. Use it only on localhost or through a trusted encrypted network.
 ```
 
-`SHARD_CA_FILE` with an `http` remote is refused before the client connects.
+The client refuses `SHARD_CA_FILE` with an `http` remote before it connects.
 
-Some commands act on the files and processes of this host, so they run on the daemon host only:
+Some commands act on this host's files and processes, so they run only on the daemon host:
 
 - `pull`, `image list`, `image remove`, `image prune`, `daemon status`, `info`, `tokens mint`, `tokens list` and `tokens revoke` refuse `--remote`, `SHARD_REMOTE` and a saved connection. Their error names the command.
 - `daemon` and `serve` refuse `--remote` and `SHARD_REMOTE`, and ignore a saved connection.
-- `--remote ""` runs a command on this host past a saved connection.
+- `--remote ""` runs a command on this host even when a connection is saved.
 - `tokens scopes` asks the server, so it follows the remote.
 
 ## Names and aliases
@@ -134,7 +134,7 @@ Short options:
 
 ## What each command prints
 
-The format column is the default `--format`. A dash is a command with no `--format`. A command that prints the id prints it even when you gave it the name.
+The Format column shows the default `--format`. A dash means the command has no `--format`. A command that prints the id prints it even when you pass the name.
 
 **Sandboxes**
 
@@ -151,7 +151,7 @@ The format column is the default `--format`. A dash is a command with no `--form
 | `fork` | - | the new id |
 | `cp` | - | nothing |
 
-Without `--all`, `list` leaves out stopped sandboxes. A table then ends with a count on stderr, such as `2 stopped sandboxes; shard list --all`. JSON gets no such line.
+Without `--all`, `list` leaves out stopped sandboxes. The table then ends with a count on stderr, such as `2 stopped sandboxes; shard list --all`. JSON output has no such line.
 
 **Images, snapshots, secrets and network policies**
 
@@ -183,7 +183,7 @@ Without `--all`, `list` leaves out stopped sandboxes. A table then ends with a c
 | `daemon status` | table | the daemon's state and its tasks |
 | `info` | table | the provider a daemon would pick, and why |
 | `serve` | - | its log |
-| `setup` | - | the wizard, or a checklist when every answer is given as an option |
+| `setup` | - | the wizard, or a checklist when you give every answer as an option |
 | `tokens mint` | json | the token record |
 | `tokens list` | table | the token ledger |
 | `tokens revoke` | - | `revoked token <id>`, or `revoked <n> tokens of <name>` with `--name` |
@@ -192,7 +192,7 @@ Without `--all`, `list` leaves out stopped sandboxes. A table then ends with a c
 
 ## JSON output
 
-`--format` takes `json` or `table`. Any other word is a usage error. Naming the default changes nothing: `list --format table` prints what `list` prints.
+`--format` takes `json` or `table`. Any other word is a usage error. If you name the default, nothing changes: `list --format table` prints the same as `list`.
 
 A `--format json` call writes one value or nothing:
 
@@ -244,7 +244,7 @@ A `--format json` call writes one value or nothing:
 | `policy` | it holds a network policy |
 | `started_at` | the daemon started it at least once |
 
-`restart.policy` is `no`, `on-failure` or `always`. `retries` is absent for no cap. `backoff` is the first wait in seconds. `count` is the restarts on this run, and `last_at` is absent before the first one. `gave_up` says an exit asked for a restart after the retries were spent. `ended` says no restart follows the last exit.
+`restart.policy` is `no`, `on-failure` or `always`. `retries` is absent when there is no cap. `backoff` is the first wait in seconds. `count` is the number of restarts in this run, and `last_at` is absent before the first one. `gave_up` is true when an exit asked for a restart after the retries ran out. `ended` is true when no restart follows the last exit.
 
 `inspect` prints one sandbox record. It adds `egress` when the record names a network policy:
 
@@ -268,7 +268,7 @@ A `--format json` call writes one value or nothing:
 }
 ```
 
-`egress.rules` is the order the host and the proxy enforce. `id` is the place of a rule in that order, from `"1"`. `action` is `allow` or `deny`. `destination.kind` is `cidr`, `domain`, `domain-suffix` or `group`. `protocol` and `ports` are absent for a rule over every protocol. `implied` is on a rule the policy did not write: `dns` when a name rule opened DNS, and `dns-rule` when a `dns` rule did. When the store no longer holds the policy, `egress` is `{"missing": true, "rules": []}` and the sandbox reaches nothing.
+`egress.rules` lists the rules in the order the host and the proxy enforce them. `id` is the rule's position in that order, starting at `"1"`. `action` is `allow` or `deny`. `destination.kind` is `cidr`, `domain`, `domain-suffix` or `group`. `protocol` and `ports` are absent for a rule that covers every protocol. `implied` marks a rule that the policy did not write: `dns` when a name rule opened DNS, and `dns-rule` when a `dns` rule did. When the store no longer holds the policy, `egress` is `{"missing": true, "rules": []}` and the sandbox reaches nothing.
 
 ### Snapshot
 
@@ -290,11 +290,11 @@ A `--format json` call writes one value or nothing:
 }
 ```
 
-`name` and `source_name` are absent when empty. `disk_mib` and `memory_mib` are the bounds the source ran under. `size` is the bytes the copy takes on the host.
+`name` and `source_name` are absent when empty. `disk_mib` and `memory_mib` are the bounds the source ran under. `size` is the space the copy takes on the host, in bytes.
 
 ### Images, secrets, policies and tokens
 
-`image list`. `digest` is the full digest, `size` is in bytes, and `broken` is absent when empty:
+`image list` prints an array of images. `digest` is the full digest, `size` is in bytes, and `broken` is absent when empty:
 
 ```json
 [
@@ -307,7 +307,7 @@ A `--format json` call writes one value or nothing:
 ]
 ```
 
-`secret list`, never with a value:
+`secret list` prints the secrets, never a value:
 
 ```json
 [
@@ -320,7 +320,7 @@ A `--format json` call writes one value or nothing:
 ]
 ```
 
-`policy list`:
+`policy list` prints each policy with its number of rules:
 
 ```json
 [{"name": "api-only", "rule_count": 2}]
@@ -328,7 +328,7 @@ A `--format json` call writes one value or nothing:
 
 `policy show` prints `{name, rules, dns, holders}`. `dns` is `open` or `closed`, and `holders` names the sandboxes whose record names the policy.
 
-`tokens list`. `expires_at` is `null` for a token that never expires, and `status` is `active`, `revoked` or `expired`:
+`tokens list` prints the token ledger. `expires_at` is `null` for a token that never expires, and `status` is `active`, `revoked` or `expired`:
 
 ```json
 [
@@ -347,7 +347,7 @@ A `--format json` call writes one value or nothing:
 
 ### Host
 
-`info`. `unreadable` is absent when the root holds no record shard cannot read:
+`info` prints the provider a daemon would pick, and why. `unreadable` is absent unless the root holds a record that shard cannot read:
 
 ```json
 {"provider": "gvisor", "reason": "no /dev/kvm"}
@@ -374,7 +374,7 @@ A `--format json` call writes one value or nothing:
 {"create": true, "start": true, "stop": true, "remove": true, "pause": true, "resume": true, "fork": false, "snapshot": true}
 ```
 
-`version`. On a Mac it adds `shim`, which is `embedded` or `absent`:
+`version` prints the client and daemon versions. On a Mac, it adds `shim`, which is `embedded` or `absent`:
 
 ```json
 {"client": "v0.1.0", "daemon": "v0.1.0"}
