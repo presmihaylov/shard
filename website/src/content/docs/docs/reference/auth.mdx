@@ -28,7 +28,8 @@ Give the `token` field to the client:
 		```ts
 		import { Shard } from "useshards";
 
-		const shard = new Shard({ remote: "https://shard.example.com", apiKey: process.env.READER_TOKEN });
+		// Reads SHARD_API_KEY.
+		const shard = new Shard({ remote: "https://shard.example.com" });
 		try {
 		  const { sandboxes } = await shard.list();
 		  for (const sandbox of sandboxes) console.log(sandbox.id);
@@ -39,11 +40,10 @@ Give the `token` field to the client:
 	</TabItem>
 	<TabItem label="Python">
 		```python
-		import os
-
 		from useshards import Shard
 
-		with Shard(remote="https://shard.example.com", api_key=os.environ["READER_TOKEN"]) as shard:
+		# Reads SHARD_API_KEY.
+		with Shard(remote="https://shard.example.com") as shard:
 		    for sandbox in shard.list().sandboxes:
 		        print(sandbox.id)
 		```
