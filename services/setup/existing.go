@@ -825,19 +825,19 @@ func networkLeft(h Host, held bool) ([]string, error) {
 
 const fstabPath = "/etc/fstab"
 
-// dataImageLeft names the disk image the daemon made for a data dir that cannot clone, and the fstab line that mounts it, which uninstall keeps with the data.
-func dataImageLeft(h Host) ([]string, error) {
+// dataImage names the disk image the daemon made for a data dir that cannot clone, with the fstab line that mounts it, and the bare commands that unmount and remove it.
+func dataImage(h Host) (where, free []string, err error) {
 	image := datadir.ImagePath(DataDir)
 	info, err := os.Lstat(rooted(h, image))
 	if errors.Is(err, fs.ErrNotExist) {
-		return nil, nil
+		return nil, nil, nil
 	}
 	if err != nil {
-		return nil, fmt.Errorf("check %s: %w", image, err)
+		return nil, nil, fmt.Errorf("check %s: %w", image, err)
 	}
 	fstab, err := os.ReadFile(rooted(h, fstabPath))
 	if err != nil && !errors.Is(err, fs.ErrNotExist) {
-		return nil, fmt.Errorf("read %s: %w", fstabPath, err)
+		return nil, nil, fmt.Errorf("read %s: %w", fstabPath, err)
 	}
 	var mounts []string
 	for line := range strings.SplitSeq(string(fstab), "\n") {
@@ -846,16 +846,31 @@ func dataImageLeft(h Host) ([]string, error) {
 		}
 	}
 
-	where := fmt.Sprintf("It lives in the %.1f GiB disk image %s", float64(info.Size())/(1<<30), image)
-	free := "To free the disk and delete the saved data, run:"
+	size := fmt.Sprintf("It lives in the %.1f GiB disk image %s", float64(info.Size())/(1<<30), image)
+	free = []string{"sudo umount " + DataDir}
+	if len(mounts) > 0 {
+		free = append(free, "sudo sed -i '\\|^"+regexp.QuoteMeta(image)+"[[:space:]]|d' "+fstabPath)
+	}
+	free = append(free, "sudo rm "+image)
 	if len(mounts) == 0 {
-		return []string{where + ".", free, "  sudo umount " + DataDir, "  sudo rm " + image}, nil
+		return []string{size + "."}, free, nil
 	}
 
-	return slices.Concat(
-		[]string{where + ", which this line in " + fstabPath + " mounts at boot:"}, mounts,
-		[]string{free, "  sudo umount " + DataDir, "  sudo sed -i '\\|^" + regexp.QuoteMeta(image) + "[[:space:]]|d' " + fstabPath, "  sudo rm " + image},
-	), nil
+	return slices.Concat([]string{size + ", which this line in " + fstabPath + " mounts at boot:"}, mounts), free, nil
+}
+
+// dataImageLeft reports the disk image and how to free it, for the uninstall summary that keeps the data.
+func dataImageLeft(h Host) ([]string, error) {
+	where, free, err := dataImage(h)
+	if err != nil || where == nil {
+		return nil, err
+	}
+	lines := append(where, "To free the disk and delete the saved data, run:")
+	for _, c := range free {
+		lines = append(lines, "  "+c)
+	}
+
+	return lines, nil
 }
 
 // macLogsLeft names the log directory the LaunchDaemon wrote, which uninstall keeps as it keeps the data.

@@ -377,9 +377,13 @@ func TestPreflightExistingDataImage(t *testing.T) {
 		"The daemon cannot start with gVisor over that data, and setup never changes its provider.",
 		"To keep the data, choose Firecracker.",
 		"It lives in the 0.0 GiB disk image /var/lib/shard.xfs.",
-		"To free the disk and delete the saved data, run:",
-		"  sudo umount /var/lib/shard",
-		"  sudo rm /var/lib/shard.xfs",
+		"To delete the saved data, first remove its sandboxes so their network and cgroups go too:", "",
+		"  Start the daemon on that data:", "    sudo shard daemon --provider firecracker", "",
+		"  List sandboxes:", "    sudo shard list --all", "",
+		"  Remove a sandbox:", "    sudo shard remove --force <name>", "",
+		"  Then stop that daemon and free the disk:",
+		"    sudo umount /var/lib/shard",
+		"    sudo rm /var/lib/shard.xfs",
 		"Then run shard setup again.",
 	)
 }
