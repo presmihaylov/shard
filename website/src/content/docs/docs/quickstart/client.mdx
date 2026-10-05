@@ -1,0 +1,150 @@
+---
+title: 'Quickstart: client'
+description: Connect the shard CLI, the TypeScript SDK or the Python SDK to a remote shard server, and run a command in a sandbox.
+sidebar:
+  order: 4
+---
+
+import { Tabs, TabItem } from '@astrojs/starlight/components';
+
+Connect to a shard server and run a command in a new sandbox:
+
+<Tabs syncKey="lang">
+	<TabItem label="CLI">
+
+```sh
+curl -fsSL https://useshards.com/install | sh
+export SHARD_API_KEY=<your API key>
+shard setup --remote https://shard.example.com --save -y
+
+shard create --name demo --memory 512MiB alpine:3.20
+shard exec demo echo hello
+shard remove --force demo
+```
+
+	</TabItem>
+	<TabItem label="TypeScript">
+
+```sh
+npm install useshards
+export SHARD_REMOTE=https://shard.example.com
+export SHARD_API_KEY=<your API key>
+```
+
+```ts
+import { Shard } from "useshards";
+
+const shard = new Shard();
+const sandbox = await shard.create({ image: "docker.io/library/alpine:3" });
+try {
+  const result = await sandbox.exec(["uname", "-sr"]);
+  console.log(result.exitCode, result.stdout);
+} finally {
+  await sandbox.remove({ force: true });
+  shard.close();
+}
+```
+
+	</TabItem>
+	<TabItem label="Python">
+
+```sh
+pip install useshards
+export SHARD_REMOTE=https://shard.example.com
+export SHARD_API_KEY=<your API key>
+```
+
+```python
+from useshards import Shard
+
+with Shard() as shard:
+    sandbox = shard.create("docker.io/library/alpine:3")
+    try:
+        result = sandbox.exec(["uname", "-sr"])
+        print(result.exit_code, result.stdout)
+    finally:
+        sandbox.remove(force=True)
+```
+
+	</TabItem>
+</Tabs>
+
+Replace `https://shard.example.com` with the URL of your server. The TypeScript SDK needs Node 20.3 or later, and the Python SDK needs Python 3.11 or later.
+
+## What you need
+
+You need a server that runs `shard serve`. The daemon never listens on the network. `shard serve` is a separate process that checks an API key and passes each request to the daemon, usually behind an HTTPS proxy. See [the TCP front](https://github.com/presmihaylov/shard/blob/main/docs/daemon.md#the-tcp-front).
+
+You also need an API key from that server. Mint one on the server, with `sudo` on Linux:
+
+```sh
+shard tokens mint --name build-agent --duration 24h
+```
+
+The command prints a JSON record. Its `token` value is the API key. With no `--scopes`, the key can do everything, and with no `--duration`, it never expires. `shard tokens scopes` lists the scopes.
+
+## Connect the CLI
+
+Run `shard setup` with no options, and choose `Connect to a remote server`. The wizard asks for the server URL and the API key. It reads the key from `SHARD_API_KEY` when that is set, and otherwise asks for it with hidden input.
+
+Setup then checks three things: that it can reach the server, that the server accepts the key, and which lifecycle verbs the server supports. A failed check offers to retry, to edit the details, or to exit.
+
+When the checks pass, setup offers to save the connection. Every later `shard` command then uses it, with no flag and no variable. The file is `~/.config/shard/config.json`, or `$XDG_CONFIG_HOME/shard/config.json` when that is set. It holds the key as plain text, so setup makes it readable by your user only.
+
+Without the saved connection, set the two variables in each shell:
+
+```sh
+export SHARD_REMOTE=https://shard.example.com
+export SHARD_API_KEY=<your API key>
+```
+
+A command picks its server and key in this order:
+
+| Setting | First | Then | Last |
+| --- | --- | --- | --- |
+| Server URL | `--remote` | `SHARD_REMOTE` | the saved connection |
+| API key | `SHARD_API_KEY` | | the saved connection |
+
+The saved key goes only to the server it was saved for. `--remote ""` runs a command against the daemon on this machine instead.
+
+## Commands that run on the server only
+
+A few commands act on the daemon's own host, so they refuse a remote: `pull`, `image list`, `image remove`, `image prune`, `info`, `daemon status`, `tokens mint`, `tokens list` and `tokens revoke`. Run them on the server. On a machine with a saved connection, add `--remote ""` to run them against the local daemon.
+
+`shard create` needs no `pull` first. The server fetches a missing image itself.
+
+## Connect an SDK
+
+The SDKs do not read the connection that `shard setup` saves. They read `SHARD_REMOTE` and `SHARD_API_KEY`, or the options you pass, and an option beats the variable:
+
+<Tabs syncKey="lang">
+	<TabItem label="TypeScript">
+
+```ts
+const shard = new Shard({ remote: "https://shard.example.com", apiKey: process.env.MY_SHARD_KEY });
+```
+
+	</TabItem>
+	<TabItem label="Python">
+
+```python
+import os
+
+from useshards import Shard
+
+shard = Shard(remote="https://shard.example.com", api_key=os.environ["MY_SHARD_KEY"])
+```
+
+	</TabItem>
+</Tabs>
+
+## HTTPS and certificates
+
+Use an `https` URL. An `http` URL works, but it encrypts neither the API key nor the requests. Setup asks you to confirm one, and every CLI command and both SDKs print a warning. Use `http` only on localhost or through a trusted encrypted network.
+
+Certificates are always verified, and there is no option to skip that. For a server whose certificate a private certificate authority signed, set `SHARD_CA_FILE` to that authority's PEM file. The saved connection does not store it, so keep the variable set. The TypeScript SDK also takes `caFile`, and the Python SDK takes `ca_file=`.
+
+## Next steps
+
+- **See the full SDK guides.** The [TypeScript README](https://github.com/presmihaylov/shard/blob/main/sdks/typescript/README.md) and the [Python README](https://github.com/presmihaylov/shard/blob/main/sdks/python/README.md) cover background commands, files and errors.
+- **Change the connection.** Run `shard setup` again to check, replace or remove the saved connection.
