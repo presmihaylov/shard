@@ -15,8 +15,8 @@ func TestLocalDaemonNamesTheHostsOwnSetup(t *testing.T) {
 		provider string
 		want     Daemon
 	}{
-		{"linux service", "linux", []string{systemdUnit}, "", Daemon{"is it running? systemctl status shard", "sudo journalctl -u shard"}},
-		{"mac service", "darwin", []string{launchdPlist}, "", Daemon{"is it running? launchctl print system/shard.daemon", "/var/log/shard/daemon.log"}},
+		{"linux service", "linux", []string{systemdUnit}, "", Daemon{serviceHint, "sudo journalctl -u shard"}},
+		{"mac service", "darwin", []string{launchdPlist}, "", Daemon{serviceHint, "/var/log/shard/daemon.log"}},
 		{"linux by hand", "linux", nil, Runc, Daemon{"is it running? sudo shard daemon --provider runc", foregroundLog}},
 		{"mac by hand", "darwin", nil, VZ, Daemon{"is it running? shard daemon --provider vz", foregroundLog}},
 		{"a Mac plist on linux is no service", "linux", []string{launchdPlist}, GVisor, Daemon{"is it running? sudo shard daemon --provider gvisor", foregroundLog}},

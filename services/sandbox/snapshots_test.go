@@ -105,7 +105,7 @@ func TestCreateSnapshotRefusesASandboxWhoseImageIsGone(t *testing.T) {
 	_, err := svc.CreateSnapshot(t.Context(), sandbox.SnapshotRequest{Sandbox: "web"})
 
 	var refused *sandbox.RequestError
-	if !errors.As(err, &refused) || !strings.Contains(err.Error(), "shard image pull "+canonicalAlpine) {
+	if !errors.As(err, &refused) || !strings.Contains(err.Error(), "shard pull "+canonicalAlpine) {
 		t.Errorf("a snapshot over a gone image returned %v, want a refusal that names the pull", err)
 	}
 	if slices.Contains(r.calls, "provider.Snapshot") {

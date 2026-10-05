@@ -71,7 +71,7 @@ type ListResult struct {
 // ConnectError is a socket or a server nothing answers on. Its text is the one line the operator needs.
 type ConnectError struct {
 	Path string
-	// Hint is the question and the command that answers it, as is it running? systemctl status shard.
+	// Hint is the question and the command that fixes it, as is it set up? shard setup.
 	Hint string
 	Err  error
 	// Remote is a server over the network, whose Hint is the cause and the fix: there is no local daemon to check.
