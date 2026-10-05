@@ -257,7 +257,7 @@ func (s *Service) Resume(ctx context.Context, ref string) (models.Sandbox, error
 	}
 
 	if err := s.cfg.Provider.Resume(ctx, id, sb.Checkpoint); err != nil {
-		return models.Sandbox{}, errors.Join(err, Reconcile(ctx, s.cfg.Repo, s.cfg.Provider, id, true))
+		return models.Sandbox{}, imageGone(id, sb.Image, sb.Digest, "resume", errors.Join(err, Reconcile(ctx, s.cfg.Repo, s.cfg.Provider, id, true)))
 	}
 
 	// The restore brought the guest up over rules it has no memory of, so the host's go on again now.
@@ -289,6 +289,9 @@ func (s *Service) Fork(ctx context.Context, ref string, req CopyRequest) (sb mod
 	// A fork captures the source as it runs now, never an older checkpoint of it, so only a running source is forked (SHARD-457).
 	if src.State != models.StateRunning {
 		return models.Sandbox{}, wrongState(source, src, "fork takes a running sandbox", models.CodeSandboxNotRunning)
+	}
+	if err := checkFork(ctx, src); err != nil {
+		return models.Sandbox{}, err
 	}
 
 	var td Teardown
@@ -323,7 +326,7 @@ func (s *Service) Fork(ctx context.Context, ref string, req CopyRequest) (sb mod
 	spec := models.SandboxSpec{ID: id, Name: req.Name, StateDir: claim.dir, Network: claim.net, Resources: src.Resources}
 	if err := s.cfg.Provider.Fork(ctx, source, spec); err != nil {
 		if ctx.Err() == nil {
-			return models.Sandbox{}, err
+			return models.Sandbox{}, imageGone(source, src.Image, src.Digest, "fork", err)
 		}
 		// An interrupt kills the restore process, not what it may already have restored, and only stop ends a sandbox, so a fork that may run is kept.
 		probe, perr := s.status(context.WithoutCancel(ctx), id, "fork")
@@ -410,7 +413,15 @@ func (s *Service) claimCopy(ctx context.Context, td *Teardown, req CopyRequest, 
 	}
 	claim.id = copied.ID
 
-	td.Push(func(context.Context) error { return s.cfg.Repo.Delete(claim.id) })
+	td.Push(func(context.Context) error {
+		err := s.cfg.Repo.Delete(claim.id)
+		// An rm that took the copy's lock first already deleted the record this step gives back (SHARD-582).
+		if errors.Is(err, sandboxstate.ErrNotFound) {
+			return nil
+		}
+
+		return err
+	})
 
 	// The id exists now, so a stop or an rm can name it: they wait here until the copy is done.
 	unlock, err := s.lock(ctx, claim.id)
@@ -418,6 +429,11 @@ func (s *Service) claimCopy(ctx context.Context, td *Teardown, req CopyRequest, 
 		return claim, err
 	}
 	claim.unlock = unlock
+
+	// Read it again under the lock, as Complete does, since an rm in the gap leaves nothing to bring up (SHARD-582).
+	if _, err := s.cfg.Repo.Get(claim.id); err != nil {
+		return claim, fmt.Errorf("the copy was removed before the fork brought it up: %w", err)
+	}
 
 	claim.dir, err = s.cfg.Repo.Dir(claim.id)
 	if err != nil {

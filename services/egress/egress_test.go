@@ -8,6 +8,7 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
+	"runtime"
 	"slices"
 	"strings"
 	"testing"
@@ -207,6 +208,38 @@ func TestParseRuleReadsTheCommandLineSpelling(t *testing.T) {
 	rule, err := ParseRule(models.ActionAllow, "suffix:example.com")
 	if err != nil || rule.Protocol != "tcp" || !slices.Equal(rule.Ports, []int{80, 443}) {
 		t.Errorf("a suffix rule = %+v, %v, want the web ports by default", rule, err)
+	}
+}
+
+// SHARD-627: repeated ranges are refused before they expand, so a policy PUT cannot make the daemon allocate gigabytes.
+func TestParseRuleRefusesPortsPastTheBoundBeforeTheyExpand(t *testing.T) {
+	text := "any tcp:" + strings.Repeat("1-1024,", 4096) + "1-1024"
+
+	var before, after runtime.MemStats
+	runtime.ReadMemStats(&before)
+	_, err := ParseRule(models.ActionAllow, text)
+	runtime.ReadMemStats(&after)
+
+	if err == nil || !strings.Contains(err.Error(), "more than 1024 ports") {
+		t.Fatalf("ParseRule of %d bytes of repeated ranges = %v, want the port bound", len(text), err)
+	}
+	if grew := after.TotalAlloc - before.TotalAlloc; grew > 1<<20 {
+		t.Errorf("the refused rule allocated %d bytes", grew)
+	}
+
+	rule, err := ParseRule(models.ActionAllow, "10.0.0.0/8 tcp:1-512,513-1024")
+	if err != nil || len(rule.Ports) != 1024 {
+		t.Errorf("a rule of exactly 1024 ports = %d ports, %v", len(rule.Ports), err)
+	}
+	for _, text := range []string{"10.0.0.0/8 tcp:1-1024,80", "10.0.0.0/8 tcp:1-1024,1025"} {
+		if _, err := ParseRule(models.ActionAllow, text); err == nil || !strings.Contains(err.Error(), "more than 1024 ports") {
+			t.Errorf("ParseRule(%q) = %v, want the port bound", text, err)
+		}
+	}
+	for _, text := range []string{"any tcp:9223372036854775807", "any tcp:0-9223372036854775807", "any tcp:0", "any tcp:65535-65536"} {
+		if _, err := ParseRule(models.ActionAllow, text); err == nil || !strings.Contains(err.Error(), "not between 1 and 65535") {
+			t.Errorf("ParseRule(%q) = %v, want the port range", text, err)
+		}
 	}
 }
 

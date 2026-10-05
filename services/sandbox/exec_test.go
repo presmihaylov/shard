@@ -11,10 +11,12 @@ import (
 	"slices"
 	"strings"
 	"sync"
+	"syscall"
 	"testing"
 	"time"
 
 	"github.com/presmihaylov/shard/models"
+	"github.com/presmihaylov/shard/services/bundle"
 	"github.com/presmihaylov/shard/services/sandbox"
 	"github.com/presmihaylov/shard/services/sandboxstate"
 )
@@ -233,6 +235,54 @@ func TestExecRefusesARequestWithNoCommand(t *testing.T) {
 	}
 	if slices.Contains(r.calls, "provider.Exec") {
 		t.Error("exec reached the provider with no command to run")
+	}
+}
+
+// A user the guest's tree cannot resolve is the caller's to fix: a request error in the guest's words, never the host rootfs (SHARD-648).
+func TestExecAsAUserTheTreeCannotResolveIsARequestError(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		user string
+		// guest makes the tree's etc/passwd what a guest with root in it left there.
+		guest func(passwd string) error
+		want  string
+	}{
+		{name: "an image with no passwd", user: "nobody", guest: func(string) error { return nil }, want: `resolve the user "nobody": the image has no passwd`},
+		{name: "a passwd that links out of the tree", user: "nobody", guest: func(passwd string) error { return os.Symlink("/etc/shadow", passwd) }, want: "/etc/passwd is a symbolic link"},
+		{name: "a numeric id over a passwd that links out", user: "65534", guest: func(passwd string) error { return os.Symlink("/etc/shadow", passwd) }, want: "/etc/passwd is a symbolic link"},
+		{name: "an etc that links out of the tree", user: "nobody", guest: func(passwd string) error {
+			etc := filepath.Dir(passwd)
+			if err := os.Remove(etc); err != nil {
+				return err
+			}
+			return os.Symlink("/etc", etc)
+		}, want: "/etc is a symbolic link"},
+		{name: "a passwd that is a fifo", user: "nobody", guest: func(passwd string) error { return syscall.Mkfifo(passwd, 0o600) }, want: "/etc/passwd is a p"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			rootfs := t.TempDir()
+			if err := os.MkdirAll(filepath.Join(rootfs, "etc"), 0o755); err != nil {
+				t.Fatal(err)
+			}
+			if err := tc.guest(filepath.Join(rootfs, "etc/passwd")); err != nil {
+				t.Fatal(err)
+			}
+			svc, l := newService(t, &recorder{}, running())
+			l.provider.serve = func(spec models.ExecSpec) (models.ExitStatus, error) {
+				if _, err := bundle.ResolveUser(rootfs, spec.User); err != nil {
+					return models.ExitStatus{}, fmt.Errorf("sandbox sandbox1: %w", err)
+				}
+				t.Errorf("the exec resolved the user %q", spec.User)
+
+				return models.ExitStatus{Code: 1}, nil
+			}
+
+			_, _, _, err := execOf(t, l, svc, "sandbox1", sandbox.ExecRequest{Command: []string{"id"}, User: tc.user}, "")
+			refused, ok := errors.AsType[*sandbox.RequestError](err)
+			if !ok || !strings.HasPrefix(refused.Public(), tc.want) || strings.Contains(refused.Public(), rootfs) {
+				t.Fatalf("exec as %s = %v, want a request error that starts %q and never names the host rootfs", tc.user, err, tc.want)
+			}
+		})
 	}
 }
 

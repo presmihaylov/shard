@@ -122,14 +122,14 @@ func TestSecretSetListRemoveRoundTrip(t *testing.T) {
 func TestSecretSetRefusesAnEmptyStdinAndNoDestination(t *testing.T) {
 	var out bytes.Buffer
 
-	app, _ := newSecretApp(t, &out, "\n", nil)
+	app, _ := newSecretApp(t, &out, "\n", &fakeLifecycleRepo{r: &recorder{}})
 
 	err := app.Run(t.Context(), []string{"secret", "set", "--destination", "api.example.com", "KEY"})
 	if err == nil || !strings.Contains(err.Error(), "empty") {
 		t.Errorf("set with an empty stdin = %v", err)
 	}
 
-	app, _ = newSecretApp(t, &out, "value-123456\n", nil)
+	app, _ = newSecretApp(t, &out, "value-123456\n", &fakeLifecycleRepo{r: &recorder{}})
 
 	err = app.Run(t.Context(), []string{"secret", "set", "KEY"})
 	if err == nil || !strings.Contains(err.Error(), "no destination") {
@@ -145,12 +145,13 @@ func TestSecretSetRefusesAnEmptyStdinAndNoDestination(t *testing.T) {
 func TestSecretSetRefusesToMoveAPlaceholderASandboxHolds(t *testing.T) {
 	var out bytes.Buffer
 
-	repo := &fakeLifecycleRepo{r: &recorder{}, left: []models.Sandbox{{ID: "sb1", Secrets: []string{"KEY"}}}}
+	repo := &fakeLifecycleRepo{r: &recorder{}}
 	app, root := newSecretApp(t, &out, "value-654321\n", repo)
 
 	if err := app.Run(t.Context(), []string{"secret", "set", "--destination", "api.example.com", "KEY"}); err != nil {
 		t.Fatal(err)
 	}
+	repo.left = []models.Sandbox{{ID: "sb1", Secrets: []string{"KEY"}}}
 
 	app, _ = newSecretApp(t, &out, "value-654321\n", repo)
 	app.Root = root
@@ -379,14 +380,15 @@ func TestSecretListListsTheReadableOnesAndFails(t *testing.T) {
 func TestSecretRemoveRefusesWhileASandboxHoldsIt(t *testing.T) {
 	var out bytes.Buffer
 
-	repo := &fakeLifecycleRepo{r: &recorder{}, left: []models.Sandbox{
-		{ID: "sandbox1", State: models.StateStopped, Secrets: []string{"KEY"}},
-		{ID: "sandbox2", State: models.StateRunning, Secrets: []string{"OTHER"}},
-	}}
+	repo := &fakeLifecycleRepo{r: &recorder{}}
 	app, root := newSecretApp(t, &out, "value-123456\n", repo)
 
 	if err := app.Run(t.Context(), []string{"secret", "set", "--destination", "api.example.com", "KEY"}); err != nil {
 		t.Fatal(err)
+	}
+	repo.left = []models.Sandbox{
+		{ID: "sandbox1", State: models.StateStopped, Secrets: []string{"KEY"}},
+		{ID: "sandbox2", State: models.StateRunning, Secrets: []string{"OTHER"}},
 	}
 
 	err := app.Run(t.Context(), []string{"secret", "remove", "KEY"})
@@ -408,12 +410,13 @@ func TestSecretRemoveRefusesWhileASandboxHoldsIt(t *testing.T) {
 func TestSecretRemoveRefusesWhenARecordIsUnreadable(t *testing.T) {
 	var out bytes.Buffer
 
-	repo := &fakeLifecycleRepo{r: &recorder{}, unreadable: os.ErrPermission}
+	repo := &fakeLifecycleRepo{r: &recorder{}}
 	app, _ := newSecretApp(t, &out, "value-123456\n", repo)
 
 	if err := app.Run(t.Context(), []string{"secret", "set", "--destination", "api.example.com", "KEY"}); err != nil {
 		t.Fatal(err)
 	}
+	repo.unreadable = os.ErrPermission
 
 	err := app.Run(t.Context(), []string{"secret", "remove", "KEY"})
 	if err == nil || !strings.Contains(err.Error(), "cannot tell") {

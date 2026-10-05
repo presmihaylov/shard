@@ -4,6 +4,7 @@ package gvisor_test
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"os"
 	"os/exec"
@@ -159,8 +160,7 @@ func TestAStoppedSandboxStartsAgainOverWhatItKept(t *testing.T) {
 	}
 }
 
-// runsc start only unblocks the task and reads nothing back, so a Start that returned nil used to
-// mean nothing at all: the supervisor could already be dead over an entrypoint that does not exist.
+// runsc start alone proves no launch, so the supervisor's refusal must reach the caller.
 func TestStartRefusesAnEntrypointThatNeverRan(t *testing.T) {
 	h := newHarness(t)
 	spec := h.newSpec(t, "/no/such/entrypoint")
@@ -173,9 +173,12 @@ func TestStartRefusesAnEntrypointThatNeverRan(t *testing.T) {
 	if err == nil {
 		t.Fatal("Start reported success for an entrypoint the image does not hold")
 	}
-	// The message carries what the supervisor printed, because the caller drops the log with the rest.
-	if !strings.Contains(err.Error(), "did not start") || !strings.Contains(err.Error(), "/no/such/entrypoint") {
-		t.Errorf("Start failed with %v, want it to name the entrypoint that did not start", err)
+	var refused *models.CommandNotStartedError
+	if !errors.As(err, &refused) {
+		t.Fatalf("Start failed with %v, want CommandNotStartedError", err)
+	}
+	if refused.Code != models.CommandNotFoundExitCode {
+		t.Errorf("Start returned exit code %d, want %d", refused.Code, models.CommandNotFoundExitCode)
 	}
 
 	assertAlive(t, h, spec.ID, false)
@@ -267,21 +270,20 @@ func TestCreateRefusesASandboxRunscLostThatIsStillMounted(t *testing.T) {
 	assertMounted(t, h, spec.ID, true)
 }
 
-// Hand-deleted runsc metadata over a live mount is the one case where an unmount drops a running
-// sandbox's rootfs. Remove must refuse instead, and shard remove --force is SHARD-24's answer.
-func TestRemoveRefusesWhenRunscLostASandboxThatIsStillMounted(t *testing.T) {
+// The cgroup proves the rootfs is idle even when the runtime metadata is gone.
+func TestRemoveDropsTheMountAfterRunscLostASandbox(t *testing.T) {
 	h := newHarness(t)
 	spec := h.start(t, "/bin/sh", "-c", "sleep 3600")
 	h.loseTheSandbox(t, spec.ID)
 
-	if err := h.provider.Remove(t.Context(), spec.ID); err == nil {
-		t.Fatal("Remove unmounted a sandbox runsc no longer knows about")
+	if err := h.provider.Remove(t.Context(), spec.ID); err != nil {
+		t.Fatalf("Remove after the runtime state went: %v", err)
 	}
 
-	assertMounted(t, h, spec.ID, true)
+	assertMounted(t, h, spec.ID, false)
 }
 
-// Stop reaches the same unmount as Remove, so it owes the same refusal over hand-deleted metadata.
+// Stop uses the runtime status, so absent metadata cannot prove that the rootfs is idle.
 func TestStopRefusesWhenRunscLostASandboxThatIsStillMounted(t *testing.T) {
 	h := newHarness(t)
 	spec := h.start(t, "/bin/sh", "-c", "sleep 3600")
@@ -480,7 +482,7 @@ func (h *harness) loseTheSandbox(t *testing.T, id string) {
 		t.Fatalf("the state directory of %s: %v", id, err)
 	}
 
-	// Stop and Remove now refuse this mount, so only the test can drop it before the TempDir removal.
+	// An orphaned mount can survive a refusal, so the test owns its cleanup.
 	t.Cleanup(func() { exec.Command("umount", "-l", filepath.Join(dir, "bundle", "rootfs")).Run() })
 }
 

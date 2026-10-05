@@ -80,6 +80,9 @@ func publicStoppedReason(reason string) string {
 	case "", sandbox.OOMKilledReason, sandbox.DiedReason, sandbox.LostReason:
 		return reason
 	}
+	if strings.HasPrefix(reason, sandbox.SupervisorFailedReason+":") && strings.Contains(reason, models.ErrLostState.Error()) {
+		return "the sandbox lost its lifecycle state; start it again"
+	}
 	if reason == sandbox.SupervisorFailedReason || strings.HasPrefix(reason, sandbox.SupervisorFailedReason+":") {
 		return "the sandbox supervisor failed; remove it and create another sandbox"
 	}

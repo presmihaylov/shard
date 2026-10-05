@@ -39,6 +39,8 @@ const (
 	MaxSourceConns = 1024
 	// maxHeaderBytes bounds one request's headers, where net/http's default of 1 MiB let a guest write a megabyte of log per request (SHARD-345).
 	maxHeaderBytes = 64 << 10
+	// maxResponseHeaderBytes bounds an upstream's headers as tightly, where the transport's default of 10 MiB times MaxSourceConns could fill the daemon (SHARD-547).
+	maxResponseHeaderBytes = 64 << 10
 	// maxHostLen is the longest DNS name, and so the longest host the proxy judges or prints.
 	maxHostLen = 253
 )
@@ -51,6 +53,8 @@ var (
 	heldReadTimeout = 30 * time.Second
 	// heldBudget bounds what one source holds at once to put secrets in, its bodies and what a value adds, so it cannot fill the daemon (SHARD-348).
 	heldBudget = 32 << 20
+	// responseHeaderTimeout ends an upstream wait that held a goroutine for ever; a model API sends no header until a call that is not streamed ends, and its SDKs wait 10 minutes (SHARD-547).
+	responseHeaderTimeout = 10 * time.Minute
 )
 
 var (
@@ -139,8 +143,10 @@ func New(cfg Config) (*Server, error) {
 				return dialer.DialContext(ctx, "tcp", upstream.String())
 			},
 			// A pooled connection would outlive the decision that opened it, so every request dials afresh.
-			DisableKeepAlives: true,
-			TLSClientConfig:   &tls.Config{MinVersion: tls.VersionTLS12},
+			DisableKeepAlives:      true,
+			TLSClientConfig:        &tls.Config{MinVersion: tls.VersionTLS12},
+			ResponseHeaderTimeout:  responseHeaderTimeout,
+			MaxResponseHeaderBytes: maxResponseHeaderBytes,
 		},
 	}, nil
 }

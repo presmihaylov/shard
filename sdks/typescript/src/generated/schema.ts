@@ -1373,14 +1373,14 @@ export interface operations {
         };
         requestBody?: never;
         responses: {
-            /** @description A WebSocket follow with follow=true: one egress decision per text message, until the sandbox stops or is removed. */
+            /** @description A WebSocket follow with follow=true: one egress decision per text message, until the sandbox stops, fails or is removed. */
             101: {
                 headers: {
                     [name: string]: unknown;
                 };
                 content?: never;
             };
-            /** @description The egress decisions, oldest first; with follow one decision per line until the sandbox stops or is removed. */
+            /** @description The egress decisions, oldest first; with follow one decision per line until the sandbox stops, fails or is removed. */
             200: {
                 headers: {
                     /** @description The older decisions the read left out; absent when it left out none. */

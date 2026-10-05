@@ -73,8 +73,8 @@ func readSigningKey(path string) ([]byte, error) {
 	if !info.Mode().IsRegular() {
 		return nil, fmt.Errorf("the signing key file %s is not a regular file", path)
 	}
-	if info.Mode().Perm()&0o007 != 0 {
-		return nil, fmt.Errorf("the signing key file %s is at mode %04o, which everyone on the host can read", path, info.Mode().Perm())
+	if err := exposed("the signing key file "+path, info.Mode().Perm()); err != nil {
+		return nil, err
 	}
 
 	raw, err := os.ReadFile(path)
@@ -92,6 +92,28 @@ func readSigningKey(path string) ([]byte, error) {
 	}
 
 	return []byte(key), nil
+}
+
+// exposed refuses a mode that gives everyone on the host any access, and names the access it gives.
+func exposed(subject string, perm fs.FileMode) error {
+	var can []string
+	for _, bit := range []struct {
+		mask fs.FileMode
+		verb string
+	}{{0o004, "read"}, {0o002, "write"}, {0o001, "execute"}} {
+		if perm&bit.mask != 0 {
+			can = append(can, bit.verb)
+		}
+	}
+	if len(can) == 0 {
+		return nil
+	}
+	access := can[len(can)-1]
+	if len(can) > 1 {
+		access = strings.Join(can[:len(can)-1], ", ") + " and " + access
+	}
+
+	return fmt.Errorf("%s is at mode %04o, which everyone on the host can %s", subject, perm, access)
 }
 
 // createSigningKey writes a random key to path at 0600, or reads the one a concurrent first use landed there first.
