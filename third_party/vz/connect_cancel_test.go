@@ -1,36 +1,42 @@
 package vz
 
 import (
-	"runtime/cgo"
 	"testing"
 )
 
-// Cancel keeps the handle valid for a late framework completion (SHARD-619).
-func TestConnectCancelKeepsHandleForLateCompletion(t *testing.T) {
-	managed := &managedConnect{fn: func(*VirtioSocketConnection, error) {
+// Cancel reclaims the dial's registry slot and marks it dead, so a guest that never answers leaks nothing and a late callback delivers to nobody (SHARD-619).
+func TestConnectCancelReclaimsTheRegistrySlot(t *testing.T) {
+	id := pendingConnectSeq.Add(1)
+	managed := &managedConnect{id: id, fn: func(*VirtioSocketConnection, error) {
 		t.Error("fn ran for a dial the caller cancelled")
 	}}
-	handle := cgo.NewHandle(managed)
-
-	defer func() {
-		if r := recover(); r != nil {
-			t.Fatalf("resolving the handle after cancel panicked: %v", r)
-		}
-	}()
+	pendingConnects.Store(id, managed)
 
 	managed.cancel() // the caller timed out and gave up
 
-	// connectionHandler's first act on a late completion; on the free-on-cancel code this panicked.
-	got, ok := handle.Value().(*managedConnect)
-	if !ok {
-		t.Fatalf("handle resolved to %T; want *managedConnect", handle.Value())
+	if _, ok := pendingConnects.Load(id); ok {
+		t.Error("cancel left the registry slot, so the never-answered dial leaks")
 	}
-	fn, dead := got.take()
+
+	fn, dead := managed.take()
 	if !dead {
-		t.Error("cancel did not mark the dial dead, so a late callback would deliver to a gone caller")
+		t.Error("cancel did not mark the dial dead, so a callback that still wins the slot would deliver to a gone caller")
 	}
 	if fn != nil {
 		t.Error("cancel did not drop the callback, so the dial still retains it and the channel it closes over")
 	}
-	handle.Delete() // the callback owns the delete
+}
+
+// A late callback on a reclaimed slot resolves no value, so it never panics on a freed handle (SHARD-619).
+func TestLateCallbackFindsNoRegistrySlot(t *testing.T) {
+	id := pendingConnectSeq.Add(1)
+	managed := &managedConnect{id: id, fn: func(*VirtioSocketConnection, error) {}}
+	pendingConnects.Store(id, managed)
+
+	managed.cancel()
+
+	// connectionHandler's first act on a completion; a reclaimed slot must be a miss, not a freed-handle panic.
+	if _, ok := pendingConnects.LoadAndDelete(id); ok {
+		t.Error("a late callback still found the slot, so cancel did not reclaim it")
+	}
 }

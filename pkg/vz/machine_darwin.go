@@ -219,7 +219,7 @@ func awaitConnect(port uint32, timeout time.Duration, start func(fn func(net.Con
 	done := make(chan result, 1)
 	var mu sync.Mutex
 	abandoned := false
-	// The framework callback frees the handle; cancel only marks the dial dead (SHARD-619).
+	// cancel reclaims the dial's registry slot, so a guest that never answers leaks nothing and a late callback delivers to nobody (SHARD-619).
 	cancel := start(func(conn net.Conn, err error) {
 		mu.Lock()
 		defer mu.Unlock()
