@@ -97,6 +97,29 @@ func TestApplyStopsAtTheFailedStepAndSaysWhatStays(t *testing.T) {
 	}
 }
 
+// The retry hint names shard when it is on PATH, and the full path of the running binary when it is not. (SHARD-743)
+func TestTheRetryHintNamesAReachableCommand(t *testing.T) {
+	broke := func(context.Context) error { return errors.New("nope") }
+	for _, c := range []struct {
+		name string
+		host Host
+		want string
+	}{
+		{"on PATH", Host{LookPath: func(string) (string, error) { return "/usr/local/bin/shard", nil }, Executable: "/tmp/build/shard"}, "Run `shard setup` again to retry."},
+		{"not on PATH", Host{LookPath: func(string) (string, error) { return "", errors.New("not found") }, Executable: "/tmp/build/shard"}, "Run `/tmp/build/shard setup` again to retry."},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			ui := &fakeUI{}
+			if err := (&Setup{Host: c.host, UI: ui}).apply(t.Context(), "Setting up", []Step{{"only", broke}}); err == nil {
+				t.Fatal("apply of a failing step returned no error")
+			}
+			if !slices.Contains(ui.printed, c.want) {
+				t.Errorf("printed %q, want it to contain %q", ui.printed, c.want)
+			}
+		})
+	}
+}
+
 func TestApplyPrintsTheLinesOfAProblem(t *testing.T) {
 	ui := &fakeUI{}
 	problem := &Problem{Lines: []string{"Could not download runsc", "Check the network and run shard setup again."}}

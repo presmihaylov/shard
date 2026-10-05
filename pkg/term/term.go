@@ -547,6 +547,23 @@ func (c *Checklist) Attention(i int, detail ...string) error { return c.end(i, a
 // Fail marks step i failed, with the reason in the lines under it.
 func (c *Checklist) Fail(i int, detail ...string) error { return c.end(i, failed, detail) }
 
+// Progress shows detail under the running step i: live on a terminal, and one plain indented line at a time without one.
+func (c *Checklist) Progress(i int, detail ...string) error {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if !c.t.interactive {
+		lines := make([]string, 0, len(detail))
+		for _, d := range detail {
+			lines = append(lines, "  "+d)
+		}
+
+		return errors.Join(c.err, c.t.Print(lines...))
+	}
+	c.steps[i].detail = detail
+
+	return errors.Join(c.err, c.draw())
+}
+
 func (c *Checklist) end(i int, state checkState, detail []string) error {
 	c.stopSpinner()
 

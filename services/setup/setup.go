@@ -35,6 +35,8 @@ type Host struct {
 	Env      func(string) string
 	// Run runs one command as it is given; a step that needs root wraps it in sudo itself.
 	Run func(ctx context.Context, name string, args ...string) ([]byte, error)
+	// LookPath finds a command on PATH, so a hint knows whether shard is reachable by name yet.
+	LookPath func(string) (string, error)
 }
 
 // releases is where setup looks up and downloads a shard release.
@@ -60,7 +62,22 @@ func NewHost(version string) (Host, error) {
 		Run: func(ctx context.Context, name string, args ...string) ([]byte, error) {
 			return exec.CommandContext(ctx, name, args...).CombinedOutput()
 		},
+		LookPath: exec.LookPath,
 	}, nil
+}
+
+// retryCommand is "shard" once it is on PATH, else the full path of the running binary, so the hint always works.
+func (h Host) retryCommand() string {
+	if h.LookPath != nil {
+		if _, err := h.LookPath("shard"); err == nil {
+			return "shard"
+		}
+	}
+	if h.Executable == "" {
+		return "shard"
+	}
+
+	return h.Executable
 }
 
 // Question names one choice, so the flags can answer it and a run without a terminal can name the flag it lacks.
@@ -100,6 +117,8 @@ type Checklist interface {
 	Done(i int) error
 	Attention(i int, detail ...string) error
 	Fail(i int, detail ...string) error
+	// Progress updates the running step's detail lines, so a long step like a download can show how far it is.
+	Progress(i int, detail ...string) error
 }
 
 // Step is one line of a checklist and the change it makes. Do is safe to run again after a stop.
@@ -132,6 +151,8 @@ var ErrDeclined = errors.New("setup was cancelled; nothing changed")
 type Setup struct {
 	Host Host
 	UI   UI
+	// step reports progress on the running step; apply sets it per step, and it is nil outside apply.
+	step func(detail ...string) error
 }
 
 // The first choice, in the order the wizard shows it.
@@ -198,10 +219,13 @@ func (s *Setup) apply(ctx context.Context, title string, steps []Step) error {
 		if err := list.Start(i); err != nil {
 			return err
 		}
-		if err := step.Do(ctx); err != nil {
+		s.step = func(detail ...string) error { return list.Progress(i, detail...) }
+		err := step.Do(ctx)
+		s.step = nil
+		if err != nil {
 			return errors.Join(
 				list.Fail(i, problemLines(err)...),
-				s.UI.Print("", "Setup stopped. Earlier completed steps remain in place.", "Run `shard setup` again to retry."),
+				s.UI.Print("", "Setup stopped. Earlier completed steps remain in place.", fmt.Sprintf("Run `%s setup` again to retry.", s.Host.retryCommand())),
 				&StoppedError{Step: step.Title, Err: err},
 			)
 		}
