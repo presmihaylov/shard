@@ -71,7 +71,7 @@ func TestResolveUserRefusesAPasswdThatIsAFifo(t *testing.T) {
 		if err == nil {
 			t.Fatal("ResolveUser read a passwd file that is a fifo")
 		}
-		requireGuestRefusal(t, err, rootfs, "/etc/passwd is a p")
+		requireGuestRefusal(t, err, rootfs, "/etc/passwd is a named pipe")
 		if !strings.Contains(err.Error(), "regular file") {
 			t.Errorf("the refusal is %q, and it must say what the file must be", err)
 		}
@@ -180,7 +180,7 @@ func TestResolveUserRefusesAPasswdThatIsADirectory(t *testing.T) {
 	if err == nil {
 		t.Fatal("ResolveUser read a passwd that is a directory")
 	}
-	requireGuestRefusal(t, err, rootfs, "/etc/passwd is a d")
+	requireGuestRefusal(t, err, rootfs, "/etc/passwd is a directory")
 }
 
 // A socket, like a device with no driver, fails the open itself, so the file type check after it never runs.
@@ -211,7 +211,7 @@ func TestResolveUserRefusesAPasswdThatIsASocket(t *testing.T) {
 	if err == nil {
 		t.Fatal("ResolveUser read a passwd that is a socket")
 	}
-	requireGuestRefusal(t, err, rootfs, "/etc/passwd is a S")
+	requireGuestRefusal(t, err, rootfs, "/etc/passwd is a socket")
 }
 
 // requireGuestRefusal holds a database refusal to what a public route may answer: the guest's path, never where the host keeps the tree (SHARD-648).

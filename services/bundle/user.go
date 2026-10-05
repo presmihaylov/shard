@@ -11,6 +11,8 @@ import (
 	"strconv"
 	"strings"
 	"syscall"
+
+	"github.com/presmihaylov/shard/pkg/filemode"
 )
 
 // errNoEntry lets a numeric id fall back to the plain id, while a real read error still propagates.
@@ -306,5 +308,5 @@ func openFailed(root *os.Root, rel, full string, err error) error {
 }
 
 func notRegular(rel string, mode fs.FileMode) error {
-	return &UserDatabaseError{Err: fmt.Errorf("/%s is a %s, and a user database must be a regular file", rel, mode.Type())}
+	return &UserDatabaseError{Err: fmt.Errorf("/%s is a %s, and a user database must be a regular file", rel, filemode.Name(mode))}
 }
