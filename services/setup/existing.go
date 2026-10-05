@@ -12,6 +12,8 @@ import (
 	"strings"
 
 	"github.com/presmihaylov/shard/pkg/term"
+	"github.com/presmihaylov/shard/pkg/vzshim"
+	"github.com/presmihaylov/shard/services/kernel"
 	"github.com/presmihaylov/shard/services/sandboxstate"
 )
 
@@ -102,15 +104,29 @@ func (s *Setup) existing(ctx context.Context, inst Installation) error {
 // repair re-runs the steps of the recorded choices, so the provider and the startup setting stay what they were.
 func (s *Setup) repair(ctx context.Context, m Manifest, service ServiceState) error {
 	var problems []string
+	gone := map[string]bool{}
 	for _, f := range m.Files {
 		_, err := os.Lstat(filepath.Join(s.Host.Root, f.Path))
 		if errors.Is(err, fs.ErrNotExist) {
 			problems = append(problems, f.Path+" is missing.")
+			gone[filepath.Base(f.Path)] = true
 			continue
 		}
 		if err != nil {
 			return fmt.Errorf("check %s: %w", f.Path, err)
 		}
+	}
+	for _, name := range missingTools(s.Host, m.Provider).names() {
+		if !gone[name] {
+			problems = append(problems, name+" is missing.")
+		}
+	}
+	runtime, err := s.missingRuntime(ctx, m.Provider)
+	if err != nil {
+		return err
+	}
+	for _, f := range runtime {
+		problems = append(problems, f+" is missing.")
 	}
 	if m.StartAtBoot && service != ServiceActive {
 		problems = append(problems, "The background service is not running.")
@@ -124,6 +140,11 @@ func (s *Setup) repair(ctx context.Context, m Manifest, service ServiceState) er
 	if err != nil {
 		return err
 	}
+	// A running daemon built its provider already, and puts the runtime files back only when it builds it again.
+	if len(runtime) > 0 && service == ServiceActive {
+		restart := Step{Title: "Restart the daemon", Do: func(ctx context.Context) error { return restartService(ctx, s.Host, m) }}
+		steps = slices.Insert(steps, len(steps)-1, restart)
+	}
 	lines := []string{"Setup found these problems:", ""}
 	for _, p := range problems {
 		lines = append(lines, "  "+p)
@@ -131,6 +152,9 @@ func (s *Setup) repair(ctx context.Context, m Manifest, service ServiceState) er
 	lines = append(lines, "", "Setup will run these steps again:")
 	for _, st := range steps {
 		lines = append(lines, "  "+st.Title)
+	}
+	if len(runtime) > 0 && service == ServiceNone {
+		lines = append(lines, "", "Then restart `shard daemon`, which puts back the files it keeps in "+DataDir+".")
 	}
 	lines = append(lines, "", "Your settings and sandbox data stay in place.", "")
 	if err := s.UI.Print(lines...); err != nil {
@@ -144,6 +168,57 @@ func (s *Setup) repair(ctx context.Context, m Manifest, service ServiceState) er
 	}
 
 	return s.apply(ctx, "Repairing Shard", steps)
+}
+
+// runtimeFiles are what the daemon of provider writes under its root when it builds the provider: the vz shim and guest init, and a microVM's kernel.
+func runtimeFiles(h Host, provider string) ([]string, error) {
+	var files []string
+	if provider == VZ {
+		files = vzshim.Paths(filepath.Join(DataDir, vzshim.Dir))
+	}
+	if provider != VZ && provider != Firecracker {
+		return files, nil
+	}
+	k, err := kernel.Path(DataDir, h.Arch)
+	if err != nil {
+		return nil, err
+	}
+
+	return append(files, k), nil
+}
+
+// missingRuntime is each runtime file that is gone; on Linux the data root is root's, so the check runs with administrator access.
+func (s *Setup) missingRuntime(ctx context.Context, provider string) ([]string, error) {
+	h := s.Host
+	files, err := runtimeFiles(h, provider)
+	if err != nil || len(files) == 0 {
+		return nil, err
+	}
+	check := run
+	if h.OS == "linux" {
+		if err := s.admin(ctx); err != nil {
+			return nil, err
+		}
+		check = privileged
+	}
+	args := []string{"-c", `for f in "$@"; do [ -e "$f" ] || echo "$f"; done`, "sh"}
+	for _, f := range files {
+		args = append(args, rooted(h, f))
+	}
+	out, err := check(ctx, h, "sh", args...)
+	if err != nil {
+		return nil, fmt.Errorf("check the files of %s: %w", providerTitle(provider), err)
+	}
+
+	gone := strings.Split(strings.TrimSpace(string(out)), "\n")
+	var missing []string
+	for _, f := range files {
+		if slices.Contains(gone, rooted(h, f)) {
+			missing = append(missing, f)
+		}
+	}
+
+	return missing, nil
 }
 
 // replacement is one installed binary and the release file that replaces it.

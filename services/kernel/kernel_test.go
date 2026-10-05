@@ -61,6 +61,9 @@ func TestEnsureDownloadsOnceAndVerifies(t *testing.T) {
 	if k.SHA256 != sum(body) || k.Version != Version || k.Arch != "test" {
 		t.Fatalf("unexpected kernel %+v", k)
 	}
+	if path, err := Path(root, "test"); err != nil || k.Path != path {
+		t.Fatalf("Ensure kept the kernel at %s, and Path names %s (%v)", k.Path, path, err)
+	}
 	if _, err := s.Ensure(context.Background(), "test"); err != nil {
 		t.Fatal(err)
 	}

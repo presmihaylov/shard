@@ -26,6 +26,14 @@ const (
 	entitlementsName = "entitlements.plist"
 )
 
+// Dir is where under the daemon root the shim and the guest init are installed.
+const Dir = "vz"
+
+// Paths are the files Install and InstallInit write under dir.
+func Paths(dir string) []string {
+	return []string{filepath.Join(dir, shimName), filepath.Join(dir, initName)}
+}
+
 // ErrNoShim is what Install returns from a binary built by go build alone, without make build-darwin.
 var ErrNoShim = errors.New("vzshim: this binary was built without shard-vz-shim: run make build-darwin")
 

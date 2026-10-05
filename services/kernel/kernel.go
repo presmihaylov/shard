@@ -63,6 +63,16 @@ func URL(arch string) (string, error) {
 	return "https://github.com/presmihaylov/shard/releases/download/" + Tag() + "/" + a.name, nil
 }
 
+// Path is where under the daemon root Ensure keeps the release kernel for arch.
+func Path(root, arch string) (string, error) {
+	a, ok := artifacts[arch]
+	if !ok {
+		return "", fmt.Errorf("no guest kernel for arch %q", arch)
+	}
+
+	return filepath.Join(root, "kernel", Tag(), a.name), nil
+}
+
 // Service owns <root>/kernel, one directory per Tag.
 type Service struct {
 	root   string
@@ -114,7 +124,7 @@ func WithLogger(l *log.Logger) Option {
 
 // New prepares the kernel tree under root, which is the daemon root.
 func New(root string, opts ...Option) *Service {
-	s := &Service{root: filepath.Join(root, "kernel"), client: http.DefaultClient, log: log.New(io.Discard, "", 0)}
+	s := &Service{root: root, client: http.DefaultClient, log: log.New(io.Discard, "", 0)}
 	for _, opt := range opts {
 		opt(s)
 	}
@@ -129,11 +139,11 @@ func (s *Service) Ensure(ctx context.Context, arch string) (Kernel, error) {
 		return s.verified(s.local, arch, s.localSHA256)
 	}
 
-	a, ok := artifacts[arch]
-	if !ok {
-		return Kernel{}, fmt.Errorf("no guest kernel for arch %q", arch)
+	path, err := Path(s.root, arch)
+	if err != nil {
+		return Kernel{}, err
 	}
-	path := filepath.Join(s.root, Tag(), a.name)
+	a := artifacts[arch]
 
 	s.mu.Lock()
 	defer s.mu.Unlock()

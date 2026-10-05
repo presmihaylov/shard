@@ -11,6 +11,7 @@ import (
 	"testing"
 
 	"github.com/presmihaylov/shard/services/client"
+	"github.com/presmihaylov/shard/services/kernel"
 )
 
 // fakeHost runs file commands for real under a temp root and answers the service managers from canned output.
@@ -56,7 +57,7 @@ func (f *fakeHost) run(ctx context.Context, name string, args ...string) ([]byte
 			return []byte(f.launchd), errors.New("exit status 113")
 		}
 		return []byte(f.launchd), nil
-	case "mkdir", "install", "mv", "rm", "rmdir", "find":
+	case "mkdir", "install", "mv", "rm", "rmdir", "find", "sh":
 		return exec.CommandContext(ctx, name, args...).CombinedOutput()
 	}
 	if filepath.IsAbs(name) {
@@ -95,13 +96,18 @@ func (f *fakeHost) read(t *testing.T, path string) (string, bool) {
 	return string(data), true
 }
 
-// installed writes the files of a setup install, the manifest that names them, and the shard the user runs.
+// installed writes the files of a setup install, the manifest that names them, the provider's tools and the shard the user runs.
 func (f *fakeHost) installed(t *testing.T, m Manifest) {
 	t.Helper()
 	f.write(t, "/home/u/.local/bin/shard", "old cli")
 	for _, o := range m.Files {
 		if o.Kind != KindData {
 			f.write(t, o.Path, "old "+filepath.Base(o.Path))
+		}
+	}
+	for _, tl := range toolsFor(f.host(nil), m.Provider) {
+		if _, ok := lookPath(f.host(nil), tl.Name); !ok {
+			f.write(t, "/usr/bin/"+tl.Name, "#!/bin/sh\n")
 		}
 	}
 	if err := saveManifest(t.Context(), f.host(nil), m); err != nil {
@@ -309,6 +315,71 @@ func TestRepairShowsTheProblemsBeforeItAsks(t *testing.T) {
 		t.Fatalf("repair = %v, want ErrDeclined", err)
 	}
 	said(t, ui, "/usr/local/bin/shard-init is missing.", "The background service is not running.")
+}
+
+func TestRepairFindsADeletedVMShimAndKernel(t *testing.T) {
+	f := newFakeHost(t)
+	h := f.host(nil)
+	h.OS, h.Arch, h.Env = "darwin", "arm64", func(string) string { return "u" }
+	m := Manifest{Version: "v0.1.0", Provider: VZ, StartAtBoot: true, Files: []Owned{
+		{Path: "/usr/local/bin/shard", Kind: KindBinary},
+		{Path: launchdPlist, Kind: KindService},
+	}}
+	f.installed(t, m)
+	f.write(t, "/var/lib/shard/vz/shard-init", "init")
+	k, err := kernel.Path(DataDir, "arm64")
+	if err != nil {
+		t.Fatal(err)
+	}
+	ui := confirming(false)
+
+	if err := (&Setup{Host: h, UI: ui}).repair(t.Context(), m, ServiceActive); !errors.Is(err, ErrDeclined) {
+		t.Fatalf("repair = %v, want ErrDeclined", err)
+	}
+	said(t, ui, "/var/lib/shard/vz/shard-vz-shim is missing.", k+" is missing.")
+	if slices.Contains(ui.printed, "  /var/lib/shard/vz/shard-init is missing.") {
+		t.Errorf("repair reports the guest init it has: %q", ui.printed)
+	}
+	restart, verify := slices.Index(ui.printed, "  Restart the daemon"), slices.Index(ui.printed, "  Verify the daemon connection")
+	if restart < 0 || verify < restart {
+		t.Fatalf("a running daemon is not restarted before the verify: %q", ui.printed)
+	}
+}
+
+func TestRepairFindsADeletedTool(t *testing.T) {
+	k, err := kernel.Path(DataDir, "amd64")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, c := range []struct {
+		provider, tool string
+		// restart is the runtime file the daemon puts back once it is restarted, if the provider keeps one.
+		restart string
+	}{
+		{provider: GVisor, tool: "runsc"},
+		{provider: Sysbox, tool: "sysbox-runc"},
+		{provider: Runc, tool: "runc"},
+		{provider: Firecracker, tool: "jailer", restart: k},
+	} {
+		t.Run(c.provider, func(t *testing.T) {
+			f := newFakeHost(t)
+			m := linuxInstall("v0.1.0")
+			m.Provider = c.provider
+			f.installed(t, m)
+			if err := os.Remove(filepath.Join(f.root, "/usr/bin", c.tool)); err != nil {
+				t.Fatalf("remove: %v", err)
+			}
+			ui := confirming(false)
+
+			if err := (&Setup{Host: f.host(nil), UI: ui}).repair(t.Context(), m, ServiceActive); !errors.Is(err, ErrDeclined) {
+				t.Fatalf("repair = %v, want ErrDeclined", err)
+			}
+			said(t, ui, "  "+c.tool+" is missing.", c.restart)
+			if restarts := slices.Contains(ui.printed, "  Restart the daemon"); restarts != (c.restart != "") {
+				t.Errorf("restart the daemon = %t, want %t: %q", restarts, c.restart != "", ui.printed)
+			}
+		})
+	}
 }
 
 func TestUpgradeVerifiesBeforeItReplaces(t *testing.T) {

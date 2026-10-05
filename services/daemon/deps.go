@@ -465,9 +465,6 @@ func (d *deps) onBundles(build func(*bundle.Service) (models.Provider, error), o
 	return build(bundles)
 }
 
-// vzDir is where under the root the vz daemon keeps the signed shim, the guest init and the initrd.
-const vzDir = "vz"
-
 // kernelFetchTimeout bounds the first-use download, which runs under deps.mu and would otherwise hold every verb on a dead release endpoint.
 const kernelFetchTimeout = 5 * time.Minute
 
@@ -490,7 +487,7 @@ func (d *deps) newVZ(dirs vzvm.StateDirs) (models.Provider, error) {
 		return nil, fmt.Errorf("provider %s runs on macOS only, not %s", vzvm.Name, runtime.GOOS)
 	}
 
-	dir := filepath.Join(d.cfg.Root, vzDir)
+	dir := filepath.Join(d.cfg.Root, vzshim.Dir)
 	if err := os.MkdirAll(dir, 0o750); err != nil {
 		return nil, fmt.Errorf("create %s: %w", dir, err)
 	}
