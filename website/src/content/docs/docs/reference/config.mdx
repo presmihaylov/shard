@@ -136,7 +136,7 @@ The main paths under the root:
 
 | Path | What it holds |
 | --- | --- |
-| `shard.sock` | The API socket. When the host has a `shard` group, the socket is `0660` for that group and the root is `0710`, so the group can reach the socket and read nothing else. Otherwise the socket is `0600`, for root only. |
+| `shard.sock` | The API socket. When the host has a `shard` group, the socket is `0660` for that group and the root is `0710`, so the group can reach the socket and read nothing else. Otherwise the socket is `0600`, so only its owner can open it. |
 | `daemon.lock` | The lock that keeps one daemon on the root. |
 | `daemon.pid` | The daemon's pid, for log rotation. The lock, not this file, says whether a daemon is up. |
 | `sandboxes/` | One directory for each sandbox, with its record and its logs. |
