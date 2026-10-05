@@ -109,7 +109,7 @@ The new sandbox has its own ID, its own address and its own files. A write in on
 
 To keep a pool of warm sandboxes, prepare one sandbox, then fork it once for each sandbox you need. Each fork starts with the processes and the files that the source had.
 
-On Firecracker, a fork copies the sandbox's disk. That copy is fast only on XFS or Btrfs. See [the data directory](/docs/quickstart/server/#the-data-directory).
+On Firecracker, a fork shares the sandbox's disk blocks, which needs XFS or Btrfs. On any other filesystem, the daemon puts its data directory on an XFS image. See [the data directory](/docs/quickstart/server/#the-data-directory).
 
 ## Fork or snapshot
 
