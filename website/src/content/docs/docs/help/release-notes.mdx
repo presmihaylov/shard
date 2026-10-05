@@ -24,7 +24,7 @@ shard is pre-alpha, so a release can change the API, the CLI and the SDKs withou
 **New**
 
 - These docs cover install and setup, a quickstart for a server and one for a client, the concepts, the security model, guides, the TypeScript and Python SDKs, a reference and help. The guides that were in the repository's `docs/` folder moved here.
-- The CLI and REST API reference pages are built from the CLI's help text and the API's routes, so they list every command, flag and endpoint of this release.
+- The CLI and [REST API](/docs/reference/api/) reference pages are built from the CLI's help text and the API's routes, so they list every command, flag and endpoint of this release.
 - Firecracker and vz: the `kernel` field of a sandbox names the guest kernel that it booted, such as `kernel-6.12.110-3`, or `local-` and a hash prefix for a kernel set with `SHARD_KERNEL`. A fork keeps the kernel of its source. gVisor, runc and Sysbox leave the field out.
 - `shard create`, `shard fork` and `shard run --detach` print `created sandbox <name>` on stderr for a sandbox with a name. Stdout still holds only the id.
 
