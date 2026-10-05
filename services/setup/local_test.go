@@ -487,3 +487,17 @@ func TestNotReadyIsTheDaemonsReason(t *testing.T) {
 		}
 	}
 }
+
+func TestAdminEndsSudosRefusalOnce(t *testing.T) {
+	l := newLocalHost(t)
+	l.fail["sudo -n true"] = "sudo: a password is required\n"
+	l.fail["sudo -v"] = "Sorry, user nosudo may not run sudo on box.\n"
+	h := l.host()
+	h.Euid = 1000
+
+	err := (&Setup{Host: h, UI: &fakeUI{}}).admin(t.Context())
+	var p *Problem
+	if !errors.As(err, &p) || p.Lines[0] != "Administrator access failed: sudo -v: exit status 1: Sorry, user nosudo may not run sudo on box." {
+		t.Fatalf("admin = %v, want the refusal with one period", err)
+	}
+}

@@ -93,7 +93,7 @@ func (s *Setup) admin(ctx context.Context) error {
 	}
 	if _, err := run(ctx, s.Host, "sudo", "-v"); err != nil {
 		return &Problem{Lines: []string{
-			fmt.Sprintf("Administrator access failed: %v.", err),
+			"Administrator access failed: " + strings.TrimSuffix(err.Error(), ".") + ".",
 			"Run shard setup in a terminal where sudo can ask for your password, or as root.",
 		}}
 	}
