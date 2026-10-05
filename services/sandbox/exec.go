@@ -67,13 +67,13 @@ type TerminalSize struct {
 
 // Streams is where one attach's stdio goes. The caller owns them: a nil Stdin is a client that types nothing.
 type Streams struct {
-	Stdin  io.Reader
-	Stdout io.Writer
-	Stderr io.Writer
+	Stdin io.Reader
+	// StopStdin must unblock a caller-owned Stdin read when the attach ends.
+	StopStdin func() error
+	Stdout    io.Writer
+	Stderr    io.Writer
 	// Started is called with the exec id before the replay begins, and its error ends the attach.
 	Started func(execID string) error
-	// Warn reports what the keyboard copier cannot return, because nothing waits for that goroutine.
-	Warn func(message string)
 	// Detach ends the attach from the daemon's side, so a write blocked on a client that stopped reading returns.
 	Detach func()
 }
@@ -509,9 +509,11 @@ type execSession struct {
 	pidSet  chan struct{}
 
 	// stdinW is the write end of a non-tty command's stdin; pair is the terminal of a tty command.
-	stdinW    *os.File
-	stdinOnce sync.Once
-	pair      *pty.Pty
+	stdinW      *os.File
+	stdinOnce   sync.Once
+	pair        *pty.Pty
+	inputMu     sync.Mutex
+	inputClosed bool
 	// resizes holds the latest window for a provider whose guest owns the pty; one slot, since only the last size matters.
 	resizes chan models.TerminalSize
 
@@ -680,7 +682,7 @@ func (e *execSession) endAttach() {
 }
 
 // stdinTarget is where a client's keystrokes go: the terminal on a tty, the stdin pipe otherwise.
-func (e *execSession) stdinTarget() io.Writer {
+func (e *execSession) stdinTarget() *os.File {
 	if e.tty {
 		return e.pair.Master
 	}
@@ -695,7 +697,12 @@ func (e *execSession) closeStdin() error {
 	}
 
 	var err error
-	e.stdinOnce.Do(func() { err = e.stdinW.Close() })
+	e.stdinOnce.Do(func() {
+		e.inputMu.Lock()
+		defer e.inputMu.Unlock()
+		e.inputClosed = true
+		err = e.stdinW.Close()
+	})
 
 	return err
 }
@@ -945,7 +952,7 @@ func (s *Service) runTerminal(ctx context.Context, id string, session *execSessi
 	// A process the command left behind holds the replica too, and then nothing ever ends the copy.
 	drainErr := drain(drained, session.buf)
 
-	masterErr := pair.Master.Close()
+	masterErr := session.closeTerminalMaster()
 
 	combined := errors.Join(execErr, closeErr, drainErr, masterErr)
 	session.settleBuffer(combined)
@@ -973,7 +980,9 @@ func drain(drained <-chan error, buf *execBuffer) error {
 
 // Attach replays the buffer so far to one client, then streams live until the command ends. A client that drops
 // returns its context error, and one that takes no output for ExecStallBound a StalledError; the command runs on.
-func (s *Service) Attach(ctx context.Context, ref, execID string, streams Streams) (Attached, error) {
+func (s *Service) Attach(ctx context.Context, ref, execID string, streams Streams) (attached Attached, err error) {
+	ctx, cancel := context.WithCancel(ctx)
+	defer cancel()
 	id, _, err := s.resolveForExec(ref)
 	if err != nil {
 		return Attached{}, err
@@ -993,7 +1002,8 @@ func (s *Service) Attach(ctx context.Context, ref, execID string, streams Stream
 		return Attached{}, err
 	}
 
-	s.pumpStdin(session, streams)
+	stopInput := startStdin(ctx, session, streams, cancel)
+	defer func() { err = errors.Join(err, stopInput()) }()
 
 	sink := func(c chunk) error {
 		if session.tty || !c.stderr {
@@ -1022,32 +1032,87 @@ func (s *Service) Attach(ctx context.Context, ref, execID string, streams Stream
 	return Attached{Exit: exit, LostBytes: session.buf.lostBytes()}, nil
 }
 
-// pumpStdin feeds the client's keyboard to the command while the attach lasts. On a clean end it closes
-// the command's stdin, so an explicit end of input is a stream-4; a drop leaves stdin open for a re-attach.
-func (s *Service) pumpStdin(session *execSession, streams Streams) {
+func startStdin(ctx context.Context, session *execSession, streams Streams, detach context.CancelFunc) func() error {
 	if streams.Stdin == nil {
-		return
+		return func() error { return nil }
 	}
-
-	// A command created without stdin reads nothing, so what a tty-less client types is discarded, not stalled.
-	if !session.stdinReq && !session.tty {
-		go func() {
-			warn(streams.Warn, copyStream(io.Discard, streams.Stdin), "the keyboard of a command without stdin")
-		}()
-
-		return
-	}
-
-	target := session.stdinTarget()
+	ctx, cancel := context.WithCancel(ctx)
+	copied := make(chan error, 1)
 	go func() {
-		err := copyStream(target, streams.Stdin)
-		if err == nil {
-			warn(streams.Warn, session.closeStdin(), "the command was not told its input had ended")
-			return
+		err := pumpStdin(ctx, session, streams)
+		if err != nil {
+			detach()
 		}
-
-		warn(streams.Warn, err, "the keyboard stopped reaching the command")
+		copied <- err
 	}()
+	return func() error {
+		cancel()
+		return <-copied
+	}
+}
+
+// pumpStdin joins its interrupt before a later attach can write to the same command.
+func pumpStdin(ctx context.Context, session *execSession, streams Streams) (err error) {
+	target := session.stdinTarget()
+	if !session.stdinReq && !session.tty {
+		target = nil
+	}
+
+	interrupted := make(chan error, 1)
+	stop := context.AfterFunc(ctx, func() {
+		var deadlineErr, sourceErr error
+		if target != nil {
+			deadlineErr = session.inputDeadline(time.Now())
+		}
+		if streams.StopStdin != nil {
+			sourceErr = streams.StopStdin()
+		}
+		interrupted <- errors.Join(deadlineErr, sourceErr)
+	})
+	defer func() {
+		if !stop() {
+			err = errors.Join(err, <-interrupted)
+		}
+		if target != nil {
+			err = errors.Join(err, session.inputDeadline(time.Time{}))
+		}
+	}()
+
+	dst := io.Discard
+	if target != nil {
+		dst = target
+	}
+	err = copyStream(dst, streams.Stdin)
+	if ctx.Err() != nil && (errors.Is(err, os.ErrDeadlineExceeded) || errors.Is(err, context.Canceled) || errors.Is(err, io.ErrClosedPipe)) {
+		return nil
+	}
+	if err != nil {
+		return fmt.Errorf("copy the exec input: %w", err)
+	}
+	if ctx.Err() != nil || target == nil {
+		return nil
+	}
+
+	return session.closeStdin()
+}
+
+func (e *execSession) inputDeadline(deadline time.Time) error {
+	e.inputMu.Lock()
+	defer e.inputMu.Unlock()
+	if e.inputClosed {
+		return nil
+	}
+	if err := e.stdinTarget().SetWriteDeadline(deadline); err != nil {
+		return fmt.Errorf("set the exec input deadline: %w", err)
+	}
+	return nil
+}
+
+func (e *execSession) closeTerminalMaster() error {
+	e.inputMu.Lock()
+	defer e.inputMu.Unlock()
+	e.inputClosed = true
+	return e.pair.Master.Close()
 }
 
 // GetExec answers the exec record now, without waiting for it to end.
@@ -1591,13 +1656,4 @@ func started(streams Streams, execID string) error {
 	}
 
 	return streams.Started(execID)
-}
-
-// warn reports what no caller waits for, because the keyboard copier outlives the command it fed.
-func warn(report func(string), err error, what string) {
-	if err == nil || report == nil {
-		return
-	}
-
-	report(fmt.Sprintf("%s: %v", what, err))
 }

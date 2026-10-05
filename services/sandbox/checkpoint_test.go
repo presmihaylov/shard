@@ -323,6 +323,74 @@ func TestPauseKeepsItsMarkOverAFrozenSandboxTheSubstrateCannotRelease(t *testing
 	}
 }
 
+// A stop ends the sandbox, so its checkpoint's memory and disk copy go with it rather than leak until rm (SHARD-592).
+func TestStopDropsTheCheckpointOfAPausedSandbox(t *testing.T) {
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, "checkpoint.img"), []byte("memory"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	paused := pausedSandbox()
+	paused.Checkpoint = dir
+	svc, l := newService(t, &recorder{}, paused)
+	l.repo.checkpointDir = dir
+
+	sb, err := svc.Stop(t.Context(), "sandbox1")
+	if err != nil {
+		t.Fatalf("stop: %v", err)
+	}
+
+	if sb.State != models.StateStopped || sb.Checkpoint != "" {
+		t.Errorf("the record is %s with checkpoint %q, want stopped with none", sb.State, sb.Checkpoint)
+	}
+	if _, err := os.Stat(dir); !errors.Is(err, os.ErrNotExist) {
+		t.Errorf("the checkpoint directory survived the stop: %v", err)
+	}
+}
+
+// A stop whose drop failed wrote a stopped record, so the next stop retries the drop rather than leak the checkpoint (SHARD-592).
+func TestStopRetriesTheCheckpointDropAfterItsFirstFailure(t *testing.T) {
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, "checkpoint.img"), []byte("memory"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	// Mode 0500 denies the removal of the directory's contents, so the first drop fails.
+	if err := os.Chmod(dir, 0o500); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.Chmod(dir, 0o700) })
+
+	paused := pausedSandbox()
+	paused.Checkpoint = dir
+	svc, l := newService(t, &recorder{}, paused)
+	l.repo.checkpointDir = dir
+
+	_, err := svc.Stop(t.Context(), "sandbox1")
+	if err == nil || !strings.Contains(err.Error(), "permission denied") {
+		t.Fatalf("first stop = %v, want the drop's permission error", err)
+	}
+	if l.repo.sb.State != models.StateStopped {
+		t.Fatalf("the record is %s, want stopped after the failed drop", l.repo.sb.State)
+	}
+	if _, err := os.Stat(filepath.Join(dir, "checkpoint.img")); err != nil {
+		t.Fatalf("the memory copy must remain after the refused drop: %v", err)
+	}
+
+	if err := os.Chmod(dir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	sb, err := svc.Stop(t.Context(), "sandbox1")
+	if err != nil {
+		t.Fatalf("retry stop: %v", err)
+	}
+	if sb.State != models.StateStopped || sb.Checkpoint != "" {
+		t.Errorf("the record is %s with checkpoint %q, want stopped with none", sb.State, sb.Checkpoint)
+	}
+	if _, err := os.Stat(dir); !errors.Is(err, os.ErrNotExist) {
+		t.Errorf("the checkpoint directory survived the retry: %v", err)
+	}
+}
+
 func TestResumeRunsAPausedSandboxAgain(t *testing.T) {
 	r := &recorder{}
 	svc, l := newService(t, r, pausedSandbox())
