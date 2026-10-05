@@ -68,7 +68,7 @@ func (s *Setup) forget(ctx context.Context, path string) error {
 		return err
 	}
 	lines := []string{"✓ Connection removed", ""}
-	if note := remoteEnvNote(s.Host.Env); note != nil {
+	if note := remoteEnvNote(s.Host.Env, ""); note != nil {
 		return s.UI.Print(append(lines, note...)...)
 	}
 	if !installed {
@@ -89,10 +89,17 @@ func (s *Setup) switchToLocal(ctx context.Context) (finish func(context.Context)
 		return nil, err
 	}
 	if saved.Remote == "" {
-		return func(context.Context) error { return s.printNote(remoteEnvNote(s.Host.Env)) }, nil
+		return func(context.Context) error { return s.printNote(remoteEnvNote(s.Host.Env, "")) }, nil
 	}
 
-	if err := s.UI.Print("Normal Shard commands currently use the remote server "+client.Redacted(saved.Remote)+", saved in "+path+".", ""); err != nil {
+	current := []string{"Normal Shard commands currently use the remote server " + client.Redacted(saved.Remote) + ", saved in " + path + ".", ""}
+	if env := strings.TrimSpace(s.Host.Env(client.RemoteEnv)); env != "" {
+		current = []string{
+			"Normal Shard commands currently use the remote server " + client.Redacted(env) + ", set in " + client.RemoteEnv + ".",
+			"A connection to " + client.Redacted(saved.Remote) + " is also saved in " + path + ".", "",
+		}
+	}
+	if err := s.UI.Print(current...); err != nil {
 		return nil, err
 	}
 	remove, err := s.UI.Confirm(ctx, AskSwitch, "Remove the saved connection after local setup succeeds?", true)
@@ -102,7 +109,7 @@ func (s *Setup) switchToLocal(ctx context.Context) (finish func(context.Context)
 	if !remove {
 		return func(context.Context) error {
 			lines := []string{"", "The saved connection remains, so normal Shard commands still use the remote server.", "Run shard setup again to remove it."}
-			return s.printNote(append(lines, remoteEnvNote(s.Host.Env)...))
+			return s.printNote(append(lines, remoteEnvNote(s.Host.Env, saved.Remote)...))
 		}, nil
 	}
 
@@ -124,11 +131,14 @@ func (s *Setup) printNote(lines []string) error {
 	return s.UI.Print(lines...)
 }
 
-// remoteEnvNote is the §14 reminder that SHARD_REMOTE beats the local daemon, or nothing when it is unset.
-func remoteEnvNote(env func(string) string) []string {
+// remoteEnvNote is the §14 reminder that SHARD_REMOTE beats what an unset brings back: the saved connection, else the local daemon.
+func remoteEnvNote(env func(string) string, saved string) []string {
 	remote := strings.TrimSpace(env(client.RemoteEnv))
 	if remote == "" {
 		return nil
+	}
+	if saved != "" {
+		return []string{client.RemoteEnv + " is still set to " + client.Redacted(remote) + ", and it overrides the saved connection.", "Unset it to use the saved connection to " + client.Redacted(saved) + "."}
 	}
 
 	return []string{client.RemoteEnv + " is still set to " + client.Redacted(remote) + ", and it overrides the local default.", "Unset it to use the local daemon."}

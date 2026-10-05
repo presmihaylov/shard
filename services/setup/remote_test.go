@@ -719,6 +719,48 @@ func TestSwitchToLocalRemovesTheConnectionOnlyAtTheEnd(t *testing.T) {
 	}
 }
 
+// With SHARD_REMOTE set the switch names it as the remote in use, and a kept connection is what its unset brings back. (SHARD-679)
+func TestSwitchToLocalNamesTheRemoteThatWins(t *testing.T) {
+	for _, tc := range []struct {
+		name   string
+		remove bool
+		after  []string
+	}{
+		{name: "remove", remove: true, after: []string{
+			"", "✓ Connection removed", "",
+			"SHARD_REMOTE is still set to https://other.example.com, and it overrides the local default.", "Unset it to use the local daemon.",
+		}},
+		{name: "keep", after: []string{
+			"", "The saved connection remains, so normal Shard commands still use the remote server.", "Run shard setup again to remove it.",
+			"SHARD_REMOTE is still set to https://other.example.com, and it overrides the saved connection.",
+			"Unset it to use the saved connection to https://shard.example.com.",
+		}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			host, path := testHost(t, map[string]string{client.RemoteEnv: "https://other.example.com"})
+			saveConnection(t, path, client.Config{Remote: "https://shard.example.com", APIKey: testKey})
+			ui := &fakeUI{confirms: map[Question]bool{AskSwitch: tc.remove}}
+
+			finish, err := (&Setup{Host: host, UI: ui}).switchToLocal(t.Context())
+			if err != nil {
+				t.Fatalf("switchToLocal: %v", err)
+			}
+			put(t, host, shardBinary, nil)
+			if err := finish(t.Context()); err != nil {
+				t.Fatalf("finish: %v", err)
+			}
+
+			want := append([]string{
+				"Normal Shard commands currently use the remote server https://other.example.com, set in SHARD_REMOTE.",
+				"A connection to https://shard.example.com is also saved in " + path + ".", "",
+			}, tc.after...)
+			if !slices.Equal(ui.printed, want) {
+				t.Errorf("printed %q, want %q", ui.printed, want)
+			}
+		})
+	}
+}
+
 // With no saved connection a switch asks nothing, and says only that SHARD_REMOTE still beats the local daemon. (SHARD-657)
 func TestSwitchToLocalWithNoSavedConnection(t *testing.T) {
 	for _, tc := range []struct {
