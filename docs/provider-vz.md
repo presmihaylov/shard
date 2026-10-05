@@ -10,7 +10,7 @@ with it.
 The target is Apple Silicon on macOS 14 or later. Intel Macs can build and boot the framework, but
 shard does not support them: they get no Rosetta, no `pause`, `resume` or `fork`, and no development
 attention. macOS 13 runs every verb except `pause`, `resume` and `fork`, and it is not supported
-either. `docs/mac.md` has the workaround for both. Firecracker stays unsupported on a Mac. Nothing
+either. https://useshards.com/docs/guides/mac/ has the workaround for both. Firecracker stays unsupported on a Mac. Nothing
 on this page runs on Linux, because `pkg/vz` sits behind `//go:build darwin` and its stub returns
 the unsupported-platform error.
 

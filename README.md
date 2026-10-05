@@ -166,7 +166,7 @@ in those directories, and [the release guide](docs/release.md) explains how an S
 - [CLI commands and options](docs/cli.md)
 - [Daemon, REST API, and remote access](docs/daemon.md)
 - [Provider capabilities and limits](docs/provider.md)
-- [Mac setup](docs/mac.md) and [the Mac provider](docs/provider-vz.md)
+- [Mac setup](https://useshards.com/docs/guides/mac/) and [the Mac provider](docs/provider-vz.md)
 - [Lifecycle](docs/state-machine.md), [files](docs/files.md), [secrets](docs/secrets.md), and [egress](docs/egress.md)
 
 ## Status and contributions

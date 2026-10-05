@@ -1,0 +1,162 @@
+---
+title: How to run shard on a Mac?
+description: Run sandboxes on an Apple silicon Mac, each in a Linux micro VM, with the daemon kept up by launchd.
+sidebar:
+  order: 9
+---
+
+import { Tabs, TabItem } from '@astrojs/starlight/components';
+
+On an Apple silicon Mac with macOS 14 or later, install shard, set it up, and run a sandbox:
+
+```sh
+curl -fsSL https://useshards.com/install | sh
+shard setup --local --provider vz --start-at-boot=true -y
+shard run -d --name demo --memory 512MiB python:3.12 python -c 'print(1)'
+shard logs demo
+shard exec demo uname -a
+shard pause demo
+shard resume demo
+shard remove --force demo
+```
+
+When `~/.local/bin` is not on your `PATH`, the installer prints the line that adds it.
+
+Each sandbox is a Linux micro VM with a kernel of its own. shard drives Apple's Virtualization.framework itself, so the Mac needs no Docker and no Homebrew. The daemon runs as your user, and every shard command runs without `sudo`.
+
+## What you need
+
+- **Apple silicon and macOS 14 or later.** Setup checks both, and refuses the `vz` provider on any other Mac. Pause, resume and fork use the save and restore API of macOS 14.
+- **`codesign`.** The daemon signs its VM helper with it. Setup checks that it is there.
+- **Enough memory.** A VM's memory is real memory on the Mac. Eight sandboxes of 512 MiB use 4 GiB.
+
+An Intel Mac cannot host sandboxes. See [A Mac that cannot host sandboxes](#a-mac-that-cannot-host-sandboxes).
+
+## What setup does
+
+`shard setup --local --provider vz` asks for administrator access when a step needs it. Run it as your user, not with `sudo`. It:
+
+1. Installs `shard` in `/usr/local/bin`.
+2. Creates the data directory `/var/lib/shard` and the log directory `/var/log/shard`, both owned by you.
+3. With `--start-at-boot=true`, writes the LaunchDaemon `/Library/LaunchDaemons/shard.daemon.plist` and the log rotation file `/etc/newsyslog.d/shard.conf`, starts the daemon, and checks that it answers.
+
+To check, repair, upgrade or uninstall shard, run `shard setup` again. See [Install](/docs/install/).
+
+The daemon prepares the `vz` provider the first time it needs it. It writes the signed VM helper and the guest supervisor under `/var/lib/shard`. It also downloads the guest kernel for this Mac from the shard release and checks its SHA-256. A release that the daemon cannot reach holds it for up to 5 minutes:
+
+- With no sandboxes in `/var/lib/shard`, the daemon prepares the provider at the first command that needs it. Only that command fails.
+- With sandboxes in `/var/lib/shard`, the daemon prepares the provider before it answers any command. It then exits with the error, and launchd starts it again to try again.
+
+## Manage the daemon
+
+launchd keeps the daemon up under the label `system/shard.daemon`:
+
+| Task | Command |
+| --- | --- |
+| Check it | `launchctl print system/shard.daemon` |
+| Restart it | `sudo launchctl kickstart -k system/shard.daemon` |
+| Stop it | `sudo launchctl bootout system/shard.daemon` |
+| Start it again | `sudo launchctl bootstrap system /Library/LaunchDaemons/shard.daemon.plist` |
+| Read its log | `/var/log/shard/daemon.log` |
+
+launchd starts the daemon at boot, and starts it again one second after a crash. After a clean exit, the daemon stays down.
+
+A sandbox outlives the daemon. A restart or a stop ends the daemon only, and every VM keeps running. The next daemon takes each one back. Sandboxes also keep running while the Mac sleeps. To leave the Mac clean, stop every sandbox before you stop the daemon.
+
+### The log
+
+At 10 MiB, newsyslog moves `daemon.log` aside, keeps seven old files, and signals the daemon to open a new one. newsyslog runs once an hour, so the daemon also caps the log itself. Past 64 MiB, it moves the log to `daemon.log.overflow`, which replaces the previous one, and opens a new `daemon.log`.
+
+## Run the daemon in a terminal
+
+To run the daemon only when you want it, set up without the service:
+
+```sh
+shard setup --local --provider vz --start-at-boot=false -y
+shard daemon --provider vz
+```
+
+The daemon stays in the foreground. Run your commands in a second terminal. Closing the first terminal ends the daemon, and the sandboxes keep running until a daemon takes them back.
+
+One data directory holds one daemon. A second daemon on `/var/lib/shard` refuses to start, so stop the LaunchDaemon before you run one in a terminal.
+
+## Use the SDKs on a Mac
+
+The SDKs talk to [`shard serve`](/docs/guides/remote/) only, never to the daemon's socket. Mint a token and start `shard serve` on the Mac:
+
+```sh
+shard tokens mint --name sdk --duration 720h
+shard serve
+```
+
+`shard serve` listens on `127.0.0.1:2376`. Set `SHARD_API_KEY` to the `token` field that `shard tokens mint` printed, then point the SDK at the Mac:
+
+<Tabs syncKey="lang">
+	<TabItem label="TypeScript">
+
+```ts
+import { Shard } from "useshards";
+
+// Reads SHARD_API_KEY.
+const shard = new Shard({ remote: "http://127.0.0.1:2376" });
+try {
+  const app = await shard.run("python:3.12", ["sleep", "infinity"], { name: "demo", memoryMiB: 512 });
+  const result = await app.sandbox.exec(["uname", "-a"]);
+  console.log(result.stdout);
+  await app.sandbox.remove({ force: true });
+} finally {
+  shard.close();
+}
+```
+
+	</TabItem>
+	<TabItem label="Python">
+
+```python
+from useshards import Shard
+
+# Reads SHARD_API_KEY.
+with Shard(remote="http://127.0.0.1:2376") as shard:
+    app = shard.run("python:3.12", ["sleep", "infinity"], name="demo", memory_mib=512)
+    result = app.sandbox.exec(["uname", "-a"])
+    print(result.stdout)
+    app.sandbox.remove(force=True)
+```
+
+	</TabItem>
+</Tabs>
+
+The SDKs warn that `http` does not encrypt the connection. On `127.0.0.1` the traffic never leaves the Mac.
+
+## How a Mac differs from Linux
+
+| | vz on a Mac | gVisor on Linux |
+| --- | --- | --- |
+| Isolation | A micro VM for each sandbox, with its own Linux kernel | A user-space kernel |
+| `pause`, `resume`, `fork` | Yes | Yes |
+| `--memory` | Required. `0` is refused, and the smallest is 128 MiB | Optional. `0` means no bound |
+| `--vcpus 0` | One virtual CPU for each host CPU, up to the limit of the framework | Every host CPU |
+| Host access | None: no shared folders, no host mounts, no route to the LAN | None |
+| Docker inside a sandbox | Yes, IPv4 only | No |
+
+A sandbox that passes its `--memory` stops, as on Linux, and its record says why.
+
+shard pulls an image and turns it into a disk once. Each sandbox of that image boots an APFS clone of the disk, so the second sandbox of an image costs only a boot.
+
+A sandbox has no route to the Mac or to the LAN. Its traffic reaches the network through the daemon, and an egress policy applies the same as on Linux.
+
+## When something fails
+
+- **`provider vz does not support pause on this host; use a server that supports pause`.** The daemon runs on an Intel Mac or on macOS 13. Pause, resume and fork need Apple silicon with macOS 14 or later.
+- **`kernel checksum mismatch`.** The downloaded guest kernel does not match the hash this build expects. A download that was cut short is fetched again on its own.
+- **`codesign the shim: exec: "codesign": executable file not found in $PATH`.** The daemon cannot find `codesign`. Install the Command Line Tools with `xcode-select --install`. Xcode is not needed.
+- **A VM never boots on a managed Mac.** A device management profile can block Virtualization.framework. The error names the framework. Only a change to the profile fixes it.
+- **The daemon does not start.** Read `/var/log/shard/daemon.log`. The daemon writes its refusal to start there too.
+
+## A Mac that cannot host sandboxes
+
+On an Apple silicon Mac with macOS 13, update macOS to 14 or later.
+
+An Intel Mac can still use shard as a client. Install the CLI with the same command, then connect to a shard server on another machine. See [How to connect to a remote host?](/docs/guides/remote/).
+
+To keep the server on the Intel Mac itself, run a Linux x86_64 VM on it, for example with Lima, and set up the VM as a server with [Quickstart: server](/docs/quickstart/server/). Give the VM no mounts of the Mac's folders: Lima mounts your home folder by default, so set `mounts: []` in its file. Every sandbox then shares the kernel, the memory and the disk of that one VM. The provider inside still isolates the sandboxes from each other, but a sandbox that fills the VM's memory or disk starves the others.
