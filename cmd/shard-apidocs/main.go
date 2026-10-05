@@ -1,4 +1,4 @@
-// Command shard-apidocs writes the REST API reference pages of the site from the spec, which make openapi keeps current.
+// Command shard-apidocs writes the REST API reference pages of the site from the public route spec.
 package main
 
 import (

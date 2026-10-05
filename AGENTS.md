@@ -59,7 +59,7 @@ is the shape to grow into, not a checklist to build up front.
 cmd/shard/                 main only, thin: wire dependencies and exit
 cmd/shard-init/            the guest supervisor, PID 1 in every sandbox
 cmd/shard-openapi/         writes the spec of the public routes into docs/openapi.json
-cmd/shard-apidocs/         writes the REST API reference pages of the site from that spec
+cmd/shard-apidocs/         writes the REST API reference pages of the site from the public route spec
 cli/                       command definitions and flag parsing
 
 models/                    Sandbox, states, Provider, Capabilities, Policy
