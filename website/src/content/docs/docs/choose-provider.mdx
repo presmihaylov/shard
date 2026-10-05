@@ -3,7 +3,7 @@ title: What provider should I pick?
 description: Pick the isolation technology that runs every sandbox on a shard host, from Firecracker, gVisor, vz, Sysbox and runc.
 ---
 
-Run `shard info` on the machine that will be your sandbox host. It prints the provider that a daemon on this host uses when you name none, and the reason:
+Run `shard info` on the machine that will be your sandbox host. It prints the provider that a daemon on this host uses by default, and the reason:
 
 ```sh
 shard info
@@ -15,9 +15,9 @@ provider   firecracker
 reason     /dev/kvm opens
 ```
 
-`shard info` asks the host, not the daemon, so it works before setup. On a host that already has sandboxes, run it with `sudo`, because their records under `/var/lib/shard` belong to root.
+`shard info` inspects the host, not the daemon, so it works before setup. On a host that already has sandboxes, run it with `sudo`, because their records under `/var/lib/shard` belong to root.
 
-`shard setup` asks for the provider and marks its recommendation. To skip the question, name the provider:
+`shard setup` asks which provider to use and marks the one it recommends. To skip the question, pass the provider:
 
 ```sh
 shard setup --local --provider gvisor --start-at-boot=true -y
@@ -46,7 +46,7 @@ Setup recommends the first of `vz`, `firecracker` and `gvisor` that runs on the 
 | Tenants on one host | Many | Many | Many | One | One, and only code you trust |
 | `pause`, `resume`, `fork` | Yes | Yes | Yes | No | No |
 
-A verb that the provider does not support fails with an error that names the provider and the verb, for example `provider sysbox does not support pause on this host; use a server that supports pause`. shard never falls back to a weaker mechanism. `shard capabilities` lists all eight verbs, each true or false for the provider of the server you are connected to.
+A verb that the provider does not support fails with an error that names the provider and the verb, for example `provider sysbox does not support pause on this host; use a server that supports pause`. shard never falls back to a weaker mechanism. `shard capabilities` lists all eight verbs and says whether the provider of the server you are connected to supports each one.
 
 ## What setup installs
 
@@ -60,7 +60,7 @@ Setup installs what the provider needs, unless the host already has it where the
 | `runc` | The `runc` package, and `apparmor` when the kernel enforces AppArmor |
 | `vz` | Nothing. It uses `codesign`, which ships with macOS. |
 
-Every Linux provider also needs `iproute2`, `nftables` and `e2fsprogs`. Setup installs packages with `apt-get`. On a host without it, setup stops and names the tools to install. Setup checks the sha256 of every pinned download before it installs it. It keeps a `firecracker` that is already installed, and refuses one older than 1.13.0.
+Every Linux provider also needs `iproute2`, `nftables` and `e2fsprogs`. Setup installs packages with `apt-get`. On a host without it, setup stops and names the tools to install. Setup checks the sha256 of every pinned download before it installs it. It keeps an installed `firecracker` of 1.13.0 or newer, and refuses an older one.
 
 Firecracker and `vz` also download a guest kernel. Firecracker needs `/var/lib/shard` on XFS or Btrfs. On another filesystem it needs 20 GiB free for an XFS image, which it mounts over `/var/lib/shard`, so that directory must be empty.
 
@@ -72,6 +72,6 @@ runc runs sandboxes on the host kernel with no user namespace, so root in the sa
 
 ## Change the provider later
 
-One host runs one provider, and every sandbox on it runs on that provider. A host keeps the provider that made its sandboxes, because no other provider can read them. A daemon refuses a `--provider` that names another one, and the refusal names both. On a host that is already set up, `shard setup` shows the menu of the existing installation, which has no option to change the provider.
+One host runs one provider, and every sandbox on it runs on that provider. A host keeps the provider that made its sandboxes, because no other provider can read them. The daemon refuses a `--provider` that names a different one, and the error names both. On a host that is already set up, `shard setup` shows the menu for the existing installation, and that menu has no option to change the provider.
 
-To move a host to another provider, remove its sandboxes, run `shard setup` and choose **Uninstall Shard**. Then run `shard setup` again and pick the new provider. Its checks name anything still in the way. On a Firecracker host, also run the commands that the uninstall note prints for `/var/lib/shard.xfs`, because that image still names Firecracker.
+To move a host to another provider, remove its sandboxes, run `shard setup` and choose **Uninstall Shard**. Then run `shard setup` again and pick the new provider. Its checks name anything that is still in the way. On a Firecracker host, also run the commands that the uninstall note prints for `/var/lib/shard.xfs`, because that image still names Firecracker.
