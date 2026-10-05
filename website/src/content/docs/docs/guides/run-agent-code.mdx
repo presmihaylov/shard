@@ -73,7 +73,7 @@ The code runs in the sandbox, not in your process. It sees the image's files and
 
 ## Read the result
 
-`shard exec` prints the command's output as it runs, and exits with the command's exit code. The SDKs return a result with these fields:
+`shard exec` prints the command's output as it runs. When the output stream is complete, it exits with the command's exit code. The SDKs return a result with these fields:
 
 | TypeScript | Python | What it holds |
 | --- | --- | --- |
@@ -125,13 +125,13 @@ To read a file the code wrote, run `shard cp agent:/tmp/out.json ./out.json`. In
 
 ## Bound the time
 
-A command runs until it exits or something ends it. Ctrl+C on `shard exec`, a disconnect or a cancelled wait only detaches from the output, and the command keeps running. Set a time bound when you start it:
+A command runs until it exits or something ends it. Without `-t`, Ctrl+C on `shard exec` only detaches from the output. A disconnect or a cancelled wait also leaves the command running. Set a time bound when you start it:
 
 <Tabs syncKey="lang">
 	<TabItem label="CLI">
 
 ```sh
-shard exec agent timeout 30 python /tmp/main.py
+shard exec agent timeout -k 5 30 python /tmp/main.py
 ```
 
 	</TabItem>
@@ -139,9 +139,15 @@ shard exec agent timeout 30 python /tmp/main.py
 
 ```ts
 const command = await sandbox.exec(["python", "/tmp/main.py"], { background: true });
-const timer = setTimeout(() => command.kill("KILL"), 30_000);
-const result = await command.wait();
-clearTimeout(timer);
+const deadline = AbortSignal.timeout(30_000);
+let result;
+try {
+  result = await command.wait({ signal: deadline });
+} catch (error) {
+  if (!deadline.aborted) throw error;
+  await command.kill("KILL");
+  result = await command.wait();
+}
 ```
 
 	</TabItem>
@@ -159,7 +165,7 @@ except TimeoutError:
 	</TabItem>
 </Tabs>
 
-The CLI has no time bound of its own, so the example uses `timeout` from the image, which ends the command after 30 seconds and exits with `124`. The SDKs start the command in the background and kill it when the time is up, so it reports `137`.
+The CLI has no time bound of its own, so the example uses `timeout` from the image. It sends TERM after 30 seconds and KILL five seconds later if the command still runs. It reports `124` after the TERM timeout, or `137` if KILL is needed. The SDKs start the command in the background and send KILL when the wait times out. A command killed that way reports `137`; a command that finishes first keeps its own exit code.
 
 ## Bound the memory, CPU and disk
 
@@ -194,7 +200,7 @@ sandbox = shard.create("python:3.12-slim", memory_mib=1024, vcpus=2, disk_mib=20
 	</TabItem>
 </Tabs>
 
-**Caution: when a sandbox goes past its memory bound, the whole sandbox ends, not only the command.** The record then says `stopped`, with the reason `ran out of memory and the host ended it`. `shard start` runs it again with the files it kept. To get more memory, create a new sandbox with a larger bound.
+**Caution: when the memory ceiling triggers an OOM kill, the whole sandbox ends, not only the command.** gVisor allows headroom for the sentry and throttles the sandbox before that ceiling. The record then says `stopped`, with the reason `ran out of memory and the host ended it`. `shard start` runs it again with the files it kept. To get more memory, create a new sandbox with a larger bound.
 
 A write past the disk bound fails with `ENOSPC`, and the sandbox keeps running. If you set no disk bound, it is 10 GiB. On `vz` and `firecracker`, a create with no memory bound is refused. For details on each bound, see [the provider notes](https://github.com/presmihaylov/shard/blob/main/docs/provider.md#what-a-memory-bound-means).
 
