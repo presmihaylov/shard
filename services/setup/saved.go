@@ -47,7 +47,7 @@ func (s *Setup) saved(ctx context.Context, path string, saved client.Config) err
 
 // check verifies the saved connection as it is; one edited after a failure is a replacement, saved only on the user's word.
 func (s *Setup) check(ctx context.Context, path string, saved client.Config) error {
-	conn, caps, err := s.verify(ctx, saved)
+	conn, caps, err := s.verify(ctx, saved, saved)
 	if err != nil {
 		return err
 	}

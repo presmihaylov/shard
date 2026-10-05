@@ -114,10 +114,10 @@ func TestTheURLIsTheFlagOrTheEnvironmentOnlyOnce(t *testing.T) {
 	} {
 		ui := noTerminal(t, setupFlags{remote: tc.flag})
 		ui.env = func(name string) string { return map[string]string{client.RemoteEnv: tc.env}[name] }
-		if url, err := ui.Text(t.Context(), setup.AskURL, "Shard server URL:"); err != nil || url != tc.want {
+		if url, err := ui.Text(t.Context(), setup.AskURL, "Shard server URL:", ""); err != nil || url != tc.want {
 			t.Errorf("the URL is %q, %v; want %q", url, err, tc.want)
 		}
-		if _, err := ui.Text(t.Context(), setup.AskURL, "Shard server URL:"); err == nil || err.Error() != "no terminal to ask url: pass --remote" {
+		if _, err := ui.Text(t.Context(), setup.AskURL, "Shard server URL:", ""); err == nil || err.Error() != "no terminal to ask url: pass --remote" {
 			t.Errorf("an edit after a failed check answered %v, want the person asked", err)
 		}
 	}

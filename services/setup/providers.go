@@ -58,7 +58,7 @@ var providerTexts = []providerText{
 	}},
 	{VZ, "macOS Virtualization", []string{
 		"Run each sandbox in a small Linux virtual machine on your Mac.",
-		"Requires " + macNeed + ".",
+		"Recommended on " + macNeed + ".",
 	}},
 }
 

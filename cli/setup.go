@@ -185,14 +185,14 @@ func (a *answers) Confirm(ctx context.Context, q setup.Question, text string, ye
 	return answer, need(q, err)
 }
 
-func (a *answers) Text(ctx context.Context, q setup.Question, prompt string) (string, error) {
+func (a *answers) Text(ctx context.Context, q setup.Question, prompt, initial string) (string, error) {
 	if q == setup.AskURL && !a.urlAsked {
 		a.urlAsked = true
 		if url := cmp.Or(a.opts.remote, a.env(client.RemoteEnv)); url != "" {
 			return url, nil
 		}
 	}
-	answer, err := a.t.Text(ctx, prompt)
+	answer, err := a.t.Text(ctx, prompt, initial)
 
 	return answer, need(q, err)
 }
