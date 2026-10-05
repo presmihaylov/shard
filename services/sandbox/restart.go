@@ -161,7 +161,7 @@ func (s *Service) lastRestarts(ctx context.Context, sb models.Sandbox) (models.R
 	}
 
 	count, err := s.cfg.Provider.Restarts(ctx, sb.ID)
-	// Log and continue, on Pres's 2026-10-03 ErrExitFileTooLarge precedent (PR 309): the read emptied the file, and only this sandbox loses its count.
+	// Pres ruled to log and continue: the host empties an oversized exit file, so this sandbox keeps its last recorded count.
 	if errors.Is(err, models.ErrExitFileTooLarge) {
 		s.report(fmt.Sprintf("sandbox %s: %v; the record keeps its last restart count", sb.ID, err))
 
