@@ -211,6 +211,15 @@ func (s *Setup) apply(ctx context.Context, title string, steps []Step) error {
 	return nil
 }
 
+// socketSudo is "sudo " on Linux, where the API socket belongs to root, so a local command setup prints runs as printed.
+func socketSudo(h Host) string {
+	if h.OS == "linux" {
+		return "sudo "
+	}
+
+	return ""
+}
+
 // problemLines are the lines a Problem gives, or the error itself when the step returned none.
 func problemLines(err error) []string {
 	var problem *Problem

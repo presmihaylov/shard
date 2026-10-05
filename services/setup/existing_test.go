@@ -422,22 +422,40 @@ func TestUpgradeLeavesAnInactiveServiceStopped(t *testing.T) {
 	}
 }
 
+// The commands the refusal names reach the daemon: on Linux its socket is root's, so they carry sudo. (SHARD-675)
 func TestUninstallRefusesWhileASandboxRemains(t *testing.T) {
-	f := newFakeHost(t)
-	m := linuxInstall("v0.1.0")
-	f.installed(t, m)
-	f.write(t, "/var/lib/shard/sandboxes/sb_1/sandbox.json", "{}")
-	f.write(t, "/var/lib/shard/sandboxes/sb_2/sandbox.json", "{}")
-	f.write(t, "/var/lib/shard/images/sb_3/sandbox.json", "{}")
-	ui := &fakeUI{}
+	for _, tt := range []struct {
+		os   string
+		want []string
+	}{
+		{"linux", []string{"    sudo shard list --all", "    sudo shard remove --force <name>"}},
+		{"darwin", []string{"    shard list --all", "    shard remove --force <name>"}},
+	} {
+		t.Run(tt.os, func(t *testing.T) {
+			f := newFakeHost(t)
+			m := linuxInstall("v0.1.0")
+			f.installed(t, m)
+			f.write(t, "/var/lib/shard/sandboxes/sb_1/sandbox.json", "{}")
+			f.write(t, "/var/lib/shard/sandboxes/sb_2/sandbox.json", "{}")
+			f.write(t, "/var/lib/shard/images/sb_3/sandbox.json", "{}")
+			ui := &fakeUI{}
+			h := f.host(nil)
+			h.OS = tt.os
 
-	err := (&Setup{Host: f.host(nil), UI: ui}).uninstall(t.Context(), m)
-	if err == nil || !strings.Contains(err.Error(), "2 sandboxes left") {
-		t.Fatalf("uninstall = %v, want 2 sandboxes named", err)
-	}
-	said(t, ui, "Shard has 2 sandboxes on this machine.", "shard list --all", "shard remove --force <name>")
-	if _, ok := f.read(t, "/usr/local/bin/shard"); !ok || len(ui.asked) != 0 {
-		t.Fatalf("uninstall removed a file or asked %v while a sandbox remains", ui.asked)
+			err := (&Setup{Host: h, UI: ui}).uninstall(t.Context(), m)
+			if err == nil || !strings.Contains(err.Error(), "2 sandboxes left") {
+				t.Fatalf("uninstall = %v, want 2 sandboxes named", err)
+			}
+			said(t, ui, "Shard has 2 sandboxes on this machine.")
+			for _, line := range tt.want {
+				if !slices.Contains(ui.printed, line) {
+					t.Errorf("output %q lacks the line %q", ui.printed, line)
+				}
+			}
+			if _, ok := f.read(t, "/usr/local/bin/shard"); !ok || len(ui.asked) != 0 {
+				t.Fatalf("uninstall removed a file or asked %v while a sandbox remains", ui.asked)
+			}
+		})
 	}
 }
 
