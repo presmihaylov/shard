@@ -2,6 +2,7 @@ package setup
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io/fs"
@@ -9,6 +10,7 @@ import (
 	"os"
 	"path"
 	"path/filepath"
+	"slices"
 	"strconv"
 	"strings"
 	"syscall"
@@ -16,6 +18,7 @@ import (
 	"golang.org/x/sys/unix"
 
 	fcapi "github.com/presmihaylov/shard/pkg/firecracker"
+	"github.com/presmihaylov/shard/services/datadir"
 	"github.com/presmihaylov/shard/services/kernel"
 	"github.com/presmihaylov/shard/services/sandboxstate"
 )
@@ -411,23 +414,170 @@ func reach(ctx context.Context, h Host, u string) (err error) {
 	return nil
 }
 
-// existingSandboxes refuses a provider other than the one the sandboxes already in the data dir use.
-func existingSandboxes(_ context.Context, h Host, l Local) *finding {
-	recorded, err := sandboxstate.RecordedProvider(rooted(h, DataDir))
-	if errors.Is(err, fs.ErrPermission) {
-		return attention("Setup cannot read "+DataDir+" without administrator access.", "The daemon refuses to start if its sandboxes use another provider.")
-	}
+// existingSandboxes refuses a provider other than the one that made the data dir, since the daemon would refuse to start over it.
+func existingSandboxes(ctx context.Context, h Host, l Local) *finding {
+	owner, fact, err := rootProvider(ctx, h)
 	if err != nil {
-		return failed(fmt.Sprintf("Setup could not read the sandboxes in %s: %v.", DataDir, err))
+		return failed(fmt.Sprintf("Setup could not read %s: %v.", DataDir, err))
 	}
-	if recorded == "" || recorded == l.Provider {
+	if owner == "" || owner == l.Provider {
+		return nil
+	}
+	remove, err := deleteDataLines(h, owner)
+	if err != nil {
+		return failed(fmt.Sprintf("Setup could not read %s: %v.", DataDir, err))
+	}
+
+	return providerFailed(slices.Concat(
+		[]string{
+			fact,
+			"The daemon cannot start with " + providerTitle(l.Provider) + " over that data, and setup never changes its provider.",
+			"To keep the data, choose " + providerTitle(owner) + ".",
+		},
+		remove,
+		[]string{"Then run shard setup again."},
+	)...)
+}
+
+// rootProvider is the provider the daemon finds in the data dir and the line that names it: its records, else firecracker's data image, which hides them while unmounted.
+func rootProvider(ctx context.Context, h Host) (string, string, error) {
+	recorded, err := sandboxstate.RecordedProvider(rooted(h, DataDir))
+	// A root daemon's records are root's alone, and setup has administrator access by now (rootAccess).
+	if errors.Is(err, fs.ErrPermission) && h.Euid != 0 {
+		recorded, err = privilegedProvider(ctx, h)
+	}
+	// The daemon chooses past a record it cannot read, so setup does too.
+	var unreadable *sandboxstate.UnreadableError
+	if err != nil && !errors.As(err, &unreadable) {
+		return "", "", err
+	}
+	if recorded != "" {
+		return recorded, "The sandboxes in " + DataDir + " use " + providerTitle(recorded) + ".", nil
+	}
+	image := datadir.ImagePath(DataDir)
+	_, err = os.Stat(rooted(h, image))
+	if err == nil {
+		return Firecracker, "The data in " + DataDir + " belongs to " + providerTitle(Firecracker) + ".", nil
+	}
+	if !errors.Is(err, fs.ErrNotExist) {
+		return "", "", fmt.Errorf("check %s: %w", image, err)
+	}
+
+	return "", "", nil
+}
+
+// recordsScript prints the id and the record of each sandbox in $1, each followed by a NUL.
+const recordsScript = `[ -d "$1" ] || exit 0
+cd "$1" || exit 1
+for d in */; do
+	d=${d%/}
+	[ -f "$d/sandbox.json" ] || continue
+	printf '%s\0' "$d" && cat -- "$d/sandbox.json" && printf '\0' || exit 1
+done`
+
+// privilegedProvider is the provider of the first record that names one, read as root.
+func privilegedProvider(ctx context.Context, h Host) (string, error) {
+	dir := path.Join(DataDir, "sandboxes")
+	out, err := privileged(ctx, h, "sh", "-c", recordsScript, "sh", rooted(h, dir))
+	if err != nil {
+		return "", fmt.Errorf("read %s as root: %w", dir, err)
+	}
+	fields := strings.Split(string(out), "\x00")
+	var unreadable error
+	for i := 0; i+1 < len(fields); i += 2 {
+		id := fields[i]
+		if sandboxstate.ValidID(id) != nil {
+			continue
+		}
+		var record struct {
+			Provider string `json:"provider"`
+		}
+		if err := json.Unmarshal([]byte(fields[i+1]), &record); err != nil {
+			unreadable = errors.Join(unreadable, &sandboxstate.UnreadableError{ID: id, Err: err})
+			continue
+		}
+		if record.Provider != "" {
+			return record.Provider, nil
+		}
+	}
+
+	return "", unreadable
+}
+
+// rootAccess asks for administrator access before the checks when only root can read the sandbox records; any other read error is preflight's to report.
+func (s *Setup) rootAccess(ctx context.Context) error {
+	_, err := sandboxstate.RecordedProvider(rooted(s.Host, DataDir))
+	if !errors.Is(err, fs.ErrPermission) {
 		return nil
 	}
 
-	return providerFailed(
-		"The sandboxes in "+DataDir+" use "+providerTitle(recorded)+".",
-		"Setup never changes the provider of existing sandboxes.",
+	return s.admin(ctx)
+}
+
+// deleteDataLines are the commands that delete the data dir, after which the daemon starts over it with any provider.
+func deleteDataLines(h Host, owner string) ([]string, error) {
+	where, free, err := dataImageFacts(h)
+	if err != nil {
+		return nil, err
+	}
+	installed, err := installedInBin(h)
+	if err != nil {
+		return nil, err
+	}
+	sudo := sudoFor(h)
+	// Without the installed binaries the daemon cannot start, so setup must install them before anything can remove the sandboxes. (SHARD-742)
+	if !installed {
+		return deleteAfterReinstall(owner, where, free, sudo), nil
+	}
+
+	// A plain delete leaves a stopped sandbox's netns, veth and cgroup behind, so remove the sandboxes through their own daemon first.
+	lines := append(where,
+		"To delete the saved data, first remove its sandboxes so their network and cgroups go too:", "",
+		"  Start the daemon on that data:", "    "+sudo+"shard daemon --provider "+owner, "",
+		"  List sandboxes:", "    "+sudo+"shard list --all", "",
+		"  Remove a sandbox:", "    "+sudo+"shard remove --force <name>", "",
 	)
+	if where == nil {
+		return append(lines, "  Then stop that daemon and delete the data:", "    "+sudo+"rm -r "+DataDir), nil
+	}
+
+	// An image-backed root has sandboxes too, and an active mount would block the umount, so stop the daemon before the free.
+	lines = append(lines, "  Then stop that daemon and free the disk:")
+	for _, c := range free {
+		lines = append(lines, "    "+c)
+	}
+
+	return lines, nil
+}
+
+// installedInBin reports whether setup already put shard in /usr/local/bin, so the daemon the delete steps start is on root's PATH and can run. (SHARD-742)
+func installedInBin(h Host) (bool, error) {
+	if _, err := os.Lstat(rooted(h, shardBinary)); err != nil {
+		if errors.Is(err, fs.ErrNotExist) {
+			return false, nil
+		}
+		return false, fmt.Errorf("check %s: %w", shardBinary, err)
+	}
+
+	return true, nil
+}
+
+// deleteAfterReinstall is the delete path when shard is not installed: choose the owner so setup installs it, then remove the sandboxes, uninstall, and free the disk. (SHARD-742)
+func deleteAfterReinstall(owner string, where, free []string, sudo string) []string {
+	lines := append(where,
+		"To delete the saved data, let setup install shard first, so its daemon can remove the sandboxes:", "",
+		"  Choose "+providerTitle(owner)+". Setup installs shard and starts its daemon over this data.", "",
+		"  Remove every sandbox:", "    "+sudo+"shard list --all", "    "+sudo+"shard remove --force <name>", "",
+		"  Then uninstall shard and free the disk:", "    shard setup   (choose "+uninstallLabel+")",
+	)
+	if where == nil {
+		return append(lines, "    "+sudo+"rm -r "+DataDir)
+	}
+	for _, c := range free {
+		lines = append(lines, "    "+c)
+	}
+
+	return lines
 }
 
 func serviceSupport(_ context.Context, h Host, _ Local) *finding {

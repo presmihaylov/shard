@@ -124,3 +124,7 @@ func (c *fakeChecklist) Attention(i int, detail ...string) error {
 }
 
 func (c *fakeChecklist) Fail(i int, detail ...string) error { return c.mark("fail", i, detail) }
+
+func (c *fakeChecklist) Progress(i int, detail ...string) error {
+	return c.mark("progress", i, detail)
+}

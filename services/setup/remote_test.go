@@ -148,7 +148,6 @@ var allDone = []string{"start 0", "done 0", "start 1", "done 1", "start 2", "don
 
 // The §13 completion text, quoted from the spec, after the path line.
 var completion = []string{
-	"The file stores your API key as plain text and is accessible only to your user.",
 	"From now on, shard commands use this connection automatically.",
 	"",
 	"Next steps:",

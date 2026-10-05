@@ -205,6 +205,32 @@ func TestARedrawMovesUpPastEveryRowAWrappedLineTook(t *testing.T) {
 	}
 }
 
+func TestAShorterRedrawClearsTheRowsTheLastOneLeft(t *testing.T) {
+	var out bytes.Buffer
+	term := keyed(&out, "")
+	term.width = func() (int, error) { return 80, nil }
+	drawn, err := term.redraw(0, []string{"one", "two", "three"}, "\n")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	out.Reset()
+	used, err := term.redraw(drawn, []string{"only"}, "\n")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if used != 1 {
+		t.Fatalf("drew %d rows, want 1", used)
+	}
+	// One clear for the new row, two for the rows the taller render left below it.
+	if n := strings.Count(out.String(), clearLine); n != 3 {
+		t.Errorf("cleared %d rows, want 3", n)
+	}
+	if !strings.HasSuffix(out.String(), "\x1b[2A") {
+		t.Errorf("the redraw ended %q, want it to move the cursor up 2 rows after clearing", out.String())
+	}
+}
+
 func TestAnAnsweredQuestionLeavesABlankLine(t *testing.T) {
 	ask := map[string]func(*Terminal) error{
 		"select": func(term *Terminal) error {

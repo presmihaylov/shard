@@ -37,12 +37,14 @@ type localHost struct {
 	calls []string
 	// fail makes a command whose line starts with a key fail, printing its value.
 	fail map[string]string
+	// answer makes a command whose line starts with a key succeed, printing its value.
+	answer map[string]string
 }
 
 func newLocalHost(t *testing.T) *localHost {
 	t.Helper()
 	swap(t, &rootUID, os.Getuid())
-	l := &localHost{t: t, root: t.TempDir(), rs: newReleaseServer(t), env: map[string]string{}, fail: map[string]string{}}
+	l := &localHost{t: t, root: t.TempDir(), rs: newReleaseServer(t), env: map[string]string{}, fail: map[string]string{}, answer: map[string]string{}}
 	l.rs.add("v0.1.0", false, false, true, map[string]string{"shard-init-linux-amd64": "shard-init v0.1.0"})
 	for _, tool := range []string{"/usr/sbin/ip", "/usr/sbin/nft", "/usr/sbin/mkfs.ext4", "/usr/local/bin/runsc", "/usr/bin/systemctl", "/usr/bin/systemd-analyze", "/usr/bin/apt-get", "/usr/bin/sudo"} {
 		l.write(tool, "#!/bin/sh\n")
@@ -81,6 +83,11 @@ func (l *localHost) run(ctx context.Context, name string, args ...string) ([]byt
 	for prefix, out := range l.fail {
 		if strings.HasPrefix(line, prefix) {
 			return []byte(out), errors.New("exit status 1")
+		}
+	}
+	for prefix, out := range l.answer {
+		if strings.HasPrefix(line, prefix) {
+			return []byte(out), nil
 		}
 	}
 
@@ -438,7 +445,7 @@ func TestAProviderFailureOffersTheOthers(t *testing.T) {
 	}
 	again := ui.shown[1]
 	runc := again[providerIndex(Runc)]
-	if !slices.Equal(runc.Unavailable, []string{"The sandboxes in /var/lib/shard use gVisor.", "Setup never changes the provider of existing sandboxes."}) {
+	if !slices.Equal(runc.Unavailable, runcOverGVisor("", false)) {
 		t.Fatalf("the failed provider shows %+v", runc)
 	}
 	if last := again[len(again)-1]; last.Name != exitOption {
@@ -449,6 +456,45 @@ func TestAProviderFailureOffersTheOthers(t *testing.T) {
 	}
 	if l.changed() {
 		t.Fatalf("a failed preflight changed the host: %q", l.calls)
+	}
+}
+
+// A user's setup gets sudo before the checks when only root reads the records, and reads them as root (SHARD-742).
+func TestANonRootSetupReadsTheRecordsAsRoot(t *testing.T) {
+	if os.Geteuid() == 0 {
+		t.Skip("root reads a directory whatever its mode")
+	}
+	l := newLocalHost(t)
+	l.sandbox(GVisor)
+	dir := filepath.Join(l.root, DataDir, "sandboxes")
+	if err := os.Chmod(dir, 0); err != nil {
+		t.Fatalf("lock: %v", err)
+	}
+	t.Cleanup(func() {
+		if err := os.Chmod(dir, 0o750); err != nil {
+			t.Errorf("unlock: %v", err)
+		}
+	})
+	l.fail["sudo -n true"] = "sudo: a password is required"
+	l.answer["sudo -n -- sh -c"] = "sb1\x00{\"provider\": \"gvisor\"}\n\x00"
+	h := l.host()
+	h.Euid = 1000
+	ui := newLocalUI("true", false, Runc, GVisor)
+
+	err := (&Setup{Host: h, UI: ui}).local(t.Context(), stay)
+	if !errors.Is(err, ErrDeclined) {
+		t.Fatalf("local = %v, want the review after the second choice", err)
+	}
+
+	said(t, ui.fakeUI, "Setup needs administrator access. sudo may ask for your password.")
+	if runc := ui.shown[1][providerIndex(Runc)]; !slices.Equal(runc.Unavailable, runcOverGVisor("sudo ", false)) {
+		t.Fatalf("the failed provider shows %+v", runc)
+	}
+	reads := []string{"sudo -n true", "sudo -v", "env LC_ALL=C sudo -n -v", "sudo -n -- sh -c"}
+	for _, c := range l.calls {
+		if !slices.ContainsFunc(reads, func(r string) bool { return strings.HasPrefix(c, r) }) && !strings.HasSuffix(c, "--version") {
+			t.Fatalf("a failed preflight ran %q", c)
+		}
 	}
 }
 

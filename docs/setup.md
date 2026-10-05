@@ -150,9 +150,11 @@ shard setup --local --provider gvisor --start-at-boot=true -y
 SHARD_API_KEY=... shard setup --remote https://shard.example.com --save -y
 ```
 
-An option answers its question and the wizard asks the rest. Without a terminal, every question
-must have its answer: setup fails and names the option it needs, and it never picks one for you. A
-local run without a terminal names every missing option at once, before any check runs.
+An option answers its question and the wizard asks the rest. A local option (`--provider` or
+`--start-at-boot`) answers the mode too, so `-y` with one of them, and no `--local`, runs a local
+setup. Without a terminal, every question must have its answer: setup fails and names the option it
+needs, and it never picks one for you. A local run without a terminal names every missing option at
+once, before any check runs.
 `-y` answers the confirmation and the `http` warning only. It skips no check, and it saves a
 connection only with `--save`. The API key comes from `SHARD_API_KEY`, never from an option. Setup
 refuses a local option beside `--remote`, and `--save` beside a local option.

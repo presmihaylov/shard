@@ -1,6 +1,8 @@
 package setup
 
 import (
+	"bytes"
+	"errors"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -15,15 +17,18 @@ func TestAStalledDownloadTimesOut(t *testing.T) {
 	for _, tt := range []struct {
 		name  string
 		serve func(w http.ResponseWriter, r *http.Request)
+		want  string
 	}{
-		{"the headers never come", func(_ http.ResponseWriter, r *http.Request) { <-r.Context().Done() }},
+		// No headers means no body yet, so ResponseHeaderTimeout fires and reads as a plain timeout.
+		{"the headers never come", func(_ http.ResponseWriter, r *http.Request) { <-r.Context().Done() }, "connection timed out"},
+		// A body that stalls is the idle body's own timeout, which names the window it waited.
 		{"the body stops", func(w http.ResponseWriter, r *http.Request) {
 			if _, err := io.WriteString(w, "partial"); err != nil {
 				t.Error(err)
 			}
 			w.(http.Flusher).Flush()
 			<-r.Context().Done()
-		}},
+		}, "no data for 100ms; setup stops a download that sends nothing for that long"},
 	} {
 		t.Run(tt.name, func(t *testing.T) {
 			server := httptest.NewServer(http.HandlerFunc(tt.serve))
@@ -34,10 +39,55 @@ func TestAStalledDownloadTimesOut(t *testing.T) {
 
 			err := p.download(t.Context())
 
-			if got, want := problemLines(err), []string{"Could not download gVisor: connection timed out."}; !slices.Equal(got, want) {
+			if got, want := problemLines(err), []string{"Could not download gVisor: " + tt.want + "."}; !slices.Equal(got, want) {
 				t.Errorf("the download failed with %q, want %q", got, want)
 			}
 		})
+	}
+}
+
+// The download reports how far it got once a second, and once at the end whatever the clock says. (SHARD-744)
+func TestADownloadReportsProgressOnceASecondAndAtTheEnd(t *testing.T) {
+	clock := time.Unix(1000, 0)
+	var lines []string
+	pr := &progressReader{
+		r:      bytes.NewReader(bytes.Repeat([]byte("x"), 4096)),
+		label:  "gVisor",
+		total:  4096,
+		report: func(detail ...string) error { lines = append(lines, detail...); return nil },
+		now:    func() time.Time { return clock }, // a fixed clock, so only the first read and the end report
+	}
+
+	buf := make([]byte, 1024)
+	for {
+		n, err := pr.Read(buf)
+		if n == 0 && errors.Is(err, io.EOF) {
+			break
+		}
+		if err != nil && !errors.Is(err, io.EOF) {
+			t.Fatalf("read: %v", err)
+		}
+	}
+
+	want := []string{"gVisor 1.0 KiB of 4.0 KiB (25%)", "gVisor 4.0 KiB of 4.0 KiB (100%)"}
+	if !slices.Equal(lines, want) {
+		t.Errorf("reported %q, want %q", lines, want)
+	}
+}
+
+// progressLine shows a percent with a known length and bytes alone without one. (SHARD-744)
+func TestProgressLine(t *testing.T) {
+	for _, c := range []struct {
+		read, total int64
+		want        string
+	}{
+		{512, 2048, "runsc 512 B of 2.0 KiB (25%)"},
+		{1572864, 3145728, "runsc 1.5 MiB of 3.0 MiB (50%)"},
+		{100, 0, "runsc 100 B"},
+	} {
+		if got := progressLine("runsc", c.read, c.total); got != c.want {
+			t.Errorf("progressLine(%d, %d) = %q, want %q", c.read, c.total, got, c.want)
+		}
 	}
 }
 

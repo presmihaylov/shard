@@ -65,7 +65,7 @@ func (b *idleBody) expire() {
 func (b *idleBody) Read(p []byte) (int, error) {
 	n, err := b.ReadCloser.Read(p)
 	if b.expired.Load() {
-		return n, fmt.Errorf("no data for %s: %w", b.idle, os.ErrDeadlineExceeded)
+		return n, &stallError{after: b.idle}
 	}
 	if n > 0 {
 		b.timer.Reset(b.idle)
@@ -73,6 +73,18 @@ func (b *idleBody) Read(p []byte) (int, error) {
 
 	return n, err
 }
+
+// stallError is a download that sent nothing for after, so setup can say the idle window rather than "connection timed out".
+type stallError struct{ after time.Duration }
+
+func (e *stallError) Error() string { return fmt.Sprintf("no data for %s", e.after) }
+
+func (e *stallError) Timeout() bool { return true }
+
+func (e *stallError) Temporary() bool { return false }
+
+// Unwrap keeps errors.Is(err, os.ErrDeadlineExceeded) true, so a caller that tests for a timeout still sees one.
+func (e *stallError) Unwrap() error { return os.ErrDeadlineExceeded }
 
 func (b *idleBody) Close() error {
 	b.timer.Stop()

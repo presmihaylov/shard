@@ -123,6 +123,8 @@ type localPlan struct {
 	user string
 	// stage holds the verified downloads between the download step and the install step.
 	stage string
+	// progress reports how far a download got onto the live checklist; it is a no-op outside apply.
+	progress func(detail ...string) error
 }
 
 func newLocalPlan(h Host, l Local) *localPlan {
@@ -167,6 +169,13 @@ func socketSudo(h Host) string {
 // localSteps are the steps that set up l on this host, in checklist order; each is safe to run again.
 func (s *Setup) localSteps(_ context.Context, l Local) ([]Step, error) {
 	p := newLocalPlan(s.Host, l)
+	p.progress = func(detail ...string) error {
+		if s.step == nil {
+			return nil
+		}
+
+		return s.step(detail...)
+	}
 	steps := []Step{{Title: "Check host compatibility", Do: p.compatible}}
 	if len(p.missing.downloads) > 0 || p.initAsset != "" {
 		steps = append(steps, Step{Title: "Download and verify required tools", Do: p.download})
@@ -211,7 +220,7 @@ func (p *localPlan) download(ctx context.Context) (err error) {
 	}()
 
 	for _, d := range p.missing.downloads {
-		if err := fetchPinned(ctx, p.h, d, stage); err != nil {
+		if err := fetchPinned(ctx, p.h, d, stage, p.progress); err != nil {
 			return &Problem{Lines: []string{fmt.Sprintf("Could not download %s: %s.", d.Title, downloadCause(err))}}
 		}
 	}
@@ -227,6 +236,9 @@ func (p *localPlan) download(ctx context.Context) (err error) {
 
 // downloadCause words a network failure as client.DialCause does, so no socket address reaches the screen and every timeout reads the same.
 func downloadCause(err error) string {
+	if stall, ok := errors.AsType[*stallError](err); ok {
+		return fmt.Sprintf("no data for %s; setup stops a download that sends nothing for that long", stall.after)
+	}
 	if _, ok := errors.AsType[net.Error](err); ok {
 		return client.DialCause(err)
 	}
@@ -248,7 +260,7 @@ func (p *localPlan) clean() error {
 }
 
 // fetchPinned downloads d into stage and refuses it unless it hashes to its pin; an archive is unpacked under stage/<Title>.
-func fetchPinned(ctx context.Context, h Host, d *download, stage string) (err error) {
+func fetchPinned(ctx context.Context, h Host, d *download, stage string, report func(detail ...string) error) (err error) {
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, d.URL, nil)
 	if err != nil {
 		return err
@@ -263,14 +275,68 @@ func fetchPinned(ctx context.Context, h Host, d *download, stage string) (err er
 	}
 
 	file := filepath.Join(stage, path.Base(d.URL))
-	if err := saveVerified(resp.Body, file, d.SHA256); err != nil {
+	pr := &progressReader{r: resp.Body, label: d.Title, total: resp.ContentLength, report: report, now: time.Now}
+	if err := saveVerified(pr, file, d.SHA256); err != nil {
 		return err
+	}
+	if pr.reportErr != nil {
+		return pr.reportErr
 	}
 	if d.deb() {
 		return nil
 	}
 
 	return unpack(file, filepath.Join(stage, d.Title))
+}
+
+// progressReader reports how far a download got through report, at most once a second and once at the end.
+type progressReader struct {
+	r         io.Reader
+	label     string
+	total     int64
+	report    func(detail ...string) error
+	now       func() time.Time
+	read      int64
+	last      time.Time
+	reportErr error
+}
+
+func (pr *progressReader) Read(b []byte) (int, error) {
+	n, err := pr.r.Read(b)
+	pr.read += int64(n)
+	if pr.report == nil {
+		return n, err
+	}
+	if pr.reportErr == nil && (errors.Is(err, io.EOF) || (err == nil && pr.now().Sub(pr.last) >= time.Second)) {
+		pr.last = pr.now()
+		pr.reportErr = pr.report(progressLine(pr.label, pr.read, pr.total))
+	}
+
+	return n, err
+}
+
+// progressLine is how far a download got: a percent when the length is known, bytes alone when it is not.
+func progressLine(label string, read, total int64) string {
+	if total <= 0 {
+		return fmt.Sprintf("%s %s", label, humanBytes(read))
+	}
+
+	return fmt.Sprintf("%s %s of %s (%d%%)", label, humanBytes(read), humanBytes(total), read*100/total)
+}
+
+// humanBytes is n in binary units, so a 130 MiB download does not print as 136314880.
+func humanBytes(n int64) string {
+	const unit = 1024
+	if n < unit {
+		return fmt.Sprintf("%d B", n)
+	}
+	div, exp := int64(unit), 0
+	for m := n / unit; m >= unit; m /= unit {
+		div *= unit
+		exp++
+	}
+
+	return fmt.Sprintf("%.1f %ciB", float64(n)/float64(div), "KMGTPE"[exp])
 }
 
 func saveVerified(r io.Reader, file, want string) (err error) {

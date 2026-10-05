@@ -7,6 +7,8 @@ import (
 	"slices"
 	"strings"
 	"testing"
+
+	"github.com/presmihaylov/shard/services/sandboxstate"
 )
 
 // preflightOn runs the checks for l on h and returns the finding and the checklist it drew.
@@ -339,15 +341,93 @@ func TestPreflightDownloadAccess(t *testing.T) {
 	})
 }
 
+// runcOverGVisor is the refusal of runc over a data dir whose sandboxes use gVisor, with both ways out: the daemon steps when shard is installed, else the reinstall path, prefixing root commands with sudo (SHARD-742).
+func runcOverGVisor(sudo string, installed bool) []string {
+	head := []string{
+		"The sandboxes in /var/lib/shard use gVisor.",
+		"The daemon cannot start with runc over that data, and setup never changes its provider.",
+		"To keep the data, choose gVisor.",
+	}
+	tail := []string{"Then run shard setup again."}
+	if installed {
+		return slices.Concat(head, []string{
+			"To delete the saved data, first remove its sandboxes so their network and cgroups go too:", "",
+			"  Start the daemon on that data:", "    " + sudo + "shard daemon --provider gvisor", "",
+			"  List sandboxes:", "    " + sudo + "shard list --all", "",
+			"  Remove a sandbox:", "    " + sudo + "shard remove --force <name>", "",
+			"  Then stop that daemon and delete the data:", "    " + sudo + "rm -r /var/lib/shard",
+		}, tail)
+	}
+
+	return slices.Concat(head, []string{
+		"To delete the saved data, let setup install shard first, so its daemon can remove the sandboxes:", "",
+		"  Choose gVisor. Setup installs shard and starts its daemon over this data.", "",
+		"  Remove every sandbox:", "    " + sudo + "shard list --all", "    " + sudo + "shard remove --force <name>", "",
+		"  Then uninstall shard and free the disk:", "    shard setup   (choose " + uninstallLabel + ")",
+		"    " + sudo + "rm -r /var/lib/shard",
+	}, tail)
+}
+
 func TestPreflightExistingSandboxes(t *testing.T) {
 	l := newLocalHost(t)
 	l.sandbox(GVisor)
 
 	f, _ := preflightOn(t, l.host(), Local{Provider: Runc})
-	wantFinding(t, f, "Existing shard installation", true, "The sandboxes in /var/lib/shard use gVisor.", "Setup never changes the provider of existing sandboxes.")
+	wantFinding(t, f, "Existing shard installation", true, runcOverGVisor("", false)...)
 
 	if f, _ := preflightOn(t, l.host(), Local{Provider: GVisor}); f != nil {
 		t.Fatalf("the recorded provider fails %q: %q", f.check, f.lines)
+	}
+}
+
+// An installed host can run the daemon, so the delete steps drive it directly instead of reinstalling first (SHARD-742).
+func TestPreflightExistingSandboxesInstalled(t *testing.T) {
+	l := newLocalHost(t)
+	l.sandbox(GVisor)
+	l.write(shardBinary, "bin")
+
+	f, _ := preflightOn(t, l.host(), Local{Provider: Runc})
+	wantFinding(t, f, "Existing shard installation", true, runcOverGVisor("", true)...)
+}
+
+// A firecracker root hides its records in a data image that uninstall leaves unmounted, so the image alone names it, and the free steps also remove its start lock (SHARD-742, SHARD-734).
+func TestPreflightExistingDataImage(t *testing.T) {
+	l := newLocalHost(t)
+	l.write("/var/lib/shard.xfs", "")
+	l.write("/var/lib/shard.xfs.lock", "")
+
+	f, _ := preflightOn(t, l.host(), Local{Provider: GVisor})
+	wantFinding(t, f, "Existing shard installation", true,
+		"The data in /var/lib/shard belongs to Firecracker.",
+		"The daemon cannot start with gVisor over that data, and setup never changes its provider.",
+		"To keep the data, choose Firecracker.",
+		"It lives in the 0.0 GiB disk image /var/lib/shard.xfs.",
+		"To delete the saved data, let setup install shard first, so its daemon can remove the sandboxes:", "",
+		"  Choose Firecracker. Setup installs shard and starts its daemon over this data.", "",
+		"  Remove every sandbox:", "    shard list --all", "    shard remove --force <name>", "",
+		"  Then uninstall shard and free the disk:", "    shard setup   (choose "+uninstallLabel+")",
+		"    umount /var/lib/shard",
+		"    rm /var/lib/shard.xfs",
+		"    rm -r /var/lib/shard /var/lib/shard.xfs.lock",
+		"Then run shard setup again.",
+	)
+}
+
+// The read as root skips a name that is no id and an undecodable record, as the daemon does (SHARD-742).
+func TestPrivilegedProviderReadsTheRecords(t *testing.T) {
+	f := newFakeHost(t)
+	h := f.host(nil)
+	if got, err := privilegedProvider(t.Context(), h); got != "" || err != nil {
+		t.Fatalf("no records = %q, %v", got, err)
+	}
+	f.write(t, "/var/lib/shard/sandboxes/a1/sandbox.json", "{")
+	f.write(t, "/var/lib/shard/sandboxes/.b2/sandbox.json", `{"provider": "runc"}`)
+	if got, err := privilegedProvider(t.Context(), h); got != "" || !errors.As(err, new(*sandboxstate.UnreadableError)) {
+		t.Fatalf("an undecodable record = %q, %v", got, err)
+	}
+	f.write(t, "/var/lib/shard/sandboxes/c3/sandbox.json", "{\n  \"provider\": \"gvisor\"\n}\n")
+	if got, err := privilegedProvider(t.Context(), h); got != GVisor || err != nil {
+		t.Fatalf("records = %q, %v, want gvisor", got, err)
 	}
 }
 
