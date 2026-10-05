@@ -57,7 +57,7 @@ This token can list sandboxes, read their logs and run commands in them. It cann
 On the host, the daemon listens on a unix socket and takes no token. A request on the socket can do anything. `shard serve` is the only way in from the network, and it checks each request in two steps before it passes the request to the socket.
 
 1. The token must be an HS256 JWT signed with the host's signing key. It must carry a subject, an id and an issued-at time. The ledger on the host must hold its id, and the id must not be revoked. A token with an `exp` must not have expired. Any other token gets `401` with the code `unauthorized`.
-2. `shard serve` maps the method and the path to one scope, and the token must carry that scope. Otherwise it gets `403` with the code `forbidden`. A route that only the host can use, such as `shard pull`, gets the same `403` for every token.
+2. `shard serve` maps the method and the path to one scope, and the token must carry that scope. Otherwise it gets `403` with the code `forbidden`. A route that only the host can use, such as `POST /v0/images/pull`, gets the same `403` for every token.
 
 Both refusals come from `shard serve` before it opens the socket, so a refused request never reaches the daemon. `shard serve` logs the name of the token for every request it lets through, and never logs the token itself or the signing key.
 
@@ -73,7 +73,7 @@ Both refusals come from `shard serve` before it opens the socket, so a refused r
 | `policy:*` | Manage policies and their sandbox assignments | Every policies route, and attach and detach on a sandbox |
 | `*` | All available permissions | Every route above |
 
-A token with no scopes, or with `*`, reaches every route. `GET /v0/version`, `GET /v0/capabilities` and `GET /v0/scopes` answer any valid token, so a client can check which server it talks to before it acts. The [REST API overview](/docs/reference/api/) names the scope of each route.
+A token with no scopes, or with `*`, reaches every route. `GET /v0/version`, `GET /v0/capabilities` and `GET /v0/scopes` answer any valid token, so a client can check which server it talks to before it acts. The [TCP front](https://github.com/presmihaylov/shard/blob/main/docs/daemon.md#the-tcp-front) names the scope of each route.
 
 A create that names a secret also needs `secret:*`, and a create that names a policy also needs `policy:*`. A fork of a sandbox with secret grants or a policy needs the same scopes, because the fork copies them. The daemon refuses the request with `403` before it builds anything:
 
@@ -111,7 +111,7 @@ shard tokens mint --name build-agent --duration 24h --scopes sandbox:read,sandbo
 export SHARD_API_KEY=$(shard tokens mint --name ci --duration 24h --scopes sandbox:read | jq -r .token)
 ```
 
-`mint`, `list` and `revoke` run only on the daemon host. They refuse `--remote`, `SHARD_REMOTE` and a saved connection, and none of them talks to the daemon. The [CLI reference](/docs/reference/cli/host/#shard-tokens) lists every option.
+`mint`, `list` and `revoke` run only on the daemon host. They refuse `--remote`, `SHARD_REMOTE` and a saved connection, and none of them talks to the daemon. [The TCP front](https://github.com/presmihaylov/shard/blob/main/docs/daemon.md#the-tcp-front) lists every option.
 
 ## List and revoke tokens
 
@@ -167,6 +167,6 @@ When `shard serve` refuses the key with `401`, the CLI prints which key it sent 
 shard: the server at https://shard.example.com did not accept the API key in SHARD_API_KEY; set SHARD_API_KEY to a valid key, or ask the server administrator for a new one
 ```
 
-The SDKs raise `AuthenticationError` for a `401` and `PermissionDeniedError` for a `403`. [Errors and exit codes](/docs/reference/errors/) lists every error code.
+The SDKs raise `AuthenticationError` for a `401` and `PermissionDeniedError` for a `403`. [The API socket](https://github.com/presmihaylov/shard/blob/main/docs/daemon.md#the-api-socket) lists every error code.
 
 Use an `https` remote for any request that crosses a network you do not trust. Over an `http` remote, the token crosses the network unencrypted.
