@@ -55,7 +55,7 @@ The answer lists all eight verbs, each `true` or `false`. It comes from the prov
 
 ## The verbs of each provider
 
-One daemon runs one provider for every sandbox on its host. Every provider runs five of the eight verbs. Pause, resume and fork are optional:
+One daemon runs one provider for every sandbox on its host. Every provider supports the same five of the eight verbs. Pause, resume and fork are optional:
 
 | Verb | gVisor | Sysbox | runc | vz | Firecracker |
 | --- | --- | --- | --- | --- | --- |
@@ -64,7 +64,7 @@ One daemon runs one provider for every sandbox on its host. Every provider runs 
 | `resume` | yes | no | no | Apple silicon with macOS 14 or later | yes |
 | `fork` | yes | no | no | Apple silicon with macOS 14 or later | yes |
 
-`snapshot` is `shard snapshot create`, a copy of the files of a stopped sandbox. `fork` copies a sandbox while it runs. Every provider also runs `exec`, `logs` and `inspect`, which the answer does not list.
+`snapshot` is `shard snapshot create`, which copies the files of a stopped sandbox. `fork` copies a sandbox while it runs. Every provider also supports `exec`, `logs` and `inspect`, which the answer does not list.
 
 ## The API
 
@@ -91,7 +91,7 @@ Through `shard serve`, any valid token can read it, whatever its scopes. `shard 
 
 ## A verb the provider lacks
 
-shard refuses the verb. It never falls back to a weaker one, such as a stop in place of a pause. The refusal comes before the daemon changes anything, so the sandbox keeps its state:
+shard refuses the verb. It never falls back to a weaker verb, such as a stop in place of a pause. The refusal comes before the daemon changes anything, so the sandbox keeps its state:
 
 <Tabs syncKey="lang">
 	<TabItem label="CLI">
@@ -140,16 +140,16 @@ The message names the provider and the verb. [Errors and exit codes](/docs/refer
 
 ## The provider of a host
 
-`shard daemon status` names the provider of the daemon that runs. `shard daemon --provider <name>` picks one. Without the flag, the daemon picks one from its root, then from the host:
+`shard daemon status` names the provider of the running daemon. `shard daemon --provider <name>` picks one. Without the flag, the daemon picks one from its root, then from the host:
 
 | The root and the host | The provider |
 | --- | --- |
 | A root that holds sandbox records | The provider that made them |
-| A root with none, beside a `<root>.xfs` image | `firecracker` |
-| A root with none, on Linux, where `/dev/kvm` opens | `firecracker` |
-| A root with none, on Linux, with no `/dev/kvm` or one that does not open | `gvisor` |
-| A root with none, on macOS | `vz` |
+| A root with no records, beside a `<root>.xfs` image | `firecracker` |
+| A root with no records, on Linux, where `/dev/kvm` opens | `firecracker` |
+| A root with no records, on Linux, with no `/dev/kvm` or one that does not open | `gvisor` |
+| A root with no records, on macOS | `vz` |
 
-The daemon never picks `sysbox` or `runc`. Name them with `--provider`. `shard info` prints the provider that a new daemon would pick on this host, and the reason. It runs on the daemon host only.
+The daemon never picks `sysbox` or `runc`. To use one of them, name it with `--provider`. `shard info` prints the provider that a new daemon would pick on this host, and the reason. It runs on the daemon host only.
 
-A root keeps the provider that made its records, because no other provider can read them. A `--provider` that names another one is refused before the daemon touches the root, and the refusal names both providers.
+A root keeps the provider that made its records, because no other provider can read them. The daemon refuses a `--provider` that names another one before it touches the root, and the error names both providers.
