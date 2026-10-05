@@ -84,6 +84,7 @@ type Runner struct {
 	executable string
 	root       string
 	network    string
+	platform   string
 	execDir    string
 	settle     time.Duration
 }
@@ -112,6 +113,18 @@ const (
 // WithNetwork picks the sandbox network mode. Sandbox is what a sandbox with an allocated netns needs.
 func WithNetwork(mode string) Option {
 	return func(r *Runner) { r.network = mode }
+}
+
+// The platforms runsc runs the guest on. KVM uses hardware virtualization and is far cheaper per
+// syscall; Systrap is the software default where /dev/kvm is absent (SHARD-532).
+const (
+	PlatformKVM     = "kvm"
+	PlatformSystrap = "systrap"
+)
+
+// WithPlatform fixes the runsc platform. The daemon picks kvm where /dev/kvm opens, systrap otherwise.
+func WithPlatform(mode string) Option {
+	return func(r *Runner) { r.platform = mode }
 }
 
 // New prepares the runsc root, which is /var/lib/shard/runsc on the box.
@@ -674,8 +687,17 @@ func (r *Runner) command(ctx context.Context, args ...string) *exec.Cmd {
 func (r *Runner) global() []string {
 	// --overlay2=none because runsc otherwise writes into a filestore it throws away on a stop, and
 	// the sandbox's writable layer is the overlayfs mount services/bundle owns.
-	return []string{"--root", r.root, "--network=" + r.network, "--overlay2=none"}
+	args := []string{"--root", r.root, "--network=" + r.network, "--overlay2=none"}
+	// Fixed at daemon start so create and restore agree; a box's /dev/kvm presence does not change under a run.
+	if r.platform != "" {
+		args = append(args, "--platform="+r.platform)
+	}
+
+	return args
 }
+
+// Platform is the runsc platform this runner was fixed to, or empty when it rides the runsc default.
+func (r *Runner) Platform() string { return r.platform }
 
 // restoreArgs is the restore verb and its flags, which Restore runs and RestoreArgs reports.
 func restoreArgs(bundle, image, id string) []string {

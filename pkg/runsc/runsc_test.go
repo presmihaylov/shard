@@ -118,6 +118,30 @@ func TestEveryCommandCarriesTheGlobalFlags(t *testing.T) {
 	}
 }
 
+// A runner given a platform passes it to every call; one with none rides the runsc default.
+func TestWithPlatformFixesTheGlobalPlatformFlag(t *testing.T) {
+	with, recorded := fakeBinary(t, "", runsc.WithPlatform(runsc.PlatformKVM))
+	if with.Platform() != runsc.PlatformKVM {
+		t.Errorf("Platform is %q, want %q", with.Platform(), runsc.PlatformKVM)
+	}
+	if err := with.Start(t.Context(), "amber-otter-1a2b"); err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	if got := argv(t, recorded); !slices.Contains(got, "--platform="+runsc.PlatformKVM) {
+		t.Errorf("got argv %v, which is missing --platform=%s", got, runsc.PlatformKVM)
+	}
+
+	without, recorded := fake(t, "", "", 0)
+	if err := without.Start(t.Context(), "amber-otter-1a2b"); err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	for _, got := range argv(t, recorded) {
+		if strings.HasPrefix(got, "--platform=") {
+			t.Errorf("a runner with no platform passed %q, want no --platform flag", got)
+		}
+	}
+}
+
 func TestTheCheckpointVerbsSpellTheirFlags(t *testing.T) {
 	cases := []struct {
 		verb string

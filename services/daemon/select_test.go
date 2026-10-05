@@ -23,6 +23,18 @@ func openable(t *testing.T) string {
 	return path
 }
 
+// gvisorPlatform prefers kvm where the device opens and falls back to systrap where it does not.
+func TestGvisorPlatformPrefersKVMWhereItOpens(t *testing.T) {
+	if platform, _ := gvisorPlatform(openable(t)); platform != "kvm" {
+		t.Errorf("a kvm that opens gave platform %q, want kvm", platform)
+	}
+
+	absent := filepath.Join(t.TempDir(), "kvm")
+	if platform, _ := gvisorPlatform(absent); platform != "systrap" {
+		t.Errorf("an absent kvm gave platform %q, want systrap", platform)
+	}
+}
+
 // pick names the substrate and fails the test when the selection itself could not be made.
 func pick(t *testing.T, named, root, kvm string) Selection {
 	t.Helper()

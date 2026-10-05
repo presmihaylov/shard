@@ -535,13 +535,29 @@ func (d *deps) runnerLocked() (*runsc.Runner, error) {
 		return d.runnerSvc, nil
 	}
 
-	runner, err := runsc.New(filepath.Join(d.cfg.Root, "runsc"), runsc.WithNetwork(runsc.NetworkSandbox), runsc.WithExecDir(filepath.Join(d.cfg.Root, execDir)))
+	platform, reason := gvisorPlatform(KVMDevice)
+	runner, err := runsc.New(filepath.Join(d.cfg.Root, "runsc"), runsc.WithNetwork(runsc.NetworkSandbox), runsc.WithPlatform(platform), runsc.WithExecDir(filepath.Join(d.cfg.Root, execDir)))
 	if err != nil {
 		return nil, err
 	}
+	d.logger().Printf("gvisor platform: %s (%s)", platform, reason)
 	d.runnerSvc = runner
 
 	return d.runnerSvc, nil
+}
+
+// gvisorPlatform prefers kvm where /dev/kvm opens, since the same syscall-bound workload is several times
+// cheaper there than on software systrap; systrap is the fallback (SHARD-532).
+func gvisorPlatform(kvm string) (platform, reason string) {
+	dev, err := os.OpenFile(kvm, os.O_RDWR, 0)
+	if err != nil {
+		return runsc.PlatformSystrap, fmt.Sprintf("%s does not open: %v", kvm, err)
+	}
+	if err := dev.Close(); err != nil {
+		return runsc.PlatformSystrap, fmt.Sprintf("%s does not close: %v", kvm, err)
+	}
+
+	return runsc.PlatformKVM, kvm + " opens"
 }
 
 func (d *deps) secretsLocked() (*secret.Store, error) {
