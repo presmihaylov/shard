@@ -2,16 +2,16 @@
 
 A single-node sandbox manager for Linux and macOS.
 
-Create sandboxes from OCI images, execute commands, pause and resume processes, and fork live
-sandboxes. One binary provides the CLI and the daemon, with gVisor, Sysbox, runc, Firecracker,
-and Virtualization.framework providers.
+shard creates sandboxes from OCI images, runs commands in them, pauses and resumes their processes,
+and forks live sandboxes. One binary is both the CLI and the daemon, and it drives five providers:
+gVisor, Sysbox, runc, Firecracker, and Virtualization.framework.
 
 ## Why shard?
 
-Give an agent a sandbox that outlives its commands. Keep its files between commands, save its
-memory when idle, or fork its current state to try another path. Use the same lifecycle commands
-on a Linux server and an Apple silicon Mac, with secrets and outbound network policy under host
-control. shard manages one host; it does not schedule a fleet.
+shard gives an agent a sandbox that outlives its commands. The agent's files stay between commands.
+You can save its memory while it is idle, or fork its current state to try another path. The same
+lifecycle commands work on a Linux server and on an Apple silicon Mac, and the host keeps control of
+secrets and outbound network policy. shard manages one host. It does not schedule a fleet.
 
 ## 60-second quickstart
 
@@ -22,12 +22,12 @@ curl -fsSL https://useshards.com/install | sh
 shard setup
 ```
 
-The installer puts `shard` in `~/.local/bin` and, when `~/.local/bin` is not on `PATH`, prints the
-line that adds it. With a terminal attached it offers to start `shard setup` itself. Setup asks for
-a provider and whether the daemon starts at boot, shows what it will change, and asks once before it
-changes anything. It then installs the provider's tools. With the recommended Yes at boot, it also
-starts the daemon as a systemd service on Linux or a launchd service on a Mac; with No, it prints the
-`shard daemon` command to run yourself.
+The installer puts `shard` in `~/.local/bin`. If that directory is not on your `PATH`, it prints the
+line that adds it. When a terminal is attached, the installer also offers to start `shard setup`.
+Setup asks which provider to use and whether the daemon starts at boot, shows what it will change,
+and asks once before it changes anything. Then it installs the provider's tools. If you answer Yes
+at boot, the recommended choice, setup also starts the daemon as a systemd service on Linux or a
+launchd service on a Mac. If you answer No, it prints the `shard daemon` command to run yourself.
 
 Create a sandbox, write a file, read it, and remove the sandbox:
 
@@ -38,14 +38,14 @@ sudo shard exec demo cat /tmp/hello.txt
 sudo shard remove --force demo
 ```
 
-The file command prints `hello from shard`. `create` starts no main command, so the sandbox
-stays available for `exec`. The daemon downloads an image on its first use. On Linux the API
-socket belongs to root, so local commands run with `sudo`. On a Mac the daemon runs as your user,
-so drop `sudo`.
+The third command prints `hello from shard`. `create` starts no main command, so the sandbox stays
+available for `exec`. The daemon downloads an image the first time a sandbox uses it. On Linux the
+API socket belongs to root, so local commands run with `sudo`. On a Mac the daemon runs as your
+user, so drop `sudo`.
 
-A sandbox host is Linux x86-64, or Apple silicon with macOS 14 or later. Any other machine, such
-as an Intel Mac, can still use the CLI: `shard setup` also connects it to a remote server. See
-[the setup guide](docs/setup.md).
+To host sandboxes, a machine needs Linux on x86-64, or Apple silicon with macOS 14 or later. Any
+other machine, such as an Intel Mac, can still use the CLI, and `shard setup` connects it to a
+remote server. See [the setup guide](docs/setup.md).
 
 ## Install
 
@@ -54,8 +54,8 @@ curl -fsSL https://useshards.com/install | sh
 ```
 
 The installer downloads the newest release for this platform, checks it against the release's
-`SHA256SUMS`, and installs it as `~/.local/bin/shard`. It needs no root. Run `shard setup` again
-on a host it set up to check or repair the installation, upgrade it, or uninstall it.
+`SHA256SUMS`, and installs it as `~/.local/bin/shard`. It needs no root. To check, repair, upgrade,
+or uninstall shard on a host that setup prepared, run `shard setup` there again.
 
 ### Release binaries
 
@@ -76,12 +76,12 @@ chmod +x shard-linux-amd64
 ./shard-linux-amd64 setup
 ```
 
-Setup installs that binary as `/usr/local/bin/shard`, and on Linux also `shard-init` from the same
-release. The Mac binary embeds its VM shim and guest supervisor.
+Setup installs that binary as `/usr/local/bin/shard`. On Linux it also installs `shard-init` from
+the same release. The Mac binary already embeds its VM shim and guest supervisor.
 
 ### Build from source
 
-Use the Go version in [go.mod](go.mod), Git, and Make:
+You need Git, Make, and the Go version in [go.mod](go.mod):
 
 ```sh
 git clone https://github.com/presmihaylov/shard.git
@@ -89,10 +89,11 @@ cd shard
 make build-linux build-shard-init-linux
 ```
 
-On a Mac, install the Xcode Command Line Tools and use `make build-darwin` instead. It produces
-`bin/shard-darwin-arm64` on Apple silicon. On Linux, setup downloads `shard-init` from the release
-that matches the binary's version and refuses when there is none, so a build between releases is
-for development. See [the release guide](docs/release.md) for the build and verification process.
+On a Mac, install the Xcode Command Line Tools and run `make build-darwin` instead. On Apple silicon
+it produces `bin/shard-darwin-arm64`. On Linux, setup downloads `shard-init` from the release that
+matches the binary's version, and it refuses when no such release exists. So a build from between
+releases is for development only. See [the release guide](docs/release.md) for how a release is
+built and verified.
 
 ## Providers
 
@@ -104,13 +105,12 @@ for development. See [the release guide](docs/release.md) for the build and veri
 | Firecracker (`firecracker`) | Linux with `/dev/kvm` | MicroVM | Yes |
 | Virtualization.framework (`vz`) | Apple silicon, macOS 14+ | VM | Yes |
 
-Every provider supports create, exec, stop, start, remove, and filesystem snapshots.
-Unsupported verbs fail with the provider name; shard never substitutes another mechanism.
+Every provider supports create, exec, stop, start, remove, and filesystem snapshots. An unsupported
+verb fails with an error that names the provider. shard never swaps in another mechanism.
 
-`shard setup` recommends Firecracker when `/dev/kvm` is usable, gVisor on Linux without it, and
-`vz` on a Mac. Sysbox and runc require an explicit selection. **Sysbox is single-tenant. Use runc
-only for code you trust.** Read the [full provider matrix](docs/provider.md) before you select a
-provider.
+`shard setup` recommends Firecracker when `/dev/kvm` is usable, gVisor on Linux without it, and `vz`
+on a Mac. You have to pick Sysbox or runc yourself. **Sysbox is single-tenant. Use runc only for
+code you trust.** Read the [full provider matrix](docs/provider.md) before you pick a provider.
 
 ## Core concepts
 
@@ -139,26 +139,26 @@ sudo shard remove job
 sudo shard snapshot remove job-files
 ```
 
-Flags precede the image or sandbox name; the command follows it. `--memory` and `--disk` take
-sizes such as `512MiB` or `2GiB`; `--vcpus` takes a whole number. Secret destinations use
-`--destination` or its alias `--dest`. Grant secrets only to destinations that never return
-the credential in a response. See [the CLI reference](docs/cli.md),
+Flags go before the image or sandbox name, and the command goes after it. `--memory` and `--disk`
+take sizes such as `512MiB` or `2GiB`. `--vcpus` takes a whole number. To name a secret's
+destination, use `--destination` or its alias `--dest`. Grant a secret only to destinations that
+never return the credential in a response. See [the CLI reference](docs/cli.md),
 [the lifecycle](docs/state-machine.md), [secrets](docs/secrets.md), and [egress](docs/egress.md).
 
 ## API and SDKs
 
-The daemon serves a REST API over a Unix socket. For remote access, `shard serve` checks API
-tokens and forwards requests to that socket. Put an HTTPS proxy in front for public access.
-The CLI and SDKs use `SHARD_REMOTE` and `SHARD_API_KEY` to connect.
-See [the daemon and API guide](docs/daemon.md) and [the OpenAPI schema](docs/openapi.json).
+The daemon serves a REST API over a Unix socket. For remote access, `shard serve` checks API tokens
+and forwards requests to that socket. For public access, put an HTTPS proxy in front of it. The CLI
+and the SDKs use `SHARD_REMOTE` and `SHARD_API_KEY` to connect. See
+[the daemon and API guide](docs/daemon.md) and [the OpenAPI schema](docs/openapi.json).
 
-The `useshards` SDKs live in [sdks/typescript](sdks/typescript) and [sdks/python](sdks/python).
-They provide sandbox commands, files, lifecycle operations, secrets, and policies. TypeScript
-requires Node.js 20.3 or later; Python requires Python 3.11 or later and has synchronous and
-asynchronous clients.
+The `useshards` SDKs live in [sdks/typescript](sdks/typescript) and [sdks/python](sdks/python). They
+cover commands in a sandbox, files, the lifecycle, secrets, and policies. The TypeScript SDK needs
+Node.js 20.3 or later. The Python SDK needs Python 3.11 or later and has both a synchronous and an
+asynchronous client.
 
-Install them with `npm install useshards` or `pip install useshards`. The source and examples
-are in those directories, and [the release guide](docs/release.md) says how an SDK release is made.
+Install them with `npm install useshards` or `pip install useshards`. Their source and examples are
+in those directories, and [the release guide](docs/release.md) explains how an SDK release is made.
 
 ## Documentation
 
@@ -173,11 +173,11 @@ are in those directories, and [the release guide](docs/release.md) says how an S
 
 **Pre-alpha.** The API, CLI, and SDKs can change without compatibility guarantees.
 
-Read [AGENTS.md](AGENTS.md) for the code layout and contribution rules. Install the
-`golangci-lint` version in [CI](.github/workflows/ci.yml), then run `make check` before a commit.
-It checks format, vet, lint, unit tests, and the e2e script's own tests.
-Tests that need a runtime, namespaces, or KVM use the `integration` build tag and run on a
-suitable host. See [the release guide](docs/release.md) for the platform checks.
+Read [AGENTS.md](AGENTS.md) for the code layout and contribution rules. Install the `golangci-lint`
+version that [CI](.github/workflows/ci.yml) pins, then run `make check` before each commit. It runs
+the format check, vet, lint, the unit tests, and the e2e script's own tests. Tests that need a
+runtime, namespaces, or KVM carry the `integration` build tag and run on a host that has them. See
+[the release guide](docs/release.md) for the platform checks.
 
 ## License
 
