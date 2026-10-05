@@ -9,6 +9,7 @@ import (
 	"sync"
 
 	"github.com/presmihaylov/shard/models"
+	"github.com/presmihaylov/shard/services/egress"
 )
 
 // LostReason is what a record says once the daemon found no process and no checkpoint behind it.
@@ -30,6 +31,7 @@ func (s *Service) ReconcileAll(ctx context.Context, sandboxes []models.Sandbox, 
 	probes := s.probeAll(ctx, sandboxes)
 
 	running := 0
+	var unguarded []error
 	for i, sb := range sandboxes {
 		var state models.State
 		// A cut pause leaves a staged checkpoint, settled once here so a retried record write never reports it twice (SHARD-428).
@@ -50,10 +52,17 @@ func (s *Service) ReconcileAll(ctx context.Context, sandboxes []models.Sandbox, 
 			if probes[i].err == nil && probes[i].status.Alive() {
 				state = models.StateRunning
 			}
+			// No egress rule can match a live sandbox with no address, so a daemon serving beside it would leave it open (SHARD-565).
+			if state.Live() && egress.Fronted(sb) && !sb.Address.IsValid() {
+				unguarded = append(unguarded, fmt.Errorf("sandbox %s is %s with no address on record, so no egress rule guards it: %w", sb.ID, state, err))
+			}
 		}
 		if state.Live() {
 			running++
 		}
+	}
+	if len(unguarded) > 0 {
+		return errors.Join(unguarded...)
 	}
 
 	// Host netfilter is the policy of record, and nothing re-applied it while the last daemon was down.
@@ -137,6 +146,13 @@ func (s *Service) applyReconcile(ctx context.Context, sb models.Sandbox, status 
 	if err != nil {
 		return "", fmt.Errorf("check the checkpoint of sandbox %s: %w", sb.ID, err)
 	}
+	if state == models.StateStopped && status.Unstarted {
+		if err := s.endUnstarted(ctx, sb, report); err != nil {
+			return "", err
+		}
+
+		return state, nil
+	}
 	if state == sb.State {
 		return state, nil
 	}
@@ -218,14 +234,16 @@ func (s *Service) applyReconcile(ctx context.Context, sb models.Sandbox, status 
 // failDropped ends the record of a verb the daemon dropped before it answered: it stops a copy that runs on and tears its substrate down.
 func (s *Service) failDropped(ctx context.Context, sb models.Sandbox, status models.Status, report func(string)) error {
 	reason := InterruptedReason
+	dropped := "a create the daemon dropped"
 	if sb.State == models.StateCreated {
 		reason = DroppedCopyReason
+		dropped = "a fork the daemon dropped"
 	}
 
-	// rm refuses a live sandbox and stop refuses a failed one, so a copy left running here could never be removed.
+	// rm refuses a live sandbox and stop refuses a failed one, so a sandbox left running here could never be removed.
 	if status.Alive() {
 		if err := s.cfg.Provider.Stop(ctx, sb.ID, 0); err != nil {
-			return fmt.Errorf("stop sandbox %s, a fork the daemon dropped: %w", sb.ID, err)
+			return fmt.Errorf("stop sandbox %s, %s: %w", sb.ID, dropped, err)
 		}
 		if _, err := s.awaitStopped(ctx, sb.ID); err != nil {
 			return err
@@ -265,11 +283,41 @@ func (s *Service) failDropped(ctx context.Context, sb models.Sandbox, status mod
 	return nil
 }
 
+// endUnstarted ends the container a cut start left under a stopped record, which the next start would otherwise run as it is (SHARD-565).
+func (s *Service) endUnstarted(ctx context.Context, sb models.Sandbox, report func(string)) error {
+	if err := s.cfg.Provider.Stop(ctx, sb.ID, 0); err != nil {
+		return fmt.Errorf("end the unstarted container of sandbox %s: %w", sb.ID, err)
+	}
+	if _, err := s.awaitStopped(ctx, sb.ID); err != nil {
+		return err
+	}
+	report(fmt.Sprintf("sandbox %s said stopped and the substrate held a container whose start never ran: the container is ended and the record still says stopped", sb.ID))
+
+	return nil
+}
+
 // reconciled trusts the checkpoint over the substrate for a paused sandbox, since a checkpoint holds no process yet still resumes.
 func reconciled(sb models.Sandbox, status models.Status) (models.State, error) {
 	// No verb rests in created, so it is a fork that never answered: its caller holds an error, not the id.
 	if sb.State == models.StateCreated {
 		return models.StateFailed, nil
+	}
+	// A create cut before its start may hold no address on record, and no egress rule guards a sandbox without one (SHARD-565).
+	unguarded := status.Alive() && !sb.Address.IsValid()
+	if sb.State == models.StatePending && (status.State == models.StateCreated || unguarded) {
+		return models.StateFailed, nil
+	}
+	// Every create leases its address before its start, so a live record without one is a cut create an older daemon called running.
+	if sb.State.Live() && unguarded {
+		return models.StateFailed, nil
+	}
+	// A container whose start never ran holds no run, so a live record over one is a cut create or start an older daemon called running.
+	if sb.State.Live() && status.Unstarted {
+		return models.StateFailed, nil
+	}
+	// A record that already holds no run keeps its word; applyReconcile ends a stopped one's container.
+	if status.Unstarted && (sb.State == models.StateStopped || sb.State == models.StateFailed) {
+		return sb.State, nil
 	}
 
 	if status.State == models.StateUnresponsive {

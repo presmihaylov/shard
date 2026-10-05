@@ -158,6 +158,10 @@ func (s *Service) Chains(ctx context.Context) ([]network.Chain, error) {
 	held := map[string]error{}
 	compiled := map[string]bool{}
 	for _, sb := range sandboxes {
+		// A skip would leave a live sandbox no rule can match open, so the compile refuses it (SHARD-565).
+		if Fronted(sb) && sb.State.Live() && !sb.Address.IsValid() {
+			return nil, fmt.Errorf("sandbox %s is %s with no address on record, so no egress rule can guard it", sb.ID, sb.State)
+		}
 		// A failed create is terminal and never runs, and its teardown may have given its address to another sandbox.
 		if !Fronted(sb) || !sb.Address.IsValid() || sb.State == models.StateFailed {
 			continue

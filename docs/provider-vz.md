@@ -85,10 +85,10 @@ the daemon.
 ### The kernel is ours, and it is a raw arm64 Image
 
 shard ships one Linux kernel per architecture (SHARD-232, `docs/kernel.md`). It has virtio-blk,
-virtio-net, virtio-vsock, virtio-console, ext4 and overlay built in, with no modules and no initrd.
-The kernel is versioned and checksummed with the release, and shard downloads it into the shard
-root on first use. The Firecracker provider boots the amd64 build of the same kernel, and this
-substrate boots the arm64 build.
+virtio-net, virtio-vsock, virtio-console, ext4 and overlay built in, with no modules. An initrd
+carries `shard-init`. The kernel is versioned and checksummed with the release, and shard downloads
+it into the shard root on first use. The Firecracker provider boots the build for its host's
+architecture, arm64 or amd64, and this substrate boots the arm64 build.
 
 Docker runs inside a VM (SHARD-247). The kernel carries everything that `dockerd` and `runc` assert
 at start: netfilter with conntrack and NAT, nf_tables and the xtables compat layer (so either
@@ -130,8 +130,7 @@ disk, which only the clone finds (SHARD-280).
 Every sandbox gets an APFS clone of the base (`clonefile(2)`: instant, and the blocks are shared
 until written). The clone is grown to the sandbox's `--disk` bound and attached as virtio-blk, and
 it is the writable layer. `bundle.CloneRootDisk` does both the clone and the grow, and it reports
-whether the blocks are shared. On a volume that is not APFS it falls back to a copy, and the
-provider says so once in the log (SHARD-215, the wiring and the log line in SHARD-218). A create
+whether the blocks are shared. On a volume that is not APFS it falls back to a full copy. A create
 from a snapshot clones the snapshot's disk the same way and grows it to a larger `--disk`, by the
 rules in `docs/provider.md` (SHARD-476).
 
@@ -149,7 +148,7 @@ port after boot and retries until the listener is up:
 
 | Port | Stream | Carries |
 |---|---|---|
-| 5000 | control | JSON lines. In: `run` (the resolved entrypoint), `signal`, `stop`, `readdress` and `reseed`, each numbered and answered with `done` or `failure`. Out: `state`, `ready`, `exit`, `restarts`, `oom` and `supervisor-failed`. The host refuses a line past 1 MiB. It redials after 100 ms, waits twice as long after each refusal up to 2 s, and starts from 100 ms again after a quiet minute (SHARD-408) |
+| 5000 | control | JSON lines. In: `run` (the resolved entrypoint), `signal`, `stop`, `stop-app`, `readdress`, `reseed`, `freeze`, `thaw` and `kill`, each numbered and answered with `done` or `failure`. Out: `state`, `ready`, `exit`, `restarts`, `oom` and `supervisor-failed`. The host refuses a line past 1 MiB. It redials after 100 ms, waits twice as long after each refusal up to 2 s, and starts from 100 ms again after a quiet minute (SHARD-408) |
 | 5001 | exec | one connection per exec session. It carries an `ExecHeader` line, then the 8-byte frames the API already uses, plus stream 6 `started`, 7 `resize` and 8 `cancel` |
 | 5002 | logs | the entrypoint's stdout and stderr, in the protocol that the guest's `state` names as `logs`. At version 1 the guest opens with two big-endian uint64s: the offset of the oldest output byte it holds and the offset of the next one. The host answers with one uint64, the byte to resume from. Then it reads raw bytes and acks each write to `output.log` with the offset after that write. The guest holds up to 1 MiB that no host has acked, so a daemon restart loses nothing and repeats nothing. `output.cursor` maps the file to the offsets, and a fresh boot drops it. A `state` with no `logs` comes from a guest older than the protocol, so the host lands every byte raw and sends nothing back. An unknown version marks the sandbox lost (SHARD-243) |
 
@@ -189,11 +188,11 @@ dumpable flag, the same way it holds fd 0 on gVisor. A cleared dumpable flag alo
 boundary. A root process with `CAP_SYS_PTRACE` in the initial user namespace passes the `/proc`
 ptrace check anyway, opens `/proc/1/fd/<n>` and forges the exit record. shard-tester proved that
 forge on Sysbox. gVisor never grants the guest that capability, but the VM would. So `shard-init`
-drops `CAP_SYS_PTRACE` from the bounding set of every process it starts (the entrypoint and each
-exec session) before `exec`. A bounding set only shrinks, a child user namespace holds no
-capability over the initial one, and the bounding set masks file capabilities, so nothing in the
-guest regains it. The transport ticket (SHARD-216) ships the test: on nairiclaw, guest root that
-opens `/proc/1/fd/<control fd>` gets `EACCES`. With that boundary, guest root cannot reach the
+drops `CAP_SYS_PTRACE` from its own bounding set in PID 1 and re-execs itself. The entrypoint and
+every exec session inherit that reduced bounding set. A bounding set only shrinks, a child user
+namespace holds no capability over the initial one, and the bounding set masks file capabilities,
+so nothing in the guest regains it. The transport ticket (SHARD-216) ships the test: on nairiclaw,
+guest root that opens `/proc/1/fd/<control fd>` gets `EACCES`. With that boundary, guest root cannot reach the
 descriptor and cannot open a second connection that the host would accept. The exit code therefore
 stays host-verified, behind the VM boundary, as `docs/provider.md` promises for a microVM.
 
@@ -258,12 +257,12 @@ frames would need a second hop to reach the proxy anyway.
 ### Pause, resume and fork are save and restore, and the state file is reusable
 
 - `pause` asks `shard-init` to freeze the guest, pauses the VM, saves its state to
-  `<checkpoint dir>/vm.vzvmstate` and stops the VM. Then it takes an APFS clone of the quiescent
-  disk as `<checkpoint dir>/disk.img` beside the state file, and the shim exits. The memory is
-  freed, as the verb promises on gVisor, and the live disk stays where it is. The two files are one
-  checkpoint: the memory and the disk of the same instant. The disk is copied apart from the memory,
-  so the pause freezes the guest first (SHARD-296). `shard-init` first freezes the guest's
-  processes, through `cgroup.freeze` on the sandbox cgroup, and then freezes the root. `FIFREEZE`
+  `<checkpoint dir>/vm.vzvmstate`, and takes an APFS clone of the quiescent disk as
+  `<checkpoint dir>/disk.img` while the VM stays paused. It installs the checkpoint, then stops
+  the VM and ends the shim. The memory is freed, as the verb promises on gVisor, and the live disk
+  stays where it is. The two files are one checkpoint: the memory and the disk of the same instant.
+  The disk is copied apart from the memory, so the pause freezes the guest first (SHARD-296).
+  `shard-init` first freezes the guest's processes, through `cgroup.freeze` on the sandbox cgroup, and then freezes the root. `FIFREEZE`
   flushes the root and holds every write until the thaw, so no write lands between the flush and the
   pause. A sync alone leaves that window open, and with only a sync a writer in a loop tore the copy
   of its file on every try. The cgroup freeze comes first because a writer that a frozen root holds
@@ -295,10 +294,12 @@ frames would need a second hop to reach the proxy anyway.
 - A save may reset every vsock stream of the source's guest. If the thaw finds the control stream
   gone, the daemon dials it again and thaws the guest over the new one. If the guest takes no new
   control stream within 30 s, the fork fails with `sandbox <id> stays frozen after the fork`, and
-  the daemon dials on until the guest answers and thaws it. While the freeze holds, `inspect` reads
-  the source running, and an `exec` is refused with `a fork holds the sandbox frozen, and nothing
-  starts in it until that ends: run the command again`. An `exec` whose stream the save reset fails
-  with an error that names the fork, and its command runs on in the sandbox with no reader.
+  the follower tries for up to another 30 s. If that also fails, the follower ends and reports the
+  source stopped, although the VM can still run with its guest filesystem frozen. Before that
+  deadline, `inspect` reads the source running, and an `exec` is refused with `a fork holds the
+  sandbox frozen, and nothing starts in it until that ends: run the command again`. An `exec` whose
+  stream the save reset fails with an error that names the fork, and its command runs on in the
+  sandbox with no reader.
 - A daemon killed inside a fork's capture leaves the source's VM paused, or its guest frozen, under
   a record that says running. The next daemon resumes the VM when it adopts the shim, then reseeds
   and thaws the guest, so the fork needs no marker of its own. A completed `pause` has ended its
@@ -393,13 +394,13 @@ shard changed.
 
 | Piece | File in hypeman | Origin | Lands in |
 |---|---|---|---|
-| The device assembly: boot loader, console on file handles, entropy, virtio-blk, vsock, `Validate` before `NewVirtualMachine` | `cmd/vz-shim/vm.go` | `8331138c` | `cmd/shard-vz-shim` (SHARD-213) |
-| The machine identifier as base64 data, generated once and handed back so the caller persists it | `cmd/vz-shim/vm.go` `configurePlatform` | `8331138c` | `cmd/shard-vz-shim` (SHARD-213) |
+| The device assembly: boot loader, console on file handles, entropy, virtio-blk, vsock, `Validate` before `NewVirtualMachine` | `cmd/vz-shim/vm.go` | `8331138c` | `pkg/vz/machine_darwin.go` (SHARD-213) |
+| The machine identifier as base64 data, generated once and handed back so the caller persists it | `cmd/vz-shim/vm.go` `configurePlatform` | `8331138c` | `pkg/vz/machine_darwin.go` (SHARD-213) |
 | The shim process shape: config as JSON on argv, restore-or-start, a state watcher that ends the process on `Stopped` or `Error`, and a SIGTERM that stops the VM | `cmd/vz-shim/main.go` | `561e34fd` | `cmd/shard-vz-shim` (SHARD-213) |
 | The save and restore split: a `darwin && arm64` build calls the framework, and every other build returns the unsupported error | `cmd/vz-shim/save_restore_arm64.go`, `save_restore_unsupported.go` | `561e34fd` | `pkg/vz` (SHARD-213) |
 | The host probe reads `kern.osproductversion`. Major 14 or later means save and restore exist, and an unparsable version means they do not | `lib/hypervisor/vz/save_restore_support.go`, `save_restore_support_darwin.go` | `5d9eff09` | `pkg/vz` capability probe (SHARD-213) |
 | The shim as an embedded binary: `go:embed` the built shim and the plist, write each to a file, and run `codesign --sign - --entitlements` at first use | `lib/hypervisor/vz/starter.go` `extractShim`, `vz_shim_binary.go`, `vz_entitlements.go` | `840d6235`, `1c69f414` | SHARD-214 |
-| The shim start: `Setpgid`, `Wait` in a goroutine, poll the socket, and on a timeout read the shim's log and say whether it exited early | `lib/hypervisor/vz/starter.go` `startShim`, `waitForShim` | `840d6235` | `services/provider/vz` (SHARD-218) |
+| The shim start: `Setpgid`, `Wait` in a goroutine, poll the socket, and on a timeout read the shim's log and say whether it exited early | `lib/hypervisor/vz/starter.go` `startShim`, `waitForShim` | `840d6235` | `services/provider/vzvm` (SHARD-218) |
 | The vsock proxy over the shim socket: the client writes `CONNECT <port>\n`, the shim calls `SocketDevices()[0].Connect(port)`, answers `OK <port>\n` and copies both ways. The client keeps its `bufio.Reader` on the connection | `cmd/vz-shim/server.go` `handleVsockConnection`, `lib/hypervisor/vz/vsock.go` | `75c32892`, `1c69f414` | shim socket and `pkg/vz` client (SHARD-216) |
 
 The entitlements plist is copied with one key, `com.apple.security.virtualization`. hypeman's plist
@@ -411,7 +412,7 @@ line tool outside the sandbox does not need them, as the spike confirmed.
 | Piece | What hypeman has | Why shard writes its own |
 |---|---|---|
 | The shim config | `shimconfig/config.go` (`8331138c`): disks, NAT nets, balloon, Rosetta, the manifest of a saved VM | shard's shim has one disk, one file-handle net device and no balloon, and the identifier lives in its record instead of a manifest |
-| The shim control channel | `cmd/vz-shim/server.go`, `lib/hypervisor/vz/client.go`: an HTTP API in the shape of cloud-hypervisor's | shard needs to pass the network fd over the socket (`SCM_RIGHTS`), and HTTP cannot carry it. The verbs are pause, resume, save, stop and vsock connect, each one a length-prefixed request |
+| The shim control channel | `cmd/vz-shim/server.go`, `lib/hypervisor/vz/client.go`: an HTTP API in the shape of cloud-hypervisor's | shard needs to pass the network fd over the socket (`SCM_RIGHTS`), and HTTP cannot carry it. The verbs are state, pause, resume, save, stop, vsock connect and network, each one a length-prefixed request |
 | The cpu and memory bounds | `cmd/vz-shim/vm.go` (`8331138c`) `computeMemorySize`, `computeCPUCount`: clamp a request into the framework's `MinimumAllowed`/`MaximumAllowed` | shard's `--memory` and `--vcpus` are hard bounds that the record and `inspect` report, and a clamp would hand the VM more than the record says. Zero cpus means every host CPU the framework allows (SHARD-249). An explicit value outside the framework's range is refused with an error that names the range, as gVisor refuses a request below its minimum. The shim ticket (SHARD-213) ships the boundary tests at both ends of the range |
 | Fork | `lib/hypervisor/vz/fork.go` (`561e34fd`): rewrite the paths in the manifest of the saved VM for the target | shard takes an APFS clone of the checkpoint's disk and restores from the record. The lesson it takes is that the device configuration, the network device included, must not change between save and restore, or the restore fails with `Code=12` |
 | The unit tests | `save_restore_support_test.go`, `fork_test.go` (`5d9eff09`, `561e34fd`): the host probe matrix and the manifest path rewrites, against their registry | shard writes its own cases for every adapted behavior, next to the code that lands. SHARD-213 tests that the host probe fails closed on every row of the matrix (a non-darwin `GOOS`, a non-arm64 arch, macOS 13, an empty version, a malformed version). SHARD-215 tests the checkpoint disk pairing and the re-address message, and SHARD-216 tests the vsock handshake. The conformance suite covers the verbs and not these internals. Without the probe cases, SHARD-213 could advertise a verb the host lacks and no focused test would fail |

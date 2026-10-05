@@ -502,7 +502,7 @@ type execSession struct {
 
 	buf *execBuffer
 
-	// pid is the guest process id the provider reported, so a kill signals it; pidSet closes once it is set.
+	// pid is the provider's process handle; pidSet closes once the provider reports it.
 	pidMu   sync.Mutex
 	pid     int
 	pidOnce sync.Once
@@ -1179,7 +1179,12 @@ func (s *Service) KillExec(ctx context.Context, ref, execID, signal string) erro
 		return err
 	}
 
-	return s.cfg.Provider.Signal(ctx, id, pid, sig)
+	err = s.cfg.Provider.Signal(ctx, id, pid, sig)
+	if errors.Is(err, os.ErrProcessDone) || errors.Is(err, syscall.ESRCH) {
+		return &ExecExitedError{ID: execID}
+	}
+
+	return err
 }
 
 // DeleteExec forgets an exec that has ended and frees its buffer. An exec still running is refused.

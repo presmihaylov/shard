@@ -371,6 +371,12 @@ func restoreFiles(dir, stateDir string) error {
 
 // restore boots the checkpoint in dir in a fresh jail; foreign marks a fork, which a cut before its readdress must not resume (SHARD-321).
 func (p *Provider) restore(ctx context.Context, id, stateDir string, r record, dir string, foreign bool) (*machine, error) {
+	// A lookup beside the restore waits for its machine, as one beside a boot does (SHARD-558).
+	release, err := p.claim(ctx, id)
+	if err != nil {
+		return nil, err
+	}
+	defer release()
 	if err := p.bound(id, r.Resources); err != nil {
 		return nil, fmt.Errorf("restore sandbox %s: %w", id, err)
 	}

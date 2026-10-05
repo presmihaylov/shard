@@ -46,6 +46,8 @@ stateDiagram-v2
 | `paused` | `stopped` | `stop`, or a restart that finds no checkpoint | yes |
 | `stopped` | `running` | `start` | yes |
 
+vz supports pause and resume on Apple silicon with macOS 14 or later.
+
 ## What the picture does not say
 
 **A create begins `pending`, and the daemon finishes it in the background.** `shard create` writes
@@ -73,11 +75,19 @@ its copy on to `running` with no point in between where an operator can stop it.
 verb except `get` and `remove`. The refusal is `409 sandbox_failed` with the reason, so an operator can
 read why the create failed and then remove the sandbox. A gVisor `pause` that broke off after its
 checkpoint began also lands here. The sentry exits after any checkpoint, so nothing is left to thaw.
-When the daemon restarts while a create is still in flight, it finds the `pending` record with
-nothing behind it. It moves that record to `failed` too, because a create the daemon dropped never
-finished. A `created` record at a restart is a fork the daemon dropped, so it also ends in
-`failed`. The daemon first stops a copy that still runs and tears down its substrate, because a
-restore that the old daemon started can still run where the runtime cannot see it.
+When the daemon restarts while a create is still in flight, it moves the `pending` record to
+`failed` too, because a create the daemon dropped never finished. Only a start that took, over a
+record that holds its network, makes the record `running`. The daemon first stops a sandbox the
+start never reached, or one whose record holds no address, because no egress rule knows it. Every
+create leases its address before its start, so a `running` record with no address is such a create
+that an older daemon called running, and it ends `failed` the same way. So does a `running` record
+over a container whose start never ran. A `stopped` record over such a container is a start the
+daemon dropped: the daemon ends the container and the record stays `stopped`, so the next `start`
+builds a fresh one. If the daemon cannot stop a sandbox that runs with no address, it refuses to
+start, rather than serve beside a sandbox no egress rule guards. A `created` record at a
+restart is a fork the daemon dropped, so it also ends in `failed`. The daemon first stops a copy
+that still runs and tears down its substrate, because a restore that the old daemon started can
+still run where the runtime cannot see it.
 
 **A sandbox outlives its entrypoint, so the entrypoint exiting is not a transition.** `running`
 means that the sandbox is up. It does not mean that a workload executes in it. A sandbox created
@@ -133,14 +143,14 @@ orchestrator built again first. `runsc` never starts a stopped container, so on 
 itself removes the old container and creates a new one over the same bundle (SHARD-24).
 
 **`created --> stopped` is a legal move that nothing reaches, and it would leave nothing on the
-substrate.** On the substrate, stopping a sandbox whose entrypoint never ran is a delete, because a
-runtime refuses to signal a container that never started. The record then says `stopped` while
-`Provider.Status` reports `Exists: false`. This answer is intended, because the record is what
-survives and `Status` only ever reports what the substrate says now. A paused sandbox is the second
-case. Its record says `paused` and `Status` reports `Exists: false`, because the pause deleted the
-sandbox from the substrate and only the checkpoint holds it. A `pause` also kills any `exec` in
-flight. An `exec` that a pause keeps from starting, at any layer, is refused with `sandbox <id> is
-paused: resume it with shard resume <id>`, the text a paused record gives.
+substrate on gVisor.** On gVisor, stopping a sandbox whose entrypoint never ran is a delete,
+because the runtime refuses to signal a sandbox that never started. The record then says `stopped`
+while `Provider.Status` reports `Exists: false`. This answer is intended, because the record is
+what survives and `Status` reports what the substrate says now. After a pause, gVisor likewise
+reports `Exists: false`, because only the checkpoint holds the sandbox. vz retains `vm.json` and
+reports `Exists: true` with `State: stopped`, although the shard record says `paused`. A `pause`
+also kills any `exec` in flight. An `exec` that a pause keeps from starting, at any layer, is refused
+with `sandbox <id> is paused: resume it with shard resume <id>`, the text a paused record gives.
 
 **There is no `checkpointed` state.** `pause` writes a checkpoint to disk and frees the memory, so a
 paused sandbox holds no RAM. There is no in-memory pause to tell it apart from, so `paused` is the

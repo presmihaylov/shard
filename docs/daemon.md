@@ -628,11 +628,12 @@ and `image prune` leaves it.
   the route left out, and is absent when it left out none. Errors: 404, and 409 `sandbox_failed`.
   `shard policy logs` prints one record per line.
 - `GET /v0/sandboxes/{id}/egress-log?follow=true` with the handshake answers in text messages, one
-  JSON record each, live. A stopped or removed sandbox ends the stream with close 1000 and the reason
-  as the close text. A failure of the follow is close 1011 with the error. Without the handshake the
+  JSON record each, live. A stopped, failed or removed sandbox ends the stream with close 1000 and
+  the reason as the close text. A failed sandbox says `the sandbox failed`. A read failure ends the
+  follow with close 1011 and the public error. Without the handshake the
   route answers 200 with chunked `application/x-ndjson`, one record per line as it lands, and the
-  body ends on the same stop or remove. Either way, a 404 or a 409 `sandbox_failed` comes before
-  anything is on the wire.
+  body ends when the sandbox stops, fails or is removed. A new follow on a failed sandbox answers
+  409 `sandbox_failed` before the stream opens. Either way, a 404 comes before anything is on the wire.
 - `PUT /v0/sandboxes/{id}/files?path=&mode=&user=&parents=` streams the body into the running guest,
   and answers 204 once the body sits at `path` as one file. The guest writes to a temp name beside
   the file, syncs it and renames it over the old one, so a put that dies midway leaves the old file
@@ -791,7 +792,7 @@ else that a refusal carries lives inside `error`, and the root never holds anyth
 | `command_not_started` | 422 | an exec, or a create's app, whose command never started: it is not there, it cannot run, or its interpreter is not there. The message names the command and the kernel's reason, never a host path. `error` then adds `"exit_code"`, 127 for a command that is not there and 126 for one that cannot run, as a shell answers |
 | `name_taken` | 409 | a create or a fork whose `name` another sandbox already holds, or a snapshot create whose `name` another snapshot holds |
 | `unauthorized` | 401 | the TCP front, when the request carries no valid bearer token, and then the front dials nothing |
-| `forbidden` | 403 | the TCP front, when the token is valid but its scopes do not reach the route, and then the front dials nothing. Also the daemon, on a create that names a secret without `secret:*` or a policy without `policy:*` |
+| `forbidden` | 403 | the TCP front, when the token is valid but its scopes do not reach the route, and then the front dials nothing. Also the daemon, on a create that names or a fork that copies a secret without `secret:*` or a policy without `policy:*` |
 | `timeout` | 504 | a start the substrate did not finish within 60 s, a stop, remove or restart whose substrate status call did not answer within the budget, or an exec whose launch the substrate did not prove within 20 s. Retry it once the runtime frees. On gVisor, rm --force reclaims through the wedge instead. It SIGKILLs the sandbox's own runsc processes, which it finds by the sandbox's cgroup and by the sandbox id on their command line, then finishes the teardown. It answers this code only when that kill fails too |
 | `internal` | 500 | anything else. A local route answers what the daemon got back. A public route answers the public text the error carries, such as a policy the daemon could not apply, and otherwise only `the daemon could not complete the request; its log has the cause`. The daemon log keeps the cause |
 
@@ -871,12 +872,12 @@ replaces a file, and the run that loses reads the key of the run that won. Both 
 default key under `--root`, so a root other than `/var/lib/shard` needs the same `--root` on both.
 
 A key that is there but unusable is refused, never replaced. The error names the path and the
-fault: a file that everyone on the host can read, a file the run cannot read, something other than
-a file, an empty file, or a key under 32 bytes, the width an HS256 key needs. No error, log line or
-output holds the key. A file that `--signing-key-file` names must exist, and `serve` and every
-`tokens` verb refuse a named file that is missing rather than create one. `openssl rand -hex 32`
-prints a key that passes. `tokens list` and `tokens revoke` never create a key or the `auth`
-directory.
+fault: a file that everyone on the host can read, write or execute, a file the run cannot read,
+something other than a file, an empty file, or a key under 32 bytes, the width an HS256 key needs.
+No error, log line or output holds the key. A file that `--signing-key-file` names must exist, and
+`serve` and every `tokens` verb refuse a named file that is missing rather than create one.
+`openssl rand -hex 32` prints a key that passes. `tokens list` and `tokens revoke` never create a
+key or the `auth` directory.
 
 The daemon never reads, creates or removes `<root>/auth`, so a daemon starts the same with or
 without one, and a host that serves no TCP never has one. One exception comes from the data dir on
@@ -934,9 +935,11 @@ policy needs `policy:*`. Without the scope it needs, the daemon answers `403` wi
 scopes to the daemon in an `X-Shard-Scopes` header. It stamps the header on every request it
 forwards, and strips any copy the client sent, so a forged header can only remove a right. A request
 with no such header reached the daemon socket directly. That socket is the operator's own channel,
-and it keeps every right. A `fork` keeps the grants of the source sandbox by design, so it needs
-only `sandbox:write`. A snapshot holds no grants, so a create from one names its own secrets and
-policy, and the daemon checks the same two scopes as for any create.
+and it keeps every right. A `fork` needs `secret:*` if the source has secret grants and `policy:*`
+if the source has a policy, in addition to `sandbox:write`. The daemon checks the locked source
+before it claims a new record or captures the source. The copied grants belong to the fork and
+outlive a stop or an ungrant on the source. A snapshot holds no grants, so a create from one names
+its own secrets and policy, and the daemon checks the same two scopes as for any create.
 
 A token is minted on the server, from the same signing key, and never over the API:
 
@@ -972,8 +975,8 @@ The record holds the id, the subject, when the token was issued, when it expires
 whether it is revoked. The ledger sits beside the signing key file, at `serve.tokens` in the same
 directory, so the ledger of the default key is `<root>/auth/serve.tokens`. `tokens mint`, `tokens
 list`, `tokens revoke` and `serve` all use that path, and no flag moves it. `mint` creates the ledger
-`0640` when it is absent, and refuses a ledger that everyone can read. It prints no token when it
-cannot write the record.
+`0640` when it is absent, and refuses a ledger that everyone can read, write or execute. It prints
+no token when it cannot write the record.
 
 ```
 shard tokens list

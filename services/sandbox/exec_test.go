@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"slices"
 	"strings"
@@ -1011,6 +1012,57 @@ func TestKillExecRefusesAnExecThatHasExited(t *testing.T) {
 	var exited *sandbox.ExecExitedError
 	if !errors.As(err, &exited) || exited.ID != exec.ID {
 		t.Errorf("the kill of an ended exec returned %v, want the exec named as exited", err)
+	}
+}
+
+func TestKillExecRefusesAnEndedHandleWhileAChildHoldsOutput(t *testing.T) {
+	for _, cause := range []error{os.ErrProcessDone, syscall.ESRCH} {
+		t.Run(cause.Error(), func(t *testing.T) {
+			svc, l := newService(t, &recorder{}, running())
+			child := exec.Command("sleep", "60")
+			l.provider.signalErr = fmt.Errorf("the provider handle ended: %w", cause)
+			l.provider.serve = func(spec models.ExecSpec) (models.ExitStatus, error) {
+				child.Stdout = spec.Stdout
+				if err := child.Start(); err != nil {
+					return models.ExitStatus{}, err
+				}
+				spec.Report(7)
+				return models.ExitStatus{Code: 0}, nil
+			}
+			record, err := svc.CreateExec(t.Context(), "sandbox1", sandbox.ExecRequest{Command: []string{"true"}})
+			if err != nil {
+				t.Fatal(err)
+			}
+			t.Cleanup(func() {
+				if err := child.Process.Kill(); err != nil && !errors.Is(err, os.ErrProcessDone) {
+					t.Error(err)
+				}
+				var exit *exec.ExitError
+				if err := child.Wait(); err != nil && !errors.As(err, &exit) {
+					t.Error(err)
+				}
+				ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+				defer cancel()
+				if _, err := svc.WaitExec(ctx, "sandbox1", record.ID); err != nil {
+					t.Error(err)
+				}
+			})
+			current, err := svc.GetExec(t.Context(), "sandbox1", record.ID)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if current.State != models.ExecRunning {
+				t.Fatalf("the held output marked the exec %s, want running", current.State)
+			}
+			err = svc.KillExec(t.Context(), "sandbox1", record.ID, "KILL")
+			var exited *sandbox.ExecExitedError
+			if !errors.As(err, &exited) || exited.ID != record.ID {
+				t.Fatalf("the ended handle returned %v, want the public exec ID", err)
+			}
+			if err := child.Process.Signal(syscall.Signal(0)); err != nil {
+				t.Fatalf("the child that held output received the signal: %v", err)
+			}
+		})
 	}
 }
 

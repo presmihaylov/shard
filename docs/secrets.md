@@ -163,6 +163,10 @@ secret. That sandbox holds the old placeholder, which would never match again, s
 there first. The rotation is also refused when the sandbox records cannot be read, because then
 nothing can tell whether the secret is free.
 
+A secret removed with `--force` while a sandbox still held it cannot be set again until that sandbox
+ungrants it. The sandbox keeps the old placeholder, and with the store entry gone nothing records which
+one it was, so any new placeholder could miss. Stop the sandbox, ungrant the secret, set it, and grant it again.
+
 ## A grant may name a wildcard
 
 `secret set --destination '*.github.com' NAME` grants the value to every host under the apex. The `*` may only

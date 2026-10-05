@@ -10,7 +10,6 @@ import (
 	"slices"
 	"strconv"
 	"strings"
-	"syscall"
 )
 
 // errNoEntry lets a numeric id fall back to the plain id, while a real read error still propagates.
@@ -230,9 +229,7 @@ func findEntry(rootfs, rel string, minFields int, match func(fields []string) bo
 	return found, nil
 }
 
-// scanDatabase reads one colon-separated database and stops when visit says it has read enough.
-// os.OpenRoot confines every part of rel to the guest's own tree, so no symlink on a middle part leads
-// the read onto the host (SHARD-357); O_NOFOLLOW keeps the last part a plain file and O_NONBLOCK stops a fifo stalling it.
+// os.OpenRoot confines every part of rel to the guest's own tree, so no symlink on a middle part leads the read onto the host (SHARD-357).
 func scanDatabase(rootfs, rel string, minFields int, visit func(fields []string) (bool, error)) error {
 	full := filepath.Join(rootfs, rel)
 
@@ -242,22 +239,17 @@ func scanDatabase(rootfs, rel string, minFields int, visit func(fields []string)
 	}
 	defer root.Close() //nolint:errcheck // a read-only handle has nothing left to flush
 
-	f, err := root.OpenFile(rel, os.O_RDONLY|syscall.O_NOFOLLOW|syscall.O_NONBLOCK, 0)
+	f, err := openDatabase(root, rel, full)
 	if errors.Is(err, fs.ErrNotExist) {
 		return fmt.Errorf("the image has no %s: %w", filepath.Base(rel), errNoEntry)
+	}
+	if _, refused := errors.AsType[*UserDatabaseError](err); refused {
+		return err
 	}
 	if err != nil {
 		return openFailed(root, rel, full, err)
 	}
 	defer f.Close()
-
-	info, err := f.Stat()
-	if err != nil {
-		return fmt.Errorf("stat %s: %w", full, err)
-	}
-	if !info.Mode().IsRegular() {
-		return notRegular(rel, info.Mode())
-	}
 
 	scanner := bufio.NewScanner(f)
 	for scanner.Scan() {
@@ -282,6 +274,22 @@ func scanDatabase(rootfs, rel string, minFields int, visit func(fields []string)
 	return nil
 }
 
+// requireDatabase refuses anything but a regular file, whose read can neither block nor reach a driver.
+func requireDatabase(f *os.File, rel, full string) error {
+	info, err := f.Stat()
+	if err != nil {
+		return fmt.Errorf("stat %s: %w", full, err)
+	}
+	if info.Mode()&fs.ModeSymlink != 0 {
+		return linkRefused(rel)
+	}
+	if !info.Mode().IsRegular() {
+		return notRegular(rel, info.Mode())
+	}
+
+	return nil
+}
+
 // openFailed names a link on the way, or a last part that is no regular file, as the guest's own, since a failed open says neither.
 func openFailed(root *os.Root, rel, full string, err error) error {
 	prefix := ""
@@ -293,7 +301,7 @@ func openFailed(root *os.Root, rel, full string, err error) error {
 			return fmt.Errorf("open %s: %w", full, errors.Join(err, lstatErr))
 		}
 		if info.Mode()&fs.ModeSymlink != 0 {
-			return &UserDatabaseError{Err: fmt.Errorf("/%s is a symbolic link, and a user database must be a file in the same tree", prefix)}
+			return linkRefused(prefix)
 		}
 		mode = info.Mode()
 	}
@@ -303,6 +311,11 @@ func openFailed(root *os.Root, rel, full string, err error) error {
 	}
 
 	return fmt.Errorf("open %s: %w", full, err)
+}
+
+// linkRefused names a link the guest put on the way, whether a failed open or an O_PATH handle found it.
+func linkRefused(part string) error {
+	return &UserDatabaseError{Err: fmt.Errorf("/%s is a symbolic link, and a user database must be a file in the same tree", part)}
 }
 
 func notRegular(rel string, mode fs.FileMode) error {

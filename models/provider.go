@@ -94,6 +94,8 @@ type Status struct {
 	Reason string
 	// SupervisorFailed is the reason shard-init gave for its own death, set only on a sandbox that is not alive.
 	SupervisorFailed string
+	// Unstarted says the runtime holds a container whose start never ran; a VM replaying its adopt reads created without it.
+	Unstarted bool
 }
 
 // Alive is the assertion the keep-alive default rests on: only Stop and Pause take a sandbox out of it.
@@ -160,7 +162,7 @@ type ExecSpec struct {
 	Stdin  *os.File
 	Stdout *os.File
 	Stderr *os.File
-	// Report is called once with the guest process id, so the caller can Signal the exec while it runs.
+	// Report gives Signal the provider's process handle after the command launches.
 	Report func(pid int)
 	// Resizes carries every later window of the terminal, for a provider whose guest has a pty of its own; nil for one that shares the replica.
 	Resizes <-chan TerminalSize

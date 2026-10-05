@@ -148,8 +148,9 @@ again, so to leave the Mac clean, run `shard stop` on each sandbox first.
   its own.
 - A VM that never boots on a managed laptop: an MDM profile can block the framework outright. The
   error names `Virtualization.framework`, and nothing works around it except a change to the profile.
-- `codesign: command not found`: shard signs the shim on first use with the Command Line Tools.
-  `xcode-select --install` installs them. Xcode itself is not needed.
+- `codesign the shim: exec: "codesign": executable file not found in $PATH`: shard signs the shim
+  on first use with the Command Line Tools. `xcode-select --install` installs them. Xcode itself
+  is not needed.
 - A daemon restart keeps every sandbox, because the daemon re-adopts each running VM by its shim.
   Sandboxes also survive when the Mac sleeps.
 

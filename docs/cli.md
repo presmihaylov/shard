@@ -175,7 +175,6 @@ absent when empty:
 | field | present when |
 | --- | --- |
 | `name` | the sandbox has a `--name` |
-| `kernel` | a microVM provider booted it; the guest kernel release tag |
 | `exit_status` | the entrypoint exited at least once: `{"code": 0, "signal": 0}` |
 | `stopped_reason` | shard stopped it with no operator, or `shard-init` died on a stop |
 | `failed_reason` | `state` is `failed` |
@@ -274,7 +273,7 @@ rule the policy did not write: `dns` when a name rule opened DNS, `dns-rule` whe
 `info`. `unreadable` is absent when the root holds no record shard cannot read:
 
 ```json
-{"provider": "gvisor", "reason": "no /dev/kvm on this host"}
+{"provider": "gvisor", "reason": "no /dev/kvm"}
 ```
 
 `daemon status` is the body of `GET /v0/daemon`:

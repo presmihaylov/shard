@@ -98,7 +98,7 @@ var sandboxFlagHelps = []flagHelp{
 	{"--workdir <dir>", "default directory for commands", ""},
 	{"--user <user>", "default user for commands", ""},
 	{"--memory <size>", "memory limit", ""},
-	{"--vcpus <n>", "CPU count; 0 uses all available host CPUs", ""},
+	{"--vcpus <n>", "CPU count; 0 uses all available host CPUs, up to 32 on Firecracker", ""},
 	{"--disk <size>", "disk limit; 0 uses the default", ""},
 }
 

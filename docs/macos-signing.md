@@ -25,16 +25,16 @@ publishes the signed bytes through the atomic write in `pkg/store`, which fsyncs
 directory, so the path never holds a partial file. The install needs `codesign`, which comes with the
 Command Line Tools. It does not need Xcode.
 
-The installed shim, on a Mac with only the Command Line Tools:
+The installed shim, on a Mac with only the Command Line Tools and `/var/lib/shard` as the root:
 
 ```
-$ codesign -d --entitlements - /var/lib/shard/shard-vz-shim
+$ codesign -d --entitlements - /var/lib/shard/vz/shard-vz-shim
 [Dict]
 	[Key] com.apple.security.virtualization
 	[Value]
 		[Bool] true
 
-$ codesign -dvv /var/lib/shard/shard-vz-shim
+$ codesign -dvv /var/lib/shard/vz/shard-vz-shim
 Format=Mach-O thin (arm64)
 CodeDirectory v=20400 size=56975 flags=0x2(adhoc) hashes=1769+7 location=embedded
 Signature=adhoc
