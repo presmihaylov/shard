@@ -742,15 +742,20 @@ line with the same `code` and `message`.
   absent when it is empty. When a record is unreadable, the route refuses with 500
   and does not guess, because an image a sandbox needs would be gone.
 
-A stream is a WebSocket (RFC 6455) on the same route, opened with the standard handshake. Every
-refusal comes before the 101, as a status and a JSON body. An exec carries binary messages. The
-first byte of each message is the stream, and the rest is the payload. The client sends 0 (stdin)
+A stream is a WebSocket (RFC 6455) on the same route, opened with the standard handshake. A
+refused handshake answers with a status and a JSON body before the 101. An exec carries binary
+messages. The first byte of each message is the stream, and the rest is the payload. The client sends 0 (stdin)
 and 4 (stdin closed, empty). The daemon sends 1 (stdout), 2 (stderr), 3 (exit, `{"code", "signal"}`,
 plus `"lost_bytes"` when output was lost and `"error"` when the command never ran) and 5 (a failure
 of the daemon's own, `{"error": {"code", "message"}}`, the same object every error body carries).
 One payload is at most 1 MiB, and a longer write goes as several messages. Stream 3 or 5 ends the
 session, and the daemon closes with 1000. A client that closes first leaves the command running,
-so a client can re-attach to it by its exec id. A `tty` exec carries the guest's terminal on stream
+so a client can re-attach to it by its exec id. Each attach holds at most 1 MiB of pending
+stdin, including the bytes its writer holds. If more input arrives before that input reaches the
+command, the daemon closes only the attach with status 1013 and reason `the exec input buffer
+is full`. It sends no exit or failure message, and the command continues. Explicit stream 4 reaches
+the command only after all earlier input. Input after stream 4 closes the attach with status 1008
+and reason `the exec input is closed`. A `tty` exec carries the guest's terminal on stream
 1 alone, because a terminal has no second stream to keep apart. Ping and pong are the standard
 ones. The two `?follow=true` routes also serve without the handshake, as a chunked body that ends
 with the sandbox, so `curl -N` follows either of them. An exec attach does not serve that way.
