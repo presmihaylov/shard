@@ -1,6 +1,7 @@
 package setup
 
 import (
+	"cmp"
 	"context"
 	"crypto/tls"
 	"errors"
@@ -51,11 +52,11 @@ func (s *Setup) remote(ctx context.Context) error {
 
 // connect asks for a connection, verifies it, and offers to save it; previous stays on disk until the new one is written.
 func (s *Setup) connect(ctx context.Context, path string, previous client.Config) error {
-	conn, err := s.ask(ctx, true)
+	conn, err := s.ask(ctx, client.Config{}, true)
 	if err != nil {
 		return err
 	}
-	conn, caps, err := s.verify(ctx, conn)
+	conn, caps, err := s.verify(ctx, conn, previous)
 	if err != nil {
 		return err
 	}
@@ -63,8 +64,8 @@ func (s *Setup) connect(ctx context.Context, path string, previous client.Config
 	return s.offerSave(ctx, path, previous, conn, caps)
 }
 
-// verify checks conn until it passes or the user exits, and returns the connection that passed, edited or not.
-func (s *Setup) verify(ctx context.Context, conn client.Config) (client.Config, client.Capabilities, error) {
+// verify checks conn until it passes or the user exits, and returns the connection that passed, edited or not; previous is what stays saved.
+func (s *Setup) verify(ctx context.Context, conn, previous client.Config) (client.Config, client.Capabilities, error) {
 	for {
 		list, err := s.UI.Checklist("Checking the connection", verifySteps)
 		if err != nil {
@@ -80,19 +81,23 @@ func (s *Setup) verify(ctx context.Context, conn client.Config) (client.Config, 
 			return client.Config{}, client.Capabilities{}, errors.Join(verifyErr, err)
 		}
 		if choice == retryExit {
-			return client.Config{}, client.Capabilities{}, verifyErr
+			left := "Nothing was saved."
+			if previous.Remote != "" {
+				left = "The saved connection is unchanged."
+			}
+			return client.Config{}, client.Capabilities{}, errors.Join(verifyErr, s.UI.Print("", left))
 		}
 		if choice == retryEdit {
-			if conn, err = s.ask(ctx, false); err != nil {
+			if conn, err = s.ask(ctx, conn, false); err != nil {
 				return client.Config{}, client.Capabilities{}, err
 			}
 		}
 	}
 }
 
-// ask reads the URL and the key; with envKey a key in SHARD_API_KEY is used rather than asked for, and an edit asks the person.
-func (s *Setup) ask(ctx context.Context, envKey bool) (client.Config, error) {
-	remote, err := s.UI.Text(ctx, AskURL, "Shard server URL:")
+// ask reads the URL and the key, starting from current; with envKey a key in SHARD_API_KEY is used rather than asked for, and an edit asks the person.
+func (s *Setup) ask(ctx context.Context, current client.Config, envKey bool) (client.Config, error) {
+	remote, err := s.UI.Text(ctx, AskURL, "Shard server URL:", current.Remote)
 	if err != nil {
 		return client.Config{}, err
 	}
@@ -119,11 +124,15 @@ func (s *Setup) ask(ctx context.Context, envKey bool) (client.Config, error) {
 		return client.Config{Remote: remote, APIKey: key}, nil
 	}
 
-	key, err := s.UI.Secret(ctx, AskAPIKey, "API key:")
+	prompt := "API key:"
+	if current.APIKey != "" {
+		prompt = "API key (press Enter to keep the current key):"
+	}
+	key, err := s.UI.Secret(ctx, AskAPIKey, prompt)
 	if err != nil {
 		return client.Config{}, err
 	}
-	key = strings.TrimSpace(key)
+	key = cmp.Or(strings.TrimSpace(key), current.APIKey)
 	if key == "" {
 		return client.Config{}, fmt.Errorf("setup needs an API key: enter one at the prompt, or set %s", client.APIKeyEnv)
 	}

@@ -33,6 +33,7 @@ const (
 	ctrlC     = 3
 	ctrlD     = 4
 	ctrlU     = 21
+	esc       = 0x1b
 	backspace = 8
 	del       = 127
 )
@@ -240,31 +241,23 @@ func (t *Terminal) Confirm(ctx context.Context, question string, yes bool) (bool
 	}
 }
 
-// Text asks for one line under the prompt, after a > the way the spec draws it.
-func (t *Terminal) Text(ctx context.Context, prompt string) (string, error) {
-	if !t.interactive {
-		return "", ErrNotTerminal
-	}
-	if _, err := fmt.Fprintf(t.out, "%s\n> ", prompt); err != nil {
-		return "", fmt.Errorf("write to the terminal: %w", err)
-	}
-	answer, err := readLine(t.input(ctx))
-	if err != nil {
-		return "", err
-	}
+// Text asks for one line under the prompt, after a > the way the spec draws it; the line starts as initial, which Enter keeps.
+func (t *Terminal) Text(ctx context.Context, prompt, initial string) (string, error) {
+	answer, err := t.line(ctx, prompt, initial, false)
 
-	return strings.TrimSpace(answer), nil
+	return strings.TrimSpace(answer), err
 }
 
 // Secret asks for a value that echoes as one dot per character, so it lands on no screen and no scrollback.
-func (t *Terminal) Secret(ctx context.Context, prompt string) (secret string, err error) {
+func (t *Terminal) Secret(ctx context.Context, prompt string) (string, error) {
+	return t.line(ctx, prompt, "", true)
+}
+
+// line reads one line in raw mode, which is what lets it start as initial and mask what is typed.
+func (t *Terminal) line(ctx context.Context, prompt, initial string, masked bool) (line string, err error) {
 	if !t.interactive {
 		return "", ErrNotTerminal
 	}
-	if _, err := fmt.Fprintf(t.out, "%s\r\n> ", prompt); err != nil {
-		return "", fmt.Errorf("write to the terminal: %w", err)
-	}
-
 	restore, err := t.raw()
 	if err != nil {
 		return "", err
@@ -275,7 +268,16 @@ func (t *Terminal) Secret(ctx context.Context, prompt string) (secret string, er
 		}
 	}()
 
-	var value []byte
+	value := []byte(initial)
+	var drawn strings.Builder
+	drawn.WriteString(prompt + "\r\n> ")
+	for _, b := range value {
+		drawn.WriteString(shown(b, masked))
+	}
+	if _, err := io.WriteString(t.out, drawn.String()); err != nil {
+		return "", wrapWrite(err)
+	}
+
 	keys := t.input(ctx)
 	for {
 		b, err := readByte(keys)
@@ -292,6 +294,10 @@ func (t *Terminal) Secret(ctx context.Context, prompt string) (secret string, er
 			return "", ErrInterrupted
 		case b == ctrlD && len(value) == 0:
 			return "", errInputEnded
+		case b == esc:
+			if err := skipEscape(keys); err != nil {
+				return "", err
+			}
 		case b == ctrlU:
 			echo = strings.Repeat("\b \b", utf8.RuneCount(value))
 			value = value[:0]
@@ -303,14 +309,36 @@ func (t *Terminal) Secret(ctx context.Context, prompt string) (secret string, er
 			}
 		case b >= ' ':
 			value = append(value, b)
-			// One dot per character, so the dots count runes and not bytes.
-			if !utf8.RuneStart(b) {
-				break
-			}
-			echo = "•"
+			echo = shown(b, masked)
 		}
 		if _, err := io.WriteString(t.out, echo); err != nil {
 			return "", wrapWrite(err)
+		}
+	}
+}
+
+// shown is what the screen shows of one typed byte: the byte, or one dot per character so the dots count runes and not bytes.
+func shown(b byte, masked bool) string {
+	if !masked {
+		return string([]byte{b})
+	}
+	if !utf8.RuneStart(b) {
+		return ""
+	}
+
+	return "•"
+}
+
+// skipEscape reads the rest of an escape sequence, such as an arrow key, so none of it lands in the line.
+func skipEscape(r io.Reader) error {
+	b, err := readByte(r)
+	if err != nil || (b != '[' && b != 'O') {
+		return err
+	}
+	for {
+		// A sequence ends on its final byte, @ through ~.
+		if b, err = readByte(r); err != nil || (b >= '@' && b <= '~') {
+			return err
 		}
 	}
 }

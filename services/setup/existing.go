@@ -11,6 +11,7 @@ import (
 	"slices"
 	"strings"
 
+	"github.com/presmihaylov/shard/pkg/proxy"
 	"github.com/presmihaylov/shard/pkg/term"
 	"github.com/presmihaylov/shard/services/sandboxstate"
 )
@@ -369,26 +370,58 @@ func (s *Setup) uninstall(ctx context.Context, m Manifest) error {
 			fmt.Errorf("uninstall stopped: %s left", left))
 	}
 
-	if err := s.UI.Print("Uninstall Shard?", "",
-		"This will stop and remove the background service",
-		"and remove files installed by Shard setup.", "",
-		"Your saved data will remain.",
-		"Shared tools will remain.", ""); err != nil {
+	var steps []Step
+	var clauses []string
+	if slices.ContainsFunc(m.Files, func(f Owned) bool { return f.Kind == KindService }) {
+		steps = append(steps, Step{Title: "Stop and remove the background service", Do: func(ctx context.Context) error { return stopService(ctx, h, m) }})
+		clauses = append(clauses, "stop and remove the background service")
+	}
+	netHeld := false
+	if h.OS == "linux" {
+		steps = append(steps, Step{Title: "Remove the network bridge and firewall tables", Do: func(ctx context.Context) (err error) {
+			netHeld, err = removeNetwork(ctx, h)
+			return err
+		}})
+		clauses = append(clauses, "remove Shard's network bridge and firewall tables")
+	}
+	// Last, since it removes the manifest that lets a failed uninstall run again.
+	steps = append(steps, Step{Title: "Remove files installed by Shard setup", Do: func(ctx context.Context) error { return removeOwned(ctx, h, m) }})
+	clauses = append(clauses, "remove files installed by Shard setup")
+
+	if err := s.UI.Print(slices.Concat([]string{"Uninstall Shard?", ""}, clauseLines(clauses), []string{"", "Your saved data will remain.", "Shared tools will remain.", ""})...); err != nil {
 		return err
 	}
 	if err := s.confirm(ctx, false); err != nil {
 		return err
 	}
-
-	steps := []Step{
-		{Title: "Stop and remove the background service", Do: func(ctx context.Context) error { return stopService(ctx, h, m) }},
-		{Title: "Remove files installed by Shard setup", Do: func(ctx context.Context) error { return removeOwned(ctx, h, m) }},
-	}
 	if err := s.apply(ctx, "Uninstalling Shard", steps); err != nil {
 		return err
 	}
 
-	return s.UI.Print(uninstalled(h, m)...)
+	lines, err := uninstalled(h, m, netHeld)
+	if err != nil {
+		return err
+	}
+
+	return s.UI.Print(lines...)
+}
+
+// clauseLines joins the clauses into one sentence, a clause per line: "This will a," "b," "and c."
+func clauseLines(clauses []string) []string {
+	lines := slices.Clone(clauses)
+	last := len(lines) - 1
+	if last > 1 {
+		for i := range last {
+			lines[i] += ","
+		}
+	}
+	if last > 0 {
+		lines[last] = "and " + lines[last]
+	}
+	lines[0] = "This will " + lines[0]
+	lines[last] += "."
+
+	return lines
 }
 
 // countSandboxes reads the records with administrator access, since the data root is not the user's on Linux.
@@ -484,8 +517,65 @@ func removeOwned(ctx context.Context, h Host, m Manifest) error {
 	return removeManifest(ctx, h)
 }
 
+// The bridge and the nft tables every daemon on the host shares, as pkg/hostclean names them.
+const (
+	hostBridge = "shard0"
+	hostTable  = "shard"
+	ipForward  = "/proc/sys/net/ipv4/ip_forward"
+)
+
+var hostTableFamilies = []string{"inet", "bridge"}
+
+// removeNetwork takes the shared bridge and tables only while no sandbox has a port on the bridge and no daemon serves the proxy (SHARD-272).
+func removeNetwork(ctx context.Context, h Host) (held bool, err error) {
+	ports, err := os.ReadDir(filepath.Join(h.Root, "/sys/class/net", hostBridge, "brif"))
+	if err != nil && !errors.Is(err, fs.ErrNotExist) {
+		return false, fmt.Errorf("list the ports of the bridge %s: %w", hostBridge, err)
+	}
+	if len(ports) > 0 {
+		return true, nil
+	}
+	listeners, err := run(ctx, h, "ss", "-Hltn", fmt.Sprintf("( sport = :%d or sport = :%d )", proxy.PlainPort, proxy.TLSPort))
+	if err != nil {
+		return false, fmt.Errorf("list the listeners on the proxy ports: %w", err)
+	}
+	if strings.TrimSpace(string(listeners)) != "" {
+		return true, nil
+	}
+
+	// A host without nft never had the tables.
+	if _, ok := lookPath(h, "nft"); ok {
+		listed, err := privileged(ctx, h, "nft", "list", "tables")
+		if err != nil {
+			return false, fmt.Errorf("list the nft tables: %w", err)
+		}
+		tables := strings.Split(string(listed), "\n")
+		for _, family := range hostTableFamilies {
+			if !slices.Contains(tables, "table "+family+" "+hostTable) {
+				continue
+			}
+			if _, err := privileged(ctx, h, "nft", "delete", "table", family, hostTable); err != nil {
+				return false, fmt.Errorf("delete the nft table %s %s: %w", family, hostTable, err)
+			}
+		}
+	}
+
+	_, err = os.Lstat(filepath.Join(h.Root, "/sys/class/net", hostBridge))
+	if errors.Is(err, fs.ErrNotExist) {
+		return false, nil
+	}
+	if err != nil {
+		return false, fmt.Errorf("check the bridge %s: %w", hostBridge, err)
+	}
+	if _, err := privileged(ctx, h, "ip", "link", "delete", hostBridge); err != nil {
+		return false, fmt.Errorf("delete the bridge %s: %w", hostBridge, err)
+	}
+
+	return false, nil
+}
+
 // uninstalled names what stays and how to remove it, since uninstall removes no shared tool and no data.
-func uninstalled(h Host, m Manifest) []string {
+func uninstalled(h Host, m Manifest, netHeld bool) ([]string, error) {
 	lines := []string{"", "Shard was uninstalled.", "", "Your saved data remains in " + DataDir + "."}
 
 	var tools []string
@@ -504,7 +594,74 @@ func uninstalled(h Host, m Manifest) []string {
 		lines = append(lines, tools...)
 	}
 
-	return append(lines, "", "The shard command remains at "+h.Executable+".", "Remove it with: rm "+h.Executable)
+	if h.OS == "linux" {
+		network, err := networkLeft(h, netHeld)
+		if err != nil {
+			return nil, err
+		}
+		lines = append(lines, network...)
+	}
+
+	commands, err := leftCommands(h)
+	if err != nil {
+		return nil, err
+	}
+	switch len(commands) {
+	case 0:
+		return lines, nil
+	case 1:
+		return append(lines, "", "The shard command remains at "+commands[0]+".", "Remove it with: rm "+commands[0]), nil
+	}
+	lines = append(lines, "", "These shard commands remain:")
+	for _, c := range commands {
+		lines = append(lines, "  "+c, "    Remove it with: rm "+c)
+	}
+
+	return lines, nil
+}
+
+// networkLeft names the shared bridge and tables a daemon still uses, or else IP forwarding, which other software may need on.
+func networkLeft(h Host, held bool) ([]string, error) {
+	if held {
+		return []string{"", "A Shard daemon still uses the network bridge " + hostBridge + " and its firewall tables, so they remain."}, nil
+	}
+	forward, err := os.ReadFile(filepath.Join(h.Root, ipForward))
+	if errors.Is(err, fs.ErrNotExist) {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, fmt.Errorf("read %s: %w", ipForward, err)
+	}
+	if strings.TrimSpace(string(forward)) != "1" {
+		return nil, nil
+	}
+
+	return []string{"", "IP forwarding remains on (net.ipv4.ip_forward = 1). Other software may need it.", "Turn it off with: sudo sysctl -w net.ipv4.ip_forward=0"}, nil
+}
+
+// leftCommands are the shard commands that still exist: the one that ran setup, and the copy the installer put in ~/.local/bin.
+func leftCommands(h Host) ([]string, error) {
+	paths := []string{h.Executable}
+	if home := h.Env("HOME"); home != "" {
+		paths = append(paths, filepath.Join(home, ".local", "bin", "shard"))
+	}
+
+	var left []string
+	for _, p := range paths {
+		if slices.Contains(left, p) {
+			continue
+		}
+		_, err := os.Lstat(p)
+		if errors.Is(err, fs.ErrNotExist) {
+			continue
+		}
+		if err != nil {
+			return nil, fmt.Errorf("check %s: %w", p, err)
+		}
+		left = append(left, p)
+	}
+
+	return left, nil
 }
 
 // manual reports an install setup did not make, and changes nothing in it.

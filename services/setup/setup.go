@@ -86,7 +86,8 @@ type UI interface {
 	Select(ctx context.Context, q Question, title string, options []term.Option) (int, error)
 	// Confirm asks yes or no, and yes is the answer an empty reply takes.
 	Confirm(ctx context.Context, q Question, text string, yes bool) (bool, error)
-	Text(ctx context.Context, q Question, prompt string) (string, error)
+	// Text asks for one line that starts as initial, which Enter keeps.
+	Text(ctx context.Context, q Question, prompt, initial string) (string, error)
 	// Secret reads a value that never echoes and never lands in a log.
 	Secret(ctx context.Context, q Question, prompt string) (string, error)
 	Checklist(title string, steps []string) (Checklist, error)

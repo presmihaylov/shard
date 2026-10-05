@@ -22,6 +22,9 @@ type fakeHost struct {
 	launchd  string
 	// launchdErr makes launchctl print fail with launchd as its output.
 	launchdErr bool
+	// listeners is what ss prints for the proxy ports, and tables what nft list tables prints.
+	listeners string
+	tables    string
 }
 
 func newFakeHost(t *testing.T) *fakeHost {
@@ -31,12 +34,20 @@ func newFakeHost(t *testing.T) *fakeHost {
 
 // host runs as root, so privileged runs each command as it is.
 func (f *fakeHost) host(rs *releaseServer) Host {
-	h := Host{Root: f.root, OS: "linux", Arch: "amd64", Executable: filepath.Join(f.root, "/home/u/.local/bin/shard"), Version: "v0.1.0", Run: f.run}
+	h := Host{Root: f.root, OS: "linux", Arch: "amd64", Executable: filepath.Join(f.root, "/home/u/.local/bin/shard"), Version: "v0.1.0", Env: f.env, Run: f.run}
 	if rs != nil {
 		h.Releases, h.HTTP = rs.URL+"/releases", rs.Client()
 	}
 
 	return h
+}
+
+func (f *fakeHost) env(name string) string {
+	if name == "HOME" {
+		return filepath.Join(f.root, "/home/u")
+	}
+
+	return ""
 }
 
 func (f *fakeHost) run(ctx context.Context, name string, args ...string) ([]byte, error) {
@@ -56,6 +67,15 @@ func (f *fakeHost) run(ctx context.Context, name string, args ...string) ([]byte
 			return []byte(f.launchd), errors.New("exit status 113")
 		}
 		return []byte(f.launchd), nil
+	case "ss":
+		return []byte(f.listeners), nil
+	case "nft":
+		if args[0] == "list" {
+			return []byte(f.tables), nil
+		}
+		return nil, nil
+	case "ip":
+		return nil, nil
 	case "mkdir", "install", "mv", "rm", "rmdir", "find":
 		return exec.CommandContext(ctx, name, args...).CombinedOutput()
 	}
@@ -481,7 +501,8 @@ func TestUninstallDeclinedChangesNothing(t *testing.T) {
 		t.Fatalf("uninstall = %v, want ErrDeclined", err)
 	}
 	want := []string{"Uninstall Shard?", "",
-		"This will stop and remove the background service",
+		"This will stop and remove the background service,",
+		"remove Shard's network bridge and firewall tables,",
 		"and remove files installed by Shard setup.", "",
 		"Your saved data will remain.",
 		"Shared tools will remain.", ""}
@@ -509,6 +530,133 @@ func TestUninstallRunsAgainAfterAHalfDoneOne(t *testing.T) {
 	}
 	if _, ok, err := LoadManifest(f.host(nil)); err != nil || ok {
 		t.Fatalf("the manifest outlived the uninstall: %v, %v", ok, err)
+	}
+}
+
+// A setup that chose No for automatic startup installed no service, so uninstall neither offers nor runs a service step. (SHARD-664)
+func TestUninstallAfterABootNoSetupHasNoServiceStep(t *testing.T) {
+	f := newFakeHost(t)
+	m := Manifest{Version: "v0.1.0", Provider: VZ, Files: []Owned{
+		{Path: "/usr/local/bin/shard", Kind: KindBinary},
+		{Path: "/usr/local/bin/shard-init", Kind: KindBinary},
+	}}
+	f.installed(t, m)
+	ui := confirming(true)
+	h := f.host(nil)
+	h.OS, h.Arch = "darwin", "arm64"
+
+	if err := (&Setup{Host: h, UI: ui}).uninstall(t.Context(), m); err != nil {
+		t.Fatalf("uninstall: %v", err)
+	}
+	want := []string{"Uninstall Shard?", "", "This will remove files installed by Shard setup.", "", "Your saved data will remain.", "Shared tools will remain.", ""}
+	if !slices.Equal(ui.printed[:len(want)], want) {
+		t.Fatalf("output = %q, want it to start %q", ui.printed, want)
+	}
+	if steps := ui.lists[0].steps; !slices.Equal(steps, []string{"Remove files installed by Shard setup"}) {
+		t.Fatalf("the steps are %q, want only the file removal", steps)
+	}
+	if f.called("launchctl") {
+		t.Fatalf("uninstall touched launchd: %v", f.calls)
+	}
+}
+
+// With no daemon left on the host, uninstall takes the shared bridge and tables as pkg/hostclean does, and leaves IP forwarding as it is. (SHARD-669)
+func TestUninstallRemovesTheSharedNetwork(t *testing.T) {
+	f := newFakeHost(t)
+	m := linuxInstall("v0.1.0")
+	f.installed(t, m)
+	f.write(t, "/sys/class/net/shard0/address", "02:00:00:00:00:01")
+	f.write(t, ipForward, "1\n")
+	f.tables = "table inet filter\ntable inet shard\ntable bridge shard\n"
+	ui := confirming(true)
+
+	if err := (&Setup{Host: f.host(nil), UI: ui}).uninstall(t.Context(), m); err != nil {
+		t.Fatalf("uninstall: %v", err)
+	}
+	stop := slices.Index(f.calls, "systemctl disable --now shard")
+	inet := slices.Index(f.calls, "nft delete table inet shard")
+	if stop < 0 || inet < stop || !f.called("nft delete table bridge shard") || !f.called("ip link delete shard0") {
+		t.Fatalf("calls = %v, want the service stopped, then both tables and the bridge deleted", f.calls)
+	}
+	if f.called("nft delete table inet filter") {
+		t.Fatalf("uninstall deleted a table it does not own: %v", f.calls)
+	}
+	said(t, ui, "IP forwarding remains on (net.ipv4.ip_forward = 1). Other software may need it.", "Turn it off with: sudo sysctl -w net.ipv4.ip_forward=0")
+}
+
+// A daemon that still has a sandbox port on the bridge or serves the proxy keeps the network, and uninstall says so. (SHARD-272, SHARD-669)
+func TestUninstallLeavesANetworkADaemonStillUses(t *testing.T) {
+	cases := map[string]func(f *fakeHost){
+		"a port on the bridge": func(f *fakeHost) { f.write(t, "/sys/class/net/shard0/brif/veth1", "") },
+		"the proxy listening":  func(f *fakeHost) { f.listeners = "LISTEN 0 4096 *:30080 *:*\n" },
+	}
+	for name, held := range cases {
+		t.Run(name, func(t *testing.T) {
+			f := newFakeHost(t)
+			m := linuxInstall("v0.1.0")
+			f.installed(t, m)
+			f.write(t, "/sys/class/net/shard0/address", "02:00:00:00:00:01")
+			f.write(t, ipForward, "1\n")
+			f.tables = "table inet shard\ntable bridge shard\n"
+			held(f)
+			ui := confirming(true)
+
+			if err := (&Setup{Host: f.host(nil), UI: ui}).uninstall(t.Context(), m); err != nil {
+				t.Fatalf("uninstall: %v", err)
+			}
+			if f.called("nft") || f.called("ip link delete") {
+				t.Fatalf("uninstall took a network a daemon uses: %v", f.calls)
+			}
+			said(t, ui, "A Shard daemon still uses the network bridge shard0 and its firewall tables, so they remain.")
+			if slices.ContainsFunc(ui.printed, func(l string) bool { return strings.Contains(l, "ip_forward") }) {
+				t.Fatalf("output %q names IP forwarding while a daemon uses it", ui.printed)
+			}
+		})
+	}
+}
+
+// Uninstall names each shard command still on disk, with its rm line, and none that is gone. (SHARD-668)
+func TestUninstallNamesTheShardCommandsLeft(t *testing.T) {
+	cases := map[string]struct {
+		executable string
+		keepCopy   bool
+		want       []string
+	}{
+		"the installer copy":       {"/usr/local/bin/shard", true, []string{"", "The shard command remains at {home}.", "Remove it with: rm {home}"}},
+		"the copy and another one": {"/opt/shard/shard", true, []string{"", "These shard commands remain:", "  {opt}", "    Remove it with: rm {opt}", "  {home}", "    Remove it with: rm {home}"}},
+		"none":                     {"/usr/local/bin/shard", false, nil},
+	}
+	for name, tc := range cases {
+		t.Run(name, func(t *testing.T) {
+			f := newFakeHost(t)
+			m := linuxInstall("v0.1.0")
+			f.installed(t, m)
+			f.write(t, "/opt/shard/shard", "cli")
+			home := filepath.Join(f.root, "/home/u/.local/bin/shard")
+			if !tc.keepCopy {
+				if err := os.Remove(home); err != nil {
+					t.Fatalf("remove: %v", err)
+				}
+			}
+			ui := confirming(true)
+			h := f.host(nil)
+			h.Executable = filepath.Join(f.root, tc.executable)
+
+			if err := (&Setup{Host: h, UI: ui}).uninstall(t.Context(), m); err != nil {
+				t.Fatalf("uninstall: %v", err)
+			}
+			want := make([]string, 0, len(tc.want))
+			for _, l := range tc.want {
+				want = append(want, strings.NewReplacer("{home}", home, "{opt}", filepath.Join(f.root, "/opt/shard/shard")).Replace(l))
+			}
+			rmLine := func(l string) bool { return strings.Contains(l, "Remove it with: rm") }
+			if got := ui.printed[len(ui.printed)-len(want):]; !slices.Equal(got, want) || slices.ContainsFunc(ui.printed[:len(ui.printed)-len(want)], rmLine) {
+				t.Fatalf("output = %q, want its only rm lines at the end, as %q", ui.printed, want)
+			}
+			if slices.ContainsFunc(ui.printed, func(l string) bool { return strings.Contains(l, "/usr/local/bin/shard") }) {
+				t.Fatalf("output %q names the removed /usr/local/bin/shard", ui.printed)
+			}
+		})
 	}
 }
 

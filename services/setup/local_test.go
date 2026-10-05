@@ -331,6 +331,14 @@ func TestLocalOnAMacUsesLaunchdAndNoSudo(t *testing.T) {
 	}
 }
 
+// A supported Mac recommends macOS Virtualization in words, as Linux does its providers. (SHARD-664)
+func TestASupportedMacRecommendsVZ(t *testing.T) {
+	vz := Providers(t.Context(), newLocalHost(t).mac())[providerIndex(VZ)]
+	if !vz.Recommended || !slices.Contains(vz.Lines, "Recommended on an Apple silicon Mac with macOS 14 or later.") {
+		t.Errorf("the vz row is %+v, want it recommended in its lines", vz)
+	}
+}
+
 func TestADeclinedReviewChangesNothing(t *testing.T) {
 	l := newLocalHost(t)
 	l.pinGVisor()

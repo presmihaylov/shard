@@ -41,7 +41,7 @@ func TestOffATerminalEveryQuestionNeedsOne(t *testing.T) {
 
 	_, selectErr := term.Select(t.Context(), "pick", []Option{{Name: "a", Label: "A"}})
 	_, confirmErr := term.Confirm(t.Context(), "sure?", true)
-	_, textErr := term.Text(t.Context(), "url")
+	_, textErr := term.Text(t.Context(), "url", "")
 	_, secretErr := term.Secret(t.Context(), "key")
 	for name, err := range map[string]error{"select": selectErr, "confirm": confirmErr, "text": textErr, "secret": secretErr} {
 		if !errors.Is(err, ErrNotTerminal) {
@@ -139,6 +139,29 @@ func TestSecretEchoesOneDotPerCharacter(t *testing.T) {
 	}
 	if dots := strings.Count(echo, "•"); dots != 6 {
 		t.Errorf("echoed %d dots, want 6", dots)
+	}
+}
+
+// The line starts as the initial value, which Enter keeps and the editing keys change. (SHARD-667)
+func TestTextStartsAsTheInitialLine(t *testing.T) {
+	var out bytes.Buffer
+	got, err := keyed(&out, "\r").Text(t.Context(), "URL", "https://a.example")
+	if err != nil || got != "https://a.example" {
+		t.Fatalf("Text = %q, %v; want the initial line", got, err)
+	}
+	if want := "URL\r\n> https://a.example\r\n"; out.String() != want {
+		t.Errorf("drew %q, want %q", out.String(), want)
+	}
+}
+
+func TestTextEditsTheInitialLine(t *testing.T) {
+	var out bytes.Buffer
+	got, err := keyed(&out, "\x15https://b.exa\x1b[3~\x1b[Dmpler\x7f\r").Text(t.Context(), "URL", "https://a.example")
+	if err != nil || got != "https://b.example" {
+		t.Fatalf("Text = %q, %v; want the edited line", got, err)
+	}
+	if strings.Contains(out.String(), "~") || strings.Contains(out.String(), "[D") {
+		t.Errorf("an arrow or the delete key echoed in %q", out.String())
 	}
 }
 

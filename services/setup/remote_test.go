@@ -306,17 +306,22 @@ func TestARefusedKeyOffersRetryEditOrExit(t *testing.T) {
 	if got := savedConnection(t, path); got != (client.Config{}) {
 		t.Errorf("saved %v after a failed check", got)
 	}
+	if tail := ui.printed[len(ui.printed)-2:]; !slices.Equal(tail, []string{"", "Nothing was saved."}) {
+		t.Errorf("Exit printed %q last, want that nothing was saved", tail)
+	}
 	noLeak(t, ui, err)
 }
 
 // keysUI answers each key prompt from keys in turn, so a test can fix a wrong key through Edit.
 type keysUI struct {
 	*fakeUI
-	keys []string
+	keys    []string
+	prompts []string
 }
 
-func (u *keysUI) Secret(_ context.Context, q Question, _ string) (string, error) {
+func (u *keysUI) Secret(_ context.Context, q Question, prompt string) (string, error) {
 	u.ask(q)
+	u.prompts = append(u.prompts, prompt)
 	if len(u.keys) == 0 {
 		return "", fmt.Errorf("secret %s: %w", q, errUnscripted)
 	}
@@ -343,6 +348,9 @@ func TestEditAsksAgainAndChecksTheNewDetails(t *testing.T) {
 
 	if want := []Question{AskURL, AskAPIKey, AskRetry, AskURL, AskAPIKey, AskSave}; !slices.Equal(fake.asked, want) {
 		t.Errorf("asked %v, want %v", fake.asked, want)
+	}
+	if want := []string{"", url}; !slices.Equal(fake.initials, want) {
+		t.Errorf("the URL started as %q, want empty and then the URL to edit (SHARD-667)", fake.initials)
 	}
 	if len(fake.lists) != 2 || !slices.Equal(fake.lists[1].marks, allDone) {
 		t.Fatalf("drew %d checklists, want a second that passes", len(fake.lists))
@@ -454,6 +462,63 @@ func TestAnUnreachableServerSaysWhyAndWhatToCheck(t *testing.T) {
 	want := []string{"start 0", "fail 0: Could not reach " + url + ": connection refused. / Check the URL, and that shard serve or the proxy in front of it runs."}
 	if !slices.Equal(ui.lists[0].marks, want) {
 		t.Errorf("marked %v, want %v", ui.lists[0].marks, want)
+	}
+	if tail := ui.printed[len(ui.printed)-2:]; !slices.Equal(tail, []string{"", "Nothing was saved."}) {
+		t.Errorf("Exit printed %q last, want that nothing was saved (SHARD-667)", tail)
+	}
+}
+
+// Enter at the key prompt of an edit keeps the key, which the prompt never shows. (SHARD-667)
+func TestEditKeepsTheKeyOnAnEmptyAnswer(t *testing.T) {
+	var requests atomic.Int32
+	url, ca := tlsFront(t, testKey, func() bool { return requests.Add(1) == 1 })
+	host, path := testHost(t, map[string]string{client.CAFileEnv: ca})
+	fake := &fakeUI{
+		texts:    map[Question]string{AskURL: url},
+		selects:  map[Question]string{AskRetry: "edit"},
+		confirms: map[Question]bool{AskSave: true},
+	}
+	ui := &keysUI{fakeUI: fake, keys: []string{testKey, ""}}
+
+	err := (&Setup{Host: host, UI: ui}).remote(t.Context())
+	if err != nil {
+		t.Fatalf("remote: %v", err)
+	}
+
+	if want := []string{"API key:", "API key (press Enter to keep the current key):"}; !slices.Equal(ui.prompts, want) {
+		t.Errorf("the key prompts were %q, want %q", ui.prompts, want)
+	}
+	if got := savedConnection(t, path); got.APIKey != testKey {
+		t.Errorf("saved a key other than the kept one")
+	}
+	noLeak(t, fake, err)
+}
+
+// Exit after any failed check of a saved connection says it stays as it was. (SHARD-667)
+func TestExitAfterAFailedCheckLeavesTheSavedConnection(t *testing.T) {
+	refused, ca := tlsFront(t, "the-accepted-key", nil)
+	closed := front(testKey, nil)
+	closed.StartTLS()
+	closed.Close()
+	for name, url := range map[string]string{"a refused key": refused, "an unreachable server": closed.URL} {
+		t.Run(name, func(t *testing.T) {
+			host, path := testHost(t, map[string]string{client.CAFileEnv: ca})
+			saved := client.Config{Remote: url, APIKey: testKey}
+			saveConnection(t, path, saved)
+			ui := &fakeUI{selects: map[Question]string{AskMode: "remote", AskSaved: "check", AskRetry: "exit"}}
+
+			err := (&Setup{Host: host, UI: ui}).Run(t.Context())
+			if _, ok := errors.AsType[*StoppedError](err); !ok {
+				t.Fatalf("Run returned %v, want a stopped check", err)
+			}
+			if tail := ui.printed[len(ui.printed)-2:]; !slices.Equal(tail, []string{"", "The saved connection is unchanged."}) {
+				t.Errorf("Exit printed %q last, want that the saved connection is unchanged", tail)
+			}
+			if got := savedConnection(t, path); got != saved {
+				t.Errorf("the failed check changed the saved connection to %v", got)
+			}
+			noLeak(t, ui, err)
+		})
 	}
 }
 
