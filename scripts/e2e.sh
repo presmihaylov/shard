@@ -877,7 +877,7 @@ SOCKET="${SHARD_ROOT}/shard.sock"
 CODE=0
 REFUSAL=$(shard list 2>&1) || CODE=$?
 [ "${CODE}" != "0" ] || fail "shard list answered with no daemon up"
-expect "${REFUSAL}" "shard: cannot connect to shard daemon at ${SOCKET}: is it running? shard --root ${SHARD_ROOT} daemon" "list names the socket and this root's daemon, and nothing else"
+expect "${REFUSAL}" "shard: cannot connect to the shard daemon at ${SOCKET}: is it running? shard --root ${SHARD_ROOT} daemon" "list names the socket and this root's daemon, and nothing else"
 
 step "start the echo the fronted sandbox talks to"
 start_echo
@@ -1776,7 +1776,7 @@ run_steps() {
 	code=0
 	wait "${pid}" || code=$?
 	expect "${code}" "143" "run exits with the app's TERM death after one Ctrl+C"
-	grep -q 'shard: stopping the app' "${err}" || fail "run did not say it stops the app: $(cat "${err}")"
+	grep -q 'shard: stopping the main command' "${err}" || fail "run did not say it stops the main command: $(cat "${err}")"
 	before=$(shard logs "${id}" | grep -c e2e-tick || true)
 	sleep 3
 	expect "$(shard logs "${id}" | grep -c e2e-tick || true)" "${before}" "the ticks stopped: no restart followed the stop"
@@ -2505,7 +2505,7 @@ say "the socket is gone"
 CODE=0
 REFUSAL=$(shard list 2>&1) || CODE=$?
 [ "${CODE}" != "0" ] || fail "shard list answered with the daemon stopped"
-expect "${REFUSAL}" "shard: cannot connect to shard daemon at ${SOCKET}: is it running? shard --root ${SHARD_ROOT} daemon" "list fails fast once the daemon is gone"
+expect "${REFUSAL}" "shard: cannot connect to the shard daemon at ${SOCKET}: is it running? shard --root ${SHARD_ROOT} daemon" "list fails fast once the daemon is gone"
 
 step "clean up"
 teardown

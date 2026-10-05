@@ -61,6 +61,7 @@ export interface AppExit {
   restarts: number;
 }
 
+/** SandboxInfo is one sandbox as the daemon holds it. */
 export interface SandboxInfo {
   id: string;
   name: string | null;
@@ -84,7 +85,7 @@ export interface SandboxInfo {
   createdAt: Date;
 }
 
-/** PolicyRule is one rule as `shard policy create` takes it, as `suffix:example.com tcp:443`. */
+/** PolicyRule is one rule as `shard policy create` takes it: an action, allow or deny, and a rule, as `suffix:example.com tcp:443`. */
 export interface PolicyRule {
   action: "allow" | "deny";
   rule: string;
@@ -131,7 +132,7 @@ export interface Snapshot {
   createdAt: Date;
 }
 
-/** EgressDecision is one egress decision: rule is the id of the rule that decided, or why none did. */
+/** EgressDecision is one egress decision: rule is the id of the rule that decided it, or why none did, as default; ruleText is that rule as the CLI spells it. */
 export interface EgressDecision {
   time: Date;
   source: "proxy" | "host" | "dns";
@@ -151,7 +152,7 @@ export interface Version {
   apiVersion: string;
 }
 
-/** Capabilities say which of the eight lifecycle verbs the server supports; snapshot is filesystem snapshot creation. */
+/** Capabilities say which of the eight lifecycle verbs the daemon's provider supports; snapshot is the creation of a filesystem snapshot. */
 export interface Capabilities {
   create: boolean;
   start: boolean;
@@ -164,7 +165,7 @@ export interface Capabilities {
 }
 
 export function sandboxInfo(value: unknown): SandboxInfo {
-  const fields = Fields.of(value, "a sandbox record");
+  const fields = Fields.of(value, "a sandbox");
   const resources = fields.object("resources");
   const command = fields.strings("command");
 

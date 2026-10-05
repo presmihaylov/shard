@@ -23,6 +23,6 @@ var Scopes = []Scope{
 	{ScopeSandboxDelete, "Remove sandboxes and snapshots"},
 	{ScopeExec, "Run commands and access sandbox files"},
 	{ScopeSecret, "Manage secrets and secret grants"},
-	{ScopePolicy, "Manage policies and their sandbox assignments"},
+	{ScopePolicy, "Manage policies and attach them to sandboxes"},
 	{ScopeAll, "All available permissions"},
 }

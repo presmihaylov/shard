@@ -48,7 +48,7 @@ from ._transport import Transport
 
 
 class Sandbox:
-    """One sandbox. info is its record as of the last call that answered one; inspect() reads it again."""
+    """One sandbox. info is the sandbox as the last call on this handle returned it; inspect() reads it again."""
 
     def __init__(self, transport: Transport, info: SandboxInfo) -> None:
         self._transport = transport
@@ -180,28 +180,29 @@ class Sandbox:
         return Sandbox(self._transport, sandbox_info(record))
 
     def remove(self, *, force: bool = False) -> None:
-        """delete a sandbox and its files"""
+        """remove a sandbox and its files"""
         self._transport.send(
             lambda: remove_sandbox.sync_detailed(self.id, client=self._transport.api, force=force or UNSET),
             self._transport.read_bound(None),
         )
 
     def logs(self) -> str:
-        """The app's output so far, both streams as the daemon wrote them."""
+        """Return the app's output so far, stdout and stderr as the daemon wrote them."""
         return self._transport.answer(str, lambda: get_sandbox_logs.sync_detailed(self.id, client=self._transport.api))
 
     def follow_logs(self) -> Follow[bytes]:
-        """The app's output from the start of the log, then as it arrives, until the sandbox stops."""
+        """Yield the app's output from the start of the log, then as it arrives, and end when the sandbox stops."""
         return Follow(self._transport, path("sandboxes", self.id, "logs"), f"the logs of sandbox {self.id}", log_chunk)
 
     def egress_log(self) -> builtins.list[EgressDecision]:
-        """Every egress decision the daemon still holds, oldest first."""
+        """Return the egress decisions the daemon still holds, oldest first."""
         records = self._transport.answer(
             builtins.list, lambda: get_sandbox_egress_log.sync_detailed(self.id, client=self._transport.api)
         )
         return [egress_decision(record) for record in records]
 
     def follow_egress_log(self) -> Follow[EgressDecision]:
+        """Yield each egress decision as the daemon makes it, and end when the sandbox stops."""
         return Follow(
             self._transport,
             path("sandboxes", self.id, "egress-log"),
@@ -221,6 +222,7 @@ class Commands:
         self._sandbox = sandbox
 
     def list(self) -> builtins.list[CommandInfo]:
+        """Return every command the daemon still holds for the sandbox, running or ended."""
         records = self._transport.listed(
             models.ExecsResponse,
             lambda cursor: list_execs.sync_detailed(self._sandbox, client=self._transport.api, cursor=cursor),
@@ -236,7 +238,7 @@ class Commands:
         on_stdout: OutputCallback | None = None,
         on_stderr: OutputCallback | None = None,
     ) -> Command:
-        """A handle on a command already started; its wait() attaches, so the callbacks see the replay."""
+        """Return a handle to a command any client started; its wait() attaches, so the callbacks see the replay."""
         record = command_info(
             self._transport.answer(
                 models.Exec, lambda: get_exec.sync_detailed(self._sandbox, id, client=self._transport.api)
@@ -263,11 +265,11 @@ class App:
     def inspect(self) -> AppInfo:
         info = self.sandbox.inspect()
         if info.app is None:
-            raise ProtocolError(f"sandbox {info.id} answered a record with no app")
+            raise ProtocolError(f"the daemon answered sandbox {info.id} with no app")
         return info.app
 
     def wait(self, timeout: float | None = None) -> AppExit:
-        """Block until the app ends with no start again left. A timeout ends the wait, never the app."""
+        """Block until the app ends and its restart policy starts it no more. A timeout ends the wait, never the app."""
         try:
             record = self._transport.answer(
                 models.AppExit,
@@ -281,10 +283,11 @@ class App:
         return app_exit(record)
 
     def logs(self) -> str:
+        """Return the app's output so far; the daemon keeps a bounded log, so a long run may hold only its end."""
         return self.sandbox.logs()
 
     def stop(self, *, force: bool = False) -> None:
-        """End the app with TERM, or KILL with force, and cancel its restart policy."""
+        """End the app with TERM, or KILL with force, and cancel its restart policy; the sandbox keeps running."""
         body = models.AppStopRequest(force=force or UNSET)
         self._transport.send(
             lambda: stop_app.sync_detailed(self.sandbox.id, client=self._transport.api, body=body),

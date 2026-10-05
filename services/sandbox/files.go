@@ -25,7 +25,7 @@ const DefaultDirMode = 0o755
 // MkdirRequest is the body of POST /mkdir. Mode is octal, as a put's mode= is, so "700" reads the way chmod takes it.
 type MkdirRequest struct {
 	Path    string `json:"path" minLength:"1"`
-	Mode    string `json:"mode,omitempty" doc:"The permission bits as an octal string, as chmod takes them; none is 0755."`
+	Mode    string `json:"mode,omitempty" doc:"The permission bits in octal, at most 0777; absent is 0755."`
 	Parents bool   `json:"parents,omitempty"`
 	// User is who the mkdir runs as and who owns the directory, resolved as an exec's user is; empty is the entrypoint's.
 	User string `json:"user,omitempty"`
@@ -116,7 +116,7 @@ func (s *Service) WriteFile(ctx context.Context, ref string, req FileWrite, src 
 		return err
 	}
 	if req.Mode > 0o777 {
-		return &RequestError{Err: fmt.Errorf("a put's mode is the permission bits, at most 0777, got %#o", req.Mode)}
+		return &RequestError{Err: fmt.Errorf("the mode %#o is more than 0777; give the permission bits only", req.Mode)}
 	}
 	if req.Size < 0 {
 		return &RequestError{Err: fmt.Errorf("a put needs the size of its body, got %d", req.Size)}
@@ -245,10 +245,10 @@ func dirModeOf(raw string) (uint32, error) {
 
 	mode, err := strconv.ParseUint(raw, 8, 32)
 	if err != nil {
-		return 0, &RequestError{Err: fmt.Errorf("a mkdir's mode %q is not an octal mode", raw)}
+		return 0, &RequestError{Err: fmt.Errorf("the mode %q is not an octal mode", raw)}
 	}
 	if mode > 0o777 {
-		return 0, &RequestError{Err: fmt.Errorf("a mkdir's mode is the permission bits, at most 0777, got %#o", mode)}
+		return 0, &RequestError{Err: fmt.Errorf("the mode %#o is more than 0777; give the permission bits only", mode)}
 	}
 
 	return uint32(mode), nil
@@ -260,7 +260,7 @@ func (s *Service) DeleteFile(ctx context.Context, ref, guestPath string, recursi
 		return err
 	}
 	if path.Clean(guestPath) == "/" {
-		return &RequestError{Err: fmt.Errorf("a delete of %q would take the sandbox's whole root; name what is under it", guestPath)}
+		return &RequestError{Err: fmt.Errorf("a delete of %q would remove every file in the sandbox; name a path under it", guestPath)}
 	}
 
 	conn, err := s.openFiles(ctx, ref, "")
@@ -293,7 +293,7 @@ func (s *Service) openFiles(ctx context.Context, ref, user string) (supervisor.F
 // checkGuestPath refuses a relative path before any exec: shard has no default directory to resolve it in.
 func checkGuestPath(guestPath string) error {
 	if !path.IsAbs(guestPath) {
-		return &RequestError{Err: fmt.Errorf("a guest path must be absolute, got %q", guestPath)}
+		return &RequestError{Err: fmt.Errorf("the path %q is not absolute; give a path that starts with /", guestPath)}
 	}
 
 	return nil

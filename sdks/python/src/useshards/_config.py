@@ -60,7 +60,7 @@ def _base_url(remote: str | None, env: Mapping[str, str]) -> str:
         source, value = REMOTE_ENV, env.get(REMOTE_ENV, "")
     if not value:
         raise ConfigurationError(f"no remote: pass remote= or set {REMOTE_ENV}, as https://shard.example.com")
-    malformed = f"{source} must be an http or https url with a host, as https://shard.example.com"
+    malformed = f"{source} must be an http or https URL with a host, as https://shard.example.com"
     try:
         parsed = urllib.parse.urlsplit(value)
     except ValueError:
@@ -87,7 +87,7 @@ def _api_key(api_key: str | None, env: Mapping[str, str]) -> str:
     key = env.get(API_KEY_ENV, "").strip()
     if key:
         return _checked(key, API_KEY_ENV)
-    raise ConfigurationError(f"no API key: pass api_key= or set {API_KEY_ENV}; shard serve answers 401 without one")
+    raise ConfigurationError(f"no API key: pass api_key= or set {API_KEY_ENV}")
 
 
 def _checked(token: str, source: str) -> str:
@@ -107,11 +107,11 @@ def _verify(ca_file: StrPath | None, env: Mapping[str, str], base_url: str) -> s
         return True
     if base_url.startswith("http://"):
         raise ConfigurationError(
-            f"{source} is set, and the remote {base_url} is http: a CA certificate verifies an https remote only"
+            f"{source} applies only to an https remote, and {base_url} is http; use https, or unset {source}"
         )
     try:
         return ssl.create_default_context(cafile=path)
     except OSError as e:
         raise ConfigurationError(f"{source}: read the CA file {path}: {e.strerror}") from None
     except ssl.SSLError:
-        raise ConfigurationError(f"{source}: the CA file {path} holds no certificate") from None
+        raise ConfigurationError(f"{source}: the CA file {path} holds no PEM certificate") from None

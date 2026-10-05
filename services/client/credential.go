@@ -20,7 +20,7 @@ const (
 func NewRemoteFromEnv(host string, saved Config) (*Client, error) {
 	host = cmp.Or(host, os.Getenv(RemoteEnv), saved.Remote)
 	if host == "" {
-		return nil, fmt.Errorf("a remote client needs a host: --remote, %s or shard setup, as https://shard.example.com", RemoteEnv)
+		return nil, fmt.Errorf("no server to connect to: pass --remote, set %s, or run shard setup, as in --remote https://shard.example.com", RemoteEnv)
 	}
 	parsed, err := parseRemote(host)
 	if err != nil {
@@ -57,11 +57,11 @@ func ReadCA(host, caFile string) ([]byte, error) {
 	}
 	// Refused before the file is read, so the mismatch is the one error, whatever the file holds.
 	if parsed.Scheme == "http" {
-		return nil, fmt.Errorf("%s is set, and the remote %s is http: a CA certificate verifies an https remote only", CAFileEnv, host)
+		return nil, fmt.Errorf("%s applies only to an https remote, and %s is http; use https, or unset %s", CAFileEnv, host, CAFileEnv)
 	}
 	ca, err := os.ReadFile(caFile)
 	if err != nil {
-		return nil, fmt.Errorf("read the ca file %s from %s: %w", caFile, CAFileEnv, err)
+		return nil, fmt.Errorf("read the CA certificate file %s from %s: %w", caFile, CAFileEnv, err)
 	}
 
 	return ca, nil
@@ -88,10 +88,10 @@ func apiKey(remote *url.URL, saved Config) (key, refused string, err error) {
 		return key, refusedKey(remote.String(), "the API key saved in "+path, "run shard setup to replace it"), nil
 	}
 	if key != "" {
-		return "", "", fmt.Errorf("a remote client needs %s for %s; the saved API key is for %s and is sent to no other server", APIKeyEnv, remote.Redacted(), Redacted(saved.Remote))
+		return "", "", fmt.Errorf("the saved API key is for %s, so shard does not send it to %s; set %s, or run shard setup", Redacted(saved.Remote), remote.Redacted(), APIKeyEnv)
 	}
 
-	return "", "", fmt.Errorf("a remote client needs %s; shard serve answers 401 without one", APIKeyEnv)
+	return "", "", fmt.Errorf("--remote needs an API key: set %s, or save one with shard setup", APIKeyEnv)
 }
 
 // sameRemote compares what the client dials, the scheme and the host and port, so a path or the case of a host name makes no other server.

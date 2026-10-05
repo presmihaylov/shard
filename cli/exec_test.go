@@ -303,7 +303,7 @@ func TestExecReportsADaemonThatIsNotThere(t *testing.T) {
 	app := App{Version: "test", Root: shortRoot(t), Out: &out}
 
 	err := app.Run(t.Context(), []string{"exec", "sandbox1", "--", "true"})
-	if err == nil || !strings.Contains(err.Error(), "cannot connect to shard daemon") {
+	if err == nil || !strings.Contains(err.Error(), "cannot connect to the shard daemon") {
 		t.Fatalf("exec with no daemon returned %v", err)
 	}
 }

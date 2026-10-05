@@ -352,7 +352,7 @@ func (r *Repository) Get(id string) (models.Sandbox, error) {
 
 	data, err := os.ReadFile(path)
 	if errors.Is(err, os.ErrNotExist) {
-		return models.Sandbox{}, &models.NotFoundError{Err: fmt.Errorf("sandbox %s: %w", id, ErrNotFound)}
+		return models.Sandbox{}, models.NotFound(ErrNotFound, fmt.Sprintf("sandbox %s not found", id))
 	}
 	if err != nil {
 		return models.Sandbox{}, fmt.Errorf("read %s: %w", path, err)
@@ -650,7 +650,7 @@ func plainComponent(noun, kind, s string) error {
 	for _, c := range s {
 		// A case-insensitive filesystem folds an upper-case letter onto another record, so ids, names and refs stay lower case (SHARD-374).
 		if c >= 'A' && c <= 'Z' {
-			return &ValidationError{Reason: fmt.Sprintf("the %s %s %q holds %q, and must be lower case: a case-insensitive filesystem would fold it onto another %s", noun, kind, s, c, noun)}
+			return &ValidationError{Reason: fmt.Sprintf("the %s %s %q holds %q; use lower case only", noun, kind, s, c)}
 		}
 		alphanumeric := c >= 'a' && c <= 'z' || c >= '0' && c <= '9'
 		if !alphanumeric && c != '-' && c != '_' {

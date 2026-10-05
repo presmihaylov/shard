@@ -163,7 +163,7 @@ func (s *Setup) Run(ctx context.Context) error {
 
 	local := localOption(why)
 	local.Default = why == nil
-	mode, err := s.UI.Select(ctx, AskMode, "How do you want to use Shard?", []term.Option{
+	mode, err := s.UI.Select(ctx, AskMode, "How do you want to use shard?", []term.Option{
 		modeLocal:  local,
 		modeRemote: {Name: "remote", Label: "Connect to a remote server", Default: why != nil},
 	})
@@ -232,7 +232,7 @@ func (s *Setup) apply(ctx context.Context, title string, steps []Step) error {
 		if err := step.Do(ctx); err != nil {
 			return errors.Join(
 				list.Fail(i, problemLines(err)...),
-				s.UI.Print("", "Setup stopped. Earlier completed steps remain in place.", "Run `shard setup` again to retry."),
+				s.UI.Print("", "Setup stopped. Earlier completed steps remain in place.", "Run shard setup again to retry."),
 				&StoppedError{Step: step.Title, Err: err},
 			)
 		}

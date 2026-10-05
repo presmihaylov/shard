@@ -69,7 +69,7 @@ func parsePolicyCreate(args []string) (string, []client.RuleText, error) {
 
 	rest := flags.Args()
 	if slices.ContainsFunc(rest, func(s string) bool { return strings.HasPrefix(s, "-") }) {
-		return "", nil, errors.New("policy create takes its flags before the name: shard policy create --allow <rule> <name>")
+		return "", nil, errors.New("policy create takes its flags before the name: shard policy create --allow <rule> NAME")
 	}
 	if len(rest) != 1 {
 		return "", nil, fmt.Errorf("policy create takes one name, got %s", gotArgs(rest))
@@ -169,7 +169,7 @@ func parsePolicyRemove(args []string) (string, error) {
 
 // policyAttach hands a sandbox that already exists the policy a create with --policy would have given it.
 func (a App) policyAttach(ctx context.Context, args []string) error {
-	rest, err := policyArgs("attach", args, 2, "shard policy attach <id|name> <policy>")
+	rest, err := policyArgs("attach", args, 2, "a sandbox id or name and a policy name", "shard policy attach SANDBOX POLICY")
 	if err != nil {
 		return err
 	}
@@ -188,7 +188,7 @@ func (a App) policyAttach(ctx context.Context, args []string) error {
 }
 
 func (a App) policyDetach(ctx context.Context, args []string) error {
-	rest, err := policyArgs("detach", args, 1, "shard policy detach <id|name>")
+	rest, err := policyArgs("detach", args, 1, "one sandbox id or name", "shard policy detach SANDBOX")
 	if err != nil {
 		return err
 	}
@@ -226,7 +226,7 @@ func (a App) policyLogs(ctx context.Context, args []string) error {
 }
 
 // policyArgs parses a policy verb that takes no flags, and refuses any count but the one it wants.
-func policyArgs(verb string, args []string, want int, usage string) ([]string, error) {
+func policyArgs(verb string, args []string, want int, takes, usage string) ([]string, error) {
 	rest, err := parseArgs("policy "+verb, args)
 	if err != nil {
 		return nil, err
@@ -236,7 +236,7 @@ func policyArgs(verb string, args []string, want int, usage string) ([]string, e
 		return nil, fmt.Errorf("policy %s takes no flags: %s", verb, usage)
 	}
 	if len(rest) != want {
-		return nil, fmt.Errorf("policy %s takes %d arguments, got %s: %s", verb, want, gotArgs(rest), usage)
+		return nil, fmt.Errorf("policy %s takes %s, got %s: %s", verb, takes, gotArgs(rest), usage)
 	}
 
 	return rest, nil

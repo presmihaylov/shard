@@ -7,7 +7,7 @@ import (
 )
 
 // FailedGeneric is what a public route says of a failed sandbox whose cause no audited text covers.
-const FailedGeneric = "the sandbox failed; the daemon log has the cause"
+const FailedGeneric = "the daemon log has the cause of the failure"
 
 // publicError is an error whose text names only what the caller sent, never a host path, a pid or the root.
 type publicError interface {

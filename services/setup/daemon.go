@@ -21,11 +21,9 @@ type Daemon struct {
 
 // LocalDaemon reads the host without changing it: the service it runs, else the provider setup left to start by hand, else no setup at all.
 func LocalDaemon(h Host) (Daemon, error) {
-	service, running := systemdUnit, Daemon{Hint: "is it running? systemctl status shard", Log: "sudo journalctl -u " + serviceName}
-	sudo := "sudo "
+	service, running := systemdUnit, Daemon{Hint: "is it running? systemctl status shard", Log: sudoFor(h) + "journalctl -u " + serviceName}
 	if h.OS == "darwin" {
 		service, running = launchdPlist, Daemon{Hint: "is it running? launchctl print " + launchdLabel, Log: macLogDir + "/daemon.log"}
-		sudo = ""
 	}
 	_, err := os.Lstat(filepath.Join(h.Root, service))
 	if err == nil {
@@ -43,5 +41,5 @@ func LocalDaemon(h Host) (Daemon, error) {
 		return Daemon{Hint: "is it set up? shard setup", Log: foregroundLog}, nil
 	}
 
-	return Daemon{Hint: "is it running? " + sudo + "shard daemon --provider " + m.Provider, Log: foregroundLog}, nil
+	return Daemon{Hint: "is it running? " + socketSudo(h) + "shard daemon --provider " + m.Provider, Log: foregroundLog}, nil
 }

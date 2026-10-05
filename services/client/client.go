@@ -84,10 +84,10 @@ func (e *ConnectError) Error() string {
 	}
 	// A socket this user may not open has a daemon behind it, so asking whether it runs misleads.
 	if errors.Is(e.Err, fs.ErrPermission) {
-		return fmt.Sprintf("cannot connect to shard daemon at %s: permission denied; run the command again with sudo", e.Path)
+		return fmt.Sprintf("cannot connect to the shard daemon at %s: permission denied; run the command again with sudo", e.Path)
 	}
 
-	return fmt.Sprintf("cannot connect to shard daemon at %s: %s", e.Path, e.Hint)
+	return fmt.Sprintf("cannot connect to the shard daemon at %s: %s", e.Path, e.Hint)
 }
 
 func (e *ConnectError) Unwrap() error { return e.Err }
@@ -142,10 +142,10 @@ func NewRemote(host, token string, ca []byte) (*Client, error) {
 		return nil, err
 	}
 	if token == "" {
-		return nil, errors.New("--remote needs a token: shard serve answers 401 without one")
+		return nil, errors.New("--remote needs an API key: set " + APIKeyEnv + ", or save one with shard setup")
 	}
 	if err := checkToken(token); err != nil {
-		return nil, fmt.Errorf("the token %w", err)
+		return nil, fmt.Errorf("the API key %w", err)
 	}
 
 	address := remoteAddress(parsed)
@@ -153,7 +153,7 @@ func NewRemote(host, token string, ca []byte) (*Client, error) {
 
 	if parsed.Scheme == "http" {
 		if len(ca) > 0 {
-			return nil, fmt.Errorf("a CA certificate verifies an https remote, and %s is http", host)
+			return nil, fmt.Errorf("%s applies only to an https remote, and %s is http; use https, or unset %s", CAFileEnv, host, CAFileEnv)
 		}
 		c.plain = true
 		c.dialer = func(ctx context.Context) (net.Conn, error) {
@@ -168,7 +168,7 @@ func NewRemote(host, token string, ca []byte) (*Client, error) {
 	if len(ca) > 0 {
 		pool := x509.NewCertPool()
 		if !pool.AppendCertsFromPEM(ca) {
-			return nil, errors.New("the ca file holds no certificate")
+			return nil, errors.New(CAFileEnv + " holds no PEM certificate")
 		}
 		settings.RootCAs = pool
 	}
@@ -187,7 +187,7 @@ func parseRemote(host string) (*url.URL, error) {
 		return nil, fmt.Errorf("parse the host %q: %w", host, err)
 	}
 	if parsed.Scheme != "http" && parsed.Scheme != "https" || parsed.Host == "" {
-		return nil, fmt.Errorf("--remote must be an http or https url, as https://shard.example.com, got %q", host)
+		return nil, fmt.Errorf("the remote must be an http or https URL, as https://shard.example.com, got %q", host)
 	}
 
 	return parsed, nil
@@ -572,10 +572,10 @@ func (c *Client) exchange(ctx context.Context, method, path string, in, out any,
 	return resp.Header, nil
 }
 
-// wrap names the route and the socket, and says so when the client's own deadline, not the caller's, cut the call.
+// wrap names the route and the socket, or only the socket when the client's own deadline, not the caller's, cut the call.
 func (c *Client) wrap(caller context.Context, method, path string, bound time.Duration, err error) error {
 	if errors.Is(err, context.DeadlineExceeded) && caller.Err() == nil {
-		return fmt.Errorf("%s %s on %s: no answer within %s", method, path, c.target, bound)
+		return fmt.Errorf("the daemon at %s gave no answer within %s", c.target, bound)
 	}
 
 	return fmt.Errorf("%s %s on %s: %w", method, path, c.target, unquoted(err))

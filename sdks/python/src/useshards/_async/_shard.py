@@ -142,7 +142,7 @@ class AsyncShard:
         return AsyncApp(self._transport, AsyncSandbox(self._transport, await self._create(body)))
 
     async def get(self, ref: str) -> AsyncSandbox:
-        """A sandbox by id, id prefix or name."""
+        """Return a sandbox by id, id prefix or name."""
         record = await self._transport.answer(
             models.Inspection, lambda: get_sandbox.asyncio_detailed(ref, client=self._transport.api)
         )
@@ -170,7 +170,7 @@ class AsyncShard:
         )
 
     async def capabilities(self) -> Capabilities:
-        """Each of the eight lifecycle verbs, and whether this server runs it."""
+        """Return which of the eight lifecycle verbs the daemon's provider supports."""
         return _types.capabilities(
             await self._transport.answer(
                 models.Capabilities, lambda: get_capabilities.asyncio_detailed(client=self._transport.api)
@@ -221,6 +221,7 @@ class AsyncPolicies:
         await self._transport.send(lambda: remove_policy.asyncio_detailed(name, client=self._transport.api))
 
     async def attach(self, sandbox: SandboxRef, name: str) -> SandboxInfo:
+        """Make the sandbox enforce the policy from its next request on; the sandbox must not be running."""
         body = models.PolicyAttachRequest(policy=name)
         return await _changed(
             self._transport,
@@ -229,6 +230,7 @@ class AsyncPolicies:
         )
 
     async def detach(self, sandbox: SandboxRef) -> SandboxInfo:
+        """Take the sandbox's policy away, which leaves it the daemon's default."""
         return await _changed(
             self._transport, sandbox, lambda: detach_policy.asyncio_detailed(_id(sandbox), client=self._transport.api)
         )
@@ -248,7 +250,8 @@ class AsyncSecrets:
         destinations: Sequence[str] | None = None,
         placeholder: str | None = None,
     ) -> SecretInfo:
-        """Make the secret or replace it. A sandbox sees only the placeholder; the proxy swaps in the value."""
+        """Store the secret, or replace its value. A sandbox sees only the placeholder, and the proxy puts the value in;
+        the SDK never reads the value back."""
         body = models.SecretRequest(
             value=value,
             destinations=UNSET if destinations is None else builtins.list(destinations),
@@ -271,12 +274,14 @@ class AsyncSecrets:
         return SecretList(secrets, builtins.list(warnings))
 
     async def remove(self, name: str, *, force: bool = False) -> None:
-        """Remove a secret no sandbox is granted; force removes it anyway, and a grant left redeems nothing."""
+        """Remove a secret no sandbox holds; force removes it anyway, and a grant left redeems nothing."""
+
         await self._transport.send(
             lambda: remove_secret.asyncio_detailed(name, client=self._transport.api, force=force or UNSET)
         )
 
     async def grant(self, sandbox: SandboxRef, name: str) -> SandboxInfo:
+        """Let the sandbox send the secret to its destinations; the sandbox must not be running."""
         return await _changed(
             self._transport,
             sandbox,
@@ -284,6 +289,7 @@ class AsyncSecrets:
         )
 
     async def ungrant(self, sandbox: SandboxRef, name: str) -> SandboxInfo:
+        """Take the secret from the sandbox; the sandbox must not be running."""
         return await _changed(
             self._transport,
             sandbox,
@@ -298,6 +304,7 @@ class AsyncSnapshots:
         self._transport = transport
 
     async def create(self, sandbox: SandboxRef, *, name: str | None = None) -> Snapshot:
+        """Copy a stopped sandbox's files into a snapshot that outlives it."""
         body = models.SnapshotRequest(sandbox=_id(sandbox), name=name or UNSET)
         record = await self._transport.answer(
             models.Snapshot,
@@ -315,7 +322,7 @@ class AsyncSnapshots:
         return [_types.snapshot(record) for record in records]
 
     async def inspect(self, ref: str) -> Snapshot:
-        """A snapshot by id, id prefix or name."""
+        """Return a snapshot by id, id prefix or name."""
         record = await self._transport.answer(
             models.Snapshot, lambda: get_snapshot.asyncio_detailed(ref, client=self._transport.api)
         )

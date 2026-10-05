@@ -7,6 +7,9 @@ import type { Transport } from "./transport.js";
 import * as wire from "./wire.js";
 import { WebSocket, streamEnd } from "./ws.js";
 
+// The daemon's own bound: it detaches a client that reads no output for this long.
+const stallBound = "30s";
+
 export interface Handlers {
   onStdout?: ((chunk: Uint8Array) => void) | undefined;
   onStderr?: ((chunk: Uint8Array) => void) | undefined;
@@ -22,7 +25,7 @@ export interface CommandInfo {
   state: CommandState;
   /** The exit code once the command ended, or null while it runs; a signal ends it with 128 plus its number, as 143 for TERM. */
   exitCode: number | null;
-  /** The signal the server reported, or null; every provider reports a signal in the exit code instead. */
+  /** The signal the daemon reported, or null; every provider reports a signal in the exit code instead, as 128 plus its number, so 137 for KILL. */
   signal: number | null;
   startedAt: Date;
   exitedAt: Date | null;
@@ -115,7 +118,7 @@ export class Session {
       signal?.throwIfAborted();
     }
     if (!exit) {
-      throw new ShardConnectionError(`${this.what}: the stream was let go before the command ended`);
+      throw new ShardConnectionError(`${this.what}: the stream closed before the command ended`);
     }
     this.exited = exit;
 
@@ -176,7 +179,7 @@ export class Session {
     });
   }
 
-  /** closeStdin tells the command its input has ended, as a guest that reads waits for that. */
+  /** closeStdin ends the command's input, so a command that reads to the end of its input can finish. */
   closeStdin(): Promise<void> {
     return this.send((ws) => ws.sendBinary(message(wire.stdinClose, new Uint8Array(0))));
   }
@@ -241,7 +244,7 @@ export class Session {
         case wire.failure:
           throw wire.failureOf(body, this.what);
         default:
-          throw new ProtocolError(`${this.what}: the daemon sent a message of stream ${stream}, which no daemon sends`);
+          throw new ProtocolError(`${this.what}: the daemon sent an unknown stream ${stream}; upgrade useshards to match the daemon`);
       }
     }
 
@@ -254,7 +257,7 @@ export class Session {
     try {
       const record = await this.inspect();
 
-      return new ShardConnectionError(`${ended}; the command is ${record.state}, with ${record.lostBytes} bytes of output lost`, { cause: dropped });
+      return new ShardConnectionError(`${ended}; the daemon detaches a client that reads no output for ${stallBound}, and the command is ${record.state}, with ${record.lostBytes} bytes of output lost`, { cause: dropped });
     } catch (err) {
       return new ShardConnectionError(ended, { cause: dropped ?? err });
     }
@@ -274,7 +277,7 @@ function message(stream: number, payload: Uint8Array): Buffer {
 }
 
 export function commandInfo(value: unknown): CommandInfo {
-  const refused = new ProtocolError(`the daemon answered ${JSON.stringify(value)} as a command record`);
+  const refused = new ProtocolError(`the daemon answered ${JSON.stringify(value)} as a command`);
   if (!isObject(value)) {
     throw refused;
   }

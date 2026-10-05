@@ -32,6 +32,8 @@ type fakeHost struct {
 	// listeners is what ss prints for the proxy ports, and tables what nft list tables prints.
 	listeners string
 	tables    string
+	// asRoot is root itself, with no person who started setup through sudo.
+	asRoot bool
 }
 
 func newFakeHost(t *testing.T) *fakeHost {
@@ -39,7 +41,7 @@ func newFakeHost(t *testing.T) *fakeHost {
 	return &fakeHost{t: t, root: t.TempDir(), isActive: "active"}
 }
 
-// host runs as root, so privileged runs each command as it is.
+// host runs as root for a person who started setup with sudo, so privileged runs each command as it is.
 func (f *fakeHost) host(rs *releaseServer) Host {
 	h := Host{Root: f.root, OS: "linux", Arch: "amd64", Executable: filepath.Join(f.root, "/home/u/.local/bin/shard"), Version: "v0.1.0", Env: f.env, Run: f.run}
 	if rs != nil {
@@ -52,6 +54,9 @@ func (f *fakeHost) host(rs *releaseServer) Host {
 func (f *fakeHost) env(name string) string {
 	if name == "HOME" {
 		return filepath.Join(f.root, "/home/u")
+	}
+	if name == "SUDO_USER" && !f.asRoot {
+		return "u"
 	}
 
 	return ""
@@ -290,7 +295,7 @@ func TestExistingShowsTheSummaryAndExits(t *testing.T) {
 	if err != nil {
 		t.Fatalf("existing: %v", err)
 	}
-	want := []string{"Shard is already installed", "", "Version:  v0.1.0", "Provider: " + providerTitle("gvisor"), "Service:  Active", ""}
+	want := []string{"This machine already has shard installed", "", "Version:  v0.1.0", "Provider: " + providerTitle("gvisor"), "Service:  Active", ""}
 	if !slices.Equal(ui.printed, want) {
 		t.Fatalf("summary = %q, want %q", ui.printed, want)
 	}
@@ -322,8 +327,8 @@ func TestManualInstallChangesNothing(t *testing.T) {
 		t.Fatalf("existing: %v", err)
 	}
 	want := []string{"Manual installation detected.", "",
-		"Installed:      Shard v0.0.9",
-		"Setup installs: Shard v0.1.0", "",
+		"Installed:      shard v0.0.9",
+		"Setup installs: shard v0.1.0", "",
 		"Found:", "  /usr/local/bin/shard", "  /etc/systemd/system/shard.service", "",
 		"Setup did not install these files, so it does not change or remove them.", "",
 		"Inspect the installation:", "  sudo shard version", "  systemctl status shard", "",
@@ -657,7 +662,7 @@ func TestUpgradeVerifiesBeforeItReplaces(t *testing.T) {
 		t.Fatalf("calls = %v, want one restart and no unit change", f.calls)
 	}
 	// The review names the removal the switch question agreed to (SHARD-741).
-	said(t, ui.fakeUI, "Your sandboxes keep running while the daemon restarts.", "Shard v0.2.0 is installed, and the daemon is running.", removal)
+	said(t, ui.fakeUI, "Your sandboxes keep running while the daemon restarts.", "Upgraded to shard v0.2.0, and the daemon is running.", removal)
 	steps := ui.lists[len(ui.lists)-1].steps
 	if !slices.Equal(steps[len(steps)-2:], []string{"Restart the daemon", "Verify the daemon connection"}) {
 		t.Fatalf("the steps are %q, want the restart and then the verify last", steps)
@@ -717,7 +722,7 @@ func TestUpgradeStopsAtTheLatestRelease(t *testing.T) {
 	if err := (&Setup{Host: f.host(rs), UI: ui}).upgrade(t.Context(), m, ServiceActive, ""); err != nil {
 		t.Fatalf("upgrade: %v", err)
 	}
-	said(t, ui, "Shard v0.2.0 is up to date.")
+	said(t, ui, "Up to date: shard v0.2.0.")
 	if len(ui.asked) != 0 || rs.downloads.Load() != 0 {
 		t.Fatalf("upgrade asked %v and downloaded %d files", ui.asked, rs.downloads.Load())
 	}
@@ -734,7 +739,7 @@ func TestUpgradeLeavesAnInactiveServiceStopped(t *testing.T) {
 	if err := (&Setup{Host: f.host(rs), UI: ui}).upgrade(t.Context(), m, ServiceInactive, ""); err != nil {
 		t.Fatalf("upgrade: %v", err)
 	}
-	said(t, ui, "Setup does not start it.", "Shard v0.2.0 is installed.")
+	said(t, ui, "Setup does not start it.", "Upgraded to shard v0.2.0.")
 	if f.called("systemctl restart") || f.called("systemctl start") || f.called("/usr/local/bin/shard --remote") {
 		t.Fatalf("calls = %v", f.calls)
 	}
@@ -753,11 +758,11 @@ func TestUninstallRefusesWhileASandboxRemains(t *testing.T) {
 		want []string
 	}{
 		{"one on linux", "linux", []string{"sb_1"}, "1 sandbox left", []string{
-			"Shard has 1 sandbox on this machine.", "Remove it before you uninstall Shard:",
+			"This machine still has 1 sandbox.", "Remove it before you uninstall shard:",
 			"    sudo shard list --all", "    sudo shard remove --force <name>",
 		}},
 		{"two on darwin", "darwin", []string{"sb_1", "sb_2"}, "2 sandboxes left", []string{
-			"Shard has 2 sandboxes on this machine.", "Remove them before you uninstall Shard:",
+			"This machine still has 2 sandboxes.", "Remove them before you uninstall shard:",
 			"    shard list --all", "    shard remove --force <name>",
 		}},
 	} {
@@ -828,10 +833,10 @@ func TestUninstallDeclinedChangesNothing(t *testing.T) {
 	if !errors.Is(err, ErrDeclined) {
 		t.Fatalf("uninstall = %v, want ErrDeclined", err)
 	}
-	want := []string{"Uninstall Shard?", "",
+	want := []string{"Uninstall shard?", "",
 		"This will stop and remove the background service,",
-		"remove Shard's network bridge and firewall tables,",
-		"and remove files installed by Shard setup.", "",
+		"remove shard's network bridge and firewall tables,",
+		"and remove files installed by shard setup.", "",
 		"Your saved data will remain.",
 		"Shared tools will remain.", ""}
 	if !slices.Equal(ui.printed, want) {
@@ -876,11 +881,11 @@ func TestUninstallAfterABootNoSetupHasNoServiceStep(t *testing.T) {
 	if err := (&Setup{Host: h, UI: ui}).uninstall(t.Context(), m); err != nil {
 		t.Fatalf("uninstall: %v", err)
 	}
-	want := []string{"Uninstall Shard?", "", "This will remove files installed by Shard setup.", "", "Your saved data will remain.", "Shared tools will remain.", ""}
+	want := []string{"Uninstall shard?", "", "This will remove files installed by shard setup.", "", "Your saved data will remain.", "Shared tools will remain.", ""}
 	if !slices.Equal(ui.printed[:len(want)], want) {
 		t.Fatalf("output = %q, want it to start %q", ui.printed, want)
 	}
-	if steps := ui.lists[0].steps; !slices.Equal(steps, []string{"Remove files installed by Shard setup"}) {
+	if steps := ui.lists[0].steps; !slices.Equal(steps, []string{"Remove files installed by shard setup"}) {
 		t.Fatalf("the steps are %q, want only the file removal", steps)
 	}
 	if f.called("launchctl") {
@@ -935,7 +940,7 @@ func TestUninstallLeavesANetworkADaemonStillUses(t *testing.T) {
 			if f.called("nft") || f.called("ip link delete") {
 				t.Fatalf("uninstall took a network a daemon uses: %v", f.calls)
 			}
-			said(t, ui, "A Shard daemon still uses the network bridge shard0 and its firewall tables, so they remain.")
+			said(t, ui, "A shard daemon still uses the network bridge shard0 and its firewall tables, so they remain.")
 			if slices.ContainsFunc(ui.printed, func(l string) bool { return strings.Contains(l, "ip_forward") }) {
 				t.Fatalf("output %q names IP forwarding while a daemon uses it", ui.printed)
 			}
@@ -943,19 +948,20 @@ func TestUninstallLeavesANetworkADaemonStillUses(t *testing.T) {
 	}
 }
 
-// Uninstall names each shard command still on disk, with its rm line, and none that is gone. (SHARD-668)
+// Uninstall names the data it keeps, and the commands that delete it. (SHARD-668, SHARD-726)
 func TestUninstallNamesTheDataItKeeps(t *testing.T) {
 	const kept = "Your saved data remains in /var/lib/shard."
 	cases := map[string]struct {
-		os    string
-		files map[string]string
+		os     string
+		asRoot bool
+		files  map[string]string
 		// want are the lines right after kept, in order.
 		want  []string
 		never []string
 	}{
 		"mac logs": {os: "darwin", files: map[string]string{"/var/log/shard/daemon.log": "log"},
-			want: []string{"The daemon's logs remain in /var/log/shard.", "Remove them with: sudo rm -r /var/log/shard"}},
-		"mac without logs": {os: "darwin", never: []string{"/var/log/shard"}},
+			want: []string{"To delete the saved data, run: sudo rm -r /var/lib/shard", "The daemon's logs remain in /var/log/shard.", "Remove them with: sudo rm -r /var/log/shard"}},
+		"mac without logs": {os: "darwin", want: []string{"To delete the saved data, run: sudo rm -r /var/lib/shard"}, never: []string{"/var/log/shard"}},
 		"linux image with its fstab line": {os: "linux", files: map[string]string{
 			"/var/lib/shard.xfs": "img",
 			"/etc/fstab":         "UUID=1 / ext4 defaults 0 1\n/var/lib/shard.xfs /var/lib/shard xfs loop,nofail 0 0\n",
@@ -973,11 +979,18 @@ func TestUninstallNamesTheDataItKeeps(t *testing.T) {
 			"  sudo umount /var/lib/shard",
 			"  sudo rm /var/lib/shard.xfs",
 		}},
+		"linux image as root": {os: "linux", asRoot: true, files: map[string]string{"/var/lib/shard.xfs": "img"}, want: []string{
+			"It lives in the 0.0 GiB disk image /var/lib/shard.xfs.",
+			"To free the disk and delete the saved data, run:",
+			"  umount /var/lib/shard",
+			"  rm /var/lib/shard.xfs",
+		}},
 		"linux on a filesystem that clones": {os: "linux", never: []string{"disk image", "/etc/fstab"}},
 	}
 	for name, tc := range cases {
 		t.Run(name, func(t *testing.T) {
 			f := newFakeHost(t)
+			f.asRoot = tc.asRoot
 			for path, body := range tc.files {
 				f.write(t, path, body)
 			}

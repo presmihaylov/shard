@@ -46,8 +46,8 @@ def test_repr_hides_the_key() -> None:
 @pytest.mark.parametrize(
     ("remote", "reason"),
     [
-        ("ftp://shard.example.com", "must be an http or https url"),
-        ("https://", "must be an http or https url"),
+        ("ftp://shard.example.com", "must be an http or https URL"),
+        ("https://", "must be an http or https URL"),
         ("https://shard.example.com/v0", "only a scheme, a host and a port"),
         ("https://user@shard.example.com", "only a scheme, a host and a port"),
         ("https://shard.example.com:99999", "not a number from 0 to 65535"),
@@ -63,7 +63,7 @@ def test_remote_refused(remote: str, reason: str) -> None:
 @pytest.mark.parametrize("source", ["remote", "SHARD_REMOTE"])
 def test_a_broken_host_is_refused(remote: str, source: str) -> None:
     arg, env = (remote, {}) if source == "remote" else (None, {"SHARD_REMOTE": remote})
-    with pytest.raises(ConfigurationError, match=f"^{source} must be an http or https url with a host") as caught:
+    with pytest.raises(ConfigurationError, match=f"^{source} must be an http or https URL with a host") as caught:
         resolve(arg, "k", None, env=env)
     assert remote not in str(caught.value)
     assert "zz" not in str(caught.value)
@@ -92,7 +92,7 @@ def test_either_scheme_takes_its_port(remote: str, base_url: str) -> None:
 )
 def test_a_ca_with_http_is_refused(ca_file: str | None, env: dict[str, str], source: str) -> None:
     remote = "http://shard.example.com:80"
-    reason = f"{source} is set, and the remote {remote} is http: a CA certificate verifies an https remote only"
+    reason = f"{source} applies only to an https remote, and {remote} is http; use https, or unset {source}"
     with pytest.raises(ConfigurationError) as caught:
         resolve("http://shard.example.com", "k", ca_file, env=env)
     assert str(caught.value) == reason

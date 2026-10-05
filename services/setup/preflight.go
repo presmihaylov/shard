@@ -70,7 +70,7 @@ func (s *Setup) preflight(ctx context.Context, l Local) (*finding, error) {
 		{"Installation paths and permissions", installPaths},
 		{"Available disk space and filesystem support", diskSpace},
 		{"Download access", downloadAccess},
-		{"Existing Shard installation", existingSandboxes},
+		{"Existing shard installation", existingSandboxes},
 	}
 	if l.StartAtBoot {
 		checks = append(checks, check{"Background service support", serviceSupport})
@@ -113,7 +113,7 @@ func supportedPlatform(_ context.Context, h Host, _ Local) *finding {
 	}
 
 	return failed(
-		"Shard runs on Linux on x86_64, and on Macs with Apple silicon.",
+		"Supported hosts: Linux on x86_64, and Macs with Apple silicon.",
 		fmt.Sprintf("This machine runs %s on %s.", osName(h.OS), h.Arch),
 	)
 }
@@ -260,7 +260,7 @@ func rootOnly(h Host, dir string) *finding {
 	}
 	if owner(info) != rootUID || info.Mode().Perm()&0o022 != 0 {
 		return failed(
-			dir+" can be changed by a user other than root, and the root daemon runs Shard from it.",
+			dir+" can be changed by a user other than root, and the root daemon runs shard from it.",
 			"Make root its owner and remove group and other write access, then run shard setup again.",
 		)
 	}
@@ -372,7 +372,7 @@ func downloadAccess(ctx context.Context, h Host, l Local) *finding {
 	if h.OS == "linux" {
 		u, err := AssetURL(ctx, h, h.Version, "shard-init-linux-"+h.Arch)
 		if err != nil {
-			return failed(fmt.Sprintf("Setup could not find shard-init for Shard %s: %s.", h.Version, downloadCause(err)))
+			return failed(fmt.Sprintf("Setup could not find shard-init for shard %s: %s.", h.Version, downloadCause(err)))
 		}
 		urls = append(urls, u)
 	}

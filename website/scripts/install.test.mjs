@@ -192,7 +192,7 @@ for (const shell of shells) {
 				'/gh/presmihaylov/shard/releases/download/v0.2.0/SHA256SUMS',
 				'/gh/presmihaylov/shard/releases/download/v0.2.0/shard-linux-amd64',
 			]);
-			assert.match(result.stdout, /Downloading Shard v0\.2\.0 for linux-amd64\.\.\./);
+			assert.match(result.stdout, /Downloading shard v0\.2\.0 for linux-amd64\.\.\./);
 		});
 
 		test('reads a compact release list too', async () => {
@@ -200,7 +200,7 @@ for (const shell of shells) {
 			serveReleases([release('v0.1.9'), release('v0.2.0'), release('sdk-python-v0.9.0')], false);
 			const result = await install(shell, sandbox()).done;
 			assert.equal(result.code, 0, result.stderr);
-			assert.match(result.stdout, /Downloading Shard v0\.2\.0 /);
+			assert.match(result.stdout, /Downloading shard v0\.2\.0 /);
 		});
 
 		test('installs without a terminal: plain banner, no prompt, setup instructions, no leftovers', async () => {
@@ -210,9 +210,9 @@ for (const shell of shells) {
 			assert.equal(result.code, 0, result.stderr);
 			assert.ok(!result.stdout.includes('\x1b'), 'no color without a terminal');
 			assert.ok(result.stdout.startsWith(`${logo}\n`));
-			assert.ok(result.stdout.includes('Installing the Shard CLI...\n'));
-			assert.ok(result.stdout.includes(`✓ Shard installed\n\nInstalled at: ${box.bin}/shard\n\n`));
-			assert.ok(result.stdout.endsWith('Set up Shard later:\n  shard setup\n\nFor automated setup:\n  shard setup --help\n'));
+			assert.ok(result.stdout.includes('Installing the shard CLI...\n'));
+			assert.ok(result.stdout.includes(`✓ Installed shard\n\nInstalled at: ${box.bin}/shard\n\n`));
+			assert.ok(result.stdout.endsWith('Set up shard later:\n  shard setup\n\nFor automated setup:\n  shard setup --help\n'));
 			assert.ok(!result.stdout.includes('Start the setup wizard?'));
 			assert.equal(readFileSync(join(box.bin, 'shard'), 'utf8'), fakeShard('v0.2.0'));
 			assert.equal(spawnSync(join(box.bin, 'shard'), ['--version'], { encoding: 'utf8' }).stdout, 'client v0.2.0\n');
@@ -257,7 +257,7 @@ for (const shell of shells) {
 			const result = await install(shell, sandbox(), { os: 'Darwin', arch: 'x86_64' }).done;
 			assert.equal(result.code, 0, result.stderr);
 			assert.ok(downloads().includes('/gh/presmihaylov/shard/releases/download/v0.2.0/shard-darwin-amd64'));
-			assert.ok(result.stdout.includes('An Intel Mac can connect to a remote Shard server. It cannot host sandboxes itself.'));
+			assert.ok(result.stdout.includes('An Intel Mac can connect to a remote shard server. It cannot host sandboxes itself.'));
 		});
 
 		test('a platform the release has no build for fails before the binary download', async () => {
@@ -265,7 +265,7 @@ for (const shell of shells) {
 			const box = sandbox();
 			const result = await install(shell, box, { arch: 'aarch64' }).done;
 			assert.equal(result.code, 1);
-			assert.ok(result.stderr.includes('Shard v0.2.0 has no build for linux-arm64. Its builds are: linux-amd64, darwin-arm64, darwin-amd64.'));
+			assert.ok(result.stderr.includes('shard v0.2.0 has no build for linux-arm64. Its builds are: linux-amd64, darwin-arm64, darwin-amd64.'));
 			assert.deepEqual(downloads(), ['/gh/presmihaylov/shard/releases/download/v0.2.0/SHA256SUMS']);
 			assert.ok(!existsSync(box.bin));
 			assert.deepEqual(leftovers(box), []);
@@ -275,7 +275,7 @@ for (const shell of shells) {
 			reset();
 			const bsd = await install(shell, sandbox(), { os: 'FreeBSD', arch: 'amd64' }).done;
 			assert.equal(bsd.code, 1);
-			assert.ok(bsd.stderr.includes('Shard runs on Linux and macOS, and this system is FreeBSD.'));
+			assert.ok(bsd.stderr.includes('this system is FreeBSD, and shard runs on Linux and macOS only.'));
 			const windows = await install(shell, sandbox(), { os: 'MINGW64_NT-10.0' }).done;
 			assert.ok(windows.stderr.includes('Run this installer inside WSL 2.'));
 			assert.deepEqual(state.requests, []);
@@ -289,7 +289,7 @@ for (const shell of shells) {
 			executable(join(box.bin, 'shard'), fakeShard('v0.1.0'));
 			const result = await install(shell, box).done;
 			assert.equal(result.code, 1);
-			assert.match(result.stderr, /the checksum of shard-linux-amd64 is [0-9a-f]{64}, and SHA256SUMS of Shard v0\.2\.0 says [0-9a-f]{64}\. Nothing was installed\./);
+			assert.match(result.stderr, /the checksum of shard-linux-amd64 is [0-9a-f]{64}, and SHA256SUMS of shard v0\.2\.0 says [0-9a-f]{64}\. Nothing was installed\./);
 			assert.equal(readFileSync(join(box.bin, 'shard'), 'utf8'), fakeShard('v0.1.0'));
 			assert.deepEqual(leftovers(box), []);
 		});
@@ -313,7 +313,7 @@ for (const shell of shells) {
 			const box = sandbox();
 			const result = await install(shell, box).done;
 			assert.equal(result.code, 1);
-			assert.ok(result.stderr.includes('could not download shard-linux-amd64 from Shard v0.2.0.'));
+			assert.ok(result.stderr.includes('could not download shard-linux-amd64 from shard v0.2.0.'));
 			assert.deepEqual(leftovers(box), []);
 		});
 
@@ -347,7 +347,7 @@ for (const shell of shells) {
 			serveReleases([release('sdk-python-v0.1.0'), release('v0.3.0-rc.1', { prerelease: true }), release('kernel-6.12.110-3')]);
 			const result = await install(shell, sandbox()).done;
 			assert.equal(result.code, 1);
-			assert.ok(result.stderr.includes('found no published Shard release on GitHub.'));
+			assert.ok(result.stderr.includes('found no published shard release on GitHub.'));
 		});
 
 		test('an interrupt mid-download removes the temp files and keeps the old binary', async () => {
@@ -411,7 +411,7 @@ describe('install on a terminal', { skip: python === '' && 'needs python3 for a 
 		assert.equal(result.code, 0, result.stdout + result.stderr);
 		assert.ok(result.stdout.includes('Start the setup wizard? [Y/n] '));
 		assert.equal(readFileSync(join(box.home, 'setup-ran'), 'utf8'), 'tty\n');
-		assert.ok(!result.stdout.includes('Set up Shard later:'));
+		assert.ok(!result.stdout.includes('Set up shard later:'));
 		assert.deepEqual(leftovers(box), []);
 	});
 
@@ -421,7 +421,7 @@ describe('install on a terminal', { skip: python === '' && 'needs python3 for a 
 		const result = await installOnTerminal(box, 'n');
 		assert.equal(result.code, 0, result.stdout + result.stderr);
 		assert.ok(!existsSync(join(box.home, 'setup-ran')));
-		assert.ok(result.stdout.endsWith('Set up Shard later:\n  shard setup\n\nFor automated setup:\n  shard setup --help\n'));
+		assert.ok(result.stdout.endsWith('Set up shard later:\n  shard setup\n\nFor automated setup:\n  shard setup --help\n'));
 	});
 
 	test('the logo runs #1D6FB8 to #3F95D4 to #7FBDEB, one color per column, on a truecolor terminal', async () => {
@@ -431,7 +431,7 @@ describe('install on a terminal', { skip: python === '' && 'needs python3 for a 
 			assert.ok(result.stdout.includes(`\x1b[38;2;${painted}`), painted);
 		}
 		assert.ok(plain(result.stdout).startsWith(`${logo}\n`));
-		assert.ok(result.stdout.includes('\x1b[38;2;110;214;175m✓\x1b[0m Shard installed'));
+		assert.ok(result.stdout.includes('\x1b[38;2;110;214;175m✓\x1b[0m Installed shard'));
 	});
 
 	test('a terminal without truecolor gets one 256-color blue per letter', async () => {
@@ -449,6 +449,6 @@ describe('install on a terminal', { skip: python === '' && 'needs python3 for a 
 		const result = await installOnTerminal(sandbox(), 'n', { env: { NO_COLOR: '1', COLORTERM: 'truecolor' } });
 		assert.ok(!result.stdout.includes('\x1b'));
 		assert.ok(result.stdout.startsWith(`${logo}\n`));
-		assert.ok(result.stdout.includes('✓ Shard installed'));
+		assert.ok(result.stdout.includes('✓ Installed shard'));
 	});
 });

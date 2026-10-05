@@ -54,7 +54,7 @@ func (a App) exec(ctx context.Context, args []string) error {
 	}
 
 	if opts.tty && !pty.IsTerminal(a.stdin()) {
-		return errors.New("-t needs a terminal on stdin, and this one is not one")
+		return errors.New("-t needs a terminal on stdin; run it in a terminal, or drop -t")
 	}
 
 	req := sandbox.ExecRequest{
@@ -264,7 +264,7 @@ func parseExec(args []string) (execOptions, error) {
 
 	// A terminal nothing can type on is a hang, and the guest would wait on a keyboard that never answers.
 	if opts.tty && !opts.interactive {
-		return execOptions{}, errors.New("-t needs -i: a terminal with no input on it is a command nobody can answer")
+		return execOptions{}, errors.New("-t needs -i; pass -it")
 	}
 
 	opts.id, opts.argv = rest[0], argv

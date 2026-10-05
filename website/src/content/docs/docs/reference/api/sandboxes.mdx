@@ -28,8 +28,8 @@ Each route answers an error with the [Error](/docs/reference/api/#error) body, u
 | Name | In | Type | Required | Description |
 | --- | --- | --- | --- | --- |
 | `all` | query | boolean | no | List stopped sandboxes too. |
-| `limit` | query | integer (int64) | no | The most rows a page holds; none answers the whole list. At least 1. |
-| `cursor` | query | string | no | The next of the page before; this page starts after it. |
+| `limit` | query | integer (int64) | no | The most items on a page; absent returns the whole list. At least 1. |
+| `cursor` | query | string | no | The next value of the previous page; this page starts after it. |
 
 **Responses**
 
@@ -46,7 +46,7 @@ Each route answers an error with the [Error](/docs/reference/api/#error) body, u
 | Name | In | Type | Required | Description |
 | --- | --- | --- | --- | --- |
 | `id` | path | string | yes |  |
-| `wait` | query | boolean | no | Block until a pending create lands. |
+| `wait` | query | boolean | no | Wait until a pending create finishes, then answer. |
 
 **Responses**
 
@@ -112,7 +112,7 @@ A create that names secrets also needs the secret:\* scope, and one that names a
 | --- | --- |
 | 200 | [Sandbox](#sandbox) as `application/json` |
 
-## Delete a sandbox and its files
+## Remove a sandbox and its files
 
 `DELETE /v0/sandboxes/{id}` · scope `sandbox:delete`
 
@@ -121,7 +121,7 @@ A create that names secrets also needs the secret:\* scope, and one that names a
 | Name | In | Type | Required | Description |
 | --- | --- | --- | --- | --- |
 | `id` | path | string | yes |  |
-| `force` | query | boolean | no | Stop a sandbox that is still up or paused first. |
+| `force` | query | boolean | no | Stop the sandbox first if it is running or paused. |
 
 **Responses**
 
@@ -247,7 +247,7 @@ A create that names secrets also needs the secret:\* scope, and one that names a
 | --- | --- |
 | 200 | [Sandbox](#sandbox) as `application/json` |
 
-## Take a secret back from a sandbox
+## Ungrant a secret from a sandbox
 
 `DELETE /v0/sandboxes/{id}/secrets/{name}` · scope `secret:*`
 
@@ -459,21 +459,21 @@ A create that names secrets also needs the secret:\* scope, and one that names a
 
 | Field | Type | Required | Description |
 | --- | --- | --- | --- |
-| `backoff` | integer (int64) | yes | The first wait before a start again, in seconds; 0 or absent is 1. It doubles after each start again, up to 60. Only on-failure and always take it. From 0 to 60. |
+| `backoff` | integer (int64) | yes | The first wait before a restart, in seconds; 0 or absent is 1. It doubles after each restart, up to 60. Only on-failure and always take it. From 0 to 60. |
 | `count` | integer (int64) | yes |  |
 | `ended` | boolean | yes |  |
 | `gave_up` | boolean | yes |  |
 | `last_at` | string (date-time) | no |  |
 | `policy` | string | yes | One of `no`, `on-failure`, `always`. |
-| `retries` | integer (int64) | no | The starts again in a row before the policy gives up; 0 or absent is unlimited. Only on-failure takes it. At least 0. |
+| `retries` | integer (int64) | no | The restarts in a row before the policy gives up; 0 or absent is unlimited. Only on-failure takes it. At least 0. |
 
 ### RestartSpec
 
 | Field | Type | Required | Description |
 | --- | --- | --- | --- |
-| `backoff` | integer (int64) | no | The first wait before a start again, in seconds; 0 or absent is 1. It doubles after each start again, up to 60. Only on-failure and always take it. From 0 to 60. |
+| `backoff` | integer (int64) | no | The first wait before a restart, in seconds; 0 or absent is 1. It doubles after each restart, up to 60. Only on-failure and always take it. From 0 to 60. |
 | `policy` | string | yes | One of `no`, `on-failure`, `always`. |
-| `retries` | integer (int64) | no | The starts again in a row before the policy gives up; 0 or absent is unlimited. Only on-failure takes it. At least 0. |
+| `retries` | integer (int64) | no | The restarts in a row before the policy gives up; 0 or absent is unlimited. Only on-failure takes it. At least 0. |
 
 ### Sandbox
 
