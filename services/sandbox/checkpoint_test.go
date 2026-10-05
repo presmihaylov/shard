@@ -351,6 +351,9 @@ func TestStopDropsTheCheckpointOfAPausedSandbox(t *testing.T) {
 
 // A stop whose drop failed wrote a stopped record, so the next stop retries the drop rather than leak the checkpoint (SHARD-592).
 func TestStopRetriesTheCheckpointDropAfterItsFirstFailure(t *testing.T) {
+	if os.Geteuid() == 0 {
+		t.Skip("root removes a directory's contents whatever its mode says, so no drop fails")
+	}
 	dir := t.TempDir()
 	if err := os.WriteFile(filepath.Join(dir, "checkpoint.img"), []byte("memory"), 0o600); err != nil {
 		t.Fatal(err)
