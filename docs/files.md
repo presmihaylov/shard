@@ -93,15 +93,16 @@ defines it. The path must be absolute, because shard has no default directory.
 | `PUT /files?path=&mode=&user=&parents=` | the file, streamed | 204 | 286 |
 | `GET /files?path=` | | 200, the file, streamed | 286 |
 | `HEAD /files?path=` | | 200, `X-Shard-Stat` `{type,size,mode,uid,gid,mtime}` | 286 |
-| `GET /ls?path=` | | 200 `{"entries":[{name,type,size,mode,mtime}]}` | 287 |
+| `GET /ls?path=` | | 200 `{"entries":[{name,type,size,mode,uid,gid,mtime}]}` | 287 |
 | `POST /mkdir` | `{path,mode?,parents?,user?}` | 204 | 287 |
 | `DELETE /files?path=&recursive=` | | 204; a non-empty dir without `recursive` refuses | 287 |
 | `PUT /archive?path=&user=` | a tar, streamed | 204 | 288 |
 | `GET /archive?path=` | | 200, a tar, streamed; the client unpacks it under the rule below | 288 |
 
 The errors are `not_found`, `invalid_request` (a relative path, a bad tar, a tar entry that escapes
-`path`), `sandbox_not_running` and `internal`. The file API adds no new error code. A client that refuses
-an entry of a `GET /archive` tar fails with an error that names the entry, and writes nothing more.
+`path`), `sandbox_not_running`, `sandbox_failed` for a create that ended `failed`, and `internal`.
+The file API adds no new error code. A client that refuses an entry of a `GET /archive` tar fails
+with an error that names the entry, and writes nothing more.
 
 The client unpacks a `GET /archive` tar as hostile. The guest packs it, so `shard cp
 <id>:<dir> <dst>` guards the operator's machine the way the guest guards its own unpack. It unpacks

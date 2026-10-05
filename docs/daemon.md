@@ -502,9 +502,10 @@ curl --unix-socket /var/lib/shard/shard.sock -X POST http://localhost/v0/images/
   (`DefaultStartBudget`).
 - `POST /v0/sandboxes/{id}/stop` takes no body. It sends SIGTERM to the entrypoint and answers 200
   with the stopped record as soon as the entrypoint exits. An entrypoint that is still running after
-  30 s (`models.StopGrace`) is killed. A stop of a stopped sandbox changes nothing and answers 200
-  with the record. Errors: 400 for a body with any field, `grace` included, 404, and 409
-  `sandbox_failed`.
+  30 s (`models.StopGrace`) is killed. A stop of a paused sandbox ends it too, and a stop of a
+  stopped one changes nothing and answers 200 with the record. Errors: 400 for a body with any
+  field, `grace` included, 404, and 409 `sandbox_failed` for a create that ended `failed`. A stop of
+  a `pending` sandbox fails its create, so it answers that 409 too.
 - `DELETE /v0/sandboxes/{id}` answers 204 with no body. Errors: 404, and 409 when the sandbox is
   still up, unless the query has `?force=true`. Then the route stops the sandbox first, with the
   same 30 s grace.
@@ -576,7 +577,9 @@ and `image prune` leaves it.
   `{"exec", "sandbox", "command", "state": "running"|"exited", "exit_status": {"code",
   "signal"} or null, "started_at", "exited_at", "truncated", "lost_bytes"}`. Errors: 400 for a body that does not decode or
   a request that names no command, 400 naming the user for a `user` the sandbox's tree does not
-  list, or the guest path when its `/etc/passwd` or `/etc/group` is not a regular file, 404, 409
+  list, 400 naming the guest path when its `/etc/passwd` or `/etc/group` is not a regular file,
+  for any exec on runc and sysbox, which read both before every exec, and for one with a `user`
+  on gvisor, 404, 409
   when no command can run in the sandbox, and 429 `exec_limit` while the sandbox runs 32 execs or
   the daemon runs 256. A command
   that is not there or cannot run answers 422 `command_not_started`, and the daemon keeps no record
@@ -592,8 +595,9 @@ and `image prune` leaves it.
   the record says how much it lost.
 - `POST /v0/sandboxes/{id}/exec/{exec-id}/kill` takes `{"signal": "TERM"|"KILL"}`, with TERM as the
   default. It signals the running command and answers 204. Errors: 400 `invalid_request` for any
-  other signal, 404, and 409 `exec_exited` once the command ended. An exec that a signal ends reports code 128+n and signal 0 on every provider.
-  Only the entrypoint's exit status carries the signal.
+  other signal, `SIGTERM` and `term` included, 404, and 409 `exec_exited` once the command ended. An
+  exec that a signal ends reports code 128+n and signal 0 on every provider. Only the entrypoint's
+  exit status carries the signal.
 - `DELETE /v0/sandboxes/{id}/exec/{exec-id}` answers 204 and frees the record and its buffer.
   Errors: 404, and 409 `exec_running` while the command still runs.
 - `POST /v0/sandboxes/{id}/exec/{exec-id}/resize` takes `{"rows", "cols"}` and answers 204. It
@@ -624,8 +628,9 @@ and `image prune` leaves it.
   `shard logs -f` uses the WebSocket.
 - `GET /v0/sandboxes/{id}/egress-log` answers 200 with the newest 10000 egress decisions of the
   sandbox as a JSON array, oldest first. The array holds the proxy's own records, the host drops
-  and the resolver's `dns` records, which the daemon writes into the same file. The `Shard-Egress-Cut` header counts the older records
-  the route left out, and is absent when it left out none. Errors: 404, and 409 `sandbox_failed`.
+  and the resolver's `dns` records, which the daemon writes into the same file. The
+  `Shard-Egress-Cut` header counts the older records the route left out, and is absent when it left
+  out none. Errors: 404, 409 `sandbox_failed`, and 400 for a `follow` that is not a boolean.
   `shard policy logs` prints one record per line.
 - `GET /v0/sandboxes/{id}/egress-log?follow=true` with the handshake answers in text messages, one
   JSON record each, live. A stopped, failed or removed sandbox ends the stream with close 1000 and
@@ -686,7 +691,8 @@ and `image prune` leaves it.
   lands in the writable layer. Errors: 404, 400 when the host holds no such secret or when the guest
   environment already holds that name, and 409 when the sandbox runs or is paused.
 - `DELETE /v0/sandboxes/{id}/secrets/{name}` takes the grant and the placeholder back and answers 200
-  with the record. The proxy CA stays. Errors: 404, and 409 when the sandbox runs or is paused.
+  with the record. The proxy CA stays. Errors: 400 for a name that is not a valid secret name, 404,
+  and 409 when the sandbox runs or is paused.
 - `PUT /v0/sandboxes/{id}/policy` takes `{"policy": "<name>"}`, gives a created or stopped sandbox
   that policy, and answers 200 with the record. The daemon writes the record and applies the host
   rules. If the host refuses the rules, the daemon puts the record back. A sandbox holds one policy,
@@ -700,17 +706,18 @@ and `image prune` leaves it.
   policy with `holders`, the sandboxes whose record names it, plus the id of every sandbox whose
   record cannot be read, since that record may name it. The field is omitted when no sandbox names
   the policy. That is what `shard policy
-  list` and `shard policy show` print. Errors: 404 when the host holds no such policy.
+  list` and `shard policy show` print. Errors: 400 for a name that is not a valid policy name, and
+  404 when the host holds no such policy.
 - `PUT /v0/policies/{name}` takes `{"rules": [{"action": "allow"|"deny", "rule": "<destination>"}]}`
   with the rules in the order they were given. It compiles them, stores the policy and re-applies it
   at once to every sandbox that names it. It answers 200 with the policy. The CLI never parses a
   rule, because the daemon owns the grammar. Errors: 400 for a name or a rule the host cannot
   enforce, and 500 when the store holds the new rules but the host still enforces the old ones. The
   error message says so.
-- `DELETE /v0/policies/{name}` answers 204. Errors: 404, and 409 with the name of every sandbox that
-  holds the policy, plus the id of every sandbox whose record cannot be read, since that record
-  may hold it. There is no force here, because a sandbox with no policy would have no egress rules
-  at all.
+- `DELETE /v0/policies/{name}` answers 204. Errors: 400 for a name that is not a valid policy name,
+  404, and 409 with the name of every sandbox that holds the policy, plus the id of every sandbox
+  whose record cannot be read, since that record may hold it. There is no force here, because a
+  sandbox with no policy would have no egress rules at all.
 - `GET /v0/secrets` answers `{"secrets": [...], "next"}` with the name, the destinations, the
   placeholder and the `updated_at` of each secret, and never a value. Unreadable files come back in
   `warnings` beside the readable ones. `secret list` prints them on stderr before it exits non-zero.
@@ -719,9 +726,9 @@ and `image prune` leaves it.
   ones. Errors: 400 for a name, a destination or an empty value the host refuses, for the first put
   of a name with no destinations, and 409 with the name of every sandbox that holds the placeholder
   a new `placeholder` would change.
-- `DELETE /v0/secrets/{name}` answers 204. Errors: 404, and 409 with the name of every sandbox that
-  was granted the secret, plus the id of every sandbox whose record cannot be read, unless the
-  query has `?force=true`.
+- `DELETE /v0/secrets/{name}` answers 204. Errors: 400 for a name that is not a valid secret name,
+  404, and 409 with the name of every sandbox that was granted the secret, plus the id of every
+  sandbox whose record cannot be read, unless the query has `?force=true`.
 - `GET /v0/images` answers `{"images": [...], "next"}`, with the images as `shard image list` prints
   them. An entry the daemon could not read carries its reason in `broken`.
 - `POST /v0/images/pull` takes `{"ref"}`, pulls the image and answers 200 with it. Errors: 400 for
@@ -736,14 +743,14 @@ A `building` carries the path of each disk or EROFS image that a VM provider boo
 `pulled` says where the image went. A refusal before the first line keeps its status and its JSON
 body. After the first line the status is already sent, so a failure comes as a last `{"error"}`
 line with the same `code` and `message`.
-- `DELETE /v0/images/{ref}` takes the whole reference, including its slashes, and answers 200 with a
-  `warnings` array that lists what the route could not delete under the store, or `{}` when it
-  deleted everything. Errors: 404, and 409
-  `in_use` with every sandbox that references the image, or else every snapshot that does, unless
-  the query has `?force=true`. For a snapshot the fix names `shard snapshot remove`.
-- `POST /v0/images/prune` removes every image that no sandbox and no snapshot references, and answers
-  `{"removed": [...], "warnings": [...]}`. `removed` is null when no image goes, and `warnings` is
-  absent when it is empty. When a record is unreadable, the route refuses with 500
+- `DELETE /v0/images/{ref}` takes the whole reference, including its slashes, and answers 200 with
+  `{}`, or with a `warnings` array that lists what the route could not delete under the store.
+  Errors: 400 for a reference that does not parse, 404, and 409 `in_use` with every sandbox that
+  references the image, or else every snapshot that does, unless the query has `?force=true`. For a
+  snapshot the fix names `shard snapshot remove`.
+- `POST /v0/images/prune` removes every image that no sandbox and no snapshot references, and
+  answers `{"removed": [...]}`, an empty array when it removed nothing, with a `warnings` array
+  beside it when it left something behind. When a record is unreadable, the route refuses with 500
   and does not guess, because an image a sandbox needs would be gone.
 
 A stream is a WebSocket (RFC 6455) on the same route, opened with the standard handshake. A

@@ -45,5 +45,7 @@ One project serves the whole site. Connect it in the Vercel dashboard:
 2. Set **Root Directory** to `website`. Leave the framework preset on Astro.
 3. Add the `useshards.com` domain to the project.
 
+The static site requires no environment variables.
+
 `vercel.json` pins the install, build and output settings. Its `ignoreCommand`
 skips a deploy when a commit changes nothing under `website/`.

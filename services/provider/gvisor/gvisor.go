@@ -952,8 +952,8 @@ func (p *Provider) Pause(ctx context.Context, id string, dir string) error {
 		return err
 	}
 
-	// The layer is copied while the guest is frozen, so a fork restores over the files the memory saw.
-	if err := errors.Join(p.runsc.Checkpoint(ctx, id, tmp), b.Export(ctx, tmp)); err != nil {
+	// The checkpoint holds the memory alone: a resume restores over the bundle's own layer, and only a fork's capture copies one.
+	if err := p.runsc.Checkpoint(ctx, id, tmp); err != nil {
 		return p.lose(ctx, id, b, tmp, err)
 	}
 

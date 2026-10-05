@@ -4,6 +4,7 @@ import (
 	"os"
 	"path/filepath"
 	"slices"
+	"strings"
 	"syscall"
 	"testing"
 
@@ -105,8 +106,9 @@ func TestLookupCredentialRefusesADatabaseThatIsNotAFile(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	if _, err := lookupCredential(root, "bob"); err == nil {
-		t.Fatal("a fifo at /etc/passwd returned no error")
+	_, err := lookupCredential(root, "bob")
+	if err == nil || !strings.Contains(err.Error(), "/etc/passwd is a named pipe") {
+		t.Fatalf("a fifo at /etc/passwd gave %v, want it named a named pipe", err)
 	}
 }
 

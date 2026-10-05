@@ -9,6 +9,7 @@ import (
 	"io/fs"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"time"
 
@@ -558,8 +559,21 @@ func (p *Provider) Exec(ctx context.Context, id string, spec models.ExecSpec) (m
 		return models.ExitStatus{}, fmt.Errorf("sandbox %s is %s on %s, so nothing can run in it", id, status.State, Name)
 	}
 
+	pid, err := p.confirmInit(id, status)
+	if err != nil {
+		return models.ExitStatus{}, err
+	}
+	if pid == 0 {
+		return models.ExitStatus{}, fmt.Errorf("sandbox %s has no PID 1 on %s, so nothing can run in it", id, Name)
+	}
+
 	b, err := p.open(id)
 	if err != nil {
+		return models.ExitStatus{}, err
+	}
+
+	// sysbox-runc mounts its own overlay as the guest root, and the host's mount of the same layers can show a stale tree (SHARD-653).
+	if err := bundle.CheckUserDatabases(filepath.Join(p.procRoot, strconv.Itoa(pid), "root")); err != nil {
 		return models.ExitStatus{}, err
 	}
 

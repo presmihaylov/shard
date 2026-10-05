@@ -71,12 +71,115 @@ func TestResolveUserRefusesAPasswdThatIsAFifo(t *testing.T) {
 		if err == nil {
 			t.Fatal("ResolveUser read a passwd file that is a fifo")
 		}
-		requireGuestRefusal(t, err, rootfs, "/etc/passwd is a p")
+		requireGuestRefusal(t, err, rootfs, "/etc/passwd is a named pipe")
 		if !strings.Contains(err.Error(), "regular file") {
 			t.Errorf("the refusal is %q, and it must say what the file must be", err)
 		}
 	case <-time.After(resolveBudget):
 		t.Fatalf("ResolveUser did not answer within %s, so it is waiting on the fifo", resolveBudget)
+	}
+}
+
+// runc opens both databases before every exec, whatever the user, so the check refuses any non-file the guest's own lookup reaches (SHARD-653).
+func TestCheckUserDatabasesRefusesWhatTheGuestLookupReaches(t *testing.T) {
+	cases := map[string]struct {
+		lay  func(t *testing.T, rootfs string)
+		want string
+	}{
+		"a fifo passwd": {func(t *testing.T, rootfs string) { mkfifo(t, rootfs, "etc/passwd") }, "/etc/passwd is a named pipe"},
+		"a fifo group":  {func(t *testing.T, rootfs string) { mkfifo(t, rootfs, "etc/group") }, "/etc/group is a named pipe"},
+		"a directory group": {func(t *testing.T, rootfs string) {
+			if err := os.Mkdir(filepath.Join(rootfs, "etc/group"), 0o755); err != nil {
+				t.Fatalf("make the group directory: %v", err)
+			}
+		}, "/etc/group is a directory"},
+		"an absolute link to a fifo": {func(t *testing.T, rootfs string) {
+			mkfifo(t, rootfs, "fifo")
+			symlink(t, "/fifo", filepath.Join(rootfs, "etc/passwd"))
+		}, "/etc/passwd is a named pipe"},
+		"a relative link to a fifo": {func(t *testing.T, rootfs string) {
+			mkfifo(t, rootfs, "fifo")
+			symlink(t, "../fifo", filepath.Join(rootfs, "etc/group"))
+		}, "/etc/group is a named pipe"},
+		"a link that climbs past the top": {func(t *testing.T, rootfs string) {
+			mkfifo(t, rootfs, "fifo")
+			symlink(t, "../../../../fifo", filepath.Join(rootfs, "etc/passwd"))
+		}, "/etc/passwd is a named pipe"},
+		"a linked etc": {func(t *testing.T, rootfs string) {
+			if err := os.Mkdir(filepath.Join(rootfs, "real"), 0o755); err != nil {
+				t.Fatalf("make the real etc: %v", err)
+			}
+			mkfifo(t, rootfs, "real/passwd")
+			if err := os.Remove(filepath.Join(rootfs, "etc")); err != nil {
+				t.Fatalf("drop the etc dir: %v", err)
+			}
+			symlink(t, "/real", filepath.Join(rootfs, "etc"))
+		}, "/etc/passwd is a named pipe"},
+	}
+	for name, c := range cases {
+		t.Run(name, func(t *testing.T) {
+			rootfs := emptyRootFS(t)
+			c.lay(t, rootfs)
+
+			requireGuestRefusal(t, bundle.CheckUserDatabases(rootfs), rootfs, c.want)
+		})
+	}
+}
+
+// A database runc cannot reach either is one it does without, and a link never leads the check onto the host.
+func TestCheckUserDatabasesPassesWhatRuncReadsOrDoesWithout(t *testing.T) {
+	host := filepath.Join(t.TempDir(), "fifo")
+	if err := syscall.Mkfifo(host, 0o600); err != nil {
+		t.Fatalf("make the host fifo: %v", err)
+	}
+	cases := map[string]func(t *testing.T) string{
+		"regular files": func(t *testing.T) string { return rootFSWith(t, "root:x:0:0:::\n", "root:x:0:\n") },
+		"no files":      emptyRootFS,
+		"a link to a regular file": func(t *testing.T) string {
+			rootfs := rootFSWith(t, "root:x:0:0:::\n", "")
+			symlink(t, "/etc/passwd", filepath.Join(rootfs, "etc/group"))
+			return rootfs
+		},
+		"a dangling link": func(t *testing.T) string {
+			rootfs := emptyRootFS(t)
+			symlink(t, "/nowhere", filepath.Join(rootfs, "etc/passwd"))
+			return rootfs
+		},
+		"a link loop": func(t *testing.T) string {
+			rootfs := emptyRootFS(t)
+			symlink(t, "passwd", filepath.Join(rootfs, "etc/passwd"))
+			return rootfs
+		},
+		"an etc that is a file": func(t *testing.T) string {
+			rootfs := emptyRootFS(t)
+			if err := os.Remove(filepath.Join(rootfs, "etc")); err != nil {
+				t.Fatalf("drop the etc dir: %v", err)
+			}
+			if err := os.WriteFile(filepath.Join(rootfs, "etc"), nil, 0o600); err != nil {
+				t.Fatalf("write etc as a file: %v", err)
+			}
+			return rootfs
+		},
+		"a link to a host fifo": func(t *testing.T) string {
+			rootfs := emptyRootFS(t)
+			symlink(t, host, filepath.Join(rootfs, "etc/passwd"))
+			return rootfs
+		},
+	}
+	for name, lay := range cases {
+		t.Run(name, func(t *testing.T) {
+			if err := bundle.CheckUserDatabases(lay(t)); err != nil {
+				t.Errorf("CheckUserDatabases = %v, want nil", err)
+			}
+		})
+	}
+}
+
+func mkfifo(t *testing.T, rootfs, rel string) {
+	t.Helper()
+
+	if err := syscall.Mkfifo(filepath.Join(rootfs, rel), 0o600); err != nil {
+		t.Fatalf("make the fifo %s: %v", rel, err)
 	}
 }
 
@@ -180,7 +283,7 @@ func TestResolveUserRefusesAPasswdThatIsADirectory(t *testing.T) {
 	if err == nil {
 		t.Fatal("ResolveUser read a passwd that is a directory")
 	}
-	requireGuestRefusal(t, err, rootfs, "/etc/passwd is a d")
+	requireGuestRefusal(t, err, rootfs, "/etc/passwd is a directory")
 }
 
 // A socket, like a device with no driver, fails the open itself, so the file type check after it never runs.
@@ -211,7 +314,7 @@ func TestResolveUserRefusesAPasswdThatIsASocket(t *testing.T) {
 	if err == nil {
 		t.Fatal("ResolveUser read a passwd that is a socket")
 	}
-	requireGuestRefusal(t, err, rootfs, "/etc/passwd is a S")
+	requireGuestRefusal(t, err, rootfs, "/etc/passwd is a socket")
 }
 
 // requireGuestRefusal holds a database refusal to what a public route may answer: the guest's path, never where the host keeps the tree (SHARD-648).

@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"github.com/presmihaylov/shard/models"
+	"github.com/presmihaylov/shard/services/bundle"
 	"github.com/presmihaylov/shard/services/image"
 	"github.com/presmihaylov/shard/services/sandboxstate"
 )
@@ -173,8 +174,14 @@ func (s *Service) readSeed(id string, req CreateRequest) (seeded, error) {
 		req.Resources.MemoryMiB = new(snap.MemoryMiB)
 	}
 	// A microVM substrate grows the copy of the disk file, and a shrink could cut off blocks the snapshot's files sit on.
-	if _, grows := s.cfg.Provider.(diskAdmitter); grows && req.Resources.DiskMiB < snap.DiskMiB {
+	_, grows := s.cfg.Provider.(diskAdmitter)
+	if grows && req.Resources.DiskMiB < snap.DiskMiB {
 		return seeded{}, &RequestError{Err: fmt.Errorf("resources.disk_mib is %d MiB, smaller than the %d MiB disk of snapshot %s, and a disk only grows; omit it or set it to %d MiB or more", req.Resources.DiskMiB, snap.DiskMiB, id, snap.DiskMiB)}
+	}
+	// Every other substrate copies the files onto a new disk, which fails late inside the copy when too small; the source's own bound held them.
+	bound, need := bundle.DiskBound(req.Resources.bounds()), (snap.Size+1<<20-1)>>20
+	if !grows && bound < snap.DiskMiB && bound < need {
+		return seeded{}, &RequestError{Err: fmt.Errorf("resources.disk_mib is %d MiB, smaller than the %d MiB the files of snapshot %s take; omit it or set it to %d MiB or more", req.Resources.DiskMiB, need, id, need)}
 	}
 
 	files, err := s.cfg.Snapshots.Files(id)

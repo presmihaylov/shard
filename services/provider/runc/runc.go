@@ -568,6 +568,9 @@ func execOptions(b bundle.Bundle, spec models.ExecSpec) (runccli.ExecOptions, er
 	if err != nil {
 		return runccli.ExecOptions{}, err
 	}
+	if err := bundle.CheckUserDatabases(b.RootFS); err != nil {
+		return runccli.ExecOptions{}, err
+	}
 
 	opts := runccli.ExecOptions{
 		Bundle:  b.Dir,

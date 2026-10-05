@@ -9,6 +9,7 @@ import (
 	"path/filepath"
 
 	"github.com/presmihaylov/shard/models"
+	"github.com/presmihaylov/shard/pkg/filemode"
 )
 
 // restartFileCap bounds the read: shard-init writes a few dozen bytes, and the guest can write anything there.
@@ -73,7 +74,7 @@ func requireRegular(f *os.File, path string) error {
 		return fmt.Errorf("stat %s: %w", path, err)
 	}
 	if !info.Mode().IsRegular() {
-		return fmt.Errorf("%s is a %s, and it must be a regular file", path, info.Mode().Type())
+		return fmt.Errorf("%s is a %s, and it must be a regular file", path, filemode.Name(info.Mode()))
 	}
 
 	return nil

@@ -308,7 +308,7 @@ func TestFilesRefuseWhatTheyCannotCopy(t *testing.T) {
 		t.Fatal(err)
 	}
 	_, _, err = getFile(t, open, fifo)
-	refusedAs(t, "a get of a fifo", err, supervisor.FileInvalid, "not a regular file")
+	refusedAs(t, "a get of a fifo", err, supervisor.FileInvalid, "is a named pipe, not a regular file")
 	if got, err := statFile(t, open, fifo); err != nil || got.Type != models.FileOther {
 		t.Fatalf("stat of a fifo gave %+v, %v, want other", got, err)
 	}

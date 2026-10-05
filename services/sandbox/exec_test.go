@@ -258,7 +258,7 @@ func TestExecAsAUserTheTreeCannotResolveIsARequestError(t *testing.T) {
 			}
 			return os.Symlink("/etc", etc)
 		}, want: "/etc is a symbolic link"},
-		{name: "a passwd that is a fifo", user: "nobody", guest: func(passwd string) error { return syscall.Mkfifo(passwd, 0o600) }, want: "/etc/passwd is a p"},
+		{name: "a passwd that is a fifo", user: "nobody", guest: func(passwd string) error { return syscall.Mkfifo(passwd, 0o600) }, want: "/etc/passwd is a named pipe"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			rootfs := t.TempDir()

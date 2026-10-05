@@ -389,6 +389,84 @@ func TestPauseTakesOnlyARunningSandbox(t *testing.T) {
 	}
 }
 
+// pauseBundle lays a bundle for amber-otter-1a2b under dir, with a file in its writable layer, and returns its state directory.
+func pauseBundle(t *testing.T, dir string) string {
+	t.Helper()
+
+	stateDir := filepath.Join(dir, "amber-otter-1a2b")
+	for _, sub := range []string{"bundle", "disk/upper", "disk/tmp", "disk/shard"} {
+		if err := os.MkdirAll(filepath.Join(stateDir, sub), 0o700); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := os.WriteFile(filepath.Join(stateDir, "bundle", "config.json"), []byte("{}"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(stateDir, "disk", "upper", "data.bin"), make([]byte, 64<<10), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	return stateDir
+}
+
+// checkpointRunsc is a runsc whose checkpoint writes its image into --image-path and succeeds.
+const checkpointRunsc = `case "$*" in
+*checkpoint*) d=$(echo "$*" | sed -n 's/.*--image-path \([^ ]*\).*/\1/p'); echo img > "$d/checkpoint.img"; exit 0;;
+esac
+echo '{"id":"amber-otter-1a2b","status":"running","pid":42}'`
+
+// A resume restores over the bundle's own layer and only a fork's capture copies one, so a pause checkpoint holds no copy (SHARD-581).
+func TestAPauseCheckpointHoldsNoCopyOfTheLayer(t *testing.T) {
+	work := t.TempDir()
+	pauseBundle(t, work)
+	p := newProviderIn(t, work, checkpointRunsc)
+	p.SetCgroupRoot(t.TempDir())
+
+	dir := filepath.Join(t.TempDir(), "checkpoint")
+	pauseKept(t, p.Pause(t.Context(), "amber-otter-1a2b", dir))
+
+	if _, err := os.Stat(filepath.Join(dir, "checkpoint.img")); err != nil {
+		t.Fatalf("the pause installed no checkpoint: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(dir, "layers")); !errors.Is(err, os.ErrNotExist) {
+		t.Errorf("a stat of the layer copy in the pause checkpoint returned %v, want no copy: nothing reads one", err)
+	}
+}
+
+// The sentry is gone once runsc has checkpointed, so a layer file the daemon cannot read must not throw the memory image away (SHARD-581).
+func TestAnUnreadableLayerFileLosesNoPause(t *testing.T) {
+	if os.Geteuid() == 0 {
+		t.Skip("root reads a 0000 file, so the unreadable layer needs a user")
+	}
+	work := t.TempDir()
+	stateDir := pauseBundle(t, work)
+	if err := os.WriteFile(filepath.Join(stateDir, "disk", "upper", "unreadable"), []byte("x"), 0o000); err != nil {
+		t.Fatal(err)
+	}
+	p := newProviderIn(t, work, checkpointRunsc)
+	p.SetCgroupRoot(t.TempDir())
+
+	dir := filepath.Join(t.TempDir(), "checkpoint")
+	pauseKept(t, p.Pause(t.Context(), "amber-otter-1a2b", dir))
+	if _, err := os.Stat(filepath.Join(dir, "checkpoint.img")); err != nil {
+		t.Errorf("no checkpoint is installed after runsc wrote one, so the run cannot resume: %v", err)
+	}
+}
+
+// pauseKept wants a clean pause, bar the overlayfs refusal of the unmount off Linux.
+func pauseKept(t *testing.T, err error) {
+	t.Helper()
+
+	if err == nil {
+		return
+	}
+	// The exact text, so a cleanup error the release joins to the refusal still fails.
+	if runtime.GOOS != "linux" && err.Error() == (bundle.Bundle{}).Unmount().Error() {
+		return
+	}
+	t.Errorf("Pause after runsc wrote the memory image returned %v, want nil", err)
+}
+
 func TestResumeTakesOnlyACheckpointOfAPausedSandbox(t *testing.T) {
 	p := newProviderOver(t, `echo '{"id":"amber-otter-1a2b","status":"running","pid":42}'`)
 

@@ -10,6 +10,9 @@ import (
 	"slices"
 	"strconv"
 	"strings"
+	"syscall"
+
+	"github.com/presmihaylov/shard/pkg/filemode"
 )
 
 // errNoEntry lets a numeric id fall back to the plain id, while a real read error still propagates.
@@ -318,6 +321,79 @@ func linkRefused(part string) error {
 	return &UserDatabaseError{Err: fmt.Errorf("/%s is a symbolic link, and a user database must be a file in the same tree", part)}
 }
 
+// maxLinks is the kernel's own bound on the links one path lookup follows.
+const maxLinks = 40
+
+// CheckUserDatabases refuses a passwd or group that is not a regular file, since runc opens both before every exec and a fifo stalls it (SHARD-653).
+func CheckUserDatabases(rootfs string) error {
+	root, err := os.OpenRoot(rootfs)
+	if err != nil {
+		return fmt.Errorf("open the rootfs %s: %w", rootfs, err)
+	}
+	defer root.Close() //nolint:errcheck // a read-only handle has nothing left to flush
+
+	for _, rel := range []string{"etc/passwd", "etc/group"} {
+		mode, err := guestMode(root, rel)
+		// A database the guest cannot reach either is one runc does without.
+		if errors.Is(err, fs.ErrNotExist) || errors.Is(err, syscall.ENOTDIR) || errors.Is(err, syscall.ELOOP) {
+			continue
+		}
+		if err != nil {
+			return fmt.Errorf("check the guest's /%s: %w", rel, err)
+		}
+		if !mode.IsRegular() {
+			return notRegular(rel, mode)
+		}
+	}
+
+	return nil
+}
+
+// guestMode resolves links as the guest does, an absolute one from the top and ".." stopping there, and opens nothing a fifo could block.
+func guestMode(root *os.Root, rel string) (fs.FileMode, error) {
+	parts := strings.Split(rel, "/")
+	resolved := ""
+	mode := fs.ModeDir
+	links := 0
+	for len(parts) > 0 {
+		part := parts[0]
+		parts = parts[1:]
+		if part == "" || part == "." {
+			continue
+		}
+		if part == ".." {
+			resolved = strings.TrimSuffix(filepath.Dir(resolved), ".")
+			mode = fs.ModeDir
+			continue
+		}
+
+		next := filepath.Join(resolved, part)
+		info, err := root.Lstat(next)
+		if err != nil {
+			return 0, err
+		}
+		if info.Mode()&fs.ModeSymlink == 0 {
+			resolved, mode = next, info.Mode()
+			continue
+		}
+
+		links++
+		if links > maxLinks {
+			return 0, &fs.PathError{Op: "lstat", Path: next, Err: syscall.ELOOP}
+		}
+		target, err := root.Readlink(next)
+		if err != nil {
+			return 0, err
+		}
+		if filepath.IsAbs(target) {
+			resolved = ""
+		}
+		parts = append(strings.Split(target, "/"), parts...)
+	}
+
+	return mode, nil
+}
+
 func notRegular(rel string, mode fs.FileMode) error {
-	return &UserDatabaseError{Err: fmt.Errorf("/%s is a %s, and a user database must be a regular file", rel, mode.Type())}
+	return &UserDatabaseError{Err: fmt.Errorf("/%s is a %s, and a user database must be a regular file", rel, filemode.Name(mode))}
 }
