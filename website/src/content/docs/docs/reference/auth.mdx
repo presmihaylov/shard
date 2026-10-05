@@ -54,12 +54,12 @@ This token can list sandboxes, read their logs and run commands in them. It cann
 
 ## How a request is checked
 
-On the host, the daemon listens on a unix socket and takes no token. A request on the socket holds every right. `shard serve` is the only way in from the network, and it checks each request in two steps before it passes the request to the socket.
+On the host, the daemon listens on a unix socket and takes no token. A request on the socket can do anything. `shard serve` is the only way in from the network, and it checks each request in two steps before it passes the request to the socket.
 
-1. **The token.** The token must be an HS256 JWT signed with the host's signing key. It must carry a subject, an id and an issued-at time. The ledger on the host must hold its id, not revoked. A token with an `exp` must not have expired. Any other token gets `401` with the code `unauthorized`.
-2. **The scope.** `shard serve` maps the method and the path to one scope, and the token must carry that scope. Otherwise it gets `403` with the code `forbidden`. A route that only the host can use, such as `shard pull`, gets the same `403` for every token.
+1. The token must be an HS256 JWT signed with the host's signing key. It must carry a subject, an id and an issued-at time. The ledger on the host must hold its id, and the id must not be revoked. A token with an `exp` must not have expired. Any other token gets `401` with the code `unauthorized`.
+2. `shard serve` maps the method and the path to one scope, and the token must carry that scope. Otherwise it gets `403` with the code `forbidden`. A route that only the host can use, such as `shard pull`, gets the same `403` for every token.
 
-Both refusals come from `shard serve` before it opens the socket, so a refused request never reaches the daemon. `shard serve` logs the name of the token for every request it lets through, and never logs a token or the signing key.
+Both refusals come from `shard serve` before it opens the socket, so a refused request never reaches the daemon. `shard serve` logs the name of the token for every request it lets through, and never logs the token itself or the signing key.
 
 ## Scopes
 
@@ -73,7 +73,7 @@ Both refusals come from `shard serve` before it opens the socket, so a refused r
 | `policy:*` | Manage policies and their sandbox assignments | Every policies route, and attach and detach on a sandbox |
 | `*` | All available permissions | Every route above |
 
-A token with no scopes, or with `*`, reaches every route. `GET /v0/version`, `GET /v0/capabilities` and `GET /v0/scopes` answer any valid token, so a client can learn what it talks to before it acts. The [REST API overview](/docs/reference/api/) names the scope of each route.
+A token with no scopes, or with `*`, reaches every route. `GET /v0/version`, `GET /v0/capabilities` and `GET /v0/scopes` answer any valid token, so a client can check which server it talks to before it acts. The [REST API overview](/docs/reference/api/) names the scope of each route.
 
 A create that names a secret also needs `secret:*`, and a create that names a policy also needs `policy:*`. A fork of a sandbox with secret grants or a policy needs the same scopes, because the fork copies them. The daemon refuses the request with `403` before it builds anything:
 
@@ -103,7 +103,7 @@ shard tokens mint --name build-agent --duration 24h --scopes sandbox:read,sandbo
 - `--name` is required. It names the owner or the purpose of the token, and it is the name that `shard serve` logs.
 - `--duration` is how long the token lives. The default is 0, which mints a token that never expires.
 - `--scopes` is a comma-separated list. The default is every permission, `*`. Pass `--scopes` and `--duration` for every token except an operator's.
-- `--format json`, the default, prints one object with the `token`, its `expires_at` in UTC, or `null` when it never expires, and its `scopes`. `--format table` prints the columns TOKEN, EXPIRES and SCOPES.
+- `--format json`, the default, prints one object with the `token`, its `scopes`, and its `expires_at` in UTC (`null` when it never expires). `--format table` prints the columns TOKEN, EXPIRES and SCOPES.
 
 `mint` refuses a scope that `shard tokens scopes` does not list, and records nothing. Every token gets a random 128-bit id, and `mint` records it in the ledger before it prints the token. A client takes the `token` field as its API key:
 
@@ -145,7 +145,7 @@ A revoke takes effect on the next request, with no restart. `shard serve` also c
 | Signing key | `<root>/auth/signing-key` | `0600`, in an `auth` directory of mode `0700` |
 | Ledger | `serve.tokens` beside the signing key | `0640` |
 
-The first `shard serve` or `shard tokens mint` that finds no key at the default path creates one: 32 random bytes, written as 64 hex characters. Nothing rotates or replaces a key after that. A key file that everyone on the host can read, write or execute, that is empty, or that holds under 32 bytes is refused, and the error names the path. `tokens list` and `tokens revoke` never create a key.
+The first `shard serve` or `shard tokens mint` that finds no key at the default path creates one: 32 random bytes, written as 64 hex characters. Nothing rotates or replaces the key after that. shard refuses a key file that is empty, that holds fewer than 32 bytes, or that everyone on the host can read, write or execute. The error names the path. `tokens list` and `tokens revoke` never create a key.
 
 `--signing-key-file` names a key outside the root. The file must exist, because `serve` and the `tokens` commands never create a named file. `openssl rand -hex 32` prints a key that passes. Give `shard serve` and every `tokens` command the same `--root` and `--signing-key-file`, so that the tokens you mint land in the ledger that `shard serve` reads.
 
