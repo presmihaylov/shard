@@ -1,0 +1,65 @@
+name: SDK publish
+
+on:
+  push:
+    branches: [main]
+  # A retry after a partial failure: the plan skips what is already published.
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+# A queued run replans from main, so a pending run this one replaces loses nothing.
+concurrency:
+  group: sdk-publish
+  cancel-in-progress: false
+
+jobs:
+  release-pr:
+    name: release PR
+    runs-on: ubuntu-latest
+    if: github.ref == 'refs/heads/main'
+    permissions:
+      contents: write
+      pull-requests: write
+      actions: write
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: sdks/package-lock.json
+
+      - name: install changesets
+        working-directory: sdks
+        run: npm ci --no-audit --no-fund
+
+      - id: changesets
+        uses: changesets/action@ae32849d5ba541f9ae29e40e22a623bc13562f51 # v2.1.2
+        with:
+          cwd: sdks
+          version-script: npm run release-version
+          pr-title: Release SDKs
+          commit-message: Release SDKs
+
+      - name: name the setting
+        if: failure() && steps.changesets.outcome == 'failure'
+        run: |
+          echo "::error::If the log above says GitHub Actions may not create pull requests, turn on Settings > Actions > General > Allow GitHub Actions to create and approve pull requests."
+
+      # A push by GITHUB_TOKEN starts no workflow, so the release branch gets its checks by dispatch.
+      - name: describe the release and run its checks
+        if: steps.changesets.outputs.pr-number != ''
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PR: ${{ steps.changesets.outputs.pr-number }}
+        run: |
+          git fetch origin changeset-release/main
+          python3 sdks/release/pr_body.py --base "$GITHUB_SHA" --head origin/changeset-release/main > "$RUNNER_TEMP/body.md"
+          gh pr edit "$PR" --body-file "$RUNNER_TEMP/body.md"
+          gh workflow run ci.yml --ref changeset-release/main
+          gh workflow run sdk-release.yml --ref changeset-release/main -f sdk=both
