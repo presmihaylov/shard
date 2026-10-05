@@ -606,6 +606,54 @@ func TestDeleteRemovesTheRecordAndTheCheckpoint(t *testing.T) {
 	}
 }
 
+// A writer that opens by path, as the egress log does, must neither fail a delete "directory not empty" nor bring the directory back (SHARD-682).
+func TestADeleteBesideAWriterSucceedsAndLeavesNoDirectory(t *testing.T) {
+	r, root := repo(t)
+
+	for range 200 {
+		sb := create(t, r)
+		dir := sandboxDir(t, r, sb.ID)
+
+		stop := make(chan struct{})
+		var wg sync.WaitGroup
+		wg.Go(func() {
+			for {
+				select {
+				case <-stop:
+					return
+				default:
+				}
+
+				file, err := os.OpenFile(filepath.Join(dir, "egress.jsonl"), os.O_WRONLY|os.O_CREATE|os.O_APPEND, 0o640)
+				// The writer's own refusal is not under test: Linux answers ENOENT once the path is gone, and darwin can answer EINVAL mid-remove.
+				if err != nil {
+					continue
+				}
+				if err := file.Close(); err != nil {
+					t.Errorf("close the log: %v", err)
+
+					return
+				}
+			}
+		})
+
+		err := r.Delete(sb.ID)
+		close(stop)
+		wg.Wait()
+		if err != nil {
+			t.Fatalf("Delete beside a writer: %v", err)
+		}
+	}
+
+	entries, err := os.ReadDir(filepath.Join(root, "sandboxes"))
+	if err != nil {
+		t.Fatalf("read the sandboxes: %v", err)
+	}
+	for _, entry := range entries {
+		t.Errorf("the delete left %s behind", entry.Name())
+	}
+}
+
 func TestDeleteOfAMissingSandboxIsNotFound(t *testing.T) {
 	r, _ := repo(t)
 
