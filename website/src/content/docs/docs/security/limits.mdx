@@ -115,7 +115,7 @@ A sandbox can have four bounds: memory, CPU, processes and disk.
 - no bound, or a bound under 128 MiB, on `vz` and `firecracker`
 - a bound from 1 to 63 MiB on `gvisor`, where 0 means no bound
 
-**CPU.** `--vcpus` takes a whole number. `0`, the default, sets no bound, and the sandbox runs on every host CPU. A fraction such as `0.5` is refused, and so is a number higher than the count of CPUs the daemon can use. Firecracker accepts at most 32.
+**CPU.** `--vcpus` accepts a non-negative whole number. On gVisor, Sysbox and runc, `0` sets no CPU-time quota. On Firecracker and `vz`, `0` gives the VM as many CPUs as the host and provider allow; Firecracker uses at most 32, and `vz` follows Virtualization.framework's range. Firecracker refuses a count above 32, and `vz` refuses a count outside its allowed range.
 
 **Processes.** On gVisor, Sysbox and runc, a sandbox can hold at most 4096 processes. No flag changes this bound, so a fork bomb stops well below the host's limit. Firecracker and vz have no process bound, but a fork bomb stays inside the virtual machine and hits its memory bound.
 
