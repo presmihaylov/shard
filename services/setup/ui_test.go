@@ -21,8 +21,10 @@ type fakeUI struct {
 	// initials are the values each Text started as, in order.
 	initials []string
 	options  map[Question][]term.Option
-	printed  []string
-	lists    []*fakeChecklist
+	// questions are the text each Confirm asked.
+	questions map[Question]string
+	printed   []string
+	lists     []*fakeChecklist
 }
 
 var errUnscripted = errors.New("the test gave no answer")
@@ -48,8 +50,12 @@ func (f *fakeUI) Select(_ context.Context, q Question, _ string, options []term.
 	return 0, fmt.Errorf("select %s: no option %q can be chosen", q, name)
 }
 
-func (f *fakeUI) Confirm(_ context.Context, q Question, _ string, _ bool) (bool, error) {
+func (f *fakeUI) Confirm(_ context.Context, q Question, text string, _ bool) (bool, error) {
 	f.ask(q)
+	if f.questions == nil {
+		f.questions = map[Question]string{}
+	}
+	f.questions[q] = text
 	answer, ok := f.confirms[q]
 	if !ok {
 		return false, fmt.Errorf("confirm %s: %w", q, errUnscripted)

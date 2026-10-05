@@ -23,7 +23,13 @@ terminal that runs `shard daemon` otherwise.
 `shard daemon` itself is the one exception, because it is the daemon process rather than a client
 of one. No verb starts the daemon. A resident root process is installed on purpose, through the
 systemd unit in `packaging/systemd/shard.service`. A release carries the unit beside the two Linux
-binaries, so an install needs no checkout. As root:
+binaries, so an install needs no checkout.
+
+Install the host tools and the provider's runtime first. Every Linux provider runs `ip`, `nft` and
+`mkfs.ext4`, from the packages `iproute2`, `nftables` and `e2fsprogs`. Without `nft` the daemon
+still starts, but every `shard create` fails and the `proxy` and `dns` tasks restart in a loop. An
+install of `nftables` fixes it with no restart. The runtime is `runsc`, `sysbox-runc` or `runc`
+(`docs/provider.md`). Then, as root:
 
 ```
 base=https://github.com/presmihaylov/shard/releases/latest/download
@@ -37,8 +43,7 @@ systemctl enable --now shard
 ```
 
 The daemon looks for the guest supervisor at `/usr/local/bin/shard-init`, and `SHARD_INIT_PATH`
-names another path. Install the provider's runtime first: `runsc`, `sysbox-runc` or `runc`
-(`docs/provider.md`). From a checkout, `make build-linux build-shard-init-linux` builds the same two
+names another path. From a checkout, `make build-linux build-shard-init-linux` builds the same two
 binaries into `bin/`, and the unit is the file in `packaging/systemd`.
 
 On a Mac the equivalent is the LaunchDaemon in `packaging/launchd`, which `docs/mac.md` explains

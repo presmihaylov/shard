@@ -1,0 +1,155 @@
+---
+title: Errors and timeouts
+description: The errors the TypeScript and Python SDKs raise, the code the daemon gives each refusal, and the time limits on the client and the server.
+sidebar:
+  order: 3
+---
+
+import { TabItem, Tabs } from '@astrojs/starlight/components';
+
+Catch a refusal by its class, and read the daemon's code from it. Each client below reads the server's address from `SHARD_REMOTE` and the API key from `SHARD_API_KEY`:
+
+<Tabs syncKey="lang">
+<TabItem label="TypeScript">
+
+```ts
+import { NotFoundError, Shard } from "useshards";
+
+const shard = new Shard();
+try {
+  await shard.get("no-such-sandbox");
+} catch (err) {
+  if (!(err instanceof NotFoundError)) throw err;
+  console.log(err.status, err.code);
+} finally {
+  shard.close();
+}
+```
+
+</TabItem>
+<TabItem label="Python">
+
+```python
+from useshards import NotFoundError, Shard
+
+with Shard() as shard:
+    try:
+        shard.get("no-such-sandbox")
+    except NotFoundError as e:
+        print(e.status, e.code)
+```
+
+</TabItem>
+</Tabs>
+
+Both versions print `404 not_found`.
+
+## A failed command is not an error
+
+A command that exits with a non-zero code is a result. `exec()` reports the exit code, the signal and the output, and raises nothing. When a signal ends a command, every provider reports the exit code as 128 plus the signal's number, such as 137 for `KILL`.
+
+A command that never started is an error: `CommandNotStartedError`. Its exit code is 127 when the command does not exist and 126 when it cannot run, the same codes a shell uses.
+
+## Error classes
+
+Both SDKs export the same classes from `useshards`. Every error from the server, the connection or the settings derives from `ShardError`:
+
+| Class | When | Fields |
+| --- | --- | --- |
+| `ConfigurationError` | The constructor raises it when a setting is missing or refused. The message never shows the API key. | |
+| `ShardConnectionError` | The server is not reachable, it did not answer in time, or a stream ended before the command did. | |
+| `ProtocolError` | The server sent an answer the SDK cannot read. | |
+| `CommandNotStartedError` | The command never ran. | TS `exitCode`, `reason`. Python `exit_code`, `reason`. |
+| `APIError` | The server refused the request. | `status`, `code`, `holders`, and the daemon's message: TS `detail`, Python `message`. |
+| `UnknownLengthError` | The size of an upload is not known before it starts, for example because the file is not a regular file, or the file changed size during the upload. In Python, pass `size=` to `files.write()` when you write a stream. | |
+| `UnsafeArchiveError` | A directory download refused an entry, such as one that would land outside the target directory. | `entry`, `reason` |
+
+`APIError` has one subclass for each kind of refusal:
+
+| Subclass | Status | Meaning |
+| --- | --- | --- |
+| `InvalidRequestError` | 400, 413 | The server refused the request as written. |
+| `AuthenticationError` | 401 | The API key is missing, unknown or expired. |
+| `PermissionDeniedError` | 403 | The key's scopes do not cover the request, or the request is for the server's host only. |
+| `NotFoundError` | 404 | The sandbox, snapshot, command, file, secret or policy does not exist. |
+| `ConflictError` | 409 | The request conflicts with the current state, such as a snapshot of a running sandbox. |
+| `UnsupportedError` | 409 | The provider does not support the verb. The message names the provider and the verb. |
+| `ServerError` | 5xx | The daemon or the provider failed. |
+
+A refusal with any other status, such as 429, is a plain `APIError`.
+
+The text of an `APIError` is `<status> <code>: <message>`. Match on `code` rather than on the text, because the code is stable and the message is written for people.
+
+## Error codes
+
+[Errors and exit codes](/docs/reference/errors/#error-codes) lists every code the daemon sends, with its status and the requests that cause it. The SDK picks the class from the code first, then from the status:
+
+- `unsupported` raises `UnsupportedError`.
+- `command_not_started` raises `CommandNotStartedError`.
+- Any other code raises the subclass for its status, from the table above. For example, `sandbox_live` (409) raises `ConflictError`, and `exec_limit` (429) raises a plain `APIError`.
+
+## Errors from your own arguments
+
+A bad argument fails on the client, before any request is sent, with the language's own error:
+
+| Case | TypeScript | Python |
+| --- | --- | --- |
+| `create()` with neither an image nor a snapshot, or with both | `TypeError` | `ValueError` |
+| A local file to upload does not exist | `ENOENT` | `FileNotFoundError` |
+| `stdin=True` on a command that is not in the background | | `TypeError` |
+
+## Client timeouts
+
+Each request waits up to 60 seconds for the server. If the server sends nothing for that long, the call raises `ShardConnectionError` with the text `<method> <path>: the daemon did not answer in time`. In Python, `Shard(timeout=...)` sets this bound in seconds, and `timeout=None` removes it. In TypeScript the bound is fixed.
+
+Calls that wait on the sandbox have no bound, because they take as long as the sandbox needs:
+
+- `create()` and `run()`, which wait while the server pulls the image.
+- `start()`, `stop()`, `pause()`, `resume()`, `fork()` and `remove()`.
+- `snapshots.create()`.
+- The app's `wait()` and `stop()`.
+- A file remove, and a directory upload.
+- `exec()`, a command's `wait()` and the follow methods, once the stream is open.
+
+To bound one of these waits yourself:
+
+<Tabs syncKey="lang">
+<TabItem label="TypeScript">
+
+```ts
+const result = await command.wait({ signal: AbortSignal.timeout(30_000) });
+```
+
+An abort rejects with the signal's reason, which for `AbortSignal.timeout()` is a `DOMException` named `TimeoutError`. `exec()`, `app.wait()` and the follow methods also take a `signal`.
+
+</TabItem>
+<TabItem label="Python">
+
+```python
+result = command.wait(timeout=30)
+```
+
+When the time runs out, `wait()` raises the built-in `TimeoutError`. `app.wait()` also takes a `timeout`. With `AsyncShard`, wrap any call in `asyncio.timeout()`.
+
+</TabItem>
+</Tabs>
+
+Ending the wait never ends the command or the app. It keeps running in the sandbox until it exits or until you call `kill()` or `app.stop()`.
+
+## Server limits
+
+The daemon has its own bounds, which apply to every client:
+
+- A sandbox that the provider does not start within 60 seconds fails with `timeout`.
+- A command that the provider does not launch within 20 seconds fails with `timeout`.
+- A sandbox runs at most 32 commands at once, and the daemon runs at most 256 across all sandboxes. A command over either cap fails with `exec_limit`, and the daemon never ends a running command to make room.
+
+## Retry
+
+| Error | Retry |
+| --- | --- |
+| `exec_limit` | Yes, once a running command exits. |
+| `timeout` | Yes, once the provider has time again. |
+| `ShardConnectionError` | Read the state first. The error does not tell you whether the server did the work, so call `get()` or `inspect()` before you repeat a call that changes something. |
+| `ServerError` with `internal` | Only after you fix the cause, which the daemon's log shows. |
+| Any other `APIError` | No. Change the request or the state first. |

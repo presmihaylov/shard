@@ -1,0 +1,150 @@
+---
+title: Pause, resume and fork
+description: Save a running sandbox to disk and continue it later, or start a new sandbox from its memory and files.
+---
+
+import { TabItem, Tabs } from '@astrojs/starlight/components';
+
+Pause a sandbox, resume it, then fork it into a second sandbox with files of its own:
+
+<Tabs syncKey="lang">
+<TabItem label="CLI">
+
+```sh
+sudo shard create --name demo --memory 512MiB alpine:3.20
+sudo shard exec demo sh -c 'echo before > /root/state.txt'
+sudo shard pause demo
+sudo shard resume demo
+sudo shard fork --name demo-copy demo
+sudo shard exec demo-copy sh -c 'echo copy > /root/state.txt'
+sudo shard exec demo cat /root/state.txt
+sudo shard remove --force demo-copy
+sudo shard remove --force demo
+```
+
+</TabItem>
+<TabItem label="TypeScript">
+
+```ts
+import { Shard } from "useshards";
+
+const shard = new Shard();
+try {
+  const sandbox = await shard.create({ image: "alpine:3.20", name: "demo", memoryMiB: 512 });
+  try {
+    await sandbox.files.write("/root/state.txt", "before\n");
+    await sandbox.pause();
+    await sandbox.resume();
+
+    const copy = await sandbox.fork({ name: "demo-copy" });
+    try {
+      await copy.files.write("/root/state.txt", "copy\n");
+      process.stdout.write((await sandbox.exec("cat /root/state.txt")).stdout);
+    } finally {
+      await copy.remove({ force: true });
+    }
+  } finally {
+    await sandbox.remove({ force: true });
+  }
+} finally {
+  shard.close();
+}
+```
+
+</TabItem>
+<TabItem label="Python">
+
+```python
+from useshards import Shard
+
+with Shard() as shard:
+    sandbox = shard.create("alpine:3.20", name="demo", memory_mib=512)
+    try:
+        sandbox.files.write("/root/state.txt", "before\n")
+        sandbox.pause()
+        sandbox.resume()
+
+        copy = sandbox.fork(name="demo-copy")
+        try:
+            copy.files.write("/root/state.txt", "copy\n")
+            print(sandbox.exec("cat /root/state.txt").stdout, end="")
+        finally:
+            copy.remove(force=True)
+    finally:
+        sandbox.remove(force=True)
+```
+
+</TabItem>
+</Tabs>
+
+Each version prints `before`, because the write in `demo-copy` changed only its own files.
+
+The example needs a host that runs `gvisor`, `firecracker` or `vz`. On a Mac, leave out `sudo`. The SDKs connect to `shard serve` at the URL in `SHARD_REMOTE`, with the key in `SHARD_API_KEY`.
+
+## Pause and resume
+
+`shard pause` saves a running sandbox's memory and files to a checkpoint on disk, then ends its processes. A paused sandbox uses no memory on the host. Its state is `paused`, and it keeps its record, its files and its address.
+
+`shard resume` restores a paused sandbox from its checkpoint. Its processes carry on where they left off, and it keeps the same address. shard applies the sandbox's network rules again on each resume.
+
+A pause ends any `exec` that is still running in the sandbox. While the sandbox is paused, `shard exec` runs nothing, exits 1 and prints:
+
+```text
+shard: sandbox <id> is paused: resume it with shard resume demo
+```
+
+A paused sandbox stays paused when the daemon restarts, as long as its checkpoint is on disk. If its checkpoint is gone, it becomes `stopped`.
+
+A pause can take up to 10 minutes. A client that disconnects does not cut it short, because the sandbox would not survive a partial checkpoint. If a pause fails, the error says why, and `shard inspect demo` shows the state that shard found.
+
+## Stop a paused sandbox
+
+`shard stop` on a paused sandbox ends it and deletes its checkpoint, so you can no longer resume it. Its files stay. `shard start` runs it again from those files, with new memory.
+
+## Fork
+
+`shard fork` works on a running sandbox. The source freezes for a moment while shard captures its memory and files, then keeps running. The new sandbox starts from that capture, in the `running` state. The command prints the new sandbox's ID.
+
+The new sandbox has its own ID, its own address and its own files. A write in one sandbox never shows in the other. The new sandbox keeps the source's image, resource limits, granted secrets, network policy, command and restart policy. Give it a name with `--name`.
+
+To keep a pool of warm sandboxes, prepare one sandbox, then fork it once for each sandbox you need. Each fork starts with the processes and the files that the source had.
+
+On Firecracker, a fork shares the sandbox's disk blocks, which needs XFS or Btrfs. On any other filesystem, the daemon puts its data directory on an XFS image. See [the data directory](/docs/quickstart/server/#the-data-directory).
+
+## Fork or snapshot
+
+A snapshot also copies a sandbox, but only its files:
+
+| | Fork | Snapshot |
+| --- | --- | --- |
+| Source | A running sandbox | A stopped sandbox |
+| Copies | Memory and files | Files only |
+| Result | A running sandbox | A snapshot, which outlives its source |
+| Make a sandbox | `shard fork` makes it | `shard create --snapshot <name>` makes one from it |
+| Providers | `gvisor`, `firecracker`, `vz` | Every provider |
+
+```sh
+sudo shard stop demo
+sudo shard snapshot create --name demo-files demo
+sudo shard create --name demo-from-files --memory 512MiB --snapshot demo-files
+```
+
+A sandbox made from a snapshot starts like a new sandbox, with the snapshot's files and none of the source's memory.
+
+## Which providers support it
+
+| Provider | `pause`, `resume`, `fork` |
+| --- | --- |
+| `gvisor` | Yes |
+| `firecracker` | Yes |
+| `vz` | Yes, on Apple silicon with macOS 14 or later |
+| `sysbox` | No |
+| `runc` | No |
+
+On a provider that lacks them, each verb fails before it changes anything, and the error names the provider and the verb:
+
+```text
+provider sysbox does not support pause on this host; use a server that supports pause
+```
+
+To see what the provider of your server supports, run `shard capabilities`. It lists all eight verbs, and marks each one `true` or `false`.

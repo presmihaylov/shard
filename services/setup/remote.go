@@ -31,23 +31,6 @@ var retryOptions = []term.Option{
 	retryExit:  {Name: "exit", Label: "Exit"},
 }
 
-// remote is §12 and §13: the saved connection's menu when there is one, else a new connection.
-func (s *Setup) remote(ctx context.Context) error {
-	path, err := client.ConfigPath(s.Host.Env)
-	if err != nil {
-		return err
-	}
-	saved, err := client.LoadConfig(path)
-	if err != nil {
-		return err
-	}
-	if saved.Remote != "" {
-		return s.saved(ctx, path, saved)
-	}
-
-	return s.connect(ctx, path, client.Config{})
-}
-
 // connect asks for a connection, verifies it, and offers to save it; previous stays on disk until the new one is written.
 func (s *Setup) connect(ctx context.Context, path string, previous client.Config) error {
 	conn, err := s.ask(ctx, client.Config{}, true)
@@ -218,13 +201,13 @@ func authDetail(err error) []string {
 	return []string{err.Error()}
 }
 
-// offerSave shows the verified connection and saves it on the user's word; the plain-text note comes only with a save.
+// offerSave shows the verified connection and saves it on the user's word; the plain-text note rides in the question, so only a person asked sees it.
 func (s *Setup) offerSave(ctx context.Context, path string, previous, conn client.Config, caps client.Capabilities) error {
 	if err := s.UI.Print(connectedLines(caps)...); err != nil {
 		return err
 	}
 
-	save, err := s.UI.Confirm(ctx, AskSave, "Save this connection for future Shard commands?", true)
+	save, err := s.UI.Confirm(ctx, AskSave, saveQuestion, true)
 	if err != nil {
 		return err
 	}
@@ -242,6 +225,9 @@ func (s *Setup) offerSave(ctx context.Context, path string, previous, conn clien
 
 	return s.UI.Print(savedLines(abs, conn, s.Host.Env)...)
 }
+
+// saveQuestion is §13: the file's plain-text key is said before the save is confirmed.
+const saveQuestion = "A saved connection stores your API key as plain text in a file only your user can read.\nSave this connection for future Shard commands?"
 
 // connectedLines are every lifecycle capability, the unsupported ones too; the checklist above them already marked each step.
 func connectedLines(caps client.Capabilities) []string {

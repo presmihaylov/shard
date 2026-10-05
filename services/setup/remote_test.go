@@ -231,7 +231,7 @@ func TestAnHTTPServerAsksFirst(t *testing.T) {
 	host, path := testHost(t, nil)
 
 	ui := &fakeUI{texts: map[Question]string{AskURL: server.URL}, confirms: map[Question]bool{AskHTTP: false}}
-	err := (&Setup{Host: host, UI: ui}).remote(t.Context())
+	err := (&Setup{Host: host, UI: ui}).connect(t.Context(), path, client.Config{})
 	if !errors.Is(err, ErrDeclined) {
 		t.Fatalf("remote after a no: %v, want ErrDeclined", err)
 	}
@@ -248,7 +248,7 @@ func TestAnHTTPServerAsksFirst(t *testing.T) {
 		secrets:  map[Question]string{AskAPIKey: testKey},
 		confirms: map[Question]bool{AskHTTP: true, AskSave: true},
 	}
-	if err := (&Setup{Host: host, UI: ui}).remote(t.Context()); err != nil {
+	if err := (&Setup{Host: host, UI: ui}).connect(t.Context(), path, client.Config{}); err != nil {
 		t.Fatalf("remote after a yes: %v", err)
 	}
 	if got := savedConnection(t, path); got.Remote != server.URL {
@@ -262,7 +262,7 @@ func TestSHARDAPIKEYIsUsedRatherThanAsked(t *testing.T) {
 	host, path := testHost(t, map[string]string{client.CAFileEnv: ca, client.APIKeyEnv: testKey})
 	ui := &fakeUI{texts: map[Question]string{AskURL: url}, confirms: map[Question]bool{AskSave: true}}
 
-	err := (&Setup{Host: host, UI: ui}).remote(t.Context())
+	err := (&Setup{Host: host, UI: ui}).connect(t.Context(), path, client.Config{})
 	if err != nil {
 		t.Fatalf("remote: %v", err)
 	}
@@ -287,7 +287,7 @@ func TestARefusedKeyOffersRetryEditOrExit(t *testing.T) {
 		selects: map[Question]string{AskRetry: "exit"},
 	}
 
-	err := (&Setup{Host: host, UI: ui}).remote(t.Context())
+	err := (&Setup{Host: host, UI: ui}).connect(t.Context(), path, client.Config{})
 
 	var refused *client.APIError
 	if !errors.As(err, &refused) || refused.Status != http.StatusUnauthorized {
@@ -343,7 +343,7 @@ func TestEditAsksAgainAndChecksTheNewDetails(t *testing.T) {
 	}
 	ui := &keysUI{fakeUI: fake, keys: []string{"a-wrong-key", testKey}}
 
-	if err := (&Setup{Host: host, UI: ui}).remote(t.Context()); err != nil {
+	if err := (&Setup{Host: host, UI: ui}).connect(t.Context(), path, client.Config{}); err != nil {
 		t.Fatalf("remote: %v", err)
 	}
 
@@ -372,7 +372,7 @@ func TestEditAsksForTheKeyThatSHARDAPIKEYGotWrong(t *testing.T) {
 		confirms: map[Question]bool{AskSave: true},
 	}
 
-	err := (&Setup{Host: host, UI: ui}).remote(t.Context())
+	err := (&Setup{Host: host, UI: ui}).connect(t.Context(), path, client.Config{})
 	if err != nil {
 		t.Fatalf("remote: %v", err)
 	}
@@ -399,7 +399,7 @@ func TestRetryChecksTheSameDetailsAgain(t *testing.T) {
 		confirms: map[Question]bool{AskSave: true},
 	}
 
-	if err := (&Setup{Host: host, UI: ui}).remote(t.Context()); err != nil {
+	if err := (&Setup{Host: host, UI: ui}).connect(t.Context(), path, client.Config{}); err != nil {
 		t.Fatalf("remote: %v", err)
 	}
 
@@ -417,14 +417,14 @@ func TestRetryChecksTheSameDetailsAgain(t *testing.T) {
 // An untrusted certificate fails the first step, explains SHARD_CA_FILE, and offers no way around the check. (SHARD-657)
 func TestAnUntrustedCertificateExplainsSHARDCAFILE(t *testing.T) {
 	url, _ := tlsFront(t, testKey, nil)
-	host, _ := testHost(t, nil)
+	host, path := testHost(t, nil)
 	ui := &fakeUI{
 		texts:   map[Question]string{AskURL: url},
 		secrets: map[Question]string{AskAPIKey: testKey},
 		selects: map[Question]string{AskRetry: "exit"},
 	}
 
-	err := (&Setup{Host: host, UI: ui}).remote(t.Context())
+	err := (&Setup{Host: host, UI: ui}).connect(t.Context(), path, client.Config{})
 
 	var untrusted *tls.CertificateVerificationError
 	var stopped *StoppedError
@@ -447,14 +447,14 @@ func TestAnUnreachableServerSaysWhyAndWhatToCheck(t *testing.T) {
 	server.StartTLS()
 	url := server.URL
 	server.Close()
-	host, _ := testHost(t, nil)
+	host, path := testHost(t, nil)
 	ui := &fakeUI{
 		texts:   map[Question]string{AskURL: url},
 		secrets: map[Question]string{AskAPIKey: testKey},
 		selects: map[Question]string{AskRetry: "exit"},
 	}
 
-	err := (&Setup{Host: host, UI: ui}).remote(t.Context())
+	err := (&Setup{Host: host, UI: ui}).connect(t.Context(), path, client.Config{})
 
 	var stopped *StoppedError
 	if !errors.As(err, &stopped) || stopped.Step != "Reach the server" {
@@ -481,7 +481,7 @@ func TestEditKeepsTheKeyOnAnEmptyAnswer(t *testing.T) {
 	}
 	ui := &keysUI{fakeUI: fake, keys: []string{testKey, ""}}
 
-	err := (&Setup{Host: host, UI: ui}).remote(t.Context())
+	err := (&Setup{Host: host, UI: ui}).connect(t.Context(), path, client.Config{})
 	if err != nil {
 		t.Fatalf("remote: %v", err)
 	}
@@ -506,7 +506,7 @@ func TestExitAfterAFailedCheckLeavesTheSavedConnection(t *testing.T) {
 			host, path := testHost(t, map[string]string{client.CAFileEnv: ca})
 			saved := client.Config{Remote: url, APIKey: testKey}
 			saveConnection(t, path, saved)
-			ui := &fakeUI{selects: map[Question]string{AskMode: "remote", AskSaved: "check", AskRetry: "exit"}}
+			ui := &fakeUI{selects: map[Question]string{AskSaved: "check", AskRetry: "exit"}}
 
 			err := (&Setup{Host: host, UI: ui}).Run(t.Context())
 			if _, ok := errors.AsType[*StoppedError](err); !ok {
@@ -533,7 +533,7 @@ func TestADeclinedSaveWritesNothing(t *testing.T) {
 		confirms: map[Question]bool{AskSave: false},
 	}
 
-	err := (&Setup{Host: host, UI: ui}).remote(t.Context())
+	err := (&Setup{Host: host, UI: ui}).connect(t.Context(), path, client.Config{})
 	if err != nil {
 		t.Fatalf("remote: %v", err)
 	}
@@ -551,16 +551,20 @@ func TestADeclinedSaveWritesNothing(t *testing.T) {
 	if slices.ContainsFunc(ui.printed, func(line string) bool { return strings.Contains(line, "plain text") }) {
 		t.Errorf("printed %q, want no plain-text note without a save", ui.printed)
 	}
+	// The person asked hears it before the answer instead. (SHARD-739)
+	if want := "A saved connection stores your API key as plain text in a file only your user can read.\nSave this connection for future Shard commands?"; ui.questions[AskSave] != want {
+		t.Errorf("the save asks %q, want %q", ui.questions[AskSave], want)
+	}
 	noLeak(t, ui, err)
 }
 
-// A saved connection opens the §14 menu, and Check verifies it as saved without asking to save it again. (SHARD-657)
+// A saved connection opens the §14 menu as the first screen, and Check verifies it as saved without asking to save it again. (SHARD-657, SHARD-741)
 func TestASavedConnectionCanBeChecked(t *testing.T) {
 	url, ca := tlsFront(t, testKey, nil)
 	host, path := testHost(t, map[string]string{client.CAFileEnv: ca})
 	saved := client.Config{Remote: url, APIKey: testKey}
 	saveConnection(t, path, saved)
-	ui := &fakeUI{selects: map[Question]string{AskMode: "remote", AskSaved: "check"}}
+	ui := &fakeUI{selects: map[Question]string{AskSaved: "check"}}
 
 	err := (&Setup{Host: host, UI: ui}).Run(t.Context())
 	if err != nil {
@@ -570,10 +574,10 @@ func TestASavedConnectionCanBeChecked(t *testing.T) {
 	if ui.printed[0] != "Saved connection: "+url {
 		t.Errorf("printed %q first, want the saved connection", ui.printed[0])
 	}
-	if got := names(ui, AskSaved); !slices.Equal(got, []string{"check", "replace", "remove", "exit"}) {
+	if got := names(ui, AskSaved); !slices.Equal(got, []string{"check", "replace", "remove", "local", "exit"}) {
 		t.Errorf("the menu offers %v", got)
 	}
-	if want := []Question{AskMode, AskSaved}; !slices.Equal(ui.asked, want) {
+	if want := []Question{AskSaved}; !slices.Equal(ui.asked, want) {
 		t.Errorf("asked %v, want %v", ui.asked, want)
 	}
 	if len(ui.lists) != 1 || !slices.Equal(ui.lists[0].marks, allDone) {
@@ -611,7 +615,7 @@ func TestReplaceKeepsTheOldConnectionUntilTheNewOneIsSaved(t *testing.T) {
 				secrets:  map[Question]string{AskAPIKey: tc.key},
 				confirms: map[Question]bool{AskSave: tc.save},
 			}
-			err := (&Setup{Host: host, UI: ui}).remote(t.Context())
+			err := (&Setup{Host: host, UI: ui}).Run(t.Context())
 			if tc.key == testKey && err != nil {
 				t.Fatalf("remote: %v", err)
 			}
@@ -648,7 +652,7 @@ func TestRemoveDeletesTheSavedConnection(t *testing.T) {
 			}
 			ui := &fakeUI{selects: map[Question]string{AskSaved: "remove"}}
 
-			if err := (&Setup{Host: host, UI: ui}).remote(t.Context()); err != nil {
+			if err := (&Setup{Host: host, UI: ui}).Run(t.Context()); err != nil {
 				t.Fatalf("remote: %v", err)
 			}
 
@@ -662,6 +666,26 @@ func TestRemoveDeletesTheSavedConnection(t *testing.T) {
 	}
 }
 
+// The saved menu also sets up this machine, which first offers to drop the saved connection. (SHARD-741)
+func TestTheSavedMenuOffersLocalSetup(t *testing.T) {
+	host, path := testHost(t, nil)
+	saved := client.Config{Remote: "https://shard.example.com", APIKey: testKey}
+	saveConnection(t, path, saved)
+	ui := &fakeUI{selects: map[Question]string{AskSaved: "local"}, confirms: map[Question]bool{AskSwitch: true}}
+
+	err := (&Setup{Host: host, UI: ui}).Run(t.Context())
+	if !errors.Is(err, errUnscripted) {
+		t.Fatalf("Run without a provider: %v", err)
+	}
+
+	if want := []Question{AskSaved, AskSwitch, AskProvider}; !slices.Equal(ui.asked, want) {
+		t.Errorf("asked %v, want %v", ui.asked, want)
+	}
+	if got := savedConnection(t, path); got != saved {
+		t.Errorf("an unfinished local setup changed the saved connection to %v", got)
+	}
+}
+
 // Exit leaves the saved connection as it is and checks nothing. (SHARD-657)
 func TestExitLeavesTheSavedConnection(t *testing.T) {
 	host, path := testHost(t, nil)
@@ -669,7 +693,7 @@ func TestExitLeavesTheSavedConnection(t *testing.T) {
 	saveConnection(t, path, saved)
 	ui := &fakeUI{selects: map[Question]string{AskSaved: "exit"}}
 
-	if err := (&Setup{Host: host, UI: ui}).remote(t.Context()); err != nil {
+	if err := (&Setup{Host: host, UI: ui}).Run(t.Context()); err != nil {
 		t.Fatalf("remote: %v", err)
 	}
 
@@ -687,8 +711,9 @@ func TestSwitchToLocalRemovesTheConnectionOnlyAtTheEnd(t *testing.T) {
 		remove bool
 		want   client.Config
 		says   string
+		review string
 	}{
-		{name: "remove", remove: true, want: client.Config{}, says: "Shard commands now use the local daemon."},
+		{name: "remove", remove: true, want: client.Config{}, says: "Shard commands now use the local daemon.", review: "  Remove the saved connection to https://shard.example.com."},
 		{name: "keep", want: saved, says: "The saved connection remains, so normal Shard commands still use the remote server."},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
@@ -697,23 +722,27 @@ func TestSwitchToLocalRemovesTheConnectionOnlyAtTheEnd(t *testing.T) {
 			ui := &fakeUI{confirms: map[Question]bool{AskSwitch: tc.remove}}
 			s := &Setup{Host: host, UI: ui}
 
-			finish, err := s.switchToLocal(t.Context())
+			h, err := s.switchToLocal(t.Context())
 			if err != nil {
 				t.Fatalf("switchToLocal: %v", err)
 			}
 			containsAll(t, ui.printed, "Normal Shard commands currently use the remote server https://shard.example.com, saved in "+path+".")
+			if h.review != tc.review {
+				t.Errorf("the review says %q, want %q", h.review, tc.review)
+			}
 			if got := savedConnection(t, path); got != saved {
 				t.Fatalf("the connection changed before local setup finished: %v", got)
 			}
 
 			put(t, host, shardBinary, nil)
-			if err := finish(t.Context()); err != nil {
+			lines, err := h.finish(t.Context())
+			if err != nil {
 				t.Fatalf("finish: %v", err)
 			}
 			if got := savedConnection(t, path); got != tc.want {
 				t.Errorf("after local setup the saved connection is %v, want %v", got, tc.want)
 			}
-			containsAll(t, ui.printed, tc.says)
+			containsAll(t, lines, tc.says)
 			noLeak(t, ui, nil)
 		})
 	}
@@ -727,11 +756,11 @@ func TestSwitchToLocalNamesTheRemoteThatWins(t *testing.T) {
 		after  []string
 	}{
 		{name: "remove", remove: true, after: []string{
-			"", "✓ Connection removed", "",
+			"✓ Connection removed", "",
 			"SHARD_REMOTE is still set to https://other.example.com, and it overrides the local default.", "Unset it to use the local daemon.",
 		}},
 		{name: "keep", after: []string{
-			"", "The saved connection remains, so normal Shard commands still use the remote server.", "Run shard setup again to remove it.",
+			"The saved connection remains, so normal Shard commands still use the remote server.", "Run shard setup again to remove it.",
 			"SHARD_REMOTE is still set to https://other.example.com, and it overrides the saved connection.",
 			"Unset it to use the saved connection to https://shard.example.com.",
 		}},
@@ -741,12 +770,13 @@ func TestSwitchToLocalNamesTheRemoteThatWins(t *testing.T) {
 			saveConnection(t, path, client.Config{Remote: "https://shard.example.com", APIKey: testKey})
 			ui := &fakeUI{confirms: map[Question]bool{AskSwitch: tc.remove}}
 
-			finish, err := (&Setup{Host: host, UI: ui}).switchToLocal(t.Context())
+			h, err := (&Setup{Host: host, UI: ui}).switchToLocal(t.Context())
 			if err != nil {
 				t.Fatalf("switchToLocal: %v", err)
 			}
 			put(t, host, shardBinary, nil)
-			if err := finish(t.Context()); err != nil {
+			lines, err := h.finish(t.Context())
+			if err != nil {
 				t.Fatalf("finish: %v", err)
 			}
 
@@ -754,8 +784,8 @@ func TestSwitchToLocalNamesTheRemoteThatWins(t *testing.T) {
 				"Normal Shard commands currently use the remote server https://other.example.com, set in SHARD_REMOTE.",
 				"A connection to https://shard.example.com is also saved in " + path + ".", "",
 			}, tc.after...)
-			if !slices.Equal(ui.printed, want) {
-				t.Errorf("printed %q, want %q", ui.printed, want)
+			if got := append(ui.printed, lines...); !slices.Equal(got, want) {
+				t.Errorf("printed %q, want %q", got, want)
 			}
 		})
 	}
@@ -776,16 +806,17 @@ func TestSwitchToLocalWithNoSavedConnection(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			host, _ := testHost(t, tc.vars)
 			ui := &fakeUI{}
-			finish, err := (&Setup{Host: host, UI: ui}).switchToLocal(t.Context())
+			h, err := (&Setup{Host: host, UI: ui}).switchToLocal(t.Context())
 			if err != nil {
 				t.Fatalf("switchToLocal: %v", err)
 			}
-			if err := finish(t.Context()); err != nil {
+			lines, err := h.finish(t.Context())
+			if err != nil {
 				t.Fatalf("finish: %v", err)
 			}
 
-			if len(ui.asked) != 0 || !slices.Equal(ui.printed, tc.want) {
-				t.Errorf("asked %v and printed %q, want nothing asked and %q", ui.asked, ui.printed, tc.want)
+			if len(ui.asked) != 0 || len(ui.printed) != 0 || h.review != "" || !slices.Equal(lines, tc.want) {
+				t.Errorf("asked %v, printed %q, reviewed %q and said %q, want nothing asked and %q", ui.asked, ui.printed, h.review, lines, tc.want)
 			}
 		})
 	}

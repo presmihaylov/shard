@@ -1,0 +1,153 @@
+---
+title: FAQ
+description: Short answers about what shard is, where it runs, which provider to pick, and what a sandbox keeps.
+sidebar:
+  order: 2
+---
+
+import { Tabs, TabItem } from '@astrojs/starlight/components';
+
+## What is shard?
+
+shard is a sandbox manager for a single host. One binary is both the CLI and the daemon. It creates sandboxes from OCI images and keeps each one running between commands:
+
+<Tabs syncKey="lang">
+	<TabItem label="CLI">
+
+```sh
+shard create --name demo --memory 512MiB alpine:3.20
+shard exec demo sh -c 'echo hello from shard > /tmp/hello.txt'
+shard exec demo cat /tmp/hello.txt
+shard remove --force demo
+```
+
+	</TabItem>
+	<TabItem label="TypeScript">
+
+```ts
+import { Shard } from "useshards";
+
+const shard = new Shard();
+try {
+  const demo = await shard.create({ name: "demo", image: "alpine:3.20", memoryMiB: 512 });
+  await demo.exec(["sh", "-c", "echo hello from shard > /tmp/hello.txt"]);
+  const result = await demo.exec(["cat", "/tmp/hello.txt"]);
+  console.log(result.stdout);
+  await demo.remove({ force: true });
+} finally {
+  shard.close();
+}
+```
+
+	</TabItem>
+	<TabItem label="Python">
+
+```python
+from useshards import Shard
+
+with Shard() as shard:
+    demo = shard.create("alpine:3.20", name="demo", memory_mib=512)
+    demo.exec(["sh", "-c", "echo hello from shard > /tmp/hello.txt"])
+    print(demo.exec(["cat", "/tmp/hello.txt"]).stdout)
+    demo.remove(force=True)
+```
+
+	</TabItem>
+</Tabs>
+
+The last command prints `hello from shard`. The file is still there because the sandbox outlives each command. The TypeScript and Python examples reach `shard serve` at `SHARD_REMOTE`, with the API key in `SHARD_API_KEY`.
+
+## Who is it for?
+
+It is for anyone who gives an agent a place to run code. The agent's files are kept between its commands, and you can save its memory while it is idle or fork it to try another path. The secrets and the network policy stay on the host, outside the sandbox.
+
+## Does shard run sandboxes across many machines?
+
+No. shard manages a single host and does not schedule work across a fleet. Each host runs its own daemon, and a client picks the host with `--remote` or `SHARD_REMOTE`.
+
+## Which machines can host sandboxes?
+
+Linux on x86-64, and Apple silicon Macs with macOS 14 or later. An Intel Mac can run the CLI and connect to a remote server. There is no build for Linux on ARM. On Windows, run the installer inside WSL 2. [Supported platforms](/docs/install/#supported-platforms) has the full table.
+
+## Which provider should I pick?
+
+Let `shard setup` pick. It recommends Firecracker when it can open `/dev/kvm`, gVisor on Linux without it, and `vz` on a Mac.
+
+| Provider | Host | Isolation | Pause, resume, fork | Docker inside |
+| --- | --- | --- | --- | --- |
+| `gvisor` | Linux | a user-space kernel | yes | no |
+| `sysbox` | Linux | a user namespace | no | yes |
+| `runc` | Linux | none: the host kernel | no | no |
+| `firecracker` | Linux with `/dev/kvm` | a microVM | yes | yes |
+| `vz` | Apple silicon, macOS 14 or later | a VM | yes | yes |
+
+Setup never recommends `sysbox` or `runc`. **Sysbox is for one tenant per host. Use runc only for code you trust.** On runc, root in the sandbox is root on the host. The [provider matrix](https://github.com/presmihaylov/shard/blob/main/docs/provider.md) lists every limit.
+
+## Can I change the provider later?
+
+Not while sandboxes exist. A host's sandboxes stay on the provider that created them, and the daemon refuses a different `--provider` while they are there.
+
+## Do I need Docker?
+
+No. shard pulls images from a registry and drives the runtime itself. To run Docker inside a sandbox, use `sysbox`, `firecracker` or `vz`.
+
+## Does the image's entrypoint run?
+
+No. `shard create` starts no main command, and `shard run` starts the command you give it. The image's `ENTRYPOINT` and `CMD` never run.
+
+## What happens when the main command exits?
+
+The sandbox keeps running, and `shard exec` still works in it. Only `shard stop` or `shard remove` ends a sandbox, and there is no idle timer.
+
+## Can a sandbox run systemd?
+
+Not as its first process. shard's own supervisor is the first process in every sandbox, on every provider.
+
+## What is the difference between stop, pause, fork and snapshot?
+
+| Verb | What it does | Then |
+| --- | --- | --- |
+| `stop` | frees the memory and keeps the files | `start` runs the main command from the beginning |
+| `pause` | saves the memory and the files | `resume` continues the processes where they left off |
+| `fork` | copies a running sandbox, with its memory and files | the copy runs as a new sandbox, and the source keeps running |
+| `snapshot create` | saves the files of a stopped sandbox | `create --snapshot` starts new sandboxes from them |
+
+## Does a sandbox need a memory bound?
+
+On `firecracker` and `vz`, yes. Those providers refuse a create without `--memory`, and the bound must be 128 MiB or more. On the other providers, a sandbox without `--memory` has no memory bound, so set one anyway. shard refuses a bound larger than the host's memory.
+
+## Can a sandbox read my API keys?
+
+No. Store the key on the host and grant it to the hosts that need it. The sandbox holds only a placeholder, and shard puts the real key into the headers of HTTPS requests to those hosts on the host side. The [secrets reference](https://github.com/presmihaylov/shard/blob/main/docs/secrets.md) has the rules.
+
+## Can a sandbox reach my private network?
+
+No. Without a policy, a sandbox can reach the internet, but the host drops its traffic to private networks, cloud metadata, loopback and other sandboxes. A policy narrows that down to the hosts you allow. Sandboxes get IPv4 only. The [egress reference](https://github.com/presmihaylov/shard/blob/main/docs/egress.md) has every rule.
+
+## Does a sandbox survive a reboot?
+
+Its files do. A reboot ends its processes, and when the daemon comes back it marks the sandbox as stopped. `shard start <name>` starts it again. Restarting only the daemon does not end any sandbox.
+
+## Why do local commands need sudo on Linux?
+
+On the default Linux install, the daemon socket belongs to root, so local commands need `sudo`. An administrator can grant access to the `shard` group instead. On a Mac the daemon runs as your user, and local commands need no `sudo`.
+
+## How do I use shard from another machine?
+
+On the server, mint a token with `shard tokens mint` and run `shard serve` behind an HTTPS proxy. On the other machine, run `shard setup` and choose `Connect to a remote server`, or set `SHARD_REMOTE` and `SHARD_API_KEY`. The [TCP front](https://github.com/presmihaylov/shard/blob/main/docs/daemon.md#the-tcp-front) has the details.
+
+## Which languages have an SDK?
+
+TypeScript, on Node.js 20.3 or later, and Python 3.11 or later. The Python SDK has both a synchronous and an asynchronous client. Install them with `npm install useshards` or `pip install useshards`. Any other language can call the REST API, which the [OpenAPI schema](https://github.com/presmihaylov/shard/blob/main/docs/openapi.json) describes.
+
+## How do I upgrade or uninstall?
+
+Run the installer again to get the newest CLI. On a host that setup prepared, run `shard setup` again, and it offers to check or repair, upgrade, or uninstall. An uninstall refuses to run while any sandbox remains. It keeps your saved data in `/var/lib/shard`, as well as the tools that other programs may share.
+
+## Is shard ready for production?
+
+No. shard is pre-alpha, and the API, the CLI and the SDKs can change without any compatibility guarantees.
+
+## What is the license?
+
+Apache-2.0.

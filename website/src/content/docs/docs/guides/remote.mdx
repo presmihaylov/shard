@@ -1,0 +1,190 @@
+---
+title: How to connect to a remote host?
+description: Put shard serve and an HTTPS proxy in front of a daemon, mint an API token, and drive the sandboxes of that host from another machine.
+sidebar:
+  order: 8
+---
+
+import { Tabs, TabItem } from '@astrojs/starlight/components';
+
+Connect to a shard server with its URL and an API token, then use it as if it ran on this machine:
+
+<Tabs syncKey="lang">
+	<TabItem label="CLI">
+
+```sh
+export SHARD_API_KEY=<the token field that shard tokens mint printed>
+shard setup --remote https://shard.example.com --save -y
+shard create --name demo --memory 512MiB alpine:3.20
+shard exec demo echo hello
+shard remove --force demo
+```
+
+	</TabItem>
+	<TabItem label="TypeScript">
+
+```ts
+import { Shard } from "useshards";
+
+// Reads SHARD_API_KEY.
+const shard = new Shard({ remote: "https://shard.example.com" });
+try {
+  const sandbox = await shard.create({ name: "demo", image: "alpine:3.20", memoryMiB: 512 });
+  const result = await sandbox.exec(["echo", "hello"]);
+  console.log(result.stdout);
+  await sandbox.remove({ force: true });
+} finally {
+  shard.close();
+}
+```
+
+	</TabItem>
+	<TabItem label="Python">
+
+```python
+from useshards import Shard
+
+# Reads SHARD_API_KEY.
+with Shard(remote="https://shard.example.com") as shard:
+    sandbox = shard.create("alpine:3.20", name="demo", memory_mib=512)
+    result = sandbox.exec(["echo", "hello"])
+    print(result.stdout)
+    sandbox.remove(force=True)
+```
+
+	</TabItem>
+</Tabs>
+
+`shard setup --remote` checks that it can reach the server, that the server accepts the key, and which verbs the server supports. With `--save`, it saves the connection, so later commands need no variables.
+
+The server needs three things before a client can connect: a daemon, `shard serve`, and an HTTPS proxy in front of it. The steps below set them up on a Linux host with systemd.
+
+## 1. Set up the daemon
+
+Set up the host to run sandboxes, as in [Quickstart: server](/docs/quickstart/server/):
+
+```sh
+shard setup --local --provider gvisor --start-at-boot=true -y
+```
+
+The daemon listens on a unix socket on the host, never on TCP. Setup does not expose it to the network.
+
+## 2. Start shard serve
+
+`shard serve` is the only way in from the network. It is a separate process that does not run as root. It checks the token of each request, then passes the request to the daemon's socket. It speaks plain HTTP on `127.0.0.1:2376`, so only a proxy on the same host can reach it.
+
+Each release ships a systemd unit for it. Run these commands on the server:
+
+```sh
+sudo groupadd --system shard
+sudo useradd --system --no-create-home --gid shard shard
+sudo systemctl restart shard
+sudo install -d -m2750 -o root -g shard /etc/shard
+sudo sh -c 'umask 077; openssl rand -hex 32 > /etc/shard/serve.secret'
+sudo chown root:shard /etc/shard/serve.secret
+sudo chmod 0640 /etc/shard/serve.secret
+curl -fsSLO https://github.com/presmihaylov/shard/releases/latest/download/shard-serve.service
+sudo install -m0644 shard-serve.service /etc/systemd/system/shard-serve.service
+sudo systemctl daemon-reload
+sudo systemctl enable --now shard-serve
+```
+
+The daemon gives its socket to the `shard` group only when it starts, so the commands restart it once after they create the group. The unit runs as the `shard` user and group, and reads the token signing key from `/etc/shard/serve.secret`. It starts after the daemon and stops with it.
+
+## 3. Put HTTPS in front
+
+`shard serve` has no TLS. Put a proxy or a tunnel in front of it that gives clients an `https` URL on port 443. The proxy must pass WebSocket upgrades through and must not buffer responses. Otherwise `shard exec` and `shard logs -f` stall. It must not log the `Authorization` header, because that header carries the token.
+
+<Tabs>
+	<TabItem label="Caddy">
+
+```text
+shard.example.com {
+	reverse_proxy 127.0.0.1:2376 {
+		flush_interval -1
+	}
+}
+```
+
+Caddy gets a certificate from a public CA for a public name. On a host with no public name, add `tls internal` inside the site block, and give clients the root certificate of Caddy's own CA in `SHARD_CA_FILE`.
+
+	</TabItem>
+	<TabItem label="Cloudflare Tunnel">
+
+```yaml
+tunnel: <tunnel id>
+credentials-file: /etc/cloudflared/<tunnel id>.json
+ingress:
+  - hostname: shard.example.com
+    service: http://127.0.0.1:2376
+  - service: http_status:404
+```
+
+A tunnel needs no inbound port open on the host.
+
+	</TabItem>
+	<TabItem label="Tailscale Serve">
+
+```sh
+tailscale serve --bg --https=443 http://127.0.0.1:2376
+```
+
+Clients on the same tailnet use `https://<host>.<tailnet>.ts.net`.
+
+	</TabItem>
+</Tabs>
+
+`shard serve` sees every client as one source: the proxy. It holds at most 32 connections from one source that have not yet shown a valid token, so this bound applies to all clients together. Rate-limit floods at the proxy.
+
+## 4. Mint a token
+
+Mint one token for each client, on the server:
+
+```sh
+sudo shard tokens mint --name laptop --duration 720h \
+  --scopes sandbox:read,sandbox:write,sandbox:delete,exec \
+  --signing-key-file /etc/shard/serve.secret
+```
+
+```text
+{"token":"<jwt>","expires_at":"2026-11-04T18:00:00Z","scopes":["sandbox:read","sandbox:write","sandbox:delete","exec"]}
+```
+
+The `token` field is the client's API key. Give `shard tokens mint`, `list` and `revoke` the same `--signing-key-file`, so the token lands in the ledger that `shard serve` reads.
+
+Without `--scopes`, a token can do everything, secrets and policies included. Without `--duration`, it never expires. [The TCP front](https://github.com/presmihaylov/shard/blob/main/docs/daemon.md#the-tcp-front) lists the scopes and what each one allows.
+
+## 5. Connect a client
+
+Set the key in `SHARD_API_KEY`, never as a command argument. Then save the connection:
+
+```sh
+shard setup --remote https://shard.example.com --save -y
+```
+
+Setup writes the server URL and the key to `~/.config/shard/config.json` by default, and only your user can read the file. To connect without saving anything, set `SHARD_REMOTE` and `SHARD_API_KEY` instead. The SDKs read the same two variables, or take `remote` and `apiKey` (`remote=` and `api_key=` in Python). They never read the saved connection.
+
+If a private CA signed the server's certificate, set `SHARD_CA_FILE` to that CA's certificate. shard always verifies the certificate, and has no option to skip it. [Tokens](https://github.com/presmihaylov/shard/blob/main/docs/daemon.md#tokens) describes `SHARD_REMOTE`, `SHARD_API_KEY` and `SHARD_CA_FILE`.
+
+An `http` URL works too, but nothing encrypts the key or the requests. Use it only on localhost or through an encrypted VPN. Each command then prints a warning to stderr.
+
+## Revoke a token
+
+List the tokens, then revoke one by its ID, or every token of a name:
+
+```sh
+sudo shard tokens list --signing-key-file /etc/shard/serve.secret
+sudo shard tokens revoke --name laptop --signing-key-file /etc/shard/serve.secret
+```
+
+`shard serve` refuses a revoked token on the next request, with no restart. It also closes any open stream that uses that token, such as `shard exec` or `shard logs -f`, within a second. The command and its sandbox keep running.
+
+## Commands that run on the server only
+
+These commands refuse a remote server: `shard pull`, `shard image list`, `shard image remove`, `shard image prune`, `shard daemon`, `shard daemon status`, `shard info`, `shard serve`, and `shard tokens mint`, `list` and `revoke`. Run them on the server.
+
+On a machine with a saved connection, add `--remote ""` to send one command to this machine's daemon:
+
+```sh
+shard --remote "" list
+```

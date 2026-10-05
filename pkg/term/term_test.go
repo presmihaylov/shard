@@ -125,6 +125,17 @@ func TestConfirmTakesTheDefaultOnAnEmptyReply(t *testing.T) {
 	}
 }
 
+func TestConfirmPrintsTheLinesAboveThePromptOnce(t *testing.T) {
+	var out bytes.Buffer
+	got, err := keyed(&out, "maybe\ny\n").Confirm(t.Context(), "A note.\nsure?", false)
+	if err != nil || !got {
+		t.Fatalf("Confirm answered %v, %v; want yes", got, err)
+	}
+	if want := "A note.\nsure? [y/N] sure? [y/N] \n"; out.String() != want {
+		t.Errorf("printed %q, want %q", out.String(), want)
+	}
+}
+
 func TestSecretEchoesOneDotPerCharacter(t *testing.T) {
 	var out bytes.Buffer
 	got, err := keyed(&out, "kéy\x7fy\x15ab\r").Secret(t.Context(), "API key")
