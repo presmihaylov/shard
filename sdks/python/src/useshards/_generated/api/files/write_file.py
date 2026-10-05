@@ -15,7 +15,7 @@ def _get_kwargs(
     id: str,
     *,
     body: File,
-    path: str | Unset = UNSET,
+    path: str,
     mode: str | Unset = UNSET,
     user: str | Unset = UNSET,
     parents: bool | Unset = UNSET,
@@ -77,12 +77,12 @@ def sync_detailed(
     *,
     client: AuthenticatedClient | Client,
     body: File,
-    path: str | Unset = UNSET,
+    path: str,
     mode: str | Unset = UNSET,
     user: str | Unset = UNSET,
     parents: bool | Unset = UNSET,
 ) -> Response[Any | Error]:
-    """Write a file"""
+    """copy a file into a running sandbox"""
 
     kwargs = _get_kwargs(
         id=id,
@@ -105,12 +105,12 @@ def sync(
     *,
     client: AuthenticatedClient | Client,
     body: File,
-    path: str | Unset = UNSET,
+    path: str,
     mode: str | Unset = UNSET,
     user: str | Unset = UNSET,
     parents: bool | Unset = UNSET,
 ) -> Any | Error | None:
-    """Write a file"""
+    """copy a file into a running sandbox"""
 
     return sync_detailed(
         id=id,
@@ -128,12 +128,12 @@ async def asyncio_detailed(
     *,
     client: AuthenticatedClient | Client,
     body: File,
-    path: str | Unset = UNSET,
+    path: str,
     mode: str | Unset = UNSET,
     user: str | Unset = UNSET,
     parents: bool | Unset = UNSET,
 ) -> Response[Any | Error]:
-    """Write a file"""
+    """copy a file into a running sandbox"""
 
     kwargs = _get_kwargs(
         id=id,
@@ -154,12 +154,12 @@ async def asyncio(
     *,
     client: AuthenticatedClient | Client,
     body: File,
-    path: str | Unset = UNSET,
+    path: str,
     mode: str | Unset = UNSET,
     user: str | Unset = UNSET,
     parents: bool | Unset = UNSET,
 ) -> Any | Error | None:
-    """Write a file"""
+    """copy a file into a running sandbox"""
 
     return (
         await asyncio_detailed(

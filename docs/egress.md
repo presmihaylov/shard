@@ -33,11 +33,11 @@ lasts.
 
 A rule is `<destination> [tcp|udp[:<ports>]]`, and the form of the destination tells what it is:
 
-| destination            | example                   | what it matches                                |
-|------------------------|---------------------------|------------------------------------------------|
-| an address or a prefix | `1.1.1.1`, `10.0.0.0/8`   | the one address, or the prefix                 |
-| a name                 | `api.example.com`         | the addresses the name resolves to on the host |
-| `any`                  | `any`                     | everything                                     |
+| destination            | example                     | what it matches                                |
+|------------------------|-----------------------------|------------------------------------------------|
+| an address or a prefix | `1.1.1.1`, `203.0.113.0/24` | the one address, or the prefix                 |
+| a name                 | `api.example.com`           | the addresses the name resolves to on the host |
+| `any`                  | `any`                       | everything                                     |
 
 A name may carry wildcard labels, and only the proxy matches them. `*.example.com` is every name
 under the apex but not the apex itself. `www.*.com` swaps exactly one label, and `*` alone is every
@@ -47,16 +47,17 @@ apex and every name under it, and only the proxy matches it too.
 A name matches in any letter case, with or without a trailing dot. The store keeps it lowercase with
 no trailing dot, so `policy show` prints `example.com` for a rule typed `ExAmPlE.com.`.
 
-Ports are a comma-separated list of numbers and ranges, such as `tcp:22,8000-8100`. A rule with no
+Ports are a comma-separated list of numbers and ranges, such as `tcp:22,8000-8100`, each port from 1
+to 65535. A rule names at most 1024 ports, and a port named twice counts twice. A rule with no
 protocol matches every protocol, ping included. An address or prefix rule with no ports opens every
 tcp and udp port to that destination, so name the ports when you want only some of them.
 
-A name rule covers `tcp` to ports 80 and 443 only, and covers both when it names no port. A plain name
-is enforced twice. The host table holds the addresses the name resolved to when the table was
-written, and the proxy matches the name in the request. A wildcard and a suffix have no addresses to
-resolve, so the host table skips them and only the proxy enforces them. The proxy speaks only HTTP
-and TLS. A name on a raw port would need a guess at its addresses, so `policy create`
-refuses it and says to use an address.
+A name rule covers `tcp` to ports 80 and 443 only, and covers both when it names no port. Only the
+proxy enforces a name rule. A sandbox with a policy is fronted, so the host turns its `tcp` 80 and
+443 to the proxy before its chain sees them, and the proxy matches the name in the request. The host
+table still holds the addresses a plain name resolved to when the table was written, but no new flow
+reaches that entry. The proxy speaks only HTTP and TLS. A name on a raw port would need a guess at
+its addresses, so `policy create` refuses it and says to use an address.
 
 A secret grant does not open a destination, because only the policy decides egress. The policy must
 allow a granted host like any other host. Under `deny any` a granted host is denied, and the value is
@@ -91,8 +92,10 @@ the host, and dials the address it judged. A TLS request without a server name i
 whose `Host` header disagrees with that name gets a 400.
 
 A denied request gets a 403 with a one-line JSON body that names the host, the port, the rule and the
-reason. When the upstream leg fails, the request gets a 502 with a fixed body. That body never holds
-the error, because the error can quote the request after a secret value went into it. A secret value
+reason. A host name that does not resolve is logged as a deny with the rule `resolve`, and the
+request gets a 502 whose body is the lookup error. No value has gone in at that point. When the
+upstream leg fails, the request gets a 502 with a fixed body. That body never holds the error,
+because the error can quote the request after a secret value went into it. A secret value
 goes into request headers only, so every body streams through unchanged (SHARD-337). One sandbox
 holds at most 32 MiB at once of the bytes a value adds to a request, counted from the rewrite until
 the request is forwarded. Past that limit a request gets a 503. The proxy reads the policy, the secret
@@ -123,6 +126,7 @@ throughout: an error fails closed and never opens access.
 shard stop web
 shard policy attach web locked
 shard start web
+shard stop web
 shard policy detach web
 ```
 
@@ -153,7 +157,7 @@ rules. Each addition is marked `implied`:
   that cannot resolve it. An `allow any` that leaves port 53 open implies no rule, since it already
   reaches the resolver. A policy of only address rules opens no DNS, and a secret does not open it
   either. If the guest must resolve the host, name the host in the policy or say `allow dns`. When
-  an explicit rule opened DNS, the implied rule reads `dns rule` instead of `dns`.
+  an explicit rule opened DNS, the implied rule reads `dns-rule` instead of `dns`.
 
 A sandbox with a policy resolves names only through shard's resolver. Its `resolv.conf` names the
 gateway, and the host turns port 53 to anywhere else to the gateway, so a policy attached after the
@@ -202,8 +206,8 @@ own lookups changes nothing. As a result:
   start, remove or policy edit of any sandbox, or a daemon restart. Nothing retries on a timer.
 - Policy create and update resolve every name first, even when no sandbox holds the policy, and
   refuse a name that does not resolve. A failed sandbox never runs, so the apply skips its policy.
-- When many hosts share a CDN address, the host table allows that address for all of them. For 80
-  and 443 the proxy closes this gap by matching the name in the request.
+- Many hosts can share one CDN address. A name rule still opens only its own name, because it
+  covers only 80 and 443, and there the proxy matches the name in the request.
 
 ## The policy is IPv4, and IPv6 is dropped
 
@@ -250,13 +254,15 @@ connection is judged by the new rules.
 
 ## The decision log
 
-Every fronted sandbox keeps a decision log. `shard policy logs <id|name>` prints it as one JSON
-record per line, oldest first. `shard policy logs -f <id|name>` prints the same and then keeps
-running, so a new record appears within about a second of the decision. The follow ends at Ctrl-C or
-when the sandbox is removed, and it says on stderr which of the two happened. If the log renames a
-file away before the follow has read it, the follow fails and says to follow again. A record names
-the time, the source, the verdict, the host, the port, the address, the rule that decided, and that
-rule's text. It never carries a header, a body or a secret value.
+Every fronted sandbox keeps a decision log. A sandbox that is not fronted gets one too, as soon as
+the host drops a packet of it, such as one to a private address. `shard policy logs <id|name>`
+prints it as one JSON record per line, oldest first. `shard policy logs -f <id|name>` prints the
+same and then keeps running, so a new record appears within about a second of the decision. The
+follow ends at Ctrl-C, when the sandbox stops, or when it is removed. A stop or a removal prints the
+reason on stderr, and Ctrl-C leaves without a word. If the log renames a file away before the follow
+has read it, the follow fails and says to follow again. A record names the time, the source, the
+verdict, the host, the port, the address, the rule that decided, and that rule's text. It never
+carries a header, a body or a secret value.
 
 The log has three sources, and the daemon writes all of them into one file,
 `${root}/sandboxes/<id>/egress.jsonl`:
@@ -271,10 +277,12 @@ The log has three sources, and the daemon writes all of them into one file,
 
 The `rule` field holds the same id on both sides. It is the position of the rule in what
 `shard inspect` prints as `egress`, or one of `private`, `default`, `local`, `ipv6`, `none`,
-`missing`, `resolve` and, on a VM host, `stack`. A packet the guest sent to the host's own address
-carries `local`. The host accepts the proxy ports and drops the rest, and logs that drop like any
-other. A proxied request whose host resolves to such an address carries `local` too. An IPv6 packet
-carries `ipv6`, and the record names it by the port it was dropped on instead of by its address.
+`missing`, `resolve`, `limit` and, on a VM host, `stack`, `redirect` and `unapplied`. A VM host
+drops a flow it sees before the daemon applied the sandbox's rules, and names it `unapplied`. A
+packet the guest sent to the host's own address carries `local`. The host accepts the proxy ports
+and drops the rest, and logs that drop like any other. A proxied request whose host resolves to
+such an address carries `local` too. An IPv6 packet carries `ipv6`, and the record names it by the
+port it was dropped on instead of by its address.
 
 The log has three limits:
 

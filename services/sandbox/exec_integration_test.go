@@ -43,12 +43,12 @@ func (h *replicaHolder) Exec(_ context.Context, _ string, spec models.ExecSpec) 
 			h.t.Logf("drop the kept replica: %v", err)
 		}
 	})
+	spec.Report(1)
 
 	return models.ExitStatus{}, nil
 }
 
-// A command can leave a process holding the terminal it was given, and then nothing ever closes the
-// guest side. The exit status is already in hand, so the daemon must let go rather than wait for it.
+// A child can keep the replica open after command exit, so the daemon must bound the output drain.
 func TestExecOnATerminalLetsGoOfOutputNothingWillEnd(t *testing.T) {
 	r := &recorder{live: map[string]bool{}}
 	svc := sandbox.New(sandbox.Config{Repo: &fakeRepo{r: r, sb: running()}, Provider: &replicaHolder{t: t}})
@@ -75,8 +75,6 @@ func TestExecOnATerminalLetsGoOfOutputNothingWillEnd(t *testing.T) {
 	}
 }
 
-// terminalHolder keeps the replica it was given and hands it out as a file, so a test can resize the exec
-// while the command still runs and read the new window from the guest side. The test closes that file.
 type terminalHolder struct {
 	models.Provider
 
@@ -97,13 +95,12 @@ func (h *terminalHolder) Exec(_ context.Context, _ string, spec models.ExecSpec)
 	}
 	// The os.File is the one owner of the dup; the test closes it, so nothing raw-closes the number here.
 	h.replica <- os.NewFile(uintptr(kept), "replica")
+	spec.Report(1)
 	<-h.release
 
 	return models.ExitStatus{}, nil
 }
 
-// A resize reaches a command that is still running: shard sizes the master, and the guest side of the
-// terminal reads the new window at once.
 func TestExecResizeReachesARunningTerminal(t *testing.T) {
 	r := &recorder{live: map[string]bool{}}
 	holder := &terminalHolder{replica: make(chan *os.File, 1), release: make(chan struct{})}
@@ -126,7 +123,9 @@ func TestExecResizeReachesARunningTerminal(t *testing.T) {
 	release := func() { releaseOnce.Do(func() { close(holder.release) }) }
 	// One owner: close the file on every path so its finalizer never double-closes the fd, and let the holder go.
 	t.Cleanup(func() {
-		_ = replica.Close()
+		if err := replica.Close(); err != nil {
+			t.Errorf("close the kept replica: %v", err)
+		}
 		release()
 	})
 

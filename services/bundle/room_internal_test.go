@@ -274,3 +274,62 @@ func TestAWritePastItsReservationIsChecked(t *testing.T) {
 		t.Error("the reservation outlived the refused write")
 	}
 }
+
+// A checkpoint's memory is refused by name when it does not fit, and the write never runs.
+func TestAdmitMemoryRefusesWithoutWriting(t *testing.T) {
+	disk := filepath.Join(t.TempDir(), "sandboxes", "source", "disk.img")
+	sparse(t, disk, bytesPerMiB)
+
+	err := AdmitMemory(disk, 1<<50, func() error {
+		t.Error("wrote the memory it refused")
+
+		return nil
+	})
+	if err == nil || !strings.Contains(err.Error(), "memory of the checkpoint does not fit") {
+		t.Fatalf("got %v, want the 1 PiB memory refused by name", err)
+	}
+}
+
+// A memory write in flight is not in the free space yet, so a disk admitted meanwhile counts it (SHARD-562).
+func TestAMemoryWriteCountsUntilItEnds(t *testing.T) {
+	sandboxes := filepath.Join(t.TempDir(), "sandboxes")
+	source := filepath.Join(sandboxes, "source", "disk.img")
+	sparse(t, source, bytesPerMiB)
+	dst := filepath.Join(sandboxes, "new", "disk.img")
+	if err := os.Mkdir(filepath.Dir(dst), 0o750); err != nil {
+		t.Fatal(err)
+	}
+	free, err := freeBytes(sandboxes)
+	if err != nil {
+		t.Fatal(err)
+	}
+	room := free - diskHeadroom - bytesPerMiB
+	if room < gib {
+		t.Skipf("the root has %d MiB free, too little to split", free/bytesPerMiB)
+	}
+	// Half the room for the memory and three quarters for the disk fit one at a time, never both, and leave a margin for the host's own writes.
+	memory, bound := room/2, room/4*3
+
+	writing, release := make(chan struct{}), make(chan struct{})
+	written := make(chan error, 1)
+	go func() {
+		written <- AdmitMemory(source, memory, func() error {
+			close(writing)
+			<-release
+
+			return nil
+		})
+	}()
+	<-writing
+	if err := admitDisk(dst, bound, func() error { return nil }); err == nil {
+		t.Fatal("admitted a disk into the room the memory write is filling")
+	}
+
+	close(release)
+	if err := <-written; err != nil {
+		t.Fatal(err)
+	}
+	if err := admitDisk(dst, bound, func() error { return nil }); err != nil {
+		t.Fatalf("the ended write still holds its room: %v", err)
+	}
+}

@@ -333,7 +333,7 @@ func (c *Client) WaitSandbox(ctx context.Context, ref string) (Inspection, error
 func (c *Client) StartSandbox(ctx context.Context, ref string) (Sandbox, error) {
 	var out Sandbox
 	if err := c.call(ctx, http.MethodPost, "/v0/sandboxes/"+url.PathEscape(ref)+"/start", nil, &out, c.Timeout); err != nil {
-		return Sandbox{}, missing(ref, err)
+		return Sandbox{}, c.missingOrGone(ctx, ref, err)
 	}
 
 	return out, nil
@@ -419,7 +419,7 @@ func (c *Client) PauseSandbox(ctx context.Context, ref string) (Sandbox, error) 
 func (c *Client) ResumeSandbox(ctx context.Context, ref string) (Sandbox, error) {
 	var out Sandbox
 	if err := c.call(ctx, http.MethodPost, "/v0/sandboxes/"+url.PathEscape(ref)+"/resume", nil, &out, 0); err != nil {
-		return Sandbox{}, missing(ref, err)
+		return Sandbox{}, c.missingOrGone(ctx, ref, err)
 	}
 
 	return out, nil
@@ -429,7 +429,7 @@ func (c *Client) ResumeSandbox(ctx context.Context, ref string) (Sandbox, error)
 func (c *Client) ForkSandbox(ctx context.Context, ref string, req sandbox.CopyRequest) (Sandbox, error) {
 	var out Sandbox
 	if err := c.call(ctx, http.MethodPost, "/v0/sandboxes/"+url.PathEscape(ref)+"/fork", req, &out, 0); err != nil {
-		return Sandbox{}, missing(ref, err)
+		return Sandbox{}, c.missingOrGone(ctx, ref, err)
 	}
 
 	return out, nil
@@ -449,6 +449,23 @@ func missing(ref string, err error) error {
 	var answer *APIError
 	if errors.As(err, &answer) && answer.Code == models.CodeNotFound {
 		return &NotFoundError{Ref: ref}
+	}
+
+	return err
+}
+
+// missingOrGone tells a sandbox nothing holds from one whose image left the host, since a start, resume or fork answers not_found for both (SHARD-585).
+func (c *Client) missingOrGone(ctx context.Context, ref string, err error) error {
+	answer, ok := errors.AsType[*APIError](err)
+	if !ok || answer.Code != models.CodeNotFound {
+		return err
+	}
+	_, lookErr := c.GetSandbox(ctx, ref)
+	if _, nothing := errors.AsType[*NotFoundError](lookErr); nothing {
+		return lookErr
+	}
+	if lookErr != nil {
+		return errors.Join(err, fmt.Errorf("look up sandbox %s: %w", ref, lookErr))
 	}
 
 	return err

@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { afterEach, beforeEach, test } from "node:test";
 import { Commands } from "../src/commands.js";
-import { ConnectionError, NotFoundError, ProtocolError } from "../src/errors.js";
+import { NotFoundError, ProtocolError, ShardConnectionError } from "../src/errors.js";
 import { opBinary, opClose } from "../src/frames.js";
 import { Transport } from "../src/transport.js";
 import { FakeDaemon, type Answer, type Peer, type Request } from "./helpers/daemon.js";
@@ -117,7 +117,7 @@ test("a stdin write that fails on a stream cut before the exit rejects run", asy
   const peer = await daemon.peer(0);
   peer.socket.pause();
   peer.socket.destroy();
-  await assert.rejects(running, ConnectionError);
+  await assert.rejects(running, ShardConnectionError);
 });
 
 test("a stdin write that fails in this client rejects run at once and lets go of the stream", async () => {
@@ -217,7 +217,7 @@ test("a stdin write that fails on a stream cut before the exit rejects start", a
   const peer = await daemon.peer(0);
   peer.socket.pause();
   peer.socket.destroy();
-  await assert.rejects(starting, (err: unknown) => err instanceof ConnectionError && /dropped$/.test(err.message));
+  await assert.rejects(starting, (err: unknown) => err instanceof ShardConnectionError && /dropped$/.test(err.message));
 });
 
 test("a stdin write that fails in this client rejects start and lets go of the stream", async () => {

@@ -25,15 +25,15 @@ const MaxPayload = 1 << 20
 
 // ExitMessage is the payload of StreamExit on an exec. Error is set when the command never started, LostBytes on a gap.
 type ExitMessage struct {
-	Code      int    `json:"code"`
-	Signal    int    `json:"signal"`
-	Error     string `json:"error,omitempty"`
-	LostBytes int64  `json:"lost_bytes,omitempty"`
+	Code      int    `json:"code" doc:"The exit code, or the code a command that never started ends with."`
+	Signal    int    `json:"signal" doc:"The signal that ended the command, or 0."`
+	Error     string `json:"error,omitempty" doc:"Why the command never started; absent when it started."`
+	LostBytes int64  `json:"lost_bytes,omitempty" doc:"The output bytes the buffer dropped before this client read them; absent when it dropped none."`
 }
 
 // EndMessage is the payload of StreamExit on a log follow: why the daemon stopped following.
 type EndMessage struct {
-	Reason string `json:"reason"`
+	Reason string `json:"reason" enum:"stopped,removed"`
 }
 
 // FailureMessage is the payload of StreamFailure, nested under error like every other error body.
@@ -43,7 +43,7 @@ type FailureMessage struct {
 
 // FailureError is the code and the message a StreamFailure carries.
 type FailureError struct {
-	Code    models.Code `json:"code"`
+	Code    models.Code `json:"code" doc:"One of the codes of ErrorObject.code."`
 	Message string      `json:"message"`
 }
 

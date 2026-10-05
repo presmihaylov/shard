@@ -52,6 +52,21 @@ func (p *Process) Kill() error {
 	return nil
 }
 
+// Exited says the held process has exited, a zombie included, so whatever took its pid since never reads as it.
+func (p *Process) Exited() (bool, error) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	if p.released {
+		return false, fmt.Errorf("probe pid %d: its pin is released", p.pid)
+	}
+	done, err := gone(p.handle, p.pid)
+	if err != nil {
+		return false, fmt.Errorf("probe pid %d: %w", p.pid, err)
+	}
+
+	return done, nil
+}
+
 // Close lets the handle go; a second Close does nothing.
 func (p *Process) Close() error {
 	p.mu.Lock()

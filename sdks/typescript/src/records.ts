@@ -10,9 +10,9 @@ export type RestartPolicy = "no" | "on-failure" | "always";
 
 const restartPolicies: readonly RestartPolicy[] = ["no", "on-failure", "always"];
 
-/** ExitStatus is how an app ended: its code, and the signal that ended it or null. */
+/** ExitStatus is how an app ended: its exit code, and the signal that ended it or null. */
 export interface ExitStatus {
-  code: number;
+  exitCode: number;
   signal: number | null;
 }
 
@@ -94,7 +94,7 @@ const actions: readonly PolicyRule["action"][] = ["allow", "deny"];
 export interface Policy {
   name: string;
   rules: PolicyRule[];
-  /** The sandboxes the policy is assigned to; null on a list, which leaves it out. */
+  /** The sandboxes the policy is attached to; null on a list, which leaves it out. */
   holders: string[] | null;
   /** Whether the rules let the sandbox resolve names; null on a list. */
   dns: DNSMode | null;
@@ -130,8 +130,8 @@ export interface Snapshot {
   createdAt: Date;
 }
 
-/** NetworkLogRecord is one egress decision: rule is the id of the rule that decided, or why none did. */
-export interface NetworkLogRecord {
+/** EgressDecision is one egress decision: rule is the id of the rule that decided, or why none did. */
+export interface EgressDecision {
   time: Date;
   source: "proxy" | "host" | "dns";
   verdict: "allow" | "deny";
@@ -143,7 +143,7 @@ export interface NetworkLogRecord {
   reason: string | null;
 }
 
-const sources: readonly NetworkLogRecord["source"][] = ["proxy", "host", "dns"];
+const sources: readonly EgressDecision["source"][] = ["proxy", "host", "dns"];
 
 export interface Version {
   version: string;
@@ -234,8 +234,8 @@ export function snapshot(value: unknown): Snapshot {
   };
 }
 
-export function networkLogRecord(value: unknown): NetworkLogRecord {
-  const fields = Fields.of(value, "a network log record");
+export function egressDecision(value: unknown): EgressDecision {
+  const fields = Fields.of(value, "an egress decision");
 
   return {
     time: fields.date("time"),
@@ -288,7 +288,7 @@ function exitStatus(fields: Fields | null): ExitStatus | null {
     return null;
   }
 
-  return { code: fields.int("code"), signal: fields.int("signal") || null };
+  return { exitCode: fields.int("code"), signal: fields.int("signal") || null };
 }
 
 function restart(sandbox: Fields): RestartInfo | null {

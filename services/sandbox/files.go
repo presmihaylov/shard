@@ -10,7 +10,6 @@ import (
 	"time"
 
 	"github.com/presmihaylov/shard/models"
-	"github.com/presmihaylov/shard/services/bundle"
 	"github.com/presmihaylov/shard/services/supervisor"
 )
 
@@ -25,8 +24,8 @@ const DefaultDirMode = 0o755
 
 // MkdirRequest is the body of POST /mkdir. Mode is octal, as a put's mode= is, so "700" reads the way chmod takes it.
 type MkdirRequest struct {
-	Path    string `json:"path"`
-	Mode    string `json:"mode,omitempty"`
+	Path    string `json:"path" minLength:"1"`
+	Mode    string `json:"mode,omitempty" doc:"The permission bits as an octal string, as chmod takes them; none is 0755."`
 	Parents bool   `json:"parents,omitempty"`
 	// User is who the mkdir runs as and who owns the directory, resolved as an exec's user is; empty is the entrypoint's.
 	User string `json:"user,omitempty"`
@@ -302,10 +301,9 @@ func checkGuestPath(guestPath string) error {
 
 // fileError maps the guest's refusal to the error the API answers: not_found is 404, invalid is 400, the rest is 500.
 func fileError(err error) error {
-	// The exec plumbing around an unknown user says nothing the caller can fix, so only the user goes back.
-	var unknown *bundle.UnknownUserError
-	if errors.As(err, &unknown) {
-		return &RequestError{Err: unknown}
+	// The exec plumbing around a user refusal says nothing the caller can fix, so only the refusal goes back.
+	if refused, ok := userRefusal(err); ok {
+		return refused
 	}
 
 	var refusal *supervisor.FileError

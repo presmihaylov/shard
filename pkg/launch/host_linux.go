@@ -251,6 +251,20 @@ func (c *Channel) Kill() error {
 	return c.kill()
 }
 
+// Signal shares the pin opened under the trace, so it never resolves a saved pid again.
+func (c *Channel) Signal(sig syscall.Signal) error {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if c.pidfd < 0 {
+		return os.ErrProcessDone
+	}
+	if err := unix.PidfdSendSignal(c.pidfd, sig, nil, 0); err != nil {
+		return fmt.Errorf("signal the launched command: %w", err)
+	}
+
+	return nil
+}
+
 func (c *Channel) kill() error {
 	if err := unix.PidfdSendSignal(c.pidfd, unix.SIGKILL, nil, 0); err != nil && !errors.Is(err, unix.ESRCH) {
 		return fmt.Errorf("kill the launch shim: %w", err)
@@ -298,7 +312,8 @@ func (c *Channel) holds(pid int) error {
 // ending is a shim on its way out, or the denial when pid is a live process whose fds this host may not read.
 func ending(pid int, denied error) error {
 	fields, err := procStat(pid)
-	if errors.Is(err, fs.ErrNotExist) {
+	// A pid reaped between the open and the read of its stat reads ESRCH, not a missing file.
+	if errors.Is(err, fs.ErrNotExist) || errors.Is(err, unix.ESRCH) {
 		return &NotStartedError{}
 	}
 	if err != nil {
@@ -474,7 +489,8 @@ func (c *Channel) errno() (syscall.Errno, error) {
 	}); err != nil {
 		return 0, fmt.Errorf("read the launch shim's record: %w", err)
 	}
-	if errors.Is(rerr, unix.EAGAIN) {
+	// A reset is a guest end closed with the go byte unread, so the shim never sent a record.
+	if errors.Is(rerr, unix.EAGAIN) || errors.Is(rerr, unix.ECONNRESET) {
 		return 0, nil
 	}
 	if rerr != nil {

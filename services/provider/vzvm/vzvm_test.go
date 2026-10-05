@@ -25,6 +25,7 @@ import (
 
 	"github.com/presmihaylov/shard/models"
 	"github.com/presmihaylov/shard/pkg/ext4"
+	"github.com/presmihaylov/shard/pkg/pgroup"
 	"github.com/presmihaylov/shard/pkg/pidpin/pidpintest"
 	"github.com/presmihaylov/shard/pkg/vz"
 	"github.com/presmihaylov/shard/services/bundle"
@@ -208,6 +209,20 @@ func TestCreateRefusesAnImageWithoutARootDisk(t *testing.T) {
 	}
 }
 
+// A pruned image disk is refused by the sentinel the API answers with 404 and the pull hint, not a bare stat error.
+func TestCreateOverAGoneImageDiskNamesTheImage(t *testing.T) {
+	h := newHarness(t)
+	spec := h.newSpec(t, "/bin/sh", "-c", "exit 0")
+	if err := os.Remove(spec.RootDisk); err != nil {
+		t.Fatal(err)
+	}
+
+	err := h.provider.Create(t.Context(), spec)
+	if !errors.Is(err, models.ErrImageGone) || !strings.Contains(err.Error(), spec.ID) {
+		t.Fatalf("Create = %v, want models.ErrImageGone and the sandbox named", err)
+	}
+}
+
 // The bound needs room under the 32 MiB headroom, so a VM too small for one is refused by name.
 func TestCreateRefusesAMemoryBoundBelowTheMinimum(t *testing.T) {
 	h := newHarness(t)
@@ -219,10 +234,10 @@ func TestCreateRefusesAMemoryBoundBelowTheMinimum(t *testing.T) {
 		t.Fatalf("Create = %v, want a refusal that names the sandbox and the minimum", err)
 	}
 
-	// Zero is unbounded on Linux; a VM has no unbounded memory, so the refusal names the provider and the flag instead of a default.
+	// Zero is unbounded on Linux; a VM has no unbounded memory, so the refusal names the provider and the field instead of a default.
 	spec.Resources.MemoryMiB = 0
 	err = h.provider.Create(t.Context(), spec)
-	for _, want := range []string{spec.ID, "provider vz", "--memory 0", "--memory 128MiB"} {
+	for _, want := range []string{spec.ID, "provider vz", "needs resources.memory_mib", "set it to 128 MiB or more"} {
 		if err == nil || !strings.Contains(err.Error(), want) {
 			t.Fatalf("Create with --memory 0 = %v, want %q named", err, want)
 		}
@@ -244,7 +259,7 @@ func TestCheckResourcesRefusesWhatCreateRefuses(t *testing.T) {
 		t.Fatalf("CheckResources(128) = %v, want nil", err)
 	}
 	err := h.provider.CheckResources(models.Resources{MemoryMiB: 128, DiskMiB: 130})
-	if err == nil || !strings.Contains(err.Error(), "use 128 or 131 MiB") {
+	if err == nil || !strings.Contains(err.Error(), "set resources.disk_mib to 128 MiB or 131 MiB") {
 		t.Fatalf("CheckResources(--disk 130) = %v, want the nearest bounds", err)
 	}
 }
@@ -503,6 +518,7 @@ func TestAnExecInsideAPauseIsRefusedByName(t *testing.T) {
 	if !errors.As(err, &notStarted) || notStarted.Code != models.CommandNotExecutableExitCode || !strings.Contains(notStarted.Reason, "a pause holds the sandbox frozen") {
 		t.Errorf("Exec inside a pause = %v, want the pause's refusal with code %d", err, models.CommandNotExecutableExitCode)
 	}
+	requireSendsRefused(t, h.provider, spec.ID, "pause", "the pause")
 	if err := os.Remove(hold); err != nil {
 		t.Fatal(err)
 	}
@@ -947,6 +963,55 @@ func TestAnAdoptFailsWhenTheLogCannotOpen(t *testing.T) {
 	}
 }
 
+// guestGone has a daemon restart find the shim of a running sandbox answering and its guest out of reach, and returns the fresh provider and the shim's pid.
+func guestGone(t *testing.T) (models.SandboxSpec, *vzvm.Provider, int) {
+	t.Helper()
+	h, spec, shim := runningShim(t)
+	if err := h.provider.Close(); err != nil {
+		t.Fatal(err)
+	}
+	control := filepath.Join(spec.StateDir, "guest", fmt.Sprintf("%d.sock", supervisor.ControlPort))
+	if err := os.Rename(control, control+".off"); err != nil {
+		t.Fatal(err)
+	}
+	// A failed test still lets the cleanup's stop reach the guest.
+	t.Cleanup(func() {
+		if err := os.Rename(control+".off", control); err != nil && !errors.Is(err, fs.ErrNotExist) {
+			t.Errorf("put the control socket back: %v", err)
+		}
+	})
+
+	return spec, h.open(t), shim
+}
+
+// An adopt whose guest does not attach ends the shim and puts why on file, so a start boots the sandbox again (SHARD-577).
+func TestAnAdoptWhoseGuestDoesNotAttachEndsTheShim(t *testing.T) {
+	spec, p, shim := guestGone(t)
+
+	status, err := p.Status(t.Context(), spec.ID)
+	if err != nil || status.Alive() || !strings.Contains(status.SupervisorFailed, "its guest does not attach") {
+		t.Fatalf("Status over a guest that does not attach = %+v, %v, want it stopped with the reason", status, err)
+	}
+	awaitExit(t, shim)
+	if err := p.Start(t.Context(), spec.ID); err != nil {
+		t.Fatalf("Start after the adopt ended the shim: %v", err)
+	}
+	status, err = p.Status(t.Context(), spec.ID)
+	if err != nil || status.State != models.StateRunning || status.SupervisorFailed != "" {
+		t.Fatalf("Status after the start = %+v, %v, want it running with no failure", status, err)
+	}
+}
+
+// A rm over a restart that finds the guest out of reach ends the shim and removes the sandbox (SHARD-577).
+func TestRemoveEndsAnAdoptedShimWhoseGuestDoesNotAttach(t *testing.T) {
+	spec, p, shim := guestGone(t)
+
+	if err := p.Remove(t.Context(), spec.ID); err != nil {
+		t.Fatalf("Remove over a guest that does not attach: %v", err)
+	}
+	awaitExit(t, shim)
+}
+
 // A pause that cannot complete its checkpoint resumes the VM, keeps the last checkpoint and leaves no staging directory.
 func TestAFailedPauseResumesTheSandboxAndKeepsTheLastCheckpoint(t *testing.T) {
 	h := newHarness(t)
@@ -1332,8 +1397,16 @@ func TestAFloodedControlStreamIsLoggedOnceAndTheSandboxGoesOn(t *testing.T) {
 	}
 }
 
-// A guest that floods every control stream is dialed a few times a second at most, and exec and stop still answer (SHARD-408).
+// A guest that floods every control stream, by oversized lines or by queued events, is dialed a few times a second at most, and exec and stop still answer (SHARD-408, SHARD-550).
 func TestAGuestThatFloodsEveryControlStreamIsDialedAFewTimesASecondAtMost(t *testing.T) {
+	for _, flooding := range []string{floodEveryFile, floodEventsFile} {
+		t.Run(flooding, func(t *testing.T) {
+			floodEveryControlStream(t, flooding)
+		})
+	}
+}
+
+func floodEveryControlStream(t *testing.T, flooding string) {
 	h := newHarness(t)
 	spec := h.newSpec(t, "/bin/sh", "-c", "while true; do echo tick; sleep 0.2; done")
 	if err := h.provider.Create(t.Context(), spec); err != nil {
@@ -1346,7 +1419,7 @@ func TestAGuestThatFloodsEveryControlStreamIsDialedAFewTimesASecondAtMost(t *tes
 	if err != nil {
 		t.Fatal(err)
 	}
-	for _, marker := range []string{dialsFile, floodEveryFile} {
+	for _, marker := range []string{dialsFile, flooding} {
 		if err := os.WriteFile(filepath.Join(dir, marker), nil, 0o600); err != nil {
 			t.Fatal(err)
 		}
@@ -1800,10 +1873,13 @@ func runningShimOn(t *testing.T, h *harness) (models.SandboxSpec, int) {
 		t.Fatalf("the guest pids are %d and %d, want two real processes", entrypoint, guest)
 	}
 	t.Cleanup(func() {
-		for _, pid := range []int{-entrypoint, -guest, guest} {
-			if err := syscall.Kill(pid, syscall.SIGKILL); err != nil && !errors.Is(err, syscall.ESRCH) {
-				t.Errorf("end the fake guest %d: %v", pid, err)
+		for _, group := range []int{entrypoint, guest} {
+			if err := pgroup.Kill(group, syscall.SIGKILL); err != nil && !errors.Is(err, syscall.ESRCH) {
+				t.Errorf("end the fake guest's group %d: %v", group, err)
 			}
+		}
+		if err := syscall.Kill(guest, syscall.SIGKILL); err != nil && !errors.Is(err, syscall.ESRCH) {
+			t.Errorf("end the fake guest %d: %v", guest, err)
 		}
 	})
 
@@ -1817,7 +1893,7 @@ func runningShimOn(t *testing.T, h *harness) (models.SandboxSpec, int) {
 		t.Fatalf("Status = %+v, want the shim's pid", status)
 	}
 	t.Cleanup(func() {
-		if err := syscall.Kill(-shim, syscall.SIGKILL); err != nil && !errors.Is(err, syscall.ESRCH) {
+		if err := pgroup.Kill(shim, syscall.SIGKILL); err != nil && !errors.Is(err, syscall.ESRCH) {
 			t.Errorf("end the fake shim %d: %v", shim, err)
 		}
 	})
@@ -2286,7 +2362,7 @@ func TestAFailedBootKillsAShimWhoseSocketQueueIsFull(t *testing.T) {
 	exited := make(chan error, 1)
 	go func() { exited <- stand.Wait() }()
 	t.Cleanup(func() {
-		if err := syscall.Kill(stand.Process.Pid, syscall.SIGKILL); err != nil && !errors.Is(err, syscall.ESRCH) {
+		if err := stand.Process.Kill(); err != nil && !errors.Is(err, os.ErrProcessDone) {
 			t.Errorf("end the stand-in shim: %v", err)
 		}
 	})
@@ -2299,6 +2375,35 @@ func TestAFailedBootKillsAShimWhoseSocketQueueIsFull(t *testing.T) {
 	case <-exited:
 	case <-time.After(stopGrace):
 		t.Fatal("the shim outlived the cleanup of its failed boot")
+	}
+}
+
+// The cleanup of a failed boot waits out a shim that dropped its socket and still runs, as one closing its last connections does (SHARD-530).
+func TestAFailedBootWaitsForAShimPastItsSocket(t *testing.T) {
+	dir, err := os.MkdirTemp("", "vzq") //nolint:usetesting // t.TempDir is too long for a socket path
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { os.RemoveAll(dir) })
+	stand := exec.Command("sleep", "1")
+	stand.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
+	if err := stand.Start(); err != nil {
+		t.Fatal(err)
+	}
+	exited := make(chan error, 1)
+	go func() { exited <- stand.Wait() }()
+	t.Cleanup(func() {
+		if err := stand.Process.Kill(); err != nil && !errors.Is(err, os.ErrProcessDone) {
+			t.Errorf("end the stand-in shim: %v", err)
+		}
+		<-exited
+	})
+
+	if err := vzvm.EndShim("a", vz.Open(filepath.Join(dir, "shim.sock")), stand.Process.Pid); err != nil {
+		t.Fatalf("EndShim over a shim past its socket: %v", err)
+	}
+	if _, err := vz.Identify(stand.Process.Pid); !errors.Is(err, syscall.ESRCH) {
+		t.Fatalf("EndShim returned while the shim still ran: %v", err)
 	}
 }
 
@@ -2361,5 +2466,25 @@ func TestAdoptStagingKeepsACutPauseStage(t *testing.T) {
 
 	if _, err := os.Stat(tmp); err != nil {
 		t.Errorf("the staging %s is gone after adopt, want vz to keep it to finish on resume: %v", tmp, err)
+	}
+}
+
+// A restore whose checkpoint disk is missing must leave the live disk in place, so a failed copy never bricks a sandbox (SHARD-589).
+func TestRestoreDiskKeepsTheLiveDiskWhenTheCopyFails(t *testing.T) {
+	stateDir, checkpoint := t.TempDir(), t.TempDir()
+	disk := filepath.Join(stateDir, vzvm.DiskFile)
+	if err := os.WriteFile(disk, []byte("live"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	// The checkpoint has no disk, so the copy fails and the swap never runs.
+	if err := vzvm.RestoreDisk("sb-1", checkpoint, disk); err == nil {
+		t.Fatal("restoreDisk with no checkpoint disk = nil, want an error")
+	}
+	got, err := os.ReadFile(disk)
+	if err != nil {
+		t.Fatalf("the live disk after a failed restore: %v, want it kept", err)
+	}
+	if string(got) != "live" {
+		t.Errorf("the live disk = %q, want it unchanged", got)
 	}
 }

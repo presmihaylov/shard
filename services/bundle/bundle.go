@@ -4,6 +4,7 @@ package bundle
 import (
 	"errors"
 	"fmt"
+	"io/fs"
 	"os"
 	"path"
 	"path/filepath"
@@ -14,6 +15,7 @@ import (
 	specs "github.com/opencontainers/runtime-spec/specs-go"
 
 	"github.com/presmihaylov/shard/models"
+	"github.com/presmihaylov/shard/pkg/netns"
 	"github.com/presmihaylov/shard/services/runspec"
 )
 
@@ -35,6 +37,9 @@ const readyFileName = "started"
 // restartFileName is the count of starts again shard-init keeps under a restart policy.
 const restartFileName = "restarts.json"
 
+// changedFileName marks a config.json written since the substrate last created the container from it.
+const changedFileName = "spec-changed"
+
 // Bundle is one sandbox on disk: a bundle directory, and the overlay layers its rootfs is mounted from.
 type Bundle struct {
 	// Dir holds config.json and the rootfs mount point. It is what runsc is pointed at.
@@ -48,6 +53,8 @@ type Bundle struct {
 	ExitChannelFile string
 	ReadyFile       string
 	RestartFile     string
+	// ChangedFile sits beside ExitFile, off every bind mount, so the guest cannot clear it.
+	ChangedFile string
 
 	// Upper and Work belong to this sandbox alone. The lower layer is passed to Mount.
 	Upper string
@@ -59,6 +66,9 @@ type Bundle struct {
 	// Disk is where Image, a sparse ext4 file sized to the bound, mounts; Upper, Work, Tmp and ShardDir live on it, so one bound covers every guest write.
 	Disk  string
 	Image string
+
+	// Userns is the namespace sysbox-runc chowns Upper into while a container holds it; the zero value is a substrate that never does.
+	Userns netns.IDMapping
 }
 
 // Service builds bundles. One per shard process, because the supervisor path never changes.
@@ -89,6 +99,9 @@ func (s *Service) Build(spec models.SandboxSpec) (Bundle, error) {
 	if err := validate(spec); err != nil {
 		return Bundle{}, err
 	}
+	if err := CheckImage(spec.RootFS); err != nil {
+		return Bundle{}, fmt.Errorf("sandbox %s: %w", spec.ID, err)
+	}
 
 	b, err := newBundle(spec.StateDir)
 	if err != nil {
@@ -109,7 +122,7 @@ func (s *Service) Build(spec models.SandboxSpec) (Bundle, error) {
 	}
 
 	if spec.ProxyCA != nil {
-		trust, err := plantTrust(b, spec.RootFS, spec.Env, spec.ProxyCA)
+		trust, err := plantTrust(b.Upper, spec.RootFS, spec.Env, spec.ProxyCA, idShift{})
 		if err != nil {
 			return Bundle{}, err
 		}
@@ -170,6 +183,19 @@ func (b Bundle) Runtime() (Runtime, error) {
 	}, nil
 }
 
+// CheckImage refuses an image file or tree that left the host, by the sentinel a public route names.
+func CheckImage(path string) error {
+	_, err := os.Stat(path)
+	if errors.Is(err, fs.ErrNotExist) {
+		return fmt.Errorf("the image at %s is gone: %w: %w", path, models.ErrImageGone, err)
+	}
+	if err != nil {
+		return fmt.Errorf("stat the image at %s: %w", path, err)
+	}
+
+	return nil
+}
+
 // supervisorFlag reads back a flag the supervisor was given. Its own process user is root, so the
 // argv is the only record of which identity the entrypoint runs as.
 func supervisorFlag(args []string, name string) string {
@@ -221,6 +247,7 @@ func newBundle(stateDir string) (Bundle, error) {
 		ExitChannelFile: filepath.Join(stateDir, exitChannelFileName),
 		ReadyFile:       filepath.Join(shardDir, readyFileName),
 		RestartFile:     filepath.Join(shardDir, restartFileName),
+		ChangedFile:     filepath.Join(stateDir, changedFileName),
 		Upper:           filepath.Join(disk, "upper"),
 		Work:            filepath.Join(disk, "work"),
 		Tmp:             filepath.Join(disk, "tmp"),

@@ -73,7 +73,7 @@ func (b *idleBody) Read(p []byte) (int, error) {
 
 func fileWriteOf(r *http.Request) (sandbox.FileWrite, error) {
 	if r.ContentLength < 0 {
-		return sandbox.FileWrite{}, &sandbox.RequestError{Err: errors.New("a put needs a Content-Length: the guest lands exactly that many bytes")}
+		return sandbox.FileWrite{}, &sandbox.RequestError{Err: errors.New("the upload has no Content-Length; set Content-Length to the number of upload bytes")}
 	}
 
 	mode := uint64(sandbox.DefaultFileMode)
@@ -116,7 +116,7 @@ func (h *Handler) getFile(w http.ResponseWriter, r *http.Request) {
 	flushErr := http.NewResponseController(w).Flush()
 	_, err = io.Copy(w, body)
 	if err := errors.Join(flushErr, err, body.Close()); err != nil {
-		h.log.Printf("api: get %s from sandbox %s: %v", r.URL.Query().Get("path"), r.PathValue("id"), err)
+		h.log.Printf("api: get %q from sandbox %s: %q", r.URL.Query().Get("path"), r.PathValue("id"), h.redacted(err.Error()))
 		// The 200 is out, so only a body cut before its last chunk tells the client the file is short.
 		panic(http.ErrAbortHandler)
 	}
@@ -162,7 +162,7 @@ func (h *Handler) listDir(w http.ResponseWriter, r *http.Request) {
 	w.WriteHeader(http.StatusOK)
 	// The 200 is out, so a failure now goes to the daemon's log; the body then lacks its closing bracket, which no client parses.
 	if err := writeEntries(w, listing); err != nil {
-		h.log.Printf("api: ls %s in sandbox %s: %v", r.URL.Query().Get("path"), r.PathValue("id"), err)
+		h.log.Printf("api: ls %q in sandbox %s: %q", r.URL.Query().Get("path"), r.PathValue("id"), h.redacted(err.Error()))
 	}
 }
 
@@ -198,13 +198,13 @@ func writeEntries(w io.Writer, listing sandbox.Listing) error {
 }
 
 // makeDir makes the directory the JSON body names.
-func (h *Handler) makeDir(ctx context.Context, in *sandboxBody[sandbox.MkdirRequest]) (*struct{}, error) {
-	return done(h.lifecycle.MakeDir(ctx, in.ID, value(in.Body)))
+func (h *Handler) makeDir(ctx context.Context, in *sandboxRequest[sandbox.MkdirRequest]) (*struct{}, error) {
+	return done(h.lifecycle.MakeDir(ctx, in.ID, in.Body))
 }
 
 type deleteFileInput struct {
 	ID        string `path:"id" doc:"The sandbox id or name."`
-	Path      string `query:"path" doc:"The absolute guest path."`
+	Path      string `query:"path" required:"true" doc:"The absolute guest path."`
 	Recursive bool   `query:"recursive" doc:"Take a directory and everything in it."`
 }
 
@@ -215,8 +215,8 @@ func (h *Handler) deleteFile(ctx context.Context, in *deleteFileInput) (*struct{
 
 type writeFileInput struct {
 	ID      string `path:"id" doc:"The sandbox id or name."`
-	Path    string `query:"path" doc:"The absolute guest path."`
-	Mode    string `query:"mode" doc:"The file mode in octal; none is 0644."`
+	Path    string `query:"path" required:"true" doc:"The absolute guest path."`
+	Mode    string `query:"mode" doc:"The file mode in octal, at most 0777; none is 0644."`
 	User    string `query:"user" doc:"Who writes and owns the file; none is the entrypoint's user."`
 	Parents bool   `query:"parents" doc:"Make the missing parent directories."`
 }
@@ -228,7 +228,7 @@ type entriesResponse struct {
 
 func describeWriteFile(_ huma.Registry, op *huma.Operation) {
 	op.RequestBody = binaryBody("application/octet-stream")
-	op.Responses["204"] = &huma.Response{Description: "The file landed. A put needs a Content-Length."}
+	op.Responses["204"] = &huma.Response{Description: "The file is written. The upload sets Content-Length to its number of bytes."}
 }
 
 func describeReadFile(_ huma.Registry, op *huma.Operation) {
@@ -237,6 +237,7 @@ func describeReadFile(_ huma.Registry, op *huma.Operation) {
 
 func describeStatFile(_ huma.Registry, op *huma.Operation) {
 	op.Responses["200"] = &huma.Response{Description: "The path's stat, in a header and no body.", Headers: statHeader()}
+	op.Responses["default"] = &huma.Response{Description: "Error, as the status alone: a HEAD answer has no body."}
 }
 
 func describeListDir(registry huma.Registry, op *huma.Operation) {

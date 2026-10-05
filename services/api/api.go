@@ -211,30 +211,30 @@ func (h *Handler) routeTable() []routeEntry {
 		public("GET", "/v0/capabilities", AnyToken, operation("meta", "get-capabilities", "List the lifecycle verbs and whether this server supports each", 0), typed(h.getCapabilities)),
 		public("GET", "/v0/scopes", AnyToken, operation("meta", "list-scopes", "List the scopes a token can carry", 0), typed(h.getScopes)),
 		local("GET", "/v0/daemon", h.getDaemon),
-		public("GET", "/v0/sandboxes", SandboxRead, operation("sandboxes", "list-sandboxes", "List sandboxes", 0), typed(h.listSandboxes)),
+		public("GET", "/v0/sandboxes", SandboxRead, operation("sandboxes", "list-sandboxes", "list active sandboxes", 0), typed(h.listSandboxes)),
 		public("GET", "/v0/sandboxes/{id}", SandboxRead, operation("sandboxes", "get-sandbox", "Read a sandbox and the egress rules the host enforces for it", 0), typed(h.getSandbox)),
-		public("POST", "/v0/sandboxes", SandboxWrite, operation("sandboxes", "create-sandbox", "Create a sandbox", http.StatusCreated), documented(describeCreate, typed(h.createSandbox))),
-		public("POST", "/v0/sandboxes/{id}/start", SandboxWrite, operation("sandboxes", "start-sandbox", "Start a stopped sandbox", 0), typed(h.startSandbox)),
-		public("POST", "/v0/sandboxes/{id}/stop", SandboxWrite, operation("sandboxes", "stop-sandbox", "Stop a sandbox", 0), typed(h.stopSandbox)),
-		public("DELETE", "/v0/sandboxes/{id}", SandboxDelete, operation("sandboxes", "remove-sandbox", "Remove a sandbox", 0), typed(h.removeSandbox)),
-		public("POST", "/v0/sandboxes/{id}/pause", SandboxWrite, operation("sandboxes", "pause-sandbox", "Pause a running sandbox", 0), typed(h.pauseSandbox)),
-		public("POST", "/v0/sandboxes/{id}/resume", SandboxWrite, operation("sandboxes", "resume-sandbox", "Resume a paused sandbox", 0), typed(h.resumeSandbox)),
-		public("POST", "/v0/sandboxes/{id}/fork", SandboxWrite, operation("sandboxes", "fork-sandbox", "Fork a sandbox into a new one", http.StatusCreated), typed(h.forkSandbox)),
-		public("POST", "/v0/sandboxes/{id}/exec", Exec, operation("exec", "create-exec", "Create an exec, which runs once a client attaches", http.StatusCreated), typed(h.createExec)),
+		public("POST", "/v0/sandboxes", SandboxWrite, operation("sandboxes", "create-sandbox", "create a sandbox", http.StatusCreated), documented(describeCreate, typed(h.createSandbox))),
+		public("POST", "/v0/sandboxes/{id}/start", SandboxWrite, operation("sandboxes", "start-sandbox", "start a stopped sandbox with its saved files", 0), typed(h.startSandbox)),
+		public("POST", "/v0/sandboxes/{id}/stop", SandboxWrite, operation("sandboxes", "stop-sandbox", "stop a sandbox and preserve its files", 0), typed(h.stopSandbox)),
+		public("DELETE", "/v0/sandboxes/{id}", SandboxDelete, operation("sandboxes", "remove-sandbox", "delete a sandbox and its files", 0), typed(h.removeSandbox)),
+		public("POST", "/v0/sandboxes/{id}/pause", SandboxWrite, operation("sandboxes", "pause-sandbox", "save a sandbox's state and suspend it", 0), typed(h.pauseSandbox)),
+		public("POST", "/v0/sandboxes/{id}/resume", SandboxWrite, operation("sandboxes", "resume-sandbox", "resume a paused sandbox from its saved state", 0), typed(h.resumeSandbox)),
+		public("POST", "/v0/sandboxes/{id}/fork", SandboxWrite, operation("sandboxes", "fork-sandbox", "create a sandbox from a running sandbox's memory and files", http.StatusCreated), typed(h.forkSandbox)),
+		public("POST", "/v0/sandboxes/{id}/exec", Exec, operation("exec", "create-exec", "execute a command in a running sandbox", http.StatusCreated), typed(h.createExec)),
 		public("GET", "/v0/sandboxes/{id}/exec", Exec, operation("exec", "list-execs", "List the execs of a sandbox", 0), typed(h.listExecs)),
 		public("GET", "/v0/sandboxes/{id}/exec/{exec}", Exec, operation("exec", "get-exec", "Read, wait for or attach to an exec", 0), raw[getExecInput](h.getExec, describeGetExec)),
 		public("POST", "/v0/sandboxes/{id}/exec/{exec}/kill", Exec, operation("exec", "kill-exec", "Send a signal to a running exec", 0), typed(h.killExec)),
 		public("DELETE", "/v0/sandboxes/{id}/exec/{exec}", Exec, operation("exec", "delete-exec", "Forget an exec that ended", 0), typed(h.deleteExec)),
 		public("POST", "/v0/sandboxes/{id}/exec/{exec}/resize", Exec, operation("exec", "resize-exec", "Resize the terminal of an exec", 0), typed(h.resizeExec)),
-		public("PUT", "/v0/sandboxes/{id}/files", Exec, operation("files", "write-file", "Write a file", http.StatusNoContent), raw[writeFileInput](h.putFile, describeWriteFile)),
-		public("GET", "/v0/sandboxes/{id}/files", Exec, operation("files", "read-file", "Read a file", 0), raw[filePath](h.getFile, describeReadFile)),
+		public("PUT", "/v0/sandboxes/{id}/files", Exec, operation("files", "write-file", "copy a file into a running sandbox", http.StatusNoContent), raw[writeFileInput](h.putFile, describeWriteFile)),
+		public("GET", "/v0/sandboxes/{id}/files", Exec, operation("files", "read-file", "copy a file out of a running sandbox", 0), raw[filePath](h.getFile, describeReadFile)),
 		// A GET pattern also serves HEAD, so the stat needs its own, more specific one.
 		public("HEAD", "/v0/sandboxes/{id}/files", Exec, operation("files", "stat-file", "Stat a path", 0), raw[filePath](h.statFile, describeStatFile)),
 		public("DELETE", "/v0/sandboxes/{id}/files", Exec, operation("files", "delete-file", "Delete a path", 0), typed(h.deleteFile)),
 		public("GET", "/v0/sandboxes/{id}/ls", Exec, operation("files", "list-dir", "List a directory", 0), raw[filePath](h.listDir, describeListDir)),
 		public("POST", "/v0/sandboxes/{id}/mkdir", Exec, operation("files", "make-dir", "Make a directory", 0), typed(h.makeDir)),
-		public("PUT", "/v0/sandboxes/{id}/archive", Exec, operation("files", "write-archive", "Unpack a tar under a directory", http.StatusNoContent), raw[archiveInput](h.putArchive, describeWriteArchive)),
-		public("GET", "/v0/sandboxes/{id}/archive", Exec, operation("files", "read-archive", "Read a path as a tar", 0), raw[filePath](h.getArchive, describeReadArchive)),
+		public("PUT", "/v0/sandboxes/{id}/archive", Exec, operation("files", "write-archive", "copy a directory into a running sandbox", http.StatusNoContent), raw[archiveInput](h.putArchive, describeWriteArchive)),
+		public("GET", "/v0/sandboxes/{id}/archive", Exec, operation("files", "read-archive", "copy a directory out of a running sandbox", 0), raw[filePath](h.getArchive, describeReadArchive)),
 		public("GET", "/v0/sandboxes/{id}/logs", SandboxRead, operation("sandboxes", "get-sandbox-logs", "Read or follow the output of a sandbox", 0), raw[followInput](h.sandboxLogs, describeLogs)),
 		public("GET", "/v0/sandboxes/{id}/attach", SandboxRead, operation("app", "attach-app", "Wait for or attach to the app of a run", 0), raw[sandboxPath](h.attachApp, describeAttachApp)),
 		public("POST", "/v0/sandboxes/{id}/app/stop", SandboxWrite, operation("app", "stop-app", "Stop the app of a run", 0), typed(h.stopApp)),
@@ -311,7 +311,7 @@ type sandboxesResponse struct {
 
 // ErrorObject is a code for a program, a line for a human, the holders an in_use names, and the shell code a command_not_started carries.
 type ErrorObject struct {
-	Code     models.Code `json:"code"`
+	Code     models.Code `json:"code" doc:"What a program matches on: invalid_request, body_too_large, not_found, sandbox_not_running, sandbox_not_stopped, sandbox_not_paused, sandbox_live, sandbox_failed, no_checkpoint, unsupported, in_use, name_taken, exec_exited, exec_running, exec_limit, no_app, app_ended, unauthorized, forbidden, timeout, command_not_started or internal. A later daemon may add a code, so a client must take one it does not know."`
 	Message  string      `json:"message"`
 	Holders  []string    `json:"holders,omitempty"`
 	ExitCode int         `json:"exit_code,omitempty"`
@@ -449,17 +449,17 @@ func (h *Handler) sandboxEgressLog(w http.ResponseWriter, r *http.Request) {
 	h.writeJSON(w, http.StatusOK, listOf(records))
 }
 
-// describeEgressLog names the three answers of sandboxEgressLog: the records, a line each with follow, or a message each over a WebSocket.
+// describeEgressLog names the three answers of sandboxEgressLog: the decisions, a line each with follow, or a message each over a WebSocket.
 func describeEgressLog(registry huma.Registry, op *huma.Operation) {
 	op.Responses["200"] = &huma.Response{
-		Description: "The egress decisions, oldest first; with follow one record per line until the sandbox stops.",
-		Headers:     map[string]*huma.Header{EgressCutHeader: {Description: "The older records the read left out; absent when it left out none.", Schema: &huma.Schema{Type: huma.TypeInteger}}},
+		Description: "The egress decisions, oldest first; with follow one decision per line until the sandbox stops, fails or is removed.",
+		Headers:     map[string]*huma.Header{EgressCutHeader: {Description: "The older decisions the read left out; absent when it left out none.", Schema: &huma.Schema{Type: huma.TypeInteger}}},
 		Content: map[string]*huma.MediaType{
 			"application/json":     {Schema: schemaOf[[]egress.Record](registry)},
 			"application/x-ndjson": {Schema: schemaOf[egress.Record](registry)},
 		},
 	}
-	op.Responses["101"] = upgrade("A WebSocket follow: one egress record per text message, until the sandbox stops.")
+	op.Responses["101"] = upgrade("A WebSocket follow with follow=true: one egress decision per text message, until the sandbox stops, fails or is removed.", nil)
 }
 
 type grantInput struct {
@@ -475,8 +475,8 @@ func (h *Handler) ungrantSecret(ctx context.Context, in *grantInput) (*reply[San
 	return publicReply(h.lifecycle.UngrantSecret(ctx, in.ID, in.Name))
 }
 
-func (h *Handler) attachPolicy(ctx context.Context, in *sandboxBody[sandbox.PolicyAttachRequest]) (*reply[Sandbox], error) {
-	return publicReply(h.lifecycle.AttachPolicy(ctx, in.ID, value(in.Body).Policy))
+func (h *Handler) attachPolicy(ctx context.Context, in *sandboxRequest[sandbox.PolicyAttachRequest]) (*reply[Sandbox], error) {
+	return publicReply(h.lifecycle.AttachPolicy(ctx, in.ID, in.Body.Policy))
 }
 
 func (h *Handler) detachPolicy(ctx context.Context, in *sandboxPath) (*reply[Sandbox], error) {
@@ -494,12 +494,12 @@ func publicReply(sb models.Sandbox, err error) (*reply[Sandbox], error) {
 
 type createInput struct {
 	Wait bool `query:"wait" doc:"Answer once the sandbox leaves pending; with Accept: application/x-ndjson the pull streams first."`
-	Body *sandbox.CreateRequest
+	Body sandbox.CreateRequest
 }
 
 // createSandbox checks the scopes before anything is created, then answers in one of the two shapes describeCreate names.
 func (h *Handler) createSandbox(ctx context.Context, in *createInput) (*rawReply, error) {
-	req := value(in.Body)
+	req := in.Body
 	if err := checkCreateScopes(ctx, req); err != nil {
 		return nil, fail(err)
 	}
@@ -543,7 +543,8 @@ func (h *Handler) create(w http.ResponseWriter, r *http.Request, wait bool, req 
 
 // describeCreate names both shapes of the 201: the record, or the pull's events and then the record, one JSON line each.
 func describeCreate(registry huma.Registry, op *huma.Operation) {
-	op.Responses["201"] = &huma.Response{Description: "The sandbox, or with wait and Accept: application/x-ndjson one CreateLine per pull event and then the sandbox.", Content: map[string]*huma.MediaType{
+	op.Description = "A create that names secrets also needs the secret:* scope, and one that names a policy needs policy:*; without it the answer is 403 forbidden."
+	op.Responses["201"] = &huma.Response{Description: "The sandbox, or with wait and Accept: application/x-ndjson one CreateLine per pull event and then the sandbox. An error after the first line ends the stream with a CreateLine whose error is set, and no sandbox.", Content: map[string]*huma.MediaType{
 		"application/json":     {Schema: schemaOf[Sandbox](registry)},
 		"application/x-ndjson": {Schema: schemaOf[CreateLine](registry)},
 	}}
@@ -552,30 +553,35 @@ func describeCreate(registry huma.Registry, op *huma.Operation) {
 // ScopesHeader carries the token's scopes from the TCP front to the daemon. The front stamps it on every request it forwards and strips any client copy; a request with no such header reached the socket directly.
 const ScopesHeader = "X-Shard-Scopes"
 
-// scopeError is a create that names a secret or a policy the token's scopes do not reach; classify maps it to 403.
+// scopeError maps an unauthorized named or copied grant to 403.
 type scopeError struct {
-	scope Scope
-	named string
+	scope  Scope
+	named  string
+	action string
 }
 
 func (e *scopeError) Error() string {
-	return fmt.Sprintf("the token does not carry the %q scope, which a create that names a %s needs", e.scope, e.named)
+	return fmt.Sprintf("the token does not carry the %q scope, which a %s a %s needs", e.scope, e.action, e.named)
 }
 
 func (e *scopeError) Public() string { return e.Error() }
 
 // checkCreateScopes refuses a create that names a secret or a policy the stamped scopes do not reach. No header means the request reached the daemon socket directly, which keeps every right.
 func checkCreateScopes(ctx context.Context, req sandbox.CreateRequest) error {
+	return checkGrantScopes(ctx, "create that names", req.Secrets, req.Policy)
+}
+
+func checkGrantScopes(ctx context.Context, action string, secrets []string, policy string) error {
 	scopes, stamped := ctx.Value(scopesKey{}).([]string)
 	if !stamped {
 		return nil
 	}
 
-	if len(req.Secrets) > 0 && !scopesCover(scopes, Secret) {
-		return &scopeError{scope: Secret, named: "secret"}
+	if len(secrets) > 0 && !scopesCover(scopes, Secret) {
+		return &scopeError{scope: Secret, named: "secret", action: action}
 	}
-	if req.Policy != "" && !scopesCover(scopes, Policy) {
-		return &scopeError{scope: Policy, named: "policy"}
+	if policy != "" && !scopesCover(scopes, Policy) {
+		return &scopeError{scope: Policy, named: "policy", action: action}
 	}
 
 	return nil
@@ -619,7 +625,7 @@ func (h *Handler) startSandbox(ctx context.Context, in *sandboxPath) (*reply[San
 	sb, err := h.lifecycle.Start(ctx, in.ID)
 	// A start the substrate broke, not one it refused, is named in the daemon log beside the client's answer (SHARD-416).
 	if status, _ := classify(err); err != nil && status >= http.StatusInternalServerError {
-		h.log.Printf("api: start sandbox %s: %v", in.ID, err)
+		h.logCause("start sandbox "+in.ID, err)
 	}
 
 	return publicReply(sb, err)
@@ -650,7 +656,10 @@ func (h *Handler) resumeSandbox(ctx context.Context, in *sandboxPath) (*reply[Sa
 }
 
 func (h *Handler) forkSandbox(ctx context.Context, in *sandboxBody[sandbox.CopyRequest]) (*reply[Sandbox], error) {
-	return publicReply(h.lifecycle.Fork(ctx, in.ID, value(in.Body)))
+	checked := sandbox.WithForkCheck(ctx, func(source models.Sandbox) error {
+		return checkGrantScopes(ctx, "fork that copies", source.Secrets, source.Policy)
+	})
+	return publicReply(h.lifecycle.Fork(checked, in.ID, value(in.Body)))
 }
 
 // classify maps what a typed error refused to the status and the code that say so; anything untyped broke.
@@ -664,12 +673,14 @@ func classify(err error) (int, models.Code) {
 	var attached *sandbox.AttachedError
 	var execExited *sandbox.ExecExitedError
 	var execRunning *sandbox.ExecRunningError
+	var execLimit *sandbox.ExecLimitError
 	var substrateTimeout *sandbox.SubstrateTimeoutError
 	var tooLarge *http.MaxBytesError
 	var scope *scopeError
 	var fileNotFound *sandbox.FileNotFoundError
 	var notStarted *models.CommandNotStartedError
 	var fileInvalid *sandbox.FileInvalidError
+	var imageGone *sandbox.ImageGoneError
 
 	switch {
 	case errors.As(err, &scope):
@@ -679,7 +690,7 @@ func classify(err error) (int, models.Code) {
 	case errors.As(err, &invalid), errors.As(err, &request), errors.As(err, &fileInvalid), errors.Is(err, image.ErrBadReference):
 		return http.StatusBadRequest, models.CodeInvalidRequest
 	case errors.Is(err, sandboxstate.ErrNotFound), errors.Is(err, sandboxstate.ErrSnapshotNotFound), errors.Is(err, egress.ErrNotFound),
-		errors.Is(err, secret.ErrNotFound), errors.Is(err, image.ErrNotFound), errors.As(err, &fileNotFound):
+		errors.Is(err, secret.ErrNotFound), errors.Is(err, image.ErrNotFound), errors.As(err, &fileNotFound), errors.As(err, &imageGone):
 		return http.StatusNotFound, models.CodeNotFound
 	case errors.As(err, &nameTaken):
 		return http.StatusConflict, models.CodeNameTaken
@@ -691,12 +702,14 @@ func classify(err error) (int, models.Code) {
 		return http.StatusConflict, models.CodeExecExited
 	case errors.As(err, &execRunning):
 		return http.StatusConflict, models.CodeExecRunning
+	case errors.As(err, &execLimit):
+		return http.StatusTooManyRequests, models.CodeExecLimit
 	case errors.As(err, &held), errors.As(err, &attached):
 		return http.StatusConflict, models.CodeInUse
 	case errors.Is(err, models.ErrUnsupported):
 		return http.StatusConflict, models.CodeUnsupported
 	case errors.As(err, &substrateTimeout):
-		return http.StatusGatewayTimeout, models.CodeSubstrateTimeout
+		return http.StatusGatewayTimeout, models.CodeTimeout
 	case errors.As(err, &notStarted):
 		return http.StatusUnprocessableEntity, models.CodeCommandNotStarted
 	default:
@@ -706,6 +719,8 @@ func classify(err error) (int, models.Code) {
 
 // maxBody caps a JSON body, which the decoder holds whole; no route needs more than a few KiB.
 const maxBody = 1 << 20
+
+var bodyTooLarge = fmt.Sprintf("the request body exceeds %d MiB; send a smaller JSON body", maxBody>>20)
 
 // decode reads a JSON body into out. An empty body is the zero value; a field no route knows is refused.
 func decode(w http.ResponseWriter, r *http.Request, out any) error {
@@ -847,6 +862,9 @@ func (h *Handler) message(r *http.Request, code models.Code, err error) string {
 
 // publicText is what err's type made public, else the fixed text its code answers.
 func publicText(code models.Code, err error) string {
+	if code == models.CodeBodyTooLarge {
+		return bodyTooLarge
+	}
 	if public, ok := sandbox.PublicText(err); ok {
 		return public
 	}

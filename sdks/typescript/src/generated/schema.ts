@@ -60,10 +60,10 @@ export interface paths {
             path?: never;
             cookie?: never;
         };
-        /** List sandboxes */
+        /** list active sandboxes */
         get: operations["list-sandboxes"];
         put?: never;
-        /** Create a sandbox */
+        /** create a sandbox @description A create that names secrets also needs the secret:* scope, and one that names a policy needs policy:*; without it the answer is 403 forbidden. */
         post: operations["create-sandbox"];
         delete?: never;
         options?: never;
@@ -82,7 +82,7 @@ export interface paths {
         get: operations["get-sandbox"];
         put?: never;
         post?: never;
-        /** Remove a sandbox */
+        /** delete a sandbox and its files */
         delete: operations["remove-sandbox"];
         options?: never;
         head?: never;
@@ -113,9 +113,9 @@ export interface paths {
             path?: never;
             cookie?: never;
         };
-        /** Read a path as a tar */
+        /** copy a directory out of a running sandbox */
         get: operations["read-archive"];
-        /** Unpack a tar under a directory */
+        /** copy a directory into a running sandbox */
         put: operations["write-archive"];
         post?: never;
         delete?: never;
@@ -168,7 +168,7 @@ export interface paths {
         /** List the execs of a sandbox */
         get: operations["list-execs"];
         put?: never;
-        /** Create an exec, which runs once a client attaches */
+        /** execute a command in a running sandbox */
         post: operations["create-exec"];
         delete?: never;
         options?: never;
@@ -235,9 +235,9 @@ export interface paths {
             path?: never;
             cookie?: never;
         };
-        /** Read a file */
+        /** copy a file out of a running sandbox */
         get: operations["read-file"];
-        /** Write a file */
+        /** copy a file into a running sandbox */
         put: operations["write-file"];
         post?: never;
         /** Delete a path */
@@ -257,7 +257,7 @@ export interface paths {
         };
         get?: never;
         put?: never;
-        /** Fork a sandbox into a new one */
+        /** create a sandbox from a running sandbox's memory and files */
         post: operations["fork-sandbox"];
         delete?: never;
         options?: never;
@@ -325,7 +325,7 @@ export interface paths {
         };
         get?: never;
         put?: never;
-        /** Pause a running sandbox */
+        /** save a sandbox's state and suspend it */
         post: operations["pause-sandbox"];
         delete?: never;
         options?: never;
@@ -360,7 +360,7 @@ export interface paths {
         };
         get?: never;
         put?: never;
-        /** Resume a paused sandbox */
+        /** resume a paused sandbox from its saved state */
         post: operations["resume-sandbox"];
         delete?: never;
         options?: never;
@@ -395,7 +395,7 @@ export interface paths {
         };
         get?: never;
         put?: never;
-        /** Start a stopped sandbox */
+        /** start a stopped sandbox with its saved files */
         post: operations["start-sandbox"];
         delete?: never;
         options?: never;
@@ -412,7 +412,7 @@ export interface paths {
         };
         get?: never;
         put?: never;
-        /** Stop a sandbox */
+        /** stop a sandbox and preserve its files */
         post: operations["stop-sandbox"];
         delete?: never;
         options?: never;
@@ -561,32 +561,56 @@ export interface components {
         CreateRequest: {
             command?: string[];
             env?: string[];
+            /** @description The image to create from. A create names exactly one of image and snapshot. */
             image?: string;
             name?: string;
             policy?: string;
             resources?: components["schemas"]["ResourceRequest"];
             restart?: components["schemas"]["RestartSpec"];
             secrets?: string[];
+            /** @description The snapshot id or name to create from; it takes no command and no restart. A create names exactly one of image and snapshot. */
             snapshot?: string;
             user?: string;
             workdir?: string;
         };
         Destination: {
-            kind: string;
+            /** @enum {string} */
+            kind: "cidr" | "domain" | "domain-suffix" | "group";
             value: string;
         };
         Effective: {
             missing?: boolean;
-            policy: string;
             rules: components["schemas"]["EffectiveRule"][];
         };
         EffectiveRule: {
-            action: string;
+            /** @enum {string} */
+            action: "allow" | "deny";
             destination: components["schemas"]["Destination"];
             id: string;
-            implied?: string;
+            /** @description Set on a rule the policy did not write: dns when a name rule opened DNS, dns-rule when a dns rule did. @enum {string} */
+            implied?: "dns" | "dns-rule";
             ports?: number[];
-            protocol?: string;
+            /** @description Absent for a rule over every protocol. @enum {string} */
+            protocol?: "tcp" | "udp";
+        };
+        EgressDecision: {
+            address?: string;
+            host?: string;
+            /** Format: int64 */
+            port?: number;
+            reason?: string;
+            rule: string;
+            rule_text?: string;
+            /** @enum {string} */
+            source: "proxy" | "host" | "dns";
+            /** Format: date-time */
+            time: string;
+            /** @enum {string} */
+            verdict: "allow" | "deny";
+        };
+        EndMessage: {
+            /** @enum {string} */
+            reason: "stopped" | "removed";
         };
         EntriesResponse: {
             entries: components["schemas"]["FileEntry"][];
@@ -595,6 +619,7 @@ export interface components {
             error: components["schemas"]["ErrorObject"];
         };
         ErrorObject: {
+            /** @description What a program matches on: invalid_request, body_too_large, not_found, sandbox_not_running, sandbox_not_stopped, sandbox_not_paused, sandbox_live, sandbox_failed, no_checkpoint, unsupported, in_use, name_taken, exec_exited, exec_running, exec_limit, no_app, app_ended, unauthorized, forbidden, timeout, command_not_started or internal. A later daemon may add a code, so a client must take one it does not know. */
             code: string;
             /** Format: int64 */
             exit_code?: number;
@@ -611,7 +636,8 @@ export interface components {
             layers?: number;
             present?: boolean;
             reference?: string;
-            status: string;
+            /** @description cached and pulled carry reference and digest; pulling adds layers and bytes, the whole download; layer carries one layer's digest, bytes and present; unpacking carries reference, digest and layers; unpacked carries one layer's digest, layer and layers; building carries nothing more. @enum {string} */
+            status: "cached" | "pulling" | "layer" | "unpacking" | "unpacked" | "building" | "pulled";
         };
         Exec: {
             command: string[];
@@ -624,7 +650,8 @@ export interface components {
             sandbox: string;
             /** Format: date-time */
             started_at: string;
-            state: string;
+            /** @enum {string} */
+            state: "running" | "exited";
             truncated: boolean;
         };
         ExecRequest: {
@@ -641,23 +668,42 @@ export interface components {
             execs: components["schemas"]["Exec"][];
             next: string | null;
         };
+        ExitMessage: {
+            /** @description The exit code, or the code a command that never started ends with (int64). */
+            code: number;
+            /** @description Why the command never started; absent when it started. */
+            error?: string;
+            /** @description The output bytes the buffer dropped before this client read them; absent when it dropped none (int64). */
+            lost_bytes?: number;
+            /** @description The signal that ended the command, or 0 (int64). */
+            signal: number;
+        };
         ExitStatus: {
             /** Format: int64 */
             code: number;
             /** Format: int64 */
             signal: number;
         };
+        FailureError: {
+            /** @description One of the codes of ErrorObject.code. */
+            code: string;
+            message: string;
+        };
+        FailureMessage: {
+            error: components["schemas"]["FailureError"];
+        };
         FileEntry: {
             /** Format: int32 */
             gid: number;
-            /** Format: int32 */
+            /** @description The permission bits with setuid, setgid and sticky as a number, at most 0o7777 (4095); the type is in type (int32). */
             mode: number;
             /** Format: date-time */
             mtime: string;
             name: string;
-            /** Format: int64 */
+            /** @description The logical size in bytes (int64). */
             size: number;
-            type: string;
+            /** @enum {string} */
+            type: "file" | "dir" | "symlink" | "other";
             /** Format: int32 */
             uid: number;
         };
@@ -681,13 +727,16 @@ export interface components {
             snapshot?: string;
             /** Format: date-time */
             started_at?: string;
-            state: string;
+            /** @enum {string} */
+            state: "pending" | "created" | "running" | "paused" | "unresponsive" | "stopped" | "failed";
             stopped_reason?: string;
         };
         KillRequest: {
+            /** @description TERM or KILL, in capitals; absent or empty is TERM. */
             signal?: string;
         };
         MkdirRequest: {
+            /** @description The permission bits as an octal string, as chmod takes them; none is 0755. */
             mode?: string;
             parents?: boolean;
             path: string;
@@ -708,23 +757,11 @@ export interface components {
             rules?: components["schemas"]["RuleText"][];
         };
         PolicyView: {
-            dns: string;
+            /** @enum {string} */
+            dns: "open" | "closed";
             holders?: string[];
             name: string;
             rules: components["schemas"]["Rule"][];
-        };
-        Record: {
-            address?: string;
-            host?: string;
-            /** Format: int64 */
-            port?: number;
-            reason?: string;
-            rule: string;
-            rule_text?: string;
-            source: string;
-            /** Format: date-time */
-            time: string;
-            verdict: string;
         };
         ResourceRequest: {
             /** Format: int64 */
@@ -743,8 +780,8 @@ export interface components {
             vcpus: number;
         };
         Restart: {
-            /** Format: int64 */
-            backoff?: number;
+            /** @description The first wait before a start again, in seconds; 0 or absent is 1. It doubles after each start again, up to 60. Only on-failure and always take it (int64). */
+            backoff: number;
             /** Format: int64 */
             count: number;
             ended: boolean;
@@ -753,22 +790,24 @@ export interface components {
             last_at?: string;
             /** @enum {string} */
             policy: "no" | "on-failure" | "always";
-            /** Format: int64 */
+            /** @description The starts again in a row before the policy gives up; 0 or absent is unlimited. Only on-failure takes it (int64). */
             retries?: number;
         };
         RestartSpec: {
-            /** Format: int64 */
+            /** @description The first wait before a start again, in seconds; 0 or absent is 1. It doubles after each start again, up to 60. Only on-failure and always take it (int64). */
             backoff?: number;
             /** @enum {string} */
             policy: "no" | "on-failure" | "always";
-            /** Format: int64 */
+            /** @description The starts again in a row before the policy gives up; 0 or absent is unlimited. Only on-failure takes it (int64). */
             retries?: number;
         };
         Rule: {
-            action: string;
+            /** @enum {string} */
+            action: "allow" | "deny";
             destination: components["schemas"]["Destination"];
             ports?: number[];
-            protocol?: string;
+            /** @description Absent for a rule over every protocol. @enum {string} */
+            protocol?: "tcp" | "udp";
         };
         RuleText: {
             /** @enum {string} */
@@ -794,7 +833,8 @@ export interface components {
             snapshot?: string;
             /** Format: date-time */
             started_at?: string;
-            state: string;
+            /** @enum {string} */
+            state: "pending" | "created" | "running" | "paused" | "unresponsive" | "stopped" | "failed";
             stopped_reason?: string;
         };
         SandboxesResponse: {
@@ -817,6 +857,7 @@ export interface components {
             updated_at: string;
         };
         SecretRequest: {
+            /** @description The hosts the secret goes to. The first put of a name needs one; a rotation with none keeps the old ones. */
             destinations?: string[];
             placeholder?: string;
             value: string;
@@ -838,7 +879,7 @@ export interface components {
             memory_mib: number;
             name?: string;
             provider: string;
-            /** Format: int64 */
+            /** @description The storage bytes the copy takes on the host, which is neither disk_mib nor the logical size of its files (int64). */
             size: number;
             source: string;
             source_name?: string;
@@ -1075,13 +1116,13 @@ export interface operations {
             path?: never;
             cookie?: never;
         };
-        requestBody?: {
+        requestBody: {
             content: {
                 "application/json": components["schemas"]["CreateRequest"];
             };
         };
         responses: {
-            /** @description The sandbox, or with wait and Accept: application/x-ndjson one CreateLine per pull event and then the sandbox. */
+            /** @description The sandbox, or with wait and Accept: application/x-ndjson one CreateLine per pull event and then the sandbox. An error after the first line ends the stream with a CreateLine whose error is set, and no sandbox. */
             201: {
                 headers: {
                     [name: string]: unknown;
@@ -1204,9 +1245,9 @@ export interface operations {
     };
     "read-archive": {
         parameters: {
-            query?: {
+            query: {
                 /** @description The absolute guest path. */
-                path?: string;
+                path: string;
             };
             header?: never;
             path: {
@@ -1220,7 +1261,7 @@ export interface operations {
             /** @description A tar of the path; a body cut short is a failed read. */
             200: {
                 headers: {
-                    /** @description The guest path's stat as JSON: type, size, mode, uid, gid and mtime. */
+                    /** @description The guest path's stat as JSON: type is file, dir, symlink or other; size is the logical size in bytes; mode is the permission bits as a number, at most 0o7777; then uid, gid and mtime. */
                     "X-Shard-Stat"?: string;
                     [name: string]: unknown;
                 };
@@ -1241,9 +1282,9 @@ export interface operations {
     };
     "write-archive": {
         parameters: {
-            query?: {
+            query: {
                 /** @description The absolute guest directory. */
-                path?: string;
+                path: string;
                 /** @description Who unpacks and owns the files; none is the entrypoint's user. */
                 user?: string;
             };
@@ -1320,7 +1361,7 @@ export interface operations {
     "get-sandbox-egress-log": {
         parameters: {
             query?: {
-                /** @description Keep the stream open; a WebSocket upgrade follows too. */
+                /** @description Keep the stream open until the sandbox stops or is removed; a WebSocket upgrade requires follow=true. */
                 follow?: boolean;
             };
             header?: never;
@@ -1332,23 +1373,23 @@ export interface operations {
         };
         requestBody?: never;
         responses: {
-            /** @description A WebSocket follow: one egress record per text message, until the sandbox stops. */
+            /** @description A WebSocket follow with follow=true: one egress decision per text message, until the sandbox stops, fails or is removed. */
             101: {
                 headers: {
                     [name: string]: unknown;
                 };
                 content?: never;
             };
-            /** @description The egress decisions, oldest first; with follow one record per line until the sandbox stops. */
+            /** @description The egress decisions, oldest first; with follow one decision per line until the sandbox stops, fails or is removed. */
             200: {
                 headers: {
-                    /** @description The older records the read left out; absent when it left out none. */
+                    /** @description The older decisions the read left out; absent when it left out none. */
                     "Shard-Egress-Cut"?: number;
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": components["schemas"]["Record"][];
-                    "application/x-ndjson": components["schemas"]["Record"];
+                    "application/json": components["schemas"]["EgressDecision"][];
+                    "application/x-ndjson": components["schemas"]["EgressDecision"];
                 };
             };
             /** @description Error */
@@ -1409,7 +1450,7 @@ export interface operations {
             };
             cookie?: never;
         };
-        requestBody?: {
+        requestBody: {
             content: {
                 "application/json": components["schemas"]["ExecRequest"];
             };
@@ -1585,9 +1626,9 @@ export interface operations {
     };
     "read-file": {
         parameters: {
-            query?: {
+            query: {
                 /** @description The absolute guest path. */
-                path?: string;
+                path: string;
             };
             header?: never;
             path: {
@@ -1601,7 +1642,7 @@ export interface operations {
             /** @description The file's bytes, chunked to the end; a body cut short is a failed read. */
             200: {
                 headers: {
-                    /** @description The guest path's stat as JSON: type, size, mode, uid, gid and mtime. */
+                    /** @description The guest path's stat as JSON: type is file, dir, symlink or other; size is the logical size in bytes; mode is the permission bits as a number, at most 0o7777; then uid, gid and mtime. */
                     "X-Shard-Stat"?: string;
                     [name: string]: unknown;
                 };
@@ -1622,10 +1663,10 @@ export interface operations {
     };
     "write-file": {
         parameters: {
-            query?: {
+            query: {
                 /** @description The absolute guest path. */
-                path?: string;
-                /** @description The file mode in octal; none is 0644. */
+                path: string;
+                /** @description The file mode in octal, at most 0777; none is 0644. */
                 mode?: string;
                 /** @description Who writes and owns the file; none is the entrypoint's user. */
                 user?: string;
@@ -1645,7 +1686,7 @@ export interface operations {
             };
         };
         responses: {
-            /** @description The file landed. A put needs a Content-Length. */
+            /** @description The file is written. The upload sets Content-Length to its number of bytes. */
             204: {
                 headers: {
                     [name: string]: unknown;
@@ -1665,9 +1706,9 @@ export interface operations {
     };
     "delete-file": {
         parameters: {
-            query?: {
+            query: {
                 /** @description The absolute guest path. */
-                path?: string;
+                path: string;
                 /** @description Take a directory and everything in it. */
                 recursive?: boolean;
             };
@@ -1700,9 +1741,9 @@ export interface operations {
     };
     "stat-file": {
         parameters: {
-            query?: {
+            query: {
                 /** @description The absolute guest path. */
-                path?: string;
+                path: string;
             };
             header?: never;
             path: {
@@ -1716,20 +1757,18 @@ export interface operations {
             /** @description The path's stat, in a header and no body. */
             200: {
                 headers: {
-                    /** @description The guest path's stat as JSON: type, size, mode, uid, gid and mtime. */
+                    /** @description The guest path's stat as JSON: type is file, dir, symlink or other; size is the logical size in bytes; mode is the permission bits as a number, at most 0o7777; then uid, gid and mtime. */
                     "X-Shard-Stat"?: string;
                     [name: string]: unknown;
                 };
                 content?: never;
             };
-            /** @description Error */
+            /** @description Error, as the status alone: a HEAD answer has no body. */
             default: {
                 headers: {
                     [name: string]: unknown;
                 };
-                content: {
-                    "application/json": components["schemas"]["Error"];
-                };
+                content?: never;
             };
         };
     };
@@ -1772,7 +1811,7 @@ export interface operations {
     "get-sandbox-logs": {
         parameters: {
             query?: {
-                /** @description Keep the stream open; a WebSocket upgrade follows too. */
+                /** @description Keep the stream open until the sandbox stops or is removed; a WebSocket upgrade requires follow=true. */
                 follow?: boolean;
             };
             header?: never;
@@ -1784,14 +1823,14 @@ export interface operations {
         };
         requestBody?: never;
         responses: {
-            /** @description A WebSocket follow. Each binary message leads with its stream byte: 1 the output, 3 an EndMessage naming why the follow ended, 5 a FailureMessage. */
+            /** @description A WebSocket follow with follow=true. Each binary message leads with its stream byte: 1 the output, 3 an EndMessage naming why the follow ended, 5 a FailureMessage. */
             101: {
                 headers: {
                     [name: string]: unknown;
                 };
                 content?: never;
             };
-            /** @description The entrypoint's output as it was written; with follow the body streams until the sandbox stops. */
+            /** @description The entrypoint's output as it was written; with follow the body streams until the sandbox stops or is removed. */
             200: {
                 headers: {
                     [name: string]: unknown;
@@ -1813,9 +1852,9 @@ export interface operations {
     };
     "list-dir": {
         parameters: {
-            query?: {
+            query: {
                 /** @description The absolute guest path. */
-                path?: string;
+                path: string;
             };
             header?: never;
             path: {
@@ -1856,7 +1895,7 @@ export interface operations {
             };
             cookie?: never;
         };
-        requestBody?: {
+        requestBody: {
             content: {
                 "application/json": components["schemas"]["MkdirRequest"];
             };
@@ -1922,7 +1961,7 @@ export interface operations {
             };
             cookie?: never;
         };
-        requestBody?: {
+        requestBody: {
             content: {
                 "application/json": components["schemas"]["PolicyAttachRequest"];
             };
@@ -2216,7 +2255,7 @@ export interface operations {
             };
             cookie?: never;
         };
-        requestBody?: {
+        requestBody: {
             content: {
                 "application/json": components["schemas"]["SecretRequest"];
             };
@@ -2245,7 +2284,7 @@ export interface operations {
     "remove-secret": {
         parameters: {
             query?: {
-                /** @description Remove the secret while a sandbox record still names it. */
+                /** @description Remove the secret even when a sandbox still has a grant on it. */
                 force?: boolean;
             };
             header?: never;
@@ -2315,7 +2354,7 @@ export interface operations {
             path?: never;
             cookie?: never;
         };
-        requestBody?: {
+        requestBody: {
             content: {
                 "application/json": components["schemas"]["SnapshotRequest"];
             };

@@ -9,13 +9,13 @@ from ...client import AuthenticatedClient, Client
 from ...models.error import Error
 from ...models.exec_ import Exec
 from ...models.exec_request import ExecRequest
-from ...types import UNSET, Response, Unset
+from ...types import UNSET, Response
 
 
 def _get_kwargs(
     id: str,
     *,
-    body: ExecRequest | Unset = UNSET,
+    body: ExecRequest,
 ) -> dict[str, Any]:
     headers: dict[str, Any] = {}
 
@@ -26,8 +26,7 @@ def _get_kwargs(
         ),
     }
 
-    if not isinstance(body, Unset):
-        _kwargs["json"] = body.to_dict()
+    _kwargs["json"] = body.to_dict()
 
     headers["Content-Type"] = "application/json"
 
@@ -63,9 +62,9 @@ def sync_detailed(
     id: str,
     *,
     client: AuthenticatedClient | Client,
-    body: ExecRequest | Unset = UNSET,
+    body: ExecRequest,
 ) -> Response[Error | Exec]:
-    """Create an exec, which runs once a client attaches"""
+    """execute a command in a running sandbox"""
 
     kwargs = _get_kwargs(
         id=id,
@@ -83,9 +82,9 @@ def sync(
     id: str,
     *,
     client: AuthenticatedClient | Client,
-    body: ExecRequest | Unset = UNSET,
+    body: ExecRequest,
 ) -> Error | Exec | None:
-    """Create an exec, which runs once a client attaches"""
+    """execute a command in a running sandbox"""
 
     return sync_detailed(
         id=id,
@@ -98,9 +97,9 @@ async def asyncio_detailed(
     id: str,
     *,
     client: AuthenticatedClient | Client,
-    body: ExecRequest | Unset = UNSET,
+    body: ExecRequest,
 ) -> Response[Error | Exec]:
-    """Create an exec, which runs once a client attaches"""
+    """execute a command in a running sandbox"""
 
     kwargs = _get_kwargs(
         id=id,
@@ -116,9 +115,9 @@ async def asyncio(
     id: str,
     *,
     client: AuthenticatedClient | Client,
-    body: ExecRequest | Unset = UNSET,
+    body: ExecRequest,
 ) -> Error | Exec | None:
-    """Create an exec, which runs once a client attaches"""
+    """execute a command in a running sandbox"""
 
     return (
         await asyncio_detailed(

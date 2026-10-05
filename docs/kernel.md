@@ -2,17 +2,18 @@
 
 A microVM substrate boots a kernel that shard ships, and never the kernel of the host. There is one
 Linux release for each shard version. It is built once per architecture, and every build of it is
-byte-identical. The VZ provider boots the arm64 kernel, and Firecracker boots the amd64 kernel
-(SHARD-232, shared with M8).
+byte-identical. Each microVM provider boots the kernel for the host's architecture: arm64 on vz,
+and arm64 or amd64 on Firecracker (SHARD-232, shared with M8).
 
 ## What is in it
 
-`packaging/kernel/config-<arch>` is a full `.config` with no modules and no initrd. It builds in
-virtio-blk, virtio-net, virtio-vsock, virtio-console, virtio-pci and virtio-mmio, ext4, overlay,
-squashfs, cgroups, namespaces and seccomp. Since build 2 it also builds in the bridge, netfilter,
-conntrack, NAT and nf_tables, which a container runtime inside the guest needs (SHARD-247). Since
-build 3 it builds in EROFS with xattrs, ACLs and LZ4, for the read-only base disk that Firecracker
-mounts under its overlay (SHARD-265). Both config files started as the `ch_defconfig` of Cloud
+`packaging/kernel/config-<arch>` is a full `.config` with no modules and with initrd support. It
+builds in virtio-blk, virtio-net, virtio-vsock, virtio-console, virtio-pci and virtio-mmio, ext4,
+overlay, cgroups, namespaces and seccomp. The arm64 config also builds in squashfs; the amd64 config
+disables it. The vz provider boots with an initrd that contains `shard-init`. Since build 2 the
+kernel also builds in the bridge, netfilter, conntrack, NAT and nf_tables, which a runtime inside
+the guest needs (SHARD-247). Since build 3 it builds in EROFS with xattrs, ACLs and LZ4, for the
+read-only base disk that Firecracker mounts under its overlay (SHARD-265). Both config files started as the `ch_defconfig` of Cloud
 Hypervisor at its `ch-6.12.8` tag, which hypeman boots on Virtualization.framework in production.
 `olddefconfig` carries them forward to the pinned release. A change to either file means a new
 `Build`.
@@ -45,11 +46,11 @@ built with, then publishes `Image-arm64`, `vmlinux-amd64` and `SHA256SUMS` under
 `kernel-<version>-<build>`. A hash that does not match what the Go code expects fails the workflow,
 so a release can never carry a kernel that the daemon would refuse.
 
-On first use, the daemon fetches the file for the host arch into `<root>/kernel/<tag>/` and fsyncs
-the file and its directory. It hashes the file before every boot. When a release file has changed,
-for example because a host crash truncated it, the daemon fetches it again. When a `SHARD_KERNEL`
-file has changed, the daemon refuses it with `kernel checksum
-mismatch`. `shard inspect` shows the tag in `kernel` on a sandbox that booted one.
+When the daemon creates a microVM provider, it checks the kernel file for the host arch. On first
+use, it fetches the file into `<root>/kernel/<tag>/` and fsyncs the file and its directory. At this
+check, a changed release file, for example one that a host crash truncated, is fetched again. A
+changed `SHARD_KERNEL` file is refused with `kernel checksum mismatch`. The daemon reuses the
+provider and its kernel path for later boots, without another hash check.
 
 ### The dev path
 
@@ -63,8 +64,8 @@ SHARD_KERNEL=/path/to/Image-arm64 SHARD_KERNEL_SHA256=<its sha256> shard daemon 
 The daemon still checks the hash, against the value given. Set both variables or neither, because
 setting just one of them is an error at start. The override is meant for a developer with a fresh
 build, and an install should not use it. Every microVM substrate takes the same override. On a KVM
-box `SHARD_KERNEL` names a `vmlinux-amd64`, and the Firecracker provider boots it the way vz boots
-an `Image-arm64`.
+host, `SHARD_KERNEL` names `vmlinux-amd64` for amd64 or `Image-arm64` for arm64. The Firecracker
+provider boots the kernel for the host's architecture, as vz does.
 
 ## Bumping it
 

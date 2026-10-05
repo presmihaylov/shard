@@ -144,17 +144,19 @@ type Service struct {
 	// execs holds every exec from its create to its end, so an attach and a resize find it by id.
 	execMu sync.Mutex
 	execs  map[string]*execSession
+	// running counts each sandbox's admitted execs until their commands end, and runningAll their sum; both under execMu.
+	running    map[string]int
+	runningAll int
 }
 
 func New(cfg Config) *Service {
-	return &Service{cfg: cfg, locks: map[string]*sandboxLock{}, pulls: map[string]context.CancelCauseFunc{}, execs: map[string]*execSession{}}
+	return &Service{cfg: cfg, locks: map[string]*sandboxLock{}, pulls: map[string]context.CancelCauseFunc{}, execs: map[string]*execSession{}, running: map[string]int{}}
 }
 
 // CreateRequest is what a create names. It is the JSON body of POST /v0/sandboxes.
 type CreateRequest struct {
-	// Image and Snapshot are exclusive, and a create names one of them.
-	Image    string   `json:"image,omitempty"`
-	Snapshot string   `json:"snapshot,omitempty"`
+	Image    string   `json:"image,omitempty" doc:"The image to create from. A create names exactly one of image and snapshot."`
+	Snapshot string   `json:"snapshot,omitempty" doc:"The snapshot id or name to create from; it takes no command and no restart. A create names exactly one of image and snapshot."`
 	Name     string   `json:"name,omitempty"`
 	Command  []string `json:"command,omitempty"`
 	Env      []string `json:"env,omitempty"`
@@ -171,9 +173,9 @@ type CreateRequest struct {
 
 // ResourceRequest is the bounds a create asks for. A nil memory is an omitted --memory, which a snapshot fills, and 0 is no bound.
 type ResourceRequest struct {
-	MemoryMiB *int64 `json:"memory_mib,omitempty"`
-	VCPUs     int    `json:"vcpus" required:"false"`
-	DiskMiB   int64  `json:"disk_mib" required:"false"`
+	MemoryMiB *int64 `json:"memory_mib,omitempty" minimum:"0" maximum:"16777216"`
+	VCPUs     int    `json:"vcpus" required:"false" minimum:"0"`
+	DiskMiB   int64  `json:"disk_mib" required:"false" minimum:"0" maximum:"16777088"`
 }
 
 // bounds is what the record keeps, where an omitted memory is no bound.
@@ -224,6 +226,44 @@ func (e *StateError) Public() string {
 	return fmt.Sprintf("sandbox %s is %s: %s", e.ID, e.State, e.Fix)
 }
 
+// ImageGoneError is a verb that found the sandbox's image files gone from the host; a pull of Image brings them back.
+type ImageGoneError struct {
+	ID string
+	// Image is the record's reference pinned to its digest, so the pull restores the files the sandbox stacks over.
+	Image string
+	Verb  string
+	Err   error
+}
+
+func (e *ImageGoneError) Error() string { return e.Public() + ": " + e.Err.Error() }
+
+func (e *ImageGoneError) Unwrap() error { return e.Err }
+
+// Public names the image and the verb to run again, never the host path the substrate found empty.
+func (e *ImageGoneError) Public() string {
+	return fmt.Sprintf("sandbox %s: its image %s is no longer on this host; pull that image, then %s the sandbox again", e.ID, e.Image, e.Verb)
+}
+
+// imageGone types a substrate's gone image so a public route names the pull; any other error passes through.
+func imageGone(id, ref, digest, verb string, err error) error {
+	if !errors.Is(err, models.ErrImageGone) {
+		return err
+	}
+	gone := &ImageGoneError{ID: id, Image: ref, Verb: verb, Err: err}
+	if digest == "" {
+		return gone
+	}
+	pinned, pinErr := image.Pinned(ref, digest)
+	if pinErr != nil {
+		gone.Err = errors.Join(err, pinErr)
+
+		return gone
+	}
+	gone.Image = pinned
+
+	return gone
+}
+
 // wrongState refuses a verb on the record's state, and names why an unresponsive one is silent, as docs/state-machine.md promises.
 func wrongState(id string, sb models.Sandbox, fix string, code models.Code) *StateError {
 	refused := &StateError{ID: id, State: sb.State, Fix: fix, Code: code}
@@ -262,7 +302,9 @@ func (e *SubstrateTimeoutError) Error() string {
 	return fmt.Sprintf("the provider did not answer within %s for sandbox %s", e.Budget, e.ID)
 }
 
-func (e *SubstrateTimeoutError) Public() string { return e.Error() }
+func (e *SubstrateTimeoutError) Public() string {
+	return e.Error() + "; retry the request when the provider answers"
+}
 
 // sandboxLock is the lock of one sandbox. It counts its holder and its waiters, so the last of them frees it.
 type sandboxLock struct {
@@ -461,11 +503,11 @@ func (s *Service) Prepare(ctx context.Context, req CreateRequest) (models.Sandbo
 	}
 	// A bound past the host's memory never binds: the host runs out of memory first.
 	if s.cfg.HostMemoryMiB > 0 && res.MemoryMiB > s.cfg.HostMemoryMiB {
-		return models.Sandbox{}, &RequestError{Err: fmt.Errorf("--memory %dMiB is more than the %d MiB of memory this host has", res.MemoryMiB, s.cfg.HostMemoryMiB)}
+		return models.Sandbox{}, &RequestError{Err: fmt.Errorf("resources.memory_mib is %d MiB, more than the %d MiB of memory on this host; set it to %d MiB or less", res.MemoryMiB, s.cfg.HostMemoryMiB, s.cfg.HostMemoryMiB)}
 	}
 	// A quota past the host's CPUs never binds, and a large enough one overflows the quota to no bound at all.
 	if s.cfg.HostCPUs > 0 && res.VCPUs > s.cfg.HostCPUs {
-		return models.Sandbox{}, &RequestError{Err: fmt.Errorf("--vcpus %d is more than the %d CPUs this host has", res.VCPUs, s.cfg.HostCPUs)}
+		return models.Sandbox{}, &RequestError{Err: fmt.Errorf("resources.vcpus is %d, more than the %d CPUs on this host; set it to %d or less", res.VCPUs, s.cfg.HostCPUs, s.cfg.HostCPUs)}
 	}
 	// Record the disk bound the sandbox will actually run under, so inspect shows the enforced value, not a bare 0.
 	res.DiskMiB = bundle.DiskBound(res)
@@ -551,13 +593,25 @@ func diskRefused(err error) error {
 	return err
 }
 
-// userRefused makes the request's fault a user or group the image does not list; the substrate's wrapping says nothing the caller can fix.
+// userRefused makes the request's fault a user the guest's tree cannot resolve; the substrate's wrapping says nothing the caller can fix.
 func userRefused(err error) error {
-	if unknown, ok := errors.AsType[*bundle.UnknownUserError](err); ok {
-		return &RequestError{Err: unknown}
+	if refused, ok := userRefusal(err); ok {
+		return refused
 	}
 
 	return err
+}
+
+// userRefusal is a user or group the tree does not list, or a passwd or group the guest made other than a regular file.
+func userRefusal(err error) (*RequestError, bool) {
+	if unknown, ok := errors.AsType[*bundle.UnknownUserError](err); ok {
+		return &RequestError{Err: unknown}, true
+	}
+	if database, ok := errors.AsType[*bundle.UserDatabaseError](err); ok {
+		return &RequestError{Err: database}, true
+	}
+
+	return nil, false
 }
 
 // diskAdmitter reserves the disk of a new sandbox before its record exists; only the VM substrates hold a disk file.
@@ -679,7 +733,7 @@ func (s *Service) Complete(ctx context.Context, id string, req CreateRequest) (e
 	td.Push(func(ctx context.Context) error { return s.cfg.Provider.Remove(ctx, id) })
 
 	if err := s.cfg.Provider.Create(ctx, spec); err != nil {
-		return userRefused(err)
+		return imageGone(id, sb.Image, img.Digest, "create", userRefused(err))
 	}
 
 	if err := s.recordCreated(ctx, spec, img.Digest); err != nil {
@@ -702,7 +756,7 @@ func (s *Service) Complete(ctx context.Context, id string, req CreateRequest) (e
 			return fmt.Errorf("the start of sandbox %s was interrupted, so it may be running and it stays on the host: %w", id, err)
 		}
 
-		return nameCommand(err, spec.Entrypoint)
+		return imageGone(id, sb.Image, img.Digest, "create", nameCommand(err, spec.Entrypoint))
 	}
 
 	// The commit point. The entrypoint is live, so nothing below this line gives anything back: only
@@ -843,7 +897,7 @@ func validate(req CreateRequest) error {
 		return &RequestError{Err: errors.New("the request names both an image and a snapshot: a snapshot already names its image")}
 	}
 	if req.Snapshot != "" && (len(req.Command) != 0 || req.Restart != nil) {
-		return &RequestError{Err: errors.New("a sandbox from a snapshot runs shard-init alone, so it takes no command and no restart policy")}
+		return &RequestError{Err: errors.New("a sandbox from a snapshot cannot take command or restart; omit both fields")}
 	}
 
 	if req.Name != "" {
@@ -1005,7 +1059,7 @@ func (s *Service) Start(ctx context.Context, ref string) (models.Sandbox, error)
 	}
 
 	if err := s.start(ctx, id); err != nil {
-		return models.Sandbox{}, err
+		return models.Sandbox{}, imageGone(id, sb.Image, sb.Digest, "start", err)
 	}
 
 	return s.record(id)
@@ -1126,8 +1180,8 @@ func (s *Service) stop(ctx context.Context, id string, force bool) error {
 		case err != nil:
 			return err
 		case sb.State == models.StateStopped && !status.Alive():
-			// A second stop changes nothing; only a start that failed after the substrate came up makes a stopped record lie.
-			return nil
+			// A second stop changes nothing but the checkpoint, which an earlier stop's failed drop leaves behind (SHARD-592).
+			return s.dropCheckpoint(id)
 		}
 	}
 
@@ -1157,10 +1211,12 @@ func (s *Service) stop(ctx context.Context, id string, force bool) error {
 		return err
 	}
 
-	return s.cfg.Repo.Update(id, func(sb *models.Sandbox) error {
+	err = s.cfg.Repo.Update(id, func(sb *models.Sandbox) error {
 		sb.State = models.StateStopped
 		sb.PID = 0
 		sb.UnresponsiveReason = ""
+		// A stop ends the sandbox, so no resume can read its checkpoint again (SHARD-592).
+		sb.Checkpoint = ""
 		if exit != nil {
 			sb.ExitStatus = exit
 		}
@@ -1174,6 +1230,12 @@ func (s *Service) stop(ctx context.Context, id string, force bool) error {
 
 		return nil
 	})
+	if err != nil {
+		return err
+	}
+
+	// The record no longer names the checkpoint, so its memory and disk copy would leak until rm takes the sandbox (SHARD-592).
+	return s.dropCheckpoint(id)
 }
 
 // awaitStopped makes stop mean stopped. runsc can report a sandbox alive for a moment after a clean
@@ -1394,7 +1456,7 @@ func (s *Service) record(id string) (models.Sandbox, error) {
 // proxyCA is what a fronted sandbox is built to trust. A shard without one fronts nothing, and says so.
 func (s *Service) proxyCA() ([]byte, error) {
 	if s.cfg.ProxyCA == nil {
-		return nil, &RequestError{Err: errors.New("this shard has no proxy CA, so it cannot front a sandbox")}
+		return nil, &RequestError{Err: errors.New("this server needs a proxy certificate authority for policies and secrets; ask its administrator to configure one")}
 	}
 
 	return s.cfg.ProxyCA()

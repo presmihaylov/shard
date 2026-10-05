@@ -9,13 +9,13 @@ from ...client import AuthenticatedClient, Client
 from ...models.error import Error
 from ...models.policy_attach_request import PolicyAttachRequest
 from ...models.sandbox import Sandbox
-from ...types import UNSET, Response, Unset
+from ...types import UNSET, Response
 
 
 def _get_kwargs(
     id: str,
     *,
-    body: PolicyAttachRequest | Unset = UNSET,
+    body: PolicyAttachRequest,
 ) -> dict[str, Any]:
     headers: dict[str, Any] = {}
 
@@ -26,8 +26,7 @@ def _get_kwargs(
         ),
     }
 
-    if not isinstance(body, Unset):
-        _kwargs["json"] = body.to_dict()
+    _kwargs["json"] = body.to_dict()
 
     headers["Content-Type"] = "application/json"
 
@@ -63,7 +62,7 @@ def sync_detailed(
     id: str,
     *,
     client: AuthenticatedClient | Client,
-    body: PolicyAttachRequest | Unset = UNSET,
+    body: PolicyAttachRequest,
 ) -> Response[Error | Sandbox]:
     """Attach a policy to a sandbox"""
 
@@ -83,7 +82,7 @@ def sync(
     id: str,
     *,
     client: AuthenticatedClient | Client,
-    body: PolicyAttachRequest | Unset = UNSET,
+    body: PolicyAttachRequest,
 ) -> Error | Sandbox | None:
     """Attach a policy to a sandbox"""
 
@@ -98,7 +97,7 @@ async def asyncio_detailed(
     id: str,
     *,
     client: AuthenticatedClient | Client,
-    body: PolicyAttachRequest | Unset = UNSET,
+    body: PolicyAttachRequest,
 ) -> Response[Error | Sandbox]:
     """Attach a policy to a sandbox"""
 
@@ -116,7 +115,7 @@ async def asyncio(
     id: str,
     *,
     client: AuthenticatedClient | Client,
-    body: PolicyAttachRequest | Unset = UNSET,
+    body: PolicyAttachRequest,
 ) -> Error | Sandbox | None:
     """Attach a policy to a sandbox"""
 

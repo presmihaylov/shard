@@ -24,14 +24,24 @@ static kern_return_t token_of(int pid, audit_token_t *token) {
 import "C"
 
 import (
+	"errors"
 	"fmt"
 	"syscall"
 
 	"golang.org/x/sys/unix"
 )
 
-// zombie is SZOMB in sys/proc.h, which x/sys does not name.
-const zombie = 5
+// zombie is SZOMB and exiting is P_WEXIT in sys/proc.h, which x/sys does not name.
+const (
+	zombie  = 5
+	exiting = 0x2000
+)
+
+// pidVersion is the audit token word that tells two holders of one pid apart.
+const pidVersion = 7
+
+// inExit is P_WEXIT in sys/proc.h: the process began its exit, which no signal stops.
+const inExit = 0x2000
 
 // handle is the audit token: the kernel signals through it only while its pid version matches the process on the pid.
 type handle struct {
@@ -41,7 +51,7 @@ type handle struct {
 func open(pid int) (handle, error) {
 	var token C.audit_token_t
 	if kr := C.token_of(C.int(pid), &token); kr != C.KERN_SUCCESS {
-		// task_name_for_pid fails alike for a pid nobody holds and for a zombie, which no signal reaches either.
+		// task_name_for_pid fails alike for a pid nobody holds, a process in its exit and a zombie, which no signal stops.
 		if exited(pid) {
 			return handle{}, syscall.ESRCH
 		}
@@ -55,11 +65,18 @@ func open(pid int) (handle, error) {
 	return h, nil
 }
 
-// exited says no live process holds pid: none does, or a zombie does.
+// exited says no live process holds pid: none does, or one in its exit or a zombie does (SHARD-530).
 func exited(pid int) bool {
 	procs, err := unix.SysctlKinfoProcSlice("kern.proc.pid", pid)
 
-	return err == nil && (len(procs) == 0 || procs[0].Proc.P_stat == zombie)
+	return err == nil && (len(procs) == 0 || procs[0].Proc.P_stat == zombie || procs[0].Proc.P_flag&inExit != 0)
+}
+
+// leaving says the process on pid has begun its exit, whose task refuses a token before it turns zombie.
+func leaving(pid int) bool {
+	procs, err := unix.SysctlKinfoProcSlice("kern.proc.pid", pid)
+
+	return err == nil && len(procs) > 0 && procs[0].Proc.P_flag&exiting != 0
 }
 
 func signal(h handle, sig syscall.Signal) error {
@@ -72,6 +89,22 @@ func signal(h handle, sig syscall.Signal) error {
 	}
 
 	return nil
+}
+
+// gone compares the pid version of whoever holds pid now with the token's, since a token outlives its process.
+func gone(h handle, pid int) (bool, error) {
+	if exited(pid) {
+		return true, nil
+	}
+	now, err := open(pid)
+	if errors.Is(err, syscall.ESRCH) || (err != nil && leaving(pid)) {
+		return true, nil
+	}
+	if err != nil {
+		return false, err
+	}
+
+	return now.token[pidVersion] != h.token[pidVersion], nil
 }
 
 func release(handle) error { return nil }

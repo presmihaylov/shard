@@ -248,7 +248,8 @@ func TestSecretHoldersNamesEverySandboxThatGrantsIt(t *testing.T) {
 // A placeholder change a guest still holds is refused as held, so the API answers in_use and names the holder.
 func TestSetSecretRefusesAHeldPlaceholderAsHeld(t *testing.T) {
 	root := t.TempDir()
-	secrets, err := secret.New(filepath.Join(root, "secrets"), func(string) ([]string, error) { return []string{"sandbox1"}, nil })
+	var holders []string
+	secrets, err := secret.New(filepath.Join(root, "secrets"), func(string) ([]string, error) { return holders, nil })
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -257,6 +258,7 @@ func TestSetSecretRefusesAHeldPlaceholderAsHeld(t *testing.T) {
 	if _, err := stores.SetSecret("TOKEN", sandbox.SecretRequest{Value: "old-value-1", Destinations: []string{"a.example.com"}, Placeholder: "sk_test_first001"}); err != nil {
 		t.Fatal(err)
 	}
+	holders = []string{"sandbox1"}
 	_, err = stores.SetSecret("TOKEN", sandbox.SecretRequest{Value: "new-value-2", Placeholder: "sk_test_second02"})
 
 	var held *sandbox.HeldError
@@ -265,6 +267,14 @@ func TestSetSecretRefusesAHeldPlaceholderAsHeld(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), "secret TOKEN is granted to sandbox sandbox1") || !strings.Contains(err.Error(), "ungrant it first") {
 		t.Errorf("the refusal reads %q", err.Error())
+	}
+
+	if err := secrets.Remove("TOKEN"); err != nil {
+		t.Fatal(err)
+	}
+	_, err = stores.SetSecret("TOKEN", sandbox.SecretRequest{Value: "new-value-2", Destinations: []string{"a.example.com"}})
+	if !errors.As(err, &held) || !strings.Contains(err.Error(), "nothing records the placeholder the guest kept") {
+		t.Errorf("a set after a forced remove = %v, want a HeldError for the removed secret", err)
 	}
 }
 
