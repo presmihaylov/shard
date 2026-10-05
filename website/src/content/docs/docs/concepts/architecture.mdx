@@ -40,18 +40,18 @@ The daemon runs these background tasks. `shard daemon status` lists them:
 | --- | --- |
 | `api` | Serves the REST API on `shard.sock`. |
 | `proxy` | The egress proxy on the sandbox bridge. For a sandbox with a policy or a secret, it judges each HTTP and HTTPS request by host name, and puts secret values into the requests to approved destinations. |
-| `dns` | Answers the DNS lookups of every sandbox under a policy. |
-| `egress-log-tailer` | Moves the host's dropped packets into each sandbox's egress log. |
+| `dns` | Answers DNS lookups for every sandbox that has a policy. |
+| `egress-log-tailer` | Copies the host's records of dropped packets into each sandbox's egress log. |
 | `liveness` | Every 5 seconds, checks each running sandbox against the provider and corrects the record. |
 | `restart-policy` | Copies each sandbox's restart count onto its record. |
-| `held-log-rotation` | Keeps each output log that the runtime writes at about 16 MiB, plus one older file. |
-| `log-reopen` | Reopens the daemon's own log file, when `shard daemon --log` names one. |
+| `held-log-rotation` | Caps each output log that the runtime writes at about 16 MiB, and keeps one older file. |
+| `log-reopen` | Reopens the daemon's own log file, if `shard daemon --log` names one. |
 
-A task that fails restarts with a backoff of up to one minute.
+A failed task restarts after a backoff of up to one minute.
 
 ## A sandbox outlives the daemon
 
-The daemon does not hold the sandboxes' processes. When the daemon stops or restarts, every sandbox keeps running. The next daemon checks each record against the provider before it serves, then takes the sandboxes back. A record that says `running` with no process behind it becomes `stopped`, with the reason `daemon restarted and found no process`.
+The daemon does not hold the sandboxes' processes. When the daemon stops or restarts, every sandbox keeps running. When the daemon starts again, it checks each record against the provider before it serves any request, then picks the sandboxes up again. A record that says `running` with no process behind it becomes `stopped`, with the reason `daemon restarted and found no process`.
 
 An `exec` session does not outlive the daemon. A restart disconnects every client and loses the session's output, but the command keeps running inside the sandbox.
 
@@ -59,9 +59,9 @@ A sandbox also outlives its own command. When the command exits, the sandbox sta
 
 ## Remote access
 
-The daemon never listens on TCP. To reach it from another machine, run `shard serve` beside it. `shard serve` listens on `127.0.0.1:2376` by default, behind a proxy that terminates TLS. It rejects a request without a valid token before it connects to the daemon. It reads only the request line and the headers as far as the token, then passes the bytes on unchanged. It needs no root: the daemon gives its socket to a `shard` group when the host has one.
+The daemon never listens on TCP. To reach it from another machine, run `shard serve` on the same host. `shard serve` listens on `127.0.0.1:2376` by default, behind a proxy that terminates TLS. It rejects a request without a valid token before it connects to the daemon. It reads only the request line and the headers up to the token, then passes the bytes on unchanged. It needs no root, because the daemon gives its socket to a `shard` group when the host has one.
 
-A client chooses the daemon this way:
+A client picks the daemon in this order:
 
 1. `--remote <url>`, or `SHARD_REMOTE`, with the token in `SHARD_API_KEY`.
 2. The connection that `shard setup` saved.
@@ -69,4 +69,4 @@ A client chooses the daemon this way:
 
 ## Isolation and the network
 
-The provider decides how strong the wall between the sandbox and the host is. Each sandbox gets its own address. The host, not the sandbox, holds the network rules, and it writes them again on every create, start, resume, fork and policy change. A sandbox never holds a secret value. Its commands see a placeholder, and the egress proxy puts the value into the HTTPS request headers only on the way to a destination that the secret is granted to.
+The provider sets how strongly each sandbox is isolated from the host. Each sandbox gets its own address. The host, not the sandbox, holds the network rules, and it writes them again on every create, start, resume, fork and policy change. A sandbox never holds a secret value. Its commands see a placeholder, and the egress proxy puts the value into the HTTPS request headers only on the way to a destination that the secret is granted to.
