@@ -99,6 +99,44 @@ func TestApplyStopsAtTheFailedStepAndSaysWhatStays(t *testing.T) {
 	}
 }
 
+// The retry hint names shard when it is on PATH, and the full path of the running binary when it is not. (SHARD-743)
+func TestTheRetryHintNamesAReachableCommand(t *testing.T) {
+	broke := func(context.Context) error { return errors.New("nope") }
+	for _, c := range []struct {
+		name string
+		host Host
+		want string
+	}{
+		{"on PATH", Host{LookPath: func(string) (string, error) { return "/usr/local/bin/shard", nil }, Executable: "/tmp/build/shard"}, "Run shard setup again to retry."},
+		{"not on PATH", Host{LookPath: func(string) (string, error) { return "", errors.New("not found") }, Executable: "/tmp/build/shard"}, "Run /tmp/build/shard setup again to retry."},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			ui := &fakeUI{}
+			if err := (&Setup{Host: c.host, UI: ui}).apply(t.Context(), "Setting up", []Step{{"only", broke}}); err == nil {
+				t.Fatal("apply of a failing step returned no error")
+			}
+			if !slices.Contains(ui.printed, c.want) {
+				t.Errorf("printed %q, want it to contain %q", ui.printed, c.want)
+			}
+		})
+	}
+}
+
+// A no-TTY run sets RetrySuffix so the retry hint repeats the flags the run had, since a re-run cannot ask for them. (SHARD-743)
+func TestTheRetryHintRepeatsTheRunsFlags(t *testing.T) {
+	ui := &fakeUI{}
+	broke := func(context.Context) error { return errors.New("nope") }
+	host := Host{LookPath: func(string) (string, error) { return "/usr/local/bin/shard", nil }}
+	s := &Setup{Host: host, UI: ui, RetrySuffix: " --local --provider gvisor --start-at-boot=true -y"}
+	if err := s.apply(t.Context(), "Setting up", []Step{{"only", broke}}); err == nil {
+		t.Fatal("apply of a failing step returned no error")
+	}
+	want := "Run shard setup --local --provider gvisor --start-at-boot=true -y again to retry."
+	if !slices.Contains(ui.printed, want) {
+		t.Errorf("printed %q, want it to contain %q", ui.printed, want)
+	}
+}
+
 func TestApplyPrintsTheLinesOfAProblem(t *testing.T) {
 	ui := &fakeUI{}
 	problem := &Problem{Lines: []string{"Could not download runsc", "Check the network and run shard setup again."}}

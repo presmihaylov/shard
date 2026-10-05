@@ -256,7 +256,6 @@ func savedLines(path string, conn client.Config, env func(string) string) []stri
 		"",
 		"Configuration: " + path,
 		"",
-		"The file stores your API key as plain text and is accessible only to your user.",
 		"From now on, shard commands use this connection automatically.",
 	}
 	if remote := strings.TrimSpace(env(client.RemoteEnv)); remote != "" {

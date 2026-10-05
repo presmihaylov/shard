@@ -74,6 +74,9 @@ func Detect(ctx context.Context, h Host) (Installation, bool, error) {
 	return Installation{Manual: found}, len(found) > 0, nil
 }
 
+// uninstallLabel is the §11 menu label, quoted by the delete hint so the two cannot drift. (SHARD-742)
+const uninstallLabel = "Uninstall shard"
+
 // existing is the §11 menu over an installation Detect found.
 func (s *Setup) existing(ctx context.Context, inst Installation) error {
 	if inst.Manifest == nil {
@@ -87,7 +90,7 @@ func (s *Setup) existing(ctx context.Context, inst Installation) error {
 	choice, err := s.UI.Select(ctx, AskExisting, "What would you like to do?", []term.Option{
 		{Name: "repair", Label: "Check or repair the installation", Default: true},
 		{Name: "upgrade", Label: "Upgrade shard"},
-		{Name: "uninstall", Label: "Uninstall shard"},
+		{Name: "uninstall", Label: uninstallLabel},
 		{Name: "exit", Label: "Exit"},
 	})
 	if err != nil {
@@ -108,6 +111,9 @@ func (s *Setup) existing(ctx context.Context, inst Installation) error {
 
 // repair re-runs the steps of the recorded choices, so the provider and the startup setting stay what they were; removal is the saved remote's review line, if any.
 func (s *Setup) repair(ctx context.Context, m Manifest, service ServiceState, removal string) error {
+	if err := s.sameProvider(ctx, m); err != nil {
+		return err
+	}
 	var problems []string
 	gone := map[string]bool{}
 	for _, f := range m.Files {
@@ -267,8 +273,43 @@ type replacement struct {
 	tmp  string
 }
 
+// sameProvider stops before any change when another provider made the data dir, since the daemon cannot start over it.
+func (s *Setup) sameProvider(ctx context.Context, m Manifest) error {
+	if err := s.rootAccess(ctx); err != nil {
+		return err
+	}
+	owner, fact, err := rootProvider(ctx, s.Host)
+	if err != nil {
+		return fmt.Errorf("read the provider of %s: %w", DataDir, err)
+	}
+	if owner == "" || owner == m.Provider {
+		return nil
+	}
+	remove, err := deleteDataLines(s.Host, owner)
+	if err != nil {
+		return err
+	}
+	lines := slices.Concat(
+		[]string{
+			fact,
+			"This installation uses " + providerTitle(m.Provider) + ", so the daemon cannot start over that data.",
+			"To keep the data, uninstall shard, which keeps it, and run shard setup again with " + providerTitle(owner) + ".",
+		},
+		remove,
+		[]string{"Then run shard setup again and check or repair the installation."},
+	)
+	if err := s.UI.Print(append(lines, "", "No installation changes were made.")...); err != nil {
+		return err
+	}
+
+	return &StoppedError{Step: "Existing shard installation", Err: &Problem{Lines: lines}}
+}
+
 // upgrade fetches and verifies every binary before it asks, and replaces none until all of them passed; removal is the saved remote's review line, if any.
 func (s *Setup) upgrade(ctx context.Context, m Manifest, service ServiceState, removal string) (err error) {
+	if err := s.sameProvider(ctx, m); err != nil {
+		return err
+	}
 	h := s.Host
 	rel, err := LatestRelease(ctx, h)
 	if err != nil {
@@ -792,26 +833,77 @@ func networkLeft(h Host, held bool) ([]string, error) {
 
 const fstabPath = "/etc/fstab"
 
-// dataLeft names the commands that delete the data uninstall keeps on Linux, with the disk image and fstab line of a data dir that cannot clone.
-func dataLeft(h Host) ([]string, error) {
-	sudo := sudoFor(h)
+// dataImageFacts describes the disk image the daemon made for a data dir that cannot clone, with the fstab line that mounts it and the ordered commands that free it. (SHARD-742)
+func dataImageFacts(h Host) (where, free []string, err error) {
 	image := datadir.ImagePath(DataDir)
-	// The mount point outlives the umount, and the lock a Firecracker start takes outlives the image. (SHARD-734)
+	info, err := os.Lstat(rooted(h, image))
+	if errors.Is(err, fs.ErrNotExist) {
+		return nil, nil, nil
+	}
+	if err != nil {
+		return nil, nil, fmt.Errorf("check %s: %w", image, err)
+	}
+	fstab, err := os.ReadFile(rooted(h, fstabPath))
+	if err != nil && !errors.Is(err, fs.ErrNotExist) {
+		return nil, nil, fmt.Errorf("read %s: %w", fstabPath, err)
+	}
+	var mounts []string
+	for line := range strings.SplitSeq(string(fstab), "\n") {
+		if fields := strings.Fields(line); len(fields) > 1 && fields[0] == image {
+			mounts = append(mounts, "  "+strings.TrimSpace(line))
+		}
+	}
+
+	sudo := sudoFor(h)
+	// The lock a Firecracker start takes outlives the image. (SHARD-734)
 	remove := sudo + "rm -r " + DataDir
 	lock := image + ".lock"
-	_, err := os.Lstat(rooted(h, lock))
+	_, err = os.Lstat(rooted(h, lock))
 	if err != nil && !errors.Is(err, fs.ErrNotExist) {
-		return nil, fmt.Errorf("check %s: %w", lock, err)
+		return nil, nil, fmt.Errorf("check %s: %w", lock, err)
 	}
 	if err == nil {
 		remove += " " + lock
 	}
 
-	info, err := os.Lstat(rooted(h, image))
-	if err != nil && !errors.Is(err, fs.ErrNotExist) {
-		return nil, fmt.Errorf("check %s: %w", image, err)
+	free = []string{sudo + "umount " + DataDir}
+	if len(mounts) > 0 {
+		// systemd keeps the mount unit it made from the fstab line until a reload. (SHARD-730)
+		free = append(free, sudo+"sed -i '\\|^"+regexp.QuoteMeta(image)+"[[:space:]]|d' "+fstabPath, sudo+"systemctl daemon-reload")
 	}
-	imaged := err == nil
+	free = append(free, sudo+"rm "+image, remove)
+
+	size := fmt.Sprintf("It lives in the %.1f GiB disk image %s", float64(info.Size())/(1<<30), image)
+	if len(mounts) == 0 {
+		return []string{size + "."}, free, nil
+	}
+	return slices.Concat([]string{size + ", which this line in " + fstabPath + " mounts at boot:"}, mounts), free, nil
+}
+
+// dataLeft names the commands that delete the data uninstall keeps on Linux, with the disk image and fstab line of a data dir that cannot clone.
+func dataLeft(h Host) ([]string, error) {
+	where, free, err := dataImageFacts(h)
+	if err != nil {
+		return nil, err
+	}
+	if where != nil {
+		lines := append(where, "To free the disk and delete the saved data, run:")
+		for _, c := range free {
+			lines = append(lines, "  "+c)
+		}
+		return lines, nil
+	}
+
+	// No image, but the data dir may still carry a stale fstab line, a mount, or a Firecracker lock. (SHARD-730, SHARD-734)
+	sudo := sudoFor(h)
+	image := datadir.ImagePath(DataDir)
+	remove := sudo + "rm -r " + DataDir
+	lock := image + ".lock"
+	if _, lerr := os.Lstat(rooted(h, lock)); lerr == nil {
+		remove += " " + lock
+	} else if !errors.Is(lerr, fs.ErrNotExist) {
+		return nil, fmt.Errorf("check %s: %w", lock, lerr)
+	}
 	fstab, err := os.ReadFile(rooted(h, fstabPath))
 	if err != nil && !errors.Is(err, fs.ErrNotExist) {
 		return nil, fmt.Errorf("read %s: %w", fstabPath, err)
@@ -822,7 +914,6 @@ func dataLeft(h Host) ([]string, error) {
 			mounts = append(mounts, "  "+strings.TrimSpace(line))
 		}
 	}
-
 	_, mounted, err := mountinfo.Under(h.Root, DataDir)
 	if err != nil && !errors.Is(err, fs.ErrNotExist) {
 		return nil, fmt.Errorf("check the mount at %s: %w", DataDir, err)
@@ -832,31 +923,17 @@ func dataLeft(h Host) ([]string, error) {
 	if mounted {
 		unmount = []string{"  " + sudo + "umount " + DataDir}
 	}
-	if !imaged && len(mounts) == 0 && !mounted {
+	if len(mounts) == 0 && !mounted {
 		return []string{"To delete the saved data, run: " + remove}, nil
 	}
-	if !imaged && len(mounts) == 0 {
+	if len(mounts) == 0 {
 		return slices.Concat([]string{"To delete the saved data, run:"}, unmount, []string{"  " + remove}), nil
 	}
-	// systemd keeps the mount unit it made from the fstab line until a reload. (SHARD-730)
 	dropLine := []string{"  " + sudo + "sed -i '\\|^" + regexp.QuoteMeta(image) + "[[:space:]]|d' " + fstabPath, "  " + sudo + "systemctl daemon-reload"}
 	// A line left for a deleted image fails its mount at every boot.
-	if !imaged {
-		return slices.Concat(
-			[]string{"The disk image " + image + " is gone, but this line in " + fstabPath + " still mounts it at boot:"}, mounts,
-			[]string{"To remove the line and delete the saved data, run:"}, unmount, dropLine, []string{"  " + remove},
-		), nil
-	}
-
-	where := fmt.Sprintf("It lives in the %.1f GiB disk image %s", float64(info.Size())/(1<<30), image)
-	free := "To free the disk and delete the saved data, run:"
-	if len(mounts) == 0 {
-		return []string{where + ".", free, "  " + sudo + "umount " + DataDir, "  " + sudo + "rm " + image, "  " + remove}, nil
-	}
-
 	return slices.Concat(
-		[]string{where + ", which this line in " + fstabPath + " mounts at boot:"}, mounts,
-		[]string{free, "  " + sudo + "umount " + DataDir}, dropLine, []string{"  " + sudo + "rm " + image, "  " + remove},
+		[]string{"The disk image " + image + " is gone, but this line in " + fstabPath + " still mounts it at boot:"}, mounts,
+		[]string{"To remove the line and delete the saved data, run:"}, unmount, dropLine, []string{"  " + remove},
 	), nil
 }
 

@@ -475,6 +475,59 @@ func TestRepairShowsTheProblemsBeforeItAsks(t *testing.T) {
 	said(t, ui, "/usr/local/bin/shard-init is missing.", "The background service is not running.", removal)
 }
 
+// Check or repair and upgrade refuse before any change over a data image another provider made, with both ways out (SHARD-742).
+func TestRepairAndUpgradeStopOverAnotherProvidersData(t *testing.T) {
+	want := []string{
+		"The data in /var/lib/shard belongs to Firecracker.",
+		"This installation uses gVisor, so the daemon cannot start over that data.",
+		"To keep the data, uninstall shard, which keeps it, and run shard setup again with Firecracker.",
+		"It lives in the 0.0 GiB disk image /var/lib/shard.xfs, which this line in /etc/fstab mounts at boot:",
+		"  /var/lib/shard.xfs /var/lib/shard xfs loop 0 0",
+		"To delete the saved data, first remove its sandboxes so their network and cgroups go too:", "",
+		"  Start the daemon on that data:", "    sudo shard daemon --provider firecracker", "",
+		"  List sandboxes:", "    sudo shard list --all", "",
+		"  Remove a sandbox:", "    sudo shard remove --force <name>", "",
+		"  Then stop that daemon and free the disk:",
+		"    sudo umount /var/lib/shard",
+		"    sudo sed -i '\\|^/var/lib/shard\\.xfs[[:space:]]|d' /etc/fstab",
+		"    sudo systemctl daemon-reload",
+		"    sudo rm /var/lib/shard.xfs",
+		"    sudo rm -r /var/lib/shard",
+		"Then run shard setup again and check or repair the installation.",
+		"",
+		"No installation changes were made.",
+	}
+	for name, job := range map[string]func(*Setup, Manifest) error{
+		"repair":  func(s *Setup, m Manifest) error { return s.repair(t.Context(), m, ServiceInactive, "") },
+		"upgrade": func(s *Setup, m Manifest) error { return s.upgrade(t.Context(), m, ServiceInactive, "") },
+	} {
+		t.Run(name, func(t *testing.T) {
+			rs := newReleaseServer(t)
+			rs.add("v0.2.0", false, false, true, map[string]string{"shard-linux-amd64": "#!/bin/sh\necho client v0.2.0\n", "shard-init-linux-amd64": "new init"})
+			f := newFakeHost(t)
+			m := linuxInstall("v0.1.0")
+			f.installed(t, m)
+			if err := os.Remove(filepath.Join(f.root, "/usr/local/bin/shard-init")); err != nil {
+				t.Fatalf("remove: %v", err)
+			}
+			f.write(t, "/var/lib/shard.xfs", "")
+			f.write(t, "/etc/fstab", "/var/lib/shard.xfs /var/lib/shard xfs loop 0 0\n")
+			ui := &fakeUI{}
+
+			var stopped *StoppedError
+			if err := job(&Setup{Host: f.host(rs), UI: ui}, m); !errors.As(err, &stopped) {
+				t.Fatalf("%s = %v, want a stop", name, err)
+			}
+			if !slices.Equal(ui.printed, want) {
+				t.Errorf("printed %q, want %q", ui.printed, want)
+			}
+			if len(ui.asked) != 0 || len(f.calls) != 0 || rs.downloads.Load() != 0 {
+				t.Errorf("asked %v, ran %v and downloaded %d before the stop", ui.asked, f.calls, rs.downloads.Load())
+			}
+		})
+	}
+}
+
 func TestRepairFindsADeletedVMShimAndKernel(t *testing.T) {
 	f := newFakeHost(t)
 	h := f.host(nil)

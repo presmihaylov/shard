@@ -107,6 +107,9 @@ func (s *Setup) askStartAtBoot(ctx context.Context) (bool, error) {
 
 // checked runs preflight until it passes; a failure another provider may not have asks for the provider again.
 func (s *Setup) checked(ctx context.Context, l Local) (Local, error) {
+	if err := s.rootAccess(ctx); err != nil {
+		return l, err
+	}
 	failed := map[string][]string{}
 	for {
 		f, err := s.preflight(ctx, l)

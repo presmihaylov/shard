@@ -80,6 +80,10 @@ func (a App) setup(ctx context.Context, args []string) error {
 		return err
 	}
 	run := setup.Setup{Host: host, UI: ui}
+	// Without a terminal the retry hint must carry the flags, since a re-run cannot ask for them.
+	if !ui.t.Interactive() && len(args) > 0 {
+		run.RetrySuffix = " " + strings.Join(args, " ")
+	}
 
 	return setupExit(run.Run(ctx))
 }
