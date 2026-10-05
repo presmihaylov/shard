@@ -196,16 +196,44 @@ func (m *VM) Stop() error {
 const connectTimeout = 5 * time.Second
 
 func (m *VM) Connect(port uint32) (net.Conn, error) {
+	return awaitConnect(port, connectTimeout, func(fn func(net.Conn, error)) func() {
+		return m.vm.SocketDevices()[0].ConnectHandler(port, func(conn *vz.VirtioSocketConnection, err error) {
+			// The explicit nil branch keeps a non-nil net.Conn from wrapping a nil *VirtioSocketConnection.
+			if conn == nil {
+				fn(nil, err)
+
+				return
+			}
+			fn(conn, err)
+		})
+	})
+}
+
+// awaitConnect hands the first answer to the caller; one that lands after the timeout is closed, so no goroutine waits on it and no connection leaks (SHARD-619).
+func awaitConnect(port uint32, timeout time.Duration, start func(fn func(net.Conn, error)) func()) (net.Conn, error) {
 	type result struct {
-		conn *vz.VirtioSocketConnection
+		conn net.Conn
 		err  error
 	}
+	// Buffered so a callback that fires before this goroutine waits still lands its answer, instead of being dropped and the healthy connection closed (SHARD-619).
 	done := make(chan result, 1)
-	go func() {
-		conn, err := m.vm.SocketDevices()[0].Connect(port)
-		done <- result{conn, err}
-	}()
+	var mu sync.Mutex
+	abandoned := false
+	// cancel reclaims the dial's registry slot, so a guest that never answers leaks nothing and a late callback delivers to nobody (SHARD-619).
+	cancel := start(func(conn net.Conn, err error) {
+		mu.Lock()
+		defer mu.Unlock()
+		if abandoned {
+			closeLate(port, conn)
 
+			return
+		}
+		done <- result{conn, err}
+	})
+	defer cancel()
+
+	timer := time.NewTimer(timeout)
+	defer timer.Stop()
 	select {
 	case r := <-done:
 		if r.err != nil {
@@ -213,19 +241,32 @@ func (m *VM) Connect(port uint32) (net.Conn, error) {
 		}
 
 		return r.conn, nil
-	case <-time.After(connectTimeout):
-		// A callback that fires late finds nobody, so the connection it carries is closed here rather than leaked.
-		go func() {
-			r := <-done
-			if r.conn == nil {
-				return
+	case <-timer.C:
+		mu.Lock()
+		abandoned = true
+		mu.Unlock()
+		// A buffered answer was written before abandoned was set, so it arrived before the deadline; honor it rather than close a healthy connection (SHARD-619).
+		select {
+		case r := <-done:
+			if r.err != nil {
+				return nil, fmt.Errorf("connect to guest vsock port %d: %w", port, r.err)
 			}
-			if err := r.conn.Close(); err != nil {
-				log.Printf("vsock port %d: close a connection that answered late: %v", port, err)
-			}
-		}()
 
-		return nil, fmt.Errorf("connect to guest vsock port %d: nothing listens within %s", port, connectTimeout)
+			return r.conn, nil
+		default:
+		}
+
+		return nil, fmt.Errorf("connect to guest vsock port %d: nothing listens within %s", port, timeout)
+	}
+}
+
+// closeLate closes a connection that answered after the caller gave up, so a valid late answer leaks neither the conn nor a goroutine.
+func closeLate(port uint32, conn net.Conn) {
+	if conn == nil {
+		return
+	}
+	if err := conn.Close(); err != nil {
+		log.Printf("vsock port %d: close a connection that answered after the timeout: %v", port, err)
 	}
 }
 
