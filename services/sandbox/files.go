@@ -25,7 +25,7 @@ const DefaultDirMode = 0o755
 
 // MkdirRequest is the body of POST /mkdir. Mode is octal, as a put's mode= is, so "700" reads the way chmod takes it.
 type MkdirRequest struct {
-	Path    string `json:"path"`
+	Path    string `json:"path" minLength:"1"`
 	Mode    string `json:"mode,omitempty" doc:"The permission bits as an octal string, as chmod takes them; none is 0755."`
 	Parents bool   `json:"parents,omitempty"`
 	// User is who the mkdir runs as and who owns the directory, resolved as an exec's user is; empty is the entrypoint's.

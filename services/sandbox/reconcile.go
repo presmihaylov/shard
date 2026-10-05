@@ -190,6 +190,15 @@ func (s *Service) applyReconcile(ctx context.Context, sb models.Sandbox, status 
 		return state, nil
 	}
 
+	// A restart that adopted the substrate and read shard-init's own death keeps that reason, as the liveness tick does (SHARD-610).
+	if status.SupervisorFailed != "" {
+		if err := s.recordSupervisorFailed(sb.ID, status.SupervisorFailed, report); err != nil {
+			return "", err
+		}
+
+		return models.StateStopped, nil
+	}
+
 	err = s.cfg.Repo.Update(sb.ID, func(rec *models.Sandbox) error {
 		rec.State = models.StateStopped
 		rec.PID = 0

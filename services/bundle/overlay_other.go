@@ -15,3 +15,5 @@ func (b Bundle) Unmount() error { return errNoOverlay }
 func (b Bundle) UnmountOverlay() error { return errNoOverlay }
 
 func (b Bundle) Mounted() (bool, error) { return false, errNoOverlay }
+
+func (b Bundle) lateLayer() (string, error) { return b.Upper, nil }

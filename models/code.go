@@ -18,6 +18,7 @@ const (
 	CodeNameTaken         Code = "name_taken"
 	CodeExecExited        Code = "exec_exited"
 	CodeExecRunning       Code = "exec_running"
+	CodeExecLimit         Code = "exec_limit"
 	CodeNoApp             Code = "no_app"
 	CodeAppEnded          Code = "app_ended"
 	CodeUnauthorized      Code = "unauthorized"
