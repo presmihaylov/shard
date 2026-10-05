@@ -13,7 +13,7 @@ import (
 
 // SnapshotRequest names the stopped sandbox a snapshot copies. It is the JSON body of POST /v0/snapshots.
 type SnapshotRequest struct {
-	Sandbox string `json:"sandbox"`
+	Sandbox string `json:"sandbox" minLength:"1"`
 	Name    string `json:"name,omitempty"`
 }
 

@@ -908,6 +908,27 @@ func TestAFailedStartIsLoggedOnlyWhenTheSubstrateBrokeIt(t *testing.T) {
 	}
 }
 
+// A broken start's cause reaches the log through the redactor, like every other raw error (SHARD-550).
+func TestTheLogLineOfABrokenStartCarriesNoSecretValue(t *testing.T) {
+	s := seed(t)
+	s.verbs.err = errors.New("runsc start /var/lib/shard/sandboxes/web: env API_KEY=sk_live_synthetic_0001")
+	redact := func(text string) string {
+		return strings.ReplaceAll(text, "sk_live_synthetic_0001", "<secret API_KEY>")
+	}
+	var out bytes.Buffer
+	handler := api.NewHandler("v-test", fakeProcess{}, s.repo, nil, s.verbs, s.stores, s.egress, redact, &out)
+
+	w := httptest.NewRecorder()
+	handler.ServeHTTP(w, httptest.NewRequestWithContext(t.Context(), http.MethodPost, "/v0/sandboxes/web/start", nil))
+
+	if w.Code != http.StatusInternalServerError {
+		t.Fatalf("the start answered %d, want 500", w.Code)
+	}
+	if line := out.String(); !strings.Contains(line, "start sandbox web: ") || !strings.Contains(line, "API_KEY=<secret API_KEY>") || strings.Contains(line, "sk_live_synthetic_0001") {
+		t.Errorf("the daemon log %q, want the start named with the secret's name and never its value", line)
+	}
+}
+
 // A pause and a resume act on the sandbox that is there, so each answers 200 with its record.
 func TestPauseAndResumeAnswerTheRecord(t *testing.T) {
 	cases := map[string]string{"pause": "paused", "resume": "running"}

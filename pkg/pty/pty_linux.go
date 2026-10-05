@@ -56,3 +56,8 @@ const (
 	getTermios = unix.TCGETS
 	setTermios = unix.TCSETS
 )
+
+// flushInput discards the input nobody has read yet and leaves queued output alone, so a Ctrl-S never holds it.
+func flushInput(fd int) error {
+	return unix.IoctlSetInt(fd, unix.TCFLSH, unix.TCIFLUSH)
+}

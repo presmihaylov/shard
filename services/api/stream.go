@@ -23,8 +23,8 @@ import (
 )
 
 // createExec validates the command and names the exec; nothing runs until a client attaches.
-func (h *Handler) createExec(ctx context.Context, in *sandboxBody[sandbox.ExecRequest]) (*reply[models.Exec], error) {
-	return answer(h.lifecycle.CreateExec(ctx, in.ID, value(in.Body)))
+func (h *Handler) createExec(ctx context.Context, in *sandboxRequest[sandbox.ExecRequest]) (*reply[models.Exec], error) {
+	return answer(h.lifecycle.CreateExec(ctx, in.ID, in.Body))
 }
 
 // execsResponse is a page of one sandbox's execs, oldest id first.
@@ -332,7 +332,7 @@ func (h *Handler) resizeExec(ctx context.Context, in *execBody[sandbox.TerminalS
 
 // describeLogs names the two answers of sandboxLogs: the output as text, or with follow over a WebSocket.
 func describeLogs(registry huma.Registry, op *huma.Operation) {
-	op.Responses["200"] = response("The entrypoint's output as it was written; with follow the body streams until the sandbox stops.", "text/plain", text())
+	op.Responses["200"] = response("The entrypoint's output as it was written; with follow the body streams until the sandbox stops or is removed.", "text/plain", text())
 	op.Responses["101"] = upgrade("A WebSocket follow with follow=true. Each binary message leads with its stream byte: 1 the output, 3 an EndMessage naming why the follow ended, 5 a FailureMessage.", map[string]*huma.Schema{
 		"3": schemaOf[EndMessage](registry),
 		"5": schemaOf[FailureMessage](registry),

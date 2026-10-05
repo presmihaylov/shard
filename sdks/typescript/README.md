@@ -95,7 +95,7 @@ local argument throws the native error instead: an `upload` of a missing file th
 | `ConfigurationError` | A setting is missing or refused. The message never shows the API key, and names a CA file path or the remote when that is what to fix. |
 | `ShardConnectionError` | The daemon is unreachable, or a stream ended before the command did. |
 | `CommandNotStartedError` | The command never ran, as when its binary does not exist. |
-| `APIError` | The daemon refused the request: `AuthenticationError` (401), `PermissionDeniedError` (403), `NotFoundError` (404), `InvalidRequestError` (400, 413), `ConflictError` (409), `UnsupportedError`, `ServerError` (5xx). |
+| `APIError` | The daemon refused the request: `AuthenticationError` (401), `PermissionDeniedError` (403), `NotFoundError` (404), `InvalidRequestError` (400, 413), `ConflictError` (409), `UnsupportedError`, `ServerError` (5xx). An exec past the running-exec bound is a plain `APIError` with status 429 and code `exec_limit`. |
 
 `ProtocolError` is an answer the SDK cannot read, `UnknownLengthError` an upload of unknown size, and
 `UnsafeArchiveError` a tar entry that would land outside its target. A non-zero exit code is not an

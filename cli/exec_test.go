@@ -18,6 +18,7 @@ import (
 	"github.com/coder/websocket"
 
 	"github.com/presmihaylov/shard/models"
+	"github.com/presmihaylov/shard/pkg/pty"
 	"github.com/presmihaylov/shard/services/api"
 	"github.com/presmihaylov/shard/services/client"
 )
@@ -335,6 +336,64 @@ func TestTheResizeForwarderEndsWithItsStop(t *testing.T) {
 	}
 
 	forwarder.stop()
+}
+
+// A resize in flight when the command ends is cancelled, so stop, and the terminal restore after it, wait for no timeout.
+func TestTheResizeForwarderStopCancelsAResizeInFlight(t *testing.T) {
+	pair, err := pty.Open()
+	if err != nil {
+		t.Fatalf("pty.Open: %v", err)
+	}
+	t.Cleanup(func() {
+		if err := pair.Close(); err != nil {
+			t.Errorf("close the pair: %v", err)
+		}
+	})
+
+	entered := make(chan struct{}, 1)
+	release := make(chan struct{})
+	server := httptest.NewServer(http.HandlerFunc(func(_ http.ResponseWriter, r *http.Request) {
+		entered <- struct{}{}
+		select {
+		case <-r.Context().Done():
+		case <-release:
+		}
+	}))
+	defer server.Close()
+	// The server sees no cancel while the body is unread, so the handler is let go before Close waits on it.
+	defer close(release)
+
+	c, err := client.NewRemote(server.URL, "synthetic-token", nil)
+	if err != nil {
+		t.Fatalf("NewRemote: %v", err)
+	}
+
+	warnings := &syncBuffer{}
+	forwarder := forwardResize(t.Context(), App{Err: warnings}, c, "sandbox1", pair.Replica)
+	forwarder.named("1a2b3c4d5e6f7a8b")
+	forwarder.changed <- syscall.SIGWINCH
+
+	select {
+	case <-entered:
+	case <-time.After(5 * time.Second):
+		forwarder.stop()
+		t.Fatal("the forwarder sent no resize")
+	}
+
+	stopped := make(chan struct{})
+	go func() {
+		forwarder.stop()
+		close(stopped)
+	}()
+
+	select {
+	case <-stopped:
+	case <-time.After(2 * time.Second):
+		t.Fatal("stop waits on a resize the server never answers")
+	}
+	if warnings.String() != "" {
+		t.Errorf("the cancelled resize warned %q onto the raw terminal", warnings.String())
+	}
 }
 
 func TestParseExecPreservesArguments(t *testing.T) {
