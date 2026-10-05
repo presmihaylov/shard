@@ -620,6 +620,9 @@ func execOptions(b bundle.Bundle, spec models.ExecSpec) (runc.ExecOptions, error
 	if err != nil {
 		return runc.ExecOptions{}, err
 	}
+	if err := bundle.CheckUserDatabases(b.RootFS); err != nil {
+		return runc.ExecOptions{}, err
+	}
 
 	opts := runc.ExecOptions{
 		Bundle:  b.Dir,

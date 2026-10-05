@@ -577,7 +577,9 @@ and `image prune` leaves it.
   `{"exec", "sandbox", "command", "state": "running"|"exited", "exit_status": {"code",
   "signal"} or null, "started_at", "exited_at", "truncated", "lost_bytes"}`. Errors: 400 for a body that does not decode or
   a request that names no command, 400 naming the user for a `user` the sandbox's tree does not
-  list, or the guest path when its `/etc/passwd` or `/etc/group` is not a regular file, 404, 409
+  list, 400 naming the guest path when its `/etc/passwd` or `/etc/group` is not a regular file,
+  for any exec on runc and sysbox, which read both before every exec, and for one with a `user`
+  on gvisor, 404, 409
   when no command can run in the sandbox, and 429 `exec_limit` while the sandbox runs 32 execs or
   the daemon runs 256. A command
   that is not there or cannot run answers 422 `command_not_started`, and the daemon keeps no record
