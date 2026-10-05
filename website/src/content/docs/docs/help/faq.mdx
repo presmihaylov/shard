@@ -27,7 +27,7 @@ No. shard manages a single host and does not schedule work across a fleet. Each 
 
 ## Which machines can host sandboxes?
 
-Linux on x86-64, and Apple silicon Macs with macOS 14 or later. Any other machine, such as an Intel Mac, can run the CLI and connect to a remote server. There is no build for Linux on ARM. On Windows, run the installer inside WSL 2. [Supported platforms](/docs/install/#supported-platforms) has the full table.
+Linux on x86-64, and Apple silicon Macs with macOS 14 or later. An Intel Mac can run the CLI and connect to a remote server. There is no build for Linux on ARM. On Windows, run the installer inside WSL 2. [Supported platforms](/docs/install/#supported-platforms) has the full table.
 
 ## Which provider should I pick?
 
@@ -41,7 +41,7 @@ Let `shard setup` pick. It recommends Firecracker when it can open `/dev/kvm`, g
 | `firecracker` | Linux with `/dev/kvm` | a microVM | yes | yes |
 | `vz` | Apple silicon, macOS 14 or later | a VM | yes | yes |
 
-Setup never picks `sysbox` or `runc`. **Sysbox is for one tenant per host. Use runc only for code you trust.** On runc, root in the sandbox is root on the host. The [provider matrix](https://github.com/presmihaylov/shard/blob/main/docs/provider.md) lists every limit.
+Setup never recommends `sysbox` or `runc`. **Sysbox is for one tenant per host. Use runc only for code you trust.** On runc, root in the sandbox is root on the host. The [provider matrix](https://github.com/presmihaylov/shard/blob/main/docs/provider.md) lists every limit.
 
 ## Can I change the provider later?
 
@@ -61,7 +61,7 @@ The sandbox keeps running, and `shard exec` still works in it. Only `shard stop`
 
 ## Can a sandbox run systemd?
 
-No. shard's own supervisor is the first process in every sandbox, on every provider.
+Not as its first process. shard's own supervisor is the first process in every sandbox, on every provider.
 
 ## What is the difference between stop, pause, fork and snapshot?
 
