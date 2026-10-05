@@ -24,8 +24,7 @@ import (
 // Name is the substrate, as the record and every refusal name it.
 const Name = "vz"
 
-// cmdline boots the guest onto the console and hands shard-init the vsock transport and the root disk.
-// panic=1 reboots a panicked guest after 1s, which the framework reports as a stop, so a kernel panic ends the VM instead of hanging it (SHARD-641).
+// cmdline makes a panicked guest reboot, so the framework reports its stop.
 const cmdline = "console=hvc0 panic=1 -- -transport vsock -root /dev/vda"
 
 // MinMemoryMiB is the smallest --memory a guest boots with: the kernel and shard-init keep 32 MiB, and the bound needs room under that.
