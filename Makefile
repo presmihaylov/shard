@@ -29,16 +29,16 @@ DARWIN_ARCH ?= $(shell go env GOARCH)
 KERNEL_OUT := bin/kernel
 KERNEL_IMAGE := packaging-kernel-builder
 
-.PHONY: all build build-linux build-shard-init build-shard-init-linux build-shard-vz-shim build-shard-vz-init build-darwin test test-integration e2e-test vet lint lint-fix fmt fmt-check vuln check clean devbox-sync devbox-test itest e2e devbox-e2e e2e-firecracker devbox-demo kernel kernel-reproducible openapi sdk-ts sdk-ts-check sdk-py sdk-py-check
+.PHONY: all build build-linux build-shard-init build-shard-init-linux build-shard-vz-shim build-shard-vz-init build-darwin test test-integration e2e-test vet lint lint-fix fmt fmt-check vuln check clean devbox-sync devbox-test itest e2e devbox-e2e e2e-firecracker devbox-demo kernel kernel-reproducible openapi sdk-ts sdk-ts-check sdk-py sdk-py-check sdk-gate
 
 all: check build
 
 build:
 	go build $(TRIM) -ldflags "$(LDFLAGS)" -o $(BIN) ./cmd/shard
 
-# shard is a Linux-only server tool; the dev Mac cross-compiles and scps the binary.
+# Static, so a Linux runner's default cgo never ties the release binary to that runner's glibc.
 build-linux:
-	GOOS=linux GOARCH=amd64 go build $(TRIM) -ldflags "$(LDFLAGS)" -o $(BIN)-linux-amd64 ./cmd/shard
+	CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build $(TRIM) -ldflags "$(LDFLAGS)" -o $(BIN)-linux-amd64 ./cmd/shard
 
 # The supervisor is PID 1 in the guest, so it is static: the image may be musl or have no libc.
 build-shard-init:
@@ -161,6 +161,10 @@ sdk-py-check:
 		uv run --locked mypy && \
 		uv run --locked python scripts/unasync.py --check && \
 		uv run --locked pytest -q tests
+
+# The SDK release gate: both packages built and installed, both suites and the cross-SDK checks, against the daemon at SHARD_REMOTE.
+sdk-gate:
+	uv run --no-project --python '>=3.11' python sdks/gate/gate.py $(SDK_GATE_FLAGS)
 
 clean:
 	rm -rf bin $(VZ_SHIM_BIN) $(VZ_INIT_BIN)

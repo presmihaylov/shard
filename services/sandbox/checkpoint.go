@@ -122,6 +122,23 @@ func (s *Service) recordPaused(id, dir string) error {
 	return nil
 }
 
+// dropCheckpoint removes the checkpoint a stop leaves behind, so a stopped sandbox keeps none of its pause's memory or disk copy (SHARD-592).
+func (s *Service) dropCheckpoint(id string) error {
+	dir, err := s.cfg.Repo.CheckpointDir(id)
+	if err != nil {
+		return err
+	}
+
+	// A partial .tmp from a cut pause goes too, the way Delete takes both.
+	for _, path := range []string{dir, dir + ".tmp"} {
+		if err := os.RemoveAll(path); err != nil {
+			return fmt.Errorf("remove the checkpoint %s of sandbox %s: %w", path, id, err)
+		}
+	}
+
+	return nil
+}
+
 // reconcileGone settles a failed pause: still running, checkpointed with only the host cleanup failed, or lost by the substrate.
 func (s *Service) reconcileGone(ctx context.Context, id, dir string) error {
 	status, err := s.status(ctx, id, "pause")
@@ -231,7 +248,7 @@ func (s *Service) Resume(ctx context.Context, ref string) (models.Sandbox, error
 		return models.Sandbox{}, &StateError{ID: id, State: sb.State, Fix: "resume takes a paused sandbox", Code: models.CodeSandboxNotPaused}
 	}
 	if sb.Checkpoint == "" {
-		return models.Sandbox{}, &StateError{ID: id, State: sb.State, Fix: "its record names no checkpoint to resume from", Code: models.CodeNoCheckpoint}
+		return models.Sandbox{}, &StateError{ID: id, State: sb.State, Fix: "it has no saved state to resume; remove it and create another sandbox", Code: models.CodeNoCheckpoint}
 	}
 
 	// The lease survived the pause, so this hands back the same address over a namespace built again.

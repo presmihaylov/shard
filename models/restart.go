@@ -17,11 +17,9 @@ const RestartBackoffCap = 60
 
 // RestartSpec is the policy fixed at create: Retries caps the starts again, Backoff is the first wait in seconds.
 type RestartSpec struct {
-	Policy RestartPolicy `json:"policy" enum:"no,on-failure,always"`
-	// Retries caps the starts again in a row, 0 for unlimited; always never gives up, so it takes none.
-	Retries int `json:"retries,omitempty"`
-	// Backoff doubles after each start again, up to RestartBackoffCap.
-	Backoff int `json:"backoff" required:"false"`
+	Policy  RestartPolicy `json:"policy" enum:"no,on-failure,always"`
+	Retries int           `json:"retries,omitempty" minimum:"0" doc:"The starts again in a row before the policy gives up; 0 or absent is unlimited. Only on-failure takes it."`
+	Backoff int           `json:"backoff" required:"false" minimum:"0" maximum:"60" doc:"The first wait before a start again, in seconds; 0 or absent is 1. It doubles after each start again, up to 60. Only on-failure and always take it."`
 }
 
 // Set reports a policy that starts the entrypoint again at all.

@@ -9,7 +9,7 @@ from typing import Generic, Self, TypeVar
 
 from .._frames import CLOSE_NORMAL, OP_BINARY, OP_TEXT, Message
 from .._generated import models
-from .._types import NetworkLogRecord, network_log_record
+from .._types import EgressDecision, egress_decision
 from .._wire import EXIT, FAILURE, STDOUT, failure_of
 from ..errors import ProtocolError, ShardConnectionError, failure_error
 from . import _backend
@@ -126,11 +126,11 @@ def log_chunk(message: Message, what: str) -> bytes | None:
     raise ProtocolError(f"{what}: the daemon sent a message the SDK cannot read: {payload[:64]!r}")
 
 
-def network_log_entry(message: Message, what: str) -> NetworkLogRecord:
+def egress_log_entry(message: Message, what: str) -> EgressDecision:
     if message.opcode != OP_TEXT:
-        raise ProtocolError(f"{what}: the daemon sent a binary message where a record belongs")
+        raise ProtocolError(f"{what}: the daemon sent a binary message where a decision belongs")
     try:
-        record = models.Record.from_dict(json.loads(message.payload))
+        decision = models.EgressDecision.from_dict(json.loads(message.payload))
     except (KeyError, TypeError, ValueError):
-        raise ProtocolError(f"{what}: the daemon sent a record the SDK cannot read") from None
-    return network_log_record(record)
+        raise ProtocolError(f"{what}: the daemon sent a decision the SDK cannot read") from None
+    return egress_decision(decision)

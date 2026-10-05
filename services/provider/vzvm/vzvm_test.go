@@ -25,6 +25,7 @@ import (
 
 	"github.com/presmihaylov/shard/models"
 	"github.com/presmihaylov/shard/pkg/ext4"
+	"github.com/presmihaylov/shard/pkg/pgroup"
 	"github.com/presmihaylov/shard/pkg/pidpin/pidpintest"
 	"github.com/presmihaylov/shard/pkg/vz"
 	"github.com/presmihaylov/shard/services/bundle"
@@ -219,10 +220,10 @@ func TestCreateRefusesAMemoryBoundBelowTheMinimum(t *testing.T) {
 		t.Fatalf("Create = %v, want a refusal that names the sandbox and the minimum", err)
 	}
 
-	// Zero is unbounded on Linux; a VM has no unbounded memory, so the refusal names the provider and the flag instead of a default.
+	// Zero is unbounded on Linux; a VM has no unbounded memory, so the refusal names the provider and the field instead of a default.
 	spec.Resources.MemoryMiB = 0
 	err = h.provider.Create(t.Context(), spec)
-	for _, want := range []string{spec.ID, "provider vz", "--memory 0", "--memory 128MiB"} {
+	for _, want := range []string{spec.ID, "provider vz", "needs resources.memory_mib", "set it to 128 MiB or more"} {
 		if err == nil || !strings.Contains(err.Error(), want) {
 			t.Fatalf("Create with --memory 0 = %v, want %q named", err, want)
 		}
@@ -244,7 +245,7 @@ func TestCheckResourcesRefusesWhatCreateRefuses(t *testing.T) {
 		t.Fatalf("CheckResources(128) = %v, want nil", err)
 	}
 	err := h.provider.CheckResources(models.Resources{MemoryMiB: 128, DiskMiB: 130})
-	if err == nil || !strings.Contains(err.Error(), "use 128 or 131 MiB") {
+	if err == nil || !strings.Contains(err.Error(), "set resources.disk_mib to 128 MiB or 131 MiB") {
 		t.Fatalf("CheckResources(--disk 130) = %v, want the nearest bounds", err)
 	}
 }
@@ -1332,8 +1333,16 @@ func TestAFloodedControlStreamIsLoggedOnceAndTheSandboxGoesOn(t *testing.T) {
 	}
 }
 
-// A guest that floods every control stream is dialed a few times a second at most, and exec and stop still answer (SHARD-408).
+// A guest that floods every control stream, by oversized lines or by queued events, is dialed a few times a second at most, and exec and stop still answer (SHARD-408, SHARD-550).
 func TestAGuestThatFloodsEveryControlStreamIsDialedAFewTimesASecondAtMost(t *testing.T) {
+	for _, flooding := range []string{floodEveryFile, floodEventsFile} {
+		t.Run(flooding, func(t *testing.T) {
+			floodEveryControlStream(t, flooding)
+		})
+	}
+}
+
+func floodEveryControlStream(t *testing.T, flooding string) {
 	h := newHarness(t)
 	spec := h.newSpec(t, "/bin/sh", "-c", "while true; do echo tick; sleep 0.2; done")
 	if err := h.provider.Create(t.Context(), spec); err != nil {
@@ -1346,7 +1355,7 @@ func TestAGuestThatFloodsEveryControlStreamIsDialedAFewTimesASecondAtMost(t *tes
 	if err != nil {
 		t.Fatal(err)
 	}
-	for _, marker := range []string{dialsFile, floodEveryFile} {
+	for _, marker := range []string{dialsFile, flooding} {
 		if err := os.WriteFile(filepath.Join(dir, marker), nil, 0o600); err != nil {
 			t.Fatal(err)
 		}
@@ -1800,10 +1809,13 @@ func runningShimOn(t *testing.T, h *harness) (models.SandboxSpec, int) {
 		t.Fatalf("the guest pids are %d and %d, want two real processes", entrypoint, guest)
 	}
 	t.Cleanup(func() {
-		for _, pid := range []int{-entrypoint, -guest, guest} {
-			if err := syscall.Kill(pid, syscall.SIGKILL); err != nil && !errors.Is(err, syscall.ESRCH) {
-				t.Errorf("end the fake guest %d: %v", pid, err)
+		for _, group := range []int{entrypoint, guest} {
+			if err := pgroup.Kill(group, syscall.SIGKILL); err != nil && !errors.Is(err, syscall.ESRCH) {
+				t.Errorf("end the fake guest's group %d: %v", group, err)
 			}
+		}
+		if err := syscall.Kill(guest, syscall.SIGKILL); err != nil && !errors.Is(err, syscall.ESRCH) {
+			t.Errorf("end the fake guest %d: %v", guest, err)
 		}
 	})
 
@@ -1817,7 +1829,7 @@ func runningShimOn(t *testing.T, h *harness) (models.SandboxSpec, int) {
 		t.Fatalf("Status = %+v, want the shim's pid", status)
 	}
 	t.Cleanup(func() {
-		if err := syscall.Kill(-shim, syscall.SIGKILL); err != nil && !errors.Is(err, syscall.ESRCH) {
+		if err := pgroup.Kill(shim, syscall.SIGKILL); err != nil && !errors.Is(err, syscall.ESRCH) {
 			t.Errorf("end the fake shim %d: %v", shim, err)
 		}
 	})
@@ -2361,5 +2373,25 @@ func TestAdoptStagingKeepsACutPauseStage(t *testing.T) {
 
 	if _, err := os.Stat(tmp); err != nil {
 		t.Errorf("the staging %s is gone after adopt, want vz to keep it to finish on resume: %v", tmp, err)
+	}
+}
+
+// A restore whose checkpoint disk is missing must leave the live disk in place, so a failed copy never bricks a sandbox (SHARD-589).
+func TestRestoreDiskKeepsTheLiveDiskWhenTheCopyFails(t *testing.T) {
+	stateDir, checkpoint := t.TempDir(), t.TempDir()
+	disk := filepath.Join(stateDir, vzvm.DiskFile)
+	if err := os.WriteFile(disk, []byte("live"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	// The checkpoint has no disk, so the copy fails and the swap never runs.
+	if err := vzvm.RestoreDisk("sb-1", checkpoint, disk); err == nil {
+		t.Fatal("restoreDisk with no checkpoint disk = nil, want an error")
+	}
+	got, err := os.ReadFile(disk)
+	if err != nil {
+		t.Fatalf("the live disk after a failed restore: %v, want it kept", err)
+	}
+	if string(got) != "live" {
+		t.Errorf("the live disk = %q, want it unchanged", got)
 	}
 }

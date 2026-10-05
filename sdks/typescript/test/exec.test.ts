@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { afterEach, beforeEach, test } from "node:test";
 import { OutputCapture } from "../src/capture.js";
-import { CommandNotStartedError, ConnectionError, NotFoundError, ProtocolError, UnsupportedError } from "../src/errors.js";
+import { CommandNotStartedError, NotFoundError, ProtocolError, ShardConnectionError, UnsupportedError } from "../src/errors.js";
 import { Session } from "../src/exec.js";
 import { opBinary, opClose } from "../src/frames.js";
 import { Transport } from "../src/transport.js";
@@ -44,6 +44,10 @@ afterEach(async () => {
 
 async function start(capture = new OutputCapture(1024), handlers = {}, signal?: AbortSignal): Promise<Session> {
   return Session.start(transport, "sb_1", execRequest("echo hi", { stdin: false }), capture, handlers, signal);
+}
+
+async function startReading(): Promise<Session> {
+  return Session.start(transport, "sb_1", execRequest("cat", { stdin: true }), new OutputCapture(1024), {});
 }
 
 test("a command starts, streams to the capture and every handler, and answers its exit", async () => {
@@ -112,7 +116,7 @@ test("a stream cut before the exit names the command's state and the bytes lost"
   routes.set(`GET ${execPath}`, () => ({ status: 200, json: record({ state: "running", lost_bytes: 42 }) }));
   const session = await start();
   (await daemon.peer(0)).socket.destroy();
-  await assert.rejects(session.wait(), (err: unknown) => err instanceof ConnectionError && /the command is running, with 42 bytes of output lost$/.test(err.message));
+  await assert.rejects(session.wait(), (err: unknown) => err instanceof ShardConnectionError && /the command is running, with 42 bytes of output lost$/.test(err.message));
 });
 
 test("a cut whose record cannot be read is still a cut", async () => {
@@ -120,7 +124,7 @@ test("a cut whose record cannot be read is still a cut", async () => {
   (await daemon.peer(0)).socket.destroy();
   await assert.rejects(
     session.wait(),
-    (err: unknown) => err instanceof ConnectionError && /ended without an exit status$/.test(err.message) && err.cause instanceof NotFoundError,
+    (err: unknown) => err instanceof ShardConnectionError && /ended without an exit status$/.test(err.message) && err.cause instanceof NotFoundError,
   );
 });
 
@@ -184,7 +188,7 @@ test("a reattach replays from the daemon's oldest byte, so the capture starts ag
 });
 
 test("stdin goes in order, in pieces the daemon reads, and its close is one message", async () => {
-  const session = await start();
+  const session = await startReading();
   const peer = await daemon.peer(0);
   const big = Buffer.alloc(maxPayload + 10, 0x61);
   await Promise.all([session.writeStdin(big), session.writeStdin("tail"), session.closeStdin()]);
@@ -203,9 +207,26 @@ test("stdin goes in order, in pieces the daemon reads, and its close is one mess
 });
 
 test("stdin to a command no stream holds is refused", async () => {
-  const session = await start();
+  const session = await startReading();
   session.disconnect();
-  await assert.rejects(session.writeStdin("x"), (err: unknown) => err instanceof ConnectionError && /is not attached$/.test(err.message));
+  await assert.rejects(session.writeStdin("x"), (err: unknown) => err instanceof ShardConnectionError && /is not attached$/.test(err.message));
+});
+
+test("stdin to a command started without stdin or a terminal is refused, as the daemon drops it", async () => {
+  const session = await start();
+  const peer = await daemon.peer(0);
+  await assert.rejects(session.writeStdin("x"), (err: unknown) => err instanceof TypeError && /started without stdin, so it reads no input$/.test(err.message));
+  peer.exit({ code: 0 });
+  await session.wait();
+  assert.notEqual((await peer.next())?.opcode, opBinary, "no stdin reached the daemon");
+});
+
+test("stdin to a command on a terminal reaches it without stdin set", async () => {
+  const session = await Session.start(transport, "sb_1", execRequest("sh", { stdin: false, tty: { rows: 24, cols: 80 } }), new OutputCapture(1024), {});
+  const peer = await daemon.peer(0);
+  await session.writeStdin("x");
+  const frame = await peer.next();
+  assert.deepEqual([...(frame?.payload ?? [])], [0, 0x78]);
 });
 
 test("kill, resize and inspect reach their routes", async () => {

@@ -124,6 +124,25 @@ func TestABoundBelowTheSentryCostIsRefused(t *testing.T) {
 	}
 }
 
+// TestCheckResourcesRefusesABoundBelowTheSentryCost keeps the refusal before the record, so it leaves nothing in list.
+func TestCheckResourcesRefusesABoundBelowTheSentryCost(t *testing.T) {
+	p := newProvider(t)
+
+	err := p.CheckResources(models.Resources{MemoryMiB: gvisor.MinimumMemoryMiB - 1})
+	if err == nil {
+		t.Fatal("CheckResources accepted a bound the sentry cannot boot under")
+	}
+	if want := "at least " + strconv.Itoa(gvisor.MinimumMemoryMiB) + " MiB"; !strings.Contains(err.Error(), want) {
+		t.Errorf("the refusal is %q, want it to name %q", err, want)
+	}
+
+	for _, miB := range []int64{0, gvisor.MinimumMemoryMiB} {
+		if err := p.CheckResources(models.Resources{MemoryMiB: miB}); err != nil {
+			t.Errorf("CheckResources refused --memory %d: %v", miB, err)
+		}
+	}
+}
+
 // TestTheSwapIsPinnedToNone keeps the throttle a wall. Guest memory is sentry shmem, which is
 // swap-backed, so a host with swap would reclaim under memory.high instead of holding there.
 func TestTheSwapIsPinnedToNone(t *testing.T) {

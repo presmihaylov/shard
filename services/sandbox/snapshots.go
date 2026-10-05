@@ -14,7 +14,7 @@ import (
 
 // SnapshotRequest names the stopped sandbox a snapshot copies. It is the JSON body of POST /v0/snapshots.
 type SnapshotRequest struct {
-	Sandbox string `json:"sandbox"`
+	Sandbox string `json:"sandbox" minLength:"1"`
 	Name    string `json:"name,omitempty"`
 }
 
@@ -64,7 +64,7 @@ func (s *Service) CreateSnapshot(ctx context.Context, req SnapshotRequest) (mode
 	}
 	// A create from the snapshot looks the tag up, so a tag that moved would mount the layer over another image.
 	if img.Digest != sb.Digest {
-		return models.Snapshot{}, &RequestError{Err: fmt.Errorf("sandbox %s runs over %s at %s, and this host now holds that tag at %s, so a snapshot of it could never start", id, sb.Image, sb.Digest, img.Digest)}
+		return models.Snapshot{}, &RequestError{Err: fmt.Errorf("sandbox %s runs over %s at %s, and this host now holds that tag at %s, so a snapshot of it could never start; snapshot a sandbox created from the current %s instead", id, sb.Image, sb.Digest, img.Digest, sb.Image)}
 	}
 
 	return s.cfg.Snapshots.Create(models.Snapshot{
@@ -152,7 +152,7 @@ func (s *Service) readSeed(id string, req CreateRequest) (seeded, error) {
 
 	// The layer holds files only the substrate that wrote it knows how to mount.
 	if snap.Provider != s.cfg.Provider.Name() {
-		return seeded{}, &RequestError{Err: fmt.Errorf("snapshot %s was made on %s and this daemon runs %s: a snapshot starts only on the provider that made it", id, snap.Provider, s.cfg.Provider.Name())}
+		return seeded{}, &RequestError{Err: fmt.Errorf("snapshot %s was made on provider %s, and this server runs %s; create from it on a server that runs %s", id, snap.Provider, s.cfg.Provider.Name(), snap.Provider)}
 	}
 
 	// A create from a snapshot never pulls: a pull could bring another image than the one the layer sits over.
@@ -161,10 +161,10 @@ func (s *Service) readSeed(id string, req CreateRequest) (seeded, error) {
 		return seeded{}, err
 	}
 	if !found {
-		return seeded{}, &RequestError{Err: fmt.Errorf("snapshot %s sits over %s at %s, which this host no longer holds: a create from a snapshot never pulls", id, snap.Image, snap.Digest)}
+		return seeded{}, &RequestError{Err: fmt.Errorf("snapshot %s sits over %s at %s, which this host no longer holds, and a create from a snapshot never pulls; pull %s again if its tag still names %s, then retry, or create a new snapshot", id, snap.Image, snap.Digest, snap.Image, snap.Digest)}
 	}
 	if img.Digest != snap.Digest {
-		return seeded{}, &RequestError{Err: fmt.Errorf("snapshot %s sits over %s at %s, and this host now holds it at %s: its layer fits only the image it was copied over", id, snap.Image, snap.Digest, img.Digest)}
+		return seeded{}, &RequestError{Err: fmt.Errorf("snapshot %s sits over %s at %s, and this host now holds it at %s, and its layer fits only the image it was copied over; create a new snapshot from a sandbox over the current %s", id, snap.Image, snap.Digest, img.Digest, snap.Image)}
 	}
 
 	if req.Resources.DiskMiB == 0 {
@@ -176,12 +176,12 @@ func (s *Service) readSeed(id string, req CreateRequest) (seeded, error) {
 	// A microVM substrate grows the copy of the disk file, and a shrink could cut off blocks the snapshot's files sit on.
 	_, grows := s.cfg.Provider.(diskAdmitter)
 	if grows && req.Resources.DiskMiB < snap.DiskMiB {
-		return seeded{}, &RequestError{Err: fmt.Errorf("--disk %dMiB is smaller than the %d MiB disk of snapshot %s, and a disk only grows: drop --disk, or ask for %d MiB or more", req.Resources.DiskMiB, snap.DiskMiB, id, snap.DiskMiB)}
+		return seeded{}, &RequestError{Err: fmt.Errorf("resources.disk_mib is %d MiB, smaller than the %d MiB disk of snapshot %s, and a disk only grows; omit it or set it to %d MiB or more", req.Resources.DiskMiB, snap.DiskMiB, id, snap.DiskMiB)}
 	}
 	// Every other substrate copies the files onto a new disk, which fails late inside the copy when too small; the source's own bound held them.
 	bound, need := bundle.DiskBound(req.Resources.bounds()), (snap.Size+1<<20-1)>>20
 	if !grows && bound < snap.DiskMiB && bound < need {
-		return seeded{}, &RequestError{Err: fmt.Errorf("--disk %dMiB is smaller than the %d MiB the files of snapshot %s take: drop --disk, or ask for %d MiB or more", req.Resources.DiskMiB, need, id, need)}
+		return seeded{}, &RequestError{Err: fmt.Errorf("resources.disk_mib is %d MiB, smaller than the %d MiB the files of snapshot %s take; omit it or set it to %d MiB or more", req.Resources.DiskMiB, need, id, need)}
 	}
 
 	files, err := s.cfg.Snapshots.Files(id)

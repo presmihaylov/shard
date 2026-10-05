@@ -18,11 +18,12 @@ const (
 	CodeNameTaken         Code = "name_taken"
 	CodeExecExited        Code = "exec_exited"
 	CodeExecRunning       Code = "exec_running"
+	CodeExecLimit         Code = "exec_limit"
 	CodeNoApp             Code = "no_app"
 	CodeAppEnded          Code = "app_ended"
 	CodeUnauthorized      Code = "unauthorized"
 	CodeForbidden         Code = "forbidden"
-	CodeSubstrateTimeout  Code = "substrate_timeout"
+	CodeTimeout           Code = "timeout"
 	CodeCommandNotStarted Code = "command_not_started"
 	CodeInternal          Code = "internal"
 )

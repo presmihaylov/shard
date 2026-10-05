@@ -177,12 +177,12 @@ func TestCreateIsNoRefusalWhenTheSandboxStays(t *testing.T) {
 func TestCreateRefusedByTheProviderLeavesNoRecord(t *testing.T) {
 	r := &recorder{}
 	svc, l := newService(t, r, models.Sandbox{})
-	l.provider.refuse = errors.New("provider fake takes no --memory 0")
+	l.provider.refuse = errors.New("provider fake needs resources.memory_mib")
 
 	_, err := svc.Create(t.Context(), alpine())
 
 	var refused *sandbox.RequestError
-	if !errors.As(err, &refused) || !strings.Contains(err.Error(), "--memory 0") {
+	if !errors.As(err, &refused) || !strings.Contains(err.Error(), "needs resources.memory_mib") {
 		t.Fatalf("create = %v, want a request error with the provider's reason", err)
 	}
 	if slices.Contains(r.calls, "repo.Create") || slices.Contains(r.calls, "images.Pull") {
@@ -295,7 +295,7 @@ func TestCreateRefusesMoreMemoryThanTheHostHas(t *testing.T) {
 	_, err := svc.Create(t.Context(), req)
 
 	var refused *sandbox.RequestError
-	if !errors.As(err, &refused) || !strings.Contains(err.Error(), "--memory 4097MiB is more than the 4096 MiB") {
+	if !errors.As(err, &refused) || !strings.Contains(err.Error(), "resources.memory_mib is 4097 MiB, more than the 4096 MiB of memory on this host; set it to 4096 MiB or less") {
 		t.Fatalf("create = %v, want a request error that names the bound and the host", err)
 	}
 	if slices.Contains(r.calls, "repo.Create") || slices.Contains(r.calls, "images.Pull") {
@@ -328,7 +328,7 @@ func TestCreateRefusesMoreCPUsThanTheHostHas(t *testing.T) {
 		_, err := svc.Create(t.Context(), req)
 
 		var refused *sandbox.RequestError
-		if want := fmt.Sprintf("--vcpus %d is more than the 8 CPUs this host has", cpus); !errors.As(err, &refused) || !strings.Contains(err.Error(), want) {
+		if want := fmt.Sprintf("resources.vcpus is %d, more than the 8 CPUs on this host; set it to 8 or less", cpus); !errors.As(err, &refused) || !strings.Contains(err.Error(), want) {
 			t.Fatalf("create with %d cpus = %v, want a request error that says %q", cpus, err, want)
 		}
 		if slices.Contains(r.calls, "repo.Create") || slices.Contains(r.calls, "images.Pull") {

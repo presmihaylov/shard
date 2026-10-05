@@ -13,6 +13,16 @@ type CreateRequest = components["schemas"]["CreateRequest"];
 /** SandboxRef is a sandbox handle, or its id, id prefix or name. */
 export type SandboxRef = Sandbox | string;
 
+export interface SandboxList {
+  sandboxes: Sandbox[];
+  warnings: string[];
+}
+
+export interface SecretList {
+  secrets: SecretInfo[];
+  warnings: string[];
+}
+
 /** CreateOptions make a sandbox from an image or a snapshot, exactly one of them. */
 export interface CreateOptions {
   image?: string;
@@ -87,11 +97,11 @@ export class Shard {
   }
 
   /** list active sandboxes */
-  async list(options: { all?: boolean } = {}): Promise<Sandbox[]> {
+  async list(options: { all?: boolean } = {}): Promise<SandboxList> {
     const all = options.all || undefined;
-    const rows = await listed("/v0/sandboxes", "sandboxes", (cursor) => this.transport.api.GET("/v0/sandboxes", { params: { query: { all, cursor } } }));
+    const { rows, warnings } = await listed("/v0/sandboxes", "sandboxes", (cursor) => this.transport.api.GET("/v0/sandboxes", { params: { query: { all, cursor } } }));
 
-    return rows.map((row) => new Sandbox(this.transport, records.sandboxInfo(row)));
+    return { sandboxes: rows.map((row) => new Sandbox(this.transport, records.sandboxInfo(row))), warnings };
   }
 
   async version(): Promise<Version> {
@@ -118,7 +128,7 @@ export class Shard {
 export class Policies {
   constructor(private readonly transport: Transport) {}
 
-  /** set makes the policy, or replaces every rule of it; a sandbox it is assigned to enforces the new rules. */
+  /** set makes the policy, or replaces every rule of it; a sandbox it is attached to enforces the new rules. */
   async set(name: string, rules: PolicyRule[]): Promise<Policy> {
     const body = { rules: rules.map(({ action, rule }) => ({ action, rule })) };
 
@@ -132,7 +142,7 @@ export class Policies {
   }
 
   async list(): Promise<Policy[]> {
-    const rows = await listed("/v0/policies", "policies", (cursor) => this.transport.api.GET("/v0/policies", { params: { query: { cursor } } }));
+    const { rows } = await listed("/v0/policies", "policies", (cursor) => this.transport.api.GET("/v0/policies", { params: { query: { cursor } } }));
 
     return rows.map(records.policy);
   }
@@ -142,13 +152,13 @@ export class Policies {
     await this.transport.api.DELETE("/v0/policies/{name}", { params: { path: { name } } });
   }
 
-  /** assign makes the sandbox enforce the policy from its next request on; the sandbox must not be running. */
-  assign(sandbox: SandboxRef, name: string): Promise<SandboxInfo> {
+  /** attach makes the sandbox enforce the policy from its next request on; the sandbox must not be running. */
+  attach(sandbox: SandboxRef, name: string): Promise<SandboxInfo> {
     return changed(sandbox, (id) => this.transport.api.PUT("/v0/sandboxes/{id}/policy", { params: { path: { id } }, body: { policy: name } }));
   }
 
-  /** clear takes the sandbox's policy away, which leaves it the daemon's default. */
-  clear(sandbox: SandboxRef): Promise<SandboxInfo> {
+  /** detach takes the sandbox's policy away, which leaves it the daemon's default. */
+  detach(sandbox: SandboxRef): Promise<SandboxInfo> {
     return changed(sandbox, (id) => this.transport.api.DELETE("/v0/sandboxes/{id}/policy", { params: { path: { id } } }));
   }
 }
@@ -165,10 +175,10 @@ export class Secrets {
     return records.secretInfo(data);
   }
 
-  async list(): Promise<SecretInfo[]> {
-    const rows = await listed("/v0/secrets", "secrets", (cursor) => this.transport.api.GET("/v0/secrets", { params: { query: { cursor } } }));
+  async list(): Promise<SecretList> {
+    const { rows, warnings } = await listed("/v0/secrets", "secrets", (cursor) => this.transport.api.GET("/v0/secrets", { params: { query: { cursor } } }));
 
-    return rows.map(records.secretInfo);
+    return { secrets: rows.map(records.secretInfo), warnings };
   }
 
   /** remove deletes a secret no sandbox holds; force takes it from every sandbox first. */
@@ -181,7 +191,7 @@ export class Secrets {
     return changed(sandbox, (id) => this.transport.api.POST("/v0/sandboxes/{id}/secrets/{name}", { params: { path: { id, name } } }));
   }
 
-  revoke(sandbox: SandboxRef, name: string): Promise<SandboxInfo> {
+  ungrant(sandbox: SandboxRef, name: string): Promise<SandboxInfo> {
     return changed(sandbox, (id) => this.transport.api.DELETE("/v0/sandboxes/{id}/secrets/{name}", { params: { path: { id, name } } }));
   }
 }
@@ -199,7 +209,7 @@ export class Snapshots {
   }
 
   async list(): Promise<Snapshot[]> {
-    const rows = await listed("/v0/snapshots", "snapshots", (cursor) => this.transport.api.GET("/v0/snapshots", { params: { query: { cursor } } }));
+    const { rows } = await listed("/v0/snapshots", "snapshots", (cursor) => this.transport.api.GET("/v0/snapshots", { params: { query: { cursor } } }));
 
     return rows.map(records.snapshot);
   }

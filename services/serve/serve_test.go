@@ -17,6 +17,7 @@ import (
 	"strings"
 	"sync"
 	"sync/atomic"
+	"syscall"
 	"testing"
 	"time"
 
@@ -360,15 +361,18 @@ func TestMintAndVerifyRoundTrip(t *testing.T) {
 		t.Fatalf("Mint: %v", err)
 	}
 
-	sub, scopes, _, err := verify([]byte(testSecret), token)
+	verified, err := verify([]byte(testSecret), token)
 	if err != nil {
 		t.Fatalf("verify: %v", err)
 	}
-	if sub != "ci" {
-		t.Errorf("verify answered %q, want the subject the token names", sub)
+	if verified.ID == "" || verified.ExpiresAt == nil {
+		t.Fatal("verify lost the signed token id or expiry")
 	}
-	if strings.Join(scopes, ",") != "sandbox:read,exec" {
-		t.Errorf("verify answered scopes %v, want the ones the token carries", scopes)
+	if verified.Subject != "ci" {
+		t.Errorf("verify answered %q, want the subject the token names", verified.Subject)
+	}
+	if strings.Join(verified.Scopes, ",") != "sandbox:read,exec" {
+		t.Errorf("verify answered scopes %v, want the ones the token carries", verified.Scopes)
 	}
 }
 
@@ -378,12 +382,12 @@ func TestMintDefaultsToTheEveryVerbScope(t *testing.T) {
 		t.Fatalf("Mint: %v", err)
 	}
 
-	_, scopes, _, err := verify([]byte(testSecret), token)
+	verified, err := verify([]byte(testSecret), token)
 	if err != nil {
 		t.Fatalf("verify: %v", err)
 	}
-	if strings.Join(scopes, ",") != "*" {
-		t.Errorf("verify answered scopes %v, want the default [\"*\"] Mint writes", scopes)
+	if strings.Join(verified.Scopes, ",") != "*" {
+		t.Errorf("verify answered scopes %v, want the default [\"*\"] Mint writes", verified.Scopes)
 	}
 }
 
@@ -393,12 +397,12 @@ func TestVerifyReadsAnAbsentScopesClaimAsEveryVerb(t *testing.T) {
 	token := signed(t, jwt.SigningMethodHS256, []byte(testSecret),
 		jwt.RegisteredClaims{ID: "a-token-id", Subject: "ci", IssuedAt: jwt.NewNumericDate(now), ExpiresAt: jwt.NewNumericDate(now.Add(time.Hour))})
 
-	_, scopes, _, err := verify([]byte(testSecret), token)
+	verified, err := verify([]byte(testSecret), token)
 	if err != nil {
 		t.Fatalf("verify: %v", err)
 	}
-	if len(scopes) != 0 {
-		t.Errorf("verify answered scopes %v, want none, which is every verb", scopes)
+	if len(verified.Scopes) != 0 {
+		t.Errorf("verify answered scopes %v, want none, which is every verb", verified.Scopes)
 	}
 }
 
@@ -451,12 +455,12 @@ func TestMintTokenDefaultsAndWritesTheScopesClaim(t *testing.T) {
 		t.Errorf("the record carries scopes %v, want [\"*\"] by default", minted.Scopes)
 	}
 
-	_, scopes, _, err := verify([]byte(testSecret), minted.Token)
+	verified, err := verify([]byte(testSecret), minted.Token)
 	if err != nil {
 		t.Fatalf("verify: %v", err)
 	}
-	if strings.Join(scopes, ",") != "*" {
-		t.Errorf("the token carries scopes %v, want the written default [\"*\"]", scopes)
+	if strings.Join(verified.Scopes, ",") != "*" {
+		t.Errorf("the token carries scopes %v, want the written default [\"*\"]", verified.Scopes)
 	}
 }
 
@@ -520,6 +524,36 @@ func TestIsHandshakeNeedsAllFourHeaders(t *testing.T) {
 	} {
 		if isHandshake([]byte(head)) {
 			t.Errorf("%s: a partial upgrade was treated as a handshake", name)
+		}
+	}
+}
+
+// Every way a proxied connection ends is quiet as net wraps it, on either platform, and any other failure is not.
+func TestQuietReadsEveryEndOfAProxiedConnection(t *testing.T) {
+	wrap := func(errno syscall.Errno) error {
+		return &net.OpError{Op: "write", Net: "unix", Err: os.NewSyscallError("write", errno)}
+	}
+	for name, err := range map[string]error{
+		"nil":           nil,
+		"eof":           io.EOF,
+		"closed":        net.ErrClosed,
+		"deadline":      os.ErrDeadlineExceeded,
+		"broken pipe":   wrap(syscall.EPIPE),
+		"reset":         wrap(syscall.ECONNRESET),
+		"not connected": wrap(syscall.ENOTCONN),
+		"wrapped":       fmt.Errorf("write stream output: %w", wrap(syscall.ENOTCONN)),
+	} {
+		if !quiet(err) {
+			t.Errorf("%s: %v reads as a failure, want quiet", name, err)
+		}
+	}
+	for name, err := range map[string]error{
+		"permission": wrap(syscall.EACCES),
+		"refused":    wrap(syscall.ECONNREFUSED),
+		"other":      errors.New("read the response status line: boom"),
+	} {
+		if quiet(err) {
+			t.Errorf("%s: %v reads as quiet, want a failure", name, err)
 		}
 	}
 }
@@ -652,8 +686,8 @@ func checkLocalRoutesRefused(t *testing.T, address, name, token string, locals [
 	t.Helper()
 
 	unknown := readAll(t, askRoute(t, address, token, http.MethodGet, "/v0/nonesuch")) //nolint:bodyclose // askRoute closes the body in a cleanup
-	if unknown != forbidden+"\n" {
-		t.Fatalf("%s: an unknown route answered %q, want the forbidden body", name, unknown)
+	if unknown != unrouted+"\n" {
+		t.Fatalf("%s: an unknown route answered %q, want the unrouted body", name, unknown)
 	}
 	for _, r := range locals {
 		path := strings.NewReplacer("{id}", "s1", "{ref...}", "alpine").Replace(r.Pattern)
@@ -995,7 +1029,7 @@ func TestMintWithNoDurationHasNoExpiry(t *testing.T) {
 		t.Errorf("the record carries expires_at %s, want none for a token that never expires", minted.ExpiresAt)
 	}
 
-	if _, _, _, err := verify([]byte(testSecret), minted.Token); err != nil {
+	if _, err := verify([]byte(testSecret), minted.Token); err != nil {
 		t.Fatalf("verify a token with no expiry: %v", err)
 	}
 

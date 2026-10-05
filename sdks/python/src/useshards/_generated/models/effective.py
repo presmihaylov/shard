@@ -17,14 +17,11 @@ T = TypeVar("T", bound="Effective")
 
 @_attrs_define
 class Effective:
-    policy: str
     rules: list[EffectiveRule]
     missing: bool | Unset = UNSET
 
     def to_dict(self) -> dict[str, Any]:
         from ..models.effective_rule import EffectiveRule  # noqa: PLC0415
-
-        policy = self.policy
 
         rules = []
         for rules_item_data in self.rules:
@@ -37,7 +34,6 @@ class Effective:
 
         field_dict.update(
             {
-                "policy": policy,
                 "rules": rules,
             }
         )
@@ -51,8 +47,6 @@ class Effective:
         from ..models.effective_rule import EffectiveRule  # noqa: PLC0415
 
         d = dict(src_dict)
-        policy = d.pop("policy")
-
         rules = []
         _rules = d.pop("rules")
         for rules_item_data in _rules:
@@ -63,7 +57,6 @@ class Effective:
         missing = d.pop("missing", UNSET)
 
         effective = cls(
-            policy=policy,
             rules=rules,
             missing=missing,
         )

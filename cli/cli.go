@@ -140,6 +140,10 @@ var (
 func flagError(flags *flag.FlagSet, err error) error {
 	msg := err.Error()
 	if m := undefinedFlag.FindStringSubmatch(msg); m != nil {
+		if err := globalFlagHint(flags, m[1]); err != nil {
+			return err
+		}
+
 		return fmt.Errorf("unknown flag %s; run %s --help", dashed(m[1]), flags.Name())
 	}
 	if m := valuelessFlag.FindStringSubmatch(msg); m != nil {
@@ -160,6 +164,21 @@ func flagError(flags *flag.FlagSet, err error) error {
 	}
 
 	return err
+}
+
+// globalFlagHint says where a global flag typed after the verb belongs, and is nil for any other flag.
+func globalFlagHint(flags *flag.FlagSet, name string) error {
+	verb := helpKey(flags)
+	if verb == "" {
+		return nil
+	}
+	for _, f := range helps[""].flags {
+		if flagName(f.spell) == name {
+			return fmt.Errorf("%s goes before the verb: shard %s %s", dashed(name), f.spell, verb)
+		}
+	}
+
+	return nil
 }
 
 // wanted is what a flag's value must be: true or false for a bool, else what its placeholder in the help stands for.
@@ -441,17 +460,35 @@ func (a App) client() (*client.Client, error) {
 
 // localClient is the socket for a verb no front forwards, so a remote target fails here, before any dial, and never as a bare 403.
 func (a App) localClient(verb string) (*client.Client, error) {
-	if a.Remote != "" {
-		return nil, fmt.Errorf("shard %s runs on the daemon host only, over its socket, and cannot reach %s; unset --remote and %s to run it there", verb, a.Remote, client.RemoteEnv)
+	if err := a.hostOnly(verb); err != nil {
+		return nil, err
 	}
 
 	return a.client()
+}
+
+// hostOnly refuses a remote for a verb that acts on this host, so it never reports the local result as the server's.
+func (a App) hostOnly(verb string) error {
+	if a.Remote == "" {
+		return nil
+	}
+
+	return fmt.Errorf("shard %s runs on the daemon host only and cannot reach %s; unset --remote and %s to run it there", verb, a.Remote, client.RemoteEnv)
 }
 
 // gotArgs echoes what a verb refused, quoted, so the error shows what was typed rather than a count.
 func gotArgs(args []string) string {
 	if len(args) == 0 {
 		return "none"
+	}
+	// Flag parsing stops at the first argument, so a flag typed after it lands here.
+	for _, arg := range args[1:] {
+		if arg == "--" {
+			break
+		}
+		if len(arg) > 1 && strings.HasPrefix(arg, "-") {
+			return fmt.Sprintf("%q; put the flags before the arguments", args)
+		}
 	}
 
 	return fmt.Sprintf("%q", args)

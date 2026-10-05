@@ -3,10 +3,16 @@
 The Python SDK for [shard](https://github.com/presmihaylov/shard), the sandbox manager. `Shard` is for
 blocking code and `AsyncShard` is for asyncio. Both have the same verbs.
 
-`useshards` is not on PyPI yet, so install it from the repository:
+`useshards` is not on PyPI. Until its GitHub release is published, install it from the repository:
 
 ```
 pip install "useshards @ git+https://github.com/presmihaylov/shard#subdirectory=sdks/python"
+```
+
+Once the GitHub release is published, install its wheel:
+
+```
+pip install https://github.com/presmihaylov/shard/releases/download/sdk-python-v0.1.0/useshards-0.1.0-py3-none-any.whl
 ```
 
 Python 3.11 or later. The runtime dependencies are HTTPX, attrs and typing-extensions.
@@ -79,16 +85,21 @@ asyncio.run(main())
 
 ## Errors
 
-Every exception derives from `ShardError`.
+`ShardError` is the base of every exception below, which covers the daemon, the transport and the settings. A
+bad local argument raises the native exception instead: an `upload` of a missing file raises
+`FileNotFoundError`, and `create()` with neither an image nor a snapshot raises `ValueError`.
 
 | Exception | When |
 |---|---|
-| `ConfigurationError` | A setting is missing or refused. The message names the setting, never its value. |
+| `ConfigurationError` | A setting is missing or refused. The message never shows the API key, and names a CA file path or the remote when that is what to fix. |
 | `ShardConnectionError` | The daemon is unreachable, or a stream ended before the command did. |
 | `CommandNotStartedError` | The command never ran, as when its binary does not exist. |
-| `APIError` | The daemon refused the request: `AuthenticationError` (401), `PermissionDeniedError` (403), `NotFoundError` (404), `InvalidRequestError` (400, 413), `ConflictError` (409), `UnsupportedError`, `ServerError` (5xx). |
+| `APIError` | The daemon refused the request: `AuthenticationError` (401), `PermissionDeniedError` (403), `NotFoundError` (404), `InvalidRequestError` (400, 413), `ConflictError` (409), `UnsupportedError`, `ServerError` (5xx). An exec past the running-exec bound is a plain `APIError` with status 429 and code `exec_limit`. |
 
-A non-zero exit code is not an exception. Read `result.exit_code`.
+`ProtocolError` is an answer the SDK cannot read, `UnknownLengthError` an upload of unknown size or
+one whose source changed size while it was sent, and `UnsafeArchiveError` a `download_dir` tar entry
+the SDK refuses to land, as one outside the destination, named by `entry` and `reason`. A non-zero
+exit code is not an exception. Read `result.exit_code`.
 
 ## The shared suite
 
@@ -99,3 +110,14 @@ A non-zero exit code is not an exception. Read `result.exit_code`.
 ## License
 
 Apache-2.0.
+
+## Lists and errors
+
+`shard.list()` returns `SandboxList(sandboxes, warnings)`. `shard.secrets.list()` returns
+`SecretList(secrets, warnings)`. The async client returns the same result types. The warnings name
+entries the daemon could not read. Both lists collect warnings from every page, keeping each exact
+text once in first-seen order. Check them before you treat the result as complete. Other lists return
+plain lists.
+
+An `APIError` can carry `holders`, the sandbox ids that prevent an operation such as secret removal.
+The attribute is `None` when the error has no holders field.

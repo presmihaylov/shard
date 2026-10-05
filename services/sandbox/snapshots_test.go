@@ -208,7 +208,7 @@ func TestCreateFromASnapshotRefusesWhatTheSnapshotCannotStartOn(t *testing.T) {
 		gone bool
 		want string
 	}{
-		{"another provider", foreign, false, "made on gvisor and this daemon runs fake"},
+		{"another provider", foreign, false, "made on provider gvisor, and this server runs fake; create from it on a server that runs gvisor"},
 		{"a moved tag", moved, false, "now holds it at " + fakeDigest},
 		{"a gone image", baseSnapshot(), true, "never pulls"},
 	}
@@ -288,7 +288,7 @@ func TestCreateFromASnapshotRefusesADiskSmallerThanItsFiles(t *testing.T) {
 	_, err = svc.Create(t.Context(), sandbox.CreateRequest{Snapshot: "base", Resources: sandbox.ResourceRequest{DiskMiB: 1}})
 
 	var refused *sandbox.RequestError
-	if !errors.As(err, &refused) || !strings.Contains(err.Error(), "--disk 1MiB") || !strings.Contains(err.Error(), "MiB or more") {
+	if !errors.As(err, &refused) || !strings.Contains(err.Error(), "resources.disk_mib is 1 MiB") || !strings.Contains(err.Error(), "MiB or more") {
 		t.Fatalf("a 1 MiB --disk over %d bytes of files returned %v, want a refusal that names the disk that works", snap.Size, err)
 	}
 	if slices.Contains(r.calls, "repo.Create") || slices.Contains(r.calls, "provider.Create") {

@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"strings"
 
 	"github.com/presmihaylov/shard/models"
 )
@@ -63,7 +64,10 @@ func (e *FileError) Error() string {
 	return fmt.Sprintf("%s %s: %s", e.Op, e.Path, e.Message)
 }
 
-func (e *FileError) Public() string { return e.Error() }
+// Public quotes the guest path and folds the guest's words onto one line, as either can hold a newline.
+func (e *FileError) Public() string {
+	return fmt.Sprintf("%s %q: %s", e.Op, e.Path, strings.Join(strings.Fields(e.Message), " "))
+}
 
 // Stat asks the guest for the shape of one path. It never follows a final symlink.
 func Stat(conn io.ReadWriter, path string) (models.FileStat, error) {

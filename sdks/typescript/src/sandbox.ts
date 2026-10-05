@@ -1,12 +1,12 @@
 // One sandbox: its record as the last verb answered it, and the verbs, commands and files that act on it.
 import { Commands, type Command, type ExecOptions, type ExecResult } from "./commands.js";
 import { Files } from "./files.js";
-import { follow, logChunk, networkLogEntry } from "./follow.js";
-import { networkLogRecord, records, sandboxInfo, type NetworkLogRecord, type SandboxInfo } from "./records.js";
+import { egressLogEntry, follow, logChunk } from "./follow.js";
+import { egressDecision, records, sandboxInfo, type EgressDecision, type SandboxInfo } from "./records.js";
 import type { Transport } from "./transport.js";
 import * as wire from "./wire.js";
 
-/** refresh hands a sandbox the record another verb answered, as a policy assign; the package does not export it. */
+/** refresh hands a sandbox the record another verb answered, as a policy attach; the package does not export it. */
 export const refresh = Symbol("refresh");
 
 export interface FollowOptions {
@@ -109,18 +109,18 @@ export class Sandbox {
     return follow(this.transport, wire.path("sandboxes", this.id, "logs"), `the logs of sandbox ${this.id}`, logChunk, options.signal);
   }
 
-  /** networkLogs answers the egress decisions the daemon still holds, oldest first. */
-  async networkLogs(): Promise<NetworkLogRecord[]> {
+  /** egressLog answers the egress decisions the daemon still holds, oldest first. */
+  async egressLog(): Promise<EgressDecision[]> {
     const { data } = await this.transport.api.GET("/v0/sandboxes/{id}/egress-log", { params: this.params });
 
-    return records(data, `the network log of sandbox ${this.id}`, networkLogRecord);
+    return records(data, `the egress log of sandbox ${this.id}`, egressDecision);
   }
 
-  /** followNetworkLogs yields each egress decision as the daemon makes it, and ends when the sandbox stops. */
-  followNetworkLogs(options: FollowOptions = {}): AsyncGenerator<NetworkLogRecord> {
-    const what = `the network log of sandbox ${this.id}`;
+  /** followEgressLog yields each egress decision as the daemon makes it, and ends when the sandbox stops. */
+  followEgressLog(options: FollowOptions = {}): AsyncGenerator<EgressDecision> {
+    const what = `the egress log of sandbox ${this.id}`;
 
-    return follow(this.transport, wire.path("sandboxes", this.id, "egress-log"), what, networkLogEntry, options.signal);
+    return follow(this.transport, wire.path("sandboxes", this.id, "egress-log"), what, egressLogEntry, options.signal);
   }
 
   private get params(): { path: { id: string } } {

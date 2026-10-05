@@ -103,7 +103,7 @@ func (f *fakeDaemon) build() {
 			Environments: bundle.Opener(func(id string) (string, error) { return f.repoSvc.Dir(id) }),
 			ProxyCA: func() ([]byte, error) {
 				if f.proxyCA == nil {
-					return nil, errors.New("this shard has no proxy CA, so it cannot front a sandbox")
+					return nil, errors.New("this server needs a proxy certificate authority for policies and secrets; ask its administrator to configure one")
 				}
 
 				return f.proxyCA, nil

@@ -19,7 +19,9 @@ This is the final shape of every verb, flag and output of `shard`. The SDKs buil
 
 ## Global options
 
-They go before the verb.
+They go before the verb. One typed after it fails, and the error shows where it goes. A verb's own
+options go before its arguments, as `shard logs -f web`: one typed after an argument is an argument,
+and the error says to put the options first.
 
 | flag | what |
 | --- | --- |
@@ -40,8 +42,10 @@ to stdout. Use it only on localhost or through a trusted encrypted network. `SHA
 `http` remote is refused before the client dials.
 
 `pull`, `image list`, `image remove`, `image prune` and `daemon status` run on the daemon host only,
-because `shard serve` refuses their routes. With `--remote` or `SHARD_REMOTE` set, each one fails
-before it dials, and its error names the verb.
+because `shard serve` refuses their routes. `daemon`, `serve`, `info`, `tokens mint`, `tokens list`
+and `tokens revoke` act on the files and the processes of this host, so they run there only too.
+With `--remote` or `SHARD_REMOTE` set, each one fails before it dials or touches the host, and its
+error names the verb. `tokens scopes` asks the server, so it follows the remote.
 
 ## Names and aliases
 
@@ -50,7 +54,8 @@ A verb has one name. `list` and `remove` take `ls` and `rm` as aliases, at the t
 prints the same help. The help never lists an alias.
 
 `exec` takes `-i` and `--interactive`, `-t` and `--tty`, and `-it` for both. `logs` and
-`policy logs` take `-f` and `--follow`. `run` takes `-d` and `--detach`.
+`policy logs` take `-f` and `--follow`. `run` takes `-d` and `--detach`. `secret set` takes `--dest`
+and `--destination`.
 
 ## Verbs
 
@@ -70,11 +75,11 @@ a dash is a verb with no `--format`.
 | `inspect <ref>` | `--format` | json | the record |
 | `stop <ref>` | | - | the id |
 | `start <ref>` | | - | the id |
-| `remove <ref>` | `--force` | - | the id |
+| `remove <ref>` | `--force` | - | the id, or nothing for a missing sandbox with `--force` |
 | `pause <ref>` | | - | the id |
 | `resume <ref>` | | - | the id |
 | `fork <ref>` | `--name` | - | the new id |
-| `cp <src> <ref>:<path>`, `cp <ref>:<path> <dst>` | `--user` | - | nothing |
+| `cp <src> <ref>:<path>`, `cp <ref>:<path> <dst>` | `--user`, on a copy in only | - | nothing |
 
 `<ref>` is a sandbox id or its `--name`. A verb that prints the id prints the id even when it was given the name.
 
@@ -132,10 +137,10 @@ shard: sandbox <id> is paused: resume it with shard resume <id>
 nothing: `list --format table` prints what `list` prints.
 
 **A `--format json` call writes one value or nothing.** JSON is one value, indented by two spaces, and a list verb
-prints an array. A failure to parse, to reach the daemon, or to encode writes nothing to stdout. A
-list with warnings, or a `daemon status` with a task in backoff, still writes the whole value, then
-the warnings or the error on stderr, and exits 1. `version --format json` with no daemon writes
-nothing and fails.
+prints an array. `tokens mint` is the one exception, and writes its value on one line. A failure to
+parse, to reach the daemon, or to encode writes nothing to stdout. A list with warnings, or a
+`daemon status` with a task in backoff, still writes the whole value, then the warnings or the error
+on stderr, and exits 1. `version --format json` with no daemon writes nothing and fails.
 
 ### JSON
 
@@ -184,7 +189,8 @@ absent when empty:
 
 `restart.policy` is `no`, `on-failure` or `always`. `retries` is absent for no cap, `backoff` is the
 first wait in seconds, `count` is the starts again on this run, and `last_at` is absent before the
-first one.
+first one. `gave_up` says an exit asked for a start again after the retries were spent, and `ended`
+says no start again follows the last exit.
 
 `inspect` prints one sandbox record, and adds `egress` when the record names a policy:
 
@@ -199,7 +205,6 @@ first one.
   "policy": "api-only",
   "created_at": "2026-10-01T09:30:00Z",
   "egress": {
-    "policy": "api-only",
     "rules": [
       {"action": "allow", "destination": {"kind": "group", "value": "dns"}, "protocol": "udp", "ports": [53], "id": "1", "implied": "dns"},
       {"action": "allow", "destination": {"kind": "group", "value": "dns"}, "protocol": "tcp", "ports": [53], "id": "2", "implied": "dns"},
@@ -212,9 +217,9 @@ first one.
 `egress.rules` is the order the host and the proxy enforce. `id` is the place of a rule in it, from
 `"1"`. `action` is `allow` or `deny`, and `destination.kind` is `cidr`, `domain`, `domain-suffix` or
 `group`. `protocol` and `ports` are absent for a rule over every protocol. `implied` is present on a
-rule the policy did not write: `dns` when a name rule opened DNS, `dns rule` when a `dns` rule did.
-When the store no longer holds the policy, `egress` is `{"policy": "<name>", "missing": true, "rules":
-null}` and the sandbox reaches nothing.
+rule the policy did not write: `dns` when a name rule opened DNS, `dns-rule` when a `dns` rule did.
+`policy` names the policy once, at the top. When the store no longer holds it, `egress` is
+`{"missing": true, "rules": []}` and the sandbox reaches nothing.
 
 `snapshot list` prints an array of snapshot records, below.
 
@@ -336,7 +341,7 @@ shard snapshot inspect web-base
 shard snapshot remove web-base
 ```
 
-`snapshot create` refuses a running or paused sandbox. `create --snapshot` takes no image and
+`snapshot create` takes a stopped sandbox only. `create --snapshot` takes no image and
 never pulls: the image must be on the host at the digest the snapshot recorded, and only the
 provider that made the snapshot starts it. With no `--memory` or `--disk`, the new sandbox takes the
 bounds its source ran under. On Firecracker and `vz` a larger `--disk` grows the snapshot's disk and
