@@ -31,11 +31,12 @@ shard is pre-alpha, so a release can change the API, the CLI and the SDKs withou
 **Install and setup**
 
 - With a saved remote connection, `shard setup` opens on the menu of that connection: check, replace, remove, run sandboxes on this machine, or exit. `--local`, `--provider` or `--start-at-boot` picks the local choice.
-- Setup says that a saved connection stores the API key as plain text before it asks whether to save it.
+- Setup says that a saved connection stores the API key as plain text before it asks whether to save it, not after the save.
 - A local setup with no terminal names every flag that it still needs in one error, before any check, and exits 1.
-- On Linux, setup also finds a Firecracker disk image in `/var/lib/shard`. When the data belongs to another provider, setup prints the commands that keep or delete it. Repair and upgrade stop with the same advice before they change anything.
+- On Linux, setup also finds a Firecracker disk image in `/var/lib/shard`. When the data belongs to another provider, setup prints the commands that keep or delete it. Without a disk image, the delete steps first remove the sandboxes through a daemon of that provider, so their network and cgroups go too. Repair and upgrade stop with the same advice before they change anything.
 - On Linux, when only root can read the sandbox records, setup asks for administrator access before its checks. It skips a record that it cannot read, as the daemon does.
-- After a failed step, the retry hint names a command that runs: `shard setup`, or the full path of the binary when `shard` is not on `PATH`.
+- After a failed step, the retry hint names a command that runs: `shard setup`, or the full path of the binary when `shard` is not on `PATH`. With no terminal, the hint also repeats the flags of the run.
+- A menu or the step list that gets shorter no longer leaves old lines on the screen.
 - The tool download shows its progress for `runsc`, `firecracker` and `sysbox`. A download that gets no data for 30 seconds fails with `no data for 30s`.
 - A local setup ends with `shard <version> is set up`, and a repair with `shard <version> is repaired`.
 - Setup prints `sudo` only where you need it: never before a shard command on a Mac, and never when you are logged in as root.
