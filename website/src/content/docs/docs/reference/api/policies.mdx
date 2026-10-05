@@ -1,0 +1,136 @@
+---
+title: Policies
+description: The routes that store the network policies a sandbox can attach.
+sidebar:
+  order: 6
+---
+
+This stores a network policy named `web` with one rule. A sandbox with this policy can reach `api.example.com`, and the policy drops whatever its rules do not allow:
+
+```sh
+curl --unix-socket /var/lib/shard/shard.sock -X PUT -H 'Content-Type: application/json' -d '{"rules":[{"action":"allow","rule":"api.example.com"}]}' http://localhost/v0/policies/web
+```
+
+A create names the policy, and so does an [attach](/docs/reference/api/sandboxes/#attach-a-policy-to-a-sandbox) to a stopped sandbox.
+
+{/* make openapi writes this part from the routes. Edit the routes, not this part. */}
+
+Each route answers an error with the [Error](/docs/reference/api/#error) body, unless its responses say otherwise.
+
+## List policies
+
+`GET /v0/policies` · scope `policy:*`
+
+**Parameters**
+
+| Name | In | Type | Required | Description |
+| --- | --- | --- | --- | --- |
+| `limit` | query | integer (int64) | no | The most rows a page holds; none answers the whole list. At least 1. |
+| `cursor` | query | string | no | The next of the page before; this page starts after it. |
+
+**Responses**
+
+| Status | Body |
+| --- | --- |
+| 200 | [PoliciesResponse](#policiesresponse) as `application/json` |
+
+## Read a policy
+
+`GET /v0/policies/{name}` · scope `policy:*`
+
+**Parameters**
+
+| Name | In | Type | Required |
+| --- | --- | --- | --- |
+| `name` | path | string | yes |
+
+**Responses**
+
+| Status | Body |
+| --- | --- |
+| 200 | [PolicyView](#policyview) as `application/json` |
+
+## Create or replace a policy
+
+`PUT /v0/policies/{name}` · scope `policy:*`
+
+**Parameters**
+
+| Name | In | Type | Required |
+| --- | --- | --- | --- |
+| `name` | path | string | yes |
+
+**Request body**
+
+[PolicyRequest](#policyrequest) as `application/json`, optional.
+
+**Responses**
+
+| Status | Body |
+| --- | --- |
+| 200 | [PolicyView](#policyview) as `application/json` |
+
+## Remove a policy
+
+`DELETE /v0/policies/{name}` · scope `policy:*`
+
+**Parameters**
+
+| Name | In | Type | Required |
+| --- | --- | --- | --- |
+| `name` | path | string | yes |
+
+**Responses**
+
+| Status | Body |
+| --- | --- |
+| 204 | none |
+
+## Objects
+
+### PoliciesResponse
+
+| Field | Type | Required |
+| --- | --- | --- |
+| `next` | string or null | yes |
+| `policies` | array of [Policy](#policy) | yes |
+
+### Policy
+
+| Field | Type | Required |
+| --- | --- | --- |
+| `name` | string | yes |
+| `rules` | array of [Rule](#rule) | yes |
+
+### PolicyRequest
+
+| Field | Type | Required |
+| --- | --- | --- |
+| `rules` | array of [RuleText](#ruletext) | no |
+
+### PolicyView
+
+| Field | Type | Required | Description |
+| --- | --- | --- | --- |
+| `dns` | string | yes | One of `open`, `closed`. |
+| `holders` | array of string | no |  |
+| `name` | string | yes |  |
+| `rules` | array of [Rule](#rule) | yes |  |
+
+### Rule
+
+| Field | Type | Required | Description |
+| --- | --- | --- | --- |
+| `action` | string | yes | One of `allow`, `deny`. |
+| `destination` | [Destination](/docs/reference/api/sandboxes/#destination) | yes |  |
+| `ports` | array of integer (int64) | no |  |
+| `protocol` | string | no | Absent for a rule over every protocol. One of `tcp`, `udp`. |
+
+### RuleText
+
+| Field | Type | Required | Description |
+| --- | --- | --- | --- |
+| `action` | string | yes | One of `allow`, `deny`. |
+| `rule` | string | yes |  |
+
+{/* make openapi writes everything above this line. Write by hand below it. */}

@@ -1,0 +1,217 @@
+---
+title: Security model
+description: What shard protects, where each boundary sits, and who can reach the API.
+sidebar:
+  order: 1
+---
+
+import { Tabs, TabItem } from '@astrojs/starlight/components';
+
+Give a sandbox an API key that it cannot read, and let it reach only one host:
+
+<Tabs syncKey="lang">
+	<TabItem label="CLI">
+
+```sh
+printf '%s' "$OPENAI_API_KEY" | shard secret set --destination api.openai.com OPENAI_API_KEY
+shard policy create --allow api.openai.com --deny any openai-only
+shard create --name agent --memory 512MiB --secret OPENAI_API_KEY --policy openai-only alpine:3.20
+shard exec agent sh -c 'echo "$OPENAI_API_KEY"'
+shard remove --force agent
+```
+
+	</TabItem>
+	<TabItem label="TypeScript">
+
+```ts
+import { Shard } from "useshards";
+
+const shard = new Shard();
+try {
+  await shard.secrets.set("OPENAI_API_KEY", {
+    value: process.env.OPENAI_API_KEY!,
+    destinations: ["api.openai.com"],
+  });
+  await shard.policies.set("openai-only", [
+    { action: "allow", rule: "api.openai.com" },
+    { action: "deny", rule: "any" },
+  ]);
+  const agent = await shard.create({
+    name: "agent",
+    image: "alpine:3.20",
+    memoryMiB: 512,
+    secrets: ["OPENAI_API_KEY"],
+    policy: "openai-only",
+  });
+  console.log((await agent.exec(["sh", "-c", 'echo "$OPENAI_API_KEY"'])).stdout);
+  await agent.remove({ force: true });
+} finally {
+  shard.close();
+}
+```
+
+	</TabItem>
+	<TabItem label="Python">
+
+```python
+import os
+
+from useshards import PolicyRule, Shard
+
+with Shard() as shard:
+    shard.secrets.set(
+        "OPENAI_API_KEY",
+        value=os.environ["OPENAI_API_KEY"],
+        destinations=["api.openai.com"],
+    )
+    shard.policies.set(
+        "openai-only",
+        [PolicyRule(action="allow", rule="api.openai.com"), PolicyRule(action="deny", rule="any")],
+    )
+    agent = shard.create(
+        "alpine:3.20",
+        name="agent",
+        memory_mib=512,
+        secrets=["OPENAI_API_KEY"],
+        policy="openai-only",
+    )
+    print(agent.exec(["sh", "-c", 'echo "$OPENAI_API_KEY"']).stdout)
+    agent.remove(force=True)
+```
+
+	</TabItem>
+</Tabs>
+
+The TypeScript and Python examples reach `shard serve` at the address in `SHARD_REMOTE`, with the API key in `SHARD_API_KEY`.
+
+The sandbox prints a placeholder, not the key:
+
+```text
+mock-OPENAI_API_KEY
+```
+
+When the sandbox sends that placeholder in a header of an HTTPS request to `api.openai.com`, the host replaces it with the real key. A request to any other host carries the placeholder. The policy allows `api.openai.com` and denies everything else.
+
+## What shard protects
+
+shard treats the code in a sandbox as untrusted. That code might be an agent, a tool that a prompt injection took over, or a package nobody has read. It can read its own environment, dump its memory, and send every byte it finds to anywhere it can reach.
+
+Four boundaries separate that code from what you want to protect:
+
+| Boundary | What it keeps out | Where it is enforced |
+| --- | --- | --- |
+| The provider | the host kernel and other sandboxes | gVisor, a virtual machine, or a user namespace |
+| Secrets | the value of a credential | the proxy on the host |
+| Network egress | your private networks, and hosts the policy does not allow | the host, never the sandbox |
+| The API | anyone without access to the socket or a valid token | the daemon socket and `shard serve` |
+
+## Isolation depends on the provider
+
+The provider decides how strongly a sandbox is isolated from the host and from other sandboxes:
+
+| Provider | The boundary | Tenants on one host |
+| --- | --- | --- |
+| `gvisor` | gVisor, a kernel in user space between the sandbox and the host kernel | many |
+| `firecracker` | a microVM with its own kernel | many |
+| `vz` | a virtual machine with its own kernel, on Apple's Virtualization framework | many |
+| `sysbox` | a Linux user namespace | one |
+| `runc` | namespaces and cgroups only, on the host kernel | trusted code only |
+
+**Caution: Sysbox sandboxes are not isolated from each other.** Every Sysbox sandbox maps to the same host uid range, `0 165536 65536`. A process that escapes one sandbox has the same uid as root in every other sandbox. Run one tenant per Sysbox host.
+
+**Caution: runc isolates nothing.** Root in the sandbox is root on the host. Use runc only for code you trust, or on a host you can afford to lose. shard never picks runc or Sysbox for you. Only `--provider` selects one, and a later daemon keeps it on a root that already holds its sandboxes.
+
+For each provider in detail, see [the provider matrix](https://github.com/presmihaylov/shard/blob/main/docs/provider.md#the-substrates).
+
+## Secrets never enter the sandbox
+
+A sandbox holds a placeholder for each secret it is granted. The default placeholder is `mock-<NAME>`, and `--placeholder` sets a different one. The value stays on the host in `<root>/secrets/<NAME>`, a file with mode `0600` inside a directory with mode `0700`. shard writes the value nowhere else.
+
+A secret is granted to destinations, never to a sandbox alone. `--destination` names each host that the value may be sent to. The host puts the value only into the headers of HTTPS requests to those hosts, and never into the URL or the body. A request to any other host, or over plain HTTP, carries the placeholder.
+
+**Caution: grant a secret only to hosts that never send the credential back.** The host does not read the response, so a granted host that echoes a request header, such as a debug page, returns the real value to the sandbox.
+
+A grant does not open network access to any host. Only the policy decides what the sandbox can reach, so a sandbox with a policy needs an allow rule for each granted host.
+
+The proxy does not stop misuse of the key. A sandbox that may call `api.openai.com` with the key can make any call that the key allows. Limit the key at the API provider, because shard only keeps the key out of the sandbox.
+
+Pass the value to `shard secret set` on stdin or at its hidden prompt. Never pass it as a command argument, because command arguments show up in the process list.
+
+On runc, the proxy is the only thing between the sandbox and the value, and code that escapes the sandbox can read the secret store just as the host can.
+
+For grants, rotation and the placeholder rules, see [secrets](https://github.com/presmihaylov/shard/blob/main/docs/secrets.md).
+
+## The host decides network egress
+
+A sandbox has no network rules of its own. The rules live on the host: netfilter on Linux, and the daemon's own network stack on a Mac. Code in the sandbox cannot change them, and the host writes them again on every create, start, resume, fork and policy change.
+
+A sandbox without a policy can reach the internet but nothing private. The host drops its traffic to:
+
+- `10.0.0.0/8`, `172.16.0.0/12` and `192.168.0.0/16`
+- `169.254.0.0/16`, which holds the cloud metadata address
+- `127.0.0.0/8` and `100.64.0.0/10`
+- every other sandbox
+
+This floor applies under every policy, and no rule can open it. A policy is an ordered list of rules. The first rule that matches decides, and the host drops traffic that no rule allows.
+
+A sandbox with a policy or a secret sends its traffic on TCP ports 80 and 443 through a proxy on the host. The proxy judges each request by host name, and it also refuses a host that resolves to one of the host's own addresses.
+
+For rules, wildcards and the egress log, see [egress](https://github.com/presmihaylov/shard/blob/main/docs/egress.md).
+
+## Who can reach the API
+
+The daemon listens only on a unix socket at `<root>/shard.sock`, which defaults to `/var/lib/shard/shard.sock`. It never listens on TCP.
+
+The socket has mode `0600`, so only the user the daemon runs as can use it. On Linux that user is root. If the host has a group named `shard`, the daemon hands the socket to that group with mode `0660` when it starts, and members of the group can then use the socket without `sudo`.
+
+**Caution: anyone who can reach the socket holds every right.** A request on the socket carries no token and no scopes. Add a user to the `shard` group only if you trust them with every sandbox and every secret on the host.
+
+## Remote access goes through shard serve
+
+A client on another host reaches the daemon through `shard serve`, a separate process that checks a token on every request and then passes the bytes to the socket. By default it listens on `127.0.0.1:2376` and speaks plain HTTP.
+
+**Caution: put an HTTPS proxy or a tunnel in front of shard serve before any token crosses a network.** Over plain HTTP, the token travels in clear text. `shard serve` logs a line when it starts if its listen address is not loopback.
+
+Mint a token on the server:
+
+```sh
+shard tokens mint --name ci --duration 24h --scopes sandbox:read,sandbox:write,exec
+```
+
+The client sends the token as `SHARD_API_KEY`. `shard serve` answers `401` with the code `unauthorized`, before the request reaches the daemon, when a token:
+
+- is signed with another key or another algorithm than HS256
+- has expired
+- has been revoked, or is not in the token ledger on the server
+
+A token minted without `--duration` never expires. `shard tokens mint` works only on the server and never over the API. The first run of `shard tokens mint` or `shard serve` creates the signing key, `<root>/auth/signing-key`, with mode `0600`. shard never rotates that key.
+
+A token's scopes limit which routes it can reach:
+
+| Scope | What it allows |
+| --- | --- |
+| `sandbox:read` | list, inspect, logs, the egress log, attach, and reading snapshots |
+| `sandbox:write` | create, start, stop, pause, resume, fork, and making a snapshot |
+| `sandbox:delete` | removing a sandbox or a snapshot |
+| `exec` | exec, and every file route |
+| `secret:*` | every secret route, and grants on a sandbox |
+| `policy:*` | every policy route, and the policy of a sandbox |
+
+A token with no scopes, or with `*`, has every scope. A request to a route outside the token's scopes gets `403` with the code `forbidden`. A create that names a secret also needs `secret:*`, and a create that names a policy also needs `policy:*`. Through `shard serve`, server-only commands such as the image commands get `403` for every token.
+
+Revoke a token by its id, or every token of one name:
+
+```sh
+shard tokens revoke --name ci
+```
+
+The next request with that token gets `401`. `shard serve` checks the ledger once a second for each open connection and closes any connection that uses a revoked token. Closing the connection detaches the client, but it does not stop an exec or a sandbox.
+
+To run `shard serve` as an unprivileged user and to set up the proxy, see [the TCP front](https://github.com/presmihaylov/shard/blob/main/docs/daemon.md#the-tcp-front).
+
+## What shard never writes down
+
+- shard never logs a secret value, and never writes one into a state file. A sandbox record names its secrets but never holds their values.
+- The proxy logs one line for each request, but never logs a header value.
+- `shard serve` and the CLI never log a token or the signing key. `shard serve` logs the name of the token for each request it lets through.
+- `shard secret list` prints names, destinations and placeholders, but never a value.

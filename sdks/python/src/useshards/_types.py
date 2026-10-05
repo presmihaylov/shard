@@ -205,7 +205,7 @@ class AppExit:
 
 @attrs.frozen
 class SandboxInfo:
-    """A sandbox's record. app is None for a sandbox made with no command."""
+    """A sandbox's record. app is None for a sandbox made with no command, kernel on a container substrate."""
 
     id: str
     name: str | None

@@ -37,18 +37,18 @@ func ReadExitStatus(path string) (models.ExitStatus, bool, error) {
 	return exit, found, nil
 }
 
-// DecodeExitPage reads the record off a sealed exit channel page; anything else there is a guest write, so it is no exit.
-func DecodeExitPage(page []byte) (models.ExitStatus, bool) {
+// DecodeExitPage reads the record off a sealed exit channel page, with the restart count it carries; anything else there is a guest write, so it is no exit.
+func DecodeExitPage(page []byte) (models.ExitReport, bool) {
 	if end := bytes.IndexByte(page, 0); end >= 0 {
 		page = page[:end]
 	}
 
-	exit, found, err := decodeExitRecord(page)
+	report, found, err := decodeReport(page, models.ExitReportKind)
 	if err != nil {
-		return models.ExitStatus{}, false
+		return models.ExitReport{}, false
 	}
 
-	return exit, found
+	return report, found
 }
 
 // ReadNotStarted answers the refusal shard-init recorded when the entrypoint's exec failed, or nil when there is none.
@@ -97,9 +97,9 @@ func notStarted(sandbox string, report models.ExitReport) *models.CommandNotStar
 	return &models.CommandNotStartedError{Sandbox: sandbox, Reason: failed.Reason(), Code: code}
 }
 
-// WriteExitStatus replaces the exit file with one record, framed as shard-init frames it, so ReadExitStatus reads it.
-func WriteExitStatus(path string, exit models.ExitStatus) error {
-	encoded, err := json.Marshal(models.ExitReport{Kind: models.ExitReportKind, Code: exit.Code, Signal: exit.Signal})
+// WriteExitReport replaces the exit file with one record, framed as shard-init frames it, so ReadExitStatus and RestartCount read it.
+func WriteExitReport(path string, report models.ExitReport) error {
+	encoded, err := json.Marshal(report)
 	if err != nil {
 		return fmt.Errorf("marshal the exit report: %w", err)
 	}

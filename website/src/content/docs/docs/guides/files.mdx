@@ -1,0 +1,136 @@
+---
+title: How to move files in and out?
+description: Copy files and directories between your machine and a running sandbox, from the CLI, the SDKs or the API.
+sidebar:
+  order: 3
+---
+
+import { Tabs, TabItem } from '@astrojs/starlight/components';
+
+Copy a project into a sandbox, run it, and copy its result out:
+
+<Tabs syncKey="lang">
+	<TabItem label="CLI">
+
+```sh
+shard create --name agent --memory 512MiB python:3.12-slim
+shard cp ./project agent:/srv/
+shard exec agent python /srv/project/main.py
+shard cp agent:/srv/project/out.json ./out.json
+```
+
+	</TabItem>
+	<TabItem label="TypeScript">
+
+```ts
+import { Shard } from "useshards";
+
+const shard = new Shard();
+try {
+  const sandbox = await shard.create({ name: "agent", image: "python:3.12-slim", memoryMiB: 512 });
+  await sandbox.files.uploadDir("./project", "/srv/project");
+  await sandbox.exec(["python", "/srv/project/main.py"]);
+  await sandbox.files.download("/srv/project/out.json", "./out.json");
+} finally {
+  shard.close();
+}
+```
+
+	</TabItem>
+	<TabItem label="Python">
+
+```python
+from useshards import Shard
+
+with Shard() as shard:
+    sandbox = shard.create("python:3.12-slim", name="agent", memory_mib=512)
+    sandbox.files.upload_dir("./project", "/srv/project")
+    sandbox.exec(["python", "/srv/project/main.py"])
+    sandbox.files.download("/srv/project/out.json", "./out.json")
+```
+
+	</TabItem>
+</Tabs>
+
+The TypeScript and Python examples reach `shard serve` at the address in `SHARD_REMOTE`, with the API key in `SHARD_API_KEY`.
+
+In this example, `main.py` writes `out.json` next to itself. The image does not need `tar` or a shell for any of this, because shard's own supervisor in the sandbox reads and writes the files.
+
+## Where a copy lands
+
+`shard cp` works like `docker cp`. When the destination is a directory in the sandbox, or ends with `/`, the source goes inside it under its own name, so `shard cp ./project agent:/srv/` creates `/srv/project`. A copy out works the same way on your machine. If a local path contains a colon, start it with `./` or `/`.
+
+The SDKs use the exact path you give them: `uploadDir("./project", "/srv/project")` gives `/srv/project` the same contents as `./project`. A path in the sandbox must always be absolute, because shard has no default directory for a file call.
+
+## Read and write without a local file
+
+<Tabs syncKey="lang">
+	<TabItem label="CLI">
+
+```sh
+printf '{"n": 3}\n' > input.json
+shard cp input.json agent:/srv/input.json
+```
+
+	</TabItem>
+	<TabItem label="TypeScript">
+
+```ts
+await sandbox.files.write("/srv/input.json", '{"n": 3}\n');
+const text = await sandbox.files.read("/srv/input.json", { encoding: "utf8" });
+```
+
+	</TabItem>
+	<TabItem label="Python">
+
+```python
+sandbox.files.write("/srv/input.json", '{"n": 3}\n')
+text = sandbox.files.read_text("/srv/input.json")
+```
+
+	</TabItem>
+</Tabs>
+
+Without an encoding option, `files.read` returns bytes: a `Uint8Array` in TypeScript and `bytes` in Python. These are all the file calls in the SDKs:
+
+| TypeScript | Python | What it does |
+| --- | --- | --- |
+| `write`, `read` | `write`, `read`, `read_text` | put or get bytes or text |
+| `upload`, `download` | `upload`, `download` | copy one file between a local path and the sandbox |
+| `uploadDir`, `downloadDir` | `upload_dir`, `download_dir` | copy a directory |
+| `stat`, `list` | `stat`, `list` | get the type, size, mode, owner and modification time of a path, or of each entry in a directory |
+| `mkdir`, `remove` | `mkdir`, `remove` | create a directory, or delete a path; with `recursive`, delete a directory that is not empty |
+
+`write`, `upload` and `mkdir` take `parents` to create any missing directories, and `mode` to set the permission bits. `shard cp`, `upload` and `download` keep the source's ordinary permission bits, but not setuid or setgid.
+
+## Who owns a written file
+
+A copy into the sandbox runs as a user inside the sandbox. That user is the sandbox's user unless you set `--user` on `shard cp` or `user` in the SDK. The guest kernel checks the permissions and sets the owner, just as it does for an `exec`. A write into the image's usual `/etc` directory therefore fails for a user other than root. `--user root` can bypass ordinary file permissions, but not a read-only mount.
+
+## The rules
+
+- **The sandbox must be running.** A copy into or out of a stopped sandbox fails with `sandbox <id> is stopped: start it again with shard start <name>`. On a paused sandbox, it fails with `sandbox <id> is paused: resume it with shard resume <name>`. In both messages, `<name>` is the sandbox's name, or its id when it has none.
+- **A write never leaves half a file.** A copy in writes the data under a temporary name in the target directory, syncs it, and then renames it over the old file. If a copy is cut off midway, the old file stays intact.
+- **The daemon sets no size cap.** Copies stream in both directions, and the daemon never holds the whole file. A directory copied out is the exception: `shard cp` and the SDKs refuse one past 64 GiB of file data or 1,048,576 entries.
+- **A file is only bytes.** shard never puts a secret value into a file, even when the file holds a placeholder.
+- **A directory copied out of the sandbox is untrusted.** The sandbox packs it, so `shard cp` and the SDKs unpack it carefully. They refuse an absolute name, a `..`, a hardlink to a name outside the directory, and a device node, and no symlink can lead the unpack outside the destination. They also drop the setuid and setgid bits and never change an owner on your machine. A refusal names the entry, and the copy writes nothing more.
+- **A file call needs the `exec` scope.** A write can replace what the sandbox runs, and a read sees what `cat` sees, so a token that copies files can also run commands.
+
+## Over the API
+
+Every route is under `/v0/sandboxes/{id}`, where `{id}` is the id or the name of the sandbox. An error has the body `{"error":{"code":"<code>","message":"<message>"}}`, except on a `HEAD`, which has no body.
+
+| Route | Body | Answer |
+| --- | --- | --- |
+| `PUT /files?path=&mode=&user=&parents=` | the file, streamed | `204` |
+| `GET /files?path=` | | `200`, the file, streamed |
+| `HEAD /files?path=` | | `200`, with the stat as JSON in `X-Shard-Stat` |
+| `GET /ls?path=` | | `200`, `{"entries": [...]}` |
+| `POST /mkdir` | `{"path", "mode", "parents", "user"}` | `204` |
+| `DELETE /files?path=&recursive=` | | `204` |
+| `PUT /archive?path=&user=` | a tar, streamed | `204` |
+| `GET /archive?path=` | | `200`, a tar, streamed |
+
+`PUT /files` needs a `Content-Length` header with the number of file bytes. Its `mode` query and the `mode` in a mkdir body are octal strings, such as `"644"` and `"755"`.
+
+A stat contains `type`, `size`, `mode`, `uid`, `gid` and `mtime`. The possible errors are `not_found`, `invalid_request` (for a relative path, a bad tar, a tar entry that lands outside `path`, or a path the guest refuses, such as one the user may not write), `sandbox_not_running`, `sandbox_failed` (for a sandbox whose create failed) and `internal`.

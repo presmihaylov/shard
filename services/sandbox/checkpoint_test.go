@@ -750,7 +750,7 @@ func TestForkCarriesThePolicyAndTellsTheHostBeforeTheRestore(t *testing.T) {
 }
 
 // copyRunState is every record field a copy does not take from its source: its own identity, its run, and what the substrate reports.
-var copyRunState = []string{"ID", "Name", "Provider", "Kernel", "State", "ExitStatus", "StoppedReason", "FailedReason", "FailedPublic", "UnresponsiveReason", "Checkpoint", "Pausing", "Snapshot",
+var copyRunState = []string{"ID", "Name", "Provider", "State", "ExitStatus", "StoppedReason", "FailedReason", "FailedPublic", "UnresponsiveReason", "Checkpoint", "Pausing", "Snapshot",
 	"PID", "NetnsPath", "Address", "HostInterface", "ExitChannel",
 	"Restart", "StartedAt", "CreatedAt"}
 
@@ -763,6 +763,8 @@ func withEveryPolicy(sb models.Sandbox) models.Sandbox {
 	sb.Policy = "locked"
 	sb.Command = []string{"python", "-m", "http.server"}
 	sb.Restart = &models.Restart{RestartSpec: models.RestartSpec{Policy: models.RestartOnFailure, Retries: 5, Backoff: 1}}
+	// No create asks for it, but a fork runs the source's memory image and so its kernel (SHARD-745).
+	sb.Kernel = "kernel-6.12.110-3"
 
 	return sb
 }

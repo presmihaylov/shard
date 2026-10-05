@@ -1,0 +1,227 @@
+---
+title: Files
+description: The routes that copy files and directories into and out of a running sandbox.
+sidebar:
+  order: 3
+---
+
+This copies a file and a directory into the running sandbox `web`, then lists the directory that holds them:
+
+```sh
+curl --unix-socket /var/lib/shard/shard.sock -T ./app.conf 'http://localhost/v0/sandboxes/web/files?path=/srv/app.conf&mode=600'
+tar -cf - app | curl --unix-socket /var/lib/shard/shard.sock -T - 'http://localhost/v0/sandboxes/web/archive?path=/srv'
+curl --unix-socket /var/lib/shard/shard.sock 'http://localhost/v0/sandboxes/web/ls?path=/srv'
+```
+
+To copy out, send a `GET` to the same route:
+
+```sh
+curl --unix-socket /var/lib/shard/shard.sock -o app.conf 'http://localhost/v0/sandboxes/web/files?path=/srv/app.conf'
+curl --unix-socket /var/lib/shard/shard.sock 'http://localhost/v0/sandboxes/web/archive?path=/srv/app' | tar -xf -
+```
+
+{/* make openapi writes this part from the routes. Edit the routes, not this part. */}
+
+Each route answers an error with the [Error](/docs/reference/api/#error) body, unless its responses say otherwise.
+
+## Copy a file into a running sandbox
+
+`PUT /v0/sandboxes/{id}/files` · scope `exec`
+
+**Parameters**
+
+| Name | In | Type | Required | Description |
+| --- | --- | --- | --- | --- |
+| `id` | path | string | yes | The sandbox id or name. |
+| `path` | query | string | yes | The absolute guest path. |
+| `mode` | query | string | no | The file mode in octal, at most 0777; none is 0644. |
+| `user` | query | string | no | Who writes and owns the file; none is the entrypoint's user. |
+| `parents` | query | boolean | no | Make the missing parent directories. |
+
+**Request body**
+
+binary as `application/octet-stream`, required.
+
+**Responses**
+
+| Status | Body | Description |
+| --- | --- | --- |
+| 204 | none | The file is written. The upload sets Content-Length to its number of bytes. |
+
+## Copy a file out of a running sandbox
+
+`GET /v0/sandboxes/{id}/files` · scope `exec`
+
+**Parameters**
+
+| Name | In | Type | Required | Description |
+| --- | --- | --- | --- | --- |
+| `id` | path | string | yes | The sandbox id or name. |
+| `path` | query | string | yes | The absolute guest path. |
+
+**Responses**
+
+| Status | Body | Description |
+| --- | --- | --- |
+| 200 | binary as `application/octet-stream` | The file's bytes, chunked to the end; a body cut short is a failed read. |
+
+**Response headers**
+
+| Header | Status | Type | Description |
+| --- | --- | --- | --- |
+| `X-Shard-Stat` | 200 | string | The guest path's stat as JSON: type is file, dir, symlink or other; size is the logical size in bytes; mode is the permission bits as a number, at most 0o7777; then uid, gid and mtime. |
+
+## Stat a path
+
+`HEAD /v0/sandboxes/{id}/files` · scope `exec`
+
+**Parameters**
+
+| Name | In | Type | Required | Description |
+| --- | --- | --- | --- | --- |
+| `id` | path | string | yes | The sandbox id or name. |
+| `path` | query | string | yes | The absolute guest path. |
+
+**Responses**
+
+| Status | Body | Description |
+| --- | --- | --- |
+| 200 | none | The path's stat, in a header and no body. |
+| Error | none | Error, as the status alone: a HEAD answer has no body. |
+
+**Response headers**
+
+| Header | Status | Type | Description |
+| --- | --- | --- | --- |
+| `X-Shard-Stat` | 200 | string | The guest path's stat as JSON: type is file, dir, symlink or other; size is the logical size in bytes; mode is the permission bits as a number, at most 0o7777; then uid, gid and mtime. |
+
+## Delete a path
+
+`DELETE /v0/sandboxes/{id}/files` · scope `exec`
+
+**Parameters**
+
+| Name | In | Type | Required | Description |
+| --- | --- | --- | --- | --- |
+| `id` | path | string | yes | The sandbox id or name. |
+| `path` | query | string | yes | The absolute guest path. |
+| `recursive` | query | boolean | no | Take a directory and everything in it. |
+
+**Responses**
+
+| Status | Body |
+| --- | --- |
+| 204 | none |
+
+## List a directory
+
+`GET /v0/sandboxes/{id}/ls` · scope `exec`
+
+**Parameters**
+
+| Name | In | Type | Required | Description |
+| --- | --- | --- | --- | --- |
+| `id` | path | string | yes | The sandbox id or name. |
+| `path` | query | string | yes | The absolute guest path. |
+
+**Responses**
+
+| Status | Body | Description |
+| --- | --- | --- |
+| 200 | [EntriesResponse](#entriesresponse) as `application/json` | The directory's entries; a listing cut short never parses. |
+
+## Make a directory
+
+`POST /v0/sandboxes/{id}/mkdir` · scope `exec`
+
+**Parameters**
+
+| Name | In | Type | Required | Description |
+| --- | --- | --- | --- | --- |
+| `id` | path | string | yes | The sandbox id or name. |
+
+**Request body**
+
+[MkdirRequest](#mkdirrequest) as `application/json`, required.
+
+**Responses**
+
+| Status | Body |
+| --- | --- |
+| 204 | none |
+
+## Copy a directory into a running sandbox
+
+`PUT /v0/sandboxes/{id}/archive` · scope `exec`
+
+**Parameters**
+
+| Name | In | Type | Required | Description |
+| --- | --- | --- | --- | --- |
+| `id` | path | string | yes | The sandbox id or name. |
+| `path` | query | string | yes | The absolute guest directory. |
+| `user` | query | string | no | Who unpacks and owns the files; none is the entrypoint's user. |
+
+**Request body**
+
+binary as `application/x-tar`, required.
+
+**Responses**
+
+| Status | Body | Description |
+| --- | --- | --- |
+| 204 | none | The tar unpacked under the directory. |
+
+## Copy a directory out of a running sandbox
+
+`GET /v0/sandboxes/{id}/archive` · scope `exec`
+
+**Parameters**
+
+| Name | In | Type | Required | Description |
+| --- | --- | --- | --- | --- |
+| `id` | path | string | yes | The sandbox id or name. |
+| `path` | query | string | yes | The absolute guest path. |
+
+**Responses**
+
+| Status | Body | Description |
+| --- | --- | --- |
+| 200 | binary as `application/x-tar` | A tar of the path; a body cut short is a failed read. |
+
+**Response headers**
+
+| Header | Status | Type | Description |
+| --- | --- | --- | --- |
+| `X-Shard-Stat` | 200 | string | The guest path's stat as JSON: type is file, dir, symlink or other; size is the logical size in bytes; mode is the permission bits as a number, at most 0o7777; then uid, gid and mtime. |
+
+## Objects
+
+### EntriesResponse
+
+| Field | Type | Required |
+| --- | --- | --- |
+| `entries` | array of [FileEntry](#fileentry) | yes |
+
+### FileEntry
+
+| Field | Type | Required | Description |
+| --- | --- | --- | --- |
+| `gid` | integer (int32) | yes | At least 0. |
+| `mode` | integer (int32) | yes | The permission bits with setuid, setgid and sticky as a number, at most 0o7777 (4095); the type is in type. At least 0. |
+| `mtime` | string (date-time) | yes |  |
+| `name` | string | yes |  |
+| `size` | integer (int64) | yes | The logical size in bytes. |
+| `type` | string | yes | One of `file`, `dir`, `symlink`, `other`. |
+| `uid` | integer (int32) | yes | At least 0. |
+
+### MkdirRequest
+
+| Field | Type | Required | Description |
+| --- | --- | --- | --- |
+| `mode` | string | no | The permission bits as an octal string, as chmod takes them; none is 0755. |
+| `parents` | boolean | no |  |
+| `path` | string | yes | At least 1 character. |
+| `user` | string | no |  |
+
+{/* make openapi writes everything above this line. Write by hand below it. */}

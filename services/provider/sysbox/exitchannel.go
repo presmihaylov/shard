@@ -28,7 +28,7 @@ type exitChannel struct {
 	mu     sync.Mutex
 	opened bool
 	file   *os.File
-	last   *models.ExitStatus
+	last   *models.ExitReport
 }
 
 // exitChannels is every channel this daemon holds, by sandbox id.
@@ -110,7 +110,7 @@ func newExitChannel(b bundle.Bundle) (*os.File, error) {
 	return f, nil
 }
 
-// collect copies a new record from the page into the exit file, which every reader then reads.
+// collect copies a new record from the page into the exit file, which every reader of the exit and the count then reads.
 func (p *Provider) collect(ctx context.Context, id string, b bundle.Bundle) error {
 	ch := p.exits.get(id)
 	ch.mu.Lock()
@@ -127,17 +127,17 @@ func (p *Provider) collect(ctx context.Context, id string, b bundle.Bundle) erro
 		return nil
 	}
 
-	exit, found, err := readPage(ch.file)
+	report, found, err := readPage(ch.file)
 	if err != nil {
 		return fmt.Errorf("read the exit channel of sandbox %s: %w", id, err)
 	}
-	if !found || (ch.last != nil && *ch.last == exit) {
+	if !found || (ch.last != nil && *ch.last == report) {
 		return nil
 	}
-	if err := bundle.WriteExitStatus(b.ExitFile, exit); err != nil {
+	if err := bundle.WriteExitReport(b.ExitFile, report); err != nil {
 		return err
 	}
-	ch.last = &exit
+	ch.last = &report
 
 	return nil
 }
@@ -270,15 +270,15 @@ func unreadable(err error) error {
 	return replaced(fmt.Sprintf("does not read as the page (%v)", err))
 }
 
-// readPage reads the exit record off a stable page.
-func readPage(f *os.File) (models.ExitStatus, bool, error) {
+// readPage reads the exit record, and the restart count on it, off a stable page.
+func readPage(f *os.File) (models.ExitReport, bool, error) {
 	page, err := stablePage(f)
 	if err != nil {
-		return models.ExitStatus{}, false, err
+		return models.ExitReport{}, false, err
 	}
-	exit, found := bundle.DecodeExitPage(page)
+	report, found := bundle.DecodeExitPage(page)
 
-	return exit, found, nil
+	return report, found, nil
 }
 
 // refusal reads the not-started record off the page, which the daemon still holds after PID 1 died.

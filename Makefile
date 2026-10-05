@@ -131,9 +131,10 @@ fmt-check:
 vuln:
 	go run $(GOVULNCHECK) ./...
 
-# Regenerates the spec from the routes; a unit test fails while docs/openapi.json differs (SHARD-489).
+# Regenerates the spec and the REST API reference pages from the routes; a unit test fails while either differs (SHARD-489, SHARD-714).
 openapi:
 	go run ./cmd/shard-openapi docs/openapi.json
+	go run ./cmd/shard-apidocs website/src/content/docs/docs/reference/api
 
 # Regenerates the CLI reference pages of the site from cli/help.go; a unit test fails while they differ.
 cli-docs:

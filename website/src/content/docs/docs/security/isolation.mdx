@@ -1,0 +1,132 @@
+---
+title: Isolation by provider
+description: What separates a sandbox from the host and from other sandboxes on each provider.
+sidebar:
+  order: 2
+---
+
+import { Tabs, TabItem } from '@astrojs/starlight/components';
+
+Ask a sandbox which kernel it runs on:
+
+<Tabs syncKey="lang">
+	<TabItem label="CLI">
+
+```sh
+shard create --name probe --memory 512MiB alpine:3.20
+shard exec probe uname -r
+shard remove --force probe
+```
+
+	</TabItem>
+	<TabItem label="TypeScript">
+
+```ts
+import { Shard } from "useshards";
+
+const shard = new Shard();
+try {
+  const probe = await shard.create({ name: "probe", image: "alpine:3.20", memoryMiB: 512 });
+  console.log((await probe.exec(["uname", "-r"])).stdout);
+  await probe.remove({ force: true });
+} finally {
+  shard.close();
+}
+```
+
+	</TabItem>
+	<TabItem label="Python">
+
+```python
+from useshards import Shard
+
+with Shard() as shard:
+    probe = shard.create("alpine:3.20", name="probe", memory_mib=512)
+    print(probe.exec(["uname", "-r"]).stdout)
+    probe.remove(force=True)
+```
+
+	</TabItem>
+</Tabs>
+
+The TypeScript and Python examples reach `shard serve` at the address in `SHARD_REMOTE`, with the API key in `SHARD_API_KEY`.
+
+Compare the answer with `uname -r` on the server. On gVisor, the sandbox reports gVisor's own kernel version. On Firecracker and vz, it reports the kernel that shard boots in each virtual machine. On Sysbox and runc, it reports the server's kernel, because the sandbox runs on that kernel.
+
+## The five providers
+
+The provider is the boundary between a sandbox and the host. A server runs one provider, and every sandbox on it uses that provider.
+
+| Provider | Between the sandbox and the host kernel | Tenants on one host | Exit code |
+| --- | --- | --- | --- |
+| `gvisor` | gVisor, a kernel that runs in user space | many | verified by the host |
+| `firecracker` | a microVM with its own kernel | many | verified by the host |
+| `vz` | a virtual machine with its own kernel | many | verified by the host |
+| `sysbox` | a Linux user namespace, with its own `/proc` and `/sys` | one | reported by the sandbox |
+| `runc` | nothing: namespaces and cgroups on the host kernel | trusted code only | reported by the sandbox |
+
+The exit code is the `exit_status` that `shard inspect` reports for the main command. On Sysbox and runc, the sandbox itself reports it, so the host cannot verify it.
+
+To see the provider of a server, run `shard info` or `shard daemon status` on the server.
+
+## gVisor
+
+gVisor puts a kernel that runs in user space, called the sentry, between the sandbox and the host kernel. The sandbox starts with runc's default capabilities and can never gain more, and the sentry enforces those capabilities.
+
+gVisor is the default on a Linux host without `/dev/kvm`, and many tenants can share one host. The trade-off is speed: file-heavy work such as `npm install` or `git clone` runs slower than on the other providers. Docker does not run inside a gVisor sandbox.
+
+## Firecracker
+
+Each sandbox is a microVM with its own kernel, and the host needs `/dev/kvm`.
+
+The daemon starts every virtual machine process through Firecracker's `jailer` and never runs it as root. Each process gets:
+
+- its own uid and gid, from `1879048192` to `2147352575`, a range that does not overlap Sysbox, the `/etc/subuid` defaults or the systemd ranges
+- new pid and mount namespaces, and a chroot into a directory of its own
+- no capabilities, and Firecracker's seccomp filter
+
+When the sandbox has a network device, the virtual machine process joins the sandbox's network namespace instead of the host's. Processes inside the virtual machine are not host processes, so a fork bomb stays inside the virtual machine and runs into its memory bound.
+
+Docker runs inside a Firecracker sandbox.
+
+## vz
+
+Each sandbox is a virtual machine on Apple's Virtualization framework, with its own kernel. shard supports the vz provider only on an Apple silicon Mac. On a Mac, the daemon and every virtual machine run as your user, not as root.
+
+The virtual machine has no network bridge. Its only network device connects to a network stack inside the daemon, which judges every flow with the same rules as the Linux host. A sandbox never sees another sandbox's traffic.
+
+Docker runs inside a vz sandbox.
+
+## Sysbox
+
+Each sandbox runs in its own Linux user namespace, with its own view of `/proc` and `/sys`. Docker runs inside a Sysbox sandbox. A process in the sandbox is a host process that runs under a host uid other than root. Root in the sandbox has every capability inside its user namespace.
+
+**Caution: Sysbox sandboxes are not isolated from each other.** Every Sysbox sandbox maps to the same host uid range, `0 165536 65536`. A process that escapes one sandbox has the same uid as root in every other sandbox. Run one tenant per Sysbox host.
+
+shard never picks Sysbox for you. Only `shard daemon --provider sysbox`, or the records that a Sysbox daemon made, can select it.
+
+## runc
+
+**Caution: runc isolates nothing.** The sandbox runs on the host kernel, with only namespaces and cgroups around it. Root in the sandbox is root on the host. Use runc only for code you trust, or on a host you can afford to lose.
+
+A runc sandbox starts with runc's default capabilities and can never gain more. It runs under Docker's default seccomp profile and, where the host has the AppArmor module enabled, also under Docker's AppArmor profile, loaded as `shard-default`. If the module is enabled but `apparmor_parser` is missing, the daemon refuses the runc provider rather than run sandboxes without a profile.
+
+shard never picks runc for you. Only `shard daemon --provider runc`, or the records that a runc daemon made, can select it.
+
+## What every provider shares
+
+- shard's own supervisor, shard-init, is PID 1 in every sandbox, and the main command runs as its child.
+- The host decides the network. Each sandbox has its own address and can send traffic only from it. The host drops traffic to private networks and to other sandboxes, and the rules live on the host, never in the sandbox. See [egress](https://github.com/presmihaylov/shard/blob/main/docs/egress.md).
+- On gVisor, Sysbox and runc, each host cgroup has a limit of 4096 processes and threads. This is not a limit of 4096 guest processes on gVisor: see [gVisor's resource model](https://gvisor.dev/docs/architecture_guide/resources/). Guest processes on Firecracker and vz stay inside the virtual machine.
+- When the memory ceiling triggers an OOM kill, shard ends the sandbox as a whole. gVisor allows extra memory for the sentry and throttles the sandbox before that ceiling. Set bounds that leave room for the host and other sandboxes.
+
+## Which provider for which code
+
+| Your code | Provider |
+| --- | --- |
+| untrusted, from many tenants, on Linux | `gvisor`, or `firecracker` where the host has `/dev/kvm` |
+| untrusted, and it needs Docker inside | `firecracker`, or `sysbox` with one tenant per host |
+| untrusted, on a Mac | `vz` |
+| your own, and it needs native speed | `runc` |
+
+For every difference between the providers, see [the provider matrix](https://github.com/presmihaylov/shard/blob/main/docs/provider.md#the-substrates).
