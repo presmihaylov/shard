@@ -99,7 +99,7 @@ func (s *Setup) ask(ctx context.Context, envKey bool) (client.Config, error) {
 	remote = strings.TrimSpace(remote)
 
 	if parsed, err := url.Parse(remote); err == nil && parsed.Scheme == "http" {
-		if err := s.UI.Print("", "HTTP does not encrypt your API key or requests.", "Use it only through a trusted encrypted network.", ""); err != nil {
+		if err := s.UI.Print("HTTP does not encrypt your API key or requests.", "Use it only through a trusted encrypted network.", ""); err != nil {
 			return client.Config{}, err
 		}
 		proceed, err := s.UI.Confirm(ctx, AskHTTP, "Continue?", false)
@@ -256,6 +256,7 @@ func (s *Setup) offerSave(ctx context.Context, path string, previous, conn clien
 // connectedLines are the §13 result lines, then every lifecycle capability, the unsupported ones too.
 func connectedLines(conn client.Config, caps client.Capabilities) []string {
 	lines := []string{
+		"",
 		"✓ Connected to " + client.Redacted(conn.Remote),
 		"✓ API key accepted",
 		"✓ Server capabilities retrieved",
@@ -299,24 +300,28 @@ func savedLines(path string, conn client.Config, env func(string) string) []stri
 		lines = append(lines, "", "Keep "+client.CAFileEnv+" set: the saved connection does not store the certificate authority.")
 	}
 
-	return append(lines,
-		"",
-		"Next steps:",
-		"",
+	lines = append(lines, "", "Next steps:", "")
+
+	return append(lines, nextSteps("")...)
+}
+
+// nextSteps are the §13 first commands; sudo is "sudo " where the API socket belongs to root.
+func nextSteps(sudo string) []string {
+	return []string{
 		"  List sandboxes:",
-		"    shard list",
+		"    " + sudo + "shard list",
 		"",
 		"  Create a sandbox:",
-		"    shard create --name demo --memory 512MiB alpine:3.20",
+		"    " + sudo + "shard create --name demo --memory 512MiB alpine:3.20",
 		"",
 		"  Run a command:",
-		"    shard exec demo echo hello",
+		"    " + sudo + "shard exec demo echo hello",
 		"",
 		"  Remove the sandbox:",
-		"    shard remove --force demo",
+		"    " + sudo + "shard remove --force demo",
 		"",
 		"Documentation: https://useshards.com/docs",
-	)
+	}
 }
 
 // notSavedLines say how to use the verified connection without the file; the key stays a placeholder.

@@ -147,3 +147,26 @@ func TestSecretEndsOnInterrupt(t *testing.T) {
 		t.Errorf("Ctrl-C gave %v, want ErrInterrupted", err)
 	}
 }
+
+func TestAnAnsweredQuestionLeavesABlankLine(t *testing.T) {
+	ask := map[string]func(*Terminal) error{
+		"select": func(term *Terminal) error {
+			_, err := term.Select(t.Context(), "pick", []Option{{Name: "a", Label: "A"}})
+			return err
+		},
+		"confirm": func(term *Terminal) error { _, err := term.Confirm(t.Context(), "sure?", true); return err },
+		"text":    func(term *Terminal) error { _, err := term.Text(t.Context(), "url"); return err },
+		"secret":  func(term *Terminal) error { _, err := term.Secret(t.Context(), "key"); return err },
+	}
+	typed := map[string]string{"select": "\r", "confirm": "\n", "text": "u\n", "secret": "k\r"}
+	ends := map[string]string{"select": "\r\n\r\n", "confirm": "[Y/n] \n", "text": "> \n", "secret": "•\r\n\r\n"}
+	for name, question := range ask {
+		var out bytes.Buffer
+		if err := question(keyed(&out, typed[name])); err != nil {
+			t.Fatalf("%s: %v", name, err)
+		}
+		if !strings.HasSuffix(out.String(), ends[name]) {
+			t.Errorf("%s printed %q, want it to end %q", name, out.String(), ends[name])
+		}
+	}
+}

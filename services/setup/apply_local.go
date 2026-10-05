@@ -88,7 +88,7 @@ func (s *Setup) admin(ctx context.Context) error {
 	if _, err := s.Host.Run(ctx, "sudo", "-n", "true"); err == nil {
 		return nil
 	}
-	if err := s.UI.Print("", "Setup needs administrator access. sudo may ask for your password."); err != nil {
+	if err := s.UI.Print("Setup needs administrator access. sudo may ask for your password."); err != nil {
 		return err
 	}
 	if _, err := run(ctx, s.Host, "sudo", "-v"); err != nil {

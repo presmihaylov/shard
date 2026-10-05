@@ -267,7 +267,13 @@ func TestLocalSetsUpGVisorWithAService(t *testing.T) {
 		"  Configure and start a systemd service.",
 		"Administrator access is required.",
 		"Shard is set up, and the daemon is running.",
-		"Local commands run with sudo, for example `sudo shard ls`.",
+		"Local commands run with sudo, because the API socket belongs to root.",
+		"Next steps:",
+		"    sudo shard list",
+		"    sudo shard create --name demo --memory 512MiB alpine:3.20",
+		"    sudo shard exec demo echo hello",
+		"    sudo shard remove --force demo",
+		"Documentation: https://useshards.com/docs",
 	)
 	if len(ui.lists) != 2 || ui.lists[0].title != "Checking this machine" || ui.lists[1].title != "Setting up Shard" {
 		t.Fatalf("checklists %v", ui.lists)
@@ -296,7 +302,11 @@ func TestLocalManualStartupPrintsTheDaemonCommand(t *testing.T) {
 		t.Fatalf("local = %v; printed %q", err, ui.printed)
 	}
 
-	said(t, ui.fakeUI, "Automatic startup: No", "  Leave daemon startup under your control.", "Start the daemon with:", "  sudo shard daemon --provider gvisor")
+	said(t, ui.fakeUI, "Automatic startup: No", "  Leave daemon startup under your control.", "  Start the daemon, and run the next steps in another terminal:")
+	daemon, list := slices.Index(ui.printed, "    sudo shard daemon --provider gvisor"), slices.Index(ui.printed, "    sudo shard list")
+	if daemon < 0 || list < daemon {
+		t.Fatalf("the daemon command does not come before the next steps: %q", ui.printed)
+	}
 	if slices.ContainsFunc(ui.printed, func(p string) bool { return strings.Contains(p, "Install the tools") }) {
 		t.Fatalf("the review offers tools the host has: %q", ui.printed)
 	}
@@ -318,7 +328,8 @@ func TestLocalOnAMacUsesLaunchdAndNoSudo(t *testing.T) {
 		t.Fatalf("local = %v; printed %q", err, ui.printed)
 	}
 
-	said(t, ui.fakeUI, "Provider:          macOS Virtualization", "  Install shard in /usr/local/bin.", "  Configure and start a launchd service.", "Shard is set up, and the daemon is running.")
+	said(t, ui.fakeUI, "Provider:          macOS Virtualization", "  Install shard in /usr/local/bin.", "  Configure and start a launchd service.", "Shard is set up, and the daemon is running.",
+		"Next steps:", "    shard list", "    shard remove --force demo", "Documentation: https://useshards.com/docs")
 	if slices.ContainsFunc(ui.printed, func(p string) bool { return strings.Contains(p, "sudo") }) {
 		t.Fatalf("a Mac is told to use sudo: %q", ui.printed)
 	}
