@@ -36,7 +36,7 @@ Setup runs as you and uses `sudo` for the steps that need root. An Intel Mac can
 Run `shard setup` with no options, or answer `Y` when the installer asks `Start the setup wizard?`. The wizard asks four things:
 
 1. **How do you want to use Shard?** Choose `Run sandboxes on this machine`.
-2. **Choose how Shard isolates your sandboxes.** The wizard lists all five providers. It marks one this host cannot run as unavailable and says why. It recommends macOS Virtualization on a supported Mac, Firecracker on Linux with `/dev/kvm`, and gVisor on other Linux hosts.
+2. **Choose how Shard isolates your sandboxes.** The wizard lists all five providers. It marks each provider this host cannot run as unavailable and says why. It recommends macOS Virtualization on a supported Mac, Firecracker on Linux with `/dev/kvm`, and gVisor on other Linux hosts.
 3. **Start Shard automatically when this machine starts?** `Yes (recommended)` installs a service that starts the daemon at boot and restarts it after a crash.
 4. **Continue?** Setup first checks the host and shows every change. Nothing changes until you answer.
 
