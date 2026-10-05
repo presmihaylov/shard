@@ -238,17 +238,9 @@ func (b *Broker) sandbox(source netip.Addr) (models.Sandbox, error) {
 
 	// The map is rebuilt only when a record changed, so a flood of questions is one map read each, not one list each (SHARD-381).
 	if gen := b.records.Generation(); b.byAddr == nil || gen != b.cachedGen {
-		// nil log: the daemon tasks already name a bad record, so a per-request log would only flood (SHARD-343, rate SHARD-347).
-		sandboxes, err := sandboxstate.ListReadable(b.records, nil)
+		byAddr, err := b.addresses()
 		if err != nil {
-			return models.Sandbox{}, fmt.Errorf("read the sandbox records: %w", err)
-		}
-
-		byAddr := make(map[netip.Addr]models.Sandbox, len(sandboxes))
-		for _, sb := range sandboxes {
-			if sb.Address.IsValid() {
-				byAddr[sb.Address.Addr()] = sb
-			}
+			return models.Sandbox{}, err
 		}
 		b.byAddr = byAddr
 		b.cachedGen = gen
@@ -260,6 +252,25 @@ func (b *Broker) sandbox(source netip.Addr) (models.Sandbox, error) {
 	}
 
 	return sb, nil
+}
+
+// addresses maps each address to the sandbox that holds it now.
+func (b *Broker) addresses() (map[netip.Addr]models.Sandbox, error) {
+	// nil log: the daemon tasks already name a bad record, so a per-request log would only flood (SHARD-343, rate SHARD-347).
+	sandboxes, err := sandboxstate.ListReadable(b.records, nil)
+	if err != nil {
+		return nil, fmt.Errorf("read the sandbox records: %w", err)
+	}
+
+	byAddr := make(map[netip.Addr]models.Sandbox, len(sandboxes))
+	for _, sb := range sandboxes {
+		// A failed create keeps the address its teardown gave back, and the next create may hold it now (SHARD-545).
+		if sb.Address.IsValid() && sb.State != models.StateFailed {
+			byAddr[sb.Address.Addr()] = sb
+		}
+	}
+
+	return byAddr, nil
 }
 
 func granted(sec secret.Secret, host string) bool {

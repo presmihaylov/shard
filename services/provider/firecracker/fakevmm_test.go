@@ -79,6 +79,22 @@ const (
 var initBinary string
 
 func TestMain(m *testing.M) {
+	switch os.Getenv(fakeReaperEnv) {
+	case launchReaper:
+		if err := launch(); err != nil {
+			fmt.Fprintln(os.Stderr, "launch the reaper:", err)
+			os.Exit(1)
+		}
+
+		return
+	case runReaper:
+		// reap writes its error to the test binary, the one reader there is.
+		if err := reap(); err != nil {
+			os.Exit(1)
+		}
+
+		return
+	}
 	// The vmm passes its whole environment to the guest, so only the -transport argv says which one this is.
 	if os.Getenv(failingGuestEnv) == "1" && len(os.Args) == 3 && os.Args[1] == "-transport" {
 		if err := failingGuest(strings.TrimPrefix(os.Args[2], "unix:")); err != nil {
@@ -119,7 +135,7 @@ func TestMain(m *testing.M) {
 	os.Exit(runTests(m))
 }
 
-func runTests(m *testing.M) int {
+func runTests(m *testing.M) (exit int) {
 	initBinary = os.Getenv(fakeInitEnv)
 	if initBinary == "" {
 		dir, err := os.MkdirTemp("", "fcinit")
@@ -138,11 +154,43 @@ func runTests(m *testing.M) int {
 			return 1
 		}
 	}
+	run, err := os.MkdirTemp("", "fcrun")
+	if err != nil {
+		fmt.Fprintln(os.Stderr, err)
+
+		return 1
+	}
+	defer func() {
+		if err := os.RemoveAll(run); err != nil {
+			fmt.Fprintln(os.Stderr, "remove the run directory:", err)
+			exit = 1
+		}
+	}()
+	harnessesFile = filepath.Join(run, "harnesses")
+	if err := os.WriteFile(harnessesFile, nil, 0o600); err != nil {
+		fmt.Fprintln(os.Stderr, err)
+
+		return 1
+	}
+	reaped, err := startReaper(harnessesFile)
+	if err != nil {
+		fmt.Fprintln(os.Stderr, "start the reaper:", err)
+
+		return 1
+	}
 	// Every vmm the provider starts from here is this binary, and inherits the switch.
 	os.Setenv(fakeVMMEnv, "1")
+	os.Setenv(fakeRunEnv, strconv.Itoa(os.Getpid()))
 	os.Setenv(fakeInitEnv, initBinary)
 
-	return m.Run()
+	code := m.Run()
+	if err := reaped(); err != nil {
+		fmt.Fprintln(os.Stderr, "the reaper:", err)
+
+		return 1
+	}
+
+	return code
 }
 
 // jailerArgs is what the fake jailer was run with.
@@ -187,8 +235,17 @@ func fakeJailer() error {
 	if err := vmm.Start(); err != nil {
 		return err
 	}
+	if held := os.Getenv(heldJailerEnv); held != "" {
+		if err := holdUntilOrphaned(held, vmm.Process.Pid); err != nil {
+			return err
+		}
+	}
 	if err := note(filepath.Join(filepath.Dir(*base), sessionsFile), strconv.Itoa(vmm.Process.Pid)); err != nil {
 		return err
+	}
+	// A test binary that died before the note may have had its reaper scan without it, so this jailer ends the session itself.
+	if orphaned() {
+		return end(func() (map[int]bool, error) { return map[int]bool{vmm.Process.Pid: true}, nil })
 	}
 	pidFile, err := os.OpenFile(filepath.Join(chroot, filepath.Base(*execFile)+".pid"), os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0o600)
 	if err != nil {
@@ -205,41 +262,48 @@ func fakeJailer() error {
 func endSessions(t *testing.T, path string) {
 	t.Helper()
 
+	if err := end(func() (map[int]bool, error) { return sessionsIn(path) }); err != nil {
+		t.Error(err)
+	}
+}
+
+// sessionsIn is every vmm session the file names.
+func sessionsIn(path string) (map[int]bool, error) {
 	blob, err := os.ReadFile(path)
 	if err != nil {
-		t.Errorf("read the vmm sessions: %v", err)
-
-		return
+		return nil, err
 	}
 	sids := map[int]bool{}
 	for field := range strings.FieldsSeq(string(blob)) {
 		sid, err := strconv.Atoi(field)
 		if err != nil {
-			t.Errorf("read the vmm sessions: %v", err)
-
-			return
+			return nil, fmt.Errorf("parse the vmm session %q in %s: %w", field, path, err)
 		}
 		sids[sid] = true
 	}
-	for deadline := time.Now().Add(stopGrace); ; time.Sleep(20 * time.Millisecond) {
-		left, err := inSessions(sids)
-		if err != nil {
-			t.Errorf("list the vmm sessions: %v", err)
 
-			return
+	return sids, nil
+}
+
+// end SIGKILLs every process left in the sessions that sids reads, round after round, until none is left or stopGrace passes.
+func end(sids func() (map[int]bool, error)) error {
+	for deadline := time.Now().Add(stopGrace); ; time.Sleep(20 * time.Millisecond) {
+		noted, err := sids()
+		if err != nil {
+			return fmt.Errorf("read the vmm sessions: %w", err)
+		}
+		left, err := inSessions(noted)
+		if err != nil {
+			return fmt.Errorf("list the vmm sessions: %w", err)
 		}
 		if len(left) == 0 {
-			return
+			return nil
 		}
 		if time.Now().After(deadline) {
-			t.Errorf("processes %v are left in the vmm sessions %s after SIGKILL", left, stopGrace)
-
-			return
+			return fmt.Errorf("processes %v are left in the vmm sessions %s after SIGKILL", left, stopGrace)
 		}
 		if err := killAll(left); err != nil {
-			t.Errorf("end the vmm sessions: %v", err)
-
-			return
+			return fmt.Errorf("end the vmm sessions: %w", err)
 		}
 	}
 }
