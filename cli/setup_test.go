@@ -114,7 +114,7 @@ func TestALocalRunWithoutATerminalRefusesBeforeAnyCheck(t *testing.T) {
 		opts setupFlags
 		want string
 	}{
-		{setupFlags{local: true}, "no terminal to choose a provider, choose whether Shard starts at boot and confirm the changes: pass --provider, --start-at-boot and -y"},
+		{setupFlags{local: true}, "no terminal to choose a provider, choose whether shard starts at boot and confirm the changes: pass --provider, --start-at-boot and -y"},
 		{setupFlags{provider: "gvisor", startAtBoot: boot}, "no terminal to confirm the changes: pass -y"},
 		{setupFlags{local: true, startAtBoot: boot, yes: true}, "no terminal to choose a provider: pass --provider"},
 		{setupFlags{provider: "gvisor", startAtBoot: boot, yes: true}, ""},

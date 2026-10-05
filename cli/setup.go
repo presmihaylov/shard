@@ -232,7 +232,7 @@ var confirmations = []setup.Question{setup.AskConfirm, setup.AskHTTP}
 var setupQuestion = map[setup.Question]struct{ ask, flag string }{
 	setup.AskMode:        {"choose local or remote setup", "--local or --remote <url>"},
 	setup.AskProvider:    {"choose a provider", "--provider"},
-	setup.AskStartAtBoot: {"choose whether Shard starts at boot", "--start-at-boot"},
+	setup.AskStartAtBoot: {"choose whether shard starts at boot", "--start-at-boot"},
 	setup.AskConfirm:     {"confirm the changes", "-y"},
 	setup.AskHTTP:        {"confirm a connection over HTTP", "-y"},
 	setup.AskURL:         {"read the server URL", "--remote"},
