@@ -23,7 +23,7 @@ shard is pre-alpha, so a release can change the API, the CLI and the SDKs withou
 
 **New**
 
-- One-line install: `curl -fsSL https://useshards.com/install | sh` downloads the newest release, checks it against that release's `SHA256SUMS`, installs it to `~/.local/bin/shard`, and offers to run `shard setup`. If the install fails or is interrupted, the old binary stays in place.
+- One-line install: `curl -fsSL https://useshards.com/install | sh` downloads the newest release, checks it against that release's `SHA256SUMS`, installs it to `~/.local/bin/shard`, and offers to run `shard setup`. The old binary stays in place until the verified new binary replaces it in one rename.
 
 **Install and setup**
 
@@ -83,4 +83,4 @@ The first release:
 
 - `shard` for Linux on x86-64 and for Apple silicon Macs, and a build for Intel Macs, for client use only.
 - `shard-init` for Linux, the systemd units for the daemon and for `shard serve`, and the launchd service for a Mac.
-- The `useshards` SDKs 0.1.0 for TypeScript and Python, as files on their own GitHub releases. They reached npm and PyPI in v0.1.1.
+- The `useshards` SDKs 0.1.0 for TypeScript and Python, as files on their own GitHub releases. They were on npm and PyPI by v0.1.1.
