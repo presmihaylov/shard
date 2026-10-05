@@ -83,7 +83,7 @@ shard puts the key in only when the request meets all of these conditions:
 
 - **It goes over HTTPS on port 443.** A request over plain HTTP, or to any other port, carries the placeholder. The same goes for a database password on 5432 or SMTP on 587.
 - **It goes to a granted destination.** A request to any other host carries the placeholder.
-- **The placeholder is in a header.** shard never puts the key in the path, the query or the body, because a host can quote those back in an error. API SDKs put the key in a header.
+- **The placeholder is in an end-to-end header, such as `Authorization`.** shard never puts the key in the path, the query or the body, because a host can quote those back in an error. Connection headers, such as `Proxy-Authorization` or a header named by `Connection`, keep the placeholder. Use a client that sends the credential in an end-to-end header.
 - **The placeholder appears unchanged.** HTTP Basic auth works too, as in `https://api:mock-KEY@host`. Any other encoding or signing of the key does not.
 
 ## Choose the destinations
@@ -133,7 +133,7 @@ shard.secrets.set(
 	</TabItem>
 </Tabs>
 
-A placeholder must be 8 characters or more, and contain only letters, digits, `_`, `-` and `.`. It must not contain the key, and the key must not contain it.
+A custom placeholder must be 8 characters or more, and contain only letters, digits, `_`, `-` and `.`. The default `mock-NAME` is exempt from those two checks. Neither kind may contain the key, and the key must not contain the placeholder.
 
 ## Grant a key to a sandbox that exists
 
@@ -177,13 +177,13 @@ A grant does not open the network to any host. If the sandbox has a network poli
 
 ## Rotate a key
 
-Run `shard secret set` again with the same name and the new key. The destinations and the placeholder stay the same. A running sandbox uses the new key on its next request, and the sandbox itself sees no change.
+Run `shard secret set` again with the same name and the new key. The destinations and the placeholder stay the same unless you supply `--destination` or `--placeholder`. A running sandbox uses the new key on its next request, and the sandbox itself sees no change.
 
 shard refuses to change the placeholder while a sandbox holds the secret, so ungrant the secret from that sandbox first.
 
 ## Clients that do not trust the proxy
 
-To put the key in, shard terminates the TLS connection on the host with its own certificate authority. It puts that certificate where the image reads its root certificates, and points `SSL_CERT_FILE`, `REQUESTS_CA_BUNDLE`, `NODE_EXTRA_CA_CERTS` and `CURL_CA_BUNDLE` at it. curl, Python, Node, Deno, Bun, Go, Ruby, PHP and .NET trust it without any change. Three kinds of client do not:
+To put the key in, shard terminates the TLS connection on the host with its own certificate authority. It puts that certificate where the image reads its root certificates, and points `SSL_CERT_FILE`, `REQUESTS_CA_BUNDLE`, `NODE_EXTRA_CA_CERTS` and `CURL_CA_BUNDLE` at it. The usual clients for curl, Python, Node, Deno, Bun, Go, Ruby, PHP and .NET read that store. A client configured with its own roots can ignore it. These clients also need care:
 
 - **Java** trusts its own keystore. On JDK 9 or later, import the last certificate in `$SSL_CERT_FILE` into it:
 
@@ -192,7 +192,7 @@ To put the key in, shard terminates the TLS connection on the host with its own 
   keytool -importcert -noprompt -cacerts -storepass changeit -alias shard-proxy -file /tmp/shard-proxy-ca.pem
   ```
 
-- **Rust with `webpki-roots`** compiles its root certificates into the binary. Build with `rustls-native-certs` instead.
+- **Rust with `webpki-roots`** compiles its root certificates into the binary. Configure rustls to use `rustls-native-certs` instead.
 - **A client that pins a certificate** refuses the proxy. Its request fails with a certificate error, and the key never goes out.
 
 ## What this does not stop
