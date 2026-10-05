@@ -21,7 +21,7 @@ shard: cannot connect to shard daemon at /var/lib/shard/shard.sock: is it set up
 
 `shard capabilities` lists the eight lifecycle verbs and marks each one `true` or `false` for the provider the server runs.
 
-Every error from the CLI starts with `shard:`, and most end with the command that tells you more or fixes the problem. Find the line you got in the sections below.
+The CLI prefixes returned errors with `shard:`. Setup also prints failures beside the step that failed. Find the line you got in the sections below.
 
 ## The installer
 
@@ -99,7 +99,7 @@ On Linux the API socket belongs to root, so run local commands with `sudo`:
 sudo shard list
 ```
 
-On a Mac the daemon runs as your user, and no command needs `sudo`.
+On a Mac the daemon runs as your user, so local sandbox commands need no `sudo`. Setup and service commands can still need administrator access.
 
 ### `another shard daemon already holds ...`
 
@@ -115,7 +115,7 @@ A reboot ends every sandbox process. When the daemon comes back, it marks each s
 
 `shard list --all` shows the reason next to the state: `stopped (daemon restarted and found no process)`. `shard start <name>` brings the sandbox back with its files.
 
-Restarting only the daemon does not end any sandbox, and the next daemon picks the running ones up again.
+An ordinary daemon restart leaves already running sandboxes alive, and the next daemon adopts them. An interrupted create, fork or restore can require cleanup instead.
 
 ## Sandboxes
 
@@ -123,7 +123,7 @@ Restarting only the daemon does not end any sandbox, and the next daemon picks t
 
 **`provider firecracker needs --memory, as a VM's memory is real memory on the host; set it to 128 MiB or more, for example --memory 512MiB`.** The `firecracker` and `vz` providers need a memory bound on every create. Add `--memory 512MiB` or more.
 
-**`stopped (ran out of memory and the host ended it)`.** The sandbox used more than its `--memory` bound, so the host ended it. It does not start again on its own, but `shard start <name>` brings it back with its files. The bound is fixed when the sandbox is created, so to get more memory, create a new sandbox with a larger `--memory`.
+**`stopped (ran out of memory and the host ended it)`.** The sandbox reached its memory ceiling and triggered an OOM kill. gVisor allows headroom for the sentry and throttles before that ceiling. It does not start again on its own, but `shard start <name>` brings it back with its files. The bound is fixed when the sandbox is created, so to get more memory, create a new sandbox with a larger `--memory`.
 
 **`stopped (the sandbox process died)`.** The host or a crash ended the sandbox. `shard start <name>` brings it back.
 
@@ -136,17 +136,17 @@ sudo ufw allow in on shard0
 sudo ufw route allow in on shard0
 ```
 
-**A name does not resolve, or a request gets a `403`, in a sandbox with a network policy.** The policy does not allow that host. `shard policy logs <name>` shows each decision and the rule that made it. A policy with only address rules needs `--allow dns` before names resolve. The [egress reference](https://github.com/presmihaylov/shard/blob/main/docs/egress.md) lists every rule.
+**A name does not resolve, or a request gets a `403`, in a sandbox with a network policy.** Check the policy and shard's private-address restrictions. `shard policy logs <name>` shows each decision and the rule or restriction that made it. A policy with only address rules needs `--allow dns` before names resolve. The [egress reference](https://github.com/presmihaylov/shard/blob/main/docs/egress.md) lists every rule.
 
 **An HTTPS client fails on a certificate in a sandbox with a secret.** shard's proxy inserts the key on the host, so it presents its own certificate to the client. Most clients trust it without any change. Java and some Rust builds need an extra step, and a client that pins a certificate cannot use a secret. The [secrets reference](https://github.com/presmihaylov/shard/blob/main/docs/secrets.md) has the steps.
 
 ## A remote server
 
-A command goes to the server that `--remote` names. Without `--remote` it uses `SHARD_REMOTE`, and if that is not set either, the saved connection. The API key comes from `SHARD_API_KEY` or, if that is not set, from the saved connection.
+A client command goes to the server that `--remote` names. Without `--remote` it uses a nonempty `SHARD_REMOTE`, then the saved connection. An explicit `--remote ""` selects the local socket. The API key comes from a nonempty `SHARD_API_KEY`, or from the saved connection when it names the same server.
 
 **`cannot connect to the shard server at ...: connection refused; check the URL, and that shard serve or the proxy in front of it runs`.** Nothing answers at that address. The cause in the line can also be `no such host` or `connection timed out`. Check the URL, and check that `shard serve` is running on the server.
 
-**`the server certificate is not trusted (...); for a private certificate authority, set SHARD_CA_FILE to its PEM file`.** shard always checks the certificate and has no option to skip the check. If a private authority signed the server's certificate, point `SHARD_CA_FILE` at that authority's certificate:
+**`the server certificate is not trusted (...); for a private certificate authority, set SHARD_CA_FILE to its PEM file`.** For HTTPS, shard checks the certificate and has no option to skip the check. If a private authority signed the server's certificate, point `SHARD_CA_FILE` at that authority's certificate:
 
 ```sh
 export SHARD_CA_FILE=/path/to/ca.pem
