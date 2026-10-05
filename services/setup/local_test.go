@@ -627,7 +627,7 @@ func TestRepairSaysItIsDone(t *testing.T) {
 		t.Run(c.startAtBoot, func(t *testing.T) {
 			l := newLocalHost(t)
 			h := l.host()
-			if err := (&Setup{Host: h, UI: newLocalUI(c.startAtBoot, true, GVisor)}).local(t.Context()); err != nil {
+			if err := (&Setup{Host: h, UI: newLocalUI(c.startAtBoot, true, GVisor)}).local(t.Context(), stay); err != nil {
 				t.Fatalf("local = %v", err)
 			}
 			m, _, err := LoadManifest(h)
@@ -637,7 +637,7 @@ func TestRepairSaysItIsDone(t *testing.T) {
 			l.remove("/usr/local/bin/shard-init")
 			ui := newLocalUI(c.startAtBoot, true)
 
-			if err := (&Setup{Host: h, UI: ui}).repair(t.Context(), m, ServiceActive); err != nil {
+			if err := (&Setup{Host: h, UI: ui}).repair(t.Context(), m, ServiceActive, ""); err != nil {
 				t.Fatalf("repair = %v; printed %q", err, ui.printed)
 			}
 			if last := ui.printed[len(ui.printed)-1]; last != c.want {
