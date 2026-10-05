@@ -157,6 +157,15 @@ function install(shell, box, opts = {}) {
 }
 
 const downloads = () => state.requests.filter((url) => url.startsWith('/gh/'));
+// The install logo, verbatim: 5 lines of 48 columns.
+const logo = [
+	'▄███████▄ ███   ███ ▄███████▄ ███████▄  ██████▄ ',
+	'███▄▄▄▄   ███   ███ ███   ███ ███   ███ ███  ███',
+	' ▀██████▄ ███▀▀▀███ █████████ ████████  ███  ▐██',
+	'▄▄▄▄▄▄███ ███   ███ ███   ███ ███   ███ ███▄▄██▀',
+	' ▀▀▀▀▀▀▀  ▀▀▀   ▀▀▀ ▀▀▀   ▀▀▀ ▀▀▀   ▀▀▀ ▀▀▀▀▀▀  ',
+].join('\n');
+const plain = (text) => text.replaceAll(/\x1b\[[0-9;]*m/g, '');
 const leftovers = (box) => [...readdirSync(box.tmp), ...(existsSync(box.bin) ? readdirSync(box.bin).filter((name) => name !== 'shard') : [])];
 
 for (const shell of shells) {
@@ -200,7 +209,7 @@ for (const shell of shells) {
 			const result = await install(shell, box).done;
 			assert.equal(result.code, 0, result.stderr);
 			assert.ok(!result.stdout.includes('\x1b'), 'no color without a terminal');
-			assert.ok(result.stdout.startsWith('███████ ██   ██  █████  ██████  ██████\n'));
+			assert.ok(result.stdout.startsWith(`${logo}\n`));
 			assert.ok(result.stdout.includes('Installing the Shard CLI...\n'));
 			assert.ok(result.stdout.includes(`✓ Shard installed\n\nInstalled at: ${box.bin}/shard\n\n`));
 			assert.ok(result.stdout.endsWith('Set up Shard later:\n  shard setup\n\nFor automated setup:\n  shard setup --help\n'));
@@ -415,26 +424,31 @@ describe('install on a terminal', { skip: python === '' && 'needs python3 for a 
 		assert.ok(result.stdout.endsWith('Set up Shard later:\n  shard setup\n\nFor automated setup:\n  shard setup --help\n'));
 	});
 
-	test('the banner runs #585BE2 to #3E57DE to #93A8EF on a truecolor terminal', async () => {
+	test('the logo runs #1D6FB8 to #3F95D4 to #7FBDEB, one color per column, on a truecolor terminal', async () => {
 		reset();
 		const result = await installOnTerminal(sandbox(), 'n', { env: { COLORTERM: 'truecolor' } });
-		for (const rgb of ['88;91;226', '87;91;226', '62;87;222', '66;91;223', '147;168;239']) {
-			assert.ok(result.stdout.includes(`\x1b[38;2;${rgb}m█`), rgb);
+		for (const painted of ['29;111;184m▄', '30;113;185m█', '63;149;212m█', '66;151;213m█', '127;189;235m▀']) {
+			assert.ok(result.stdout.includes(`\x1b[38;2;${painted}`), painted);
 		}
+		assert.ok(plain(result.stdout).startsWith(`${logo}\n`));
 		assert.ok(result.stdout.includes('\x1b[38;2;110;214;175m✓\x1b[0m Shard installed'));
 	});
 
-	test('a terminal without truecolor gets 256-color codes', async () => {
+	test('a terminal without truecolor gets one 256-color blue per letter', async () => {
 		reset();
 		const result = await installOnTerminal(sandbox(), 'n');
-		assert.ok(result.stdout.includes('\x1b[38;5;62m█'));
+		for (const code of ['25m▄', '32m█', '74m█', '110m█']) {
+			assert.ok(result.stdout.includes(`\x1b[38;5;${code}`), code);
+		}
 		assert.ok(!result.stdout.includes('\x1b[38;2;'));
+		assert.ok(plain(result.stdout).startsWith(`${logo}\n`));
 	});
 
 	test('NO_COLOR keeps the terminal output plain', async () => {
 		reset();
 		const result = await installOnTerminal(sandbox(), 'n', { env: { NO_COLOR: '1', COLORTERM: 'truecolor' } });
 		assert.ok(!result.stdout.includes('\x1b'));
+		assert.ok(result.stdout.startsWith(`${logo}\n`));
 		assert.ok(result.stdout.includes('✓ Shard installed'));
 	});
 });
