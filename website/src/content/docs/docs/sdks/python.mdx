@@ -76,7 +76,7 @@ Use `Shard` in a `with` block, or call `shard.close()` when you are done, so it 
 | Argument | Value |
 | --- | --- |
 | `image` | The image, such as `alpine:3.20`. It is the first positional argument. |
-| `snapshot` | A snapshot ID, ID prefix or name. The sandbox starts from the snapshot's files. Pass either `image` or `snapshot`, not both. |
+| `snapshot` | A snapshot ID or name. The sandbox starts from the snapshot's files. Pass either `image` or `snapshot`, not both. |
 | `name` | A name to use in place of the ID. |
 | `env` | The environment that every command in the sandbox starts with. |
 | `workdir` | The working directory of every command. |
@@ -84,9 +84,9 @@ Use `Shard` in a `with` block, or call `shard.close()` when you are done, so it 
 | `secrets` | The names of the secrets to grant. |
 | `policy` | The name of the network policy. |
 | `memory_mib` | The memory bound. Without it, the sandbox takes a snapshot's own bound, or has no bound. |
-| `vcpus`, `disk_mib` | The CPU count and the disk size. Without them, the daemon's defaults apply. |
+| `vcpus`, `disk_mib` | The CPU count and the disk size. Without them, the daemon's defaults apply. A sandbox from a snapshot takes the snapshot's disk size. |
 
-`shard.get(ref)` finds a sandbox by ID, ID prefix or name. `shard.list()` returns `SandboxList(sandboxes, warnings)` for the active sandboxes, and `shard.list(all=True)` adds the stopped ones. The warnings name entries that the daemon could not read, so check them before you treat the list as complete.
+`shard.get(ref)` finds a sandbox by ID or name. `shard.list()` returns `SandboxList(sandboxes, warnings)` for the active sandboxes, and `shard.list(all=True)` adds the stopped ones. The warnings name entries that the daemon could not read, so check them before you treat the list as complete.
 
 A `Sandbox` has these lifecycle methods:
 
@@ -178,7 +178,7 @@ When the app exits, its sandbox stays `running`, so you can still run commands i
 - `app.wait()` returns `AppExit(exit_code, signal, restarts)` once the restart policy will not start the app again. With `timeout=`, it raises `TimeoutError` when the time runs out, and the app keeps running.
 - `app.stop()` ends the app with `TERM`, or with `KILL` when you pass `force=True`, and cancels its restart policy. The sandbox keeps running.
 - `app.logs()` returns the app's output so far. The daemon keeps a bounded log, so for a long run it may hold only the end. `app.sandbox.follow_logs()` yields the output from the start of the log, then new output as it arrives, and it ends when the sandbox stops.
-- `restart` is a `Restart(policy, retries=, backoff=)`. `policy` is `"no"`, `"on-failure"` (after a non-zero exit) or `"always"` (after any exit). `retries` caps how many times in a row `on-failure` starts the app again, and `0`, the default, means no cap. `backoff` is the first wait in seconds, and it is 1 when you leave it at `0`. Each wait after that doubles, up to 60 seconds. Without `restart`, the daemon never starts the app again.
+- `restart` is a `Restart(policy, retries=, backoff=)`. `policy` is `"no"`, `"on-failure"` (after a non-zero exit code or a signal) or `"always"` (after any exit). `retries` caps how many times in a row `on-failure` starts the app again, and `0`, the default, means no cap. `backoff` is the first wait in seconds, and it is 1 when you leave it at `0`. Each wait after that doubles, up to 60 seconds. Without `restart`, the daemon never starts the app again.
 
 ## Secrets, policies and snapshots
 
