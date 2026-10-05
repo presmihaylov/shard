@@ -108,7 +108,9 @@ shard: cannot connect to shard daemon at /srv/shard/shard.sock: is it running? s
 }
 ```
 
-The file holds the key as plain text. Setup makes the directory `0700` and the file `0600`, and replaces the whole file on each save. The CLI refuses a file with any other field. Run `shard setup` again to check, replace or remove the connection.
+The file holds the key as plain text. Setup makes the directory `0700` and the file `0600`, and replaces the whole file on each save. The CLI refuses a file with any other field.
+
+Run `shard setup` again and its first screen names the saved server. It offers to check, replace or remove the connection, or to set up this machine instead. Local setup on a machine with a saved connection offers to remove it, and lists the removal among the changes. It removes the connection only once local setup succeeds. A repair or an upgrade of an existing installation makes the same offer. A `SHARD_REMOTE` in the environment still overrides the local daemon after that.
 
 The CLI sends the saved key only to the saved server: the same scheme, host and port. A `SHARD_REMOTE` or `--remote` that names another server needs its own `SHARD_API_KEY`:
 

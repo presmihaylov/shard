@@ -61,7 +61,7 @@ If a check fails before setup changes anything, the output says `No installation
 
 **Firecracker shows `Requires access to /dev/kvm.`** The host has no hardware virtualization that shard can use, and the line under it says why, for example `This machine does not provide it.` Choose gVisor, or use a host with `/dev/kvm`: bare metal, or a VM with nested virtualization.
 
-**`no terminal to ask ...: pass ...`.** Setup is running without a terminal, as in a script or over `ssh` with no TTY, so a question has no answer. The error names the option that answers the question, and setup never picks one for you. For the API key, the error is `no terminal to read the API key: set SHARD_API_KEY`.
+**`no terminal to ask ...: pass ...`.** Setup is running without a terminal, as in a script or over `ssh` with no TTY, so a question has no answer. The error names the option that answers the question, and setup never picks one for you. A local run names every missing option in one error. For the API key, the error is `no terminal to read the API key: set SHARD_API_KEY`.
 
 **`setup was cancelled; nothing changed`.** You declined the confirmation, and setup exits with code 1.
 
@@ -104,6 +104,10 @@ On a Mac the daemon runs as your user, so local sandbox commands need no `sudo`.
 ### `another shard daemon already holds ...`
 
 A root can have only one daemon, so a second `shard daemon` on the same root refuses to start. This happens when you start a daemon by hand while the service is already running one. Use the service, or stop it first.
+
+### `task proxy failed, restart in ...`
+
+The daemon log repeats this line, and the same line for `dns`, while every `shard create` fails. The host has no `nft`. Setup installs it, so this happens after an [install by hand](/docs/install/#install-by-hand). Install the `nftables` package. The next restart of each task succeeds, and the daemon itself needs no restart.
 
 ### A sandbox is stopped after a reboot
 
