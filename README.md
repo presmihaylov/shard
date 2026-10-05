@@ -156,6 +156,7 @@ or PyPI. Until the releases are available, the source and examples are in those 
 
 ## Documentation
 
+- [Set up a host or a remote connection](docs/setup.md)
 - [CLI commands and options](docs/cli.md)
 - [Daemon, REST API, and remote access](docs/daemon.md)
 - [Provider capabilities and limits](docs/provider.md)

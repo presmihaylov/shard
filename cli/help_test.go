@@ -126,7 +126,7 @@ Environment variables:
   SHARD_CA_FILE  custom CA certificate file; HTTPS only
 
 Set SHARD_REMOTE and SHARD_API_KEY for remote access.
-Without a remote URL, Shard connects to the local daemon.
+Without a remote URL or a saved connection, Shard connects to the local daemon.
 
 Get started:
   shard setup
