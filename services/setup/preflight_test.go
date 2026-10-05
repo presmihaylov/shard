@@ -7,6 +7,8 @@ import (
 	"slices"
 	"strings"
 	"testing"
+
+	"github.com/presmihaylov/shard/services/sandboxstate"
 )
 
 // preflightOn runs the checks for l on h and returns the finding and the checklist it drew.
@@ -339,15 +341,61 @@ func TestPreflightDownloadAccess(t *testing.T) {
 	})
 }
 
+// runcOverGVisor is the refusal of runc over a data dir whose sandboxes use gVisor, with both ways out (SHARD-742).
+var runcOverGVisor = []string{
+	"The sandboxes in /var/lib/shard use gVisor.",
+	"The daemon cannot start with runc over that data, and setup never changes its provider.",
+	"To keep the data, choose gVisor.",
+	"To delete the saved data, run:",
+	"  sudo rm -r /var/lib/shard",
+	"Then run shard setup again.",
+}
+
 func TestPreflightExistingSandboxes(t *testing.T) {
 	l := newLocalHost(t)
 	l.sandbox(GVisor)
 
 	f, _ := preflightOn(t, l.host(), Local{Provider: Runc})
-	wantFinding(t, f, "Existing Shard installation", true, "The sandboxes in /var/lib/shard use gVisor.", "Setup never changes the provider of existing sandboxes.")
+	wantFinding(t, f, "Existing Shard installation", true, runcOverGVisor...)
 
 	if f, _ := preflightOn(t, l.host(), Local{Provider: GVisor}); f != nil {
 		t.Fatalf("the recorded provider fails %q: %q", f.check, f.lines)
+	}
+}
+
+// A firecracker root hides its records in a data image that uninstall leaves unmounted, so the image alone names it (SHARD-742).
+func TestPreflightExistingDataImage(t *testing.T) {
+	l := newLocalHost(t)
+	l.write("/var/lib/shard.xfs", "")
+
+	f, _ := preflightOn(t, l.host(), Local{Provider: GVisor})
+	wantFinding(t, f, "Existing Shard installation", true,
+		"The data in /var/lib/shard belongs to Firecracker.",
+		"The daemon cannot start with gVisor over that data, and setup never changes its provider.",
+		"To keep the data, choose Firecracker.",
+		"It lives in the 0.0 GiB disk image /var/lib/shard.xfs.",
+		"To free the disk and delete the saved data, run:",
+		"  sudo umount /var/lib/shard",
+		"  sudo rm /var/lib/shard.xfs",
+		"Then run shard setup again.",
+	)
+}
+
+// The read as root skips a name that is no id and an undecodable record, as the daemon does (SHARD-742).
+func TestPrivilegedProviderReadsTheRecords(t *testing.T) {
+	f := newFakeHost(t)
+	h := f.host(nil)
+	if got, err := privilegedProvider(t.Context(), h); got != "" || err != nil {
+		t.Fatalf("no records = %q, %v", got, err)
+	}
+	f.write(t, "/var/lib/shard/sandboxes/a1/sandbox.json", "{")
+	f.write(t, "/var/lib/shard/sandboxes/.b2/sandbox.json", `{"provider": "runc"}`)
+	if got, err := privilegedProvider(t.Context(), h); got != "" || !errors.As(err, new(*sandboxstate.UnreadableError)) {
+		t.Fatalf("an undecodable record = %q, %v", got, err)
+	}
+	f.write(t, "/var/lib/shard/sandboxes/c3/sandbox.json", "{\n  \"provider\": \"gvisor\"\n}\n")
+	if got, err := privilegedProvider(t.Context(), h); got != GVisor || err != nil {
+		t.Fatalf("records = %q, %v, want gvisor", got, err)
 	}
 }
 

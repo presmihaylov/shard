@@ -107,6 +107,9 @@ func (s *Setup) existing(ctx context.Context, inst Installation) error {
 
 // repair re-runs the steps of the recorded choices, so the provider and the startup setting stay what they were.
 func (s *Setup) repair(ctx context.Context, m Manifest, service ServiceState) error {
+	if err := s.sameProvider(ctx, m); err != nil {
+		return err
+	}
 	var problems []string
 	gone := map[string]bool{}
 	for _, f := range m.Files {
@@ -256,8 +259,43 @@ type replacement struct {
 	tmp  string
 }
 
+// sameProvider stops before any change when another provider made the data dir, since the daemon cannot start over it.
+func (s *Setup) sameProvider(ctx context.Context, m Manifest) error {
+	if err := s.rootAccess(ctx); err != nil {
+		return err
+	}
+	owner, fact, err := rootProvider(ctx, s.Host)
+	if err != nil {
+		return fmt.Errorf("read the provider of %s: %w", DataDir, err)
+	}
+	if owner == "" || owner == m.Provider {
+		return nil
+	}
+	remove, err := deleteDataLines(s.Host)
+	if err != nil {
+		return err
+	}
+	lines := slices.Concat(
+		[]string{
+			fact,
+			"This installation uses " + providerTitle(m.Provider) + ", so the daemon cannot start over that data.",
+			"To keep the data, uninstall shard, which keeps it, and run shard setup again with " + providerTitle(owner) + ".",
+		},
+		remove,
+		[]string{"Then run shard setup again and check or repair the installation."},
+	)
+	if err := s.UI.Print(append(lines, "", "No installation changes were made.")...); err != nil {
+		return err
+	}
+
+	return &StoppedError{Step: "Existing Shard installation", Err: &Problem{Lines: lines}}
+}
+
 // upgrade fetches and verifies every binary before it asks, and replaces none until all of them passed.
 func (s *Setup) upgrade(ctx context.Context, m Manifest, service ServiceState) (err error) {
+	if err := s.sameProvider(ctx, m); err != nil {
+		return err
+	}
 	h := s.Host
 	rel, err := LatestRelease(ctx, h)
 	if err != nil {
