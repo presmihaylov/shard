@@ -4,6 +4,7 @@ import (
 	"cmp"
 	"errors"
 	"fmt"
+	"net/url"
 	"os"
 	"strings"
 )
@@ -15,18 +16,18 @@ const (
 	CAFileEnv = "SHARD_CA_FILE"
 )
 
-// NewRemoteFromEnv builds the client of host, or of SHARD_REMOTE when host is empty, with SHARD_API_KEY and SHARD_CA_FILE.
-func NewRemoteFromEnv(host string) (*Client, error) {
-	host = cmp.Or(host, os.Getenv(RemoteEnv))
+// NewRemoteFromEnv builds the client of host, or of SHARD_REMOTE, or of the saved remote, with SHARD_API_KEY or the saved key, and SHARD_CA_FILE.
+func NewRemoteFromEnv(host string, saved Config) (*Client, error) {
+	host = cmp.Or(host, os.Getenv(RemoteEnv), saved.Remote)
 	if host == "" {
-		return nil, fmt.Errorf("a remote client needs a host: --remote or %s, as https://shard.example.com", RemoteEnv)
+		return nil, fmt.Errorf("a remote client needs a host: --remote, %s or shard setup, as https://shard.example.com", RemoteEnv)
 	}
 	parsed, err := parseRemote(host)
 	if err != nil {
 		return nil, err
 	}
 
-	token, err := apiKey()
+	token, err := apiKey(parsed, saved)
 	if err != nil {
 		return nil, err
 	}
@@ -47,17 +48,46 @@ func NewRemoteFromEnv(host string) (*Client, error) {
 	return NewRemote(host, token, ca)
 }
 
-// apiKey is SHARD_API_KEY, the one credential of a remote client; an error names the variable, never the value.
-func apiKey() (string, error) {
+// apiKey is SHARD_API_KEY, else the saved key when remote is the saved remote, so a key reaches no server it was not saved for; an error never quotes it.
+func apiKey(remote *url.URL, saved Config) (string, error) {
 	key := strings.TrimSpace(os.Getenv(APIKeyEnv))
-	if key == "" {
-		return "", fmt.Errorf("a remote client needs %s; shard serve answers 401 without one", APIKeyEnv)
-	}
-	if err := checkToken(key); err != nil {
-		return "", fmt.Errorf("%s %w", APIKeyEnv, err)
+	if key != "" {
+		if err := checkToken(key); err != nil {
+			return "", fmt.Errorf("%s %w", APIKeyEnv, err)
+		}
+
+		return key, nil
 	}
 
-	return key, nil
+	key = strings.TrimSpace(saved.APIKey)
+	if key != "" && sameRemote(remote, saved.Remote) {
+		return key, nil
+	}
+	if key != "" {
+		return "", fmt.Errorf("a remote client needs %s for %s; the saved API key is for %s and is sent to no other server", APIKeyEnv, remote.Redacted(), redacted(saved.Remote))
+	}
+
+	return "", fmt.Errorf("a remote client needs %s; shard serve answers 401 without one", APIKeyEnv)
+}
+
+// sameRemote compares what the client dials, the scheme and the host and port, so a path or the case of a host name makes no other server.
+func sameRemote(remote *url.URL, saved string) bool {
+	other, err := url.Parse(saved)
+	if err != nil {
+		return false
+	}
+
+	return remote.Scheme == other.Scheme && strings.EqualFold(remoteAddress(remote), remoteAddress(other))
+}
+
+// redacted hides a password a remote url carries, as url.URL.Redacted does.
+func redacted(remote string) string {
+	parsed, err := url.Parse(remote)
+	if err != nil {
+		return remote
+	}
+
+	return parsed.Redacted()
 }
 
 // checkToken refuses the bytes net/http refuses in a header, so a newline never splits a request; any other wrong token is the front's to refuse.

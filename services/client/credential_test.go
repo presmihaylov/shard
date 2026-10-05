@@ -88,7 +88,7 @@ func TestNewRemoteFromEnvSendsTheKeyOverEitherScheme(t *testing.T) {
 			t.Setenv(client.APIKeyEnv, "key-token")
 			t.Setenv(client.CAFileEnv, tc.ca)
 
-			c, err := client.NewRemoteFromEnv("")
+			c, err := client.NewRemoteFromEnv("", client.Config{})
 			if err != nil {
 				t.Fatalf("NewRemoteFromEnv: %v", err)
 			}
@@ -112,7 +112,7 @@ func TestAMissingKeyNamesSHARDAPIKEYAlone(t *testing.T) {
 			noRemoteEnv(t)
 			t.Setenv(client.APIKeyEnv, key)
 
-			_, err := client.NewRemoteFromEnv("https://shard.example.com")
+			_, err := client.NewRemoteFromEnv("https://shard.example.com", client.Config{})
 			if err == nil {
 				t.Fatal("NewRemoteFromEnv answered with no key")
 			}
@@ -129,7 +129,7 @@ func TestHTTPSTrustsTheStoreOrSHARDCAFILE(t *testing.T) {
 
 	noRemoteEnv(t)
 	t.Setenv(client.APIKeyEnv, "key-token")
-	c, err := client.NewRemoteFromEnv(host)
+	c, err := client.NewRemoteFromEnv(host, client.Config{})
 	if err != nil {
 		t.Fatalf("NewRemoteFromEnv: %v", err)
 	}
@@ -138,7 +138,7 @@ func TestHTTPSTrustsTheStoreOrSHARDCAFILE(t *testing.T) {
 	}
 
 	t.Setenv(client.CAFileEnv, ca)
-	c, err = client.NewRemoteFromEnv(host)
+	c, err = client.NewRemoteFromEnv(host, client.Config{})
 	if err != nil {
 		t.Fatalf("NewRemoteFromEnv: %v", err)
 	}
@@ -158,7 +158,7 @@ func TestSHARDCAFILEWithAnHTTPRemoteIsRefused(t *testing.T) {
 			t.Setenv(client.APIKeyEnv, "key-token")
 			t.Setenv(client.CAFileEnv, caFile)
 
-			_, err := client.NewRemoteFromEnv(host)
+			_, err := client.NewRemoteFromEnv(host, client.Config{})
 			if err == nil || !strings.Contains(err.Error(), client.CAFileEnv) || !strings.Contains(err.Error(), host) {
 				t.Errorf("%s with %s returned %v, want a refusal that names both", client.CAFileEnv, host, err)
 			}
@@ -179,7 +179,7 @@ func TestNewRemoteFromEnvNeedsAHost(t *testing.T) {
 	noRemoteEnv(t)
 	t.Setenv(client.APIKeyEnv, "key-token")
 
-	_, err := client.NewRemoteFromEnv("")
+	_, err := client.NewRemoteFromEnv("", client.Config{})
 	if err == nil || !strings.Contains(err.Error(), client.RemoteEnv) {
 		t.Errorf("NewRemoteFromEnv with no host returned %v, want a refusal that names %s", err, client.RemoteEnv)
 	}
@@ -215,7 +215,7 @@ func TestNoErrorHoldsTheKey(t *testing.T) {
 			t.Setenv(client.APIKeyEnv, tc.key)
 			t.Setenv(client.CAFileEnv, tc.caFile)
 
-			_, err := client.NewRemoteFromEnv("")
+			_, err := client.NewRemoteFromEnv("", client.Config{})
 			if err == nil {
 				t.Fatal("NewRemoteFromEnv accepted it")
 			}
@@ -246,7 +246,7 @@ func TestNoErrorHoldsTheKey(t *testing.T) {
 			t.Setenv(client.APIKeyEnv, key)
 			t.Setenv(client.CAFileEnv, ca)
 
-			c, err := client.NewRemoteFromEnv("")
+			c, err := client.NewRemoteFromEnv("", client.Config{})
 			if err != nil {
 				t.Fatalf("NewRemoteFromEnv: %v", err)
 			}
@@ -261,5 +261,140 @@ func TestNoErrorHoldsTheKey(t *testing.T) {
 				}
 			}
 		})
+	}
+}
+
+// sawRequest says whether the front saw a request, without waiting for one.
+func sawRequest(seen chan string) bool {
+	select {
+	case <-seen:
+		return true
+	default:
+		return false
+	}
+}
+
+// The remote is --remote, else SHARD_REMOTE, else the saved one, and only the chosen server sees a request. (SHARD-657)
+func TestTheRemoteIsTheFlagThenSHARDREMOTEThenTheSavedOne(t *testing.T) {
+	flag, flagSeen := plainFront(t, "key-token")
+	envRemote, envSeen := plainFront(t, "key-token")
+	saved, savedSeen := plainFront(t, "key-token")
+
+	for _, tc := range []struct {
+		name, host, env string
+		want            chan string
+	}{
+		{name: "the flag", host: flag, env: envRemote, want: flagSeen},
+		{name: "SHARD_REMOTE", env: envRemote, want: envSeen},
+		{name: "the saved remote", want: savedSeen},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			noRemoteEnv(t)
+			t.Setenv(client.RemoteEnv, tc.env)
+			t.Setenv(client.APIKeyEnv, "key-token")
+
+			c, err := client.NewRemoteFromEnv(tc.host, client.Config{Remote: saved, APIKey: "key-token"})
+			if err != nil {
+				t.Fatalf("NewRemoteFromEnv: %v", err)
+			}
+			if _, err := c.Version(t.Context()); err != nil {
+				t.Fatalf("Version: %v", err)
+			}
+			for name, seen := range map[string]chan string{"the flag": flagSeen, "SHARD_REMOTE": envSeen, "the saved remote": savedSeen} {
+				if got := sawRequest(seen); got != (seen == tc.want) {
+					t.Errorf("the front of %s saw a request: %v", name, got)
+				}
+			}
+		})
+	}
+}
+
+// SHARD_API_KEY beats the saved key, and an empty or blank one counts as unset, so the saved key rides. (SHARD-657)
+func TestSHARDAPIKEYBeatsTheSavedKey(t *testing.T) {
+	for _, tc := range []struct {
+		name, env, want string
+	}{
+		{name: "set", env: "env-key", want: "env-key"},
+		{name: "unset", env: "", want: "saved-key"},
+		{name: "blank", env: " \t\n", want: "saved-key"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			host, seen := plainFront(t, tc.want)
+			noRemoteEnv(t)
+			t.Setenv(client.APIKeyEnv, tc.env)
+
+			c, err := client.NewRemoteFromEnv("", client.Config{Remote: host, APIKey: "saved-key"})
+			if err != nil {
+				t.Fatalf("NewRemoteFromEnv: %v", err)
+			}
+			if _, err := c.Version(t.Context()); err != nil {
+				t.Fatalf("Version: %v", err)
+			}
+			if got := <-seen; got != "Bearer "+tc.want {
+				t.Errorf("the front saw %q, want %q as the bearer", got, tc.want)
+			}
+		})
+	}
+}
+
+// The saved key goes to the server it was saved for alone; another remote needs SHARD_API_KEY, and the refusal never quotes the key. (SHARD-657)
+func TestTheSavedKeyGoesToTheSavedRemoteAlone(t *testing.T) {
+	other, otherSeen := plainFront(t, leakKey)
+	saved, _ := plainFront(t, leakKey)
+
+	for name, set := range map[string]func(*testing.T) string{
+		"the flag":     func(*testing.T) string { return other },
+		"SHARD_REMOTE": func(t *testing.T) string { t.Setenv(client.RemoteEnv, other); return "" },
+	} {
+		t.Run(name, func(t *testing.T) {
+			noRemoteEnv(t)
+			host := set(t)
+
+			_, err := client.NewRemoteFromEnv(host, client.Config{Remote: saved, APIKey: leakKey})
+			if err == nil {
+				t.Fatal("NewRemoteFromEnv sent the saved key to another server")
+			}
+			if msg := err.Error(); !strings.Contains(msg, client.APIKeyEnv) || !strings.Contains(msg, saved) || strings.Contains(msg, leakKey) {
+				t.Errorf("NewRemoteFromEnv returned %q, want %s and the saved remote in it and never the key", msg, client.APIKeyEnv)
+			}
+			if sawRequest(otherSeen) {
+				t.Error("the other server saw a request")
+			}
+		})
+	}
+}
+
+// One server is one scheme and one host and port: the case of the name, a path and the default port make no other, a scheme or a port does. (SHARD-657)
+func TestTheSavedKeyMatchesItsServerWhateverTheSpelling(t *testing.T) {
+	saved := client.Config{Remote: "https://Shard.Example.com/", APIKey: leakKey}
+
+	for host, same := range map[string]bool{
+		"https://shard.example.com":         true,
+		"https://shard.example.com:443/v0":  true,
+		"http://shard.example.com":          false,
+		"https://shard.example.com:8443":    false,
+		"https://shard.example.com.evil.io": false,
+	} {
+		t.Run(host, func(t *testing.T) {
+			noRemoteEnv(t)
+
+			_, err := client.NewRemoteFromEnv(host, saved)
+			if same && err != nil {
+				t.Errorf("NewRemoteFromEnv refused the saved server: %v", err)
+			}
+			if !same && err == nil {
+				t.Error("NewRemoteFromEnv sent the saved key to another server")
+			}
+		})
+	}
+}
+
+// A refusal names the saved remote with its password hidden, as url.URL.Redacted prints it. (SHARD-657)
+func TestARefusalHidesThePasswordOfTheSavedRemote(t *testing.T) {
+	noRemoteEnv(t)
+
+	_, err := client.NewRemoteFromEnv("https://other.example.com", client.Config{Remote: "https://user:" + leakKey + "@shard.example.com", APIKey: "saved-key"})
+	if err == nil || strings.Contains(err.Error(), leakKey) || !strings.Contains(err.Error(), "shard.example.com") {
+		t.Errorf("NewRemoteFromEnv returned %v, want the saved remote in it and never its password", err)
 	}
 }

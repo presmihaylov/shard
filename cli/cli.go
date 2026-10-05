@@ -2,6 +2,7 @@
 package cli
 
 import (
+	"cmp"
 	"context"
 	"errors"
 	"flag"
@@ -54,6 +55,9 @@ type App struct {
 
 	// plainWarned is shared by every copy of the App one run makes, so a verb that builds two clients warns once.
 	plainWarned *sync.Once
+
+	// remoteFlag says --remote was passed, so even an empty one names the target and the saved connection names none.
+	remoteFlag bool
 }
 
 // stdin is what exec hands the guest and what secret set reads the value from.
@@ -388,6 +392,7 @@ func (a *App) parseGlobals(args []string) ([]string, error) {
 	if err := parseVerb(flags, args); err != nil {
 		return nil, err
 	}
+	flags.Visit(func(f *flag.Flag) { a.remoteFlag = a.remoteFlag || f.Name == "remote" })
 
 	// --version answers before the root is checked, so it never fails.
 	if showVersion {
@@ -435,11 +440,15 @@ func (h *hostList) Set(value string) error {
 	return nil
 }
 
-// client speaks to the daemon on the socket, or through --remote; a verb asks only after its flags parsed, so --help reads no token.
+// client speaks to the daemon on the socket, or through --remote, SHARD_REMOTE or the saved connection; a verb asks only after its flags parsed, so --help reads no token.
 func (a App) client() (*client.Client, error) {
+	saved, err := a.saved()
+	if err != nil {
+		return nil, err
+	}
 	// The key and the certificate are read here, so a bad one fails before the verb dials.
-	if a.Remote != "" {
-		c, err := client.NewRemoteFromEnv(a.Remote)
+	if remote := cmp.Or(a.Remote, saved.Remote); remote != "" {
+		c, err := client.NewRemoteFromEnv(remote, saved)
 		if err != nil {
 			return nil, err
 		}
@@ -469,11 +478,40 @@ func (a App) localClient(verb string) (*client.Client, error) {
 
 // hostOnly refuses a remote for a verb that acts on this host, so it never reports the local result as the server's.
 func (a App) hostOnly(verb string) error {
+	if err := a.noRemote(verb); err != nil {
+		return err
+	}
+	saved, err := a.saved()
+	if err != nil {
+		return err
+	}
+	if saved.Remote == "" {
+		return nil
+	}
+
+	return fmt.Errorf("shard %s runs on the daemon host only and cannot reach the %v; remove it with shard setup to run it here", verb, saved)
+}
+
+// noRemote is hostOnly for daemon and serve: the saved connection names where commands go, never where a daemon runs.
+func (a App) noRemote(verb string) error {
 	if a.Remote == "" {
 		return nil
 	}
 
 	return fmt.Errorf("shard %s runs on the daemon host only and cannot reach %s; unset --remote and %s to run it there", verb, a.Remote, client.RemoteEnv)
+}
+
+// saved is the connection shard setup saved; an explicit --remote "" asks for the socket, so it reads none.
+func (a App) saved() (client.Config, error) {
+	if a.remoteFlag && a.Remote == "" {
+		return client.Config{}, nil
+	}
+	path, err := client.ConfigPath(os.Getenv)
+	if err != nil {
+		return client.Config{}, err
+	}
+
+	return client.LoadConfig(path)
 }
 
 // gotArgs echoes what a verb refused, quoted, so the error shows what was typed rather than a count.
