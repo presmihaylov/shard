@@ -2,6 +2,7 @@
 package sandboxstate
 
 import (
+	"crypto/rand"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -13,6 +14,7 @@ import (
 	"strings"
 	"sync"
 	"sync/atomic"
+	"syscall"
 
 	"github.com/presmihaylov/shard/models"
 	"github.com/presmihaylov/shard/pkg/store"
@@ -234,10 +236,19 @@ func (r *Repository) Delete(id string) error {
 	}
 
 	// The checkpoint and its unfinished .tmp go next: nothing else reaches them once the record is gone (SHARD-368).
-	for _, path := range []string{r.checkpointDir(id), r.checkpointDir(id) + ".tmp", r.dir(id)} {
+	for _, path := range []string{r.checkpointDir(id), r.checkpointDir(id) + ".tmp"} {
 		if err := os.RemoveAll(path); err != nil {
 			return fmt.Errorf("remove %s: %w", path, err)
 		}
+	}
+
+	// A writer that opens by path, as the egress log does, adds a file mid-remove; under a name no id can take, the path has no directory left to add to (SHARD-682).
+	trash := filepath.Join(r.root, sandboxesDir, "."+id+"."+rand.Text())
+	if err := os.Rename(r.dir(id), trash); err != nil {
+		return fmt.Errorf("move %s aside: %w", r.dir(id), err)
+	}
+	if err := removeTrash(trash); err != nil {
+		return err
 	}
 
 	// Without this a power loss can bring the sandbox back, and claimID syncs the create side already.
@@ -245,6 +256,22 @@ func (r *Repository) Delete(id string) error {
 		if err := store.SyncDir(filepath.Join(r.root, dir)); err != nil {
 			return err
 		}
+	}
+
+	return nil
+}
+
+// removeTrash retries "directory not empty": a writer that resolved the path before the rename can still land one file, and none can after.
+func removeTrash(trash string) error {
+	var err error
+	for range 3 {
+		err = os.RemoveAll(trash)
+		if !errors.Is(err, syscall.ENOTEMPTY) {
+			break
+		}
+	}
+	if err != nil {
+		return fmt.Errorf("remove %s: %w", trash, err)
 	}
 
 	return nil
