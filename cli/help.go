@@ -497,7 +497,7 @@ var helps = map[string]verbHelp{
 		},
 		examples: []string{
 			"shard policy create --allow api.example.com api-only",
-			`shard policy create --allow "10.0.0.0/8 tcp:22" internal-ssh`,
+			`shard policy create --allow "203.0.113.0/24 tcp:22" ssh-only`,
 		},
 	},
 	"policy show": {
