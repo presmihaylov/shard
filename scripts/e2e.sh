@@ -1687,7 +1687,7 @@ no_command_steps() {
 	code=0
 	refusal=$(shard create "${IMAGE}" /bin/true 2>&1) || code=$?
 	[ "${code}" != "0" ] || fail "create took a command: ${refusal}"
-	grep -q 'create takes no command: shard run' <<<"${refusal}" || fail "the refusal of a command does not point at run: ${refusal}"
+	grep -qE 'create takes no command: (sudo )?shard run' <<<"${refusal}" || fail "the refusal of a command does not point at run: ${refusal}"
 	api_call POST "/v0/sandboxes" "{\"image\":\"${IMAGE}\",\"restart\":{\"policy\":\"always\"}}"
 	[ "${REPLY_CODE}" = "400" ] || fail "a restart policy with no command answered ${REPLY_CODE}, want 400"
 	grep -q 'restart.policy needs a command' <<<"${REPLY_BODY}" || fail "the refusal does not name restart.policy: ${REPLY_BODY}"
