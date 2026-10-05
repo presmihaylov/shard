@@ -136,6 +136,91 @@ func TestALineThatNeverEndsEndsTheControlStream(t *testing.T) {
 	}
 }
 
+// A guest that queues events past a bound the host has not read ends its stream: the host closes it and Next hands out the queued ones first (SHARD-550).
+func TestAGuestThatFloodsEventsEndsTheControlStream(t *testing.T) {
+	cases := map[string]struct {
+		event supervisor.Message
+		most  int
+	}{
+		"by count": {supervisor.Message{Kind: supervisor.KindRestarts}, 4096},
+		"by bytes": {supervisor.Message{Kind: supervisor.KindSupervisorFailed, Error: strings.Repeat("x", 256<<10)}, 64},
+	}
+	for name, tc := range cases {
+		t.Run(name, func(t *testing.T) {
+			host, guest := net.Pipe()
+			defer host.Close()
+			defer guest.Close()
+			c := supervisor.ControlOver(host)
+
+			written := floodEvents(t, guest, tc.event, tc.most)
+			read, err := drainEvents(c)
+			if !errors.Is(err, supervisor.ErrEventFlood) || read != written-1 {
+				t.Fatalf("next after %d of %d events = %v, want ErrEventFlood after all but the refused one", read, written, err)
+			}
+		})
+	}
+}
+
+// drainEvents reads Next until it fails, and answers how many events it read and the error that ended them.
+func drainEvents(c *supervisor.Control) (int, error) {
+	read := 0
+	for {
+		if _, err := c.Next(); err != nil {
+			return read, err
+		}
+		read++
+	}
+}
+
+// A request in flight when a flood ends the stream fails at once, and the next one names the flood (SHARD-550).
+func TestAFloodEndsTheRequestInFlight(t *testing.T) {
+	host, guest := net.Pipe()
+	defer host.Close()
+	defer guest.Close()
+	c := supervisor.ControlOver(host)
+
+	stopped := make(chan error, 1)
+	go func() { stopped <- c.Stop(t.Context()) }()
+	var request supervisor.Message
+	if err := supervisor.ReadMessage(bufio.NewReader(guest), &request); err != nil || request.Kind != supervisor.KindStop {
+		t.Fatalf("the guest read %+v, %v, want the stop", request, err)
+	}
+	floodEvents(t, guest, supervisor.Message{Kind: supervisor.KindRestarts}, 4096)
+
+	select {
+	case err := <-stopped:
+		if err == nil {
+			t.Fatal("the stop in flight succeeded over a stream the flood ended")
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("the stop in flight still waits after the flood ended the stream")
+	}
+	if err := c.Thaw(t.Context()); !errors.Is(err, supervisor.ErrEventFlood) {
+		t.Fatalf("thaw after the flood = %v, want ErrEventFlood", err)
+	}
+}
+
+// floodEvents writes event until the host closes its end, and answers how many writes the host took; most bounds a host that never closes.
+func floodEvents(t *testing.T, guest net.Conn, event supervisor.Message, most int) int {
+	t.Helper()
+
+	for written := range most {
+		err := guest.SetWriteDeadline(time.Now().Add(5 * time.Second))
+		if err == nil {
+			err = supervisor.WriteMessage(guest, event)
+		}
+		if errors.Is(err, io.ErrClosedPipe) {
+			return written
+		}
+		if err != nil {
+			t.Fatalf("event %d: %v, want the host to take it or close the stream", written, err)
+		}
+	}
+	t.Fatalf("the host took all %d events with none read", most)
+
+	return 0
+}
+
 func TestReadHeaderLeavesTheFramesBehindIt(t *testing.T) {
 	var buf bytes.Buffer
 	if err := supervisor.WriteMessage(&buf, supervisor.ExecHeader{Argv: []string{"sh"}}); err != nil {

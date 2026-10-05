@@ -332,6 +332,20 @@ func TestDeleteExecRefusesARunningExec(t *testing.T) {
 	}
 }
 
+// An exec create past a running-exec bound is a 429 exec_limit whose message names the bound.
+func TestCreateExecRefusesPastTheExecLimit(t *testing.T) {
+	s := seed(t)
+	s.verbs.err = &sandbox.ExecLimitError{ID: s.running.ID, Limit: 32}
+
+	status, body := send(t, s.server, http.MethodPost, "/v0/sandboxes/"+s.running.ID+"/exec", `{"command":["true"]}`)
+	if status != http.StatusTooManyRequests || errorOf(t, body).code != "exec_limit" {
+		t.Fatalf("the create answered %d %v, want 429 exec_limit", status, body)
+	}
+	if answer := errorOf(t, body).message; !strings.Contains(answer, "32") {
+		t.Errorf("the refusal is %q, and it must name the bound", answer)
+	}
+}
+
 // decodeRefusal is the status and the JSON body a Dial got instead of the 101.
 func decodeRefusal(t *testing.T, resp *http.Response) (int, map[string]any) {
 	t.Helper()

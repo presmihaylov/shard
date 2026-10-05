@@ -1,219 +1,177 @@
 # shard
-This is a work in progress, will announce when it's live and ready to be used!
 
-shard is a single-node sandbox manager. One binary runs isolated sandboxes on a Linux host or a Mac,
-with or without hardware virtualization, and gives them the same lifecycle verbs either way: run,
-exec, pause, resume and fork. It drives gVisor, Sysbox when you need Docker or systemd inside the
-sandbox, Firecracker microVMs on a host with `/dev/kvm`, and Virtualization.framework on a Mac. A
-resident `shard daemon` owns the state and serves it over a REST API on a unix socket. The CLI is a
-thin client of that socket, and each command runs one verb.
+A single-node sandbox manager for Linux and macOS.
 
-**Status: pre-alpha.** Every verb runs on gVisor, Firecracker, and `vz` on an Apple silicon Mac
-with macOS 14 or later. Sysbox and runc refuse pause, resume and fork, and run every other verb.
-Every verb talks to the daemon, so the daemon must be up. See `docs/daemon.md`.
+Create sandboxes from OCI images, execute commands, pause and resume processes, and fork live
+sandboxes. One binary provides the CLI and the daemon, with gVisor, Sysbox, runc, Firecracker,
+and Virtualization.framework providers.
+
+## Why shard?
+
+Give an agent a sandbox that outlives its commands. Keep its files between commands, save its
+memory when idle, or fork its current state to try another path. Use the same lifecycle commands
+on a Linux server and an Apple silicon Mac, with secrets and outbound network policy under host
+control. shard manages one host; it does not schedule a fleet.
+
+## 60-second quickstart
+
+This example uses gVisor on Linux. [Install shard](#install), `shard-init`, `runsc`, `iproute2`,
+and `nftables` first. Linux providers need root. The examples use their own data directory,
+`/var/lib/shard-demo`, selected by `--root`.
+
+Start the daemon in one terminal and leave it there:
+
+```sh
+sudo shard --root /var/lib/shard-demo daemon --provider gvisor
+```
+
+In a second terminal, create a sandbox, write a file, read it, and remove the sandbox:
+
+```sh
+sudo shard --root /var/lib/shard-demo create --name demo --memory 512MiB alpine:3.20
+sudo shard --root /var/lib/shard-demo exec demo sh -c 'echo hello from shard > /tmp/hello.txt'
+sudo shard --root /var/lib/shard-demo exec demo cat /tmp/hello.txt
+sudo shard --root /var/lib/shard-demo remove --force demo
+```
+
+The file command prints `hello from shard`. `create` starts no main command, so the sandbox
+stays available for `exec`. The daemon downloads an image on its first use.
+
+For a Mac, follow [the Mac setup](docs/mac.md). The supported host is Apple silicon with macOS
+14 or later; its `vz` daemon runs as your user and needs neither Docker nor root.
+
+## Install
+
+### Release binaries
+
+Use these assets from the [GitHub releases](https://github.com/presmihaylov/shard/releases)
+when v0.1.0 is available. Until then, [build from source](#build-from-source).
+
+| Host | Assets |
+|---|---|
+| Linux x86-64 | `shard-linux-amd64` and `shard-init-linux-amd64` |
+| macOS Apple silicon | `shard-darwin-arm64` |
+| macOS Intel, client use only | `shard-darwin-amd64` |
+| Checksums | `SHA256SUMS` |
+
+On Linux, download both binaries and install them as `shard` and `shard-init`:
+
+```sh
+sudo install -m0755 shard-linux-amd64 /usr/local/bin/shard
+sudo install -m0755 shard-init-linux-amd64 /usr/local/bin/shard-init
+```
+
+Install the runtime for your provider separately. gVisor needs `runsc`; Sysbox needs
+`sysbox-runc`; runc needs `runc`; Firecracker needs `firecracker`, `jailer`, and `/dev/kvm`.
+The [provider contract](docs/provider.md) lists the host requirements and limits.
+
+The Mac binary embeds its VM shim and guest supervisor. An Intel Mac can use the CLI with a
+remote Linux daemon; a local Intel Mac daemon is unsupported.
+
+### Build from source
+
+Use the Go version in [go.mod](go.mod), Git, and Make:
+
+```sh
+git clone https://github.com/presmihaylov/shard.git
+cd shard
+make build-linux build-shard-init-linux
+sudo install -m0755 bin/shard-linux-amd64 /usr/local/bin/shard
+sudo install -m0755 bin/shard-init-linux-amd64 /usr/local/bin/shard-init
+```
+
+On a Mac, install the Xcode Command Line Tools and use `make build-darwin` instead. It produces
+`bin/shard-darwin-arm64` on Apple silicon. See [the release guide](docs/release.md) for the build
+and verification process.
 
 ## Providers
 
-`shard daemon --provider gvisor|sysbox|runc|vz|firecracker` picks the provider for the host.
-Without it, a Linux host whose `/dev/kvm` opens runs Firecracker, one without runs gVisor, and a
-Mac runs `vz`. Sysbox and runc run only when named. A root that holds records keeps the provider
-that made them, and `shard info` prints the pick. The table is the short form of the full matrix in
-`docs/provider.md`, which also has the Firecracker column:
+| Provider | Host | Isolation | Pause, resume, fork |
+|---|---|---|---|
+| gVisor (`gvisor`) | Linux | User-space kernel | Yes |
+| Sysbox (`sysbox`) | Linux | User namespace | No |
+| runc (`runc`) | Linux | Host kernel, no user namespace | No |
+| Firecracker (`firecracker`) | Linux with `/dev/kvm` | MicroVM | Yes |
+| Virtualization.framework (`vz`) | Apple silicon, macOS 14+ | VM | Yes |
 
-| | gVisor (Linux default without `/dev/kvm`) | Sysbox | runc | vz (Mac default) |
-|---|---|---|---|---|
-| Isolation | user-space kernel | container with a user namespace | **none**: a container on the host kernel | a micro VM per sandbox |
-| Syscall cost | high on file-heavy work | near native | near native | native, inside the VM |
-| Docker or systemd inside | no | yes | no | no |
-| pause, resume | yes | **no, refused by name** | **no, refused by name** | Apple silicon on macOS 14 or later |
-| fork of a running sandbox | yes | **no, refused by name** | **no, refused by name** | Apple silicon on macOS 14 or later |
-| Tenancy | many tenants per host | **one tenant per host** | **one tenant per host**, code you trust | many tenants per host |
+Every provider supports create, exec, stop, start, remove, and filesystem snapshots.
+Unsupported verbs fail with the provider name; shard never substitutes another mechanism.
 
-Sysbox CE gives every container the same uid range, so two Sysbox sandboxes are isolated from the
-host but not from each other. Run one tenant per Sysbox host.
+A new root defaults to Firecracker when the daemon can open `/dev/kvm`, gVisor on Linux without
+usable KVM, and `vz` on macOS. An existing root keeps its provider. Sysbox and runc require an
+explicit selection. **Sysbox is single-tenant. Use runc only for code you trust.** Read the
+[full provider matrix](docs/provider.md) before you select a provider.
 
-runc isolates nothing. Root in the guest is root on the host. shard never picks it by default, and
-`--provider runc` is the only way to select it.
+## Core concepts
 
-`vz` runs only on a Mac. It uses Virtualization.framework and needs neither Docker nor root. Start
-with `docs/mac.md`, and read `docs/provider-vz.md` for the contract.
+| Concept | Behavior |
+|---|---|
+| Sandbox | `create` starts without a main command. `run` starts the command you supply. The image's ENTRYPOINT and CMD never run. |
+| Exec | Execute another command in a running sandbox. Use `-i` / `--interactive` for stdin; `-t` / `--tty` requires it. |
+| Stop and start | Stop frees memory and keeps files. Start uses those files and starts any main command from the beginning. |
+| Pause and resume | Save memory and files, then continue the processes from that state. Availability depends on the provider. |
+| Fork | Capture a running sandbox's memory and files as a new sandbox. The source briefly pauses, then continues. |
+| Snapshot | Save a stopped sandbox's files without memory. The snapshot outlives its source and can seed a new sandbox. |
+| Secrets | The sandbox receives placeholders. The host proxy replaces them in HTTPS request headers sent to granted destinations. |
+| Egress | Without a policy, a sandbox can reach the internet but not private networks. A policy adds ordered allow and deny rules. |
 
-## Sandboxes
+A sandbox stays running after its main command exits. Only `stop` or `remove` ends it.
+For example:
 
-```
-shard daemon
-shard run --name lab python:3.12 python -c 'print(1)'
-shard exec lab python --version
-shard create --name idle python:3.12
-```
-
-Shard flags precede the image or sandbox reference. The command and its arguments follow the reference.
-An optional `--` before the command still works.
-
-`shard run` creates a sandbox and starts the command after the image as its app. The image's own
-ENTRYPOINT and CMD never run. Run prints what the app writes, stdout and stderr interleaved, until
-the restart policy ends, and then exits with the app's last code, or 128 plus the signal that ended
-it. It exits 125 when shard itself fails. `-d` prints the id once the app starts and returns.
-Ctrl+C stops the app and cancels its restarts, a second Ctrl+C kills it, and a third leaves with 130.
-Before the sandbox is up, run waits for it, then stops the app, or kills it after a second Ctrl+C,
-and exits 130. The sandbox stays `running` through all of it, until `shard stop`.
-
-`shard create` takes no command. Only `shard-init` runs, and the sandbox stays up for `shard exec`.
-
-`shard daemon` runs first, in a terminal of its own or as the systemd unit in `packaging/systemd`.
-It owns the state. Every other verb is a client of its socket and fails fast when the daemon is not
-running.
-
-The daemon never binds TCP. A client on another host reaches it through `shard serve`, an
-unprivileged process that speaks plain HTTP behind an HTTPS proxy such as Caddy, checks a bearer
-token and passes the bytes to the socket. A script or a CI job exports
-`SHARD_REMOTE=https://shard.example.com` and `SHARD_API_KEY`, the token that `shard tokens mint`
-issues, and every verb goes through the proxy to the front. An `http` url works too, for
-localhost or an encrypted VPN; use `https` for public access. See `docs/daemon.md`. A Mac that
-shard does not support, an Intel Mac or one on macOS 13, can run shard inside a Linux VM as a
-workaround, as `docs/mac.md` describes.
-
-On create or run, shard pulls the image, claims the record, allocates the network and creates the
-sandbox. Run then starts the app as the child of `shard-init`, and the sandbox outlives it.
-`--restart` starts the app again after it exits, and goes on `run` only. `--env`, `--workdir`,
-`--user`, `--memory` and `--vcpus` shape the workload, and they go before the image.
-`--memory` and `--disk` take a whole size such as `512MiB` or `2GiB`: KiB, MiB and GiB are binary,
-KB, MB and GB decimal. Only `0` goes without a unit. The API and the record keep MiB.
-
-`--user` sets the user of the app and of every exec only. The supervisor stays privileged as PID 1,
-so it can always record how the app ended.
-
-`SHARD_INIT_PATH` names the supervisor binary and defaults to `/usr/local/bin/shard-init` on
-Linux. A Mac daemon carries its own guest build of the supervisor and installs it under `<root>/vz`.
-
-`--secret NAME` hands the guest a placeholder for a stored secret as `$NAME`. The value stays on the
-host. The egress proxy puts it into a header of an HTTPS request on its way to the granted
-destination. See `docs/secrets.md`.
-
-`--policy NAME` names the egress policy the host enforces. Without one, the sandbox can reach the
-internet but no private address. See `docs/egress.md`.
-
-`shard cp ./app.conf <id>:/srv/` and `shard cp <id>:/srv/app.conf .` copy one file into or out of a
-running sandbox. The copy is streamed and byte exact. A copy into the sandbox keeps the file mode and
-is atomic in the guest, and `--user` names the user who writes and owns the file. A directory travels
-as a tar, with its modes and symlinks. A copy out refuses any entry in it that would land outside
-the destination.
-
-## Checkpoints and snapshots
-
-Every sandbox sees at most one fixed CPU feature set, listed in `services/bundle/defaults.go`. The
-set is what Intel Broadwell, AMD Zen and every newer CPU have in common, and it leaves out anything a
-host may lack. That list bounds where a checkpoint can restore. A host that lacks a listed feature
-runs its guests with a smaller set and reports no error, and its checkpoints restore only where that
-smaller set exists. gVisor does not promise a restore across machines (gvisor#11486), so shard
-promises a restore only on the host that took the checkpoint and treats any other host as best
-effort. Changing the list invalidates every existing checkpoint, so do not tune it.
-
-`pause` and `resume` work on gVisor, on Firecracker, and on `vz` on an Apple silicon Mac with macOS
-14 or later. On Sysbox, on runc and on `vz` on any other Mac, each of them refuses by name and the
-sandbox keeps running.
-
-`shard pause` writes a running sandbox into a checkpoint and frees its memory. `shard resume` runs it
-again from that checkpoint, and does not consume it. A pause copies the writable layer, so its time
-and disk cost grow with what the sandbox has written. The checkpoint is the memory image plus a copy
-of the writable layer as it was at the pause.
-
-`shard fork` starts a new sandbox from a running one. It freezes the source for a moment, captures
-its memory and its writable layer, lets the same sandbox run on, and starts the new one from that
-capture, never from an older checkpoint. Each fork takes a capture of its own, so two forks share
-nothing, and the capture is never a checkpoint you can name. gVisor, Firecracker and `vz` fork today
-(SHARD-457, SHARD-462, SHARD-463).
-
-```
-shard stop web
-shard snapshot create --name web-base web
-shard create --name web-2 --snapshot web-base
+```sh
+sudo shard --root /var/lib/shard-demo run --name job --memory 512MiB alpine:3.20 echo job done
+sudo shard --root /var/lib/shard-demo exec job echo sandbox still available
+sudo shard --root /var/lib/shard-demo stop job
+sudo shard --root /var/lib/shard-demo snapshot create --name job-files job
+sudo shard --root /var/lib/shard-demo create --name job-copy --memory 512MiB --snapshot job-files
+sudo shard --root /var/lib/shard-demo remove --force job-copy
+sudo shard --root /var/lib/shard-demo remove job
+sudo shard --root /var/lib/shard-demo snapshot remove job-files
 ```
 
-`shard snapshot create` copies every file that a stopped sandbox kept, `/tmp` included, and no
-memory image. It refuses a running or paused source: stop it first. A snapshot has an id and an
-optional unique name, and it outlives its source, so `shard remove` of the source leaves it in place.
-`shard create --snapshot` takes the place of an image, as the snapshot names its own, and the new
-sandbox runs shard-init alone under a new id and address. It never pulls: the image must still be on
-the host at the digest the snapshot recorded, and only the provider that made the snapshot starts
-it. On Firecracker and `vz` a larger `--disk` grows the snapshot's disk and its filesystem, and a
-smaller one is refused, as a disk only grows. `shard snapshot list`, `inspect` and `remove` manage the rest.
+When you finish the examples, press Ctrl+C in the daemon terminal.
 
-Measured on the devbox, a 2 vCPU Hetzner Cloud box with no `/dev/kvm`, with an idle Alpine sandbox
-of about 40 MiB resident: pause takes 0.19 to 0.24 s, and resume 0.46 to 0.48 s.
-E2B quotes about 4 s per GiB to pause and about 1 s to resume. Those numbers include a cloud round
-trip that these do not, so they compare the mechanism rather than the product.
-`docs/demo.cast` is the whole run on that box, recorded with `make devbox-demo`. Play it with
-`asciinema play docs/demo.cast`.
+Flags precede the image or sandbox name; the command follows it. `--memory` and `--disk` take
+sizes such as `512MiB` or `2GiB`; `--vcpus` takes a whole number. Secret destinations use
+`--destination` or its alias `--dest`. Grant secrets only to destinations that never return
+the credential in a response. See [the CLI reference](docs/cli.md),
+[the lifecycle](docs/state-machine.md), [secrets](docs/secrets.md), and [egress](docs/egress.md).
 
-## Secrets
+## API and SDKs
 
-```
-printf '%s' "$TOKEN" | shard secret set --destination api.example.com API_TOKEN
-shard secret list
-shard secret remove API_TOKEN
-```
+The daemon serves a REST API over a Unix socket. For remote access, `shard serve` checks API
+tokens and forwards requests to that socket. Put an HTTPS proxy in front for public access.
+The CLI and SDKs use `SHARD_REMOTE` and `SHARD_API_KEY` to connect.
+See [the daemon and API guide](docs/daemon.md) and [the OpenAPI schema](docs/openapi.json).
 
-A secret is granted to a destination, never to a sandbox alone. The store keeps the value in one file
-of mode 0600. `secret list` never prints the value, and `secret remove` refuses while a sandbox still holds
-the placeholder. `docs/secrets.md` says what this protects against and what it does not.
+The `useshards` SDKs live in [sdks/typescript](sdks/typescript) and [sdks/python](sdks/python).
+They provide sandbox commands, files, lifecycle operations, secrets, and policies. TypeScript
+requires Node.js 20.3 or later; Python requires Python 3.11 or later and has synchronous and
+asynchronous clients.
 
-## Egress
+Separate SDK releases are planned on GitHub under `sdk-typescript-v0.1.0` and
+`sdk-python-v0.1.0`. After publication, download the TypeScript `.tgz` or the Python `.whl`
+from their release assets and install the local file. The SDKs are not published on npm
+or PyPI. Until the releases are available, the source and examples are in those directories.
 
-```
-shard policy create --allow api.example.com --deny any locked
-shard run --policy locked python:3.12 python agent.py
-shard policy show locked
-shard policy remove locked
-```
+## Documentation
 
-A policy is an ordered list of `allow` and `deny` rules over addresses, prefixes and names. Traffic
-that matches no rule is dropped. On Linux the host enforces the policy in netfilter. It applies the
-policy again after every restore, and applies a change to every live sandbox at once. On a Mac the
-daemon's own userspace netstack enforces it and writes every drop to the sandbox's egress log.
-`docs/egress.md` has the rule syntax and what a policy implies.
+- [CLI commands and options](docs/cli.md)
+- [Daemon, REST API, and remote access](docs/daemon.md)
+- [Provider capabilities and limits](docs/provider.md)
+- [Mac setup](docs/mac.md) and [the Mac provider](docs/provider-vz.md)
+- [Lifecycle](docs/state-machine.md), [files](docs/files.md), [secrets](docs/secrets.md), and [egress](docs/egress.md)
 
-## Images
+## Status and contributions
 
-```
-shard pull python:3.12           download an image
-shard image list                 list the pulled images
-shard image remove python:3.12   remove one, with the rootfs no other tag needs
-```
+**Pre-alpha.** The API, CLI, and SDKs can change without compatibility guarantees.
 
-Everything lands under `/var/lib/shard`, and `--root` overrides that. shard unpacks an image once
-per digest, into a read-only rootfs that every sandbox built from it layers over. shard never
-re-resolves a tag it already holds. To get a newer image for that tag, run `shard image remove` and pull
-again.
-
-## Development
-
-`make check` runs the same gates as CI: format check, vet, lint and tests.
-`make fmt` and `make lint-fix` apply the fixes that can be made automatically.
-Linting needs [golangci-lint](https://golangci-lint.run/) v2 (`brew install golangci-lint`).
-
-The code sits in three buckets: `models/` for domain structs, `pkg/` for thin drivers over external
-things, and `services/` for business logic. `pkg/` never imports `models/`, and `depguard` enforces
-that in CI. [AGENTS.md](AGENTS.md) has the full layout and the rules that go with it.
-
-The Linux substrates do not run on macOS. `make test` stays green on a Mac. Anything that needs
-`runsc`, netns or KVM sits behind the `integration` build tag and runs on a Linux box through
-`make test-integration`. `make build-darwin` builds the Mac binary, and `docs/release.md` says what
-runs where.
-
-`make e2e-firecracker` drives the whole lifecycle on Firecracker. It runs only on demand, because it
-needs `/dev/kvm`, which CI and the devbox do not have, so no gate calls it. To run it, rent a
-bare-metal KVM box, run the target there as root, and destroy the box afterwards. `docs/provider.md`
-says what it proves.
-
-`CLAUDE.md` is a symlink to `AGENTS.md`, so one document serves every agent. A Windows checkout
-needs `core.symlinks=true`.
-
-## API stability
-
-The module stays at `v0` until launch and makes no stability promise. The provider interface is
-scheduled to change twice, once after each substrate is real.
+Read [AGENTS.md](AGENTS.md) for the code layout and contribution rules. Install the
+`golangci-lint` version in [CI](.github/workflows/ci.yml), then run `make check` before a commit.
+It checks format, vet, lint, unit tests, and the e2e script's own tests.
+Tests that need a runtime, namespaces, or KVM use the `integration` build tag and run on a
+suitable host. See [the release guide](docs/release.md) for the platform checks.
 
 ## License
 
-Apache-2.0. See [LICENSE](LICENSE) and [NOTICE](NOTICE).
+[Apache-2.0](LICENSE). See [NOTICE](NOTICE) for attribution.

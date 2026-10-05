@@ -78,3 +78,16 @@ func (b Bundle) Mounted() (bool, error) {
 
 	return true, nil
 }
+
+// lateLayer is where a write after Build goes: overlayfs misses a change to a mounted upper layer, so it goes through the merged view.
+func (b Bundle) lateLayer() (string, error) {
+	mounted, err := b.Mounted()
+	if err != nil {
+		return "", err
+	}
+	if mounted {
+		return b.RootFS, nil
+	}
+
+	return b.Upper, nil
+}

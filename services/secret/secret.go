@@ -76,7 +76,7 @@ func (e *UnreadableError) Error() string { return e.Err.Error() }
 func (e *UnreadableError) Unwrap() error { return e.Err }
 
 func (e *UnreadableError) Public() string {
-	return fmt.Sprintf("secret %s: its record cannot be read", e.Name)
+	return fmt.Sprintf("secret %s cannot be read; ask the server administrator to check the daemon log", e.Name)
 }
 
 // record is the file on disk. It is the only place the value is written.
@@ -184,6 +184,9 @@ func (s *Store) placeholder(name, value, chosen string, existing record) (string
 	// A guest that held the value would need no proxy, so this rule holds for the default too.
 	if strings.Contains(value, chosen) {
 		return "", &InvalidError{Err: fmt.Errorf("the placeholder of secret %s is inside its value, and the guest must never hold the value", name)}
+	}
+	if strings.Contains(chosen, value) {
+		return "", &InvalidError{Err: fmt.Errorf("the value of secret %s is inside its placeholder, and the guest holds the placeholder", name)}
 	}
 
 	// Only what this call named is shaped: a rotation must never be blocked by the placeholder it carries
