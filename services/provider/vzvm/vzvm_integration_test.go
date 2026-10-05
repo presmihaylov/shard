@@ -975,6 +975,84 @@ func TestAShimEndsItsVMOnSIGTERM(t *testing.T) {
 	}
 }
 
+// A guest kernel panic ends the sandbox as stopped: VZ reports no state change for the in-process reboot, so the shim stops the VM on the console banner (SHARD-641).
+func TestAGuestKernelPanicStopsTheSandbox(t *testing.T) {
+	h := newVMHarness(t)
+	spec := h.newSpec(t, "sleep", "3600")
+	if err := h.provider.Create(t.Context(), spec); err != nil {
+		t.Fatal(err)
+	}
+	if err := h.provider.Start(t.Context(), spec.ID); err != nil {
+		t.Fatal(err)
+	}
+
+	// A command in flight when the guest panics must return, not hang on a dead vsock.
+	pendingOut := filepath.Join(t.TempDir(), "pending.log")
+	pending := make(chan error, 1)
+	go func() {
+		out, err := os.OpenFile(pendingOut, os.O_CREATE|os.O_WRONLY, 0o600)
+		if err != nil {
+			pending <- err
+
+			return
+		}
+		defer out.Close()
+		_, err = h.provider.Exec(t.Context(), spec.ID, models.ExecSpec{Argv: []string{"/bin/sh", "-c", "sleep 300"}, Stdout: out, Stderr: out})
+		pending <- err
+	}()
+	time.Sleep(time.Second)
+
+	// sysrq c crashes the guest; the exec that triggers it dies with the kernel, so its result does not matter.
+	crashOut := filepath.Join(t.TempDir(), "crash.log")
+	go func() {
+		out, err := os.OpenFile(crashOut, os.O_CREATE|os.O_WRONLY, 0o600)
+		if err != nil {
+			return
+		}
+		defer out.Close()
+		_, _ = h.provider.Exec(t.Context(), spec.ID, models.ExecSpec{Argv: []string{"/bin/sh", "-c", "echo 1 > /proc/sys/kernel/sysrq; echo c > /proc/sysrq-trigger"}, Stdout: out, Stderr: out})
+	}()
+
+	started := time.Now()
+	deadline := time.Now().Add(15 * time.Second)
+	for {
+		status, err := h.provider.Status(t.Context(), spec.ID)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if status.State == models.StateStopped {
+			t.Logf("the sandbox stopped %s after the panic", time.Since(started).Round(100*time.Millisecond))
+
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("the sandbox is still %s 15s after the panic", status.State)
+		}
+		time.Sleep(time.Second)
+	}
+
+	select {
+	case err := <-pending:
+		t.Logf("the pending exec returned after the panic: %v", err)
+	case <-time.After(10 * time.Second):
+		t.Fatal("the pending exec never returned after the guest panicked")
+	}
+
+	console, err := os.ReadFile(filepath.Join(spec.StateDir, "console.log"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(console), "Kernel panic - not syncing") {
+		t.Fatalf("the console log has no panic banner:\n%s", console)
+	}
+	if shims := shimsOf(t, spec.StateDir); len(shims) != 0 {
+		t.Fatalf("shims left after the panic: %v", shims)
+	}
+	if err := h.provider.Remove(t.Context(), spec.ID); err != nil {
+		t.Fatalf("Remove after the panic: %v", err)
+	}
+}
+
 // shimsOf is the pid of every shim whose config names the sandbox's socket.
 func shimsOf(t *testing.T, stateDir string) []int {
 	t.Helper()
