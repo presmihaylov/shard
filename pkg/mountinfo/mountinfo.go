@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"path/filepath"
 	"slices"
 	"strings"
 )
@@ -22,7 +23,12 @@ type Mount struct {
 
 // At asks the kernel what is mounted at point, because a shard restart forgets what it mounted.
 func At(point string) (Mount, bool, error) {
-	f, err := os.Open(path)
+	return Under("/", point)
+}
+
+// Under is At on a host whose files sit under root, as a test's fake host does.
+func Under(root, point string) (Mount, bool, error) {
+	f, err := os.Open(filepath.Join(root, path))
 	if err != nil {
 		return Mount{}, false, fmt.Errorf("open %s: %w", path, err)
 	}

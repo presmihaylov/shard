@@ -948,7 +948,7 @@ func TestUninstallLeavesANetworkADaemonStillUses(t *testing.T) {
 	}
 }
 
-// Uninstall names the data it keeps, and the commands that delete it. (SHARD-668, SHARD-726)
+// Uninstall names the data it keeps, and the commands that delete it. (SHARD-668, SHARD-726, SHARD-730, SHARD-734)
 func TestUninstallNamesTheDataItKeeps(t *testing.T) {
 	const kept = "Your saved data remains in /var/lib/shard."
 	cases := map[string]struct {
@@ -971,21 +971,63 @@ func TestUninstallNamesTheDataItKeeps(t *testing.T) {
 			"To free the disk and delete the saved data, run:",
 			"  sudo umount /var/lib/shard",
 			`  sudo sed -i '\|^/var/lib/shard\.xfs[[:space:]]|d' /etc/fstab`,
+			"  sudo systemctl daemon-reload",
 			"  sudo rm /var/lib/shard.xfs",
+			"  sudo rm -r /var/lib/shard",
+		}},
+		"linux fstab line without its image": {os: "linux", files: map[string]string{
+			"/etc/fstab": "UUID=1 / ext4 defaults 0 1\n/var/lib/shard.xfs /var/lib/shard xfs loop,nofail 0 0\n",
+		}, want: []string{
+			"The disk image /var/lib/shard.xfs is gone, but this line in /etc/fstab still mounts it at boot:",
+			"  /var/lib/shard.xfs /var/lib/shard xfs loop,nofail 0 0",
+			"To remove the line and delete the saved data, run:",
+			`  sudo sed -i '\|^/var/lib/shard\.xfs[[:space:]]|d' /etc/fstab`,
+			"  sudo systemctl daemon-reload",
+			"  sudo rm -r /var/lib/shard",
+		}},
+		"linux mount left of a deleted image": {os: "linux", files: map[string]string{
+			"/proc/self/mountinfo": "36 25 7:0 / /var/lib/shard rw,relatime shared:1 - xfs /dev/loop0 rw,attr2,inode64\n",
+		}, want: []string{
+			"To delete the saved data, run:",
+			"  sudo umount /var/lib/shard",
+			"  sudo rm -r /var/lib/shard",
+		}},
+		"linux fstab line and mount without its image": {os: "linux", files: map[string]string{
+			"/etc/fstab":           "/var/lib/shard.xfs /var/lib/shard xfs loop,nofail 0 0\n",
+			"/proc/self/mountinfo": "36 25 7:0 / /var/lib/shard rw,relatime shared:1 - xfs /dev/loop0 rw,attr2,inode64\n",
+		}, want: []string{
+			"The disk image /var/lib/shard.xfs is gone, but this line in /etc/fstab still mounts it at boot:",
+			"  /var/lib/shard.xfs /var/lib/shard xfs loop,nofail 0 0",
+			"To remove the line and delete the saved data, run:",
+			"  sudo umount /var/lib/shard",
+			`  sudo sed -i '\|^/var/lib/shard\.xfs[[:space:]]|d' /etc/fstab`,
+			"  sudo systemctl daemon-reload",
+			"  sudo rm -r /var/lib/shard",
+		}},
+		"linux image with its lock": {os: "linux", files: map[string]string{"/var/lib/shard.xfs": "img", "/var/lib/shard.xfs.lock": ""}, want: []string{
+			"It lives in the 0.0 GiB disk image /var/lib/shard.xfs.",
+			"To free the disk and delete the saved data, run:",
+			"  sudo umount /var/lib/shard",
+			"  sudo rm /var/lib/shard.xfs",
+			"  sudo rm -r /var/lib/shard /var/lib/shard.xfs.lock",
 		}},
 		"linux image without an fstab line": {os: "linux", files: map[string]string{"/var/lib/shard.xfs": "img"}, want: []string{
 			"It lives in the 0.0 GiB disk image /var/lib/shard.xfs.",
 			"To free the disk and delete the saved data, run:",
 			"  sudo umount /var/lib/shard",
 			"  sudo rm /var/lib/shard.xfs",
+			"  sudo rm -r /var/lib/shard",
 		}},
 		"linux image as root": {os: "linux", asRoot: true, files: map[string]string{"/var/lib/shard.xfs": "img"}, want: []string{
 			"It lives in the 0.0 GiB disk image /var/lib/shard.xfs.",
 			"To free the disk and delete the saved data, run:",
 			"  umount /var/lib/shard",
 			"  rm /var/lib/shard.xfs",
+			"  rm -r /var/lib/shard",
 		}},
-		"linux on a filesystem that clones": {os: "linux", never: []string{"disk image", "/etc/fstab"}},
+		"linux on a filesystem that clones": {os: "linux", want: []string{"To delete the saved data, run: sudo rm -r /var/lib/shard"}, never: []string{"disk image", "/etc/fstab"}},
+		"linux on a filesystem that clones, with the lock": {os: "linux", files: map[string]string{"/var/lib/shard.xfs.lock": ""},
+			want: []string{"To delete the saved data, run: sudo rm -r /var/lib/shard /var/lib/shard.xfs.lock"}},
 	}
 	for name, tc := range cases {
 		t.Run(name, func(t *testing.T) {

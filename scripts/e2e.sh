@@ -899,7 +899,7 @@ if getent group shard >/dev/null; then
 else
 	WANT_MODE="0600"
 	WANT_GROUP="root"
-	grep -q "mode 0600, no shard group" <<<"${LISTEN_LINE}" || fail "the host has no shard group and the daemon logged '${LISTEN_LINE}'"
+	grep -q "mode 0600, for its owner only, as this host has no shard group" <<<"${LISTEN_LINE}" || fail "the host has no shard group and the daemon logged '${LISTEN_LINE}'"
 fi
 expect "$(stat -c '%a %U:%G' "${SOCKET}")" "${WANT_MODE#0} root:${WANT_GROUP}" "the socket sits at ${WANT_MODE} root:${WANT_GROUP}, as logged"
 

@@ -13,6 +13,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/presmihaylov/shard/pkg/mountinfo"
 	"github.com/presmihaylov/shard/pkg/proxy"
 	"github.com/presmihaylov/shard/pkg/term"
 	"github.com/presmihaylov/shard/pkg/vzshim"
@@ -714,11 +715,11 @@ func uninstalled(h Host, m Manifest, netHeld bool) ([]string, error) {
 		lines = append(lines, logs...)
 	}
 	if h.OS == "linux" {
-		image, err := dataImageLeft(h)
+		data, err := dataLeft(h)
 		if err != nil {
 			return nil, err
 		}
-		lines = append(lines, image...)
+		lines = append(lines, data...)
 	}
 
 	var tools []string
@@ -784,16 +785,26 @@ func networkLeft(h Host, held bool) ([]string, error) {
 
 const fstabPath = "/etc/fstab"
 
-// dataImageLeft names the disk image the daemon made for a data dir that cannot clone, and the fstab line that mounts it, which uninstall keeps with the data.
-func dataImageLeft(h Host) ([]string, error) {
+// dataLeft names the commands that delete the data uninstall keeps on Linux, with the disk image and fstab line of a data dir that cannot clone.
+func dataLeft(h Host) ([]string, error) {
+	sudo := sudoFor(h)
 	image := datadir.ImagePath(DataDir)
-	info, err := os.Lstat(rooted(h, image))
-	if errors.Is(err, fs.ErrNotExist) {
-		return nil, nil
+	// The mount point outlives the umount, and the lock a Firecracker start takes outlives the image. (SHARD-734)
+	remove := sudo + "rm -r " + DataDir
+	lock := image + ".lock"
+	_, err := os.Lstat(rooted(h, lock))
+	if err != nil && !errors.Is(err, fs.ErrNotExist) {
+		return nil, fmt.Errorf("check %s: %w", lock, err)
 	}
-	if err != nil {
+	if err == nil {
+		remove += " " + lock
+	}
+
+	info, err := os.Lstat(rooted(h, image))
+	if err != nil && !errors.Is(err, fs.ErrNotExist) {
 		return nil, fmt.Errorf("check %s: %w", image, err)
 	}
+	imaged := err == nil
 	fstab, err := os.ReadFile(rooted(h, fstabPath))
 	if err != nil && !errors.Is(err, fs.ErrNotExist) {
 		return nil, fmt.Errorf("read %s: %w", fstabPath, err)
@@ -805,16 +816,40 @@ func dataImageLeft(h Host) ([]string, error) {
 		}
 	}
 
-	sudo := sudoFor(h)
+	_, mounted, err := mountinfo.Under(h.Root, DataDir)
+	if err != nil && !errors.Is(err, fs.ErrNotExist) {
+		return nil, fmt.Errorf("check the mount at %s: %w", DataDir, err)
+	}
+	// A mount outlives its deleted image, and rm -r would empty it, then fail on the busy mount point.
+	var unmount []string
+	if mounted {
+		unmount = []string{"  " + sudo + "umount " + DataDir}
+	}
+	if !imaged && len(mounts) == 0 && !mounted {
+		return []string{"To delete the saved data, run: " + remove}, nil
+	}
+	if !imaged && len(mounts) == 0 {
+		return slices.Concat([]string{"To delete the saved data, run:"}, unmount, []string{"  " + remove}), nil
+	}
+	// systemd keeps the mount unit it made from the fstab line until a reload. (SHARD-730)
+	dropLine := []string{"  " + sudo + "sed -i '\\|^" + regexp.QuoteMeta(image) + "[[:space:]]|d' " + fstabPath, "  " + sudo + "systemctl daemon-reload"}
+	// A line left for a deleted image fails its mount at every boot.
+	if !imaged {
+		return slices.Concat(
+			[]string{"The disk image " + image + " is gone, but this line in " + fstabPath + " still mounts it at boot:"}, mounts,
+			[]string{"To remove the line and delete the saved data, run:"}, unmount, dropLine, []string{"  " + remove},
+		), nil
+	}
+
 	where := fmt.Sprintf("It lives in the %.1f GiB disk image %s", float64(info.Size())/(1<<30), image)
 	free := "To free the disk and delete the saved data, run:"
 	if len(mounts) == 0 {
-		return []string{where + ".", free, "  " + sudo + "umount " + DataDir, "  " + sudo + "rm " + image}, nil
+		return []string{where + ".", free, "  " + sudo + "umount " + DataDir, "  " + sudo + "rm " + image, "  " + remove}, nil
 	}
 
 	return slices.Concat(
 		[]string{where + ", which this line in " + fstabPath + " mounts at boot:"}, mounts,
-		[]string{free, "  " + sudo + "umount " + DataDir, "  " + sudo + "sed -i '\\|^" + regexp.QuoteMeta(image) + "[[:space:]]|d' " + fstabPath, "  " + sudo + "rm " + image},
+		[]string{free, "  " + sudo + "umount " + DataDir}, dropLine, []string{"  " + sudo + "rm " + image, "  " + remove},
 	), nil
 }
 
