@@ -1,0 +1,245 @@
+---
+title: Network egress
+description: What a sandbox can reach, how a policy limits it, and how to read the decisions the host makes.
+sidebar:
+  order: 4
+---
+
+import { Tabs, TabItem } from '@astrojs/starlight/components';
+
+Let a sandbox reach one host, and see what the host refuses:
+
+<Tabs syncKey="lang">
+	<TabItem label="CLI">
+
+```sh
+shard policy create --allow api.openai.com --deny any openai-only
+shard create --name agent --policy openai-only alpine:3.20
+shard exec agent wget -q -O /dev/null http://example.com
+shard policy logs agent
+shard remove --force agent
+```
+
+	</TabItem>
+	<TabItem label="TypeScript">
+
+```ts
+import { Shard } from "useshards";
+
+const shard = new Shard();
+try {
+  await shard.policies.set("openai-only", [
+    { action: "allow", rule: "api.openai.com" },
+    { action: "deny", rule: "any" },
+  ]);
+  const agent = await shard.create({ name: "agent", image: "alpine:3.20", policy: "openai-only" });
+  const result = await agent.exec(["wget", "-q", "-O", "/dev/null", "http://example.com"]);
+  console.log(result.exitCode);
+  for (const d of await agent.egressLog()) {
+    console.log(d.source, d.verdict, d.host, d.ruleText);
+  }
+  await agent.remove({ force: true });
+} finally {
+  shard.close();
+}
+```
+
+	</TabItem>
+	<TabItem label="Python">
+
+```python
+from useshards import PolicyRule, Shard
+
+with Shard() as shard:
+    shard.policies.set(
+        "openai-only",
+        [PolicyRule(action="allow", rule="api.openai.com"), PolicyRule(action="deny", rule="any")],
+    )
+    agent = shard.create("alpine:3.20", name="agent", policy="openai-only")
+    result = agent.exec(["wget", "-q", "-O", "/dev/null", "http://example.com"])
+    print(result.exit_code)
+    for d in agent.egress_log():
+        print(d.source, d.verdict, d.host, d.rule_text)
+    agent.remove(force=True)
+```
+
+	</TabItem>
+</Tabs>
+
+`wget` fails, because the policy does not allow `example.com`. The sandbox cannot even look the name up. The log shows a `dns` record that denies `example.com`.
+
+The host decides what a sandbox can reach, never the sandbox. A sandbox holds no network rules of its own, so code in it cannot change them. The host writes its rules again on every create, start, resume, fork and policy change.
+
+## Without a policy
+
+A sandbox created without `--policy` reaches the internet and nothing private. The host drops its traffic to:
+
+- `10.0.0.0/8`, `172.16.0.0/12` and `192.168.0.0/16`
+- `169.254.0.0/16`, which holds the cloud metadata address
+- `127.0.0.0/8` and `100.64.0.0/10`
+- every other sandbox
+
+This floor holds under every policy too. The host checks it before any rule of a policy, so no rule opens it.
+
+Nothing outside can open a connection into a sandbox. The host drops a new connection toward a sandbox before it asks any policy.
+
+## Write a policy
+
+A policy is a name and an ordered list of rules, at most 256. The first rule that matches decides, and the host drops traffic that no rule allows.
+
+```sh
+shard policy create --allow api.openai.com --allow "203.0.113.0/24 tcp:5432" --deny any app
+```
+
+The name has at most 64 lowercase letters, digits and hyphens, and starts with a letter or a digit.
+
+A rule is `<destination> [tcp|udp[:<ports>]]`. The form of the destination tells what it matches:
+
+| Destination | Example | What it matches |
+| --- | --- | --- |
+| an address or a prefix | `1.1.1.1`, `203.0.113.0/24` | that address, or that prefix |
+| a name | `api.example.com` | that host name |
+| a wildcard | `*.example.com` | every name under `example.com`, not `example.com` itself |
+| a suffix | `suffix:example.com` | `example.com` and every name under it |
+| `any` | `any` | everything |
+| `dns` | `dns` | DNS to shard's resolver, in an allow rule only |
+
+A wildcard replaces one whole label. `www.*.com` matches one label in that place, and `*` alone matches every host. A `*` inside a label, such as `api*.example.com`, is refused. A name matches in any letter case, with or without a trailing dot.
+
+Ports are a comma-separated list of numbers and ranges, such as `tcp:22,8000-8100`, from 1 to 65535. A rule names at most 1024 ports. A rule with no protocol matches every protocol, ping included. An address rule with no ports opens every TCP and UDP port, so name the ports when you want only some.
+
+**A name rule covers only TCP ports 80 and 443.** The proxy matches the name in each request, and it speaks only HTTP and TLS. `policy create` refuses a name on any other port and tells you to use an address.
+
+A secret grant opens no host. The policy must allow a granted host like any other host. See [secrets](https://github.com/presmihaylov/shard/blob/main/docs/secrets.md).
+
+### Attach a policy after the create
+
+<Tabs syncKey="lang">
+	<TabItem label="CLI">
+
+```sh
+shard stop web
+shard policy attach web openai-only
+shard start web
+```
+
+	</TabItem>
+	<TabItem label="TypeScript">
+
+```ts
+await web.stop();
+await shard.policies.attach(web, "openai-only");
+await web.start();
+```
+
+	</TabItem>
+	<TabItem label="Python">
+
+```python
+web.stop()
+shard.policies.attach(web, "openai-only")
+web.start()
+```
+
+	</TabItem>
+</Tabs>
+
+A sandbox holds one policy, so an attach replaces the one it holds. `shard policy detach <sandbox>` leaves it with no policy. Both commands take only a `created` or `stopped` sandbox, and fail with `stop it first` otherwise. A policy the server does not hold is refused, and the refusal changes nothing.
+
+### Change a policy
+
+Run `shard policy create` again with the same name to change the policy. The change holds at once on every sandbox with that policy, running or paused, and nothing restarts. A connection that is already open stays open until it ends. A new connection gets the new rules.
+
+`shard policy list` lists the names. `shard policy show <name>` prints the rules and `holders`, the sandboxes whose record names the policy. `shard policy remove` refuses while a sandbox holds the policy. `shard list` shows each sandbox's policy in its `POLICY` column.
+
+## DNS under a policy
+
+A sandbox with a policy resolves names only through shard's resolver, on the host. Any DNS it sends elsewhere goes to the resolver too.
+
+The resolver answers a name only when the policy allows it: through a name, wildcard or suffix rule that matches it, through `allow any`, or through `allow dns`. Every other name gets `NXDOMAIN`. So a lookup cannot carry data out past the policy.
+
+A policy that names a host, or says `allow dns`, opens DNS to the resolver for you. `shard inspect` prints these added rules in `egress`, marked `implied`. A sandbox with no policy uses public DNS directly.
+
+**Caution: a policy of only address rules opens no DNS.** `allow 203.0.113.7` gives the sandbox an address but no way to resolve a name, so a tool that looks up a name fails first. `shard policy create` prints a note when you store such a policy. Add a name rule for the host, or add `--allow dns`.
+
+A rule id is its position in what `shard inspect` prints as `egress`. An edit that adds DNS to a policy puts two implied rules in front, and moves every rule down by two. A log line written before the edit then points at a different rule.
+
+## The egress proxy
+
+A sandbox with a policy or a secret sends its TCP ports 80 and 443 through a proxy on the host. The proxy judges each request by host name, with the same rules. The host still decides every other port. A sandbox with neither a policy nor a secret never goes through the proxy.
+
+The proxy reads HTTPS with a certificate authority of its own. shard adds it to the file the image already reads, and points `SSL_CERT_FILE`, `REQUESTS_CA_BUNDLE`, `NODE_EXTRA_CA_CERTS` and `CURL_CA_BUNDLE` at that file. So a create that goes through the proxy refuses an image with no CA bundle, and refuses `--env` for those four names. For clients that do not read the file, see [secrets](https://github.com/presmihaylov/shard/blob/main/docs/secrets.md).
+
+The proxy resolves each name on the host and connects to the address it judged. It refuses a TLS handshake with no server name, and answers `400` when the `Host` header differs from that name. It also refuses a host that resolves to one of the server's own addresses.
+
+The answers from the proxy:
+
+| Status | When |
+| --- | --- |
+| `403` | the policy denies the request. The JSON body names the host, the port, the rule and the reason. |
+| `502` | the host does not resolve, or the upstream fails. The body never holds the upstream error. |
+| `503` | the secret values put into the sandbox's requests in flight pass 32 MiB. |
+
+A sandbox holds at most 1024 connections open to the proxy. The proxy closes a keep-alive connection after 60 seconds with no request.
+
+## Names resolve on the host
+
+The host resolves a name rule to its IPv4 addresses when it applies the rules, through public nameservers. A sandbox that answers its own lookups changes nothing.
+
+- Store the policy again to pick up addresses that changed.
+- `policy create` refuses a name that does not resolve.
+- When a name stops resolving, only the sandboxes whose policy names it are held. A create or start of such a sandbox fails. A running one keeps its last rules while its policy and the daemon stay the same. Otherwise it gets closed rules: web traffic to the proxy, DNS to the resolver, the rest dropped. The daemon log names each held sandbox.
+- A held sandbox comes back at the next apply after the name resolves: a create, start, remove or policy change of any sandbox, or a daemon restart. Nothing retries on a timer.
+
+## IPv6 is dropped
+
+A sandbox gets one IPv4 address and no IPv6 route. The host drops every IPv6 packet a sandbox sends, and logs it with the rule `ipv6`. No rule of a policy matches IPv6.
+
+## The decision log
+
+`shard policy logs <sandbox>` prints the decisions for one sandbox as JSON, one record per line, oldest first. `--follow` keeps printing new records within about a second, and ends at Ctrl-C or when the sandbox stops or is removed.
+
+```sh
+shard policy logs --follow agent
+```
+
+A record holds `time`, `source`, `verdict`, `host`, `port`, `address`, `rule`, `rule_text` and `reason`. It never holds a header, a body or a secret value.
+
+| `source` | One record for |
+| --- | --- |
+| `proxy` | each request the proxy judged, allowed or denied |
+| `dns` | each question the resolver judged, allowed or denied |
+| `host` | each packet the host dropped, which the proxy and the resolver never saw |
+
+`rule` is the id of the rule that decided, or one of these:
+
+| `rule` | Why |
+| --- | --- |
+| `private` | the private floor |
+| `default` | no rule of the policy matched |
+| `missing` | the policy does not exist, so everything is dropped |
+| `local` | the destination is one of the server's own addresses |
+| `ipv6` | an IPv6 packet |
+| `resolve` | the proxy could not resolve the host |
+| `limit` | the sandbox has 1024 connections open to the proxy |
+
+A Mac adds `stack`, `redirect` and `unapplied`.
+
+The proxy and the resolver refuse a request they cannot write to the log. So nothing goes out unlogged.
+
+The log has limits:
+
+- On Linux, the host logs at most 2 dropped packets a second for each rule of a sandbox, with a burst of 10. On a Mac, the limit is 2 a second for each sandbox. One sandbox's flood never hides the records of another.
+- A sandbox keeps at most 16 MiB of log, in two files of 8 MiB. `shard policy logs` prints the newest 10000 records, and says on stderr how many it left out.
+- A drop while the daemon is down is lost if the kernel log overwrites it first.
+
+**Caution: a drop by another firewall on the server is not in the log.** A packet that `ufw`, `firewalld` or a rule of your own drops leaves no record, and the sandbox only times out. With `ufw` on, a `FORWARD` policy of `DROP` stops all the traffic of a sandbox without a policy, and an `INPUT` policy of `DROP` stops the proxy and the resolver. Let the bridge through:
+
+```sh
+ufw allow in on shard0
+ufw route allow in on shard0
+```
+
+## On a Mac
+
+macOS has no host firewall for shard to use. On vz, each sandbox's network ends in a network stack inside the daemon. That stack judges every flow with the same rules as a Linux host: the private floor first, then the policy, then the default drop. It sends 80 and 443 of a sandbox with a policy or a secret through the same proxy. A refused flow gets no answer, as on Linux, and goes into the same log with `source` `host`.
