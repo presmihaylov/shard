@@ -1130,8 +1130,8 @@ func (s *Service) stop(ctx context.Context, id string, force bool) error {
 		case err != nil:
 			return err
 		case sb.State == models.StateStopped && !status.Alive():
-			// A second stop changes nothing; only a start that failed after the substrate came up makes a stopped record lie.
-			return nil
+			// A second stop changes nothing but the checkpoint, which an earlier stop's failed drop leaves behind (SHARD-592).
+			return s.dropCheckpoint(id)
 		}
 	}
 
@@ -1161,10 +1161,12 @@ func (s *Service) stop(ctx context.Context, id string, force bool) error {
 		return err
 	}
 
-	return s.cfg.Repo.Update(id, func(sb *models.Sandbox) error {
+	err = s.cfg.Repo.Update(id, func(sb *models.Sandbox) error {
 		sb.State = models.StateStopped
 		sb.PID = 0
 		sb.UnresponsiveReason = ""
+		// A stop ends the sandbox, so no resume can read its checkpoint again (SHARD-592).
+		sb.Checkpoint = ""
 		if exit != nil {
 			sb.ExitStatus = exit
 		}
@@ -1178,6 +1180,12 @@ func (s *Service) stop(ctx context.Context, id string, force bool) error {
 
 		return nil
 	})
+	if err != nil {
+		return err
+	}
+
+	// The record no longer names the checkpoint, so its memory and disk copy would leak until rm takes the sandbox (SHARD-592).
+	return s.dropCheckpoint(id)
 }
 
 // awaitStopped makes stop mean stopped. runsc can report a sandbox alive for a moment after a clean
