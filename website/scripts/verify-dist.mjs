@@ -30,7 +30,7 @@ const requiredFiles = [
 	'docs/index.html',
 	'docs/install/index.html',
 	'pagefind/pagefind.js',
-	'favicon.svg',
+	'shard-mark.svg',
 	'install',
 	...landing.map(([file]) => file),
 ];

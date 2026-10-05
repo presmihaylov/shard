@@ -1,0 +1,158 @@
+---
+title: Capabilities
+description: The lifecycle verbs each provider supports, how to ask a server for them, and how shard refuses a verb that a provider lacks.
+sidebar:
+  order: 4
+---
+
+import { Tabs, TabItem } from '@astrojs/starlight/components';
+
+Ask a server which lifecycle verbs it supports before you call one. On a Sysbox server:
+
+<Tabs syncKey="lang">
+	<TabItem label="CLI">
+		```sh
+		shard capabilities
+		```
+
+		```text
+		CAPABILITY   SUPPORTED
+		create       true
+		start        true
+		stop         true
+		remove       true
+		pause        false
+		resume       false
+		fork         false
+		snapshot     true
+		```
+	</TabItem>
+	<TabItem label="TypeScript">
+		```ts
+		import { Shard } from "useshards";
+
+		const shard = new Shard();
+		try {
+		  const caps = await shard.capabilities();
+		  console.log(caps.pause, caps.fork); // false false
+		} finally {
+		  shard.close();
+		}
+		```
+	</TabItem>
+	<TabItem label="Python">
+		```python
+		from useshards import Shard
+
+		with Shard() as shard:
+		    caps = shard.capabilities()
+		    print(caps.pause, caps.fork)  # False False
+		```
+	</TabItem>
+</Tabs>
+
+The SDK examples connect to the server that `SHARD_REMOTE` names, with the API key in `SHARD_API_KEY`.
+
+The answer lists all eight verbs, each `true` or `false`. It comes from the provider of the daemon, so it is the same for every sandbox on that server. Token scopes and sandbox states never change it.
+
+## The verbs of each provider
+
+One daemon runs one provider for every sandbox on its host. Every provider supports the same five of the eight verbs. Pause, resume and fork are optional:
+
+| Verb | gVisor | Sysbox | runc | vz | Firecracker |
+| --- | --- | --- | --- | --- | --- |
+| `create`, `start`, `stop`, `remove`, `snapshot` | yes | yes | yes | yes | yes |
+| `pause` | yes | no | no | Apple silicon with macOS 14 or later | yes |
+| `resume` | yes | no | no | Apple silicon with macOS 14 or later | yes |
+| `fork` | yes | no | no | Apple silicon with macOS 14 or later | yes |
+
+`snapshot` is `shard snapshot create`, which copies the files of a stopped sandbox. `fork` copies a sandbox while it runs. Every provider also supports `exec`, `logs` and `inspect`, which the answer does not list.
+
+## The API
+
+`GET /v0/capabilities` answers the same eight fields:
+
+```sh
+curl --unix-socket /var/lib/shard/shard.sock http://localhost/v0/capabilities
+```
+
+```json
+{
+  "create": true,
+  "start": true,
+  "stop": true,
+  "remove": true,
+  "pause": false,
+  "resume": false,
+  "fork": false,
+  "snapshot": true
+}
+```
+
+Through `shard serve`, any valid token can read it, whatever its scopes. `shard capabilities --format json` prints the same object.
+
+## A verb the provider lacks
+
+shard refuses the verb. It never falls back to a weaker verb, such as a stop in place of a pause. The refusal comes before the daemon changes anything, so the sandbox keeps its state:
+
+<Tabs syncKey="lang">
+	<TabItem label="CLI">
+		```sh
+		shard pause quiet-heron-3f0a
+		# shard: provider sysbox does not support pause on this host; use a server that supports pause
+		```
+	</TabItem>
+	<TabItem label="TypeScript">
+		```ts
+		import { Shard, UnsupportedError } from "useshards";
+
+		const shard = new Shard();
+		try {
+		  const sandbox = await shard.get("quiet-heron-3f0a");
+		  await sandbox.pause();
+		} catch (err) {
+		  if (!(err instanceof UnsupportedError)) throw err;
+		  console.log(err.status, err.code); // 409 unsupported
+		} finally {
+		  shard.close();
+		}
+		```
+	</TabItem>
+	<TabItem label="Python">
+		```python
+		from useshards import Shard, UnsupportedError
+
+		with Shard() as shard:
+		    sandbox = shard.get("quiet-heron-3f0a")
+		    try:
+		        sandbox.pause()
+		    except UnsupportedError as err:
+		        print(err.status, err.code)  # 409 unsupported
+		```
+	</TabItem>
+</Tabs>
+
+The API answers 409 with the code `unsupported`:
+
+```json
+{"error":{"code":"unsupported","message":"provider sysbox does not support pause on this host; use a server that supports pause"}}
+```
+
+The message names the provider and the verb. [The API socket](https://github.com/presmihaylov/shard/blob/main/docs/daemon.md#the-api-socket) lists every code.
+
+## The provider of a host
+
+`shard daemon status` names the provider of the running daemon. `shard daemon --provider <name>` picks one. Without the flag, the daemon picks one from its root, then from the host:
+
+| The root and the host | The provider |
+| --- | --- |
+| A root that holds sandbox records | The provider that made them |
+| A root whose every record cannot be read | None. The daemon refuses to start until `--provider` names one |
+| A root with no records, beside a `<root>.xfs` image | `firecracker` |
+| A root with no records, on Linux, where `/dev/kvm` opens | `firecracker` |
+| A root with no records, on Linux, with no `/dev/kvm` or one that does not open | `gvisor` |
+| A root with no records, on macOS | `vz` |
+
+On a root with no records, the daemon never picks `sysbox` or `runc`. To use one of them, name it with `--provider`. `shard info` prints the provider that a new daemon would pick on this host, and the reason. It runs on the daemon host only.
+
+A root keeps the provider that made its records, because no other provider can read them. The daemon refuses a `--provider` that names another one before it touches the root, and the error names both providers.

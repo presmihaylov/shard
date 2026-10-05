@@ -1,153 +1,233 @@
-/* The docs skin: Starlight wired to the winter tokens, then restyled after the nairi docs. */
+/* The docs skin: Starlight on the landing page's tokens, fonts and terminal panel. */
 @layer base, starlight, theme, components, utilities;
 
 @import '@astrojs/starlight-tailwind';
 @import 'tailwindcss/theme.css' layer(theme);
 @import 'tailwindcss/utilities.css' layer(utilities);
 
-@import './tokens.css';
-@import './ui/badge.css';
-@import './ui/banner.css';
-@import './ui/components.css';
+/* Starlight's default theme is dark, so :root holds the landing's dark tokens. */
+:root {
+	--paper: #040a10;
+	--ink: #e4f3fc;
+	--muted: #9aafc0;
+	--blue: #91c4ed;
+	--line: #1b3042;
+	--soft: #0b1925;
+	--surface: #0a1722;
+	--line-strong: #294459;
+	--selection: #2d81be66;
+
+	--display: 'Gugi', system-ui, sans-serif;
+	--body: 'Geist Variable', system-ui, sans-serif;
+	--mono: 'JetBrains Mono Variable', ui-monospace, monospace;
+}
+:root[data-theme='light'] {
+	--paper: #faf9f8;
+	--ink: #052955;
+	--muted: #526579;
+	--blue: #2d81be;
+	--line: #cdc1c150;
+	--soft: #eaf3fa;
+	--surface: #ffffff;
+	--line-strong: #dededc;
+	--selection: #d7e8f5;
+}
 
 /* Unlayered, so it beats both the Starlight defaults and the starlight-tailwind mapping in the utilities layer. */
 :root {
-	--sl-font: var(--font-body);
-	--sl-font-mono: var(--font-mono);
+	--sl-font: var(--body);
+	--sl-font-mono: var(--mono);
 
-	--sl-color-text: var(--color-foreground);
-	--sl-color-white: var(--color-foreground);
-	--sl-color-text-accent: var(--color-link);
-	--sl-color-text-invert: var(--color-background);
-	--sl-color-accent: var(--color-foreground);
-	--sl-color-accent-low: var(--color-muted);
-	--sl-color-accent-high: var(--color-foreground);
+	--sl-color-white: var(--ink);
+	--sl-color-gray-1: var(--ink);
+	--sl-color-gray-2: var(--ink);
+	--sl-color-gray-3: var(--muted);
+	--sl-color-gray-4: color-mix(in oklab, var(--muted) 60%, var(--paper));
+	--sl-color-gray-5: var(--line-strong);
+	--sl-color-gray-6: var(--soft);
+	--sl-color-gray-7: color-mix(in oklab, var(--soft) 50%, var(--paper));
+	--sl-color-black: var(--paper);
 
-	--sl-color-bg: var(--docs-surface);
-	--sl-color-bg-nav: color-mix(in oklab, var(--docs-surface) 80%, transparent);
-	--sl-color-bg-sidebar: var(--docs-surface);
-	--sl-color-bg-inline-code: color-mix(in oklab, var(--color-foreground) 5%, transparent);
-	--sl-color-hairline: color-mix(in oklab, var(--color-foreground) 7%, transparent);
-	--sl-color-hairline-light: color-mix(in oklab, var(--color-foreground) 7%, transparent);
-	--sl-color-hairline-shade: color-mix(in oklab, var(--color-foreground) 7%, transparent);
-	--sl-color-backdrop-overlay: var(--color-scrim);
+	--sl-color-accent-low: var(--soft);
+	--sl-color-accent: var(--blue);
+	--sl-color-accent-high: var(--blue);
 
-	--sl-color-gray-1: var(--color-foreground);
-	--sl-color-gray-2: #3a4c5f;
-	--sl-color-gray-3: #4a5d71;
-	--sl-color-gray-4: #8697aa;
-	--sl-color-gray-5: #c9d5e1;
-	--sl-color-gray-6: #dce5ee;
-	--sl-color-gray-7: #e9f0f6;
-	--sl-color-black: #f3f7fb;
+	--sl-color-text: var(--ink);
+	--sl-color-text-accent: var(--blue);
+	--sl-color-text-invert: var(--paper);
+	--sl-color-bg: var(--paper);
+	--sl-color-bg-nav: var(--paper);
+	--sl-color-bg-sidebar: var(--paper);
+	--sl-color-bg-inline-code: var(--soft);
+	--sl-color-bg-accent: var(--blue);
+	--sl-color-hairline: var(--line);
+	--sl-color-hairline-light: var(--line);
+	--sl-color-hairline-shade: var(--line);
 
 	--sl-line-height: 1.65;
 	--sl-line-height-headings: 1.2;
 	/* Starlight sizes the heading wrapper, so a size set in em on the heading itself compounds. */
-	--sl-text-h2: 1.375rem;
-	--sl-text-h3: 1.125rem;
+	--sl-text-h2: 1.5rem;
+	--sl-text-h3: 1.25rem;
 }
-:root[data-theme='dark'] {
-	--sl-color-gray-1: #dce6f0;
-	--sl-color-gray-2: #c0cedc;
-	--sl-color-gray-3: #93a6ba;
-	--sl-color-gray-4: #72859a;
-	--sl-color-gray-5: #32465c;
-	--sl-color-gray-6: #1c2938;
-	--sl-color-gray-7: #162130;
-	--sl-color-black: #0e1621;
-	--sl-color-hairline-shade: color-mix(in oklab, var(--color-foreground) 10%, transparent);
+/* Starlight sets the overlay on ::backdrop itself, so inheriting it from :root is not enough. */
+::backdrop {
+	--sl-color-backdrop-overlay: #040a10cc;
+}
+[data-theme='light'] ::backdrop {
+	--sl-color-backdrop-overlay: #0529554d;
 }
 
-body {
-	background-color: var(--docs-surface);
-	color: var(--color-foreground);
+::selection {
+	background: var(--selection);
 }
 
-/* Header: a frosted bar over the page, one hairline under it. */
-.page > .header {
-	-webkit-backdrop-filter: blur(var(--blur-glass));
-	backdrop-filter: blur(var(--blur-glass));
-}
+/* Header: the landing nav, paper with one line under it. */
 .site-title {
-	font-family: var(--font-brand);
-	font-weight: 400;
+	display: flex;
+	align-items: center;
+	gap: 9px;
+	color: var(--ink);
+	text-decoration: none;
 }
-
-/* Sidebar: a floating glass card on desktop, as the nairi docs float theirs. */
+.site-title .pixel-logo {
+	flex: none;
+	width: 36px;
+	height: 33px;
+	color: var(--blue);
+}
+.site-title .wordmark {
+	font: 600 23px/1 var(--display);
+	letter-spacing: -1.6px;
+}
+.site-title .eyebrow {
+	margin-inline-start: 3px;
+	font: 11px var(--mono);
+	letter-spacing: 1.8px;
+	text-transform: uppercase;
+	color: var(--muted);
+}
+.nav-link {
+	font-size: 14px;
+	color: var(--ink);
+	text-decoration: none;
+	white-space: nowrap;
+}
+.nav-link:hover {
+	color: var(--blue);
+}
+.theme-toggle {
+	display: grid;
+	place-items: center;
+	width: 32px;
+	height: 32px;
+	padding: 0;
+	border: 1px solid var(--line-strong);
+	border-radius: 7px;
+	background: var(--surface);
+	color: var(--blue);
+	cursor: pointer;
+	transition: color 0.2s, border-color 0.2s;
+}
+.theme-toggle:hover {
+	color: var(--ink);
+	border-color: var(--blue);
+}
+/* The mobile menu button, in the toggle's bordered style in place of Starlight's filled circle. */
+.sl-menu-button {
+	border: 1px solid var(--line-strong);
+	border-radius: 7px;
+	background-color: var(--surface);
+	color: var(--ink);
+	box-shadow: none;
+}
+.sl-menu-button:has(~ :popover-open) {
+	background-color: var(--soft);
+}
+.mobile-preferences {
+	align-items: center;
+}
+:is(.nav-link, .theme-toggle):focus-visible {
+	outline: 3px solid var(--blue);
+	outline-offset: 5px;
+}
 @media (min-width: 50rem) {
-	.page > .sidebar .sidebar-pane {
-		inset-block: calc(var(--sl-nav-height) + 0.75rem) 0.75rem;
-		inset-inline-start: 0.75rem;
-		width: calc(var(--sl-sidebar-width) - 0.75rem);
-		border: 1px solid color-mix(in oklab, var(--color-foreground) 7%, transparent);
-		border-radius: var(--radius-lg);
-		background-color: color-mix(in oklab, var(--docs-surface) 40%, transparent);
-		-webkit-backdrop-filter: blur(var(--blur-glass));
-		backdrop-filter: blur(var(--blur-glass));
+	site-search button[data-open-modal] {
+		border-color: var(--line-strong);
+		border-radius: 7px;
+		background-color: var(--surface);
+		color: var(--muted);
+	}
+	site-search button[data-open-modal]:hover {
+		border-color: var(--blue);
+		color: var(--ink);
 	}
 }
+site-search dialog {
+	border-color: var(--line-strong);
+	border-radius: 11px;
+}
+
+/* Sidebar: eyebrow group labels, the current page on the soft fill with a blue edge. */
 #starlight__sidebar .top-level a,
 #starlight__sidebar .top-level summary {
-	border-radius: var(--radius-md);
+	border-radius: 7px;
 	padding: 0.375rem 0.75rem;
 }
 #starlight__sidebar .top-level a {
 	font-size: var(--sl-text-sm);
-	font-weight: 500;
-	color: var(--color-muted-foreground);
-	transition: color 150ms, background-color 150ms;
+	color: var(--muted);
+	transition: color 0.2s, background-color 0.2s;
 }
 #starlight__sidebar .top-level a:hover {
-	color: var(--color-foreground);
-	background-color: color-mix(in oklab, var(--color-foreground) 5%, transparent);
+	color: var(--ink);
+	background-color: var(--soft);
 }
 #starlight__sidebar .group-label .large {
-	font-size: 0.75rem;
-	font-weight: 700;
-	letter-spacing: 0.08em;
+	font: 11px var(--mono);
+	letter-spacing: 1.8px;
 	text-transform: uppercase;
-	color: var(--color-muted-foreground);
+	color: var(--muted);
 }
 #starlight__sidebar ul ul li {
 	border-inline-start: none;
 	margin-inline-start: 0;
 	padding-inline-start: 0;
 }
-/* The active row is the ink fill: night ink in light, a soft frost pill in dark. */
 #starlight__sidebar a[aria-current='page'],
 #starlight__sidebar a[aria-current='page']:hover,
 #starlight__sidebar a[aria-current='page']:focus {
-	font-weight: 600;
-	color: #eef4fa;
-	background: radial-gradient(125% 130% at 35% 25%, #2b3d53 0%, #1c2b3d 46%, #0f1824 100%);
+	font-weight: 500;
+	color: var(--ink);
+	background-color: var(--soft);
+	box-shadow: inset 2px 0 var(--blue);
 }
-[data-theme='dark'] #starlight__sidebar a[aria-current='page'],
-[data-theme='dark'] #starlight__sidebar a[aria-current='page']:hover,
-[data-theme='dark'] #starlight__sidebar a[aria-current='page']:focus {
-	color: var(--color-foreground);
-	background: color-mix(in oklab, var(--color-foreground) 14%, transparent);
+#starlight__on-this-page {
+	font: 11px var(--mono);
+	letter-spacing: 1.8px;
+	text-transform: uppercase;
+	color: var(--muted);
 }
 
-/* Headings: Outfit for the page and section titles, Geist for the small ones. */
+/* Headings: Gugi at its one weight, as the landing sets it; Geist for the small ones. */
 h1#_top,
 .sl-markdown-content :is(h1, h2, h3):not(:where(.not-content *)) {
-	font-family: var(--font-display);
-	font-weight: 600;
+	font-family: var(--display);
+	font-weight: 400;
 	letter-spacing: -0.025em;
 }
 .sl-markdown-content :is(h4, h5, h6):not(:where(.not-content *)) {
-	font-family: var(--font-body);
+	font-family: var(--body);
 	font-weight: 600;
 	letter-spacing: -0.01em;
 }
 .sl-markdown-content h2:not(:where(.not-content *)) {
-	line-height: 1.4;
+	line-height: 1.22;
 	margin-top: 2.5em;
 	margin-bottom: 0.75em;
 }
 .sl-markdown-content h3:not(:where(.not-content *)) {
-	line-height: 1.5;
+	line-height: 1.3;
 	margin-top: 2em;
 	margin-bottom: 0.5em;
 }
@@ -155,21 +235,19 @@ h1#_top,
 	margin-top: 0;
 }
 
-/* Links: ink blue with a thin underline, so a link never reads as bold text. */
-.sl-markdown-content a:not(:where(.not-content *)) {
-	color: var(--color-link);
-	font-weight: 500;
+/* Links: the landing blue, with a thin underline so a link reads as one in running text. */
+.sl-markdown-content a:not(:where(.not-content *, .sl-link-card *)) {
+	color: var(--blue);
 	text-decoration: underline;
 	text-decoration-thickness: 1px;
 	text-underline-offset: 3px;
-	text-decoration-color: var(--color-link);
+	text-decoration-color: color-mix(in oklab, var(--blue) 45%, transparent);
 }
-.sl-markdown-content a:not(:where(.not-content *)):hover {
-	color: var(--color-link);
-	text-decoration-thickness: 2px;
+.sl-markdown-content a:not(:where(.not-content *, .sl-link-card *)):hover {
+	text-decoration-color: var(--blue);
 }
 
-/* Tables: the nairi data table, a quiet header fill and horizontal hairlines only. */
+/* Tables: the landing command sheet, a soft header and lines between rows only. */
 .sl-markdown-content table:not(:where(.not-content *)) {
 	font-size: 0.875rem;
 	line-height: 1.5;
@@ -181,148 +259,125 @@ h1#_top,
 	vertical-align: top;
 }
 .sl-markdown-content thead th:not(:where(.not-content *)) {
-	background-color: color-mix(in oklab, var(--color-foreground) 5%, transparent);
-	color: var(--color-muted-foreground);
+	background-color: var(--soft);
+	color: var(--muted);
 	font-weight: 500;
 	text-align: start;
-	border-bottom: 1px solid color-mix(in oklab, var(--color-foreground) 7%, transparent);
+	border-top: 1px solid var(--line-strong);
+	border-bottom: 1px solid var(--line-strong);
 }
 .sl-markdown-content tbody tr:not(:where(.not-content *)) {
-	border-bottom: 1px solid color-mix(in oklab, var(--color-foreground) 5%, transparent);
-	transition: background-color 100ms;
-}
-.sl-markdown-content tbody tr:not(:where(.not-content *)):hover {
-	background-color: color-mix(in oklab, var(--color-foreground) 4%, transparent);
+	border-bottom: 1px solid var(--line);
 }
 
-/* Inline code: a quiet ink chip; Expressive Code blocks are not touched. */
+/* Inline code: a soft chip; Expressive Code blocks are not touched. */
 .sl-markdown-content :not(pre) > code:not(:where(.not-content *)) {
-	border: none;
+	border: 1px solid var(--line);
 	border-radius: 5px;
 	padding: 0.125em 0.375em;
 	font-size: 0.875em;
-	font-weight: 500;
 }
 
-/* Tabs: a hairline rule, the active tab in ink with an ink underline. */
-starlight-tabs .tablist-wrapper [role='tablist'] {
-	border-bottom: 1px solid color-mix(in oklab, var(--color-foreground) 7%, transparent);
+/* Code blocks: the landing terminal's title bar, left-aligned with no window dots. */
+.expressive-code .frame.is-terminal .header {
+	justify-content: flex-start;
+	padding-inline: 19px;
 }
-[data-theme='dark'] starlight-tabs .tablist-wrapper [role='tablist'] {
-	border-bottom-color: color-mix(in oklab, var(--color-foreground) 10%, transparent);
+
+/* Tabs: the landing's terminal tabs, mono labels over one line, the active one underlined in blue. */
+starlight-tabs .tablist-wrapper [role='tablist'] {
+	border-bottom: 1px solid var(--line-strong);
 }
 starlight-tabs .tab > [role='tab'] {
-	font-size: var(--sl-text-sm);
-	font-weight: 500;
-	color: var(--color-muted-foreground);
-	border-bottom-color: transparent;
+	font: 0.8125rem var(--mono);
+	color: var(--muted);
+	border-bottom: 2px solid transparent;
+}
+starlight-tabs .tab > [role='tab']:hover {
+	color: var(--blue);
 }
 starlight-tabs .tab > [role='tab'][aria-selected='true'] {
-	font-weight: 600;
-	color: var(--color-foreground);
-	border-bottom-color: var(--color-foreground);
+	color: var(--ink);
+	border-bottom-color: var(--blue);
 }
 
-/* Prev and next: thin ink border cards with a hover wash, no drop shadow. */
-.pagination-links > a {
-	border: 1px solid color-mix(in oklab, var(--color-foreground) 12%, transparent);
-	border-radius: var(--radius-md);
+/* Cards and prev/next: the landing's install box, one line border and no shadow. */
+:is(.card, .sl-link-card, .pagination-links > a) {
+	border: 1px solid var(--line-strong);
+	border-radius: 9px;
+	background-color: var(--surface);
 	box-shadow: none;
-	color: var(--color-muted-foreground);
-	font-size: 13px;
-	transition: background-color 150ms, border-color 150ms;
 }
-.pagination-links > a:hover {
-	background-color: color-mix(in oklab, var(--color-foreground) 5%, transparent);
-	border-color: color-mix(in oklab, var(--color-foreground) 20%, transparent);
+:is(.sl-link-card, .pagination-links > a):hover {
+	border-color: var(--blue);
+	background-color: var(--surface);
+}
+.card {
+	--sl-card-border: var(--line-strong);
+	--sl-card-bg: var(--soft);
+}
+.card .icon {
+	color: var(--blue);
+}
+:is(.card, .sl-link-card) .title {
+	font-family: var(--display);
+	font-weight: 400;
+	letter-spacing: -0.025em;
+}
+.pagination-links > a {
+	color: var(--muted);
+	font-size: 13px;
 }
 .pagination-links .link-title {
 	font-size: var(--sl-text-base);
-	font-weight: 500;
-	color: var(--color-foreground);
+	color: var(--ink);
 }
 
-/* Asides: the vbanner callout, one tone each, labelled Info, Tip, Warning and Error in en.json. */
+/* Asides: an eyebrow title over a tinted panel; index.html has no status colors, so these keep the old tones. */
 .starlight-aside {
-	position: relative;
-	overflow: hidden;
-	isolation: isolate;
-	border: none;
-	border-radius: var(--radius-card);
+	--aside-tone: var(--blue);
+	--sl-color-asides-text-accent: var(--blue);
+	border: 1px solid color-mix(in oklab, var(--aside-tone) 35%, transparent);
+	border-radius: 9px;
 	padding: 16px 20px;
-	--vbn-base: color-mix(in srgb, var(--color-background) 82%, transparent);
-	background:
-		radial-gradient(95% 150% at 2% -10%, var(--vbn-wash) 0%, transparent 66%),
-		var(--vbn-surface);
-}
-.starlight-aside--note {
-	--vbn-tone: #2a74b8;
-	--vbn-surface: color-mix(in srgb, #2a74b8 12%, var(--vbn-base));
-	--vbn-wash: color-mix(in srgb, #2a74b8 24%, var(--color-background));
+	background: color-mix(in oklab, var(--aside-tone) 8%, var(--paper));
+	color: var(--ink);
 }
 .starlight-aside--tip {
-	--vbn-tone: #15bd7e;
-	--vbn-surface: color-mix(in srgb, #15bd7e 13%, var(--vbn-base));
-	--vbn-wash: color-mix(in srgb, #15bd7e 26%, var(--color-background));
+	--aside-tone: #15bd7e;
 }
 .starlight-aside--caution {
-	--vbn-tone: #f5be2e;
-	--vbn-surface: color-mix(in srgb, #f5be2e 12%, var(--vbn-base));
-	--vbn-wash: color-mix(in srgb, #f5be2e 24%, var(--color-background));
+	--aside-tone: #f5be2e;
 }
 .starlight-aside--danger {
-	--vbn-tone: #ea3e67;
-	--vbn-surface: color-mix(in srgb, #ea3e67 12%, var(--vbn-base));
-	--vbn-wash: color-mix(in srgb, #ea3e67 24%, var(--color-background));
-}
-[data-theme='dark'] .starlight-aside--note {
-	--vbn-tone: #7dbceb;
-	--vbn-surface: color-mix(in srgb, #7dbceb 20%, var(--vbn-base));
-	--vbn-wash: color-mix(in srgb, #7dbceb 34%, var(--color-background));
+	--aside-tone: #ea3e67;
 }
 [data-theme='dark'] .starlight-aside--tip {
-	--vbn-tone: #3fd79a;
-	--vbn-surface: color-mix(in srgb, #3fd79a 20%, var(--vbn-base));
-	--vbn-wash: color-mix(in srgb, #3fd79a 34%, var(--color-background));
+	--aside-tone: #3fd79a;
 }
 [data-theme='dark'] .starlight-aside--caution {
-	--vbn-tone: #f7d262;
-	--vbn-surface: color-mix(in srgb, #f7d262 20%, var(--vbn-base));
-	--vbn-wash: color-mix(in srgb, #f7d262 34%, var(--color-background));
+	--aside-tone: #f7d262;
 }
 [data-theme='dark'] .starlight-aside--danger {
-	--vbn-tone: #f1748f;
-	--vbn-surface: color-mix(in srgb, #f1748f 20%, var(--vbn-base));
-	--vbn-wash: color-mix(in srgb, #f1748f 34%, var(--color-background));
+	--aside-tone: #f1748f;
 }
 .starlight-aside__title {
-	gap: 0.5rem;
-	font-size: 14px;
-	font-weight: 600;
-	line-height: 1.4;
-	color: var(--color-foreground);
+	font: 11px var(--mono);
+	letter-spacing: 1.8px;
+	text-transform: uppercase;
+	color: var(--ink);
 }
 .starlight-aside__icon {
-	color: var(--vbn-tone);
+	font-size: 1.5em;
+	color: var(--aside-tone);
 }
 .starlight-aside__content {
-	margin-top: 4px;
 	font-size: 14px;
-	line-height: 1.45;
-	color: color-mix(in srgb, var(--color-foreground) 70%, transparent);
-}
-.starlight-aside__content a {
-	color: var(--color-link);
-	text-decoration-color: var(--color-link);
+	line-height: 1.6;
 }
 
-/* Search: the nairi panel radius and lift. */
-site-search dialog {
-	border-radius: var(--radius-lg);
-	box-shadow: var(--shadow-lg);
-}
-
-/* The github-dark comment grey is too faint on the night code panel. */
-.expressive-code .ec-line span[style*='--0:#6A737D'] {
-	--0: #95a3b1;
+@media (prefers-reduced-motion: reduce) {
+	:is(.theme-toggle, #starlight__sidebar .top-level a) {
+		transition: none;
+	}
 }

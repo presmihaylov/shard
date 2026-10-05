@@ -1,4 +1,9 @@
-# shard
+<p align="center">
+  <picture>
+    <source media="(prefers-color-scheme: dark)" srcset=".github/assets/logo-dark.svg">
+    <img alt="shard" src=".github/assets/logo-light.svg" width="300">
+  </picture>
+</p>
 
 A single-node sandbox manager for Linux and macOS.
 

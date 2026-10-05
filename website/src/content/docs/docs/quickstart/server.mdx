@@ -95,7 +95,7 @@ On a Mac, run `shard daemon --provider vz` without `sudo`. Closing the terminal 
 
 The daemon keeps its state in `/var/lib/shard`: the sandbox records, the images, the secrets and the policies. Setup never asks for another directory.
 
-Firecracker copies a disk for each fork and snapshot. That is fast only on a filesystem that clones a file by sharing its blocks: XFS or Btrfs. On any other filesystem, the daemon makes an XFS image at `/var/lib/shard.xfs` and mounts it over `/var/lib/shard`. The image takes half the free space beside it, up to 100 GiB. Setup refuses Firecracker there when that filesystem has less than 20 GiB free, or when `/var/lib/shard` already holds files.
+Firecracker copies a disk for each fork and snapshot. That needs a filesystem that clones a file by sharing its blocks: XFS or Btrfs. On any other filesystem, the daemon makes an XFS image at `/var/lib/shard.xfs` and mounts it over `/var/lib/shard`. The image takes half the free space beside it, up to 100 GiB. Setup refuses Firecracker there when that filesystem has less than 20 GiB free, or when `/var/lib/shard` already holds files.
 
 ## Script it
 

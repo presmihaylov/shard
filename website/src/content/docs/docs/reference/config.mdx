@@ -1,0 +1,151 @@
+---
+title: Environment and config
+description: The environment variables and options that choose the server a client reaches, the saved connection, and the data directory of a daemon.
+sidebar:
+  order: 2
+---
+
+import { Tabs, TabItem } from '@astrojs/starlight/components';
+
+Two environment variables point a client at a shard server on another host:
+
+<Tabs syncKey="lang">
+	<TabItem label="CLI">
+		```sh
+		export SHARD_REMOTE=https://shard.example.com
+		export SHARD_API_KEY=<the token that shard tokens mint printed>
+		shard list
+		```
+	</TabItem>
+	<TabItem label="TypeScript">
+		```ts
+		import { Shard } from "useshards";
+
+		// Reads SHARD_REMOTE and SHARD_API_KEY.
+		const shard = new Shard();
+		try {
+		  const { sandboxes } = await shard.list();
+		  for (const sandbox of sandboxes) console.log(sandbox.id);
+		} finally {
+		  shard.close();
+		}
+		```
+	</TabItem>
+	<TabItem label="Python">
+		```python
+		from useshards import Shard
+
+		# Reads SHARD_REMOTE and SHARD_API_KEY.
+		with Shard() as shard:
+		    for sandbox in shard.list().sandboxes:
+		        print(sandbox.id)
+		```
+	</TabItem>
+</Tabs>
+
+`SHARD_REMOTE` is the URL of `shard serve`, or of the proxy in front of it. `SHARD_API_KEY` is a token from [`shard tokens mint`](https://github.com/presmihaylov/shard/blob/main/docs/daemon.md#tokens). Without a remote, the CLI talks to the daemon on this host, over the socket under its root.
+
+## Where a client connects
+
+Each setting comes from the first source that has it:
+
+| Setting | CLI | TypeScript | Python |
+| --- | --- | --- | --- |
+| Server URL | `--remote`, then `SHARD_REMOTE`, then the saved connection. With none of them, the local socket. | `remote`, then `SHARD_REMOTE` | `remote=`, then `SHARD_REMOTE` |
+| API key | `SHARD_API_KEY`, then the saved connection | `apiKey`, then `SHARD_API_KEY` | `api_key=`, then `SHARD_API_KEY` |
+| CA certificate | `SHARD_CA_FILE` | `caFile`, then `SHARD_CA_FILE` | `ca_file=`, then `SHARD_CA_FILE` |
+
+The SDKs always need a server URL and a key. They talk to `shard serve` only, never to the socket, and they do not read the saved connection. A client with a server URL and no key fails before it sends a request. The CLI says:
+
+```text
+shard: a remote client needs SHARD_API_KEY; shard serve answers 401 without one
+```
+
+`--remote ""` sends one command to the local socket, even when `SHARD_REMOTE` or a saved connection names a server:
+
+```sh
+shard --remote "" list
+```
+
+## Environment variables
+
+| Variable | Read by | Description |
+| --- | --- | --- |
+| `SHARD_REMOTE` | CLI, SDKs | The server URL, as `https://shard.example.com`. It must be `http` or `https` and name a host. The SDKs take only a scheme, a host and a port. `--remote` overrides it. |
+| `SHARD_API_KEY` | CLI, SDKs | The API token. The clients trim the spaces around it and refuse a key with a control character other than a tab. Do not pass the key as a command argument. |
+| `SHARD_CA_FILE` | CLI, SDKs | A PEM file of the certificate authority that signed the server's certificate, for an `https` server only. Without it, the system's certificate authorities verify the server. |
+| `XDG_CONFIG_HOME` | CLI | Moves the saved connection to `$XDG_CONFIG_HOME/shard/config.json`. The CLI ignores a relative path. |
+| `NO_COLOR` | CLI | Any value that is not empty turns off color in `shard setup`. |
+| `SHARD_INIT_PATH` | daemon | The host path of the guest supervisor, `shard-init`. The default on Linux is `/usr/local/bin/shard-init`. On a Mac, the daemon boots the Linux one it carries. |
+| `SHARD_KERNEL`, `SHARD_KERNEL_SHA256` | daemon | A guest kernel file and its SHA-256, in place of the kernel release, for Firecracker and vz. Set both or neither. They are for a developer with a fresh kernel build, not for an install. |
+
+The daemon reads `SHARD_INIT_PATH`, `SHARD_KERNEL` and `SHARD_KERNEL_SHA256` from its own environment, so set them where `shard daemon` or its service starts.
+
+## Global options
+
+Global options go before the command, for example `shard --root /srv/shard list`.
+
+| Option | Description | Default |
+| --- | --- | --- |
+| `--root <dir>` | The data directory of the local daemon. It must be an absolute path. | `/var/lib/shard` |
+| `--remote <url>` | The server URL. It overrides `SHARD_REMOTE` and the saved connection. | |
+| `--version` | Print the version of this client. It needs no daemon. | |
+
+With another root, the CLI talks to the daemon of that root, and its hint names that daemon:
+
+```text
+shard: cannot connect to shard daemon at /srv/shard/shard.sock: is it running? shard --root /srv/shard daemon
+```
+
+## The saved connection
+
+`shard setup` can save a remote server and its key, so that later commands use them with no variables set. It writes `$XDG_CONFIG_HOME/shard/config.json`, or `~/.config/shard/config.json`:
+
+```json
+{
+  "remote": "https://shard.example.com",
+  "api_key": "<saved key>"
+}
+```
+
+The file holds the key as plain text. Setup makes the directory `0700` and the file `0600`, and replaces the whole file on each save. The CLI refuses a file with any other field. Run `shard setup` again to check, replace or remove the connection.
+
+The CLI sends the saved key only to the saved server: the same scheme, host and port. A `SHARD_REMOTE` or `--remote` that names another server needs its own `SHARD_API_KEY`:
+
+```text
+shard: a remote client needs SHARD_API_KEY for https://staging.example.com; the saved API key is for https://shard.example.com and is sent to no other server
+```
+
+Some commands run on the daemon host only, such as `shard tokens list` and `shard pull`. They refuse `--remote`, `SHARD_REMOTE` and a saved connection. Add `--remote ""` to run one of them on this host.
+
+## Plain HTTP
+
+An `http` server URL works, but nothing encrypts the key or the requests. The CLI writes one line to stderr:
+
+```text
+Warning: HTTP does not encrypt this connection. Use it only on localhost or through a trusted encrypted network.
+```
+
+The TypeScript SDK emits the same text as a process warning, and the Python SDK as a `UserWarning`. `SHARD_CA_FILE` with an `http` server is an error, because a certificate verifies only an `https` server.
+
+## The data directory
+
+The daemon keeps its state under its root, `/var/lib/shard` by default. One daemon serves one root: `daemon.lock` keeps a second daemon off a root that another daemon already holds. Two daemons can run side by side under two roots.
+
+The main paths under the root:
+
+| Path | What it holds |
+| --- | --- |
+| `shard.sock` | The API socket. When the host has a `shard` group, the socket is `0660` for that group and the root is `0710`, so the group can reach the socket and read nothing else. Otherwise the socket is `0600`, so only its owner can open it. |
+| `daemon.lock` | The lock that keeps one daemon on the root. |
+| `daemon.pid` | The daemon's pid, for log rotation. The lock, not this file, says whether a daemon is up. |
+| `sandboxes/` | One directory for each sandbox, with its record and its logs. |
+| `snapshots/`, `checkpoints/` | Saved snapshots, and the saved state of paused sandboxes. |
+| `images/` | The pulled images. |
+| `secrets/`, `policies/` | The secret and policy stores. |
+| `auth/` | The signing key and the token ledger of `shard serve`. See [Tokens](https://github.com/presmihaylov/shard/blob/main/docs/daemon.md#tokens). |
+| `proxy/` | The certificate authority of the egress proxy. |
+| `kernel/` | The guest kernel for Firecracker and vz, fetched on first use. |
+| `.reserve` | 64 MiB kept in reserve, so the daemon can start on a full disk and serve the `remove` that frees space. |
+
+On Firecracker, the root must be on a filesystem that clones a file by sharing its blocks: XFS with `reflink=1`, or Btrfs. A Firecracker daemon probes the root when it starts. When the root cannot clone, the daemon makes an XFS image beside it at `<root>.xfs`, mounts it over the root, and adds an `/etc/fstab` line for it. No other provider needs this.
