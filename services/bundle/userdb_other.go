@@ -14,7 +14,7 @@ func openDatabase(root *os.Root, rel, full string) (*os.File, error) {
 	if err != nil {
 		return nil, err
 	}
-	if err := requireDatabase(f, full); err != nil {
+	if err := requireDatabase(f, rel, full); err != nil {
 		return nil, errors.Join(err, f.Close())
 	}
 

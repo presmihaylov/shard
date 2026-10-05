@@ -190,6 +190,11 @@ func TestFlagErrorsReadAsTheHelpSpellsThem(t *testing.T) {
 		`unknown flag --bogus; run shard create --help`:                                                     {"create", "--bogus", "alpine"},
 		`unknown flag -x; run shard pause --help`:                                                           {"pause", "-x"},
 		`unknown flag --bogus; run shard --help`:                                                            {"--bogus", "list"},
+		`--root goes before the verb: shard --root <dir> list`:                                              {"list", "--root", "/srv/shard"},
+		`--remote goes before the verb: shard --remote <url> image list`:                                    {"image", "list", "--remote", "https://shard.example"},
+		`logs takes one sandbox id or name, got ["web" "-f"]; put the flags before the arguments`:           {"logs", "web", "-f"},
+		`tokens revoke takes one token id, got ["abc" "--name" "ci"]; put the flags before the arguments`:   {"tokens", "revoke", "abc", "--name", "ci"},
+		`stop takes one sandbox id or name, got ["web" "--" "-x"]`:                                          {"stop", "web", "--", "-x"},
 	}
 
 	for want, args := range cases {

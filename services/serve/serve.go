@@ -707,6 +707,7 @@ func quiet(err error) bool {
 		return true
 	}
 
-	return errors.Is(err, io.EOF) || errors.Is(err, net.ErrClosed) ||
-		errors.Is(err, os.ErrDeadlineExceeded) || errors.Is(err, syscall.EPIPE) || errors.Is(err, syscall.ECONNRESET)
+	// Darwin answers a write to a unix socket whose peer shut down with ENOTCONN where Linux answers EPIPE (SHARD-626).
+	return errors.Is(err, io.EOF) || errors.Is(err, net.ErrClosed) || errors.Is(err, os.ErrDeadlineExceeded) ||
+		errors.Is(err, syscall.EPIPE) || errors.Is(err, syscall.ECONNRESET) || errors.Is(err, syscall.ENOTCONN)
 }

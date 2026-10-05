@@ -1,7 +1,7 @@
 # Secrets
 
 A sandbox never holds a secret value. It holds a placeholder. On the host, the value goes into a
-header of an HTTPS request, on its way to the one destination the secret is granted to. Whatever runs
+header of an HTTPS request, on its way to a destination the secret is granted to. Whatever runs
 in the sandbox, a prompt-injected agent included, can read its environment, dump its memory and post
 every byte of it anywhere it likes, and what it posts is the placeholder. This holds only as long as
 the granted host never sends the value back. See the caution under the grant.
@@ -20,7 +20,7 @@ record names the secret, and `--force` overrides that. The name is the environme
 reads, so it has the same form: uppercase letters, digits and `_`.
 
 **The grant.** A secret is granted to a destination and never to a sandbox alone. `--destination` names
-the hosts the value may go to, and a request to any other host never carries it.
+a host the value may go to, and repeats for each one. A request to any other host never carries it.
 `shard create --secret NAME` hands the guest the placeholder as `$NAME` and records the grant in the
 sandbox record, which `shard inspect` prints as `secrets`. A fork carries the grant of its source,
 because the copied bundle already hands the guest the placeholder. A snapshot holds no grant, so a
@@ -33,9 +33,11 @@ it there. An echo endpoint does this, and so does a debug page that prints its r
 Stripping the value from every response is not practical, so the grant is the control. Name only
 hosts that consume the credential and never return it.
 
-A grant neither opens the host nor closes anything. The sandbox's policy decides what it may reach,
-and the grant decides only where the value may be put in. A sandbox with a policy needs an allow for
-the granted host in that policy.
+A grant opens no host. The sandbox's policy decides what it may reach, and the grant decides only
+where the value may be put in. A sandbox with a policy needs an allow for the granted host in that
+policy. A grant does make the sandbox fronted, for every host it reaches and not only the granted
+one: a TLS handshake with no server name is refused, and a request whose `Host` differs from the
+handshake name gets 400 (`docs/egress.md`).
 
 ## Granting after the create
 
@@ -78,11 +80,12 @@ with the placeholder unchanged, so send the credential over `https://`. HTTP Bas
 substituted and re-encoded, so `https://api:mock-KEY@host` works. Any other encoding or signing of
 the key is not substituted. The proxy finds the placeholder only where it appears verbatim in a
 header value or inside a Basic header. A hop-by-hop header keeps the placeholder. These are
-`Connection`, `Upgrade`, `Keep-Alive` and any header that `Connection` names. Such a header belongs
-to the connection and not to the upstream, and the proxy can quote one back. For now, brokering
-covers only HTTPS on port 443. A credential sent on any other port or protocol, such as a database
-password on 5432 or SMTP on 587, leaves as the placeholder and never as the value. The policy still
-decides whether the connection is allowed at all.
+`Connection`, `Proxy-Connection`, `Keep-Alive`, `Proxy-Authenticate`, `Proxy-Authorization`, `Te`,
+`Trailer`, `Transfer-Encoding`, `Upgrade` and any header that `Connection` names. Such a header
+belongs to the connection and not to the upstream, and the proxy can quote one back. For now,
+brokering covers only HTTPS on port 443. A credential sent on any other port or protocol, such as a
+database password on 5432 or SMTP on 587, leaves as the placeholder and never as the value. The
+policy still decides whether the connection is allowed at all.
 
 **The placeholder.** An SDK that checks the shape of a key before it sends it never sends
 `mock-NAME`. For such an SDK, `--placeholder` gives the guest a string of the right shape:
@@ -98,8 +101,9 @@ another secret already owns it as its own placeholder or as its default. The def
 exempt from the length and the character checks, so a short name still gets one, but not from the
 other two. Only a placeholder that this call names is checked for shape, so the placeholder the record
 carries forward never blocks a rotation. Changing the placeholder of a secret that a sandbox holds is
-refused, because that guest already holds the old one. Ungrant it first. `shard secret list` prints
-the placeholder.
+refused, because that guest already holds the old one. Ungrant it first. Every `set`, of any name, is
+also refused while a record in the store cannot be read, because that record may own the placeholder.
+`shard secret list` prints the placeholder.
 
 **The value.** `shard secret set` takes the value in one of three ways. It reads stdin when the value
 is `-` or when stdin is a pipe. Use stdin in a script, because the value then lands in no shell
@@ -115,8 +119,17 @@ The proxy CA is planted at the path the image already reads, and `SSL_CERT_FILE`
 on it reads that file, and so do curl, Python, Ruby, PHP, Go and .NET on Linux. Python `requests`
 and `httpx` read it too, and so do Node, Deno and Bun. Three kinds of client do not.
 
-Java trusts its own keystore. Import the CA into the image with `keytool -importcert`, or point
-`-Djavax.net.ssl.trustStore` at a store that holds it. The CA is the file that `SSL_CERT_FILE` names.
+Java trusts its own keystore. The file that `SSL_CERT_FILE` names holds the image's roots with the
+proxy CA last, and `keytool -importcert` imports only the first certificate of a file. In the
+sandbox, cut out the last certificate and import that, on JDK 9 or later:
+
+```
+awk '/-BEGIN CERTIFICATE-/{c=""} {c=c $0 "\n"} END{printf "%s", c}' "$SSL_CERT_FILE" > /tmp/shard-proxy-ca.pem
+keytool -importcert -noprompt -cacerts -storepass changeit -alias shard-proxy -file /tmp/shard-proxy-ca.pem
+```
+
+Or point `-Djavax.net.ssl.trustStore` at a store that holds it. The host keeps the CA alone at
+`<root>/proxy/ca.crt`.
 
 Rust built with `rustls` and `webpki-roots` compiles its roots in. Build with `rustls-native-certs`
 instead, which reads the same file.

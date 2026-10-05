@@ -806,7 +806,7 @@ func (s *Service) startOutcome(session *execSession) error {
 
 	s.dropHidden(session)
 	if _, err := session.result(); err != nil {
-		return err
+		return userRefused(err)
 	}
 
 	return fmt.Errorf("the exec in sandbox %s ended with no report that its command launched", session.sandboxID)

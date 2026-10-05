@@ -14,7 +14,7 @@ func openDatabase(root *os.Root, rel, full string) (*os.File, error) {
 		return nil, err
 	}
 	defer handle.Close()
-	if err := requireDatabase(handle, full); err != nil {
+	if err := requireDatabase(handle, rel, full); err != nil {
 		return nil, err
 	}
 	// The magic link reopens the inode the handle proved, not whatever the guest has put at the path since.

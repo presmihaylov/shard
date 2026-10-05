@@ -36,9 +36,9 @@ all: check build
 build:
 	go build $(TRIM) -ldflags "$(LDFLAGS)" -o $(BIN) ./cmd/shard
 
-# shard is a Linux-only server tool; the dev Mac cross-compiles and scps the binary.
+# Static, so a Linux runner's default cgo never ties the release binary to that runner's glibc.
 build-linux:
-	GOOS=linux GOARCH=amd64 go build $(TRIM) -ldflags "$(LDFLAGS)" -o $(BIN)-linux-amd64 ./cmd/shard
+	CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build $(TRIM) -ldflags "$(LDFLAGS)" -o $(BIN)-linux-amd64 ./cmd/shard
 
 # The supervisor is PID 1 in the guest, so it is static: the image may be musl or have no libc.
 build-shard-init:

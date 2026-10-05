@@ -19,7 +19,9 @@ This is the final shape of every verb, flag and output of `shard`. The SDKs buil
 
 ## Global options
 
-They go before the verb.
+They go before the verb. One typed after it fails, and the error shows where it goes. A verb's own
+options go before its arguments, as `shard logs -f web`: one typed after an argument is an argument,
+and the error says to put the options first.
 
 | flag | what |
 | --- | --- |
@@ -40,8 +42,10 @@ to stdout. Use it only on localhost or through a trusted encrypted network. `SHA
 `http` remote is refused before the client dials.
 
 `pull`, `image list`, `image remove`, `image prune` and `daemon status` run on the daemon host only,
-because `shard serve` refuses their routes. With `--remote` or `SHARD_REMOTE` set, each one fails
-before it dials, and its error names the verb.
+because `shard serve` refuses their routes. `daemon`, `serve`, `info`, `tokens mint`, `tokens list`
+and `tokens revoke` act on the files and the processes of this host, so they run there only too.
+With `--remote` or `SHARD_REMOTE` set, each one fails before it dials or touches the host, and its
+error names the verb. `tokens scopes` asks the server, so it follows the remote.
 
 ## Names and aliases
 
@@ -50,7 +54,8 @@ A verb has one name. `list` and `remove` take `ls` and `rm` as aliases, at the t
 prints the same help. The help never lists an alias.
 
 `exec` takes `-i` and `--interactive`, `-t` and `--tty`, and `-it` for both. `logs` and
-`policy logs` take `-f` and `--follow`. `run` takes `-d` and `--detach`.
+`policy logs` take `-f` and `--follow`. `run` takes `-d` and `--detach`. `secret set` takes `--dest`
+and `--destination`.
 
 ## Verbs
 
@@ -132,10 +137,10 @@ shard: sandbox <id> is paused: resume it with shard resume <id>
 nothing: `list --format table` prints what `list` prints.
 
 **A `--format json` call writes one value or nothing.** JSON is one value, indented by two spaces, and a list verb
-prints an array. A failure to parse, to reach the daemon, or to encode writes nothing to stdout. A
-list with warnings, or a `daemon status` with a task in backoff, still writes the whole value, then
-the warnings or the error on stderr, and exits 1. `version --format json` with no daemon writes
-nothing and fails.
+prints an array. `tokens mint` is the one exception, and writes its value on one line. A failure to
+parse, to reach the daemon, or to encode writes nothing to stdout. A list with warnings, or a
+`daemon status` with a task in backoff, still writes the whole value, then the warnings or the error
+on stderr, and exits 1. `version --format json` with no daemon writes nothing and fails.
 
 ### JSON
 
@@ -184,7 +189,8 @@ absent when empty:
 
 `restart.policy` is `no`, `on-failure` or `always`. `retries` is absent for no cap, `backoff` is the
 first wait in seconds, `count` is the starts again on this run, and `last_at` is absent before the
-first one.
+first one. `gave_up` says an exit asked for a start again after the retries were spent, and `ended`
+says no start again follows the last exit.
 
 `inspect` prints one sandbox record, and adds `egress` when the record names a policy:
 

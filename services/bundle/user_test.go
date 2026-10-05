@@ -2,6 +2,7 @@ package bundle_test
 
 import (
 	"errors"
+	"net"
 	"os"
 	"path/filepath"
 	"slices"
@@ -23,15 +24,13 @@ func TestResolveUserRefusesAPasswdThatIsASymbolicLink(t *testing.T) {
 		t.Fatalf("link the passwd file: %v", err)
 	}
 
-	_, err := bundle.ResolveUser(rootfs, "root")
-	if err == nil {
-		t.Fatal("ResolveUser read a passwd file that points out of the rootfs")
-	}
-	if !strings.Contains(err.Error(), filepath.Join(rootfs, "etc/passwd")) {
-		t.Errorf("the refusal is %q, and it must name the file", err)
-	}
-	if errors.As(err, new(*bundle.UnknownUserError)) {
-		t.Errorf("the refusal %q reads as an unknown user, and a file the daemon will not read is not the caller's mistake", err)
+	// A numeric id falls back only when passwd lists nobody, never past a file the daemon will not read.
+	for _, user := range []string{"root", "65534"} {
+		_, err := bundle.ResolveUser(rootfs, user)
+		if err == nil {
+			t.Fatalf("ResolveUser(%q) read a passwd file that points out of the rootfs", user)
+		}
+		requireGuestRefusal(t, err, rootfs, "/etc/passwd is a symbolic link")
 	}
 }
 
@@ -72,6 +71,7 @@ func TestResolveUserRefusesAPasswdThatIsAFifo(t *testing.T) {
 		if err == nil {
 			t.Fatal("ResolveUser read a passwd file that is a fifo")
 		}
+		requireGuestRefusal(t, err, rootfs, "/etc/passwd is a p")
 		if !strings.Contains(err.Error(), "regular file") {
 			t.Errorf("the refusal is %q, and it must say what the file must be", err)
 		}
@@ -166,8 +166,64 @@ func TestResolveUserRefusesAGroupFileThatIsASymbolicLink(t *testing.T) {
 	if err == nil {
 		t.Fatal("ResolveUser read a group file that points out of the rootfs")
 	}
-	if !strings.Contains(err.Error(), filepath.Join(rootfs, "etc/group")) {
-		t.Errorf("the refusal is %q, and it must name the file", err)
+	requireGuestRefusal(t, err, rootfs, "/etc/group is a symbolic link")
+}
+
+// A directory is no more a database than a fifo is, and the guest can make one as easily.
+func TestResolveUserRefusesAPasswdThatIsADirectory(t *testing.T) {
+	rootfs := emptyRootFS(t)
+	if err := os.Mkdir(filepath.Join(rootfs, "etc/passwd"), 0o755); err != nil {
+		t.Fatalf("make the passwd directory: %v", err)
+	}
+
+	_, err := bundle.ResolveUser(rootfs, "root")
+	if err == nil {
+		t.Fatal("ResolveUser read a passwd that is a directory")
+	}
+	requireGuestRefusal(t, err, rootfs, "/etc/passwd is a d")
+}
+
+// A socket, like a device with no driver, fails the open itself, so the file type check after it never runs.
+func TestResolveUserRefusesAPasswdThatIsASocket(t *testing.T) {
+	rootfs, err := os.MkdirTemp("", "u") //nolint:usetesting // t.TempDir is too long for a socket path
+	if err != nil {
+		t.Fatalf("create the rootfs: %v", err)
+	}
+	t.Cleanup(func() {
+		if err := os.RemoveAll(rootfs); err != nil {
+			t.Errorf("remove the rootfs: %v", err)
+		}
+	})
+	if err := os.Mkdir(filepath.Join(rootfs, "etc"), 0o755); err != nil {
+		t.Fatalf("create etc: %v", err)
+	}
+	listener, err := net.Listen("unix", filepath.Join(rootfs, "etc/passwd"))
+	if err != nil {
+		t.Fatalf("make the passwd socket: %v", err)
+	}
+	t.Cleanup(func() {
+		if err := listener.Close(); err != nil {
+			t.Errorf("close the passwd socket: %v", err)
+		}
+	})
+
+	_, err = bundle.ResolveUser(rootfs, "root")
+	if err == nil {
+		t.Fatal("ResolveUser read a passwd that is a socket")
+	}
+	requireGuestRefusal(t, err, rootfs, "/etc/passwd is a S")
+}
+
+// requireGuestRefusal holds a database refusal to what a public route may answer: the guest's path, never where the host keeps the tree (SHARD-648).
+func requireGuestRefusal(t *testing.T, err error, rootfs, want string) {
+	t.Helper()
+
+	refused, ok := errors.AsType[*bundle.UserDatabaseError](err)
+	if !ok {
+		t.Fatalf("the refusal %q is not a user database error, so the API answers it 500", err)
+	}
+	if !strings.HasPrefix(refused.Public(), want) || strings.Contains(refused.Public(), rootfs) {
+		t.Errorf("the refusal reads %q, want it to start %q and never name the host rootfs %s", refused.Public(), want, rootfs)
 	}
 }
 
@@ -190,9 +246,7 @@ func TestResolveUserRefusesAPasswdReachedThroughAHostSymlink(t *testing.T) {
 	if err == nil {
 		t.Fatalf("ResolveUser read a passwd reached through a host symlink and returned %+v", got)
 	}
-	if !strings.Contains(err.Error(), filepath.Join(rootfs, "etc/passwd")) {
-		t.Errorf("the refusal is %q, and it must name the file", err)
-	}
+	requireGuestRefusal(t, err, rootfs, "/etc is a symbolic link")
 }
 
 // rootFSWith writes the two databases. An empty one is a rootfs that has no such file at all.

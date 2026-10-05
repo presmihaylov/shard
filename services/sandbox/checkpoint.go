@@ -257,7 +257,7 @@ func (s *Service) Resume(ctx context.Context, ref string) (models.Sandbox, error
 	}
 
 	if err := s.cfg.Provider.Resume(ctx, id, sb.Checkpoint); err != nil {
-		return models.Sandbox{}, errors.Join(err, Reconcile(ctx, s.cfg.Repo, s.cfg.Provider, id, true))
+		return models.Sandbox{}, imageGone(id, sb.Image, sb.Digest, "resume", errors.Join(err, Reconcile(ctx, s.cfg.Repo, s.cfg.Provider, id, true)))
 	}
 
 	// The restore brought the guest up over rules it has no memory of, so the host's go on again now.
@@ -323,7 +323,7 @@ func (s *Service) Fork(ctx context.Context, ref string, req CopyRequest) (sb mod
 	spec := models.SandboxSpec{ID: id, Name: req.Name, StateDir: claim.dir, Network: claim.net, Resources: src.Resources}
 	if err := s.cfg.Provider.Fork(ctx, source, spec); err != nil {
 		if ctx.Err() == nil {
-			return models.Sandbox{}, err
+			return models.Sandbox{}, imageGone(source, src.Image, src.Digest, "fork", err)
 		}
 		// An interrupt kills the restore process, not what it may already have restored, and only stop ends a sandbox, so a fork that may run is kept.
 		probe, perr := s.status(context.WithoutCancel(ctx), id, "fork")

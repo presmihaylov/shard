@@ -672,6 +672,7 @@ func classify(err error) (int, models.Code) {
 	var fileNotFound *sandbox.FileNotFoundError
 	var notStarted *models.CommandNotStartedError
 	var fileInvalid *sandbox.FileInvalidError
+	var imageGone *sandbox.ImageGoneError
 
 	switch {
 	case errors.As(err, &scope):
@@ -681,7 +682,7 @@ func classify(err error) (int, models.Code) {
 	case errors.As(err, &invalid), errors.As(err, &request), errors.As(err, &fileInvalid), errors.Is(err, image.ErrBadReference):
 		return http.StatusBadRequest, models.CodeInvalidRequest
 	case errors.Is(err, sandboxstate.ErrNotFound), errors.Is(err, sandboxstate.ErrSnapshotNotFound), errors.Is(err, egress.ErrNotFound),
-		errors.Is(err, secret.ErrNotFound), errors.Is(err, image.ErrNotFound), errors.As(err, &fileNotFound):
+		errors.Is(err, secret.ErrNotFound), errors.Is(err, image.ErrNotFound), errors.As(err, &fileNotFound), errors.As(err, &imageGone):
 		return http.StatusNotFound, models.CodeNotFound
 	case errors.As(err, &nameTaken):
 		return http.StatusConflict, models.CodeNameTaken
