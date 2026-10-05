@@ -52,13 +52,13 @@ with Shard() as shard:
 	</TabItem>
 </Tabs>
 
-Here `main.py` writes `out.json` next to itself. The image needs no `tar` and no shell for any of this. shard's own supervisor in the sandbox reads and writes the files.
+In this example, `main.py` writes `out.json` next to itself. The image does not need `tar` or a shell for any of this, because shard's own supervisor in the sandbox reads and writes the files.
 
 ## Where a copy lands
 
-`shard cp` works like `docker cp`. When the destination is a directory in the sandbox, or ends with `/`, the source goes inside it under its own name. So `shard cp ./project agent:/srv/` makes `/srv/project`. A copy out works the same way on your machine. Put `./` or `/` in front of a local path that holds a colon.
+`shard cp` works like `docker cp`. When the destination is a directory in the sandbox, or ends with `/`, the source goes inside it under its own name, so `shard cp ./project agent:/srv/` creates `/srv/project`. A copy out works the same way on your machine. If a local path contains a colon, start it with `./` or `/`.
 
-The SDKs take the exact path. `uploadDir("./project", "/srv/project")` makes `/srv/project` hold what `./project` holds. A path in the sandbox is always absolute, because shard has no default directory for a file call.
+The SDKs use the exact path you give them: `uploadDir("./project", "/srv/project")` gives `/srv/project` the same contents as `./project`. A path in the sandbox must always be absolute, because shard has no default directory for a file call.
 
 ## Read and write without a local file
 
@@ -89,34 +89,34 @@ text = sandbox.files.read_text("/srv/input.json")
 	</TabItem>
 </Tabs>
 
-`files.read` returns bytes: a `Uint8Array` in TypeScript, `bytes` in Python. The SDKs have the full set of calls:
+`files.read` returns bytes: a `Uint8Array` in TypeScript and `bytes` in Python. These are all the file calls in the SDKs:
 
 | TypeScript | Python | What it does |
 | --- | --- | --- |
 | `write`, `read` | `write`, `read`, `read_text` | put or get bytes or text |
 | `upload`, `download` | `upload`, `download` | copy one file between a local path and the sandbox |
 | `uploadDir`, `downloadDir` | `upload_dir`, `download_dir` | copy a directory |
-| `stat`, `list` | `stat`, `list` | the type, size, mode, owner and modification time of a path, or of each entry of a directory |
-| `mkdir`, `remove` | `mkdir`, `remove` | make a directory, or delete a path; `recursive` deletes a directory that is not empty |
+| `stat`, `list` | `stat`, `list` | get the type, size, mode, owner and modification time of a path, or of each entry in a directory |
+| `mkdir`, `remove` | `mkdir`, `remove` | create a directory, or delete a path; with `recursive`, delete a directory that is not empty |
 
-`write`, `upload` and `mkdir` take `parents` to make the missing directories, and `mode` for the permission bits. `shard cp`, `upload` and `download` keep the permission bits of the source.
+`write`, `upload` and `mkdir` take `parents` to create any missing directories, and `mode` to set the permission bits. `shard cp`, `upload` and `download` keep the permission bits of the source.
 
 ## Who owns a written file
 
-A copy into the sandbox runs as a user in the sandbox. That user is the sandbox's user, unless you set `--user` on `shard cp`, or `user` in the SDK. The guest kernel checks the permissions and sets the owner, as it does for an `exec`. So a write into `/etc` as a user that is not root fails, and `--user root` writes anywhere.
+A copy into the sandbox runs as a user inside the sandbox. That user is the sandbox's user unless you set `--user` on `shard cp` or `user` in the SDK. The guest kernel checks the permissions and sets the owner, just as it does for an `exec`. A write into `/etc` therefore fails for a user other than root, while `--user root` can write anywhere.
 
 ## The rules
 
-- **The sandbox must be running.** A copy into or out of a stopped sandbox fails with `sandbox <id> is stopped: start it again with shard start <name>`. A paused one fails with `sandbox <id> is paused: resume it with shard resume <name>`.
-- **A write never leaves half a file.** A copy in writes a temporary name in the target directory, syncs it and renames it over the old file. A copy cut midway leaves the old file whole.
-- **There is no size cap.** Both directions stream, and the daemon never holds the whole file.
+- **The sandbox must be running.** A copy into or out of a stopped sandbox fails with `sandbox <id> is stopped: start it again with shard start <name>`. On a paused sandbox, it fails with `sandbox <id> is paused: resume it with shard resume <name>`.
+- **A write never leaves half a file.** A copy in writes the data under a temporary name in the target directory, syncs it, and then renames it over the old file. If a copy is cut off midway, the old file stays intact.
+- **There is no size cap.** Copies stream in both directions, and the daemon never holds the whole file.
 - **A file is only bytes.** shard never puts a secret value into a file, even when the file holds a placeholder.
-- **A directory that comes out is untrusted.** The sandbox packs it, so `shard cp` and the SDKs unpack it with care. They refuse an absolute name, a `..`, a hardlink to a name outside the directory, and a device node. No symlink can lead the unpack out of the destination. They drop the setuid and setgid bits, and they never change an owner on your machine.
+- **A directory copied out of the sandbox is untrusted.** The sandbox packs it, so `shard cp` and the SDKs unpack it carefully. They refuse an absolute name, a `..`, a hardlink to a name outside the directory, and a device node, and no symlink can lead the unpack outside the destination. They also drop the setuid and setgid bits and never change an owner on your machine.
 - **A file call needs the `exec` scope.** A write can replace what the sandbox runs, and a read sees what `cat` sees, so a token that copies files can also run commands.
 
 ## Over the API
 
-Every route sits under `/v0/sandboxes/{id}`, where `{id}` is the id or the name of the sandbox.
+Every route is under `/v0/sandboxes/{id}`, where `{id}` is the id or the name of the sandbox.
 
 | Route | Body | Answer |
 | --- | --- | --- |
@@ -129,4 +129,4 @@ Every route sits under `/v0/sandboxes/{id}`, where `{id}` is the id or the name 
 | `PUT /archive?path=&user=` | a tar, streamed | `204` |
 | `GET /archive?path=` | | `200`, a tar, streamed |
 
-A stat holds `type`, `size`, `mode`, `uid`, `gid` and `mtime`. The errors are `not_found`, `invalid_request` for a relative path or a bad tar, `sandbox_not_running`, `sandbox_failed` and `internal`.
+A stat contains `type`, `size`, `mode`, `uid`, `gid` and `mtime`. The possible errors are `not_found`, `invalid_request` (for a relative path or a bad tar), `sandbox_not_running`, `sandbox_failed` and `internal`.
