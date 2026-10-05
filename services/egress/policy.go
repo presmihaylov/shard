@@ -113,7 +113,7 @@ func (s *Store) Get(name string) (models.Policy, error) {
 
 	blob, err := os.ReadFile(s.path(name))
 	if errors.Is(err, fs.ErrNotExist) {
-		return models.Policy{}, &models.NotFoundError{Err: fmt.Errorf("%w: %s", ErrNotFound, name)}
+		return models.Policy{}, models.NotFound(ErrNotFound, fmt.Sprintf("policy %s not found", name))
 	}
 	if err != nil {
 		return models.Policy{}, fmt.Errorf("read policy %s: %w", name, err)

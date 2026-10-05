@@ -1226,11 +1226,11 @@ func (s *Service) ResizeExec(_ context.Context, ref, execID string, size Termina
 
 	// An exec that ended, or one that runs on pipes, has no terminal to resize.
 	if session.pair == nil {
-		return &models.NotFoundError{Err: fmt.Errorf("exec %s of sandbox %s: %w", execID, id, sandboxstate.ErrNotFound)}
+		return models.NotFound(sandboxstate.ErrNotFound, fmt.Sprintf("exec %s of sandbox %s has no terminal to resize; only an exec created with tty has one", execID, id))
 	}
 	select {
 	case <-session.done:
-		return &models.NotFoundError{Err: fmt.Errorf("exec %s of sandbox %s: %w", execID, id, sandboxstate.ErrNotFound)}
+		return models.NotFound(sandboxstate.ErrNotFound, fmt.Sprintf("exec %s of sandbox %s has ended; it has no terminal to resize", execID, id))
 	default:
 	}
 
@@ -1288,7 +1288,7 @@ func (s *Service) execOf(id, execID string) (*execSession, error) {
 
 	session := s.execs[execID]
 	if session == nil || session.sandboxID != id || !session.shown {
-		return nil, &models.NotFoundError{Err: fmt.Errorf("exec %s of sandbox %s: %w", execID, id, sandboxstate.ErrNotFound)}
+		return nil, models.NotFound(sandboxstate.ErrNotFound, fmt.Sprintf("exec %s not found in sandbox %s", execID, id))
 	}
 
 	return session, nil
@@ -1477,7 +1477,7 @@ func (s *Service) readyForExec(ctx context.Context, ref string) (string, error) 
 	}
 
 	if !status.Exists {
-		return "", &UnavailableError{ID: id, Why: "is gone from " + s.cfg.Provider.Name(), Fix: fmt.Sprintf("remove it with shard remove %s and create another", nameOf(id, sb))}
+		return "", &UnavailableError{ID: id, Why: "is gone from " + s.cfg.Provider.Name(), Fix: fmt.Sprintf("remove it with shard remove %s and create another sandbox", nameOf(id, sb))}
 	}
 
 	return "", &StateError{ID: id, State: status.State, Fix: "start it again with shard start " + nameOf(id, sb), Code: models.CodeSandboxNotRunning}
@@ -1552,7 +1552,7 @@ func (s *Service) endedUnderExec(id string, session *execSession, err error) err
 
 	sb, getErr := s.cfg.Repo.Get(id)
 	if errors.Is(getErr, sandboxstate.ErrNotFound) {
-		return &models.NotFoundError{Err: fmt.Errorf("exec %s of sandbox %s: %w", session.id, id, sandboxstate.ErrNotFound)}
+		return models.NotFound(sandboxstate.ErrNotFound, fmt.Sprintf("sandbox %s not found", id))
 	}
 	if getErr != nil {
 		return errors.Join(err, getErr)

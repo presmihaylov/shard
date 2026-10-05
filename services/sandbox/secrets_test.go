@@ -273,7 +273,7 @@ func TestSetSecretRefusesAHeldPlaceholderAsHeld(t *testing.T) {
 		t.Fatal(err)
 	}
 	_, err = stores.SetSecret("TOKEN", sandbox.SecretRequest{Value: "new-value-2", Destinations: []string{"a.example.com"}})
-	if !errors.As(err, &held) || !strings.Contains(err.Error(), "nothing records the placeholder the guest kept") {
+	if !errors.As(err, &held) || !strings.Contains(err.Error(), "still hold the placeholder of the removed secret") {
 		t.Errorf("a set after a forced remove = %v, want a HeldError for the removed secret", err)
 	}
 }

@@ -236,7 +236,7 @@ func (t apiTask) Run(ctx context.Context) error {
 		return err
 	}
 
-	owner := "no " + api.Group + " group on this host"
+	owner := "for its owner only, as this host has no " + api.Group + " group"
 	if group != "" {
 		owner = "group " + group
 	}

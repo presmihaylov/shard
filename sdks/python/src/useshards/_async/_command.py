@@ -33,12 +33,13 @@ STDIN_PIECE = 64 * 1024
 # A disconnect returns before the daemon lets go of its attach, so an attach right after one retries in_use this long.
 _REATTACH_BOUND = 2.0
 _REATTACH_PAUSE = 0.05
-# The daemon's own bound: it detaches a client that takes no output for this long.
+# The daemon's own bound: it detaches a client that reads no output for this long.
 _STALL_BOUND = "30s"
 
 
 class AsyncCommand:
-    """A command started with background=True. Leaving its stream never ends it; kill() does."""
+    """A handle to one command in a sandbox, from exec(background=True) or commands.get(). Leaving its stream never ends
+    it; kill() does."""
 
     def __init__(
         self,
@@ -80,7 +81,8 @@ class AsyncCommand:
         return f"command {self.id} in sandbox {self.sandbox}"
 
     async def wait(self, timeout: float | None = None) -> CommandResult:
-        """Block until the command ends; a handle off its stream attaches, so the callbacks see the replay."""
+        """Block until the command ends. With no stream open it attaches, and the daemon replays the output it still
+        holds."""
         if self._pump is None and self._result is None and self._error is None:
             await self._attach()
         if not await _backend.wait_event(self._done, timeout):
@@ -89,7 +91,7 @@ class AsyncCommand:
             raise self._error
         if self._result is not None:
             return self._result
-        raise ShardConnectionError(f"{self._what}: the stream was left before the command ended")
+        raise ShardConnectionError(f"{self._what}: the stream closed before the command ended")
 
     async def kill(self, signal: Signal = "TERM") -> None:
         """Send the command one signal. This, not a disconnect or a cancellation, is what ends it."""
@@ -99,29 +101,33 @@ class AsyncCommand:
         )
 
     async def inspect(self) -> CommandInfo:
+        """Read the command again from the daemon."""
         record = await self._transport.answer(
             models.Exec, lambda: get_exec.asyncio_detailed(self.sandbox, self.id, client=self._transport.api)
         )
         return command_info(record)
 
     async def resize(self, rows: int, cols: int) -> None:
+        """Set the terminal size of a command that runs on a terminal."""
         body = models.TerminalSize(rows=rows, cols=cols)
         await self._transport.send(
             lambda: resize_exec.asyncio_detailed(self.sandbox, self.id, client=self._transport.api, body=body)
         )
 
     async def write_stdin(self, data: bytes | str) -> None:
+        """Send data to the command's input, in order."""
         if self._stdin is False:
             raise ValueError(f"{self._what} started without stdin=True, so it reads no input")
         async with self._stdin_lock:
             await _feed(self._attached("write_stdin"), _bytes(data))
 
     async def close_stdin(self) -> None:
+        """End the command's input, so a command that reads to the end of its input can finish."""
         async with self._stdin_lock:
             await self._attached("close_stdin").send_binary(bytes([STDIN_CLOSE]))
 
     async def disconnect(self) -> None:
-        """Leave the command's stream. The command runs on, and wait() or reconnect() takes it up again."""
+        """Close the command's stream and leave the command running; wait() or reconnect() attaches again."""
         ws, pump = self._ws, self._pump
         if ws is None or pump is None:
             return
@@ -245,7 +251,9 @@ class AsyncCommand:
                 return CommandResult(self.id, status.code, status.signal, stdout, stderr, status.lost_bytes)
             if stream == FAILURE:
                 raise failure_of(payload, self._what)
-            raise ProtocolError(f"the daemon sent a message of stream {stream} on {self._what}, which no daemon sends")
+            raise ProtocolError(
+                f"the daemon sent an unknown stream {stream} on {self._what}; upgrade useshards to match the daemon"
+            )
 
     def _output(self, stream: int, data: bytes) -> None:
         self._capture.add(stream, data)
@@ -255,15 +263,15 @@ class AsyncCommand:
 
     async def _cut(self, cause: ShardConnectionError | None) -> NoReturn:
         """Ask the record why a stream ended early, since a daemon that detaches a stalled client says nothing."""
-        what = f"{self._what} ended without an exit status"
+        what = f"{self._what}: the stream ended without an exit status"
         try:
             info = await self.inspect()
         except ShardError as e:
-            # shard ruled in SHARD-283 that a record the daemon cannot answer leaves the cut line alone.
-            raise ShardConnectionError(f"{what}: the stream to the daemon dropped") from e
+            # The inspect is best effort, as in the CLI: a failure keeps the plain cut line.
+            raise ShardConnectionError(what) from e
         raise ShardConnectionError(
-            f"{what}; the daemon detaches a client that takes no output for {_STALL_BOUND}, "
-            f"and the command is {info.state} with {info.lost_bytes} bytes of output lost"
+            f"{what}; the daemon detaches a client that reads no output for {_STALL_BOUND}, "
+            f"and the command is {info.state}, with {info.lost_bytes} bytes of output lost"
         ) from cause
 
     def _attached(self, verb: str) -> AsyncWebSocket:

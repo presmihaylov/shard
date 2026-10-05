@@ -108,10 +108,10 @@ func (o setupFlags) wantsLocal() bool { return o.local || o.provider != "" || o.
 // check refuses a local choice beside a remote one, so neither half guesses which was meant.
 func (o setupFlags) check() error {
 	if o.remote != "" && o.wantsLocal() {
-		return errors.New("--remote connects to a server; --local, --provider and --start-at-boot set up this machine")
+		return errors.New("--remote cannot go with --local, --provider or --start-at-boot; pass --remote to connect to a server, or the others to set up this machine")
 	}
 	if o.save && o.wantsLocal() {
-		return errors.New("--save saves a remote connection; it does not apply to --local")
+		return errors.New("--save applies only to --remote; drop --save, or drop --local, --provider and --start-at-boot")
 	}
 
 	return nil

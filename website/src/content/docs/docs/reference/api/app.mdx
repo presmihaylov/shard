@@ -1,0 +1,84 @@
+---
+title: App
+description: The routes that attach to and stop the app of a sandbox created with a command.
+sidebar:
+  order: 9
+---
+
+A sandbox created with a `command` runs it as its app. This waits for the app in the sandbox `web` to end, then says how it ended:
+
+```sh
+curl --unix-socket /var/lib/shard/shard.sock http://localhost/v0/sandboxes/web/attach
+```
+
+This stops the app and leaves the sandbox running:
+
+```sh
+curl --unix-socket /var/lib/shard/shard.sock -X POST -H 'Content-Type: application/json' -d '{"force":true}' http://localhost/v0/sandboxes/web/app/stop
+```
+
+{/* make openapi writes this part from the routes. Edit the routes, not this part. */}
+
+Each route answers an error with the [Error](/docs/reference/api/#error) body, unless its responses say otherwise.
+
+## Wait for or attach to the app of a run
+
+`GET /v0/sandboxes/{id}/attach` · scope `sandbox:read`
+
+**Parameters**
+
+| Name | In | Type | Required | Description |
+| --- | --- | --- | --- | --- |
+| `id` | path | string | yes | The sandbox id or name. |
+
+**Responses**
+
+| Status | Body | Description |
+| --- | --- | --- |
+| 101 | WebSocket | A WebSocket attach. Each binary message leads with its stream byte: 1 the output from the start of the log, 3 the AppExit, 5 a FailureMessage. |
+| 200 | [AppExit](#appexit) as `application/json` | How the app ended, once it ends. |
+
+**WebSocket messages**
+
+| Stream byte | Payload |
+| --- | --- |
+| 3 | [AppExit](#appexit) |
+| 5 | [FailureMessage](/docs/reference/api/sandboxes/#failuremessage) |
+
+## Stop the app of a run
+
+`POST /v0/sandboxes/{id}/app/stop` · scope `sandbox:write`
+
+**Parameters**
+
+| Name | In | Type | Required | Description |
+| --- | --- | --- | --- | --- |
+| `id` | path | string | yes | The sandbox id or name. |
+
+**Request body**
+
+[AppStopRequest](#appstoprequest) as `application/json`, optional.
+
+**Responses**
+
+| Status | Body |
+| --- | --- |
+| 204 | none |
+
+## Objects
+
+### AppExit
+
+| Field | Type | Required |
+| --- | --- | --- |
+| `code` | integer (int64) | yes |
+| `restarts` | integer (int64) | yes |
+| `signal` | integer (int64) | yes |
+
+### AppStopRequest
+
+| Field | Type | Required |
+| --- | --- | --- |
+| `force` | boolean | no |
+
+{/* make openapi writes everything above this line. Write by hand below it. */}

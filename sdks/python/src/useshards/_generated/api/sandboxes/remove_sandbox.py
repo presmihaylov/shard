@@ -61,7 +61,7 @@ def sync_detailed(
     client: AuthenticatedClient | Client,
     force: bool | Unset = UNSET,
 ) -> Response[Any | Error]:
-    """delete a sandbox and its files"""
+    """Remove a sandbox and its files"""
 
     kwargs = _get_kwargs(
         id=id,
@@ -81,7 +81,7 @@ def sync(
     client: AuthenticatedClient | Client,
     force: bool | Unset = UNSET,
 ) -> Any | Error | None:
-    """delete a sandbox and its files"""
+    """Remove a sandbox and its files"""
 
     return sync_detailed(
         id=id,
@@ -96,7 +96,7 @@ async def asyncio_detailed(
     client: AuthenticatedClient | Client,
     force: bool | Unset = UNSET,
 ) -> Response[Any | Error]:
-    """delete a sandbox and its files"""
+    """Remove a sandbox and its files"""
 
     kwargs = _get_kwargs(
         id=id,
@@ -114,7 +114,7 @@ async def asyncio(
     client: AuthenticatedClient | Client,
     force: bool | Unset = UNSET,
 ) -> Any | Error | None:
-    """delete a sandbox and its files"""
+    """Remove a sandbox and its files"""
 
     return (
         await asyncio_detailed(

@@ -32,7 +32,7 @@ export interface ExecOptions extends OutputOptions {
 /** ExecResult is how a command ended, with the end of its output. */
 export interface ExecResult {
   exitCode: number;
-  /** The signal the server reported, or null; every provider reports a signal as the exit code 128 plus its number, as 137 for KILL. */
+  /** The signal the daemon reported, or null; every provider reports a signal in the exit code instead, as 128 plus its number, so 137 for KILL. */
   signal: number | null;
   /** The newest output, at most outputLimitBytes of stdout and stderr together, so a long run keeps only its end. */
   stdout: string;
@@ -56,11 +56,12 @@ export class Command {
     return this.session.sandboxId;
   }
 
+  /** inspect reads the command again from the daemon. */
   inspect(): Promise<CommandInfo> {
     return this.session.inspect();
   }
 
-  /** wait answers how the command ended. With no stream open it attaches, and the output starts again from the daemon's oldest byte. */
+  /** wait returns how the command ended. With no stream open it attaches, and the daemon replays the output it still holds. */
   async wait(options: { signal?: AbortSignal } = {}): Promise<ExecResult> {
     return result(await this.session.wait(options.signal), this.capture);
   }
@@ -70,19 +71,22 @@ export class Command {
     return this.session.kill(signal);
   }
 
+  /** resize sets the terminal size of a command that runs on a terminal. */
   resize(rows: number, cols: number): Promise<void> {
     return this.session.resize({ rows, cols });
   }
 
+  /** writeStdin sends data to the command's input, in order. */
   writeStdin(data: string | Uint8Array): Promise<void> {
     return this.session.writeStdin(data);
   }
 
+  /** closeStdin ends the command's input, so a command that reads to the end of its input can finish. */
   closeStdin(): Promise<void> {
     return this.session.closeStdin();
   }
 
-  /** disconnect lets go of the stream and leaves the command running. */
+  /** disconnect closes the stream and leaves the command running; wait() or reconnect() attaches again. */
   disconnect(): void {
     this.session.disconnect();
   }
@@ -93,13 +97,14 @@ export class Command {
   }
 }
 
+/** Commands are the commands started in one sandbox, by this client or any other. */
 export class Commands {
   constructor(
     private readonly transport: Transport,
     private readonly sandboxId: string,
   ) {}
 
-  /** run answers how the command ended; a nonzero exit is a result, and a command that never started throws. */
+  /** run returns how the command ended; a nonzero exit is a result, and a command that never started throws. */
   async run(command: string | string[], options: ExecOptions = {}): Promise<ExecResult> {
     const { session, capture, input } = await this.open(command, options);
     if (input === undefined) {
@@ -117,7 +122,7 @@ export class Commands {
     return result(exit, capture);
   }
 
-  /** start answers a handle once the command runs, with any stdin given already sent. */
+  /** start returns a handle once the command runs, with any stdin given already sent. */
   async start(command: string | string[], options: ExecOptions = {}): Promise<Command> {
     const { session, capture, input } = await this.open(command, options);
     if (input !== undefined) {
@@ -131,7 +136,7 @@ export class Commands {
     return new Command(session, capture);
   }
 
-  /** list answers every command the daemon still holds for the sandbox, running or ended. */
+  /** list returns every command the daemon still holds for the sandbox, running or ended. */
   async list(): Promise<CommandInfo[]> {
     const path = { id: this.sandboxId };
     const route = "/v0/sandboxes/{id}/exec";
@@ -140,7 +145,7 @@ export class Commands {
     return rows.map(commandInfo);
   }
 
-  /** get answers a handle to a command any client started; its output comes when it attaches. */
+  /** get returns a handle to a command any client started; its output comes when it attaches. */
   async get(id: string, options: OutputOptions = {}): Promise<Command> {
     const params = { path: { id: this.sandboxId, exec: id } };
     const info = commandInfo((await this.transport.api.GET("/v0/sandboxes/{id}/exec/{exec}", { params })).data);

@@ -128,7 +128,7 @@ func TestLogsReportsADaemonThatIsNotThere(t *testing.T) {
 	app := App{Version: "test", Root: shortRoot(t), Out: &out}
 
 	err := app.Run(t.Context(), []string{"logs", "sandbox1"})
-	if err == nil || !strings.Contains(err.Error(), "cannot connect to shard daemon") {
+	if err == nil || !strings.Contains(err.Error(), "cannot connect to the shard daemon") {
 		t.Fatalf("logs with no daemon returned %v", err)
 	}
 }

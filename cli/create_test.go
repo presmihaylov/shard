@@ -73,7 +73,7 @@ func TestParseCreateTakesAnImageOrASnapshot(t *testing.T) {
 
 	for args, want := range map[string]string{
 		"--snapshot web-base alpine:3.20": "create takes an image or --snapshot, never both: snapshot web-base already names its image",
-		"":                                "create takes one image reference or --snapshot <id|name>, got none",
+		"":                                "create takes one image reference or --snapshot SNAPSHOT, got none",
 	} {
 		if _, err := parseCreate(strings.Fields(args)); err == nil || err.Error() != want {
 			t.Errorf("parseCreate(%q) = %v, want %q", args, err, want)
@@ -265,10 +265,10 @@ func TestParseRunRestartFlags(t *testing.T) {
 // Only a run has an app to start again, so create and exec point every restart flag at run, with its value.
 func TestCreateAndExecPointARestartFlagToRun(t *testing.T) {
 	cases := map[string][]string{
-		"--restart is a run flag: shard run --restart always <image> <command>":             {"create", "--restart", "always", "alpine:3.20"},
-		"--restart-retries is a run flag: shard run --restart-retries 2 <image> <command>":  {"create", "--restart-retries", "2", "alpine:3.20"},
-		"--restart-backoff is a run flag: shard run --restart-backoff 5s <image> <command>": {"create", "--restart-backoff=5s", "alpine:3.20"},
-		"--restart is a run flag: shard run --restart on-failure <image> <command>":         {"exec", "--restart", "on-failure", "web", "true"},
+		"--restart is a run flag: shard run --restart always IMAGE COMMAND":             {"create", "--restart", "always", "alpine:3.20"},
+		"--restart-retries is a run flag: shard run --restart-retries 2 IMAGE COMMAND":  {"create", "--restart-retries", "2", "alpine:3.20"},
+		"--restart-backoff is a run flag: shard run --restart-backoff 5s IMAGE COMMAND": {"create", "--restart-backoff=5s", "alpine:3.20"},
+		"--restart is a run flag: shard run --restart on-failure IMAGE COMMAND":         {"exec", "--restart", "on-failure", "web", "true"},
 	}
 
 	for want, args := range cases {

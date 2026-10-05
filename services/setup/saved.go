@@ -79,10 +79,10 @@ func (s *Setup) forget(ctx context.Context, path string) ([]string, error) {
 		return append(lines, note...), nil
 	}
 	if !installed {
-		return append(lines, "Shard commands now use this machine, which is not set up to run sandboxes.", "Run shard setup again to set it up."), nil
+		return append(lines, "From now on, shard commands use this machine, which is not set up to run sandboxes.", "Run shard setup again to set it up."), nil
 	}
 
-	return append(lines, "Shard commands now use the local daemon."), nil
+	return append(lines, "From now on, shard commands use the local daemon."), nil
 }
 
 // handover is the §14 answer about a saved remote: the line the review adds, and finish, which acts on it once a local job succeeds and says what it did.
@@ -105,10 +105,10 @@ func (s *Setup) switchToLocal(ctx context.Context) (handover, error) {
 		return handover{finish: func(context.Context) ([]string, error) { return remoteEnvNote(s.Host.Env, ""), nil }}, nil
 	}
 
-	current := []string{"Normal Shard commands currently use the remote server " + client.Redacted(saved.Remote) + ", saved in " + path + ".", ""}
+	current := []string{"Normal shard commands currently use the remote server " + client.Redacted(saved.Remote) + ", saved in " + path + ".", ""}
 	if env := strings.TrimSpace(s.Host.Env(client.RemoteEnv)); env != "" {
 		current = []string{
-			"Normal Shard commands currently use the remote server " + client.Redacted(env) + ", set in " + client.RemoteEnv + ".",
+			"Normal shard commands currently use the remote server " + client.Redacted(env) + ", set in " + client.RemoteEnv + ".",
 			"A connection to " + client.Redacted(saved.Remote) + " is also saved in " + path + ".", "",
 		}
 	}
@@ -121,7 +121,7 @@ func (s *Setup) switchToLocal(ctx context.Context) (handover, error) {
 	}
 	if !remove {
 		return handover{finish: func(context.Context) ([]string, error) {
-			lines := []string{"The saved connection remains, so normal Shard commands still use the remote server.", "Run shard setup again to remove it."}
+			lines := []string{"The saved connection remains, so normal shard commands still use the remote server.", "Run shard setup again to remove it."}
 			return append(lines, remoteEnvNote(s.Host.Env, saved.Remote)...), nil
 		}}, nil
 	}

@@ -24,7 +24,7 @@ func (a App) fork(ctx context.Context, args []string) error {
 		return err
 	}
 
-	return a.print(sb.ID)
+	return a.printCreated(sb)
 }
 
 // parseFork refuses a name no verb could take back before the daemon captures anything.

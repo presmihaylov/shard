@@ -78,7 +78,7 @@ func (s *Setup) verify(ctx context.Context, conn, previous client.Config) (clien
 
 // ask reads the URL and the key, starting from current; with envKey a key in SHARD_API_KEY is used rather than asked for, and an edit asks the person.
 func (s *Setup) ask(ctx context.Context, current client.Config, envKey bool) (client.Config, error) {
-	remote, err := s.UI.Text(ctx, AskURL, "Shard server URL:", current.Remote)
+	remote, err := s.UI.Text(ctx, AskURL, "URL of the shard server:", current.Remote)
 	if err != nil {
 		return client.Config{}, err
 	}
@@ -227,7 +227,7 @@ func (s *Setup) offerSave(ctx context.Context, path string, previous, conn clien
 }
 
 // saveQuestion is §13: the file's plain-text key is said before the save is confirmed.
-const saveQuestion = "A saved connection stores your API key as plain text in a file only your user can read.\nSave this connection for future Shard commands?"
+const saveQuestion = "A saved connection stores your API key as plain text in a file only your user can read.\nSave this connection for future shard commands?"
 
 // connectedLines are every lifecycle capability, the unsupported ones too; the checklist above them already marked each step.
 func connectedLines(caps client.Capabilities) []string {
@@ -257,13 +257,13 @@ func savedLines(path string, conn client.Config, env func(string) string) []stri
 		"Configuration: " + path,
 		"",
 		"The file stores your API key as plain text and is accessible only to your user.",
-		"Shard will use this connection automatically.",
+		"From now on, shard commands use this connection automatically.",
 	}
 	if remote := strings.TrimSpace(env(client.RemoteEnv)); remote != "" {
-		lines = append(lines, "", client.RemoteEnv+" is set to "+client.Redacted(remote)+", and Shard commands use it before the saved connection.")
+		lines = append(lines, "", client.RemoteEnv+" is set to "+client.Redacted(remote)+", and shard commands use it before the saved connection.")
 	}
 	if key := strings.TrimSpace(env(client.APIKeyEnv)); key != "" && key != conn.APIKey {
-		lines = append(lines, "", client.APIKeyEnv+" is set to another key, and Shard commands use it before the saved one.")
+		lines = append(lines, "", client.APIKeyEnv+" is set to another key, and shard commands use it before the saved one.")
 	}
 	if caFile := env(client.CAFileEnv); caFile != "" {
 		lines = append(lines, "", "Keep "+client.CAFileEnv+" set: the saved connection does not store the certificate authority.")

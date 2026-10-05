@@ -293,7 +293,7 @@ func TestWriteRestartsReadsBackThroughBundle(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	got, err := bundle.Bundle{RestartFile: path}.RestartCount()
+	got, err := bundle.ReadRestartCount(path)
 	if err != nil {
 		t.Fatal(err)
 	}

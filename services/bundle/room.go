@@ -152,11 +152,11 @@ type NoRoomError struct {
 
 func (e *NoRoomError) Error() string {
 	if e.Memory {
-		return fmt.Sprintf("the %d MiB memory of the checkpoint does not fit on the root: it has %d MiB free, the disks of the sandboxes on it are bound to %d MiB, and %d MiB stays free for the daemon; remove a sandbox",
+		return fmt.Sprintf("the %d MiB of sandbox memory to save does not fit on the host disk: it has %d MiB free, the disks of the sandboxes on it are bound to %d MiB, and %d MiB stays free for the daemon; remove a sandbox",
 			e.Bound/bytesPerMiB, e.Free/bytesPerMiB, e.Held/bytesPerMiB, diskHeadroom/bytesPerMiB)
 	}
 
-	return fmt.Sprintf("a %d MiB disk does not fit on the root: it has %d MiB free, the disks of the other sandboxes on it are bound to %d MiB, and %d MiB stays free for the daemon; set a smaller resources.disk_mib or remove a sandbox",
+	return fmt.Sprintf("a %d MiB disk does not fit on the host disk: it has %d MiB free, the disks of the other sandboxes on it are bound to %d MiB, and %d MiB stays free for the daemon; set a smaller resources.disk_mib or remove a sandbox",
 		e.Bound/bytesPerMiB, e.Free/bytesPerMiB, e.Held/bytesPerMiB, diskHeadroom/bytesPerMiB)
 }
 

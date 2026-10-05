@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"io/fs"
 	"os"
 	"path/filepath"
 
@@ -12,27 +13,41 @@ import (
 	"github.com/presmihaylov/shard/pkg/filemode"
 )
 
-// restartFileCap bounds the read: shard-init writes a few dozen bytes, and the guest can write anything there.
+// restartFileCap bounds the read: the daemon writes a few dozen bytes there.
 const restartFileCap = 4 << 10
 
-// RestartCount reads what shard-init kept of its restart policy on this run, zero before the first start again, off a disk a stop detached too (SHARD-401).
+// RestartCount reads the count shard-init keeps on its exit record, zero before the first start again (SHARD-634).
 func (b Bundle) RestartCount() (models.RestartCount, error) {
-	var count models.RestartCount
-	err := b.withDisk(func() error {
-		var err error
-		count, err = readRestartCount(b.RestartFile)
-
-		return err
-	})
+	blob, err := readExitFile(b.ExitFile)
+	if errors.Is(err, fs.ErrNotExist) {
+		return models.RestartCount{}, nil
+	}
 	if err != nil {
 		return models.RestartCount{}, err
 	}
 
-	return count, nil
+	report, _, err := decodeReport(blob, models.ExitReportKind)
+	if err != nil {
+		return models.RestartCount{}, fmt.Errorf("decode the restart count in %s: %w", b.ExitFile, err)
+	}
+
+	return report.Restarts, nil
 }
 
-// readRestartCount takes only a small regular file, because the guest can write that path too.
-func readRestartCount(path string) (models.RestartCount, error) {
+// ClearRun drops what an earlier run left of the supervisor's files. The guest can leave a tree at ReadyFile, so a plain remove is not enough (SHARD-635).
+func (b Bundle) ClearRun() error {
+	for _, stale := range []string{b.ExitFile, b.ReadyFile, b.ChangedFile} {
+		// The guest is down here, and RemoveAll follows no link, so nothing past the tree it left goes with it.
+		if err := os.RemoveAll(stale); err != nil {
+			return fmt.Errorf("clear %s: %w", stale, err)
+		}
+	}
+
+	return nil
+}
+
+// ReadRestartCount reads the count a VM provider keeps from the guest's events, and takes only a small regular file.
+func ReadRestartCount(path string) (models.RestartCount, error) {
 	f, err := openRegular(path)
 	if errors.Is(err, os.ErrNotExist) {
 		return noRestartYet(path)

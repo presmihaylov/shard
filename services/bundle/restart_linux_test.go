@@ -28,7 +28,7 @@ func TestRestartCountRefusesASpecialFileBeforeItsOpen(t *testing.T) {
 
 	// The writer waits within the first few calls, and any call that opens the fifo for a read releases it.
 	for range 50 {
-		if _, err := (bundle.Bundle{RestartFile: path}).RestartCount(); err == nil {
+		if _, err := bundle.ReadRestartCount(path); err == nil {
 			t.Fatal("RestartCount read a fifo")
 		}
 		select {

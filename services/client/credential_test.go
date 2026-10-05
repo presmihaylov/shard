@@ -209,7 +209,7 @@ func TestNoErrorHoldsTheKey(t *testing.T) {
 		{name: "a remote of another scheme", host: "ftp://box.example.com", key: leakKey, caFile: ca, mentions: "http or https"},
 		{name: "an http remote with a ca file", host: "http://box.example.com", key: leakKey, caFile: ca, mentions: client.CAFileEnv},
 		{name: "a remote that does not parse", host: "https://[::1", key: leakKey, caFile: ca, mentions: "parse"},
-		{name: "a missing ca file", host: host, key: leakKey, caFile: filepath.Join(t.TempDir(), "missing.pem"), mentions: "ca file"},
+		{name: "a missing ca file", host: host, key: leakKey, caFile: filepath.Join(t.TempDir(), "missing.pem"), mentions: "CA certificate file"},
 		{name: "a ca file of no certificate", host: host, key: leakKey, caFile: noCert, mentions: "certificate"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {

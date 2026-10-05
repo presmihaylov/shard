@@ -52,7 +52,7 @@ type bodyRequest[B any] struct {
 
 type filePath struct {
 	ID   string `path:"id" doc:"The sandbox id or name."`
-	Path string `query:"path" required:"true" doc:"The absolute guest path."`
+	Path string `query:"path" required:"true" doc:"The absolute path inside the sandbox."`
 }
 
 type followInput struct {

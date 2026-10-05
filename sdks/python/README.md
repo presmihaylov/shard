@@ -67,19 +67,34 @@ asyncio.run(main())
 
 ## What to know
 
-- **A sandbox outlives its app.** `shard.run(image, command)` answers an `App`. When the app exits,
+- **`create()` runs no command.** It returns a running sandbox, or one in state `failed` with
+  `info.failed_reason`. Run commands in it with `exec()`.
+- **A sandbox outlives its app.** `shard.run(image, command)` returns an `App`. When the app exits,
   its sandbox stays running, so you can still exec into it. Only `stop()` or `remove()` ends it.
 - **A string command runs under `/bin/sh -c`.** A list runs as it is.
-- **`exec(..., background=True)` answers a `Command`.** `wait()`, `kill()`, `write_stdin()` and
-  `resize()` act on it. `commands.get(id)` finds it again from another client. In the foreground `stdin=` is
+- **`exec(..., background=True)` returns a `Command`.** `wait()`, `kill()`, `write_stdin()`, `close_stdin()`
+  and `resize()` act on it. `commands.get(id)` finds it again from another client. In the foreground `stdin=` is
   the whole input; in the background `stdin=True` keeps the input open for `write_stdin()`.
 - **A cancel never kills the remote command.** An asyncio cancel, a timeout or a dropped connection
   ends only the wait. The command runs on until it exits or you call `kill()`.
-- **Output is capped.** A result keeps the newest 8 MiB across stdout and stderr together
-  (`output_limit_bytes=`). `on_stdout=` and `on_stderr=` see every chunk as it arrives.
+- **Output may hold only its end.** A result keeps the newest 8 MiB of stdout and stderr together
+  (`output_limit_bytes=`, 0 keeps none). `on_stdout=` and `on_stderr=` see every chunk as it arrives.
+  `result.lost_bytes` is different: it counts output the daemon dropped before any client read it.
+  `logs()` is bounded on the daemon too, so a long app may hold only its end.
 - **Files stream.** `files.download()` writes to a temporary file and renames it at the end, so a
   large file never sits in memory. An upload sends its length first: `files.upload()` takes a path,
   and `files.write()` takes bytes, a seekable file, or a stream with `size=`.
+- **A verb the provider lacks raises `UnsupportedError`.** `shard.capabilities()` says which of the
+  eight lifecycle verbs the daemon's provider supports (create, start, stop, remove, pause, resume,
+  fork and snapshot), before you call them.
+
+## Lists
+
+`shard.list()` returns `SandboxList(sandboxes, warnings)`. `shard.secrets.list()` returns
+`SecretList(secrets, warnings)`. The async client returns the same result types. The warnings name
+entries the daemon could not read. Both lists collect warnings from every page, keeping each exact
+text once in first-seen order. Check them before you treat the result as complete. Other lists return
+plain lists.
 
 ## Errors
 
@@ -99,23 +114,9 @@ one whose source changed size while it was sent, and `UnsafeArchiveError` a `dow
 the SDK refuses to land, as one outside the destination, named by `entry` and `reason`. A non-zero
 exit code is not an exception. Read `result.exit_code`.
 
-## The shared suite
-
-`uv run python -m suite` runs the checks of `sdks/suite/checks.txt` against `SHARD_REMOTE`, with
-`SHARD_API_KEY` and `SHARD_SUITE_WILDCARD_KEY` each a `"*"` token. `SHARD_SUITE_ONLY=name,name` runs a subset,
-`SHARD_SUITE_MODE=sync|async` runs one mode, and `SHARD_SUITE_IMAGE` picks the image.
+An `APIError` can carry `holders`, the sandbox ids that prevent an operation such as secret removal.
+The attribute is `None` when the error has no holders field.
 
 ## License
 
 Apache-2.0.
-
-## Lists and errors
-
-`shard.list()` returns `SandboxList(sandboxes, warnings)`. `shard.secrets.list()` returns
-`SecretList(secrets, warnings)`. The async client returns the same result types. The warnings name
-entries the daemon could not read. Both lists collect warnings from every page, keeping each exact
-text once in first-seen order. Check them before you treat the result as complete. Other lists return
-plain lists.
-
-An `APIError` can carry `holders`, the sandbox ids that prevent an operation such as secret removal.
-The attribute is `None` when the error has no holders field.

@@ -1,4 +1,9 @@
-"""The shared suite; the README names its settings."""
+"""The shared suite.
+
+`uv run python -m suite` runs the checks of `sdks/suite/checks.txt` against `SHARD_REMOTE`, with
+`SHARD_API_KEY` and `SHARD_SUITE_WILDCARD_KEY` each a `"*"` token. `SHARD_SUITE_ONLY=name,name` runs a subset,
+`SHARD_SUITE_MODE=sync|async` runs one mode, and `SHARD_SUITE_IMAGE` picks the image.
+"""
 
 from __future__ import annotations
 

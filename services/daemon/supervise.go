@@ -26,7 +26,7 @@ func (d *Daemon) supervise(ctx context.Context, t Task) {
 			return
 		}
 		if err == nil {
-			d.log.Printf("task %s is done", name)
+			d.log.Printf("task %s completed and needs no restart", name)
 			d.states.done(name)
 
 			return
