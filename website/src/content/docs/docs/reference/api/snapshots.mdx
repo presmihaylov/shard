@@ -40,8 +40,8 @@ Each route answers an error with the [Error](/docs/reference/api/#error) body, u
 
 | Name | In | Type | Required | Description |
 | --- | --- | --- | --- | --- |
-| `limit` | query | integer (int64) | no | The most rows a page holds; none answers the whole list. At least 1. |
-| `cursor` | query | string | no | The next of the page before; this page starts after it. |
+| `limit` | query | integer (int64) | no | The most items on a page; absent returns the whole list. At least 1. |
+| `cursor` | query | string | no | The next value of the previous page; this page starts after it. |
 
 **Responses**
 
@@ -95,7 +95,7 @@ Each route answers an error with the [Error](/docs/reference/api/#error) body, u
 | `memory_mib` | integer (int64) | yes |  |
 | `name` | string | no |  |
 | `provider` | string | yes |  |
-| `size` | integer (int64) | yes | The storage bytes the copy takes on the host, which is neither disk\_mib nor the logical size of its files. |
+| `size` | integer (int64) | yes | The bytes the snapshot takes on the host disk; not disk\_mib and not the logical size of its files. |
 | `source` | string | yes |  |
 | `source_name` | string | no |  |
 
