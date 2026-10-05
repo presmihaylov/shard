@@ -333,6 +333,7 @@ func (p *Provider) endLive(ctx context.Context, m *machine) error {
 	_, err := m.client.State(probe)
 	cancelProbe()
 	if err != nil {
+		// Log and continue, ruled by @shard (SHARD-561): the forced stop below still ends the vmm (SHARD-344 ruling 2).
 		fmt.Fprintf(os.Stderr, "firecracker: sandbox %s: no flush before the forced stop, the vmm does not answer: %v\n", m.id, err)
 
 		return p.end(ctx, m)
@@ -341,6 +342,7 @@ func (p *Provider) endLive(ctx context.Context, m *machine) error {
 	flushCtx, cancel := context.WithTimeout(context.Background(), flushGrace)
 	defer cancel()
 	if err := m.control.Load().Kill(flushCtx); err != nil {
+		// Log and continue, ruled by @shard (SHARD-561): the flush is best effort, and the cut below ends the vmm either way (SHARD-344 ruling 2).
 		fmt.Fprintf(os.Stderr, "firecracker: sandbox %s: flush before the forced stop: %v\n", m.id, err)
 	}
 

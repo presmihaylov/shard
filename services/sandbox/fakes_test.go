@@ -144,6 +144,10 @@ type fakeRepo struct {
 	stateDir      string
 	// onGet runs inside every Get, so a test moves the record on the goroutine that polls it.
 	onGet func()
+	// onCreate runs once a fork's copy exists, so a test lands a verb before the fork takes its lock.
+	onCreate func(id string)
+	// unmade is a fork's copy that a delete took, which reads not found from then on.
+	unmade string
 }
 
 func (f *fakeRepo) Get(id string) (models.Sandbox, error) {
@@ -197,6 +201,9 @@ func (f *fakeRepo) Create(sb models.Sandbox, admit ...func(dir string) error) (m
 	if f.sb.ID != "" {
 		sb.ID = "sandbox2"
 		f.made = &sb
+		if f.onCreate != nil {
+			f.onCreate(sb.ID)
+		}
 
 		return sb, nil
 	}
@@ -242,9 +249,15 @@ func (f *fakeRepo) Dir(id string) (string, error) {
 	return "/state/" + id, nil
 }
 
-func (f *fakeRepo) Delete(string) error {
+func (f *fakeRepo) Delete(id string) error {
 	if err := f.r.record("repo.Delete"); err != nil {
 		return err
+	}
+	if id == f.unmade {
+		return fmt.Errorf("sandbox %s: %w", id, sandboxstate.ErrNotFound)
+	}
+	if f.made != nil && id == f.made.ID {
+		f.unmade, f.made = id, nil
 	}
 	f.deleted = true
 

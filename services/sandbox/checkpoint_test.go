@@ -14,6 +14,7 @@ import (
 
 	"github.com/presmihaylov/shard/models"
 	"github.com/presmihaylov/shard/services/sandbox"
+	"github.com/presmihaylov/shard/services/sandboxstate"
 )
 
 func TestPauseWritesTheCheckpointAndRecordsIt(t *testing.T) {
@@ -350,6 +351,9 @@ func TestStopDropsTheCheckpointOfAPausedSandbox(t *testing.T) {
 
 // A stop whose drop failed wrote a stopped record, so the next stop retries the drop rather than leak the checkpoint (SHARD-592).
 func TestStopRetriesTheCheckpointDropAfterItsFirstFailure(t *testing.T) {
+	if os.Geteuid() == 0 {
+		t.Skip("root removes a directory's contents whatever its mode says, so no drop fails")
+	}
 	dir := t.TempDir()
 	if err := os.WriteFile(filepath.Join(dir, "checkpoint.img"), []byte("memory"), 0o600); err != nil {
 		t.Fatal(err)
@@ -676,6 +680,27 @@ func TestAFailedForkUnwindsBeforeItLetsTheCopyGo(t *testing.T) {
 	case <-reached:
 	case <-time.After(2 * time.Second):
 		t.Fatal("the copy's lock was never released")
+	}
+}
+
+// An rm can take the copy's lock before the fork does, so the fork finds no record and claims nothing more (SHARD-582).
+func TestAForkWhoseCopyWasRemovedFirstClaimsNothingMore(t *testing.T) {
+	r := &recorder{}
+	svc, l := newService(t, r, forkSource())
+	l.repo.onCreate = func(id string) {
+		l.provider.status = models.Status{}
+		if err := svc.Remove(t.Context(), id, false); err != nil {
+			t.Fatalf("rm of the copy: %v", err)
+		}
+	}
+
+	_, err := svc.Fork(t.Context(), "sandbox1", sandbox.CopyRequest{})
+	if err == nil || !errors.Is(err, sandboxstate.ErrNotFound) || strings.Contains(err.Error(), "left on the host") {
+		t.Fatalf("fork = %v, want the copy reported removed and nothing reported left", err)
+	}
+
+	if got := keep(r.calls, "net.Allocate", "provider.Fork"); len(got) != 0 {
+		t.Errorf("the fork went on to %v for a copy an rm had freed", got)
 	}
 }
 

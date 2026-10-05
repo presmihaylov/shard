@@ -9,6 +9,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"io/fs"
 	"net"
 	"net/http"
 	"os"
@@ -1118,8 +1119,8 @@ func TestTheFrontRefusesAWorldReadableLedger(t *testing.T) {
 	}
 
 	_, err := New(Config{Listen: "127.0.0.1:0", SigningKeyFile: env.secret, Root: shortRoot(t), Out: io.Discard})
-	if err == nil {
-		t.Error("the front started with a world-readable ledger, want a refusal")
+	if err == nil || !strings.Contains(err.Error(), "everyone on the host can read") {
+		t.Errorf("New = %v, want a refusal that says everyone on the host can read the ledger", err)
 	}
 }
 
@@ -1298,19 +1299,21 @@ func TestIssueTokenCreatesTheLedger0640(t *testing.T) {
 	}
 }
 
-// IssueToken refuses to append to a ledger others can read, so a minted token never lands in an exposed file.
-func TestIssueTokenRefusesAWorldReadableLedger(t *testing.T) {
-	path := filepath.Join(t.TempDir(), TokensFileName)
+// IssueToken refuses to append to a ledger everyone on the host can reach, so a minted token never lands in an exposed file.
+func TestIssueTokenRefusesALedgerEveryoneCanReach(t *testing.T) {
+	for mode, want := range map[fs.FileMode]string{0o644: "everyone on the host can read", 0o602: "everyone on the host can write"} {
+		path := filepath.Join(t.TempDir(), TokensFileName)
+		if _, err := IssueToken([]byte(testSecret), path, "ci", nil, time.Hour); err != nil {
+			t.Fatalf("IssueToken: %v", err)
+		}
+		if err := os.Chmod(path, mode); err != nil {
+			t.Fatalf("chmod: %v", err)
+		}
 
-	if _, err := IssueToken([]byte(testSecret), path, "ci", nil, time.Hour); err != nil {
-		t.Fatalf("IssueToken: %v", err)
-	}
-	if err := os.Chmod(path, 0o644); err != nil {
-		t.Fatalf("chmod: %v", err)
-	}
-
-	if _, err := IssueToken([]byte(testSecret), path, "ci", nil, time.Hour); err == nil {
-		t.Error("IssueToken appended to a world-readable ledger, want a refusal")
+		_, err := IssueToken([]byte(testSecret), path, "ci", nil, time.Hour)
+		if err == nil || !strings.Contains(err.Error(), want) {
+			t.Errorf("IssueToken on a %04o ledger = %v, want a refusal that says %q", mode, err, want)
+		}
 	}
 }
 

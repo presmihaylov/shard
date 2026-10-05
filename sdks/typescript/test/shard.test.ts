@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { inspect } from "node:util";
 import { after, afterEach, before, beforeEach, test } from "node:test";
 import { APIError, CommandNotStartedError, ProtocolError } from "../src/errors.js";
 import { Shard } from "../src/shard.js";
@@ -189,6 +190,32 @@ test("an http remote warns once per client, in the CLI's words, and answers as h
     clients.forEach((client) => client.close());
     await plain.close();
   }
+});
+
+test("printing a client, a sandbox or an attached command never shows the API key", async () => {
+  const exec = {
+    exec: "ex_1",
+    sandbox: "sb_1",
+    command: ["sleep", "9"],
+    state: "running",
+    exit_status: null,
+    started_at: "2026-10-04T10:00:00Z",
+    exited_at: null,
+    truncated: false,
+    lost_bytes: 0,
+  };
+  routes.set("POST /v0/sandboxes/sb_1/exec", () => ({ status: 201, json: exec }));
+  daemon.upgrade = () => undefined;
+  const sandbox = await shard.create({ image: "alpine" });
+  const command = await sandbox.exec("sleep 9", { background: true });
+  const peer = await daemon.peer(0);
+  for (const handle of [shard, sandbox, command]) {
+    assert.doesNotMatch(inspect(handle, { depth: Infinity, showHidden: true }), /test-key/);
+    assert.doesNotMatch(JSON.stringify(handle), /test-key/);
+  }
+  peer.exit({ code: 0, signal: 0, lost_bytes: 0 });
+  peer.close();
+  await command.wait();
 });
 
 test("version and capabilities read the daemon's records", async () => {

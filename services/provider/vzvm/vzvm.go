@@ -24,7 +24,7 @@ import (
 // Name is the substrate, as the record and every refusal name it.
 const Name = "vz"
 
-// cmdline boots the guest onto the console and hands shard-init the vsock transport and the root disk.
+// cmdline boots the guest, hands shard-init the vsock transport and the root disk; the shim ends the VM when the kernel prints its panic banner on the console.
 const cmdline = "console=hvc0 -- -transport vsock -root /dev/vda"
 
 // MinMemoryMiB is the smallest --memory a guest boots with: the kernel and shard-init keep 32 MiB, and the bound needs room under that.

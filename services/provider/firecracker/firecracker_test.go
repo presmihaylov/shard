@@ -2600,6 +2600,119 @@ func TestAnAdoptFailsWhenTheLogCannotOpen(t *testing.T) {
 	}
 }
 
+// guestGone has a daemon restart find the vmm of spec answering and its guest out of reach, and returns the fresh provider and the vmm's pid.
+func (h *harness) guestGone(t *testing.T) (models.SandboxSpec, *firecracker.Provider, int) {
+	t.Helper()
+
+	spec, pid := h.runLong(t)
+	if err := h.provider.Close(); err != nil {
+		t.Fatal(err)
+	}
+	_, vsock := h.sockets(spec.ID)
+	if err := os.Rename(vsock, vsock+".off"); err != nil {
+		t.Fatal(err)
+	}
+
+	return spec, h.open(t), pid
+}
+
+// An adopt whose guest does not attach ends the vmm and puts why on file, so a start boots the sandbox again (SHARD-557).
+func TestAnAdoptWhoseGuestDoesNotAttachEndsTheVMM(t *testing.T) {
+	h := newHarness(t)
+	spec, p, pid := h.guestGone(t)
+
+	status, err := p.Status(t.Context(), spec.ID)
+	if err != nil || status.Alive() || !strings.Contains(status.SupervisorFailed, "its guest does not attach") {
+		t.Fatalf("Status over a guest that does not attach = %+v, %v, want it stopped with the reason", status, err)
+	}
+	awaitReaped(t, pid)
+	if _, err := os.Stat(h.jail(spec.ID)); !errors.Is(err, fs.ErrNotExist) {
+		t.Errorf("the jail of the vmm the adopt ended: %v, want it removed", err)
+	}
+	if err := p.Start(t.Context(), spec.ID); err != nil {
+		t.Fatalf("Start after the adopt ended the vmm: %v", err)
+	}
+	status, err = p.Status(t.Context(), spec.ID)
+	if err != nil || status.State != models.StateRunning || status.SupervisorFailed != "" {
+		t.Fatalf("Status after the start = %+v, %v, want it running with no failure", status, err)
+	}
+}
+
+// A rm over a restart that finds the guest out of reach ends the vmm and removes the sandbox (SHARD-557).
+func TestRemoveEndsAnAdoptedVMMWhoseGuestDoesNotAttach(t *testing.T) {
+	h := newHarness(t)
+	spec, p, pid := h.guestGone(t)
+
+	if err := p.Remove(t.Context(), spec.ID); err != nil {
+		t.Fatalf("Remove over a guest that does not attach: %v", err)
+	}
+	awaitReaped(t, pid)
+	if _, err := os.Stat(h.jail(spec.ID)); !errors.Is(err, fs.ErrNotExist) {
+		t.Errorf("the jail after the rm: %v, want it removed", err)
+	}
+}
+
+// The end of a vmm whose guest does not attach kills through the pin its attach took, so a process on its pid since is never hit (SHARD-557).
+func TestAnUnattachedVMMEndsThroughItsPinNotItsPid(t *testing.T) {
+	h := newHarness(t)
+	spec, p, pid := h.guestGone(t)
+	innocent := exec.Command("sleep", "60")
+	if err := innocent.Start(); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		if err := innocent.Process.Kill(); err != nil && !errors.Is(err, os.ErrProcessDone) {
+			t.Error(err)
+		}
+		var exit *exec.ExitError
+		if err := innocent.Wait(); err != nil && !errors.As(err, &exit) {
+			t.Error(err)
+		}
+	})
+
+	if err := p.EndUnattachedAs(t.Context(), spec.ID, innocent.Process.Pid); err != nil {
+		t.Fatalf("the end of a vmm whose guest does not attach: %v", err)
+	}
+	awaitReaped(t, pid)
+	if err := syscall.Kill(innocent.Process.Pid, 0); err != nil {
+		t.Fatalf("the process on the vmm's pid since was hit: %v", err)
+	}
+}
+
+// A status during a boot waits for it, so the guest gives its one control stream to one machine (SHARD-558).
+func TestAStatusDuringABootAttachesNoSecondMachine(t *testing.T) {
+	h := newHarness(t)
+	spec, _ := h.runLong(t)
+	if err := h.provider.Stop(t.Context(), spec.ID, stopGrace); err != nil {
+		t.Fatal(err)
+	}
+	watchControls(t, spec)
+
+	ctx, cancel := context.WithCancel(t.Context())
+	polled := make(chan error, 1)
+	go func() {
+		for ctx.Err() == nil {
+			if _, err := h.provider.Status(ctx, spec.ID); err != nil && ctx.Err() == nil {
+				polled <- err
+
+				return
+			}
+		}
+		polled <- nil
+	}()
+	err := h.provider.Start(t.Context(), spec.ID)
+	cancel()
+	if pollErr := <-polled; pollErr != nil {
+		t.Errorf("Status during the boot: %v", pollErr)
+	}
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := controls(t, spec.StateDir, "attach"); len(got) != 1 {
+		t.Fatalf("the guest took %d control streams over one boot and the statuses beside it, want 1", len(got))
+	}
+}
+
 // Daemon restarts and a dropped stream under an entrypoint that never stops writing lose no line of the log and repeat none.
 func TestTheLogKeepsEveryLineAcrossDaemonRestarts(t *testing.T) {
 	h := newHarness(t)

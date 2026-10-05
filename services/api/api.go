@@ -452,14 +452,14 @@ func (h *Handler) sandboxEgressLog(w http.ResponseWriter, r *http.Request) {
 // describeEgressLog names the three answers of sandboxEgressLog: the decisions, a line each with follow, or a message each over a WebSocket.
 func describeEgressLog(registry huma.Registry, op *huma.Operation) {
 	op.Responses["200"] = &huma.Response{
-		Description: "The egress decisions, oldest first; with follow one decision per line until the sandbox stops or is removed.",
+		Description: "The egress decisions, oldest first; with follow one decision per line until the sandbox stops, fails or is removed.",
 		Headers:     map[string]*huma.Header{EgressCutHeader: {Description: "The older decisions the read left out; absent when it left out none.", Schema: &huma.Schema{Type: huma.TypeInteger}}},
 		Content: map[string]*huma.MediaType{
 			"application/json":     {Schema: schemaOf[[]egress.Record](registry)},
 			"application/x-ndjson": {Schema: schemaOf[egress.Record](registry)},
 		},
 	}
-	op.Responses["101"] = upgrade("A WebSocket follow with follow=true: one egress decision per text message, until the sandbox stops or is removed.", nil)
+	op.Responses["101"] = upgrade("A WebSocket follow with follow=true: one egress decision per text message, until the sandbox stops, fails or is removed.", nil)
 }
 
 type grantInput struct {
@@ -553,30 +553,35 @@ func describeCreate(registry huma.Registry, op *huma.Operation) {
 // ScopesHeader carries the token's scopes from the TCP front to the daemon. The front stamps it on every request it forwards and strips any client copy; a request with no such header reached the socket directly.
 const ScopesHeader = "X-Shard-Scopes"
 
-// scopeError is a create that names a secret or a policy the token's scopes do not reach; classify maps it to 403.
+// scopeError maps an unauthorized named or copied grant to 403.
 type scopeError struct {
-	scope Scope
-	named string
+	scope  Scope
+	named  string
+	action string
 }
 
 func (e *scopeError) Error() string {
-	return fmt.Sprintf("the token does not carry the %q scope, which a create that names a %s needs", e.scope, e.named)
+	return fmt.Sprintf("the token does not carry the %q scope, which a %s a %s needs", e.scope, e.action, e.named)
 }
 
 func (e *scopeError) Public() string { return e.Error() }
 
 // checkCreateScopes refuses a create that names a secret or a policy the stamped scopes do not reach. No header means the request reached the daemon socket directly, which keeps every right.
 func checkCreateScopes(ctx context.Context, req sandbox.CreateRequest) error {
+	return checkGrantScopes(ctx, "create that names", req.Secrets, req.Policy)
+}
+
+func checkGrantScopes(ctx context.Context, action string, secrets []string, policy string) error {
 	scopes, stamped := ctx.Value(scopesKey{}).([]string)
 	if !stamped {
 		return nil
 	}
 
-	if len(req.Secrets) > 0 && !scopesCover(scopes, Secret) {
-		return &scopeError{scope: Secret, named: "secret"}
+	if len(secrets) > 0 && !scopesCover(scopes, Secret) {
+		return &scopeError{scope: Secret, named: "secret", action: action}
 	}
-	if req.Policy != "" && !scopesCover(scopes, Policy) {
-		return &scopeError{scope: Policy, named: "policy"}
+	if policy != "" && !scopesCover(scopes, Policy) {
+		return &scopeError{scope: Policy, named: "policy", action: action}
 	}
 
 	return nil
@@ -651,7 +656,10 @@ func (h *Handler) resumeSandbox(ctx context.Context, in *sandboxPath) (*reply[Sa
 }
 
 func (h *Handler) forkSandbox(ctx context.Context, in *sandboxBody[sandbox.CopyRequest]) (*reply[Sandbox], error) {
-	return publicReply(h.lifecycle.Fork(ctx, in.ID, value(in.Body)))
+	checked := sandbox.WithForkCheck(ctx, func(source models.Sandbox) error {
+		return checkGrantScopes(ctx, "fork that copies", source.Secrets, source.Policy)
+	})
+	return publicReply(h.lifecycle.Fork(checked, in.ID, value(in.Body)))
 }
 
 // classify maps what a typed error refused to the status and the code that say so; anything untyped broke.

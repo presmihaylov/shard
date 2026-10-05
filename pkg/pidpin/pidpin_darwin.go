@@ -40,6 +40,9 @@ const (
 // pidVersion is the audit token word that tells two holders of one pid apart.
 const pidVersion = 7
 
+// inExit is P_WEXIT in sys/proc.h: the process began its exit, which no signal stops.
+const inExit = 0x2000
+
 // handle is the audit token: the kernel signals through it only while its pid version matches the process on the pid.
 type handle struct {
 	token [8]uint32
@@ -48,7 +51,7 @@ type handle struct {
 func open(pid int) (handle, error) {
 	var token C.audit_token_t
 	if kr := C.token_of(C.int(pid), &token); kr != C.KERN_SUCCESS {
-		// task_name_for_pid fails alike for a pid nobody holds and for a zombie, which no signal reaches either.
+		// task_name_for_pid fails alike for a pid nobody holds, a process in its exit and a zombie, which no signal stops.
 		if exited(pid) {
 			return handle{}, syscall.ESRCH
 		}
@@ -62,11 +65,11 @@ func open(pid int) (handle, error) {
 	return h, nil
 }
 
-// exited says no live process holds pid: none does, or a zombie does.
+// exited says no live process holds pid: none does, or one in its exit or a zombie does (SHARD-530).
 func exited(pid int) bool {
 	procs, err := unix.SysctlKinfoProcSlice("kern.proc.pid", pid)
 
-	return err == nil && (len(procs) == 0 || procs[0].Proc.P_stat == zombie)
+	return err == nil && (len(procs) == 0 || procs[0].Proc.P_stat == zombie || procs[0].Proc.P_flag&inExit != 0)
 }
 
 // leaving says the process on pid has begun its exit, whose task refuses a token before it turns zombie.

@@ -524,7 +524,7 @@ func (h *Handler) followLogsPlain(w http.ResponseWriter, r *http.Request, id str
 	}
 }
 
-// followEgressLog streams one decision per message, or per line without the handshake, until the sandbox stops or is removed.
+// followEgressLog streams decisions until the sandbox stops, fails or is removed.
 func (h *Handler) followEgressLog(w http.ResponseWriter, r *http.Request, sb models.Sandbox) {
 	if !isHandshake(r) {
 		h.followEgressLogPlain(w, r, sb)
@@ -561,6 +561,8 @@ func (h *Handler) followEgressLog(w http.ResponseWriter, r *http.Request, sb mod
 	// Each end of the record is said in its sentinel's own words, which no wrapper on the way can add a host detail to.
 	case errors.Is(err, errStopped):
 		f.close(websocket.StatusNormalClosure, errStopped.Error())
+	case errors.Is(err, errFailed):
+		f.close(websocket.StatusNormalClosure, errFailed.Error())
 	case errors.Is(err, egress.ErrSandboxGone):
 		f.close(websocket.StatusNormalClosure, egress.ErrSandboxGone.Error())
 	case f.ctx.Err() != nil:
@@ -599,8 +601,8 @@ func (h *Handler) followEgressLogPlain(w http.ResponseWriter, r *http.Request, s
 
 	err = endOf(ctx, err)
 
-	// A stop, a rm or a client that hung up ends the body, and none of them is a failure.
-	if errors.Is(err, errStopped) || errors.Is(err, egress.ErrSandboxGone) || r.Context().Err() != nil {
+	// A terminal sandbox or a client that hung up has no more records to wait for.
+	if errors.Is(err, errStopped) || errors.Is(err, errFailed) || errors.Is(err, egress.ErrSandboxGone) || r.Context().Err() != nil {
 		err = nil
 	}
 	if err != nil {
@@ -611,10 +613,13 @@ func (h *Handler) followEgressLogPlain(w http.ResponseWriter, r *http.Request, s
 // errStopped ends an egress follow: a stopped sandbox makes no more decisions, so there is nothing left to follow.
 var errStopped = errors.New("the sandbox stopped")
 
+// A failed sandbox cannot run again, so its log will never gain another decision.
+var errFailed = errors.New("the sandbox failed")
+
 // stopPoll is how often an egress follow asks the record whether the sandbox stopped.
 const stopPoll = 500 * time.Millisecond
 
-// untilStopped ends the context once the record says stopped or is gone, since the egress log outlives both.
+// untilStopped watches the record because the egress log outlives a stopped, failed or removed sandbox.
 func (h *Handler) untilStopped(parent context.Context, id string) (context.Context, func()) {
 	ctx, cancel := context.WithCancelCause(parent)
 
@@ -634,6 +639,8 @@ func (h *Handler) untilStopped(parent context.Context, id string) (context.Conte
 				cancel(fmt.Errorf("ask whether sandbox %s stopped: %w", id, err))
 			case sb.State == models.StateStopped:
 				cancel(errStopped)
+			case sb.State == models.StateFailed:
+				cancel(errFailed)
 			}
 		}
 	}()

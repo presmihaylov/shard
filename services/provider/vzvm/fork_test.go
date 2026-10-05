@@ -398,7 +398,7 @@ func forkInBackground(t *testing.T, h *harness, source string) <-chan error {
 	return forked
 }
 
-// requireHeld proves a source a fork holds reads running at once, and refuses an exec by the fork's name.
+// requireHeld proves a source a fork holds reads running at once, and refuses an exec, a signal and an app stop by the fork's name.
 func requireHeld(t *testing.T, h *harness, id string, pid int, window string) {
 	t.Helper()
 	began := time.Now()
@@ -410,6 +410,24 @@ func requireHeld(t *testing.T, h *harness, id string, pid int, window string) {
 	want := fmt.Sprintf("sandbox %s could not run the command: a fork holds the sandbox frozen, and nothing starts in it until that ends: run the command again", id)
 	if err == nil || err.Error() != want {
 		t.Fatalf("Exec on the source in %s = %v, want %q", window, err, want)
+	}
+	requireSendsRefused(t, h.provider, id, "fork", window)
+}
+
+// requireSendsRefused proves a signal and an app stop are refused at once by the name of the verb that holds the sandbox (SHARD-580).
+func requireSendsRefused(t *testing.T, p models.Provider, id, verb, window string) {
+	t.Helper()
+	ctx, cancel := context.WithTimeout(t.Context(), time.Second)
+	defer cancel()
+	err := p.Signal(ctx, id, 1, "TERM")
+	want := fmt.Sprintf("sandbox %s: a %s holds the sandbox frozen, so the signal was not sent: send it again once that ends", id, verb)
+	if err == nil || err.Error() != want {
+		t.Fatalf("Signal in %s = %v, want %q", window, err, want)
+	}
+	err = p.StopApp(ctx, id, false)
+	want = fmt.Sprintf("sandbox %s: a %s holds the sandbox frozen, so the app stop was not sent: send it again once that ends", id, verb)
+	if err == nil || err.Error() != want {
+		t.Fatalf("StopApp in %s = %v, want %q", window, err, want)
 	}
 }
 

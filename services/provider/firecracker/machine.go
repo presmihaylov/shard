@@ -165,7 +165,11 @@ func (p *Provider) lookup(ctx context.Context, id, dir string, r record) (*machi
 		}
 	}
 
-	m, err = p.attach(ctx, id, dir, r.Jail, client, info)
+	m, err = p.attach(ctx, id, dir, r.Jail, client, info, adoptBound)
+	// Every later lookup would fail on the same guest, stop and rm with it, so the vmm ends here (SHARD-557).
+	if m != nil && err != nil {
+		return nil, p.endUnattached(ctx, m, err)
+	}
 	if err != nil || m == nil {
 		return m, err
 	}
@@ -224,17 +228,51 @@ func (p *Provider) endJudged(id string, client *fcapi.Client, pid int, jail stri
 		return fmt.Errorf("sandbox %s: end the vmm a read judged: %w", id, err)
 	}
 
-	if err := awaitEnded(&machine{id: id, client: client, pid: pid}); err != nil {
+	return clearJail(&machine{id: id, jail: jail, client: client, pid: pid})
+}
+
+// clearJail waits out a vmm just killed and removes its jail.
+func clearJail(m *machine) error {
+	if err := awaitEnded(m); err != nil {
 		return err
 	}
 	// A vmm a spawn began since answers from the same jail, which is then its own.
 	probe, cancel := context.WithTimeout(context.Background(), probeFloor)
 	defer cancel()
-	if _, err := client.State(probe); !absent(err) {
+	if _, err := m.client.State(probe); !absent(err) {
 		return nil
 	}
 
-	return removeJail(jail)
+	return removeJail(m.jail)
+}
+
+// endUnattached ends an adopted vmm whose guest does not attach and puts why on file, so the sandbox reads stopped with its reason.
+func (p *Provider) endUnattached(ctx context.Context, m *machine, cause error) error {
+	// A lookup cut short may be what failed the attach, so its guest is not judged.
+	if ctx.Err() != nil {
+		return errors.Join(cause, m.close())
+	}
+	// One this process spawns, or holds since, is left to it.
+	if p.spared(m.id) {
+		return m.close()
+	}
+	// The pin holds the vmm the attach judged, so the kill never reaches a process on its pid since (SHARD-557).
+	killed := m.pinned.Kill()
+	if err := errors.Join(killed, m.close()); err != nil {
+		return errors.Join(cause, fmt.Errorf("sandbox %s: end the vmm whose guest does not attach: %w", m.id, err))
+	}
+	if err := clearJail(m); err != nil {
+		return errors.Join(cause, err)
+	}
+	// A boot failure put its own reason and exit on file.
+	if errors.Is(cause, errBootFailed) {
+		return nil
+	}
+	if err := os.WriteFile(filepath.Join(m.dir, supervisorFailedFile), []byte(supervisor.OneLine(cause.Error())), 0o600); err != nil {
+		return fmt.Errorf("sandbox %s: record why its vmm ended: %w", m.id, err)
+	}
+
+	return nil
 }
 
 // unanswered keeps a vmm an adopt found silent, by the pin on the peer that took its dial, so each later lookup waits on its one request.
@@ -485,6 +523,12 @@ func (p *Provider) spawn(id string) (done func()) {
 
 // boot starts a vmm for the sandbox over its image and its own overlay, and attaches to the guest once it answers.
 func (p *Provider) boot(ctx context.Context, id, dir string, r record) (*machine, error) {
+	// A lookup beside the boot waits for its machine, and never attaches a second one the guest's one control stream flips between (SHARD-558).
+	release, err := p.claim(ctx, id)
+	if err != nil {
+		return nil, err
+	}
+	defer release()
 	// The next run must not answer a wait, or a restart count, with what the last one left.
 	for _, stale := range []string{exitFile, restartsFile, oomFile, supervisorFailedFile, cursorFile} {
 		if err := os.Remove(filepath.Join(dir, stale)); err != nil && !errors.Is(err, fs.ErrNotExist) {
@@ -530,7 +574,11 @@ func (p *Provider) boot(ctx context.Context, id, dir string, r record) (*machine
 
 // up attaches to a vmm this provider just spawned, and ends it when there is no guest to attach to.
 func (p *Provider) up(ctx context.Context, id, dir, jail string, client *fcapi.Client, info fcapi.Info) (*machine, error) {
-	m, err := p.attach(ctx, id, dir, jail, client, info)
+	m, err := p.attach(ctx, id, dir, jail, client, info, startGrace)
+	// The kill below goes by the socket, so the pin a failed guest hands back only needs letting go.
+	if m != nil && err != nil {
+		err = errors.Join(err, m.close())
+	}
 	if err != nil {
 		// A vmm the kill did not end keeps its jail, so a later lookup can still find it and end it.
 		if endErr := endVMM(id, client); endErr != nil {
@@ -587,8 +635,23 @@ func (m *machine) readdress(ctx context.Context, r record) error {
 	return nil
 }
 
-// attach opens the control connection to the guest and follows its events and its logs.
-func (p *Provider) attach(ctx context.Context, id, dir, jail string, client *fcapi.Client, info fcapi.Info) (*machine, error) {
+// unattached lets go of the stream of a guest that failed its attach, and keeps the pin for the caller to close.
+func (m *machine) unattached(cause error) (*machine, error) {
+	if control := m.control.Swap(nil); control != nil {
+		return m, errors.Join(cause, closeControl(control))
+	}
+
+	return m, cause
+}
+
+// errNoGuest marks an attach the guest itself failed, which no later attach to the same vmm gets past.
+var errNoGuest = errors.New("its guest does not attach")
+
+// errBootFailed marks a guest whose shard-init died at boot, with its death on file.
+var errBootFailed = errors.New("shard-init failed at boot")
+
+// attach opens the control connection to the guest within grace, and follows its events and its logs; a guest that fails it hands back the machine, its pin still held.
+func (p *Provider) attach(ctx context.Context, id, dir, jail string, client *fcapi.Client, info fcapi.Info, grace time.Duration) (*machine, error) {
 	// The pin is taken while the vmm answers, so a stop after a later freeze kills this vmm alone (SHARD-439).
 	answered, pin, err := client.StatePinned(ctx)
 	if err != nil {
@@ -602,23 +665,23 @@ func (p *Provider) attach(ctx context.Context, id, dir, jail string, client *fca
 		return nil, errors.Join(fmt.Errorf("sandbox %s: its socket answers for pid %d, not its vmm %d", id, answered.PID, info.PID), m.close())
 	}
 
-	connectCtx, cancel := context.WithTimeout(ctx, startGrace)
+	connectCtx, cancel := context.WithTimeout(ctx, grace)
 	defer cancel()
 	control, err := supervisor.Connect(connectCtx, m.dial)
 	if err != nil {
-		return nil, errors.Join(fmt.Errorf("sandbox %s: %w", id, err), m.close())
+		return m.unattached(fmt.Errorf("sandbox %s: %w: %w", id, errNoGuest, err))
 	}
 	m.control.Store(control)
 
 	state, err := control.Next()
 	if err != nil {
-		return nil, errors.Join(fmt.Errorf("sandbox %s: read the supervisor state: %w", id, err), m.close())
+		return m.unattached(fmt.Errorf("sandbox %s: %w: read the supervisor state: %w", id, errNoGuest, err))
 	}
 	if state.Kind == supervisor.KindSupervisorFailed {
-		return nil, errors.Join(m.failedAtBoot(state), m.close())
+		return m.unattached(m.failedAtBoot(state))
 	}
 	if state.Kind != supervisor.KindState {
-		return nil, errors.Join(fmt.Errorf("sandbox %s: the supervisor opened with a %q message, not its state", id, state.Kind), m.close())
+		return m.unattached(fmt.Errorf("sandbox %s: %w: the supervisor opened with a %q message, not its state", id, errNoGuest, state.Kind))
 	}
 	m.freezesOverlay = state.FreezesOverlay
 	// The guest answered, so a fork's restore resumed; clear its marker, or a later pause would read as a cut fork (SHARD-321).
@@ -643,7 +706,7 @@ func (p *Provider) attach(ctx context.Context, id, dir, jail string, client *fca
 	// The guest holds the entrypoint's output until a logs connection is open, so it is open before any run.
 	logs, err := m.dial(ctx, supervisor.LogsPort)
 	if err != nil {
-		return nil, errors.Join(fmt.Errorf("sandbox %s: open the logs connection: %w", id, err), m.close())
+		return m.unattached(fmt.Errorf("sandbox %s: %w: open the logs connection: %w", id, errNoGuest, err))
 	}
 	out, err := os.OpenFile(filepath.Join(dir, logFile), os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o600)
 	if err != nil {
@@ -754,7 +817,7 @@ func (m *machine) failedAtBoot(event supervisor.Message) error {
 		return fmt.Errorf("sandbox %s: %w", m.id, err)
 	}
 
-	return fmt.Errorf("sandbox %s: shard-init failed at boot with exit %d: %s", m.id, event.Exit.Code, supervisor.OneLine(event.Error))
+	return fmt.Errorf("sandbox %s: %w with exit %d: %s", m.id, errBootFailed, event.Exit.Code, supervisor.OneLine(event.Error))
 }
 
 // reconnect dials the control stream again after dropped ends, for as long as the vmm runs the VM: a lost stream is not a dead guest.
@@ -920,8 +983,8 @@ func (p *Provider) followLogs(ctx context.Context, m *machine, logs net.Conn, ou
 
 			return
 		}
+		// Log and continue, ruled by @shard (SHARD-561): the loop redials after pollInterval, and EOF is the guest powering off.
 		if err != nil && !errors.Is(err, io.EOF) {
-			// The guest ends the connection when it powers off, which is the normal end of a log.
 			fmt.Fprintf(os.Stderr, "firecracker: sandbox %s: %v\n", m.id, err)
 		}
 		if !m.alive() {
