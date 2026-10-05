@@ -135,7 +135,7 @@ Flags precede the image or sandbox name; the command follows it. `--memory` and 
 sizes such as `512MiB` or `2GiB`; `--vcpus` takes a whole number. Secret destinations use
 `--destination` or its alias `--dest`. Grant secrets only to destinations that never return
 the credential in a response. See [the CLI reference](docs/cli.md),
-[the lifecycle](https://useshards.com/docs/concepts/lifecycle/), [secrets](docs/secrets.md), and [egress](docs/egress.md).
+[the lifecycle](docs/state-machine.md), [secrets](docs/secrets.md), and [egress](docs/egress.md).
 
 ## API and SDKs
 
@@ -159,7 +159,7 @@ are in those directories, and [the release guide](docs/release.md) says how an S
 - [Daemon, REST API, and remote access](docs/daemon.md)
 - [Provider capabilities and limits](docs/provider.md)
 - [Mac setup](docs/mac.md) and [the Mac provider](docs/provider-vz.md)
-- [Lifecycle](https://useshards.com/docs/concepts/lifecycle/), [files](docs/files.md), [secrets](docs/secrets.md), and [egress](docs/egress.md)
+- [Lifecycle](docs/state-machine.md), [files](docs/files.md), [secrets](docs/secrets.md), and [egress](docs/egress.md)
 
 ## Status and contributions
 
