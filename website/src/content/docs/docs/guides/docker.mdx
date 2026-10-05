@@ -81,7 +81,7 @@ On a Linux host without `/dev/kvm`, Sysbox is the provider for Docker. Setup ins
 shard setup --local --provider sysbox --start-at-boot=true -y
 ```
 
-Setup never recommends Sysbox, and a daemon started without `--provider` never picks it. You have to name it. Sysbox needs an x86_64 Linux host, root, and a kernel that Sysbox supports. There is no fallback to another provider.
+Setup never recommends Sysbox. A daemon started without `--provider` keeps Sysbox only for a data directory that already holds Sysbox sandboxes, so name it the first time. Sysbox needs an x86_64 Linux host, root, and a kernel that Sysbox supports. There is no fallback to another provider.
 
 ## Why dockerd is the command
 
