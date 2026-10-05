@@ -949,6 +949,15 @@ func orList(words []string) string {
 	return strings.Join(words[:len(words)-1], ", ") + " or " + words[len(words)-1]
 }
 
+// andList joins words as a sentence does: a, b and c.
+func andList(words []string) string {
+	if len(words) < 2 {
+		return strings.Join(words, "")
+	}
+
+	return strings.Join(words[:len(words)-1], ", ") + " and " + words[len(words)-1]
+}
+
 // seconds spells a count of seconds the way a duration flag takes it.
 func seconds(n int) string { return short(time.Duration(n) * time.Second) }
 

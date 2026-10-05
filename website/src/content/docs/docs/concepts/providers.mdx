@@ -1,0 +1,152 @@
+---
+title: Providers and capabilities
+description: What a provider is, how a host picks one, and which lifecycle commands each provider supports.
+sidebar:
+  order: 2
+---
+
+import { Tabs, TabItem } from '@astrojs/starlight/components';
+
+Ask a server which lifecycle commands it supports:
+
+<Tabs syncKey="lang">
+	<TabItem label="CLI">
+
+```sh
+shard capabilities
+```
+
+	</TabItem>
+	<TabItem label="TypeScript">
+
+```ts
+import { Shard } from "useshards";
+
+const shard = new Shard();
+try {
+  const caps = await shard.capabilities();
+  console.log(caps.pause, caps.resume, caps.fork);
+} finally {
+  shard.close();
+}
+```
+
+	</TabItem>
+	<TabItem label="Python">
+
+```python
+from useshards import Shard
+
+with Shard() as shard:
+    caps = shard.capabilities()
+    print(caps.pause, caps.resume, caps.fork)
+```
+
+	</TabItem>
+</Tabs>
+
+The TypeScript and Python examples reach `shard serve` at the address in `SHARD_REMOTE`, with the API key in `SHARD_API_KEY`.
+
+On a server that runs Sysbox or runc, the CLI prints:
+
+```text
+CAPABILITY   SUPPORTED
+create       true
+start        true
+stop         true
+remove       true
+pause        false
+resume       false
+fork         false
+snapshot     true
+```
+
+The answer depends only on the server's provider. Your API key's scopes and the state of your sandboxes do not affect it. `shard capabilities --format json` prints the same eight keys as JSON.
+
+## What a provider is
+
+A provider is the mechanism that runs and isolates each sandbox. shard has five:
+
+| Provider | Each sandbox is | Host |
+| --- | --- | --- |
+| `gvisor` | a container behind gVisor, a kernel that runs in user space | Linux |
+| `firecracker` | a microVM | Linux with `/dev/kvm` |
+| `vz` | a virtual machine on Apple's Virtualization framework | Apple silicon Mac, macOS 14 or later |
+| `sysbox` | a Linux container with its own user namespace | Linux, one tenant per host |
+| `runc` | a plain Linux container on the host kernel, with no isolation | Linux, trusted code only |
+
+A daemon runs one provider, and every sandbox on that host runs on it. Each sandbox record names the provider that created it. A data directory that already holds records refuses any other provider, because that provider cannot read those sandboxes.
+
+To compare the providers for your workload, see [the provider matrix](https://github.com/presmihaylov/shard/blob/main/docs/provider.md#the-substrates).
+
+## How a host picks its provider
+
+`shard setup` asks which provider to use, and on Linux the service it installs starts the daemon with `--provider`. A daemon started without `--provider` picks one itself. It looks at the data directory first and at the host second:
+
+| The data directory and the host | Provider | Reason |
+| --- | --- | --- |
+| holds records | the one that made them | `it made the records under <root>` |
+| empty, beside a `<root>.xfs` image | `firecracker` | `it made the data image <root>.xfs` |
+| empty, on Linux, `/dev/kvm` opens | `firecracker` | `/dev/kvm opens` |
+| empty, on Linux, no `/dev/kvm` | `gvisor` | `no /dev/kvm` |
+| empty, on Linux, `/dev/kvm` does not open | `gvisor` | `/dev/kvm does not open: <error>` |
+| empty, on macOS | `vz` | `macOS runs virtual machines through Virtualization.framework` |
+
+The daemon never chooses Sysbox or runc for you. It runs one of them only when `--provider` names it, or when the data directory already holds records that this provider made.
+
+`shard info` prints the provider and the reason. It does not need a running daemon, so it shows what a daemon started now without `--provider` would run:
+
+```text
+$ shard info
+FIELD      VALUE
+provider   firecracker
+reason     /dev/kvm opens
+```
+
+`shard daemon status` shows the provider of the daemon that is already running. The two differ when that daemon was started with `--provider`. Both commands run only on the server.
+
+## The eight capabilities
+
+Every provider supports `create`, `start`, `stop`, `remove` and `snapshot`, as well as `exec`, `logs` and `inspect`. Three commands, `pause`, `resume` and `fork`, are optional, because the provider has to save a running sandbox's memory to support them.
+
+| Command | gVisor | Firecracker | vz | Sysbox | runc |
+| --- | --- | --- | --- | --- | --- |
+| `create`, `start`, `stop`, `remove`, `snapshot` | yes | yes | yes | yes | yes |
+| `pause`, `resume`, `fork` | yes | yes | yes | no | no |
+
+Sysbox supports none of the three, because `sysbox-runc` has no checkpoint support. shard does not drive a checkpoint on runc either. On `vz`, all three need macOS 14 or later on Apple silicon, and a daemon on an older Mac refuses them.
+
+`snapshot` works on every provider, because it copies the files of a stopped sandbox and does not need its memory.
+
+## Refuse, never downgrade
+
+A command that the provider does not support fails immediately, with an error that names the provider and the command:
+
+```text
+shard: provider sysbox does not support pause on this host; use a server that supports pause
+```
+
+The API answers with status `409` and the code `unsupported`. The TypeScript and Python SDKs throw `UnsupportedError`.
+
+shard never falls back to a weaker mechanism. A `pause` on Sysbox fails instead of stopping the sandbox, and the sandbox keeps running. The daemon checks the capability before it touches the sandbox, so a refused command leaves the sandbox as it was.
+
+Check `shard capabilities` before you build on `pause`, `resume` or `fork`.
+
+## Resource bounds by provider
+
+`--memory`, `--vcpus` and `--disk` bound a sandbox on every provider, but what each bound does depends on the provider:
+
+| Bound | gVisor | Firecracker | vz | Sysbox and runc |
+| --- | --- | --- | --- | --- |
+| `--memory` | optional, at least 64 MiB | required, at least 128 MiB | required, at least 128 MiB | optional |
+| `--vcpus` | a CPU time quota | virtual CPUs, at most 32 | virtual CPUs | a CPU time quota |
+| `--disk` | default 10 GiB | default 10 GiB | default 10 GiB | default 10 GiB |
+| Processes | at most 4096 | no bound | no bound | at most 4096 |
+
+**Memory.** When a sandbox goes past its memory bound, the whole sandbox ends, not just one process in it. It becomes `stopped` with the reason `ran out of memory and the host ended it`. On gVisor, the sandbox slows down when it reaches the bound and ends only once it is a little above it. `create` refuses a bound above the host's total memory.
+
+**CPU.** `--vcpus` accepts a non-negative whole number. On gVisor, Sysbox and runc, `0` sets no CPU-time quota. On Firecracker and `vz`, `0` gives the VM as many CPUs as the host and provider allow; Firecracker uses at most 32, and `vz` follows Virtualization.framework's range. Firecracker refuses a count above 32, and `vz` refuses a count outside its allowed range.
+
+**Disk.** The bound covers everything the sandbox writes. A write past it fails with `ENOSPC`, but the sandbox keeps running. `--disk 0` means the default size. The disk is sparse, so an unused sandbox takes no space on the host.
+
+**Processes.** On gVisor, Sysbox and runc, a sandbox can hold at most 4096 processes, and this limit is fixed. In a Firecracker or vz sandbox, processes run inside the virtual machine, so a fork bomb stays inside it and hits the virtual machine's memory.

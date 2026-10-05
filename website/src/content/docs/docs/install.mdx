@@ -1,26 +1,50 @@
 ---
 title: Install
-description: Install the Shard CLI with one command, on Linux or macOS.
+description: Install the shard CLI with one command on Linux or macOS, and the TypeScript and Python SDKs from npm and PyPI.
 ---
 
-Install the Shard CLI with one command:
+import { TabItem, Tabs } from '@astrojs/starlight/components';
+
+Install the shard CLI with one command, or add an SDK to your project:
+
+<Tabs syncKey="lang">
+<TabItem label="CLI">
 
 ```sh
 curl -fsSL https://useshards.com/install | sh
 ```
 
-The installer puts the CLI at `~/.local/bin/shard`. It needs no root and changes nothing else on the machine. When a terminal is attached, it then offers to start `shard setup`, which sets up this machine as a sandbox host or connects it to a remote Shard server.
+</TabItem>
+<TabItem label="TypeScript">
+
+```sh
+npm install useshards
+```
+
+</TabItem>
+<TabItem label="Python">
+
+```sh
+pip install useshards
+```
+
+</TabItem>
+</Tabs>
+
+The installer puts the CLI at `~/.local/bin/shard`. The installer itself needs no root and changes nothing else on the machine. If a terminal is attached, it then offers to start `shard setup`. Setup is the step that changes the machine: it turns this machine into a sandbox host or connects it to a remote shard server.
+
+The TypeScript SDK needs Node.js 20.3 or later, and the Python SDK needs Python 3.11 or later. Both talk to a host through `shard serve`.
 
 ## What the installer does
 
 1. Detects the operating system and the CPU architecture.
-2. Asks the GitHub releases API for the newest stable Shard release, a `vX.Y.Z` tag that is neither a draft nor a prerelease, and prints that version.
-3. Downloads the binary for this platform and the release's `SHA256SUMS` from that one release, into a temporary directory.
-4. Verifies the binary's checksum, and refuses to install on a mismatch.
+2. Asks the GitHub releases API for the newest stable shard release, a `vX.Y.Z` tag that is neither a draft nor a prerelease, and prints that version.
+3. Downloads this platform's binary and the release's `SHA256SUMS` from that same release into a temporary directory.
+4. Verifies the binary's checksum, and stops if it does not match.
 5. Checks that the new binary reports the expected version, then moves it over `~/.local/bin/shard`.
-6. Prints the install path and, when `~/.local/bin` is not on `PATH`, the line that adds it for new shells and the `export` that adds it to the current one.
+6. Prints the install path and, if `~/.local/bin` is not on `PATH`, the line that adds it for new shells and the `export` that adds it to the current one. Under fish, it prints one `fish_add_path` line instead.
 
-An existing `shard` stays in place until the new binary is downloaded and verified. On a failure or an interrupt, the installer removes its temporary files and leaves the old binary as it was.
+An existing `shard` stays in place until the installer has downloaded and verified the new binary. On a failure or an interrupt, the installer removes its temporary files and leaves the old binary as it was.
 
 ## Supported platforms
 
@@ -30,7 +54,7 @@ An existing `shard` stays in place until the new binary is downloaded and verifi
 | macOS, Apple silicon | Yes | Yes |
 | macOS, Intel | No | Yes |
 
-On another CPU architecture, the installer stops with an error that lists the builds the release has. On another operating system, it stops with an error that names the system. On Windows, run it inside WSL 2. Under Rosetta, an Apple silicon Mac gets the native arm64 build.
+A Mac needs macOS 14 or later to host sandboxes. On another CPU architecture, the installer stops with an error that lists the builds in the release. On another operating system, it stops with an error that names the system. On Windows, run it inside WSL 2. Under Rosetta, an Apple silicon Mac gets the native arm64 build.
 
 ## Set up later
 
@@ -51,12 +75,28 @@ For automated setup:
 | Code | When |
 | --- | --- |
 | 0 | Setup finished, or there was nothing to do |
-| 1 | A check or a step failed, an option was refused, or the confirmation was declined |
-| 130 | Ctrl+C left setup; the steps done so far stay in place |
+| 1 | A check or a step failed, setup refused an option, or you declined the confirmation |
+| 130 | You left setup with Ctrl+C. The steps done so far stay in place |
 
 ## Upgrade
 
-Run the same command again. The installer resolves the newest release each time and replaces the binary in place.
+On a machine that only connects to a remote server, run the installer again. It finds the newest release each time and replaces `~/.local/bin/shard` in place.
+
+On a sandbox host, run `shard setup`, choose **Run sandboxes on this machine**, then **Upgrade Shard**. The daemon runs the copy that setup installed in `/usr/local/bin`, so the installer alone does not upgrade it. Setup downloads and verifies the new release before it replaces anything. It replaces `/usr/local/bin/shard`, `/usr/local/bin/shard-init` on Linux, and the `shard` you ran it from, and keeps the provider. If the installed version is already the newest, setup says so and changes nothing.
+
+Setup tells you before it restarts the daemon. A running background service restarts on the new version, and the upgrade waits until the daemon answers. Your sandboxes keep running while the daemon restarts. Open `shard exec` sessions disconnect, and their commands keep running. If you start the daemon yourself, restart `shard daemon` after the upgrade.
+
+## Uninstall
+
+On a sandbox host, remove your sandboxes first. Then run `shard setup`, choose **Run sandboxes on this machine**, then **Uninstall Shard**. If any sandbox is left, uninstall refuses and prints the commands that list and remove sandboxes.
+
+Uninstall stops and removes the background service, removes the files that setup installed, and on Linux removes the network bridge and firewall tables when the bridge has no port and nothing listens on the proxy ports. Your data in `/var/lib/shard` stays, and so do tools that other software may also use. The closing note names what stays, and the command that removes each of these: on Linux the `/var/lib/shard.xfs` disk image and its `/etc/fstab` line, on a Mac the daemon logs in `/var/log/shard`, each shared tool that setup installed, and every `shard` command that is left. Uninstall never turns IP forwarding off. On Linux, if the bridge stays, the note says so. Otherwise, if forwarding is on, the note prints the command that turns it off.
+
+On a machine that only connects to a remote server, run `shard setup`, choose **Connect to a remote server**, then **Remove this connection**. Then remove the CLI:
+
+```sh
+rm ~/.local/bin/shard
+```
 
 ## Output
 
@@ -64,4 +104,4 @@ The banner uses color when standard output is a terminal. Set `NO_COLOR` to turn
 
 ## Troubleshooting
 
-The installer makes one unauthenticated call to the GitHub API, which allows 60 calls an hour for each IP address. When that limit is spent, the installer stops with an error that says so. Run it again an hour later. It never falls back to a fixed version.
+The installer makes one unauthenticated call to the GitHub API, which allows 60 calls an hour for each IP address. When you reach that limit, the installer stops with an error that says so. Run it again an hour later. The installer never falls back to a fixed version.

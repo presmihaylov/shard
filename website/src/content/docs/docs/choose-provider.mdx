@@ -1,0 +1,77 @@
+---
+title: What provider should I pick?
+description: Pick the isolation technology for a shard daemon, from Firecracker, gVisor, vz, Sysbox and runc.
+---
+
+Run `shard info` on the machine that will be your sandbox host. It prints the provider that a daemon on this host uses by default, and the reason:
+
+```sh
+shard info
+```
+
+```text
+FIELD      VALUE
+provider   firecracker
+reason     /dev/kvm opens
+```
+
+`shard info` inspects the host, not the daemon, so it works before setup. On a Linux host that is already set up, run it with `sudo`, because `/var/lib/shard` belongs to root and other users cannot read it.
+
+`shard setup` asks which provider to use, and the cursor starts on the one it recommends. To skip the question, pass the provider:
+
+```sh
+shard setup --local --provider gvisor --start-at-boot=true -y
+```
+
+## The short answer
+
+| Your host | Pick |
+| --- | --- |
+| Linux, and `/dev/kvm` opens | `firecracker` |
+| Linux without `/dev/kvm` | `gvisor` |
+| An Apple silicon Mac with macOS 14 or later | `vz` |
+| Linux, one tenant, and the workload runs Docker inside the sandbox | `sysbox` |
+| Linux, one tenant, and you trust the code | `runc` |
+
+Setup recommends the first of `vz`, `firecracker` and `gvisor` that runs on the host. It never recommends `sysbox` or `runc`. A daemon started with no `--provider` picks either of them only when that provider made the sandboxes already under its root.
+
+## Compare the providers
+
+| | `firecracker` | `gvisor` | `vz` | `sysbox` | `runc` |
+| --- | --- | --- | --- | --- | --- |
+| Isolation | A microVM per sandbox | A user-space kernel, `runsc` | A VM per sandbox, through Virtualization.framework | `sysbox-runc`, with a user namespace and virtualized `/proc` and `/sys` | The host kernel, with no user namespace |
+| Host | Linux x86_64 with `/dev/kvm` | Linux x86_64 | Apple silicon, macOS 14 or later | Linux x86_64 | Linux x86_64 |
+| File-heavy work (`npm install`, `git clone`) | Near native | Slower | Near native | Near native | Near native |
+| Docker inside | Yes | No | Yes | Yes | No |
+| Tenants on one host | Many | Many | Many | One | One, and only code you trust |
+| `pause`, `resume`, `fork` | Yes | Yes | Yes | No | No |
+
+A verb that the provider does not support fails with an error that names the provider and the verb, for example `provider sysbox does not support pause on this host; use a server that supports pause`. shard never falls back to a weaker mechanism. `shard capabilities` lists all eight verbs and says whether the provider of the server you are connected to supports each one.
+
+## What setup installs
+
+Setup installs what the provider needs, unless the host already has it where the root daemon looks:
+
+| Provider | Setup installs |
+| --- | --- |
+| `firecracker` | `firecracker` and `jailer` from a pinned release, `erofs-utils` and `xfsprogs` |
+| `gvisor` | `runsc` from a pinned gVisor release |
+| `sysbox` | The Sysbox CE package from a pinned release |
+| `runc` | The `runc` package, and `apparmor` when the kernel enforces AppArmor |
+| `vz` | Nothing. It uses `codesign`, which ships with macOS. |
+
+Every Linux provider also needs `iproute2`, `nftables` and `e2fsprogs`. Setup installs packages with `apt-get`. On a host without it, setup stops and names the tools to install. Setup checks the sha256 of every pinned download before it installs it. It keeps an installed `firecracker` of 1.13.0 or newer, and refuses an older one.
+
+Firecracker and `vz` also download a guest kernel. Firecracker needs `/var/lib/shard` on XFS or Btrfs. On another filesystem it needs 20 GiB free for an XFS image, which it mounts over `/var/lib/shard`, so that directory must be empty.
+
+## Sysbox and runc share more with the host
+
+Sysbox CE maps every sandbox to the same host user ID range. Two Sysbox sandboxes are isolated from the host, but not from each other. Run one tenant per Sysbox host.
+
+runc runs sandboxes on the host kernel with no user namespace, so root in the sandbox is root on the host. Use it only for code you trust, on a host with one tenant.
+
+## Change the provider later
+
+One daemon runs one provider, and every sandbox in its data directory uses that provider. The data directory keeps the provider that made its sandboxes, because no other provider can read them. The daemon refuses a `--provider` that names a different one, and the error names both. On a host that is already set up, `shard setup` shows the menu for the existing installation, and that menu has no option to change the provider.
+
+To move a host to another provider, remove its sandboxes, run `shard setup` and choose **Uninstall Shard**. Then run `shard setup` again and pick the new provider. Its checks name anything that is still in the way. On a Firecracker host, also run the commands that the uninstall note prints for `/var/lib/shard.xfs`, because that image still names Firecracker.

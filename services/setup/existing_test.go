@@ -448,7 +448,7 @@ func TestRepairFindsNothingToDo(t *testing.T) {
 	f.installed(t, m)
 	ui := &fakeUI{}
 
-	if err := (&Setup{Host: f.host(nil), UI: ui}).repair(t.Context(), m, ServiceActive); err != nil {
+	if err := (&Setup{Host: f.host(nil), UI: ui}).repair(t.Context(), m, ServiceActive, ""); err != nil {
 		t.Fatalf("repair: %v", err)
 	}
 	said(t, ui, "No problems found")
@@ -465,12 +465,14 @@ func TestRepairShowsTheProblemsBeforeItAsks(t *testing.T) {
 		t.Fatalf("remove: %v", err)
 	}
 	ui := confirming(false)
+	removal := "  Remove the saved connection to https://shard.example.com."
 
-	err := (&Setup{Host: f.host(nil), UI: ui}).repair(t.Context(), m, ServiceInactive)
+	err := (&Setup{Host: f.host(nil), UI: ui}).repair(t.Context(), m, ServiceInactive, removal)
 	if !errors.Is(err, ErrDeclined) {
 		t.Fatalf("repair = %v, want ErrDeclined", err)
 	}
-	said(t, ui, "/usr/local/bin/shard-init is missing.", "The background service is not running.")
+	// The review names the removal the switch question agreed to (SHARD-741).
+	said(t, ui, "/usr/local/bin/shard-init is missing.", "The background service is not running.", removal)
 }
 
 func TestRepairFindsADeletedVMShimAndKernel(t *testing.T) {
@@ -489,7 +491,7 @@ func TestRepairFindsADeletedVMShimAndKernel(t *testing.T) {
 	}
 	ui := confirming(false)
 
-	if err := (&Setup{Host: h, UI: ui}).repair(t.Context(), m, ServiceActive); !errors.Is(err, ErrDeclined) {
+	if err := (&Setup{Host: h, UI: ui}).repair(t.Context(), m, ServiceActive, ""); !errors.Is(err, ErrDeclined) {
 		t.Fatalf("repair = %v, want ErrDeclined", err)
 	}
 	said(t, ui, "/var/lib/shard/vz/shard-vz-shim is missing.", k+" is missing.")
@@ -607,7 +609,7 @@ func TestRepairFindsADeletedTool(t *testing.T) {
 			}
 			ui := confirming(false)
 
-			if err := (&Setup{Host: f.host(nil), UI: ui}).repair(t.Context(), m, ServiceActive); !errors.Is(err, ErrDeclined) {
+			if err := (&Setup{Host: f.host(nil), UI: ui}).repair(t.Context(), m, ServiceActive, ""); !errors.Is(err, ErrDeclined) {
 				t.Fatalf("repair = %v, want ErrDeclined", err)
 			}
 			said(t, ui, "  "+c.tool+" is missing.", c.restart)
@@ -638,7 +640,9 @@ func TestUpgradeVerifiesBeforeItReplaces(t *testing.T) {
 		}
 	}
 
-	if err := (&Setup{Host: f.host(rs), UI: ui}).upgrade(t.Context(), m, ServiceActive); err != nil {
+	removal := "  Remove the saved connection to https://shard.example.com."
+
+	if err := (&Setup{Host: f.host(rs), UI: ui}).upgrade(t.Context(), m, ServiceActive, removal); err != nil {
 		t.Fatalf("upgrade: %v", err)
 	}
 	for path, want := range map[string]string{
@@ -657,7 +661,8 @@ func TestUpgradeVerifiesBeforeItReplaces(t *testing.T) {
 	if !f.called("systemctl restart shard") || f.called("systemctl enable") {
 		t.Fatalf("calls = %v, want one restart and no unit change", f.calls)
 	}
-	said(t, ui.fakeUI, "Your sandboxes keep running while the daemon restarts.", "Upgraded to shard v0.2.0, and the daemon is running.")
+	// The review names the removal the switch question agreed to (SHARD-741).
+	said(t, ui.fakeUI, "Your sandboxes keep running while the daemon restarts.", "Upgraded to shard v0.2.0, and the daemon is running.", removal)
 	steps := ui.lists[len(ui.lists)-1].steps
 	if !slices.Equal(steps[len(steps)-2:], []string{"Restart the daemon", "Verify the daemon connection"}) {
 		t.Fatalf("the steps are %q, want the restart and then the verify last", steps)
@@ -686,7 +691,7 @@ func TestUpgradeKeepsTheOldBinaries(t *testing.T) {
 			m := linuxInstall("v0.1.0")
 			f.installed(t, m)
 
-			err := (&Setup{Host: f.host(rs), UI: confirming(tc.confirm)}).upgrade(t.Context(), m, ServiceActive)
+			err := (&Setup{Host: f.host(rs), UI: confirming(tc.confirm)}).upgrade(t.Context(), m, ServiceActive, "")
 			if tc.want != nil && !errors.Is(err, tc.want) {
 				t.Fatalf("upgrade = %v, want %v", err, tc.want)
 			}
@@ -714,7 +719,7 @@ func TestUpgradeStopsAtTheLatestRelease(t *testing.T) {
 	f.installed(t, m)
 	ui := &fakeUI{}
 
-	if err := (&Setup{Host: f.host(rs), UI: ui}).upgrade(t.Context(), m, ServiceActive); err != nil {
+	if err := (&Setup{Host: f.host(rs), UI: ui}).upgrade(t.Context(), m, ServiceActive, ""); err != nil {
 		t.Fatalf("upgrade: %v", err)
 	}
 	said(t, ui, "Up to date: shard v0.2.0.")
@@ -731,7 +736,7 @@ func TestUpgradeLeavesAnInactiveServiceStopped(t *testing.T) {
 	f.installed(t, m)
 	ui := confirming(true)
 
-	if err := (&Setup{Host: f.host(rs), UI: ui}).upgrade(t.Context(), m, ServiceInactive); err != nil {
+	if err := (&Setup{Host: f.host(rs), UI: ui}).upgrade(t.Context(), m, ServiceInactive, ""); err != nil {
 		t.Fatalf("upgrade: %v", err)
 	}
 	said(t, ui, "Setup does not start it.", "Upgraded to shard v0.2.0.")

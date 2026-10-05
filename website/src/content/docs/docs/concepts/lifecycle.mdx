@@ -1,0 +1,162 @@
+---
+title: Sandboxes and the lifecycle
+description: The seven states a sandbox moves through, and what each lifecycle command does to it.
+sidebar:
+  order: 1
+---
+
+import { Tabs, TabItem } from '@astrojs/starlight/components';
+
+Create a sandbox, write a file, stop it, start it again, pause it and resume it:
+
+<Tabs syncKey="lang">
+	<TabItem label="CLI">
+
+```sh
+shard create --name demo --memory 512MiB alpine:3.20
+shard exec demo sh -c 'echo hello > /root/hello.txt'
+shard stop demo
+shard start demo
+shard exec demo cat /root/hello.txt
+shard pause demo
+shard resume demo
+shard remove --force demo
+```
+
+	</TabItem>
+	<TabItem label="TypeScript">
+
+```ts
+import { Shard } from "useshards";
+
+const shard = new Shard();
+const sandbox = await shard.create({ name: "demo", image: "docker.io/library/alpine:3", memoryMiB: 512 });
+try {
+  await sandbox.exec(["sh", "-c", "echo hello > /root/hello.txt"]);
+  await sandbox.stop();
+  await sandbox.start();
+  console.log((await sandbox.exec(["cat", "/root/hello.txt"])).stdout);
+  await sandbox.pause();
+  await sandbox.resume();
+  console.log((await sandbox.inspect()).state);
+} finally {
+  await sandbox.remove({ force: true });
+  shard.close();
+}
+```
+
+	</TabItem>
+	<TabItem label="Python">
+
+```python
+from useshards import Shard
+
+with Shard() as shard:
+    sandbox = shard.create("docker.io/library/alpine:3", name="demo", memory_mib=512)
+    try:
+        sandbox.exec(["sh", "-c", "echo hello > /root/hello.txt"])
+        sandbox.stop()
+        sandbox.start()
+        print(sandbox.exec(["cat", "/root/hello.txt"]).stdout)
+        sandbox.pause()
+        sandbox.resume()
+        print(sandbox.inspect().state)
+    finally:
+        sandbox.remove(force=True)
+```
+
+	</TabItem>
+</Tabs>
+
+The SDK examples connect to the server that `SHARD_REMOTE` names, with the API key in `SHARD_API_KEY`.
+
+The file is still there after the start, because a stop keeps the sandbox's files. Pause and resume need a provider that supports them: gVisor, Firecracker, or macOS Virtualization on Apple silicon with macOS 14 or later. Sysbox and runc refuse them.
+
+## The states
+
+A sandbox is always in one of seven states.
+
+| State | What it means |
+| --- | --- |
+| `pending` | The image is still downloading, or the sandbox is still starting. Every create begins here. |
+| `running` | The sandbox is up, and you can run commands in it. |
+| `paused` | The memory and the processes are saved on disk, so the sandbox uses no memory. |
+| `stopped` | The processes have ended, but the files are kept. `start` runs the sandbox again. |
+| `unresponsive` | The sandbox runs, but its virtual machine process did not answer a health check. This state exists only on macOS Virtualization and Firecracker. |
+| `failed` | A create, a fork or a pause lost the sandbox. Only `remove` frees it. |
+| `created` | The new copy from a fork, for a moment before it runs. No command leaves a sandbox in this state. |
+
+## The moves
+
+| From | To | What moves it |
+| --- | --- | --- |
+| `pending` | `running` | The download and the start finished. |
+| `pending` | `failed` | The download or the start failed, or a `stop` cancelled the create. |
+| `created` | `running` | A fork finished. |
+| `created` | `failed` | The daemon restarted before the fork finished. |
+| `running` | `paused` | `pause` |
+| `running` | `stopped` | `stop`, or the sandbox process died. |
+| `running` | `failed` | A gVisor `pause` began its checkpoint but did not finish. |
+| `running` | `unresponsive` | The virtual machine process missed its health check. |
+| `unresponsive` | `running` | The process answers again. |
+| `unresponsive` | `paused` | The process died after a `pause` wrote its checkpoint. |
+| `unresponsive` | `stopped` | `stop`, or the process died. |
+| `paused` | `running` | `resume` |
+| `paused` | `stopped` | `stop`, or a daemon restart that finds no checkpoint. |
+| `stopped` | `running` | `start` |
+
+`failed` is the only terminal state. `remove` is not a state. It deletes the sandbox from any state, and the next section says when it needs `--force`.
+
+## What each command does
+
+**`create`** puts the sandbox in `pending`. The CLI and both SDKs then wait until it is `running` or `failed`. While it waits, the CLI shows the download on stderr. A sandbox from `shard create` has no main command. Only shard's own supervisor runs in it, and you run your commands with `exec`. `shard run` creates a sandbox with a main command. If that command cannot start, shard removes the sandbox and the create fails with `command_not_started`. If the removal also fails, the error says that the sandbox was not removed.
+
+**`stop`** sends SIGTERM to the main command and gives it 30 seconds to exit, then kills it. The 30 seconds are fixed. `stop` succeeds only once the sandbox's processes have ended. Its files stay on disk. If the provider still reports a live process after 5 more seconds, the stop fails and the state does not change. A `stop` on a `pending` sandbox cancels the create, and the sandbox becomes `failed` with the reason `the create was cancelled by shard stop`.
+
+**`start`** runs a `stopped` sandbox again, with the files the stop kept. Memory, processes and open sockets are lost at the stop. If the sandbox has a main command, it starts again from the beginning.
+
+**`pause`** saves the memory and the processes to disk and frees the memory. **`resume`** continues from that checkpoint, and the processes carry on where they left off. A `pause` ends any `exec` that is still running. An `exec` on a paused sandbox fails with `sandbox <id> is paused: resume it with shard resume <id>`.
+
+**`fork`** works only on a `running` sandbox. It freezes the source, copies its memory and files, then lets it continue. The new sandbox goes from `created` to `running`. On gVisor the capture has a 10-minute limit. If it exceeds that limit, the fork fails and shard tries to resume the source. Fork works on the same providers as pause.
+
+**`snapshot create`** works only on a `stopped` sandbox, and copies the files the stop kept. The sandbox stays `stopped`. On a running or paused sandbox it fails with `409 sandbox_not_stopped`. Such a sandbox holds memory that a copy of its files would miss. A snapshot is not a sandbox and has no state.
+
+**`remove`** deletes the sandbox and its files. It refuses a `running` or `paused` sandbox unless you pass `--force`. Then it stops the sandbox first, with the same 30 seconds. A `pending` sandbox needs no `--force`: the remove cancels its download.
+
+## A sandbox outlives its main command
+
+`running` means the sandbox is up. It does not mean a program is still running in it. When the main command of `shard run` exits, the sandbox stays `running`, and you can still `exec`, `pause` or `fork` it. `shard list` then shows the exit, for example `running (exited 0)`. The `--restart` flag of `shard run` can start the command again.
+
+Only `stop` ends a sandbox. An exit does not, and no idle timer or setting does either. The sandbox process itself can still die. Then the sandbox is `stopped`, and `shard list --all` shows the reason:
+
+- `the sandbox process died`
+- `ran out of memory and the host ended it`
+- `shard-init failed: <cause>` on a local connection, or `the sandbox supervisor failed; remove it and create another sandbox` on a remote connection
+
+## failed is terminal
+
+A `failed` sandbox refuses every command except `inspect` and `remove`. It answers `409 sandbox_failed` with the reason. Read the reason, then remove the sandbox.
+
+A sandbox becomes `failed` when:
+
+- The image download or the start failed.
+- A `stop` cancelled the create.
+- The daemon restarted before a create or a fork finished.
+- A gVisor `pause` began its checkpoint but did not finish. Nothing is left to resume.
+
+## unresponsive
+
+On macOS Virtualization and Firecracker, each sandbox is a virtual machine process on the host. The daemon checks that this process answers, within 5 seconds on macOS Virtualization and within 4 seconds on Firecracker. If the process stays silent for that whole time, the sandbox becomes `unresponsive`. A host under heavy load can cause that, and so can a SIGSTOP.
+
+shard does not end an `unresponsive` sandbox because it is silent. The process can come back with the same virtual machine, and when it answers, the sandbox is `running` again. Until then, `exec`, `start` and `pause` refuse it, and `exec` says `wait for it to answer, or end it with shard stop <id>`. `stop` and `remove --force` give it one more second to answer, then kill it.
+
+If the process dies, the sandbox becomes `stopped`. If a `pause` wrote its checkpoint before the process died, the sandbox becomes `paused` with that checkpoint instead.
+
+## When the daemon restarts
+
+A sandbox that already runs does not depend on the daemon. When the daemon stops or restarts, running sandboxes continue, and the next daemon picks them up again. The next daemon also corrects what the last one left behind:
+
+- A `running` sandbox with no process behind it becomes `stopped`, with the reason `daemon restarted and found no process`.
+- A `paused` sandbox with no checkpoint becomes `stopped`.
+- A create in progress becomes `failed`, with the reason `the daemon restarted before the create finished`.
+- A fork copy in progress becomes `failed`, with the reason `the daemon restarted before the fork finished`.

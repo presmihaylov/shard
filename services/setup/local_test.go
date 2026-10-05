@@ -23,6 +23,7 @@ import (
 
 	"github.com/presmihaylov/shard/models"
 	"github.com/presmihaylov/shard/pkg/term"
+	"github.com/presmihaylov/shard/services/client"
 	"github.com/presmihaylov/shard/services/daemon"
 	"github.com/presmihaylov/shard/services/sandboxstate"
 )
@@ -240,6 +241,9 @@ func newLocalUI(startAtBoot string, confirm bool, providers ...string) *localUI 
 
 func marks(list *fakeChecklist) string { return strings.Join(list.marks, ", ") }
 
+// stay is the handover of a run with no saved remote and nothing to say about one.
+var stay = handover{finish: func(context.Context) ([]string, error) { return nil, nil }}
+
 func finished(t *testing.T, list *fakeChecklist) {
 	t.Helper()
 	for i := range list.steps {
@@ -255,7 +259,7 @@ func TestLocalSetsUpGVisorWithAService(t *testing.T) {
 	l.pinGVisor()
 	ui := newLocalUI("true", true, GVisor)
 
-	if err := (&Setup{Host: l.host(), UI: ui}).local(t.Context()); err != nil {
+	if err := (&Setup{Host: l.host(), UI: ui}).local(t.Context(), stay); err != nil {
 		t.Fatalf("local = %v; printed %q", err, ui.printed)
 	}
 
@@ -298,12 +302,46 @@ func TestLocalSetsUpGVisorWithAService(t *testing.T) {
 	}
 }
 
+// The review names the saved connection setup removes, and the done text says it is gone before the next steps. (SHARD-741)
+func TestLocalNamesTheSavedConnectionItRemoves(t *testing.T) {
+	l := newLocalHost(t)
+	l.pinGVisor()
+	l.env[client.ConfigHomeEnv] = t.TempDir()
+	path, err := client.ConfigPath(l.host().Env)
+	if err != nil {
+		t.Fatalf("config path: %v", err)
+	}
+	saveConnection(t, path, client.Config{Remote: "https://shard.example.com", APIKey: testKey})
+	ui := newLocalUI("true", true, GVisor)
+	ui.confirms[AskSwitch] = true
+
+	if err := (&Setup{Host: l.host(), UI: ui}).runLocal(t.Context()); err != nil {
+		t.Fatalf("runLocal = %v; printed %q", err, ui.printed)
+	}
+
+	order := []string{
+		"  Configure and start a systemd service.", "  Remove the saved connection to https://shard.example.com.", "Administrator access is required.",
+		"shard v0.1.0 is set up, and the daemon is running.", "✓ Connection removed", "From now on, shard commands use the local daemon.", "Next steps:", "Documentation: https://useshards.com/docs",
+	}
+	at := -1
+	for _, line := range order {
+		i := slices.Index(ui.printed, line)
+		if i <= at {
+			t.Fatalf("%q is missing or out of order in %q", line, ui.printed)
+		}
+		at = i
+	}
+	if got := savedConnection(t, path); got != (client.Config{}) {
+		t.Errorf("the saved connection is still %v", got)
+	}
+}
+
 func TestLocalManualStartupPrintsTheDaemonCommand(t *testing.T) {
 	l := newLocalHost(t)
 	l.env["SUDO_USER"] = "u"
 	ui := newLocalUI("false", true, GVisor)
 
-	if err := (&Setup{Host: l.host(), UI: ui}).local(t.Context()); err != nil {
+	if err := (&Setup{Host: l.host(), UI: ui}).local(t.Context(), stay); err != nil {
 		t.Fatalf("local = %v; printed %q", err, ui.printed)
 	}
 
@@ -328,7 +366,7 @@ func TestLocalAsRootPrintsNoSudo(t *testing.T) {
 	l := newLocalHost(t)
 	ui := newLocalUI("false", true, GVisor)
 
-	if err := (&Setup{Host: l.host(), UI: ui}).local(t.Context()); err != nil {
+	if err := (&Setup{Host: l.host(), UI: ui}).local(t.Context(), stay); err != nil {
 		t.Fatalf("local = %v; printed %q", err, ui.printed)
 	}
 
@@ -344,7 +382,7 @@ func TestLocalOnAMacUsesLaunchdAndNoSudo(t *testing.T) {
 	swap(t, &kernelURL, func(string) (string, error) { return l.rs.URL + "/download/v0.1.0/shard-init-linux-amd64", nil })
 	ui := newLocalUI("true", true, VZ)
 
-	if err := (&Setup{Host: h, UI: ui}).local(t.Context()); err != nil {
+	if err := (&Setup{Host: h, UI: ui}).local(t.Context(), stay); err != nil {
 		t.Fatalf("local = %v; printed %q", err, ui.printed)
 	}
 
@@ -375,7 +413,7 @@ func TestADeclinedReviewChangesNothing(t *testing.T) {
 	l.pinGVisor()
 	ui := newLocalUI("true", false, GVisor)
 
-	err := (&Setup{Host: l.host(), UI: ui}).local(t.Context())
+	err := (&Setup{Host: l.host(), UI: ui}).local(t.Context(), stay)
 	if !errors.Is(err, ErrDeclined) {
 		t.Fatalf("local = %v, want ErrDeclined", err)
 	}
@@ -389,7 +427,7 @@ func TestAProviderFailureOffersTheOthers(t *testing.T) {
 	l.sandbox(GVisor)
 	ui := newLocalUI("true", false, Runc, GVisor)
 
-	err := (&Setup{Host: l.host(), UI: ui}).local(t.Context())
+	err := (&Setup{Host: l.host(), UI: ui}).local(t.Context(), stay)
 	if !errors.Is(err, ErrDeclined) {
 		t.Fatalf("local = %v, want the review after the second choice", err)
 	}
@@ -419,7 +457,7 @@ func TestExitAfterAProviderFailureChangesNothing(t *testing.T) {
 	l.sandbox(Runc)
 	ui := newLocalUI("true", true, GVisor, exitOption)
 
-	err := (&Setup{Host: l.host(), UI: ui}).local(t.Context())
+	err := (&Setup{Host: l.host(), UI: ui}).local(t.Context(), stay)
 	if !errors.Is(err, ErrDeclined) {
 		t.Fatalf("local = %v, want ErrDeclined", err)
 	}
@@ -433,7 +471,7 @@ func TestAHostFailureStopsWithoutAnotherChoice(t *testing.T) {
 	l.remove("/run/systemd/system")
 	ui := newLocalUI("true", true, GVisor)
 
-	err := (&Setup{Host: l.host(), UI: ui}).local(t.Context())
+	err := (&Setup{Host: l.host(), UI: ui}).local(t.Context(), stay)
 	var stopped *StoppedError
 	if !errors.As(err, &stopped) || stopped.Step != "Background service support" {
 		t.Fatalf("local = %v, want a stop at the service check", err)
@@ -454,7 +492,7 @@ func TestEveryProviderUnavailableStillOffersExit(t *testing.T) {
 	h.OS = "darwin"
 	ui := newLocalUI("true", true, exitOption)
 
-	err := (&Setup{Host: h, UI: ui}).local(t.Context())
+	err := (&Setup{Host: h, UI: ui}).local(t.Context(), stay)
 	if !errors.Is(err, ErrDeclined) {
 		t.Fatalf("local = %v, want ErrDeclined", err)
 	}
@@ -474,7 +512,7 @@ func TestAFailedStepSaysWhatStays(t *testing.T) {
 	l.fail["systemctl start"] = "Job for shard.service failed."
 	ui := newLocalUI("true", true, GVisor)
 
-	err := (&Setup{Host: l.host(), UI: ui}).local(t.Context())
+	err := (&Setup{Host: l.host(), UI: ui}).local(t.Context(), stay)
 	var stopped *StoppedError
 	if !errors.As(err, &stopped) || stopped.Step != "Start the daemon" {
 		t.Fatalf("local = %v, want a stop at the start", err)
