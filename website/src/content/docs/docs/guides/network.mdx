@@ -166,7 +166,7 @@ sandbox.start()
 
 ## With an API key
 
-A secret grant does not open a host, so the policy must also allow the host that a secret is granted to. Under `deny any` with no allow rule for that host, the request is denied and the key is never sent. See [secrets](https://github.com/presmihaylov/shard/blob/main/docs/secrets.md).
+A secret grant does not open a host, so the policy must also allow the host that a secret is granted to. Under `deny any` with no allow rule for that host, the request is denied and the key is never sent. See [secrets](/docs/security/secrets/).
 
 ## Limits
 
@@ -174,4 +174,4 @@ A secret grant does not open a host, so the policy must also allow the host that
 - **A name resolves on the host when the policy is applied.** If a host's addresses change later, a rule that names it can go stale. Store the policy again to resolve the names again.
 - **Another firewall on the host is not in the log.** A drop by `ufw` or `firewalld` leaves no record, so the sandbox just sees a timeout. With `ufw`, let the bridge through: `ufw allow in on shard0` and `ufw route allow in on shard0`.
 
-The [egress reference](https://github.com/presmihaylov/shard/blob/main/docs/egress.md) lists every rule.
+The [egress reference](/docs/security/egress/) lists every rule.

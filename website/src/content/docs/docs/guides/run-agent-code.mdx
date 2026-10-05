@@ -241,9 +241,9 @@ sandbox = shard.create("python:3.12-slim", memory_mib=512, policy="offline")
 	</TabItem>
 </Tabs>
 
-Every name lookup in that sandbox then fails, and the host drops or refuses every outgoing connection. To let the code reach one API, put an `--allow` rule for that host before `--deny any`. See [egress](https://github.com/presmihaylov/shard/blob/main/docs/egress.md) for the rules and the decision log.
+Every name lookup in that sandbox then fails, and the host drops or refuses every outgoing connection. To let the code reach one API, put an `--allow` rule for that host before `--deny any`. See [egress](/docs/security/egress/) for the rules and the decision log.
 
-When the code needs an API key, give it a placeholder and let the host put the key in. See [secrets](https://github.com/presmihaylov/shard/blob/main/docs/secrets.md).
+When the code needs an API key, give it a placeholder and let the host put the key in. See [secrets](/docs/security/secrets/).
 
 ## One sandbox per task
 

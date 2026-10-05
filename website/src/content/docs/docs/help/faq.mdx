@@ -118,11 +118,11 @@ On `firecracker` and `vz`, yes. Those providers refuse a create without `--memor
 
 ## Can a sandbox read my API keys?
 
-No. Store the key on the host and grant it to the hosts that need it. The sandbox holds only a placeholder, and shard puts the real key into the headers of HTTPS requests to those hosts on the host side. The [secrets reference](https://github.com/presmihaylov/shard/blob/main/docs/secrets.md) has the rules.
+No. Store the key on the host and grant it to the hosts that need it. The sandbox holds only a placeholder, and shard puts the real key into the headers of HTTPS requests to those hosts on the host side. The [secrets reference](/docs/security/secrets/) has the rules.
 
 ## Can a sandbox reach my private network?
 
-No. Without a policy, a sandbox can reach the internet, but the host drops its traffic to private networks, cloud metadata, loopback and other sandboxes. A policy narrows that down to the hosts you allow. Sandboxes get IPv4 only. The [egress reference](https://github.com/presmihaylov/shard/blob/main/docs/egress.md) has every rule.
+No. Without a policy, a sandbox can reach the internet, but the host drops its traffic to private networks, cloud metadata, loopback and other sandboxes. A policy narrows that down to the hosts you allow. Sandboxes get IPv4 only. The [egress reference](/docs/security/egress/) has every rule.
 
 ## Does a sandbox survive a reboot?
 
