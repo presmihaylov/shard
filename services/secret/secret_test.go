@@ -299,6 +299,9 @@ func TestSetRefusesToMoveAPlaceholderItCannotAccountFor(t *testing.T) {
 	if _, err := broken.Set("TOKEN", "new-value-2", nil, "sk_test_second02"); !errors.Is(err, os.ErrPermission) {
 		t.Errorf("a change with unreadable holders = %v, want the read error", err)
 	}
+	if _, err := broken.Set("FRESH", "new-value-3", nil, ""); !errors.Is(err, os.ErrPermission) {
+		t.Errorf("a first set with unreadable holders = %v, want the read error", err)
+	}
 }
 
 func TestSetRefusesAPlaceholderAnotherSecretOwns(t *testing.T) {
