@@ -112,8 +112,9 @@ heading of each SDK's `CHANGELOG.md` as its release record, fails when it differ
 and skips an SDK whose GitHub release and registry files are both there already. For each SDK left,
 `sdk-release.yml` builds the commit that set its version. It runs the shared gate (`make sdk-gate`
 against a fresh runc daemon behind a TLS front), the SDK's check, the pack or build, and a clean
-install and import. The npm job (environment `npm`) and the PyPI job (environment `pypi`) then
-publish those exact files by trusted publishing. Each job gets an OIDC token, and the repository
+install and import. When the version already has a published GitHub release, the build ships that
+release's files in place of its own, so the registries get the same bytes. The npm job (environment
+`npm`) and the PyPI job (environment `pypi`) then publish those exact files by trusted publishing. Each job gets an OIDC token, and the repository
 holds no registry token.
 
 Last, the run tags `sdk-typescript-v<version>` or `sdk-python-v<version>`, the latter in PEP 440,
@@ -133,8 +134,8 @@ version and PyPI failed, the retry publishes only to PyPI. A failure on differen
 registry holds another build of that version. A registry never replaces a version, so release a new
 one with a changeset.
 
-The first release, 0.1.0, reuses the tags `sdk-typescript-v0.1.0` and `sdk-python-v0.1.0` and their
-GitHub releases as they are.
+The first release, 0.1.0, ships the files of the GitHub releases `sdk-typescript-v0.1.0` and
+`sdk-python-v0.1.0`, and keeps those tags and releases as they are.
 
 ### Setup
 
