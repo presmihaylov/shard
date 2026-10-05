@@ -89,11 +89,24 @@ class AsyncTransport:
                 return
             cursor = page.next_
 
-    async def put(self, path: str, params: dict[str, str], content: bytes | AsyncIterable[bytes], size: int) -> None:
-        """A body of a known length; the generated client takes a file it buffers, never a stream."""
-        # An explicit length keeps HTTPX from sending the stream chunked, which the daemon refuses.
+    async def put(
+        self,
+        path: str,
+        params: dict[str, str],
+        content: bytes | AsyncIterable[bytes],
+        size: int | None,
+        timeout: httpx.Timeout | None = None,
+    ) -> None:
+        """A streamed body, chunked when size is None; the generated client takes a file it buffers, never a stream."""
+        # A file put needs the length up front, since the guest lands exactly that many bytes.
+        headers = {} if size is None else {"Content-Length": str(size)}
         request = self.http.build_request(
-            "PUT", path, params=params, content=content, headers={"Content-Length": str(size)}
+            "PUT",
+            path,
+            params=params,
+            content=content,
+            headers=headers,
+            timeout=self.timeout if timeout is None else timeout,
         )
         try:
             await self.http.send(request)

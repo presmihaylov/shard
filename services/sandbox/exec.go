@@ -37,9 +37,15 @@ const DefaultExecCleanupGrace = 2 * time.Second
 // execIDLen is how many hex characters name an exec, so a list cursor that is not one is refused.
 const execIDLen = 16
 
+// The execs the daemon runs at once, per sandbox and in all: each holds up to execBufferCap of output in daemon memory, outside every sandbox's bound (SHARD-550).
+const (
+	maxRunningExecsPerSandbox = 32
+	maxRunningExecs           = 256
+)
+
 // ExecRequest is one command to run in a sandbox that already runs. It is the body of POST /v0/sandboxes/{id}/exec.
 type ExecRequest struct {
-	Command []string `json:"command"`
+	Command []string `json:"command" minItems:"1"`
 	Env     []string `json:"env,omitempty"`
 	WorkDir string   `json:"workdir,omitempty"`
 	User    string   `json:"user,omitempty"`
@@ -55,19 +61,19 @@ type ExecRequest struct {
 
 // TerminalSize is a terminal window in character cells. It is the body of the resize route too.
 type TerminalSize struct {
-	Rows uint16 `json:"rows" required:"false"`
-	Cols uint16 `json:"cols" required:"false"`
+	Rows uint16 `json:"rows" required:"false" maximum:"65535"`
+	Cols uint16 `json:"cols" required:"false" maximum:"65535"`
 }
 
 // Streams is where one attach's stdio goes. The caller owns them: a nil Stdin is a client that types nothing.
 type Streams struct {
-	Stdin  io.Reader
-	Stdout io.Writer
-	Stderr io.Writer
+	Stdin io.Reader
+	// StopStdin must unblock a caller-owned Stdin read when the attach ends.
+	StopStdin func() error
+	Stdout    io.Writer
+	Stderr    io.Writer
 	// Started is called with the exec id before the replay begins, and its error ends the attach.
 	Started func(execID string) error
-	// Warn reports what the keyboard copier cannot return, because nothing waits for that goroutine.
-	Warn func(message string)
 	// Detach ends the attach from the daemon's side, so a write blocked on a client that stopped reading returns.
 	Detach func()
 }
@@ -146,6 +152,24 @@ func (e *ExecRunningError) Error() string {
 }
 
 func (e *ExecRunningError) Public() string { return e.Error() }
+
+// ExecLimitError is a create past the execs one sandbox, or the whole daemon, runs at once. No running exec is evicted to make room.
+type ExecLimitError struct {
+	ID    string
+	Limit int
+	// Daemon is a refusal by the bound across every sandbox, not by the sandbox's own.
+	Daemon bool
+}
+
+func (e *ExecLimitError) Error() string {
+	if e.Daemon {
+		return fmt.Sprintf("the daemon runs %d execs, the most it runs at once across all sandboxes: wait for one to exit, or kill one", e.Limit)
+	}
+
+	return fmt.Sprintf("sandbox %s runs %d execs, the most one sandbox runs at once: wait for one to exit, or kill one", e.ID, e.Limit)
+}
+
+func (e *ExecLimitError) Public() string { return e.Error() }
 
 // chunk is one write the guest made, tagged with the stream it came on so a replay keeps them apart.
 type chunk struct {
@@ -485,9 +509,11 @@ type execSession struct {
 	pidSet  chan struct{}
 
 	// stdinW is the write end of a non-tty command's stdin; pair is the terminal of a tty command.
-	stdinW    *os.File
-	stdinOnce sync.Once
-	pair      *pty.Pty
+	stdinW      *os.File
+	stdinOnce   sync.Once
+	pair        *pty.Pty
+	inputMu     sync.Mutex
+	inputClosed bool
 	// resizes holds the latest window for a provider whose guest owns the pty; one slot, since only the last size matters.
 	resizes chan models.TerminalSize
 
@@ -656,7 +682,7 @@ func (e *execSession) endAttach() {
 }
 
 // stdinTarget is where a client's keystrokes go: the terminal on a tty, the stdin pipe otherwise.
-func (e *execSession) stdinTarget() io.Writer {
+func (e *execSession) stdinTarget() *os.File {
 	if e.tty {
 		return e.pair.Master
 	}
@@ -671,7 +697,12 @@ func (e *execSession) closeStdin() error {
 	}
 
 	var err error
-	e.stdinOnce.Do(func() { err = e.stdinW.Close() })
+	e.stdinOnce.Do(func() {
+		e.inputMu.Lock()
+		defer e.inputMu.Unlock()
+		e.inputClosed = true
+		err = e.stdinW.Close()
+	})
 
 	return err
 }
@@ -692,10 +723,19 @@ func (s *Service) CreateExec(ctx context.Context, ref string, req ExecRequest) (
 		return models.Exec{}, err
 	}
 
-	session, err := s.startExec(id, execID, req)
-	if err != nil {
+	if err := s.admitExec(id); err != nil {
 		return models.Exec{}, err
 	}
+	session, err := s.startExec(id, execID, req)
+	if err != nil {
+		s.releaseExec(id)
+		return models.Exec{}, err
+	}
+	// The slot frees when the command ends, whether it ran, never started, or a stop or a remove ended it.
+	go func() {
+		<-session.done
+		s.releaseExec(id)
+	}()
 
 	// Held before the wait so a stop cancels it, and shown only once it launched, so a refused command never lists.
 	s.holdExec(execID, session)
@@ -766,7 +806,7 @@ func (s *Service) startOutcome(session *execSession) error {
 
 	s.dropHidden(session)
 	if _, err := session.result(); err != nil {
-		return err
+		return userRefused(err)
 	}
 
 	return fmt.Errorf("the exec in sandbox %s ended with no report that its command launched", session.sandboxID)
@@ -912,7 +952,7 @@ func (s *Service) runTerminal(ctx context.Context, id string, session *execSessi
 	// A process the command left behind holds the replica too, and then nothing ever ends the copy.
 	drainErr := drain(drained, session.buf)
 
-	masterErr := pair.Master.Close()
+	masterErr := session.closeTerminalMaster()
 
 	combined := errors.Join(execErr, closeErr, drainErr, masterErr)
 	session.settleBuffer(combined)
@@ -940,7 +980,9 @@ func drain(drained <-chan error, buf *execBuffer) error {
 
 // Attach replays the buffer so far to one client, then streams live until the command ends. A client that drops
 // returns its context error, and one that takes no output for ExecStallBound a StalledError; the command runs on.
-func (s *Service) Attach(ctx context.Context, ref, execID string, streams Streams) (Attached, error) {
+func (s *Service) Attach(ctx context.Context, ref, execID string, streams Streams) (attached Attached, err error) {
+	ctx, cancel := context.WithCancel(ctx)
+	defer cancel()
 	id, _, err := s.resolveForExec(ref)
 	if err != nil {
 		return Attached{}, err
@@ -960,7 +1002,8 @@ func (s *Service) Attach(ctx context.Context, ref, execID string, streams Stream
 		return Attached{}, err
 	}
 
-	s.pumpStdin(session, streams)
+	stopInput := startStdin(ctx, session, streams, cancel)
+	defer func() { err = errors.Join(err, stopInput()) }()
 
 	sink := func(c chunk) error {
 		if session.tty || !c.stderr {
@@ -989,32 +1032,87 @@ func (s *Service) Attach(ctx context.Context, ref, execID string, streams Stream
 	return Attached{Exit: exit, LostBytes: session.buf.lostBytes()}, nil
 }
 
-// pumpStdin feeds the client's keyboard to the command while the attach lasts. On a clean end it closes
-// the command's stdin, so an explicit end of input is a stream-4; a drop leaves stdin open for a re-attach.
-func (s *Service) pumpStdin(session *execSession, streams Streams) {
+func startStdin(ctx context.Context, session *execSession, streams Streams, detach context.CancelFunc) func() error {
 	if streams.Stdin == nil {
-		return
+		return func() error { return nil }
 	}
-
-	// A command created without stdin reads nothing, so what a tty-less client types is discarded, not stalled.
-	if !session.stdinReq && !session.tty {
-		go func() {
-			warn(streams.Warn, copyStream(io.Discard, streams.Stdin), "the keyboard of a command without stdin")
-		}()
-
-		return
-	}
-
-	target := session.stdinTarget()
+	ctx, cancel := context.WithCancel(ctx)
+	copied := make(chan error, 1)
 	go func() {
-		err := copyStream(target, streams.Stdin)
-		if err == nil {
-			warn(streams.Warn, session.closeStdin(), "the command was not told its input had ended")
-			return
+		err := pumpStdin(ctx, session, streams)
+		if err != nil {
+			detach()
 		}
-
-		warn(streams.Warn, err, "the keyboard stopped reaching the command")
+		copied <- err
 	}()
+	return func() error {
+		cancel()
+		return <-copied
+	}
+}
+
+// pumpStdin joins its interrupt before a later attach can write to the same command.
+func pumpStdin(ctx context.Context, session *execSession, streams Streams) (err error) {
+	target := session.stdinTarget()
+	if !session.stdinReq && !session.tty {
+		target = nil
+	}
+
+	interrupted := make(chan error, 1)
+	stop := context.AfterFunc(ctx, func() {
+		var deadlineErr, sourceErr error
+		if target != nil {
+			deadlineErr = session.inputDeadline(time.Now())
+		}
+		if streams.StopStdin != nil {
+			sourceErr = streams.StopStdin()
+		}
+		interrupted <- errors.Join(deadlineErr, sourceErr)
+	})
+	defer func() {
+		if !stop() {
+			err = errors.Join(err, <-interrupted)
+		}
+		if target != nil {
+			err = errors.Join(err, session.inputDeadline(time.Time{}))
+		}
+	}()
+
+	dst := io.Discard
+	if target != nil {
+		dst = target
+	}
+	err = copyStream(dst, streams.Stdin)
+	if ctx.Err() != nil && (errors.Is(err, os.ErrDeadlineExceeded) || errors.Is(err, context.Canceled) || errors.Is(err, io.ErrClosedPipe)) {
+		return nil
+	}
+	if err != nil {
+		return fmt.Errorf("copy the exec input: %w", err)
+	}
+	if ctx.Err() != nil || target == nil {
+		return nil
+	}
+
+	return session.closeStdin()
+}
+
+func (e *execSession) inputDeadline(deadline time.Time) error {
+	e.inputMu.Lock()
+	defer e.inputMu.Unlock()
+	if e.inputClosed {
+		return nil
+	}
+	if err := e.stdinTarget().SetWriteDeadline(deadline); err != nil {
+		return fmt.Errorf("set the exec input deadline: %w", err)
+	}
+	return nil
+}
+
+func (e *execSession) closeTerminalMaster() error {
+	e.inputMu.Lock()
+	defer e.inputMu.Unlock()
+	e.inputClosed = true
+	return e.pair.Master.Close()
 }
 
 // GetExec answers the exec record now, without waiting for it to end.
@@ -1237,6 +1335,35 @@ func (s *Service) dropHidden(session *execSession) {
 	}
 }
 
+// admitExec takes one running slot of sandbox id, or refuses when the sandbox or the daemon has none left.
+func (s *Service) admitExec(id string) error {
+	s.execMu.Lock()
+	defer s.execMu.Unlock()
+
+	if s.running[id] >= maxRunningExecsPerSandbox {
+		return &ExecLimitError{ID: id, Limit: maxRunningExecsPerSandbox}
+	}
+	if s.runningAll >= maxRunningExecs {
+		return &ExecLimitError{ID: id, Limit: maxRunningExecs, Daemon: true}
+	}
+	s.running[id]++
+	s.runningAll++
+
+	return nil
+}
+
+// releaseExec frees the slot admitExec took for sandbox id.
+func (s *Service) releaseExec(id string) {
+	s.execMu.Lock()
+	defer s.execMu.Unlock()
+
+	s.runningAll--
+	s.running[id]--
+	if s.running[id] == 0 {
+		delete(s.running, id)
+	}
+}
+
 // exitedExecCap bounds the exited execs one sandbox retains, so a sandbox that runs many commands in a
 // loop does not grow without a bound.
 const exitedExecCap = 32
@@ -1340,7 +1467,7 @@ func (s *Service) readyForExec(ctx context.Context, ref string) (string, error) 
 	// The exit file records a 137 for this, which is what a plain kill -9 records too, so the reason
 	// is named here or an operator never learns it.
 	if status.OOMKilled {
-		return "", &UnavailableError{ID: id, Why: OOMKilledReason, Fix: fmt.Sprintf("start it again with shard start %s, over the files it kept; a larger --memory needs a new sandbox", id)}
+		return "", &UnavailableError{ID: id, Why: OOMKilledReason, Fix: fmt.Sprintf("start it again with shard start %s, over the files it kept; more memory needs a new sandbox with a larger resources.memory_mib", id)}
 	}
 
 	if !status.Exists {
@@ -1529,13 +1656,4 @@ func started(streams Streams, execID string) error {
 	}
 
 	return streams.Started(execID)
-}
-
-// warn reports what no caller waits for, because the keyboard copier outlives the command it fed.
-func warn(report func(string), err error, what string) {
-	if err == nil || report == nil {
-		return
-	}
-
-	report(fmt.Sprintf("%s: %v", what, err))
 }

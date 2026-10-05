@@ -17,6 +17,8 @@ type partialRecords struct {
 
 func (p partialRecords) List() ([]models.Sandbox, error) { return p.sandboxes, p.unreadable }
 
+func (p partialRecords) Generation() uint64 { return 0 }
+
 // SHARD-343: one record that will not decode must not drop every other sandbox's chain.
 func TestChainsSkipAnUnreadableRecord(t *testing.T) {
 	s := newStore(t)

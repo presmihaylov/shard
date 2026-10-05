@@ -122,6 +122,23 @@ func (s *Service) recordPaused(id, dir string) error {
 	return nil
 }
 
+// dropCheckpoint removes the checkpoint a stop leaves behind, so a stopped sandbox keeps none of its pause's memory or disk copy (SHARD-592).
+func (s *Service) dropCheckpoint(id string) error {
+	dir, err := s.cfg.Repo.CheckpointDir(id)
+	if err != nil {
+		return err
+	}
+
+	// A partial .tmp from a cut pause goes too, the way Delete takes both.
+	for _, path := range []string{dir, dir + ".tmp"} {
+		if err := os.RemoveAll(path); err != nil {
+			return fmt.Errorf("remove the checkpoint %s of sandbox %s: %w", path, id, err)
+		}
+	}
+
+	return nil
+}
+
 // reconcileGone settles a failed pause: still running, checkpointed with only the host cleanup failed, or lost by the substrate.
 func (s *Service) reconcileGone(ctx context.Context, id, dir string) error {
 	status, err := s.status(ctx, id, "pause")
@@ -231,7 +248,7 @@ func (s *Service) Resume(ctx context.Context, ref string) (models.Sandbox, error
 		return models.Sandbox{}, &StateError{ID: id, State: sb.State, Fix: "resume takes a paused sandbox", Code: models.CodeSandboxNotPaused}
 	}
 	if sb.Checkpoint == "" {
-		return models.Sandbox{}, &StateError{ID: id, State: sb.State, Fix: "its record names no checkpoint to resume from", Code: models.CodeNoCheckpoint}
+		return models.Sandbox{}, &StateError{ID: id, State: sb.State, Fix: "it has no saved state to resume; remove it and create another sandbox", Code: models.CodeNoCheckpoint}
 	}
 
 	// The lease survived the pause, so this hands back the same address over a namespace built again.
@@ -240,7 +257,7 @@ func (s *Service) Resume(ctx context.Context, ref string) (models.Sandbox, error
 	}
 
 	if err := s.cfg.Provider.Resume(ctx, id, sb.Checkpoint); err != nil {
-		return models.Sandbox{}, errors.Join(err, Reconcile(ctx, s.cfg.Repo, s.cfg.Provider, id, true))
+		return models.Sandbox{}, imageGone(id, sb.Image, sb.Digest, "resume", errors.Join(err, Reconcile(ctx, s.cfg.Repo, s.cfg.Provider, id, true)))
 	}
 
 	// The restore brought the guest up over rules it has no memory of, so the host's go on again now.
@@ -306,7 +323,7 @@ func (s *Service) Fork(ctx context.Context, ref string, req CopyRequest) (sb mod
 	spec := models.SandboxSpec{ID: id, Name: req.Name, StateDir: claim.dir, Network: claim.net, Resources: src.Resources}
 	if err := s.cfg.Provider.Fork(ctx, source, spec); err != nil {
 		if ctx.Err() == nil {
-			return models.Sandbox{}, err
+			return models.Sandbox{}, imageGone(source, src.Image, src.Digest, "fork", err)
 		}
 		// An interrupt kills the restore process, not what it may already have restored, and only stop ends a sandbox, so a fork that may run is kept.
 		probe, perr := s.status(context.WithoutCancel(ctx), id, "fork")

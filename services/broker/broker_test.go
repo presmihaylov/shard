@@ -398,6 +398,46 @@ func TestRewriteSubstitutesOnlyOnAGrantedHost(t *testing.T) {
 	}
 }
 
+// A failed create keeps the address its teardown gave back, so only the sandbox that holds it now is judged (SHARD-545).
+func TestTheBrokerSkipsAFailedSandboxOnTheSameAddress(t *testing.T) {
+	address := netip.MustParsePrefix("10.87.0.2/16")
+	records := fakeRecords{sandboxes: []models.Sandbox{
+		{ID: "live", Policy: "web", State: models.StateRunning, Address: address},
+		{ID: "failed", Secrets: []string{"TOKEN"}, State: models.StateFailed, Address: address},
+		{ID: "gone", State: models.StateFailed, Address: netip.MustParsePrefix("10.87.0.4/16")},
+	}}
+	secrets := fakeSecrets{"TOKEN": {Name: "TOKEN", Placeholder: "mock-TOKEN", Destinations: []string{"api.example.com"}}}
+	web := models.Policy{Name: "web", Rules: []models.Rule{
+		{Action: models.ActionAllow, Destination: models.Destination{Kind: models.DestinationDomain, Value: "api.example.com"}, Protocol: "tcp", Ports: []int{443}},
+	}}
+	b, log := newBrokerLog(t, records, secrets, web)
+
+	got, err := b.Decide(t.Context(), proxy.Request{Source: source, Host: "evil.example.net", Port: 80})
+	if err != nil || got.Allowed {
+		t.Errorf("Decide = %+v, %v, want the live sandbox's policy to refuse", got, err)
+	}
+	allowed, err := b.Resolve(t.Context(), dns.Question{Source: source, Name: "evil.example.net"})
+	if err != nil || allowed {
+		t.Errorf("Resolve = %v, %v, want the live sandbox's policy to refuse", allowed, err)
+	}
+	if len(log.ids) != 2 || log.ids[0] != "live" || log.ids[1] != "live" {
+		t.Errorf("the decisions went to %v, want the live sandbox's log", log.ids)
+	}
+
+	out := request(t, http.MethodGet, "https://api.example.com/")
+	out.Header.Set("Authorization", "Bearer mock-TOKEN")
+	if _, err := b.Rewrite(t.Context(), proxy.Request{Source: source, Host: "api.example.com", Port: 443, TLS: true}, out, nil, unlimited); err != nil {
+		t.Fatalf("Rewrite: %v", err)
+	}
+	if out.Header.Get("Authorization") != "Bearer mock-TOKEN" {
+		t.Errorf("the live sandbox got the failed one's secret: %v", out.Header)
+	}
+
+	if _, err := b.Decide(t.Context(), proxy.Request{Source: netip.MustParseAddr("10.87.0.4"), Host: "api.example.com", Port: 443, TLS: true}); err == nil {
+		t.Error("an address only a failed sandbox records was judged")
+	}
+}
+
 func TestRewriteSubstitutesOnTLSOnly(t *testing.T) {
 	records := fakeRecords{sandboxes: []models.Sandbox{{ID: "sb", Secrets: []string{"TOKEN", "KEY"}, Address: netip.MustParsePrefix("10.87.0.2/16")}}}
 	secrets := fakeSecrets{

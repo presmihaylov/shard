@@ -43,7 +43,9 @@ Push a tag of the form `v*` on `main`. `release.yml` first checks that the tagge
 `shard-linux-amd64` and `shard-init-linux-amd64` on a Linux runner, and `shard-darwin-arm64` and
 `shard-darwin-amd64` on a macOS runner, each with `RELEASE=1`. That builds with `-trimpath` and links
 with `-s -w`, so a release binary has no symbol table, no DWARF and no build paths. A panic still
-prints its stack. The workflow adds the service files from `packaging/`: `shard.service`,
+prints its stack. Both Linux binaries build with cgo off, so they link no libc and run on any
+distribution, and the workflow stops if `file` does not call each one statically linked and
+stripped. The workflow adds the service files from `packaging/`: `shard.service`,
 `shard-serve.service`, `shard.daemon.plist` and `shard.newsyslog.conf`. An install then takes the
 binaries and the units from one tag (`docs/daemon.md`, `docs/mac.md`). It puts all of them, with a
 `SHA256SUMS`, under a draft GitHub release named after the tag. `shard --version` reports the tag.

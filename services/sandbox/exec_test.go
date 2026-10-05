@@ -11,10 +11,12 @@ import (
 	"slices"
 	"strings"
 	"sync"
+	"syscall"
 	"testing"
 	"time"
 
 	"github.com/presmihaylov/shard/models"
+	"github.com/presmihaylov/shard/services/bundle"
 	"github.com/presmihaylov/shard/services/sandbox"
 	"github.com/presmihaylov/shard/services/sandboxstate"
 )
@@ -233,6 +235,54 @@ func TestExecRefusesARequestWithNoCommand(t *testing.T) {
 	}
 	if slices.Contains(r.calls, "provider.Exec") {
 		t.Error("exec reached the provider with no command to run")
+	}
+}
+
+// A user the guest's tree cannot resolve is the caller's to fix: a request error in the guest's words, never the host rootfs (SHARD-648).
+func TestExecAsAUserTheTreeCannotResolveIsARequestError(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		user string
+		// guest makes the tree's etc/passwd what a guest with root in it left there.
+		guest func(passwd string) error
+		want  string
+	}{
+		{name: "an image with no passwd", user: "nobody", guest: func(string) error { return nil }, want: `resolve the user "nobody": the image has no passwd`},
+		{name: "a passwd that links out of the tree", user: "nobody", guest: func(passwd string) error { return os.Symlink("/etc/shadow", passwd) }, want: "/etc/passwd is a symbolic link"},
+		{name: "a numeric id over a passwd that links out", user: "65534", guest: func(passwd string) error { return os.Symlink("/etc/shadow", passwd) }, want: "/etc/passwd is a symbolic link"},
+		{name: "an etc that links out of the tree", user: "nobody", guest: func(passwd string) error {
+			etc := filepath.Dir(passwd)
+			if err := os.Remove(etc); err != nil {
+				return err
+			}
+			return os.Symlink("/etc", etc)
+		}, want: "/etc is a symbolic link"},
+		{name: "a passwd that is a fifo", user: "nobody", guest: func(passwd string) error { return syscall.Mkfifo(passwd, 0o600) }, want: "/etc/passwd is a p"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			rootfs := t.TempDir()
+			if err := os.MkdirAll(filepath.Join(rootfs, "etc"), 0o755); err != nil {
+				t.Fatal(err)
+			}
+			if err := tc.guest(filepath.Join(rootfs, "etc/passwd")); err != nil {
+				t.Fatal(err)
+			}
+			svc, l := newService(t, &recorder{}, running())
+			l.provider.serve = func(spec models.ExecSpec) (models.ExitStatus, error) {
+				if _, err := bundle.ResolveUser(rootfs, spec.User); err != nil {
+					return models.ExitStatus{}, fmt.Errorf("sandbox sandbox1: %w", err)
+				}
+				t.Errorf("the exec resolved the user %q", spec.User)
+
+				return models.ExitStatus{Code: 1}, nil
+			}
+
+			_, _, _, err := execOf(t, l, svc, "sandbox1", sandbox.ExecRequest{Command: []string{"id"}, User: tc.user}, "")
+			refused, ok := errors.AsType[*sandbox.RequestError](err)
+			if !ok || !strings.HasPrefix(refused.Public(), tc.want) || strings.Contains(refused.Public(), rootfs) {
+				t.Fatalf("exec as %s = %v, want a request error that starts %q and never names the host rootfs", tc.user, err, tc.want)
+			}
+		})
 	}
 }
 
@@ -1294,6 +1344,140 @@ func waitForExecCount(t *testing.T, svc *sandbox.Service, ref string, want int) 
 
 		time.Sleep(time.Millisecond)
 	}
+}
+
+// A sandbox runs at most MaxRunningExecsPerSandbox execs at once, and the one past it never reaches the substrate (SHARD-550).
+func TestAnExecPastTheSandboxBoundIsRefusedBeforeItStarts(t *testing.T) {
+	r := &recorder{}
+	svc, l := newService(t, r, running())
+	l.provider.execWaits = make(chan struct{})
+	holdRunningExecs(t, svc, sandbox.MaxRunningExecsPerSandbox)
+
+	_, err := svc.CreateExec(t.Context(), "sandbox1", sandbox.ExecRequest{Command: []string{"sleep", "600"}})
+
+	var limit *sandbox.ExecLimitError
+	if !errors.As(err, &limit) || limit.Daemon || limit.Limit != sandbox.MaxRunningExecsPerSandbox {
+		t.Fatalf("the create past the bound returned %v, want the sandbox's exec limit", err)
+	}
+	if launched := callsTo(r, "provider.Exec"); launched != sandbox.MaxRunningExecsPerSandbox {
+		t.Errorf("the substrate ran %d execs, want %d and none for the refused create", launched, sandbox.MaxRunningExecsPerSandbox)
+	}
+
+	close(l.provider.execWaits)
+	waitForRunningExecs(t, svc, 0)
+	if _, err := svc.CreateExec(t.Context(), "sandbox1", sandbox.ExecRequest{Command: []string{"true"}}); err != nil {
+		t.Errorf("a create once the commands ended returned %v, want it admitted", err)
+	}
+}
+
+// The daemon runs at most MaxRunningExecs execs across all sandboxes, so a sandbox under its own bound is still refused (SHARD-550).
+func TestAnExecPastTheDaemonBoundIsRefused(t *testing.T) {
+	r := &recorder{}
+	svc, _ := newService(t, r, running())
+	for i := range sandbox.MaxRunningExecs {
+		if err := svc.AdmitExec(fmt.Sprintf("other%d", i/sandbox.MaxRunningExecsPerSandbox)); err != nil {
+			t.Fatalf("AdmitExec %d: %v", i, err)
+		}
+	}
+
+	_, err := svc.CreateExec(t.Context(), "sandbox1", sandbox.ExecRequest{Command: []string{"true"}})
+
+	var limit *sandbox.ExecLimitError
+	if !errors.As(err, &limit) || !limit.Daemon || limit.Limit != sandbox.MaxRunningExecs {
+		t.Fatalf("the create past the daemon bound returned %v, want the daemon's exec limit", err)
+	}
+	if launched := callsTo(r, "provider.Exec"); launched != 0 {
+		t.Errorf("the substrate ran %d execs, want none for the refused create", launched)
+	}
+
+	svc.ReleaseExec("other0")
+	if _, err := svc.CreateExec(t.Context(), "sandbox1", sandbox.ExecRequest{Command: []string{"true"}}); err != nil {
+		t.Errorf("a create once a slot freed returned %v, want it admitted", err)
+	}
+}
+
+// A stop ends every running exec of the sandbox, so their slots free with them (SHARD-550).
+func TestStopFreesTheRunningExecSlots(t *testing.T) {
+	svc, l := newService(t, &recorder{}, running())
+	l.provider.execWaits = make(chan struct{})
+	holdRunningExecs(t, svc, sandbox.MaxRunningExecsPerSandbox)
+
+	if _, err := svc.Stop(t.Context(), "sandbox1"); err != nil {
+		t.Fatalf("Stop: %v", err)
+	}
+
+	waitForRunningExecs(t, svc, 0)
+}
+
+// A create whose command never launches frees its slot, so failed launches never fill the bound (SHARD-550).
+func TestAFailedLaunchFreesItsExecSlot(t *testing.T) {
+	cases := []struct {
+		name    string
+		tune    func(*sandbox.Config)
+		arrange func(*fakeProvider)
+	}{
+		{"never started", func(*sandbox.Config) {}, func(p *fakeProvider) {
+			p.execNoPID = true
+			p.execErr = &models.CommandNotStartedError{Sandbox: "sandbox1", Reason: "no such file or directory", Code: 127}
+		}},
+		{"past its budget", func(cfg *sandbox.Config) { cfg.ExecStartBudget = 20 * time.Millisecond }, func(p *fakeProvider) {
+			p.execNoPID = true
+			p.execWaits = make(chan struct{})
+		}},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			svc, l := newService(t, &recorder{}, running(), tc.tune)
+			tc.arrange(l.provider)
+
+			if _, err := svc.CreateExec(t.Context(), "sandbox1", sandbox.ExecRequest{Command: []string{"/bin/nope"}}); err == nil {
+				t.Fatal("CreateExec admitted a command that never launched")
+			}
+
+			waitForRunningExecs(t, svc, 0)
+		})
+	}
+}
+
+// holdRunningExecs creates n execs in sandbox1 whose commands run until the test releases them.
+func holdRunningExecs(t *testing.T, svc *sandbox.Service, n int) {
+	t.Helper()
+
+	for i := range n {
+		if _, err := svc.CreateExec(t.Context(), "sandbox1", sandbox.ExecRequest{Command: []string{"sleep", "600"}}); err != nil {
+			t.Fatalf("CreateExec %d: %v", i, err)
+		}
+	}
+}
+
+// waitForRunningExecs polls until sandbox1, the one sandbox the test runs execs in, holds want running slots, as each frees in its exec's goroutine.
+func waitForRunningExecs(t *testing.T, svc *sandbox.Service, want int) {
+	t.Helper()
+
+	deadline := time.Now().Add(2 * time.Second)
+	for {
+		held, all := svc.RunningExecs("sandbox1")
+		if held == want && all == want {
+			return
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("sandbox1 holds %d running exec slots and the daemon %d, want %d", held, all, want)
+		}
+
+		time.Sleep(time.Millisecond)
+	}
+}
+
+// callsTo counts the calls the recorder saw to one name.
+func callsTo(r *recorder, name string) int {
+	calls := 0
+	for _, call := range r.snapshot() {
+		if call == name {
+			calls++
+		}
+	}
+
+	return calls
 }
 
 // A failed sandbox accepts only a delete of the sandbox itself, so every exec verb answers

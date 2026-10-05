@@ -25,7 +25,7 @@ func open() (*Pty, error) {
 		return nil, errors.Join(err, master.Close())
 	}
 
-	return pair, nil
+	return pollableMaster(pair)
 }
 
 // replicaOf is grantpt, unlockpt and ptsname, which Darwin spells as three ioctls on the master.
@@ -68,3 +68,11 @@ const (
 	getTermios = unix.TIOCGETA
 	setTermios = unix.TIOCSETA
 )
+
+// flushInput discards the input nobody has read yet and leaves queued output alone, so a Ctrl-S never holds it.
+func flushInput(fd int) error {
+	// FREAD from sys/fcntl.h, which x/sys does not export.
+	const fread = 1
+
+	return unix.IoctlSetPointerInt(fd, unix.TIOCFLUSH, fread)
+}

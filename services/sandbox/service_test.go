@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io/fs"
 	"net/netip"
 	"os"
 	"slices"
@@ -177,12 +178,12 @@ func TestCreateIsNoRefusalWhenTheSandboxStays(t *testing.T) {
 func TestCreateRefusedByTheProviderLeavesNoRecord(t *testing.T) {
 	r := &recorder{}
 	svc, l := newService(t, r, models.Sandbox{})
-	l.provider.refuse = errors.New("provider fake takes no --memory 0")
+	l.provider.refuse = errors.New("provider fake needs resources.memory_mib")
 
 	_, err := svc.Create(t.Context(), alpine())
 
 	var refused *sandbox.RequestError
-	if !errors.As(err, &refused) || !strings.Contains(err.Error(), "--memory 0") {
+	if !errors.As(err, &refused) || !strings.Contains(err.Error(), "needs resources.memory_mib") {
 		t.Fatalf("create = %v, want a request error with the provider's reason", err)
 	}
 	if slices.Contains(r.calls, "repo.Create") || slices.Contains(r.calls, "images.Pull") {
@@ -295,7 +296,7 @@ func TestCreateRefusesMoreMemoryThanTheHostHas(t *testing.T) {
 	_, err := svc.Create(t.Context(), req)
 
 	var refused *sandbox.RequestError
-	if !errors.As(err, &refused) || !strings.Contains(err.Error(), "--memory 4097MiB is more than the 4096 MiB") {
+	if !errors.As(err, &refused) || !strings.Contains(err.Error(), "resources.memory_mib is 4097 MiB, more than the 4096 MiB of memory on this host; set it to 4096 MiB or less") {
 		t.Fatalf("create = %v, want a request error that names the bound and the host", err)
 	}
 	if slices.Contains(r.calls, "repo.Create") || slices.Contains(r.calls, "images.Pull") {
@@ -328,7 +329,7 @@ func TestCreateRefusesMoreCPUsThanTheHostHas(t *testing.T) {
 		_, err := svc.Create(t.Context(), req)
 
 		var refused *sandbox.RequestError
-		if want := fmt.Sprintf("--vcpus %d is more than the 8 CPUs this host has", cpus); !errors.As(err, &refused) || !strings.Contains(err.Error(), want) {
+		if want := fmt.Sprintf("resources.vcpus is %d, more than the 8 CPUs on this host; set it to 8 or less", cpus); !errors.As(err, &refused) || !strings.Contains(err.Error(), want) {
 			t.Fatalf("create with %d cpus = %v, want a request error that says %q", cpus, err, want)
 		}
 		if slices.Contains(r.calls, "repo.Create") || slices.Contains(r.calls, "images.Pull") {
@@ -1589,5 +1590,70 @@ func TestRemoveNamesTheRulesItLeft(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), "host rules") {
 		t.Errorf("rm failed with %v, want it to name the host rules it left behind", err)
+	}
+}
+
+// goneImage is what a substrate answers over an image rootfs an image rm deleted while a sandbox still stacks over it.
+func goneImage() error {
+	return fmt.Errorf("sandbox sandbox1: the image at /var/lib/shard/rootfs/sha256-0a1b is gone: %w: %w", models.ErrImageGone,
+		&fs.PathError{Op: "stat", Path: "/var/lib/shard/rootfs/sha256-0a1b", Err: fs.ErrNotExist})
+}
+
+// withImage is sb as a pull of alpine:3.20 left it, so a gone image has a reference to name.
+func withImage(sb models.Sandbox) models.Sandbox {
+	sb.Image, sb.Digest = "index.docker.io/library/alpine:3.20", fakeDigest
+
+	return sb
+}
+
+// imageGone checks err names the pinned pull and the verb to run again, and never the host path behind it.
+func imageGone(t *testing.T, err error, verb string) {
+	t.Helper()
+
+	if _, ok := errors.AsType[*sandbox.ImageGoneError](err); !ok {
+		t.Fatalf("%s over a gone image = %v, want an ImageGoneError", verb, err)
+	}
+	want := "sandbox sandbox1: its image index.docker.io/library/alpine@" + fakeDigest +
+		" is no longer on this host; pull that image, then " + verb + " the sandbox again"
+	if public, ok := sandbox.PublicText(err); !ok || public != want {
+		t.Errorf("the public text is %q, want %q", public, want)
+	}
+}
+
+// A start over an image an rm deleted names the pull that brings it back, and the record stays stopped (SHARD-585).
+func TestStartOverAGoneImageNamesThePullThatBringsItBack(t *testing.T) {
+	svc, l := newService(t, &recorder{fail: []string{"provider.Start"}, cause: goneImage()}, withImage(stopped()))
+
+	_, err := svc.Start(t.Context(), "sandbox1")
+
+	imageGone(t, err, "start")
+	if l.repo.sb.State != models.StateStopped {
+		t.Errorf("the record is %s after the refused start, want stopped", l.repo.sb.State)
+	}
+}
+
+// A create whose image left the host between the create and the start of its holder names the pull too (SHARD-585).
+func TestCreateWhoseStartFindsTheImageGoneNamesThePull(t *testing.T) {
+	svc, l := newService(t, &recorder{fail: []string{"provider.Start"}, cause: goneImage()}, models.Sandbox{})
+
+	_, err := svc.Create(t.Context(), alpine())
+
+	imageGone(t, err, "create")
+	public, _ := sandbox.PublicText(err)
+	if l.repo.sb.State != models.StateFailed || l.repo.sb.FailedPublic != public {
+		t.Errorf("the record is %s with public reason %q, want failed with %q", l.repo.sb.State, l.repo.sb.FailedPublic, public)
+	}
+}
+
+// A create whose image an rm deleted after the pull fails with the same public reason it answers (SHARD-585).
+func TestCreateOverAGoneImageNamesThePullThatBringsItBack(t *testing.T) {
+	svc, l := newService(t, &recorder{fail: []string{"provider.Create"}, cause: goneImage()}, models.Sandbox{})
+
+	_, err := svc.Create(t.Context(), alpine())
+
+	imageGone(t, err, "create")
+	public, _ := sandbox.PublicText(err)
+	if l.repo.sb.State != models.StateFailed || l.repo.sb.FailedPublic != public {
+		t.Errorf("the record is %s with public reason %q, want failed with %q", l.repo.sb.State, l.repo.sb.FailedPublic, public)
 	}
 }

@@ -11,7 +11,7 @@ import (
 
 // PolicyAttachRequest is the body of a policy PUT: the one policy the sandbox holds from its next start.
 type PolicyAttachRequest struct {
-	Policy string `json:"policy"`
+	Policy string `json:"policy" minLength:"1"`
 }
 
 // AttachPolicy gives a sandbox that already exists the policy a create with --policy would have given it.

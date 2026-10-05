@@ -3,6 +3,7 @@ package cli
 import (
 	"context"
 	"errors"
+	"flag"
 	"fmt"
 	"io"
 	"slices"
@@ -46,7 +47,7 @@ func (a App) secretSet(ctx context.Context, args []string) error {
 		return err
 	}
 
-	value, err := a.secretValue(opts)
+	value, err := a.secretValue(ctx, opts)
 	if err != nil {
 		return err
 	}
@@ -64,26 +65,26 @@ func (a App) secretSet(ctx context.Context, args []string) error {
 	return a.print(sec.Name)
 }
 
-// secretValue takes the value three ways: after the name, on stdin, or from a prompt with the echo off.
-func (a App) secretValue(opts secretSetOptions) (string, error) {
+// secretValue takes the value after the name, on stdin or from an echo-off prompt; a stop signal ends a stdin that never closes.
+func (a App) secretValue(ctx context.Context, opts secretSetOptions) (string, error) {
 	if opts.valueOnArgv() {
 		return opts.value, nil
 	}
 
 	if opts.value == "-" || !pty.IsTerminal(a.stdin()) {
-		return readSecretValue(a.stdin())
+		return readSecretValue(pty.Input(ctx, a.stdin()))
 	}
 
-	return a.promptSecretValue(opts.name)
+	return a.promptSecretValue(ctx, opts.name)
 }
 
 // promptSecretValue asks the terminal with the echo off, so the value lands in no history and on no screen.
-func (a App) promptSecretValue(name string) (string, error) {
+func (a App) promptSecretValue(ctx context.Context, name string) (string, error) {
 	if a.Err != nil {
 		fmt.Fprintf(a.Err, "value for %s: ", name)
 	}
 
-	blob, err := pty.ReadPassword(a.stdin())
+	blob, err := pty.ReadPassword(ctx, a.stdin())
 	if a.Err != nil {
 		fmt.Fprintln(a.Err)
 	}
@@ -131,15 +132,16 @@ func parseSecretSet(args []string) (secretSetOptions, error) {
 	}
 
 	rest := flags.Args()
+	guarded := endsOnDoubleDash(args, flags)
 	// The flags stop at the name, so the -- that guards a value starting with - is still among the arguments.
 	if len(rest) == 3 && rest[1] == "--" {
-		rest = []string{rest[0], rest[2]}
+		rest, guarded = []string{rest[0], rest[2]}, true
 	}
 	if len(rest) == 0 {
 		return secretSetOptions{}, errors.New("secret set takes a name and an optional value, got none")
 	}
-	// A value that starts with - needs a -- before it, so anything else that does is a misplaced flag.
-	if strings.HasPrefix(rest[0], "-") || (len(rest) > 2 && strings.HasPrefix(rest[1], "-")) {
+	// A value that starts with - needs a -- before it, so --placeholder=x after the name is refused, never stored.
+	if strings.HasPrefix(rest[0], "-") || (!guarded && slices.ContainsFunc(rest[1:], misplacedFlag)) {
 		return secretSetOptions{}, errors.New("secret set takes its flags before the name: shard secret set --destination <host> [--placeholder <string>] <NAME> [VALUE], with -- before a value that starts with -")
 	}
 	if len(rest) > 2 {
@@ -157,6 +159,34 @@ func parseSecretSet(args []string) (secretSetOptions, error) {
 	}
 
 	return opts, nil
+}
+
+// misplacedFlag is an argument after the name that reads as a flag; a lone - is the stdin value.
+func misplacedFlag(arg string) bool { return arg != "-" && strings.HasPrefix(arg, "-") }
+
+// endsOnDoubleDash says the flags ended on a --, not on the name; a -- that is a flag's value does not count.
+func endsOnDoubleDash(args []string, flags *flag.FlagSet) bool {
+	for at := 0; at < len(args); at++ {
+		arg := args[at]
+		if arg == "--" {
+			return true
+		}
+		if arg == "-" || !strings.HasPrefix(arg, "-") {
+			return false
+		}
+
+		name, _, inline := strings.Cut(strings.TrimLeft(arg, "-"), "=")
+		f := flags.Lookup(name)
+		if f == nil || inline {
+			continue
+		}
+		if boolean, ok := f.Value.(interface{ IsBoolFlag() bool }); ok && boolean.IsBoolFlag() {
+			continue
+		}
+		at++
+	}
+
+	return false
 }
 
 func (a App) secretList(ctx context.Context, args []string) error {

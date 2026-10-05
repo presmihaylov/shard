@@ -17,6 +17,7 @@ import (
 	"strings"
 	"sync"
 	"sync/atomic"
+	"syscall"
 	"testing"
 	"time"
 
@@ -527,6 +528,36 @@ func TestIsHandshakeNeedsAllFourHeaders(t *testing.T) {
 	}
 }
 
+// Every way a proxied connection ends is quiet as net wraps it, on either platform, and any other failure is not.
+func TestQuietReadsEveryEndOfAProxiedConnection(t *testing.T) {
+	wrap := func(errno syscall.Errno) error {
+		return &net.OpError{Op: "write", Net: "unix", Err: os.NewSyscallError("write", errno)}
+	}
+	for name, err := range map[string]error{
+		"nil":           nil,
+		"eof":           io.EOF,
+		"closed":        net.ErrClosed,
+		"deadline":      os.ErrDeadlineExceeded,
+		"broken pipe":   wrap(syscall.EPIPE),
+		"reset":         wrap(syscall.ECONNRESET),
+		"not connected": wrap(syscall.ENOTCONN),
+		"wrapped":       fmt.Errorf("write stream output: %w", wrap(syscall.ENOTCONN)),
+	} {
+		if !quiet(err) {
+			t.Errorf("%s: %v reads as a failure, want quiet", name, err)
+		}
+	}
+	for name, err := range map[string]error{
+		"permission": wrap(syscall.EACCES),
+		"refused":    wrap(syscall.ECONNREFUSED),
+		"other":      errors.New("read the response status line: boom"),
+	} {
+		if quiet(err) {
+			t.Errorf("%s: %v reads as quiet, want a failure", name, err)
+		}
+	}
+}
+
 // A sandbox:read token lists and inspects, and is 403 on every route it does not name; a forbidden route is never dialed.
 func TestAScopedTokenReachesOnlyItsRoutes(t *testing.T) {
 	up := fakeDaemon(t)
@@ -655,8 +686,8 @@ func checkLocalRoutesRefused(t *testing.T, address, name, token string, locals [
 	t.Helper()
 
 	unknown := readAll(t, askRoute(t, address, token, http.MethodGet, "/v0/nonesuch")) //nolint:bodyclose // askRoute closes the body in a cleanup
-	if unknown != forbidden+"\n" {
-		t.Fatalf("%s: an unknown route answered %q, want the forbidden body", name, unknown)
+	if unknown != unrouted+"\n" {
+		t.Fatalf("%s: an unknown route answered %q, want the unrouted body", name, unknown)
 	}
 	for _, r := range locals {
 		path := strings.NewReplacer("{id}", "s1", "{ref...}", "alpine").Replace(r.Pattern)

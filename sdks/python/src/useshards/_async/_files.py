@@ -10,7 +10,8 @@ import os
 import posixpath
 import stat
 import tempfile
-from collections.abc import AsyncIterable, AsyncIterator, Mapping
+import threading
+from collections.abc import AsyncGenerator, AsyncIterable, AsyncIterator, Mapping
 from typing import IO
 
 import httpx
@@ -114,10 +115,12 @@ class AsyncFiles:
         )
 
     async def remove(self, path: str, *, recursive: bool = False) -> None:
+        # A recursive remove waits on the guest for as long as the tree takes, so no bound cuts it.
         await self._transport.send(
             lambda: delete_file.asyncio_detailed(
                 self._sandbox, client=self._transport.api, path=path, recursive=recursive or UNSET
-            )
+            ),
+            self._transport.read_bound(None),
         )
 
     async def upload(
@@ -164,13 +167,13 @@ class AsyncFiles:
         params = {"path": parent}
         if user:
             params["user"] = user
-        # The tar goes to disk first, since the daemon takes a known length and the pack only knows it at the end.
-        with tempfile.TemporaryFile() as tar:
-            await _backend.offload(functools.partial(_archive.pack, source, name, tar))
-            size = tar.tell()
-            tar.seek(0)
-            content = _exactly(tar, size, f"upload {source}", to_end=True)
-            await self._transport.put(self._route("archive"), params, content, size)
+        # The daemon streams the tar into the guest as it arrives, and the guest's unpack may outlast any bound.
+        content = _packed(source, name)
+        try:
+            await self._transport.put(self._route("archive"), params, content, None, self._transport.read_bound(None))
+        finally:
+            # A daemon that answers before the tar ends leaves the pack blocked on a full pipe until this shuts it.
+            await content.aclose()
 
     async def download_dir(self, remote: str, local: LocalPath) -> None:
         """copy a directory out of a running sandbox"""
@@ -237,6 +240,31 @@ async def _exactly(source: IO[bytes], size: int, what: str, *, to_end: bool) -> 
     extra = await _backend.offload(functools.partial(source.read, 1))
     if extra:
         raise UnknownLengthError(f"{what}: the data grew past the {size} bytes it held at the start")
+
+
+async def _packed(source: str, name: str) -> AsyncGenerator[bytes, None]:
+    """The tar of source as the pack writes it, so the first bytes go out before the walk ends."""
+    r, w = os.pipe()
+    failed: builtins.list[BaseException] = []
+
+    def run() -> None:
+        try:
+            with open(w, "wb") as out:
+                _archive.pack(source, name, out)
+        except BaseException as e:
+            failed.append(e)
+
+    packer = threading.Thread(target=run, daemon=True)
+    packer.start()
+    try:
+        while chunk := await _backend.offload(functools.partial(os.read, r, CHUNK)):
+            yield chunk
+    finally:
+        # Shutting the read end fails a pack blocked on a full pipe, so the join returns.
+        os.close(r)
+        await _backend.offload(packer.join)
+    if failed:
+        raise failed[0]
 
 
 async def _spool(response: httpx.Response, out: IO[bytes]) -> None:

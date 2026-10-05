@@ -62,6 +62,9 @@ func newHarness(t *testing.T) *harness {
 	if err := os.WriteFile(sessions, nil, 0o600); err != nil {
 		t.Fatal(err)
 	}
+	if err := note(harnessesFile, sessions); err != nil {
+		t.Fatal(err)
+	}
 	// Registered after the RemoveAll, so it runs before it and after every spec's stop.
 	t.Cleanup(func() { endSessions(t, sessions) })
 
@@ -453,6 +456,42 @@ func TestCreateRefusesAnImageWithoutAnErofsImage(t *testing.T) {
 	}
 }
 
+// An image an rm deleted before the create leaves no disk to boot from, and the refusal carries the sentinel a route answers (SHARD-585).
+func TestCreateRefusesAnImageGoneFromTheHost(t *testing.T) {
+	h := newHarness(t)
+	spec := h.newSpec(t, "/bin/sh", "-c", "exit 0")
+	spec.BaseDisk = filepath.Join(t.TempDir(), "gone.erofs")
+
+	if err := h.provider.Create(t.Context(), spec); !errors.Is(err, models.ErrImageGone) {
+		t.Fatalf("Create over a gone image = %v, want models.ErrImageGone", err)
+	}
+}
+
+// Every boot puts the image in a new jail, so a start after an rm deleted it is refused by the same sentinel (SHARD-585).
+func TestStartRefusesAnImageGoneFromTheHost(t *testing.T) {
+	h := newHarness(t)
+	spec := h.newSpec(t, "/bin/sh", "-c", "exit 0")
+	if err := h.provider.Create(t.Context(), spec); err != nil {
+		t.Fatal(err)
+	}
+	if err := h.provider.Start(t.Context(), spec.ID); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := h.provider.Wait(t.Context(), spec.ID); err != nil {
+		t.Fatal(err)
+	}
+	if err := h.provider.Stop(t.Context(), spec.ID, stopGrace); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Remove(h.erofs); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := h.provider.Start(t.Context(), spec.ID); !errors.Is(err, models.ErrImageGone) {
+		t.Fatalf("Start over a gone image = %v, want models.ErrImageGone", err)
+	}
+}
+
 // The bound needs room under the 32 MiB headroom, so a VM too small for one is refused by name.
 func TestCreateRefusesAMemoryBoundBelowTheMinimum(t *testing.T) {
 	h := newHarness(t)
@@ -464,10 +503,10 @@ func TestCreateRefusesAMemoryBoundBelowTheMinimum(t *testing.T) {
 		t.Fatalf("Create = %v, want a refusal that names the sandbox and the minimum", err)
 	}
 
-	// Zero is unbounded on Linux; a VM has no unbounded memory, so the refusal names the provider and the flag instead of a default.
+	// Zero is unbounded on Linux; a VM has no unbounded memory, so the refusal names the provider and the field instead of a default.
 	spec.Resources.MemoryMiB = 0
 	err = h.provider.Create(t.Context(), spec)
-	for _, want := range []string{spec.ID, "provider firecracker", "--memory 0", "--memory 128MiB"} {
+	for _, want := range []string{spec.ID, "provider firecracker", "needs resources.memory_mib", "set it to 128 MiB or more"} {
 		if err == nil || !strings.Contains(err.Error(), want) {
 			t.Fatalf("Create with --memory 0 = %v, want %q named", err, want)
 		}
@@ -492,7 +531,7 @@ func TestCheckResourcesRefusesWhatCreateRefuses(t *testing.T) {
 	if err := h.provider.CheckResources(models.Resources{MemoryMiB: 128, VCPUs: 32}); err != nil {
 		t.Fatalf("CheckResources(128, 32) = %v, want nil", err)
 	}
-	for disk, want := range map[int64]string{1: "at least 11 MiB of disk", 10: "at least 11 MiB of disk", 129: "use 128 or 131 MiB"} {
+	for disk, want := range map[int64]string{1: "under the 11 MiB provider firecracker needs", 10: "under the 11 MiB provider firecracker needs", 129: "set resources.disk_mib to 128 MiB or 131 MiB"} {
 		err := h.provider.CheckResources(models.Resources{MemoryMiB: 128, DiskMiB: disk})
 		if err == nil || !strings.Contains(err.Error(), want) {
 			t.Fatalf("CheckResources(--disk %d) = %v, want %q", disk, err, want)
@@ -623,11 +662,19 @@ func TestADroppedControlStreamIsDialedAgain(t *testing.T) {
 	}
 }
 
-// A guest that floods every control stream is dialed a few times a second at most, and exec and stop still answer (SHARD-408).
+// A guest that floods every control stream, by oversized lines or by queued events, is dialed a few times a second at most, and exec and stop still answer (SHARD-408, SHARD-550).
 func TestAGuestThatFloodsEveryControlStreamIsDialedAFewTimesASecondAtMost(t *testing.T) {
+	for _, flooding := range []string{floodEveryFile, floodEventsFile} {
+		t.Run(flooding, func(t *testing.T) {
+			floodEveryControlStream(t, flooding)
+		})
+	}
+}
+
+func floodEveryControlStream(t *testing.T, flooding string) {
 	h := newHarness(t)
 	spec, pid := h.runLong(t)
-	for _, marker := range []string{dialsFile, floodEveryFile} {
+	for _, marker := range []string{dialsFile, flooding} {
 		if err := os.WriteFile(filepath.Join(spec.StateDir, marker), nil, 0o600); err != nil {
 			t.Fatal(err)
 		}
@@ -1445,7 +1492,7 @@ func TestASourceAForkHoldsReadsRunningAndRefusesAnExec(t *testing.T) {
 	}
 }
 
-// requireHeld proves a source a fork holds reads running at once, and refuses an exec by the fork's name.
+// requireHeld proves a source a fork holds reads running at once, and refuses an exec, a signal and an app stop by the fork's name.
 func (h *harness) requireHeld(t *testing.T, id string, pid int, window string) {
 	t.Helper()
 
@@ -1458,6 +1505,16 @@ func (h *harness) requireHeld(t *testing.T, id string, pid int, window string) {
 	want := fmt.Sprintf("sandbox %s could not run the command: a fork holds the sandbox frozen, and nothing starts in it until that ends: run the command again", id)
 	if err == nil || err.Error() != want {
 		t.Fatalf("Exec on the source in %s = %v, want %q", window, err, want)
+	}
+	err = h.provider.Signal(t.Context(), id, 1, "TERM")
+	want = fmt.Sprintf("sandbox %s: a fork holds the sandbox frozen, so the signal was not sent: send it again once that ends", id)
+	if err == nil || err.Error() != want {
+		t.Fatalf("Signal on the source in %s = %v, want %q", window, err, want)
+	}
+	err = h.provider.StopApp(t.Context(), id, false)
+	want = fmt.Sprintf("sandbox %s: a fork holds the sandbox frozen, so the app stop was not sent: send it again once that ends", id)
+	if err == nil || err.Error() != want {
+		t.Fatalf("StopApp on the source in %s = %v, want %q", window, err, want)
 	}
 }
 
@@ -1587,6 +1644,34 @@ func TestASourceTheForkCouldNotResumeRunsAgain(t *testing.T) {
 	}
 	if _, err := os.Stat(filepath.Join(spec.StateDir, firecracker.CaptureFile)); !errors.Is(err, os.ErrNotExist) {
 		t.Errorf("the capture marker after the adopt: %v, want gone", err)
+	}
+}
+
+// A run again that fails leaves the VM paused, so the live daemon lets the machine go and the next lookup resumes it as a new daemon would (SHARD-560).
+func TestASourceTheForkCouldNotResumeRunsAgainWithoutARestart(t *testing.T) {
+	h := newHarness(t)
+	spec, pid := h.runLong(t)
+	refuse := filepath.Join(spec.StateDir, refuseResumeFile)
+	if err := os.WriteFile(refuse, nil, 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	err := h.provider.Fork(t.Context(), spec.ID, h.forkSpec(t))
+	if err == nil || !strings.Contains(err.Error(), "refused by the test") {
+		t.Fatalf("Fork over a refused resume = %v, want the refusal", err)
+	}
+	if err := os.Remove(refuse); err != nil {
+		t.Fatal(err)
+	}
+
+	status, err := h.provider.Status(t.Context(), spec.ID)
+	if err != nil || status.State != models.StateRunning || status.PID != pid {
+		t.Fatalf("Status of the source = %+v, %v, want running again as pid %d", status, err, pid)
+	}
+	ctx, cancel := context.WithTimeout(t.Context(), 10*time.Second)
+	defer cancel()
+	if exit, err := h.provider.Exec(ctx, spec.ID, models.ExecSpec{Argv: []string{"/bin/sh", "-c", "exit 0"}}); err != nil || exit.Code != 0 {
+		t.Fatalf("Exec on the source = %+v, %v, want code 0", exit, err)
 	}
 }
 
@@ -2708,5 +2793,25 @@ func TestAdoptStagingDropsACutPauseStage(t *testing.T) {
 
 	if _, err := os.Stat(tmp); !errors.Is(err, os.ErrNotExist) {
 		t.Errorf("the staging %s survived adopt, want it dropped (err %v)", tmp, err)
+	}
+}
+
+// A restore whose checkpoint overlay is missing must leave the live overlay in place, so a failed copy never bricks a sandbox (SHARD-589).
+func TestRestoreFilesKeepsTheLiveOverlayWhenTheCopyFails(t *testing.T) {
+	stateDir, checkpoint := t.TempDir(), t.TempDir()
+	live := filepath.Join(stateDir, bundle.OverlayDiskFile)
+	if err := os.WriteFile(live, []byte("live"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	// The checkpoint has no overlay, so the copy fails and the swap never runs.
+	if err := firecracker.RestoreFiles(checkpoint, stateDir); err == nil {
+		t.Fatal("restoreFiles with no checkpoint overlay = nil, want an error")
+	}
+	got, err := os.ReadFile(live)
+	if err != nil {
+		t.Fatalf("the live overlay after a failed restore: %v, want it kept", err)
+	}
+	if string(got) != "live" {
+		t.Errorf("the live overlay = %q, want it unchanged", got)
 	}
 }

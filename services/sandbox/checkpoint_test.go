@@ -323,6 +323,74 @@ func TestPauseKeepsItsMarkOverAFrozenSandboxTheSubstrateCannotRelease(t *testing
 	}
 }
 
+// A stop ends the sandbox, so its checkpoint's memory and disk copy go with it rather than leak until rm (SHARD-592).
+func TestStopDropsTheCheckpointOfAPausedSandbox(t *testing.T) {
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, "checkpoint.img"), []byte("memory"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	paused := pausedSandbox()
+	paused.Checkpoint = dir
+	svc, l := newService(t, &recorder{}, paused)
+	l.repo.checkpointDir = dir
+
+	sb, err := svc.Stop(t.Context(), "sandbox1")
+	if err != nil {
+		t.Fatalf("stop: %v", err)
+	}
+
+	if sb.State != models.StateStopped || sb.Checkpoint != "" {
+		t.Errorf("the record is %s with checkpoint %q, want stopped with none", sb.State, sb.Checkpoint)
+	}
+	if _, err := os.Stat(dir); !errors.Is(err, os.ErrNotExist) {
+		t.Errorf("the checkpoint directory survived the stop: %v", err)
+	}
+}
+
+// A stop whose drop failed wrote a stopped record, so the next stop retries the drop rather than leak the checkpoint (SHARD-592).
+func TestStopRetriesTheCheckpointDropAfterItsFirstFailure(t *testing.T) {
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, "checkpoint.img"), []byte("memory"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	// Mode 0500 denies the removal of the directory's contents, so the first drop fails.
+	if err := os.Chmod(dir, 0o500); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.Chmod(dir, 0o700) })
+
+	paused := pausedSandbox()
+	paused.Checkpoint = dir
+	svc, l := newService(t, &recorder{}, paused)
+	l.repo.checkpointDir = dir
+
+	_, err := svc.Stop(t.Context(), "sandbox1")
+	if err == nil || !strings.Contains(err.Error(), "permission denied") {
+		t.Fatalf("first stop = %v, want the drop's permission error", err)
+	}
+	if l.repo.sb.State != models.StateStopped {
+		t.Fatalf("the record is %s, want stopped after the failed drop", l.repo.sb.State)
+	}
+	if _, err := os.Stat(filepath.Join(dir, "checkpoint.img")); err != nil {
+		t.Fatalf("the memory copy must remain after the refused drop: %v", err)
+	}
+
+	if err := os.Chmod(dir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	sb, err := svc.Stop(t.Context(), "sandbox1")
+	if err != nil {
+		t.Fatalf("retry stop: %v", err)
+	}
+	if sb.State != models.StateStopped || sb.Checkpoint != "" {
+		t.Errorf("the record is %s with checkpoint %q, want stopped with none", sb.State, sb.Checkpoint)
+	}
+	if _, err := os.Stat(dir); !errors.Is(err, os.ErrNotExist) {
+		t.Errorf("the checkpoint directory survived the retry: %v", err)
+	}
+}
+
 func TestResumeRunsAPausedSandboxAgain(t *testing.T) {
 	r := &recorder{}
 	svc, l := newService(t, r, pausedSandbox())
@@ -381,8 +449,8 @@ func TestResumeRefusesARecordWithNoCheckpoint(t *testing.T) {
 	svc, l := newService(t, &recorder{}, sb)
 
 	_, err := svc.Resume(t.Context(), "sandbox1")
-	if err == nil || !strings.Contains(err.Error(), "no checkpoint") {
-		t.Errorf("resume returned %v, want a refusal that says there is no checkpoint", err)
+	if err == nil || !strings.Contains(err.Error(), "no saved state to resume") {
+		t.Errorf("resume returned %v, want a refusal that says there is no saved state", err)
 	}
 	if l.net.allocated {
 		t.Error("resume built the network for a sandbox it could not resume")
@@ -699,4 +767,26 @@ func TestForkCarriesEveryPolicyField(t *testing.T) {
 	if sb.Restart == nil || sb.Restart.RestartSpec != source.Restart.RestartSpec {
 		t.Errorf("the fork holds the restart %+v, want the source's policy %+v", sb.Restart, source.Restart.RestartSpec)
 	}
+}
+
+// A resume over an image an rm deleted names the pull that brings it back, and the record stays paused (SHARD-585).
+func TestResumeOverAGoneImageNamesThePullThatBringsItBack(t *testing.T) {
+	svc, l := newService(t, &recorder{fail: []string{"provider.Resume"}, cause: goneImage()}, withImage(pausedSandbox()))
+	l.provider.status = models.Status{}
+
+	_, err := svc.Resume(t.Context(), "sandbox1")
+
+	imageGone(t, err, "resume")
+	if l.repo.sb.State != models.StatePaused {
+		t.Errorf("the record is %s after the refused resume, want paused", l.repo.sb.State)
+	}
+}
+
+// A fork mounts the source's image afresh, so one an rm deleted names the pull that brings it back (SHARD-585).
+func TestForkOverAGoneImageNamesThePullThatBringsItBack(t *testing.T) {
+	svc, _ := newService(t, &recorder{fail: []string{"provider.Fork"}, cause: goneImage()}, withImage(forkSource()))
+
+	_, err := svc.Fork(t.Context(), "sandbox1", sandbox.CopyRequest{})
+
+	imageGone(t, err, "fork")
 }

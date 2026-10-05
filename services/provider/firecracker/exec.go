@@ -162,6 +162,9 @@ func (p *Provider) Signal(ctx context.Context, id string, pid int, signal string
 	if err != nil {
 		return err
 	}
+	if err := refuseHeld(m, "the signal"); err != nil {
+		return err
+	}
 	if err := m.control.Load().Signal(ctx, pid, signal); err != nil {
 		return fmt.Errorf("sandbox %s: %w", id, err)
 	}
@@ -175,9 +178,22 @@ func (p *Provider) StopApp(ctx context.Context, id string, force bool) error {
 	if err != nil {
 		return err
 	}
+	if err := refuseHeld(m, "the app stop"); err != nil {
+		return err
+	}
 	if err := m.control.Load().StopApp(ctx, force); err != nil {
 		return fmt.Errorf("sandbox %s: stop the app: %w", id, err)
 	}
 
 	return nil
+}
+
+// refuseHeld names the verb that holds the guest, whose snapshot resets the control stream, so the caller knows what went unsent rather than meet a stream error (SHARD-562).
+func refuseHeld(m *machine, what string) error {
+	verb := m.holder.Load()
+	if verb == nil {
+		return nil
+	}
+
+	return fmt.Errorf("sandbox %s: a %s holds the sandbox frozen, so %s was not sent: send it again once that ends", m.id, *verb, what)
 }

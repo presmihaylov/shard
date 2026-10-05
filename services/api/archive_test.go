@@ -156,7 +156,7 @@ func TestAClientThatHangsUpBeforeTheTrailerStillLogs(t *testing.T) {
 
 	// The response write can see the hang-up before the exec does, so either side's error is the cut.
 	s.server.Close()
-	if logged := s.log.String(); !strings.Contains(logged, "api: archive /work from sandbox "+s.running.ID+": ") {
+	if logged := s.log.String(); !strings.Contains(logged, `api: archive "/work" from sandbox `+s.running.ID+": ") {
 		t.Fatalf("the daemon logged %q after a cut copy, want the failure", logged)
 	}
 }

@@ -2,7 +2,9 @@ package bundle
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
+	"io/fs"
 	"os"
 	"path/filepath"
 
@@ -83,11 +85,29 @@ func (b Bundle) writeSpec(spec *specs.Spec) error {
 		return fmt.Errorf("marshal the runtime spec: %w", err)
 	}
 
+	// The mark goes first, so a write that fails halfway costs a create again and never a guest that misses it.
+	if err := store.WriteFile(b.ChangedFile, nil, 0o600); err != nil {
+		return fmt.Errorf("mark %s changed: %w", b.configPath(), err)
+	}
+
 	if err := store.WriteFile(b.configPath(), encoded, 0o644); err != nil { // #nosec G306
 		return fmt.Errorf("write %s: %w", b.configPath(), err)
 	}
 
 	return nil
+}
+
+// Changed says config.json was written since the substrate last created the container from it.
+func (b Bundle) Changed() (bool, error) {
+	_, err := os.Stat(b.ChangedFile)
+	if errors.Is(err, fs.ErrNotExist) {
+		return false, nil
+	}
+	if err != nil {
+		return false, fmt.Errorf("stat %s: %w", b.ChangedFile, err)
+	}
+
+	return true, nil
 }
 
 // Opener answers the guest environment of any sandbox by its state dir, which on every OCI substrate is its bundle.
