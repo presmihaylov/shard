@@ -51,7 +51,9 @@ Setup stopped. Earlier completed steps remain in place.
 Run shard setup again to retry.
 ```
 
-Every step is safe to run again. Fix the cause and run `shard setup` again, and it picks up where it stopped. A download fails if it receives no data for 30 seconds, but a slow download that is still making progress runs to the end.
+Every step is safe to run again. Fix the cause and run `shard setup` again, and it picks up where it stopped. If `shard` is not on your `PATH` yet, the last line names the full path of the binary instead. A run without a terminal also repeats its options there.
+
+While a download runs, its step shows how much has arrived. A download fails if it receives no data for 30 seconds, and its line then ends `no data for 30s; setup stops a download that sends nothing for that long`. A slow download that is still making progress runs to the end.
 
 If a check fails before setup changes anything, the output says `No installation changes were made.`
 

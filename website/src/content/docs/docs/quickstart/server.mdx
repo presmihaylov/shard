@@ -105,6 +105,8 @@ Each question has a matching option, so a script runs the same checks as the wiz
 shard setup --local --provider firecracker --start-at-boot=true -y
 ```
 
+`--provider` and `--start-at-boot` also answer the first question, so a run with either one needs no `--local`.
+
 Without a terminal, every question needs its option, and setup never picks a value for you. A local run with options missing fails before any check runs, and names them all at once:
 
 ```text
