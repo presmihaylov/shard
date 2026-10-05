@@ -17,10 +17,12 @@ type fakeUI struct {
 	texts    map[Question]string
 	secrets  map[Question]string
 
-	asked   []Question
-	options map[Question][]term.Option
-	printed []string
-	lists   []*fakeChecklist
+	asked []Question
+	// initials are the values each Text started as, in order.
+	initials []string
+	options  map[Question][]term.Option
+	printed  []string
+	lists    []*fakeChecklist
 }
 
 var errUnscripted = errors.New("the test gave no answer")
@@ -56,8 +58,9 @@ func (f *fakeUI) Confirm(_ context.Context, q Question, _ string, _ bool) (bool,
 	return answer, nil
 }
 
-func (f *fakeUI) Text(_ context.Context, q Question, _ string) (string, error) {
+func (f *fakeUI) Text(_ context.Context, q Question, _, initial string) (string, error) {
 	f.ask(q)
+	f.initials = append(f.initials, initial)
 	answer, ok := f.texts[q]
 	if !ok {
 		return "", fmt.Errorf("text %s: %w", q, errUnscripted)

@@ -41,7 +41,7 @@ func TestOffATerminalEveryQuestionNeedsOne(t *testing.T) {
 
 	_, selectErr := term.Select(t.Context(), "pick", []Option{{Name: "a", Label: "A"}})
 	_, confirmErr := term.Confirm(t.Context(), "sure?", true)
-	_, textErr := term.Text(t.Context(), "url")
+	_, textErr := term.Text(t.Context(), "url", "")
 	_, secretErr := term.Secret(t.Context(), "key")
 	for name, err := range map[string]error{"select": selectErr, "confirm": confirmErr, "text": textErr, "secret": secretErr} {
 		if !errors.Is(err, ErrNotTerminal) {
@@ -142,6 +142,29 @@ func TestSecretEchoesOneDotPerCharacter(t *testing.T) {
 	}
 }
 
+// The line starts as the initial value, which Enter keeps and the editing keys change. (SHARD-667)
+func TestTextStartsAsTheInitialLine(t *testing.T) {
+	var out bytes.Buffer
+	got, err := keyed(&out, "\r").Text(t.Context(), "URL", "https://a.example")
+	if err != nil || got != "https://a.example" {
+		t.Fatalf("Text = %q, %v; want the initial line", got, err)
+	}
+	if want := "URL\r\n> https://a.example\r\n\r\n"; out.String() != want {
+		t.Errorf("drew %q, want %q", out.String(), want)
+	}
+}
+
+func TestTextEditsTheInitialLine(t *testing.T) {
+	var out bytes.Buffer
+	got, err := keyed(&out, "\x15https://b.exa\x1b[3~\x1b[Dmpler\x7f\r").Text(t.Context(), "URL", "https://a.example")
+	if err != nil || got != "https://b.example" {
+		t.Fatalf("Text = %q, %v; want the edited line", got, err)
+	}
+	if strings.Contains(out.String(), "~") || strings.Contains(out.String(), "[D") {
+		t.Errorf("an arrow or the delete key echoed in %q", out.String())
+	}
+}
+
 func TestSecretEndsOnInterrupt(t *testing.T) {
 	if _, err := keyed(&bytes.Buffer{}, "ab\x03").Secret(t.Context(), "API key"); !errors.Is(err, ErrInterrupted) {
 		t.Errorf("Ctrl-C gave %v, want ErrInterrupted", err)
@@ -155,11 +178,11 @@ func TestAnAnsweredQuestionLeavesABlankLine(t *testing.T) {
 			return err
 		},
 		"confirm": func(term *Terminal) error { _, err := term.Confirm(t.Context(), "sure?", true); return err },
-		"text":    func(term *Terminal) error { _, err := term.Text(t.Context(), "url"); return err },
+		"text":    func(term *Terminal) error { _, err := term.Text(t.Context(), "url", ""); return err },
 		"secret":  func(term *Terminal) error { _, err := term.Secret(t.Context(), "key"); return err },
 	}
-	typed := map[string]string{"select": "\r", "confirm": "\n", "text": "u\n", "secret": "k\r"}
-	ends := map[string]string{"select": "\r\n\r\n", "confirm": "[Y/n] \n", "text": "> \n", "secret": "•\r\n\r\n"}
+	typed := map[string]string{"select": "\r", "confirm": "\n", "text": "u\r", "secret": "k\r"}
+	ends := map[string]string{"select": "\r\n\r\n", "confirm": "[Y/n] \n", "text": "u\r\n\r\n", "secret": "•\r\n\r\n"}
 	for name, question := range ask {
 		var out bytes.Buffer
 		if err := question(keyed(&out, typed[name])); err != nil {
