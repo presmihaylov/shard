@@ -794,12 +794,10 @@ func dataLeft(h Host) ([]string, error) {
 	}
 
 	info, err := os.Lstat(rooted(h, image))
-	if errors.Is(err, fs.ErrNotExist) {
-		return []string{"To delete the saved data, run: " + remove}, nil
-	}
-	if err != nil {
+	if err != nil && !errors.Is(err, fs.ErrNotExist) {
 		return nil, fmt.Errorf("check %s: %w", image, err)
 	}
+	imaged := err == nil
 	fstab, err := os.ReadFile(rooted(h, fstabPath))
 	if err != nil && !errors.Is(err, fs.ErrNotExist) {
 		return nil, fmt.Errorf("read %s: %w", fstabPath, err)
@@ -811,16 +809,28 @@ func dataLeft(h Host) ([]string, error) {
 		}
 	}
 
+	if !imaged && len(mounts) == 0 {
+		return []string{"To delete the saved data, run: " + remove}, nil
+	}
+	// systemd keeps the mount unit it made from the fstab line until a reload. (SHARD-730)
+	dropLine := []string{"  " + sudo + "sed -i '\\|^" + regexp.QuoteMeta(image) + "[[:space:]]|d' " + fstabPath, "  " + sudo + "systemctl daemon-reload"}
+	// A line left for a deleted image fails its mount at every boot.
+	if !imaged {
+		return slices.Concat(
+			[]string{"The disk image " + image + " is gone, but this line in " + fstabPath + " still mounts it at boot:"}, mounts,
+			[]string{"To remove the line and delete the saved data, run:"}, dropLine, []string{"  " + remove},
+		), nil
+	}
+
 	where := fmt.Sprintf("It lives in the %.1f GiB disk image %s", float64(info.Size())/(1<<30), image)
 	free := "To free the disk and delete the saved data, run:"
 	if len(mounts) == 0 {
 		return []string{where + ".", free, "  " + sudo + "umount " + DataDir, "  " + sudo + "rm " + image, "  " + remove}, nil
 	}
 
-	// systemd keeps the mount unit it made from the fstab line until a reload. (SHARD-730)
 	return slices.Concat(
 		[]string{where + ", which this line in " + fstabPath + " mounts at boot:"}, mounts,
-		[]string{free, "  " + sudo + "umount " + DataDir, "  " + sudo + "sed -i '\\|^" + regexp.QuoteMeta(image) + "[[:space:]]|d' " + fstabPath, "  " + sudo + "systemctl daemon-reload", "  " + sudo + "rm " + image, "  " + remove},
+		[]string{free, "  " + sudo + "umount " + DataDir}, dropLine, []string{"  " + sudo + "rm " + image, "  " + remove},
 	), nil
 }
 

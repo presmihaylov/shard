@@ -970,6 +970,16 @@ func TestUninstallNamesTheDataItKeeps(t *testing.T) {
 			"  sudo rm /var/lib/shard.xfs",
 			"  sudo rm -r /var/lib/shard",
 		}},
+		"linux fstab line without its image": {os: "linux", files: map[string]string{
+			"/etc/fstab": "UUID=1 / ext4 defaults 0 1\n/var/lib/shard.xfs /var/lib/shard xfs loop,nofail 0 0\n",
+		}, want: []string{
+			"The disk image /var/lib/shard.xfs is gone, but this line in /etc/fstab still mounts it at boot:",
+			"  /var/lib/shard.xfs /var/lib/shard xfs loop,nofail 0 0",
+			"To remove the line and delete the saved data, run:",
+			`  sudo sed -i '\|^/var/lib/shard\.xfs[[:space:]]|d' /etc/fstab`,
+			"  sudo systemctl daemon-reload",
+			"  sudo rm -r /var/lib/shard",
+		}},
 		"linux image with its lock": {os: "linux", files: map[string]string{"/var/lib/shard.xfs": "img", "/var/lib/shard.xfs.lock": ""}, want: []string{
 			"It lives in the 0.0 GiB disk image /var/lib/shard.xfs.",
 			"To free the disk and delete the saved data, run:",
