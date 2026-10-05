@@ -181,9 +181,9 @@ func startupLine(h Host, l Local) string {
 // localDone closes a local setup with what to run next, with sudo where the person it ran for needs it to reach the API socket.
 func localDone(h Host, l Local) []string {
 	sudo := socketSudo(h)
-	lines := []string{"", "Setup is complete, and the daemon is running.", ""}
+	lines := []string{"", "shard " + h.Version + " is set up, and the daemon is running.", ""}
 	if !l.StartAtBoot {
-		lines = []string{"", "Setup is complete.", ""}
+		lines = []string{"", "shard " + h.Version + " is set up.", ""}
 	}
 	if sudo != "" {
 		lines = append(lines, "Local commands run with sudo, because the API socket belongs to root.", "")

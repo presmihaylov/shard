@@ -270,7 +270,7 @@ func TestLocalSetsUpGVisorWithAService(t *testing.T) {
 		"  Create shard's data directory.",
 		"  Configure and start a systemd service.",
 		"Administrator access is required.",
-		"Setup is complete, and the daemon is running.",
+		"shard v0.1.0 is set up, and the daemon is running.",
 		"Local commands run with sudo, because the API socket belongs to root.",
 		"Next steps:",
 		"    sudo shard list",
@@ -307,7 +307,7 @@ func TestLocalManualStartupPrintsTheDaemonCommand(t *testing.T) {
 		t.Fatalf("local = %v; printed %q", err, ui.printed)
 	}
 
-	said(t, ui.fakeUI, "Automatic startup: No", "  Leave daemon startup under your control.", "  Start the daemon, and run the next steps in another terminal:")
+	said(t, ui.fakeUI, "Automatic startup: No", "  Leave daemon startup under your control.", "shard v0.1.0 is set up.", "  Start the daemon, and run the next steps in another terminal:")
 	daemon, list := slices.Index(ui.printed, "    sudo shard daemon --provider gvisor"), slices.Index(ui.printed, "    sudo shard list")
 	if daemon < 0 || list < daemon {
 		t.Fatalf("the daemon command does not come before the next steps: %q", ui.printed)
@@ -348,7 +348,7 @@ func TestLocalOnAMacUsesLaunchdAndNoSudo(t *testing.T) {
 		t.Fatalf("local = %v; printed %q", err, ui.printed)
 	}
 
-	said(t, ui.fakeUI, "Provider:          macOS Virtualization", "  Install shard in /usr/local/bin.", "  Configure and start a launchd service.", "Setup is complete, and the daemon is running.",
+	said(t, ui.fakeUI, "Provider:          macOS Virtualization", "  Install shard in /usr/local/bin.", "  Configure and start a launchd service.", "shard v0.1.0 is set up, and the daemon is running.",
 		"Next steps:", "    shard list", "    shard remove --force demo", "Documentation: https://useshards.com/docs")
 	if slices.ContainsFunc(ui.printed, func(p string) bool { return strings.Contains(p, "sudo") }) {
 		t.Fatalf("a Mac is told to use sudo: %q", ui.printed)
