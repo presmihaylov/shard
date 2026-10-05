@@ -445,7 +445,7 @@ func (p *localPlan) service(ctx context.Context) (err error) {
 
 func (p *localPlan) systemdService(ctx context.Context, dir string) error {
 	unit := filepath.Join(dir, "shard.service")
-	if err := os.WriteFile(unit, []byte(systemdUnitText(p.local.Provider)), 0o644); err != nil {
+	if err := os.WriteFile(unit, []byte(systemdUnitText(p.local.Provider)), 0o600); err != nil {
 		return err
 	}
 	if _, err := run(ctx, p.h, "systemd-analyze", "verify", unit); err != nil {
@@ -465,14 +465,14 @@ func (p *localPlan) systemdService(ctx context.Context, dir string) error {
 
 func (p *localPlan) launchdService(ctx context.Context, dir string) error {
 	plist := filepath.Join(dir, "shard.daemon.plist")
-	if err := os.WriteFile(plist, []byte(launchdPlistText(p.user)), 0o644); err != nil {
+	if err := os.WriteFile(plist, []byte(launchdPlistText(p.user)), 0o600); err != nil {
 		return err
 	}
 	if _, err := run(ctx, p.h, "plutil", "-lint", plist); err != nil {
 		return &Problem{Lines: []string{fmt.Sprintf("launchd refused the service definition: %v.", err)}}
 	}
 	rotate := filepath.Join(dir, "shard.conf")
-	if err := os.WriteFile(rotate, []byte(newsyslogText(p.user)), 0o644); err != nil {
+	if err := os.WriteFile(rotate, []byte(newsyslogText(p.user)), 0o600); err != nil {
 		return err
 	}
 	for _, f := range []struct{ src, dst string }{{plist, launchdPlist}, {rotate, newsyslog}} {

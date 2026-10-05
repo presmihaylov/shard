@@ -153,8 +153,7 @@ func kvmLacks(h Host) (lack, bool) {
 	if errors.Is(err, fs.ErrPermission) {
 		return lack{}, false
 	}
-	var pathErr *fs.PathError
-	if errors.As(err, &pathErr) {
+	if pathErr, ok := errors.AsType[*fs.PathError](err); ok {
 		return lack{need, fmt.Sprintf("/dev/kvm does not open: %v.", pathErr.Err)}, true
 	}
 	if err != nil {
