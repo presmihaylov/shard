@@ -965,8 +965,11 @@ func TestAMixedCaseNameOrReferenceIsRefused(t *testing.T) {
 	if err := sandboxstate.ValidName("Morning-fern-b8b0"); !errors.As(err, &invalid) {
 		t.Errorf("ValidName of a mixed-case id shape got %T %v, want a ValidationError", err, err)
 	}
-	if err := sandboxstate.ValidName("morning-fern-b8b0"); err == nil {
-		t.Error("ValidName of a lower-case id shape got nil, want it refused")
+	if err := sandboxstate.ValidName("morning-fern-b8b0"); !errors.As(err, &invalid) {
+		t.Errorf("ValidName of a lower-case id shape got %T %v, want a ValidationError", err, err)
+	}
+	if err := sandboxstate.ValidSnapshotName("morning-fern-b8b0"); !errors.As(err, &invalid) {
+		t.Errorf("ValidSnapshotName of a lower-case id shape got %T %v, want a ValidationError", err, err)
 	}
 	if err := sandboxstate.ValidName("my-sandbox"); err != nil {
 		t.Errorf("ValidName of a plain lower-case name got %v, want nil", err)

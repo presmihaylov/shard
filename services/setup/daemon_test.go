@@ -7,21 +7,25 @@ import (
 	"testing"
 )
 
-// Every hint follows what setup left on the host: the service, the provider to start by hand, or no setup at all.
+// Every hint follows what setup left on the host: its service, a service it did not install, the provider to start by hand, or no setup at all.
 func TestLocalDaemonNamesTheHostsOwnSetup(t *testing.T) {
 	cases := []struct {
 		name, os string
 		files    []string
 		provider string
+		boot     bool
 		want     Daemon
 	}{
-		{"linux service", "linux", []string{systemdUnit}, "", Daemon{"is it running? systemctl status shard", "sudo journalctl -u shard"}},
-		{"mac service", "darwin", []string{launchdPlist}, "", Daemon{"is it running? launchctl print system/shard.daemon", "/var/log/shard/daemon.log"}},
-		{"linux by hand", "linux", nil, Runc, Daemon{"is it running? sudo shard daemon --provider runc", foregroundLog}},
-		{"mac by hand", "darwin", nil, VZ, Daemon{"is it running? shard daemon --provider vz", foregroundLog}},
-		{"a Mac plist on linux is no service", "linux", []string{launchdPlist}, GVisor, Daemon{"is it running? sudo shard daemon --provider gvisor", foregroundLog}},
-		{"linux, no setup", "linux", nil, "", Daemon{"is it set up? shard setup", foregroundLog}},
-		{"mac, no setup", "darwin", nil, "", Daemon{"is it set up? shard setup", foregroundLog}},
+		{"linux service", "linux", []string{systemdUnit}, GVisor, true, Daemon{serviceHint, "sudo journalctl -u shard"}},
+		{"mac service", "darwin", []string{launchdPlist}, VZ, true, Daemon{serviceHint, "/var/log/shard/daemon.log"}},
+		{"linux service setup did not install", "linux", []string{systemdUnit}, "", false, Daemon{"is it running? systemctl status shard", "sudo journalctl -u shard"}},
+		{"mac service setup did not install", "darwin", []string{launchdPlist}, "", false, Daemon{"is it running? launchctl print system/shard.daemon", "/var/log/shard/daemon.log"}},
+		{"linux service beside a setup without one", "linux", []string{systemdUnit}, Runc, false, Daemon{"is it running? systemctl status shard", "sudo journalctl -u shard"}},
+		{"linux by hand", "linux", nil, Runc, false, Daemon{"is it running? sudo shard daemon --provider runc", foregroundLog}},
+		{"mac by hand", "darwin", nil, VZ, false, Daemon{"is it running? shard daemon --provider vz", foregroundLog}},
+		{"a Mac plist on linux is no service", "linux", []string{launchdPlist}, GVisor, true, Daemon{"is it running? sudo shard daemon --provider gvisor", foregroundLog}},
+		{"linux, no setup", "linux", nil, "", false, Daemon{"is it set up? shard setup", foregroundLog}},
+		{"mac, no setup", "darwin", nil, "", false, Daemon{"is it set up? shard setup", foregroundLog}},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
@@ -30,7 +34,7 @@ func TestLocalDaemonNamesTheHostsOwnSetup(t *testing.T) {
 				put(t, h, f, nil)
 			}
 			if c.provider != "" {
-				data, err := json.Marshal(Manifest{Version: "v0.1.1", Provider: c.provider})
+				data, err := json.Marshal(Manifest{Version: "v0.1.1", Provider: c.provider, StartAtBoot: c.boot})
 				if err != nil {
 					t.Fatal(err)
 				}

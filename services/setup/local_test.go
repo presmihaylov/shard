@@ -634,3 +634,32 @@ func TestAdminEndsSudosRefusalOnce(t *testing.T) {
 		})
 	}
 }
+
+// A repair ends on a sentence, as setup and the upgrade do, not on its last ✓ line. (SHARD-735)
+func TestRepairSaysItIsDone(t *testing.T) {
+	for _, c := range []struct{ startAtBoot, want string }{
+		{"true", "shard v0.1.0 is repaired, and the daemon is running."},
+		{"false", "shard v0.1.0 is repaired."},
+	} {
+		t.Run(c.startAtBoot, func(t *testing.T) {
+			l := newLocalHost(t)
+			h := l.host()
+			if err := (&Setup{Host: h, UI: newLocalUI(c.startAtBoot, true, GVisor)}).local(t.Context(), stay); err != nil {
+				t.Fatalf("local = %v", err)
+			}
+			m, _, err := LoadManifest(h)
+			if err != nil {
+				t.Fatal(err)
+			}
+			l.remove("/usr/local/bin/shard-init")
+			ui := newLocalUI(c.startAtBoot, true)
+
+			if err := (&Setup{Host: h, UI: ui}).repair(t.Context(), m, ServiceActive, ""); err != nil {
+				t.Fatalf("repair = %v; printed %q", err, ui.printed)
+			}
+			if last := ui.printed[len(ui.printed)-1]; last != c.want {
+				t.Fatalf("repair ends on %q, want %q", last, c.want)
+			}
+		})
+	}
+}

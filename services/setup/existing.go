@@ -177,8 +177,15 @@ func (s *Setup) repair(ctx context.Context, m Manifest, service ServiceState, re
 	if err := s.admin(ctx); err != nil {
 		return err
 	}
+	if err := s.apply(ctx, "Repairing shard", steps); err != nil {
+		return err
+	}
 
-	return s.apply(ctx, "Repairing shard", steps)
+	done := "shard " + m.Version + " is repaired."
+	if m.StartAtBoot {
+		done = "shard " + m.Version + " is repaired, and the daemon is running."
+	}
+	return s.UI.Print("", done)
 }
 
 // runtimeFiles are what the daemon of provider writes under its root when it builds the provider: the vz shim and guest init, and a microVM's kernel.

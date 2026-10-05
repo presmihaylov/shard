@@ -591,7 +591,7 @@ func validName(noun, name string) error {
 	}
 
 	if generatedIDShape.MatchString(name) {
-		return fmt.Errorf("the %s name %q is spelled like a generated id, which no name may be", noun, name)
+		return &ValidationError{Reason: fmt.Sprintf("the %s name %q is spelled like a generated id, which no name may be", noun, name)}
 	}
 
 	return nil

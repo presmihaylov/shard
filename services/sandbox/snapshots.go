@@ -60,7 +60,7 @@ func (s *Service) CreateSnapshot(ctx context.Context, req SnapshotRequest) (mode
 		return models.Snapshot{}, err
 	}
 	if !found {
-		return models.Snapshot{}, &RequestError{Err: fmt.Errorf("sandbox %s was created from %s, which this host no longer holds, so a snapshot of it could never start: run shard image pull %s first", id, sb.Image, sb.Image)}
+		return models.Snapshot{}, &RequestError{Err: fmt.Errorf("sandbox %s was created from %s, which this host no longer holds, so a snapshot of it could never start: run shard pull %s first", id, sb.Image, sb.Image)}
 	}
 	// A create from the snapshot looks the tag up, so a tag that moved would mount the layer over another image.
 	if img.Digest != sb.Digest {

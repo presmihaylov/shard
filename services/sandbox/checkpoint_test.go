@@ -581,11 +581,15 @@ func TestForkRefusesASourceThatDoesNotRun(t *testing.T) {
 	}
 }
 
+// A bad name is the caller's spelling, so the API answers it 400, never 500. (SHARD-736)
 func TestForkRefusesABadName(t *testing.T) {
 	svc, _ := newService(t, &recorder{}, forkSource())
 
-	if _, err := svc.Fork(t.Context(), "sandbox1", sandbox.CopyRequest{Name: "Web 2"}); err == nil {
-		t.Error("fork accepted a name no verb could take back")
+	for _, name := range []string{"Web 2", "brave-otter-1a2b"} {
+		var invalid *sandboxstate.ValidationError
+		if _, err := svc.Fork(t.Context(), "sandbox1", sandbox.CopyRequest{Name: name}); !errors.As(err, &invalid) {
+			t.Errorf("fork named %q got %T %v, want a ValidationError", name, err, err)
+		}
 	}
 }
 

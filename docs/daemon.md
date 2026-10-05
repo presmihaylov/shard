@@ -5,13 +5,14 @@ verb goes over the socket, and no verb reads or writes the state itself. Without
 verb fails fast with one line:
 
 ```
-shard: cannot connect to shard daemon at /var/lib/shard/shard.sock: is it running? systemctl status shard
+shard: cannot connect to shard daemon at /var/lib/shard/shard.sock: is the background service running? shard setup repairs it
 ```
 
-The hint follows what `shard setup` left on this host: `systemctl status shard` for the systemd
-unit, `launchctl print system/shard.daemon` for the Mac LaunchDaemon, the command that starts the
-daemon by hand when setup installed no service (`sudo shard daemon --provider gvisor`), and
-`shard setup` on a host with no setup. A service serves `/var/lib/shard` only. Under any other
+The hint follows what `shard setup` left on this host: `shard setup` for the systemd unit and the
+Mac LaunchDaemon it installed, whose repair starts a service that stopped, the service's own check
+(`systemctl status shard`, `launchctl print system/shard.daemon`) for one installed by hand, the
+command that starts the daemon by hand when setup installed no service (`sudo shard daemon
+--provider gvisor`), and `shard setup` on a host with no setup. A service serves `/var/lib/shard` only. Under any other
 `--root`, the hint names that root's own daemon (`is it running? shard --root /srv/shard-e2e
 daemon`). Under `--remote`, it names the front (`is it running? shard serve at shard.example.com,
 or the proxy in front of it`).
