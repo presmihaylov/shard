@@ -56,16 +56,16 @@ with Shard() as shard:
 </TabItem>
 </Tabs>
 
-Each one prints `hello from shard`. The CLI talks to the daemon on this host after
-`shard setup`. On Linux the daemon's socket belongs to root, so the commands run with `sudo`; on a
-Mac, drop `sudo`. The SDKs talk to a host through `shard serve`, over HTTPS, with the server URL in
-`SHARD_REMOTE` and a token from `shard tokens mint` in `SHARD_API_KEY`.
+Each tab prints `hello from shard`. After `shard setup`, the CLI talks to the daemon on this host.
+On Linux the daemon's socket belongs to root, so the commands run with `sudo`. On a Mac, drop
+`sudo`. The SDKs reach a host over HTTPS through `shard serve`. They read the server URL from
+`SHARD_REMOTE`, and `SHARD_API_KEY` holds a token from `shard tokens mint`.
 
 ## What a sandbox is
 
-A sandbox starts from an OCI image and keeps running until you stop or remove it. Its main
-command, if it has one, can exit, and the sandbox stays available for `exec`. `create` starts no
-main command. `run` starts the command you give it. The image's `ENTRYPOINT` and `CMD` never run.
+A sandbox starts from an OCI image and keeps running until you stop or remove it. If it has a main
+command, that command can exit, and the sandbox stays available for `exec`. `create` starts no main
+command. `run` starts the command you give it. The image's `ENTRYPOINT` and `CMD` never run.
 
 | Verb | What it does |
 |---|---|
@@ -84,8 +84,8 @@ A provider is the isolation technology under every sandbox on a host. One host r
 | `firecracker` | A microVM per sandbox. Needs `/dev/kvm`. | yes |
 | `gvisor` | A user-space kernel, `runsc`. | yes |
 | `vz` | A VM per sandbox on a Mac, through Virtualization.framework. | yes, on Apple silicon with macOS 14 or later |
-| `sysbox` | A Linux container that can run Docker inside. One tenant per host. | no |
-| `runc` | A Linux container on the host kernel. Only for code you trust. | no |
+| `sysbox` | Linux user namespaces. The sandbox can run Docker inside. One tenant per host. | no |
+| `runc` | Linux namespaces on the host kernel, with no user namespace. Only for code you trust. | no |
 
 `shard setup` recommends Firecracker when `/dev/kvm` is usable, gVisor on Linux without it, and
 `vz` on a Mac. A verb that a provider does not support fails with an error that names the provider.
@@ -93,9 +93,10 @@ shard never falls back to a weaker mechanism.
 
 ## Secrets and network access
 
-A sandbox never holds a secret's value. It holds a placeholder, and the host proxy puts the value
-in the HTTPS request headers that go to the destinations you granted. Without a network policy, a
-sandbox can reach the internet but not private networks. A policy adds ordered allow and deny rules.
+A sandbox never holds a secret's value. It holds a placeholder instead, and the host proxy swaps in
+the real value in the headers of HTTPS requests to the destinations you granted. Without a network
+policy, a sandbox can reach the internet but not private networks. A policy adds ordered allow and
+deny rules.
 
 ## What shard is not
 
