@@ -322,7 +322,7 @@ func stage(ctx context.Context, h Host, t replacement, next string) error {
 			return err
 		}
 
-		return os.WriteFile(next, data, 0o755)
+		return os.WriteFile(next, data, 0o755) //nolint:gosec // the CLI the user runs must stay executable
 	}
 
 	_, err := privileged(ctx, h, "install", "-m", "0755", t.tmp, next)
