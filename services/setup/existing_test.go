@@ -335,8 +335,9 @@ func TestManualInstallChangesNothing(t *testing.T) {
 	}
 	ui := &fakeUI{}
 
-	if err := (&Setup{Host: h, UI: ui}).existing(t.Context(), inst); err != nil {
-		t.Fatalf("existing: %v", err)
+	err = (&Setup{Host: h, UI: ui}).existing(t.Context(), inst)
+	if stopped, ok := errors.AsType[*StoppedError](err); !ok || stopped.Step != "Existing shard installation" {
+		t.Fatalf("existing = %v, want the refusal a script reads as exit 1 (SHARD-780)", err)
 	}
 	want := []string{"Manual installation detected.", "",
 		"Installed:      shard v0.0.9",
@@ -447,8 +448,8 @@ func TestManualInstallClaimsOnlyWhatItFound(t *testing.T) {
 			}
 			ui := &fakeUI{}
 
-			if err := (&Setup{Host: h, UI: ui}).manual(t.Context(), inst); err != nil {
-				t.Fatalf("manual: %v", err)
+			if _, ok := errors.AsType[*StoppedError]((&Setup{Host: h, UI: ui}).manual(t.Context(), inst)); !ok {
+				t.Fatal("manual did not stop")
 			}
 			said(t, ui, tt.want...)
 			for _, line := range tt.never {

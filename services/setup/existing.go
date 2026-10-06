@@ -1008,7 +1008,7 @@ func leftCommands(h Host) ([]string, error) {
 	return left, nil
 }
 
-// manual reports an install setup did not make, changes nothing in it, and names the route that moves it to setup.
+// manual reports an install setup did not make, changes nothing in it, names the route that moves it to setup, and stops, so a script reads it as a refusal.
 func (s *Setup) manual(ctx context.Context, inst Installation) error {
 	h := s.Host
 	versions, err := manualVersions(ctx, h, inst.Manual)
@@ -1042,8 +1042,11 @@ func (s *Setup) manual(ctx context.Context, inst Installation) error {
 		serve,
 		[]string{"", "Your saved data in " + DataDir + " is not part of this."},
 	)
+	if err := s.UI.Print(lines...); err != nil {
+		return err
+	}
 
-	return s.UI.Print(lines...)
+	return &StoppedError{Step: "Existing shard installation", Err: &Problem{Lines: lines}}
 }
 
 // manualVersions names the version the found binary reports beside the one setup installs.

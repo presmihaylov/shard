@@ -591,7 +591,7 @@ var helps = map[string]verbHelp{
 			{title: "Remote authentication", lines: []string{"Set " + client.APIKeyEnv + ". Do not pass the key as a command argument."}},
 			{title: "Exit codes", rows: []row{
 				{"0", "setup finished, or there was nothing to do"},
-				{"1", "a check or a step failed, an option was refused, or the confirmation was declined"},
+				{"1", "a check or a step failed, an option was refused, the confirmation was declined, or setup found a manual installation"},
 				{"130", "Ctrl+C left setup; the steps done so far stay in place"},
 			}},
 		},
