@@ -1371,6 +1371,35 @@ func TestAForkOfARunningSandboxLeavesTheSourceRunning(t *testing.T) {
 	}
 }
 
+// A fork whose copy of the overlay cannot fit is refused before the capture, so the source is never frozen or paused for it (SHARD-775).
+func TestAForkThatCannotFitIsRefusedBeforeTheCapture(t *testing.T) {
+	h := newHarness(t)
+	spec, pid := h.runLong(t)
+	watchControls(t, spec)
+	fork := h.forkSpec(t)
+	// No host holds 8 TiB free, and a sparse overlay takes none of it.
+	if err := os.Truncate(filepath.Join(spec.StateDir, bundle.OverlayDiskFile), 8<<40); err != nil {
+		t.Fatal(err)
+	}
+
+	err := h.provider.Fork(t.Context(), spec.ID, fork)
+	if room, ok := errors.AsType[*bundle.NoRoomError](err); !ok || !room.Copy {
+		t.Fatalf("Fork = %v, want the copy refused for room", err)
+	}
+	if got := controls(t, spec.StateDir, supervisor.KindFreeze, supervisor.KindThaw); len(got) != 0 {
+		t.Errorf("the guest of the source read %q, want no freeze", got)
+	}
+	status, err := h.provider.Status(t.Context(), spec.ID)
+	if err != nil || status.State != models.StateRunning || status.PID != pid {
+		t.Fatalf("Status of the source = %+v, %v, want running as pid %d", status, err, pid)
+	}
+	for _, path := range []string{filepath.Join(spec.StateDir, firecracker.CaptureFile), filepath.Join(fork.StateDir, firecracker.CaptureDir)} {
+		if _, err := os.Stat(path); !errors.Is(err, os.ErrNotExist) {
+			t.Errorf("%s after the refusal: %v, want none", path, err)
+		}
+	}
+}
+
 // An exec that starts while a fork holds the source frozen is refused by name, and the control stream the capture reset is dialed again and thaws the source (SHARD-462).
 func TestAnExecWhileAForkHoldsTheSourceIsRefused(t *testing.T) {
 	h := newHarness(t)
