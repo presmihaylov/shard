@@ -68,6 +68,8 @@ type machine struct {
 	silent bool
 	// asking closes once the one state request out to the shim ends; nil when none is out.
 	asking chan struct{}
+	// ending is set once that request found the shim's pid gone, so a probe waits out the follower's handoff to gone rather than read running (SHARD-618).
+	ending bool
 	// lost is the first exit or restart event the loop could not persist; the files say nothing true after it.
 	lost error
 	// refusals logs the control lines the guest sent past the bound, which the reconnect otherwise hides.
@@ -409,10 +411,15 @@ func (p *Provider) probe(ctx context.Context, m *machine, bound time.Duration) {
 	case <-ctx.Done():
 	case <-timer.C:
 		p.mu.Lock()
-		if m.asking == asking {
+		handoff := m.ending
+		if m.asking == asking && !handoff {
 			m.silent = true
 		}
 		p.mu.Unlock()
+		// markGone bounds the handoff by killGrace, so this wait ends too (SHARD-618).
+		if handoff {
+			<-asking
+		}
 	}
 }
 
@@ -420,6 +427,9 @@ func (p *Provider) probe(ctx context.Context, m *machine, bound time.Duration) {
 func (p *Provider) ask(ctx context.Context, m *machine, asking chan struct{}) {
 	_, err := m.client.Await(ctx)
 	ended := err != nil && !m.lingers()
+	if ended {
+		p.markGone(m)
+	}
 	p.mu.Lock()
 	m.asking = nil
 	if err == nil {
@@ -430,14 +440,14 @@ func (p *Provider) ask(ctx context.Context, m *machine, asking chan struct{}) {
 		m.silent = true
 	}
 	p.mu.Unlock()
-	if ended {
-		p.markGone(m)
-	}
 	close(asking)
 }
 
 // markGone marks a shim proven gone as stopped once the follower landed its last events; a follower mid-redial or one that lost the shim never would (SHARD-618).
 func (p *Provider) markGone(m *machine) {
+	p.mu.Lock()
+	m.ending = true
+	p.mu.Unlock()
 	if m.events != nil {
 		select {
 		case <-m.events:
