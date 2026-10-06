@@ -256,6 +256,37 @@ func TestCreateRefusedByTheDiskAdmissionLeavesNoRecord(t *testing.T) {
 	}
 }
 
+// A bound the image cannot take is the request's fault, and the public text is the fix without the substrate's host path (SHARD-750).
+func TestCreateWhoseBoundTheImageCannotTakeIsABadRequest(t *testing.T) {
+	fix := "the image takes a 2048 MiB disk, more than the 1024 MiB disk bound; set resources.disk_mib to 2048 MiB or more"
+	svc, l := newService(t, &recorder{}, models.Sandbox{})
+	l.provider.createErr = fmt.Errorf("vz: write the disk at /var/lib/shard/sandboxes/sandbox1/disk.img: %w", &bundle.BoundError{Fix: fix})
+
+	_, err := svc.Create(t.Context(), alpine())
+
+	if _, ok := errors.AsType[*sandbox.RequestError](err); !ok {
+		t.Fatalf("create = %v, want a request error", err)
+	}
+	if public, _ := sandbox.PublicText(err); public != fix {
+		t.Errorf("public text = %q, want %q", public, fix)
+	}
+}
+
+// A disk the root has no room for at the substrate is the request's fault too, as it is at the admission.
+func TestCreateTheSubstrateHasNoRoomForIsABadRequest(t *testing.T) {
+	svc, l := newService(t, &recorder{}, models.Sandbox{})
+	l.provider.createErr = fmt.Errorf("vz: write the disk at /var/lib/shard/sandboxes/sandbox1/disk.img: %w", &bundle.NoRoomError{Bound: 4096 << 20})
+
+	_, err := svc.Create(t.Context(), alpine())
+
+	if _, ok := errors.AsType[*sandbox.RequestError](err); !ok {
+		t.Fatalf("create = %v, want a request error", err)
+	}
+	if public, _ := sandbox.PublicText(err); strings.Contains(public, "/var/lib/shard") || !strings.Contains(public, "does not fit on the host disk") {
+		t.Errorf("public text = %q, want the refusal without the host path", public)
+	}
+}
+
 // The record write can fail after the admission, and nothing will write that disk then.
 func TestAnAdmittedDiskIsReleasedWhenTheRecordFails(t *testing.T) {
 	r := &recorder{fail: []string{"repo.Create"}}

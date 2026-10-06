@@ -370,6 +370,9 @@ type fakeProvider struct {
 	noFork   bool
 	// pauseErr is what Pause refuses with, the way vz refuses a pause into a silent shim.
 	pauseErr error
+	// createErr and forkErr are what Create and Fork refuse with, the way a VM substrate refuses a disk.
+	createErr error
+	forkErr   error
 	// checkpointDir is the directory the pause was told to write into, and the one the resume read.
 	checkpointDir string
 	// forkedFrom is the running source the fork was told to capture.
@@ -580,6 +583,9 @@ func (f *fakeProvider) Fork(_ context.Context, source string, spec models.Sandbo
 	if err := f.r.record("provider.Fork"); err != nil {
 		return err
 	}
+	if f.forkErr != nil {
+		return f.forkErr
+	}
 	f.spec, f.forkedFrom = spec, source
 	f.status = models.Status{Exists: true, State: models.StateRunning, PID: 7}
 
@@ -599,8 +605,11 @@ func (f *fakeProvider) Snapshot(_ context.Context, source, dir string) error {
 
 func (f *fakeProvider) Create(_ context.Context, spec models.SandboxSpec) error {
 	f.spec = spec
+	if err := f.r.record("provider.Create"); err != nil {
+		return err
+	}
 
-	return f.r.record("provider.Create")
+	return f.createErr
 }
 
 func (f *fakeProvider) Start(ctx context.Context, id string) error {

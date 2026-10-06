@@ -1,5 +1,6 @@
 // @ts-check
 import react from '@astrojs/react';
+import sitemap from '@astrojs/sitemap';
 import starlight from '@astrojs/starlight';
 import tailwindcss from '@tailwindcss/vite';
 import { defineConfig } from 'astro/config';
@@ -71,8 +72,13 @@ export default defineConfig({
 	integrations: [
 		starlight({
 			title: 'shard',
-			description: 'Placeholder description for the shard documentation.',
+			description: 'The shard docs: install shard, then run isolated sandboxes for AI agents on a Linux server or a Mac that you own.',
 			favicon: '/shard-mark.svg',
+			head: [
+				{ tag: 'link', attrs: { rel: 'icon', href: '/favicon.ico', sizes: '32x32' } },
+				{ tag: 'link', attrs: { rel: 'apple-touch-icon', href: '/apple-touch-icon.png' } },
+			],
+			routeMiddleware: './src/routeData.ts',
 			customCss: [
 				'@fontsource-variable/geist/wght.css',
 				'@fontsource-variable/jetbrains-mono/wght.css',
@@ -119,6 +125,8 @@ export default defineConfig({
 			},
 		}),
 		react(),
+		// The landing is a static file, so the sitemap learns of it here.
+		sitemap({ customPages: ['https://useshards.com/'] }),
 	],
 	vite: {
 		plugins: [tailwindcss()],
