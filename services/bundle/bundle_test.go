@@ -381,6 +381,25 @@ func TestRuntimeReportsNoUserWhenNobodyNamedOne(t *testing.T) {
 	}
 }
 
+// SHARD-764: runc made the cwd under the daemon's umask 0077, so shard-init gets the work directory and runc a cwd that is there.
+func TestTheSupervisorGetsTheWorkDirectoryAndRuntimeReadsItBack(t *testing.T) {
+	b, got := build(t, models.SandboxSpec{Entrypoint: []string{"/bin/sh"}}, models.ImageConfig{WorkDir: "/work/deep"})
+
+	if got.Process.Cwd != "/" {
+		t.Errorf("got cwd %q, want / so runc makes nothing", got.Process.Cwd)
+	}
+	if arg := flagArg(t, got, "-workdir"); arg != "/work/deep" {
+		t.Errorf("got -workdir %q, want /work/deep", arg)
+	}
+	runtime, err := b.Runtime()
+	if err != nil {
+		t.Fatalf("Runtime: %v", err)
+	}
+	if runtime.WorkDir != "/work/deep" {
+		t.Errorf("Runtime reports the work directory %q, want /work/deep for an exec with none of its own", runtime.WorkDir)
+	}
+}
+
 func TestBuildTwiceLeavesTheSameBundle(t *testing.T) {
 	svc := newService(t)
 	spec := runspec.Resolve(newSpec(t), models.ImageConfig{})

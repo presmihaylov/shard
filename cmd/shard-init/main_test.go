@@ -129,6 +129,13 @@ func runChild(spec string) int {
 	case "say":
 		fmt.Println(arg)
 		return 0
+	case "pwd":
+		dir, err := os.Getwd()
+		if err != nil {
+			return 2
+		}
+		fmt.Println(dir)
+		return 0
 	case "spew":
 		// A MiB of stdout, more than a pipe holds, then the marker file ARG, so a test sees the output never held it.
 		if _, err := os.Stdout.Write(make([]byte, 1<<20)); err != nil {
@@ -441,6 +448,34 @@ func TestTermEndsASupervisorWhoseEntrypointAlreadyExited(t *testing.T) {
 	}
 
 	super.awaitExit(t)
+}
+
+// SHARD-764: runc made the work directory under the daemon's umask 0077, so a user other than root could not enter it.
+func TestTheSupervisorMakesTheWorkDirectory0755AndStartsTheEntrypointThere(t *testing.T) {
+	old := syscall.Umask(0o077)
+	t.Cleanup(func() { syscall.Umask(old) })
+	root := t.TempDir()
+	workDir := filepath.Join(root, "work", "deep")
+
+	super := startSupervisor(t, roleSupervisor, "pwd", "-workdir", workDir)
+
+	got := super.line(t)
+	want, err := filepath.EvalSymlinks(workDir)
+	if err != nil {
+		t.Fatalf("resolve %s: %v", workDir, err)
+	}
+	if got != want {
+		t.Errorf("the entrypoint ran in %q, want %q", got, want)
+	}
+	for _, dir := range []string{filepath.Dir(workDir), workDir} {
+		info, err := os.Stat(dir)
+		if err != nil {
+			t.Fatalf("stat %s: %v", dir, err)
+		}
+		if info.Mode().Perm() != 0o755 {
+			t.Errorf("%s is %o, want 755", dir, info.Mode().Perm())
+		}
+	}
 }
 
 // With no command the supervisor runs alone: it is ready at once and stays up, as a sandbox outlives any entrypoint.

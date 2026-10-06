@@ -173,7 +173,7 @@ func (b Bundle) Runtime() (Runtime, error) {
 		RootFS:    spec.Annotations[rootfsAnnotation],
 		Resources: resources,
 		Env:       spec.Process.Env,
-		WorkDir:   spec.Process.Cwd,
+		WorkDir:   supervisorFlag(spec.Process.Args, "-workdir"),
 		User:      supervisorFlag(spec.Process.Args, "-user"),
 		Groups:    groups,
 	}, nil
@@ -307,7 +307,8 @@ func (s *Service) runtimeSpec(spec models.SandboxSpec, b Bundle) (*specs.Spec, e
 		Process: &specs.Process{
 			Args: argv,
 			Env:  Environment(spec.Env),
-			Cwd:  firstNonEmpty(spec.WorkDir, "/"),
+			// runc makes a missing cwd before it sets the umask, so shard-init makes the work directory instead (SHARD-764).
+			Cwd: "/",
 			// No Inheritable, as containerd since CVE-2022-24769: a file's inheritable bits then find nothing to raise.
 			Capabilities: &specs.LinuxCapabilities{
 				Bounding:  defaultCapabilities,
@@ -370,6 +371,10 @@ func supervisorArgv(spec models.SandboxSpec) ([]string, error) {
 		// The name is resolved on the host, against the image rootfs: the supervisor cannot read a passwd.
 		argv = append(argv, "-user", fmt.Sprintf("%d:%d", identity.UID, identity.GID))
 		argv = append(argv, "-groups", formatGroups(identity.Groups))
+	}
+
+	if spec.WorkDir != "" {
+		argv = append(argv, "-workdir", spec.WorkDir)
 	}
 
 	// The policy is fixed at create: shard-init has no control channel, so the flags are the whole of it.
