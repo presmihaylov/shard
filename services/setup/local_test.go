@@ -60,7 +60,7 @@ func (l *localHost) host() Host {
 	return Host{
 		Root: l.root, OS: "linux", Arch: "amd64", Version: "v0.1.0",
 		Executable: filepath.Join(l.root, "/home/u/.local/bin/shard"),
-		Releases:   l.rs.URL + "/releases", HTTP: l.rs.Client(),
+		Releases:   l.rs.URL + "/releases", Downloads: l.rs.URL + "/download", HTTP: l.rs.Client(),
 		Env: func(k string) string { return l.env[k] },
 		Run: l.run,
 	}

@@ -316,8 +316,17 @@ func TestPreflightDownloadAccess(t *testing.T) {
 
 		f, _ := preflightOn(t, h, Local{Provider: GVisor})
 
-		if f == nil || f.check != "Download access" || !strings.HasPrefix(f.lines[0], "Setup could not find shard-init for shard v0.2.0: ") {
+		wantFinding(t, f, "Download access", false,
+			"Could not download shard-init-linux-amd64: the server answered 404 Not Found.", "Check the network connection and run shard setup again.")
+	})
+	t.Run("shard-init reached without the GitHub API", func(t *testing.T) {
+		l := newLocalHost(t)
+
+		if f, _ := preflightOn(t, l.host(), Local{Provider: GVisor}); f != nil {
 			t.Fatalf("finding %+v", f)
+		}
+		if l.rs.api.Load() != 0 || l.rs.downloads.Load() != 1 {
+			t.Fatalf("preflight made %d API calls and %d downloads, want 0 and 1", l.rs.api.Load(), l.rs.downloads.Load())
 		}
 	})
 	t.Run("a pinned tool the server lacks", func(t *testing.T) {

@@ -45,7 +45,7 @@ func newFakeHost(t *testing.T) *fakeHost {
 func (f *fakeHost) host(rs *releaseServer) Host {
 	h := Host{Root: f.root, OS: "linux", Arch: "amd64", Executable: filepath.Join(f.root, "/home/u/.local/bin/shard"), Version: "v0.1.0", Env: f.env, Run: f.run}
 	if rs != nil {
-		h.Releases, h.HTTP = rs.URL+"/releases", rs.Client()
+		h.Releases, h.Downloads, h.HTTP = rs.URL+"/releases", rs.URL+"/download", rs.Client()
 	}
 
 	return h

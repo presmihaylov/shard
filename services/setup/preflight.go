@@ -370,11 +370,7 @@ func downloadAccess(ctx context.Context, h Host, l Local) *finding {
 		urls = append(urls, d.URL)
 	}
 	if h.OS == "linux" {
-		u, err := AssetURL(ctx, h, h.Version, "shard-init-linux-"+h.Arch)
-		if err != nil {
-			return failed(fmt.Sprintf("Setup could not find shard-init for shard %s: %s.", h.Version, downloadCause(err)))
-		}
-		urls = append(urls, u)
+		urls = append(urls, AssetURL(h, h.Version, "shard-init-linux-"+h.Arch))
 	}
 	if l.Provider == Firecracker || l.Provider == VZ {
 		u, err := kernelURL(h.Arch)

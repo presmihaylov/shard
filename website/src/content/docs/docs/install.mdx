@@ -123,4 +123,4 @@ The banner uses color when standard output is a terminal. Set `NO_COLOR` to turn
 
 ## Troubleshooting
 
-The installer makes one unauthenticated call to the GitHub API, which allows 60 calls an hour for each IP address. When you reach that limit, the installer stops with an error that says so. Run it again an hour later. The installer never falls back to a fixed version.
+The installer makes one unauthenticated call to the GitHub API, which allows 60 calls an hour for each IP address. When you reach that limit, the installer stops with an error that says so and names the time the limit resets. Run it again after that time. `shard setup` fetches its files through the release download URLs, which do not count toward this limit. It calls the API only to find the latest release for an upgrade, and that error names the reset time too. The installer never falls back to a fixed version.

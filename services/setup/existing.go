@@ -352,7 +352,7 @@ func (s *Setup) upgrade(ctx context.Context, m Manifest, service ServiceState, r
 			if fetched[t.asset] {
 				continue
 			}
-			if err := rel.Fetch(ctx, h, t.asset, t.tmp, 0o755); err != nil {
+			if err := FetchAsset(ctx, h, rel.Tag, t.asset, t.tmp, 0o755); err != nil {
 				return err
 			}
 			fetched[t.asset] = true

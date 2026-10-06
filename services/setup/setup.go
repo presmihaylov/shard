@@ -30,18 +30,22 @@ type Host struct {
 	// Executable is the running shard binary, and Version is its release tag.
 	Executable string
 	Version    string
-	// Releases is the base URL of the release server.
-	Releases string
-	HTTP     *http.Client
-	Env      func(string) string
+	// Releases is the base URL of the release server, and Downloads the one that serves their files by tag and name.
+	Releases  string
+	Downloads string
+	HTTP      *http.Client
+	Env       func(string) string
 	// Run runs one command as it is given; a step that needs root wraps it in sudo itself.
 	Run func(ctx context.Context, name string, args ...string) ([]byte, error)
 	// LookPath finds a command on PATH, so a hint knows whether shard is reachable by name yet.
 	LookPath func(string) (string, error)
 }
 
-// releases is where setup looks up and downloads a shard release.
-const releases = "https://api.github.com/repos/presmihaylov/shard/releases"
+// releases is where setup looks up a shard release, and downloads where it fetches one, outside the API rate limit.
+const (
+	releases  = "https://api.github.com/repos/presmihaylov/shard/releases"
+	downloads = "https://github.com/presmihaylov/shard/releases/download"
+)
 
 // NewHost is this machine, as the running binary of version sees it.
 func NewHost(version string) (Host, error) {
@@ -58,6 +62,7 @@ func NewHost(version string) (Host, error) {
 		Executable: executable,
 		Version:    version,
 		Releases:   releases,
+		Downloads:  downloads,
 		HTTP:       newHTTPClient(idleTimeout),
 		Env:        os.Getenv,
 		Run: func(ctx context.Context, name string, args ...string) ([]byte, error) {
