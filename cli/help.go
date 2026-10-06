@@ -55,8 +55,9 @@ func para(lines ...string) note { return note{lines: lines} }
 
 // manyNote is what a verb that takes several sandboxes does when one of them fails.
 var manyNote = para(
-	"With more than one sandbox, each ID prints as its sandbox succeeds.",
-	"A failure does not stop the rest: every failure prints at the end, and the exit code is 1.",
+	"With more than one sandbox, each ID prints as soon as that sandbox succeeds.",
+	"If a sandbox fails, the command goes on to the next one.",
+	"The failures print at the end, and the exit code is 1.",
 )
 
 // flagHelp is one flag as the help spells it, as --memory <size> or -f, --follow.
@@ -80,7 +81,7 @@ var (
 	imageArg   = row{"IMAGE", "image to use; downloaded if needed"}
 	sandboxArg = row{"SANDBOX", "sandbox ID or name"}
 	// sandboxesArg is the argument of a verb that takes several sandboxes and acts on each in turn.
-	sandboxesArg = row{"SANDBOX", "sandbox ID or name; give more than one to act on each"}
+	sandboxesArg = row{"SANDBOX", "sandbox ID or name; repeatable"}
 	sourceArg    = row{"SANDBOX", "source sandbox ID or name"}
 	argsArg      = row{"ARGS", "arguments for the command"}
 	snapshotArg  = row{"SNAPSHOT", "snapshot ID or name"}
@@ -246,7 +247,7 @@ var helps = map[string]verbHelp{
 		},
 		notes: []note{
 			para("Table columns: ID, NAME, IMAGE, STATE, UPTIME, RESTART and POLICY."),
-			para("--quiet prints the IDs for another command to take, as in shard stop $(shard list -q).", "It cannot be combined with --format."),
+			para("Use --quiet to pass the IDs to another command, as in 'shard stop $(shard list -q)'.", "--quiet cannot be combined with --format."),
 		},
 		examples: []string{"shard list", "shard list --all", "shard list --format json", "shard list -q"},
 	},
@@ -301,7 +302,7 @@ var helps = map[string]verbHelp{
 	},
 	"pause": {
 		usage:   []string{"pause SANDBOX [SANDBOX...]"},
-		summary: "save sandboxes' state and suspend them",
+		summary: "suspend sandboxes and save their state",
 		args:    []row{sandboxesArg},
 		notes: []note{
 			para(
@@ -322,12 +323,12 @@ var helps = map[string]verbHelp{
 	"prune": {
 		usage:   []string{"prune [OPTIONS]"},
 		summary: "remove all stopped sandboxes",
-		about:   "Remove every stopped sandbox and its files, and print each removed ID.",
+		about:   "Remove every stopped sandbox and its files, and print the ID of each one removed.",
 		flags:   []flagHelp{{"--force", "remove without asking for confirmation", ""}},
 		notes: []note{para(
 			"Running and paused sandboxes are never removed.",
-			"prune lists the stopped sandboxes and asks before it removes them.",
-			"Without a terminal to ask on, it refuses unless --force is given.",
+			"Before it removes anything, prune lists the stopped sandboxes and asks for confirmation.",
+			"Without a terminal, it refuses unless --force is given.",
 		)},
 		examples: []string{"shard prune", "shard prune --force"},
 	},

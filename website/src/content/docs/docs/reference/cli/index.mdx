@@ -45,7 +45,7 @@ Run `shard COMMAND --help` for options and examples.
 | [`shard start`](/docs/reference/cli/sandboxes/#shard-start) | start a stopped sandbox with its saved files |
 | [`shard remove`](/docs/reference/cli/sandboxes/#shard-remove) | remove sandboxes and their files |
 | [`shard prune`](/docs/reference/cli/sandboxes/#shard-prune) | remove all stopped sandboxes |
-| [`shard pause`](/docs/reference/cli/sandboxes/#shard-pause) | save sandboxes' state and suspend them |
+| [`shard pause`](/docs/reference/cli/sandboxes/#shard-pause) | suspend sandboxes and save their state |
 | [`shard resume`](/docs/reference/cli/sandboxes/#shard-resume) | resume paused sandboxes from their saved state |
 | [`shard fork`](/docs/reference/cli/sandboxes/#shard-fork) | create a sandbox from a running sandbox's memory and files |
 | [`shard cp`](/docs/reference/cli/sandboxes/#shard-cp) | copy files or directories between your machine and a running sandbox |
@@ -156,7 +156,7 @@ The Format column shows the default `--format`. A dash means the command has no 
 
 Without `--all`, `list` leaves out stopped sandboxes. The table then ends with a count on stderr, such as `2 stopped sandboxes; shard list --all`. JSON and `-q` output have no such line.
 
-`stop`, `remove`, `pause` and `resume` take more than one sandbox, as in `shard stop $(shard list -q)`. Each id prints as its sandbox succeeds. A failure does not stop the others: the failures print on stderr at the end, and the command exits with code 1.
+`stop`, `remove`, `pause` and `resume` take more than one sandbox, as in `shard stop $(shard list -q)`. Each id prints as soon as its sandbox succeeds. If a sandbox fails, the command goes on to the next one. It prints the failures on stderr at the end and exits with code 1.
 
 **Images, snapshots, secrets and network policies**
 
