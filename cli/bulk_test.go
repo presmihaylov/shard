@@ -27,7 +27,12 @@ type fakeSandboxAPI struct {
 	warnings  []string
 	// calls is each verb the server ran, as "verb id".
 	calls []string
+	// failDelete answers a delete of these ids with an internal error, after it drops the record where the value is true.
+	failDelete map[string]bool
 }
+
+// internalText is the text the daemon answers for a failure whose cause it keeps to its log.
+const internalText = "the daemon could not complete the request; the daemon log has the cause"
 
 func (f *fakeSandboxAPI) find(ref string) int {
 	return slices.IndexFunc(f.sandboxes, func(sb client.Sandbox) bool { return sb.ID == ref || sb.Name == ref })
@@ -80,8 +85,19 @@ func (f *fakeSandboxAPI) handler() http.Handler {
 
 			return
 		}
+		dropped, fails := f.failDelete[sb.ID]
+		if fails && !dropped {
+			refuse(w, http.StatusInternalServerError, models.CodeInternal, internalText)
+
+			return
+		}
 		f.sandboxes = slices.Delete(f.sandboxes, i, i+1)
 		f.calls = append(f.calls, "remove "+sb.ID)
+		if fails {
+			refuse(w, http.StatusInternalServerError, models.CodeInternal, internalText)
+
+			return
+		}
 		w.WriteHeader(http.StatusNoContent)
 	})
 
@@ -199,6 +215,45 @@ func TestRemoveForceAppliesToEverySandbox(t *testing.T) {
 	}
 	if len(f.sandboxes) != 0 {
 		t.Errorf("the server still holds %v", f.sandboxes)
+	}
+}
+
+func TestARemoveThatFailsAfterTheRecordWentSucceedsWithAWarning(t *testing.T) {
+	app, f, stdout, stderr := newBulkApp(t, sandboxIn("aaa111", "broken", models.StateFailed), sandboxIn("bbb222", "b", models.StateStopped))
+	f.failDelete = map[string]bool{"aaa111": true}
+
+	if err := app.Run(t.Context(), []string{"remove", "--force", "broken", "b"}); err != nil {
+		t.Fatalf("remove --force: %v; stderr %q", err, stderr.String())
+	}
+
+	if got := stdout.String(); got != "aaa111\nbbb222\n" {
+		t.Errorf("remove printed %q, want both ids", got)
+	}
+	if got, want := stderr.String(), "shard: warning: sandbox aaa111 is removed, but "+internalText+"\n"; got != want {
+		t.Errorf("stderr read %q, want %q", got, want)
+	}
+	if len(f.sandboxes) != 0 {
+		t.Errorf("the server still holds %v", f.sandboxes)
+	}
+}
+
+func TestARemoveThatFailsWithTheRecordStillThereFails(t *testing.T) {
+	app, f, stdout, stderr := newBulkApp(t, sandboxIn("aaa111", "broken", models.StateFailed), sandboxIn("bbb222", "b", models.StateStopped))
+	f.failDelete = map[string]bool{"aaa111": false}
+
+	err := app.Run(t.Context(), []string{"remove", "--force", "broken", "b"})
+	if err == nil {
+		t.Fatal("remove --force of a sandbox whose record stayed succeeded")
+	}
+
+	if got := stdout.String(); got != "bbb222\n" {
+		t.Errorf("remove printed %q, want only the removed id", got)
+	}
+	if got, want := shown(app, err, stderr), "shard: "+internalText+"\n"; got != want {
+		t.Errorf("stderr read %q, want %q", got, want)
+	}
+	if len(f.sandboxes) != 1 || f.sandboxes[0].ID != "aaa111" {
+		t.Errorf("the server holds %v, want only aaa111", f.sandboxes)
 	}
 }
 
@@ -390,5 +445,23 @@ func TestPruneOfNothingSaysSoAndSucceeds(t *testing.T) {
 	}
 	if got := stderr.String(); got != "shard: no stopped sandboxes to remove\n" {
 		t.Errorf("prune wrote %q to stderr, want the one line", got)
+	}
+}
+
+func TestPruneCountsARemoveThatFailedAfterTheRecordWent(t *testing.T) {
+	app, f, stdout, stderr := newBulkApp(t, pruneTable()...)
+	f.failDelete = map[string]bool{"aaa111": true}
+
+	if err := app.Run(t.Context(), []string{"prune", "--force"}); err != nil {
+		t.Fatalf("prune --force: %v; stderr %q", err, stderr.String())
+	}
+	if got := stdout.String(); got != "aaa111\nccc333\n" {
+		t.Errorf("prune --force printed %q, want the two stopped ids", got)
+	}
+	if got, want := stderr.String(), "shard: warning: sandbox aaa111 is removed, but "+internalText+"\n"; got != want {
+		t.Errorf("stderr read %q, want %q", got, want)
+	}
+	if len(f.sandboxes) != 2 {
+		t.Errorf("the server holds %v, want the running and the paused one", f.sandboxes)
 	}
 }

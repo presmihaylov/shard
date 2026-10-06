@@ -60,7 +60,7 @@ func (a App) prune(ctx context.Context, args []string) error {
 	}
 
 	return a.each(ctx, refs, func(id string) error {
-		if err := c.RemoveSandbox(ctx, id, false); err != nil {
+		if err := a.removeByID(ctx, c, id, false); err != nil {
 			return err
 		}
 

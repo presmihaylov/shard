@@ -41,7 +41,7 @@ func (a App) removeOne(ctx context.Context, c *client.Client, ref string, force 
 	}
 
 	// A remove that waited on another remove finds the same nothing.
-	err = c.RemoveSandbox(ctx, sb.ID, force)
+	err = a.removeByID(ctx, c, sb.ID, force)
 	if errors.As(err, &missing) {
 		return a.removeMissing(ref, force, err)
 	}
@@ -50,6 +50,29 @@ func (a App) removeOne(ctx context.Context, c *client.Client, ref string, force 
 	}
 
 	return a.print(sb.ID)
+}
+
+// removeByID deletes one sandbox, and a failure that leaves no record behind counts as removed, with the failure as a warning.
+func (a App) removeByID(ctx context.Context, c *client.Client, id string, force bool) error {
+	err := c.RemoveSandbox(ctx, id, force)
+	if err == nil {
+		return nil
+	}
+	if _, missing := errors.AsType[*client.NotFoundError](err); missing {
+		return err
+	}
+
+	_, readErr := c.GetSandbox(ctx, id)
+	if readErr == nil {
+		return err
+	}
+	if _, gone := errors.AsType[*client.NotFoundError](readErr); !gone {
+		return errors.Join(err, fmt.Errorf("read sandbox %s back: %w", id, readErr))
+	}
+	// The daemon drops the record before it applies the host rules again, so a failure there leaves nothing to remove twice.
+	a.warn(fmt.Sprintf("sandbox %s is removed, but %v", id, a.forUser(a.located(err))))
+
+	return nil
 }
 
 // removeMissing fails a plain remove of an id with no record, and lets --force pass it with a warning, as rm -f does.
