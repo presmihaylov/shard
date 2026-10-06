@@ -49,6 +49,7 @@ type host struct {
 	mounted   func(string) (mountinfo.Mount, bool, error)
 	haveMkfs  func() error
 	isImage   func(string) (bool, error)
+	imageSize func(string) (int64, error)
 	room      func(string) (int64, error)
 	isRoot    func() bool
 	lock      func(string) (*store.Lock, error)
@@ -64,6 +65,7 @@ var machine = host{
 	mounted:   mountinfo.At,
 	haveMkfs:  xfs.Have,
 	isImage:   xfs.IsImage,
+	imageSize: fileSize,
 	room:      xfs.Room,
 	isRoot:    func() bool { return os.Geteuid() == 0 },
 	lock:      func(path string) (*store.Lock, error) { return store.Acquire(path, 0o600, lockWait) },
@@ -152,14 +154,17 @@ func refuse(cfg Config, h host, fs reflink.Filesystem) error {
 	return nil
 }
 
-// noImageToSize refuses a storage size on a root that clones by itself, where Firecracker makes no image; a root mounted from one keeps it.
+// noImageToSize refuses a storage size on a root that clones by itself, where Firecracker makes no image; a root mounted from one holds it to that image's size.
 func noImageToSize(cfg Config, h host, fs reflink.Filesystem) error {
 	if cfg.ImageMiB == 0 {
 		return nil
 	}
 	formatted, err := h.isImage(ImagePath(cfg.Dir))
-	if err != nil || formatted {
+	if err != nil {
 		return err
+	}
+	if formatted {
+		return sameSize(cfg, h)
 	}
 
 	return fmt.Errorf("%s is on %s, which clones a disk, so Firecracker makes no data image there and a storage size does not apply", cfg.Dir, fs.Type)
@@ -172,8 +177,11 @@ func imageSize(cfg Config, h host, fs reflink.Filesystem) (int64, error) {
 	if errors.Is(err, xfs.ErrNotImage) {
 		return 0, fmt.Errorf("%w: remove it or move the data dir", err)
 	}
-	if err != nil || formatted {
+	if err != nil {
 		return 0, err
+	}
+	if formatted {
+		return 0, sameSize(cfg, h)
 	}
 
 	// Read here, right before the allocation, since the free space can shrink after setup checked it.
@@ -194,6 +202,32 @@ func imageSize(cfg Config, h host, fs reflink.Filesystem) (int64, error) {
 	}
 
 	return mib << 20, nil
+}
+
+// sameSize refuses a storage size other than the existing image's, since setup's unit passes that size on every start; a part MiB rounds up.
+func sameSize(cfg Config, h host) error {
+	if cfg.ImageMiB == 0 {
+		return nil
+	}
+	image := ImagePath(cfg.Dir)
+	bytes, err := h.imageSize(image)
+	if err != nil {
+		return err
+	}
+	if have := (bytes + size.MiB - 1) / size.MiB; have != cfg.ImageMiB {
+		return fmt.Errorf("the data image %s already reserves %s, and shard does not resize it: set the storage size to %s, or leave it unset", image, size.Show(have), size.Show(have))
+	}
+
+	return nil
+}
+
+func fileSize(path string) (int64, error) {
+	info, err := os.Stat(path)
+	if err != nil {
+		return 0, fmt.Errorf("read the size of %s: %w", path, err)
+	}
+
+	return info.Size(), nil
 }
 
 // DefaultMiB is the image a host with room bytes free gets when nobody chose: half the room in whole GiB, at most 100 GiB.

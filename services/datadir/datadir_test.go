@@ -28,6 +28,7 @@ type fakeHost struct {
 	noMkfs    bool
 	user      bool
 	formatted bool
+	existing  int64
 	free      int64
 	fstabIn   error
 	lockAt    string
@@ -55,9 +56,10 @@ func (f *fakeHost) host() host {
 			}
 			return nil
 		},
-		isImage: func(string) (bool, error) { return f.formatted, nil },
-		room:    func(string) (int64, error) { return cmp.Or(f.free, plenty), nil },
-		isRoot:  func() bool { return !f.user },
+		isImage:   func(string) (bool, error) { return f.formatted, nil },
+		imageSize: func(string) (int64, error) { return f.existing, nil },
+		room:      func(string) (int64, error) { return cmp.Or(f.free, plenty), nil },
+		isRoot:    func() bool { return !f.user },
 		lock: func(path string) (*store.Lock, error) {
 			f.lockAt = path
 			return store.TryAcquire(path, 0o600)
@@ -368,16 +370,38 @@ func TestEnsureRefusesASizeWhereNoImageIsMade(t *testing.T) {
 	}
 }
 
-// A root mounted from an image clones, and the size names that image, which keeps its size.
-func TestEnsureKeepsAMountedImageWhenASizeIsGiven(t *testing.T) {
+// The unit setup writes passes the image's own size on every start, so that size starts the daemon and any other refuses before a step.
+func TestEnsureHoldsAnExistingImageToItsOwnSize(t *testing.T) {
 	t.Parallel()
 
-	f := &fakeHost{probes: []reflink.Filesystem{xfsR}, formatted: true}
-	if err := ensure(t.Context(), Config{Dir: t.TempDir(), Provider: Firecracker, ImageMiB: MinImageMiB}, f.host()); err != nil {
-		t.Fatalf("a mounted image: %v", err)
+	cases := []struct {
+		name   string
+		probes []reflink.Filesystem
+		mib    int64
+		want   string
+		steps  []string
+	}{
+		{"mounted, its own size", []reflink.Filesystem{xfsR}, 18 << 10, "", []string{"migrate"}},
+		{"mounted, another size", []reflink.Filesystem{xfsR}, 20 << 10, "already reserves 18 GiB", nil},
+		{"unmounted, its own size", []reflink.Filesystem{ext4, xfsR}, 18 << 10, "", []string{"fstab check", "image", "mount shard.xfs shard", "fstab"}},
+		{"unmounted, another size", []reflink.Filesystem{ext4}, 12 << 10, "already reserves 18 GiB", nil},
 	}
-	if want := []string{"migrate"}; strings.Join(f.steps, ",") != strings.Join(want, ",") {
-		t.Errorf("steps %v, want %v", f.steps, want)
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			t.Parallel()
+
+			f := &fakeHost{probes: c.probes, formatted: true, existing: 18 << 30}
+			err := ensure(t.Context(), Config{Dir: filepath.Join(t.TempDir(), "shard"), Provider: Firecracker, ImageMiB: c.mib}, f.host())
+			if c.want == "" && err != nil {
+				t.Fatalf("got %v, want the image kept", err)
+			}
+			if c.want != "" && (err == nil || !strings.Contains(err.Error(), c.want) || !strings.Contains(err.Error(), "set the storage size to 18 GiB, or leave it unset")) {
+				t.Errorf("got %v, want %q and the size to set", err, c.want)
+			}
+			if strings.Join(f.steps, ",") != strings.Join(c.steps, ",") {
+				t.Errorf("steps %v, want %v", f.steps, c.steps)
+			}
+		})
 	}
 }
 

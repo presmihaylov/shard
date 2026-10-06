@@ -563,7 +563,7 @@ var helps = map[string]verbHelp{
 				"The daemon manages local sandboxes and stays active until stopped.",
 				"An existing data directory must use its original provider.",
 				"Use 'shard info' to see the default provider for this host.",
-				"A new Firecracker data image takes half the free space, at most 100GiB, unless --storage-size sets it. An existing one keeps its size.",
+				"A new Firecracker data image takes half the free space, at most 100GiB, unless --storage-size sets it. An existing one keeps its size, and the daemon refuses any other --storage-size.",
 			),
 			hostOnlyNote,
 		},

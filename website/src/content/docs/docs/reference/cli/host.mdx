@@ -62,7 +62,7 @@ shard daemon --provider gvisor
 | `--log <path>` | daemon log file (macOS only) |  |
 | `--storage-size <size>` | size of a new Firecracker data image |  |
 
-The daemon manages local sandboxes and stays active until stopped. An existing data directory must use its original provider. Use `shard info` to see the default provider for this host. A new Firecracker data image takes half the free space, at most 100GiB, unless `--storage-size` sets it. An existing one keeps its size.
+The daemon manages local sandboxes and stays active until stopped. An existing data directory must use its original provider. Use `shard info` to see the default provider for this host. A new Firecracker data image takes half the free space, at most 100GiB, unless `--storage-size` sets it. An existing one keeps its size, and the daemon refuses any other `--storage-size`.
 
 Runs only on the daemon host and refuses `--remote`, `SHARD_REMOTE` and a saved connection.
 
