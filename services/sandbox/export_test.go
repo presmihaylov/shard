@@ -53,7 +53,7 @@ const (
 )
 
 // AdmitExec takes a running slot as a create does, so a test fills the daemon bound with sandboxes the fake repository does not hold.
-func (s *Service) AdmitExec(id string) error { return s.admitExec(id) }
+func (s *Service) AdmitExec(id string) error { return s.admitExec(id, id) }
 
 // ReleaseExec frees a slot that AdmitExec took.
 func (s *Service) ReleaseExec(id string) { s.releaseExec(id) }

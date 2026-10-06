@@ -199,7 +199,7 @@ func TestExecSplitsAnOutputOverTheLimit(t *testing.T) {
 // Nothing is on the wire before the command runs, so a refusal is a status and a JSON body like any other.
 func TestExecRefusesBeforeThe101(t *testing.T) {
 	s := seed(t)
-	s.verbs.err = &sandbox.StateError{ID: s.stopped.ID, State: models.StateStopped, Fix: "start it again with shard start " + s.stopped.ID, Code: models.CodeSandboxNotRunning}
+	s.verbs.err = &sandbox.StateError{Sandbox: s.stopped.ID, State: models.StateStopped, Fix: "start it again with shard start " + s.stopped.ID, Code: models.CodeSandboxNotRunning}
 
 	status, body := send(t, s.server, http.MethodPost, "/v0/sandboxes/"+s.stopped.ID+"/exec", `{"command":["true"]}`)
 	if status != http.StatusConflict || errorOf(t, body).code != "sandbox_not_running" {
@@ -335,7 +335,7 @@ func TestDeleteExecRefusesARunningExec(t *testing.T) {
 // An exec create past a running-exec bound is a 429 exec_limit whose message names the bound.
 func TestCreateExecRefusesPastTheExecLimit(t *testing.T) {
 	s := seed(t)
-	s.verbs.err = &sandbox.ExecLimitError{ID: s.running.ID, Limit: 32}
+	s.verbs.err = &sandbox.ExecLimitError{Sandbox: s.running.ID, Limit: 32}
 
 	status, body := send(t, s.server, http.MethodPost, "/v0/sandboxes/"+s.running.ID+"/exec", `{"command":["true"]}`)
 	if status != http.StatusTooManyRequests || errorOf(t, body).code != "exec_limit" {

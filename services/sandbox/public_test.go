@@ -9,7 +9,9 @@ import (
 	"time"
 
 	"github.com/presmihaylov/shard/models"
+	"github.com/presmihaylov/shard/pkg/netns"
 	"github.com/presmihaylov/shard/services/bundle"
+	"github.com/presmihaylov/shard/services/network"
 	"github.com/presmihaylov/shard/services/sandbox"
 )
 
@@ -192,5 +194,39 @@ func TestACreateRefusesAUserTheImageDoesNotList(t *testing.T) {
 	}
 	if sb := l.repo.sb; sb.State != models.StateFailed || sb.FailedPublic != unknown.Error() {
 		t.Errorf("the record is %s with public reason %q, want failed with the user named", sb.State, sb.FailedPublic)
+	}
+}
+
+// A network the host refused names the binary and its reason, and a full pool names the verbs that free an address.
+func TestAFailedNetworkSetUpNamesItsCause(t *testing.T) {
+	cases := map[string]struct {
+		cause error
+		want  string
+	}{
+		"a host binary": {
+			cause: &netns.CommandError{Command: "nft -f -", Stderr: "/dev/stdin:3:1-20: Error: Could not process rule: No such file or directory", Err: errors.New("exit status 1")},
+			want:  "set up the sandbox network on the host: nft failed: No such file or directory",
+		},
+		"a host binary with an unknown reason": {
+			cause: &netns.CommandError{Command: "ip netns add synthetic", Stderr: `Cannot open "/var/run/netns/synthetic": Read-only file system`, Err: errors.New("exit status 1")},
+			want:  "set up the sandbox network on the host: ip failed; the daemon log has the cause",
+		},
+		"a full pool": {
+			cause: fmt.Errorf("%w in 10.87.0.0/16", network.ErrNoFreeAddress),
+			want:  "no free address left: every sandbox holds one until it is removed, run shard list --all and remove the ones you no longer need",
+		},
+	}
+	for name, c := range cases {
+		t.Run(name, func(t *testing.T) {
+			svc, l := newService(t, &recorder{}, models.Sandbox{})
+			l.net.allocateErr = c.cause
+
+			if _, err := svc.Create(t.Context(), alpine()); err == nil {
+				t.Fatal("a failed network set up returned no error")
+			}
+			if got := l.repo.sb.FailedPublic; got != c.want {
+				t.Errorf("the public reason is %q, want %q", got, c.want)
+			}
+		})
 	}
 }

@@ -266,7 +266,7 @@ func TestFileRefusalsAnswerTheirCodes(t *testing.T) {
 	}{
 		{err: &sandbox.FileNotFoundError{Err: errors.New("get /srv/missing: no such file or directory")}, status: http.StatusNotFound, code: models.CodeNotFound},
 		{err: &sandbox.RequestError{Err: errors.New("get /srv: is a directory")}, status: http.StatusBadRequest, code: models.CodeInvalidRequest},
-		{err: &sandbox.StateError{ID: "sandbox1", State: models.StateStopped, Fix: "start it", Code: models.CodeSandboxNotRunning}, status: http.StatusConflict, code: models.CodeSandboxNotRunning},
+		{err: &sandbox.StateError{Sandbox: "sandbox1", State: models.StateStopped, Fix: "start it", Code: models.CodeSandboxNotRunning}, status: http.StatusConflict, code: models.CodeSandboxNotRunning},
 		{err: errors.New("/.shard/init files exited 1"), status: http.StatusInternalServerError, code: models.CodeInternal},
 	}
 	for _, c := range cases {

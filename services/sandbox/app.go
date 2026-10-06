@@ -12,7 +12,7 @@ import (
 
 // AttachApp copies the app's log into open's writer until the policy ends; open runs after every refusal, so a refusal precedes the answer.
 func (s *Service) AttachApp(ctx context.Context, ref string, open func() (io.Writer, error)) (exit models.AppExit, err error) {
-	id, err := s.readyForApp(ctx, ref)
+	id, name, err := s.readyForApp(ctx, ref)
 	if err != nil {
 		return models.AppExit{}, err
 	}
@@ -28,21 +28,21 @@ func (s *Service) AttachApp(ctx context.Context, ref string, open func() (io.Wri
 		return models.AppExit{}, err
 	}
 
-	return s.waitApp(ctx, id, func() error { return t.follow(w) })
+	return s.waitApp(ctx, id, name, func() error { return t.follow(w) })
 }
 
 // WaitApp answers how the app ended once its restart policy is over, and reads none of its output.
 func (s *Service) WaitApp(ctx context.Context, ref string) (models.AppExit, error) {
-	id, err := s.readyForApp(ctx, ref)
+	id, name, err := s.readyForApp(ctx, ref)
 	if err != nil {
 		return models.AppExit{}, err
 	}
 
-	return s.waitApp(ctx, id, func() error { return nil })
+	return s.waitApp(ctx, id, name, func() error { return nil })
 }
 
 // waitApp polls the files shard-init writes rather than the record, whose liveness tick is seconds apart.
-func (s *Service) waitApp(ctx context.Context, id string, copyOut func() error) (models.AppExit, error) {
+func (s *Service) waitApp(ctx context.Context, id, name string, copyOut func() error) (models.AppExit, error) {
 	for {
 		// Everything is read before the copy, so what the app wrote on its way out is drained.
 		status, err := s.cfg.Provider.Status(ctx, id)
@@ -71,7 +71,7 @@ func (s *Service) waitApp(ctx context.Context, id string, copyOut func() error) 
 			return appEnd(id, last, count)
 		}
 		if !status.Alive() {
-			return models.AppExit{}, &StateError{ID: id, State: status.State, Fix: "its app had not ended; shard start " + id + " runs it again", Code: models.CodeSandboxNotRunning}
+			return models.AppExit{}, &StateError{Sandbox: name, State: status.State, Fix: "its app had not ended; shard start " + name + " runs it again", Code: models.CodeSandboxNotRunning}
 		}
 
 		select {
@@ -116,7 +116,7 @@ func appEnd(id string, last *models.ExitStatus, count models.RestartCount) (mode
 
 // StopApp cancels every start again of the app and terms it, or kills it with force; the sandbox stays running.
 func (s *Service) StopApp(ctx context.Context, ref string, force bool) error {
-	id, err := s.readyForApp(ctx, ref)
+	id, name, err := s.readyForApp(ctx, ref)
 	if err != nil {
 		return err
 	}
@@ -126,21 +126,23 @@ func (s *Service) StopApp(ctx context.Context, ref string, force bool) error {
 		return fmt.Errorf("read the restart count of sandbox %s: %w", id, err)
 	}
 	if count.Ended {
-		return &StateError{ID: id, State: models.StateRunning, Fix: "its app already ended; shard logs " + id + " shows what it wrote", Code: models.CodeAppEnded}
+		return &StateError{Sandbox: name, State: models.StateRunning, Fix: "its app already ended; shard logs " + name + " shows what it wrote", Code: models.CodeAppEnded}
 	}
 
 	return s.cfg.Provider.StopApp(ctx, id, force)
 }
 
 // readyForApp is readyForExec for a sandbox that shard run started, since one create made runs no app to attach to or stop.
-func (s *Service) readyForApp(ctx context.Context, ref string) (string, error) {
+func (s *Service) readyForApp(ctx context.Context, ref string) (id, name string, err error) {
 	id, sb, err := s.resolveForExec(ref)
 	if err != nil {
-		return "", err
+		return "", "", err
 	}
 	if len(sb.Command) == 0 {
-		return "", &StateError{ID: id, State: sb.State, Fix: "it runs no app; shard run <image> <command> starts a sandbox with one", Code: models.CodeNoApp}
+		return "", "", &StateError{Sandbox: nameOf(id, sb), State: sb.State, Fix: "it runs no app; shard run <image> <command> starts a sandbox with one", Code: models.CodeNoApp}
 	}
 
-	return s.readyForExec(ctx, id)
+	id, sb, err = s.readyForExec(ctx, id)
+
+	return id, nameOf(id, sb), err
 }

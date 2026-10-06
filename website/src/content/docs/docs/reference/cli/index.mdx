@@ -235,6 +235,7 @@ A `--format json` call writes one value or nothing:
 | `name` | the sandbox has a `--name` |
 | `digest` | the provider created it; the image digest |
 | `snapshot` | `create --snapshot` made it; the snapshot id |
+| `forked_from` | `fork` made it; the id of the source sandbox |
 | `exit_status` | the main command exited since the last start: `{"code": 0, "signal": 0}` |
 | `stopped_reason` | shard stopped it with no operator, or `shard-init` died on a stop |
 | `failed_reason` | `state` is `failed` |
@@ -242,7 +243,7 @@ A `--format json` call writes one value or nothing:
 | `restart` | it has a restart policy |
 | `secrets` | it holds a placeholder; the secret names |
 | `policy` | it holds a network policy |
-| `started_at` | the daemon started it at least once |
+| `started_at` | the daemon started it at least once; a resume keeps the first start |
 
 `restart.policy` is `on-failure` or `always`. `retries` is absent when there is no cap. `backoff` is the first wait in seconds. `count` is the number of restarts in this run, and `last_at` is absent before the first one. `gave_up` is true when an exit asked for a restart after the retries ran out. `ended` is true when no restart follows the last exit.
 

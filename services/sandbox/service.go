@@ -213,9 +213,10 @@ func (e *RequestError) Public() string {
 
 // StateError is a verb refused for the state the sandbox is in. Fix says what the operator does instead.
 type StateError struct {
-	ID    string
-	State models.State
-	Fix   string
+	// Sandbox is the name the user gave it, else its id, so the text names what they typed.
+	Sandbox string
+	State   models.State
+	Fix     string
 	// Code names the state the verb wanted, for the program that reads the API body.
 	Code models.Code
 	// Detail is host context, such as the pid that missed its probe, which only the local text carries.
@@ -227,16 +228,16 @@ func (e *StateError) Error() string {
 		return e.Public()
 	}
 
-	return fmt.Sprintf("sandbox %s is %s: %s: %s", e.ID, e.State, e.Detail, e.Fix)
+	return fmt.Sprintf("sandbox %s is %s: %s: %s", e.Sandbox, e.State, e.Detail, e.Fix)
 }
 
 func (e *StateError) Public() string {
-	return fmt.Sprintf("sandbox %s is %s: %s", e.ID, e.State, e.Fix)
+	return fmt.Sprintf("sandbox %s is %s: %s", e.Sandbox, e.State, e.Fix)
 }
 
 // ImageGoneError is a verb that found the sandbox's image files gone from the host; a pull of Image brings them back.
 type ImageGoneError struct {
-	ID string
+	Sandbox string
 	// Image is the record's reference pinned to its digest, so the pull restores the files the sandbox stacks over.
 	Image string
 	Verb  string
@@ -249,15 +250,15 @@ func (e *ImageGoneError) Unwrap() error { return e.Err }
 
 // Public names the image and the verb to run again, never the host path the substrate found empty.
 func (e *ImageGoneError) Public() string {
-	return fmt.Sprintf("sandbox %s: its image %s is no longer on this host; pull that image, then %s the sandbox again", e.ID, e.Image, e.Verb)
+	return fmt.Sprintf("sandbox %s: its image %s is no longer on this host; pull that image, then %s the sandbox again", e.Sandbox, e.Image, e.Verb)
 }
 
 // imageGone types a substrate's gone image so a public route names the pull; any other error passes through.
-func imageGone(id, ref, digest, verb string, err error) error {
+func imageGone(name, ref, digest, verb string, err error) error {
 	if !errors.Is(err, models.ErrImageGone) {
 		return err
 	}
-	gone := &ImageGoneError{ID: id, Image: ref, Verb: verb, Err: err}
+	gone := &ImageGoneError{Sandbox: name, Image: ref, Verb: verb, Err: err}
 	if digest == "" {
 		return gone
 	}
@@ -274,7 +275,7 @@ func imageGone(id, ref, digest, verb string, err error) error {
 
 // wrongState refuses a verb on the record's state, and names why an unresponsive one is silent, as https://useshards.com/docs/concepts/lifecycle/#unresponsive promises.
 func wrongState(id string, sb models.Sandbox, fix string, code models.Code) *StateError {
-	refused := &StateError{ID: id, State: sb.State, Fix: fix, Code: code}
+	refused := &StateError{Sandbox: nameOf(id, sb), State: sb.State, Fix: fix, Code: code}
 	if sb.State == models.StateUnresponsive {
 		refused.Detail = sb.UnresponsiveReason
 	}
@@ -290,7 +291,7 @@ func FailedGuard(id string, sb models.Sandbox) error {
 	}
 
 	public := PublicReason(sb)
-	refused := &StateError{ID: id, State: sb.State, Fix: fmt.Sprintf("%s; remove it with shard remove %s and create another sandbox", public, id), Code: models.CodeSandboxFailed}
+	refused := &StateError{Sandbox: nameOf(id, sb), State: sb.State, Fix: fmt.Sprintf("%s; remove it with shard remove %s and create another sandbox", public, nameOf(id, sb)), Code: models.CodeSandboxFailed}
 	if sb.FailedReason != public {
 		refused.Detail = sb.FailedReason
 	}
@@ -762,7 +763,7 @@ func (s *Service) Complete(ctx context.Context, id string, req CreateRequest) (e
 	td.Push(func(ctx context.Context) error { return s.cfg.Provider.Remove(ctx, id) })
 
 	if err := s.cfg.Provider.Create(ctx, spec); err != nil {
-		return imageGone(id, sb.Image, img.Digest, "create", diskRefused(userRefused(err)))
+		return imageGone(nameOf(id, sb), sb.Image, img.Digest, "create", diskRefused(userRefused(err)))
 	}
 
 	if err := s.recordCreated(ctx, spec, img.Digest); err != nil {
@@ -785,7 +786,7 @@ func (s *Service) Complete(ctx context.Context, id string, req CreateRequest) (e
 			return fmt.Errorf("the start of sandbox %s was interrupted, so it may be running and it stays on the host: %w", id, err)
 		}
 
-		return imageGone(id, sb.Image, img.Digest, "create", nameCommand(err, spec.Entrypoint))
+		return imageGone(nameOf(id, sb), sb.Image, img.Digest, "create", nameCommand(err, nameOf(id, sb), spec.Entrypoint))
 	}
 
 	// The commit point. The entrypoint is live, so nothing below this line gives anything back: only
@@ -796,6 +797,7 @@ func (s *Service) Complete(ctx context.Context, id string, req CreateRequest) (e
 	err = s.cfg.Repo.Update(id, func(sb *models.Sandbox) error {
 		sb.State = models.StateRunning
 		sb.StartedAt = time.Now().UTC()
+		sb.RunStartedAt = sb.StartedAt
 
 		return nil
 	})
@@ -858,15 +860,18 @@ func (e *NotRemovedError) Public() string {
 	return e.Refusal.Public() + ", and the sandbox was not removed"
 }
 
-// nameCommand gives a refused start the program it was to run, which the provider does not know.
-func nameCommand(err error, argv []string) error {
+// nameCommand gives a refused start the sandbox and the program as the user named them, which the provider does not know.
+func nameCommand(err error, sandbox string, argv []string) error {
 	var refused *models.CommandNotStartedError
-	if !errors.As(err, &refused) || len(argv) == 0 {
+	if !errors.As(err, &refused) {
 		return err
 	}
 
 	named := *refused
-	named.Command = argv[0]
+	named.Sandbox = sandbox
+	if len(argv) > 0 {
+		named.Command = argv[0]
+	}
 
 	return &named
 }
@@ -1089,7 +1094,7 @@ func (s *Service) Start(ctx context.Context, ref string) (models.Sandbox, error)
 	}
 
 	if err := s.start(ctx, id); err != nil {
-		return models.Sandbox{}, imageGone(id, sb.Image, sb.Digest, "start", err)
+		return models.Sandbox{}, imageGone(nameOf(id, sb), sb.Image, sb.Digest, "start", err)
 	}
 
 	return s.record(id)
@@ -1345,7 +1350,7 @@ func (s *Service) Remove(ctx context.Context, ref string, force bool) error {
 		return err
 	}
 
-	if err := s.endIfAlive(ctx, id, sb.State, force); err != nil {
+	if err := s.endIfAlive(ctx, id, sb, force); err != nil {
 		return err
 	}
 
@@ -1369,10 +1374,10 @@ type reclaimer interface {
 }
 
 // endIfAlive refuses a sandbox that is still up or paused, because rm frees the writable layer and the checkpoint a stop keeps; --force stops it first, and on a wedge kills it first.
-func (s *Service) endIfAlive(ctx context.Context, id string, state models.State, force bool) error {
+func (s *Service) endIfAlive(ctx context.Context, id string, sb models.Sandbox, force bool) error {
 	// A pause ends the process on gVisor, Firecracker and vz, so only the record says a resume still needs the checkpoint, and no probe can wedge that answer.
-	if state == models.StatePaused {
-		return s.refuseOrStop(ctx, id, state, force)
+	if sb.State == models.StatePaused {
+		return s.refuseOrStop(ctx, id, sb, sb.State, force)
 	}
 
 	status, err := s.status(ctx, id, "remove")
@@ -1391,13 +1396,13 @@ func (s *Service) endIfAlive(ctx context.Context, id string, state models.State,
 		return nil
 	}
 
-	return s.refuseOrStop(ctx, id, status.State, force)
+	return s.refuseOrStop(ctx, id, sb, status.State, force)
 }
 
 // refuseOrStop ends a live or paused sandbox for rm when force says so, and refuses it otherwise.
-func (s *Service) refuseOrStop(ctx context.Context, id string, state models.State, force bool) error {
+func (s *Service) refuseOrStop(ctx context.Context, id string, sb models.Sandbox, state models.State, force bool) error {
 	if !force {
-		return &StateError{ID: id, State: state, Fix: fmt.Sprintf("stop it first with shard stop %s, or pass --force", id), Code: models.CodeSandboxNotStopped}
+		return &StateError{Sandbox: nameOf(id, sb), State: state, Fix: fmt.Sprintf("stop it first with shard stop %s, or pass --force", nameOf(id, sb)), Code: models.CodeSandboxNotStopped}
 	}
 
 	return s.stop(ctx, id, force)

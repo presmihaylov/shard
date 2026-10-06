@@ -126,11 +126,13 @@ func TestAnExecRunsWithNoClientAttached(t *testing.T) {
 
 func TestAttachRefusesAnExecNobodyCreated(t *testing.T) {
 	r := &recorder{}
-	svc, _ := newService(t, r, running())
+	sb := running()
+	sb.Name = "web"
+	svc, _ := newService(t, r, sb)
 
 	_, err := attach(t, svc, "sandbox1", "1a2b3c4d5e6f7a8b", sandbox.Streams{})
-	if !errors.Is(err, sandboxstate.ErrNotFound) {
-		t.Fatalf("Attach returned %v, want an exec that is not found", err)
+	if !errors.Is(err, sandboxstate.ErrNotFound) || !strings.Contains(err.Error(), "in sandbox web") {
+		t.Fatalf("Attach returned %v, want an exec that is not found in the sandbox by its name", err)
 	}
 	if slices.Contains(r.calls, "provider.Exec") {
 		t.Error("the attach reached the provider for an exec nobody created")
@@ -1411,15 +1413,17 @@ func waitForExecCount(t *testing.T, svc *sandbox.Service, ref string, want int) 
 // A sandbox runs at most MaxRunningExecsPerSandbox execs at once, and the one past it never reaches the substrate (SHARD-550).
 func TestAnExecPastTheSandboxBoundIsRefusedBeforeItStarts(t *testing.T) {
 	r := &recorder{}
-	svc, l := newService(t, r, running())
+	sb := running()
+	sb.Name = "web"
+	svc, l := newService(t, r, sb)
 	l.provider.execWaits = make(chan struct{})
 	holdRunningExecs(t, svc, sandbox.MaxRunningExecsPerSandbox)
 
 	_, err := svc.CreateExec(t.Context(), "sandbox1", sandbox.ExecRequest{Command: []string{"sleep", "600"}})
 
 	var limit *sandbox.ExecLimitError
-	if !errors.As(err, &limit) || limit.Daemon || limit.Limit != sandbox.MaxRunningExecsPerSandbox {
-		t.Fatalf("the create past the bound returned %v, want the sandbox's exec limit", err)
+	if !errors.As(err, &limit) || limit.Daemon || limit.Limit != sandbox.MaxRunningExecsPerSandbox || limit.Sandbox != "web" {
+		t.Fatalf("the create past the bound returned %v, want the exec limit of the sandbox by its name", err)
 	}
 	if launched := callsTo(r, "provider.Exec"); launched != sandbox.MaxRunningExecsPerSandbox {
 		t.Errorf("the substrate ran %d execs, want %d and none for the refused create", launched, sandbox.MaxRunningExecsPerSandbox)

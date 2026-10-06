@@ -214,6 +214,7 @@ class SandboxInfo:
     image: str
     digest: str | None
     snapshot: str | None
+    forked_from: str | None
     provider: str
     kernel: str | None
     state: str
@@ -344,6 +345,7 @@ def sandbox_info(record: models.Sandbox | models.Inspection) -> SandboxInfo:
         image=record.image,
         digest=record.digest or None,
         snapshot=record.snapshot or None,
+        forked_from=record.forked_from or None,
         provider=record.provider,
         kernel=record.kernel or None,
         state=record.state.value,

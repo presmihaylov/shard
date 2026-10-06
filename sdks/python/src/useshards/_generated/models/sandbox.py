@@ -31,6 +31,7 @@ class Sandbox:
     digest: str | Unset = UNSET
     exit_status: ExitStatus | Unset = UNSET
     failed_reason: str | Unset = UNSET
+    forked_from: str | Unset = UNSET
     kernel: str | Unset = UNSET
     name: str | Unset = UNSET
     policy: str | Unset = UNSET
@@ -68,6 +69,8 @@ class Sandbox:
             exit_status = self.exit_status.to_dict()
 
         failed_reason = self.failed_reason
+
+        forked_from = self.forked_from
 
         kernel = self.kernel
 
@@ -111,6 +114,8 @@ class Sandbox:
             field_dict["exit_status"] = exit_status
         if failed_reason is not UNSET:
             field_dict["failed_reason"] = failed_reason
+        if forked_from is not UNSET:
+            field_dict["forked_from"] = forked_from
         if kernel is not UNSET:
             field_dict["kernel"] = kernel
         if name is not UNSET:
@@ -162,6 +167,8 @@ class Sandbox:
 
         failed_reason = d.pop("failed_reason", UNSET)
 
+        forked_from = d.pop("forked_from", UNSET)
+
         kernel = d.pop("kernel", UNSET)
 
         name = d.pop("name", UNSET)
@@ -199,6 +206,7 @@ class Sandbox:
             digest=digest,
             exit_status=exit_status,
             failed_reason=failed_reason,
+            forked_from=forked_from,
             kernel=kernel,
             name=name,
             policy=policy,

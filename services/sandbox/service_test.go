@@ -1494,7 +1494,7 @@ func TestRemoveRefusesAPausedSandbox(t *testing.T) {
 			err := svc.Remove(t.Context(), "sandbox1", false)
 
 			var refused *sandbox.StateError
-			if !errors.As(err, &refused) || refused.Code != models.CodeSandboxNotStopped || err.Error() != "sandbox sandbox1 is paused: stop it first with shard stop sandbox1, or pass --force" {
+			if !errors.As(err, &refused) || refused.Code != models.CodeSandboxNotStopped || err.Error() != "sandbox web is paused: stop it first with shard stop web, or pass --force" {
 				t.Fatalf("rm failed with %v, want a sandbox_not_stopped error that names the pause and the stop", err)
 			}
 
@@ -1637,14 +1637,14 @@ func withImage(sb models.Sandbox) models.Sandbox {
 	return sb
 }
 
-// imageGone checks err names the pinned pull and the verb to run again, and never the host path behind it.
+// imageGone checks err names the sandbox as its user knows it, the pinned pull and the verb to run again, and never the host path behind it.
 func imageGone(t *testing.T, err error, verb string) {
 	t.Helper()
 
 	if _, ok := errors.AsType[*sandbox.ImageGoneError](err); !ok {
 		t.Fatalf("%s over a gone image = %v, want an ImageGoneError", verb, err)
 	}
-	want := "sandbox sandbox1: its image index.docker.io/library/alpine@" + fakeDigest +
+	want := "sandbox web: its image index.docker.io/library/alpine@" + fakeDigest +
 		" is no longer on this host; pull that image, then " + verb + " the sandbox again"
 	if public, ok := sandbox.PublicText(err); !ok || public != want {
 		t.Errorf("the public text is %q, want %q", public, want)
@@ -1667,7 +1667,9 @@ func TestStartOverAGoneImageNamesThePullThatBringsItBack(t *testing.T) {
 func TestCreateWhoseStartFindsTheImageGoneNamesThePull(t *testing.T) {
 	svc, l := newService(t, &recorder{fail: []string{"provider.Start"}, cause: goneImage()}, models.Sandbox{})
 
-	_, err := svc.Create(t.Context(), alpine())
+	req := alpine()
+	req.Name = "web"
+	_, err := svc.Create(t.Context(), req)
 
 	imageGone(t, err, "create")
 	public, _ := sandbox.PublicText(err)
@@ -1680,7 +1682,9 @@ func TestCreateWhoseStartFindsTheImageGoneNamesThePull(t *testing.T) {
 func TestCreateOverAGoneImageNamesThePullThatBringsItBack(t *testing.T) {
 	svc, l := newService(t, &recorder{fail: []string{"provider.Create"}, cause: goneImage()}, models.Sandbox{})
 
-	_, err := svc.Create(t.Context(), alpine())
+	req := alpine()
+	req.Name = "web"
+	_, err := svc.Create(t.Context(), req)
 
 	imageGone(t, err, "create")
 	public, _ := sandbox.PublicText(err)

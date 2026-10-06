@@ -20,7 +20,7 @@ func SecretHolders(repo Reader, name string) ([]string, error) {
 	var holders []string
 	for _, sb := range sandboxes {
 		if slices.Contains(sb.Secrets, name) {
-			holders = append(holders, sb.ID)
+			holders = append(holders, nameOf(sb.ID, sb))
 		}
 	}
 
@@ -69,7 +69,7 @@ func (s *Service) GrantSecret(ctx context.Context, ref, name string) (models.San
 		return models.Sandbox{}, &RequestError{Err: fmt.Errorf("secret %s cannot be granted: the proxy sets $%s to its trust store; store the secret under another name", name, name)}
 	}
 	if err := b.CanSetEnv(name); err != nil {
-		return models.Sandbox{}, grantRefused(id, name, err)
+		return models.Sandbox{}, grantRefused(nameOf(id, sb), name, err)
 	}
 
 	if err := b.TrustProxy(proxyCA); err != nil {
@@ -177,7 +177,7 @@ func (s *Service) holdCreatedOrStopped(ctx context.Context, ref, fix string) (st
 	if sb.State != models.StateCreated && sb.State != models.StateStopped {
 		unlock()
 
-		return "", models.Sandbox{}, nil, &StateError{ID: id, State: sb.State, Fix: fix, Code: models.CodeSandboxLive}
+		return "", models.Sandbox{}, nil, &StateError{Sandbox: nameOf(id, sb), State: sb.State, Fix: fix, Code: models.CodeSandboxLive}
 	}
 
 	return id, sb, unlock, nil
@@ -189,8 +189,8 @@ func (s *Service) environment(id string) (models.Environment, error) {
 }
 
 // grantRefused makes the request's fault only a variable the guest environment refuses; an environment it could not read broke the grant.
-func grantRefused(id, name string, err error) error {
-	wrapped := fmt.Errorf("sandbox %s cannot be granted secret %s: %w", id, name, err)
+func grantRefused(sandbox, name string, err error) error {
+	wrapped := fmt.Errorf("sandbox %s cannot be granted secret %s: %w", sandbox, name, err)
 	if _, ok := errors.AsType[*runspec.UnsettableError](err); ok {
 		return &RequestError{Err: wrapped}
 	}

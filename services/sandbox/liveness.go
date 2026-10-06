@@ -36,7 +36,7 @@ func (s *Service) Liveness(ctx context.Context, sandboxes []models.Sandbox, repo
 // other sandbox must not wait on it. It locks to write and to probe a marked run again, and bails if the run changed.
 func (s *Service) reconcileLive(ctx context.Context, sb models.Sandbox, report func(string)) error {
 	// The list may be a tick old: a stop that landed since means this sandbox never needs the substrate.
-	if before, err := s.cfg.Repo.Get(sb.ID); err != nil || !before.State.Live() || before.PID != sb.PID || !before.StartedAt.Equal(sb.StartedAt) {
+	if before, err := s.cfg.Repo.Get(sb.ID); err != nil || !before.State.Live() || before.PID != sb.PID || !before.RunStartedAt.Equal(sb.RunStartedAt) {
 		return err
 	}
 
@@ -51,12 +51,12 @@ func (s *Service) reconcileLive(ctx context.Context, sb models.Sandbox, report f
 	}
 	defer unlock()
 
-	// A stop, or a stop and a start that even reused the PID, landed while the probe ran: StartedAt catches it.
+	// A stop, or a stop and a start that even reused the PID, landed while the probe ran: RunStartedAt catches it.
 	current, err := s.cfg.Repo.Get(sb.ID)
 	if err != nil {
 		return err
 	}
-	if !current.State.Live() || current.PID != sb.PID || !current.StartedAt.Equal(sb.StartedAt) {
+	if !current.State.Live() || current.PID != sb.PID || !current.RunStartedAt.Equal(sb.RunStartedAt) {
 		return nil
 	}
 	// A silent substrate process may still answer, so it is marked and never ended here; only stop ends it (SHARD-421).
@@ -174,7 +174,7 @@ func (s *Service) noteUnresponsive(id string, seen models.Sandbox, reason string
 	if err != nil {
 		return err
 	}
-	if !current.State.Live() || current.PID != seen.PID || !current.StartedAt.Equal(seen.StartedAt) {
+	if !current.State.Live() || current.PID != seen.PID || !current.RunStartedAt.Equal(seen.RunStartedAt) {
 		return nil
 	}
 

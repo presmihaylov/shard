@@ -102,8 +102,8 @@ Every error from the API has this body:
 | Field | Description |
 | --- | --- |
 | `code` | What a program matches on. The next section lists every code. |
-| `message` | The line the CLI prints after `shard:`. |
-| `holders` | Only on `in_use`, when sandboxes or snapshots hold the entry. It lists the sandbox ids, or the snapshot ids when no sandbox holds it. |
+| `message` | The line the CLI prints after `shard:`. It names a sandbox by its name, or by its id when it has none. |
+| `holders` | Only on `in_use`, when sandboxes or snapshots hold the entry. It lists each sandbox by its name, or by its id when it has none. When no sandbox holds the entry, it lists the snapshots the same way. |
 | `exit_code` | Only on `command_not_started`: 127 for a command that does not exist, 126 for one that cannot run. |
 
 `error` is the only top-level field.

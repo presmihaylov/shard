@@ -172,24 +172,35 @@ func TestStartFailsFastAndTypedWhenTheRuntimeWedges(t *testing.T) {
 	}
 }
 
-// A stop and a start that reused the PID during the tick changes StartedAt, so PID alone would miss the new
-// run: the guard catches it on StartedAt and never applies the old run's status to the new one.
+// RunStartedAt prevents an old probe from changing a resumed run that reuses its PID.
 func TestLivenessBailsWhenAReusedPidHidesANewRun(t *testing.T) {
-	r := &recorder{}
-	old := running()
-	old.StartedAt = time.Now().Add(-time.Minute)
-	svc, l := newService(t, r, old, fastBudget)
-	// The record now holds a fresh run behind the same PID 42: a later StartedAt.
-	l.repo.sb.StartedAt = time.Now()
+	cases := map[string]func(*models.Sandbox){
+		"a stop and a start": func(sb *models.Sandbox) {
+			sb.StartedAt = time.Now()
+			sb.RunStartedAt = sb.StartedAt
+		},
+		// A resume keeps the first start (SHARD-770), so only the run marker moves.
+		"a pause and a resume": func(sb *models.Sandbox) { sb.RunStartedAt = time.Now() },
+	}
+	for name, land := range cases {
+		t.Run(name, func(t *testing.T) {
+			r := &recorder{}
+			old := running()
+			old.StartedAt = time.Now().Add(-time.Minute)
+			old.RunStartedAt = old.StartedAt
+			svc, l := newService(t, r, old, fastBudget)
+			land(&l.repo.sb)
 
-	if err := svc.Liveness(t.Context(), []models.Sandbox{old}, func(string) {}); err != nil {
-		t.Fatalf("Liveness returned %v, want nil", err)
-	}
-	if slices.Contains(r.calls, "provider.Status") {
-		t.Error("the tick probed a run the record had already replaced")
-	}
-	if got := l.repo.sb; got.State != models.StateRunning || got.PID != 42 {
-		t.Errorf("the record is now %s pid %d, want the fresh run left running with pid 42", got.State, got.PID)
+			if err := svc.Liveness(t.Context(), []models.Sandbox{old}, func(string) {}); err != nil {
+				t.Fatalf("Liveness returned %v, want nil", err)
+			}
+			if slices.Contains(r.calls, "provider.Status") {
+				t.Error("the tick probed a run the record had already replaced")
+			}
+			if got := l.repo.sb; got.State != models.StateRunning || got.PID != 42 {
+				t.Errorf("the record is now %s pid %d, want the fresh run left running with pid 42", got.State, got.PID)
+			}
+		})
 	}
 }
 

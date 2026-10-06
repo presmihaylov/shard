@@ -1,6 +1,7 @@
 package cli
 
 import (
+	"cmp"
 	"context"
 	"errors"
 	"flag"
@@ -53,11 +54,14 @@ func (a App) createAndWait(ctx context.Context, c *client.Client, req sandbox.Cr
 		return client.Sandbox{}, inFlags(err, req)
 	}
 	if sb.State == models.StateFailed {
-		return client.Sandbox{}, fmt.Errorf("sandbox %s failed to start: %s", sb.ID, sb.FailedReason)
+		return client.Sandbox{}, fmt.Errorf("sandbox %s failed to start: %s", sandboxName(sb), sb.FailedReason)
 	}
 
 	return sb, nil
 }
+
+// sandboxName is the sandbox as its user knows it: the name they gave, else the id.
+func sandboxName(sb client.Sandbox) string { return cmp.Or(sb.Name, sb.ID) }
 
 // resourceFlags names each resources field of the API as the flag that sets it.
 var resourceFlags = strings.NewReplacer("resources.memory_mib", "--memory", "resources.vcpus", "--vcpus", "resources.disk_mib", "--disk")
