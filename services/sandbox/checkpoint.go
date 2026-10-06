@@ -94,7 +94,12 @@ func (s *Service) Pause(ctx context.Context, ref string) (models.Sandbox, error)
 		}
 
 		// A pause that spent its budget leaves pctx done, so the reconcile probes under a budget of its own.
-		return models.Sandbox{}, errors.Join(err, s.reconcileGone(base, id, dir))
+		if gone := s.reconcileGone(base, id, dir); gone != nil {
+			return models.Sandbox{}, errors.Join(err, gone)
+		}
+
+		// Only a sandbox the reconcile left running and unmarked makes a disk refusal the request's fault.
+		return models.Sandbox{}, diskRefused(err)
 	}
 
 	if err := s.recordPaused(id, dir); err != nil {
@@ -327,7 +332,7 @@ func (s *Service) Fork(ctx context.Context, ref string, req CopyRequest) (sb mod
 	spec := models.SandboxSpec{ID: id, Name: req.Name, StateDir: claim.dir, Network: claim.net, Resources: src.Resources}
 	if err := s.cfg.Provider.Fork(ctx, source, spec); err != nil {
 		if ctx.Err() == nil {
-			return models.Sandbox{}, imageGone(source, src.Image, src.Digest, "fork", err)
+			return models.Sandbox{}, imageGone(source, src.Image, src.Digest, "fork", diskRefused(err))
 		}
 		// An interrupt kills the restore process, not what it may already have restored, and only stop ends a sandbox, so a fork that may run is kept.
 		probe, perr := s.status(context.WithoutCancel(ctx), id, "fork")

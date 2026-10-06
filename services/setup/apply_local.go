@@ -21,6 +21,7 @@ import (
 
 	"github.com/klauspost/compress/zstd"
 
+	"github.com/presmihaylov/shard/pkg/size"
 	"github.com/presmihaylov/shard/pkg/tarball"
 	"github.com/presmihaylov/shard/services/client"
 )
@@ -549,7 +550,7 @@ func (p *localPlan) service(ctx context.Context) (err error) {
 
 func (p *localPlan) systemdService(ctx context.Context, dir string) error {
 	unit := filepath.Join(dir, "shard.service")
-	if err := os.WriteFile(unit, []byte(systemdUnitText(p.local.Provider)), 0o600); err != nil {
+	if err := os.WriteFile(unit, []byte(systemdUnitText(p.local)), 0o600); err != nil {
 		return err
 	}
 	if _, err := run(ctx, p.h, "systemd-analyze", "verify", unit); err != nil {
@@ -590,6 +591,9 @@ func (p *localPlan) launchdService(ctx context.Context, dir string) error {
 
 func (p *localPlan) start(ctx context.Context) error {
 	if p.h.OS != "darwin" {
+		if err := roomAtStart(p.h, p.local.StorageMiB); err != nil {
+			return err
+		}
 		if _, err := privileged(ctx, p.h, "systemctl", "start", "shard.service"); err != nil {
 			return &Problem{Lines: []string{fmt.Sprintf("Could not start the daemon: %v.", err)}}
 		}
@@ -698,8 +702,17 @@ func logHint(h Host) string {
 }
 
 // systemdUnitText is packaging/systemd/shard.service with the provider named, so the daemon never probes for one.
-func systemdUnitText(provider string) string {
-	return strings.Replace(systemdUnitTemplate, systemdExecStart, systemdExecStart+" --provider "+provider, 1)
+func systemdUnitText(l Local) string {
+	return strings.Replace(systemdUnitTemplate, systemdExecStart, systemdExecStart+daemonArgs(l.Provider, l.StorageMiB), 1)
+}
+
+// daemonArgs start shard daemon as setup recorded it: the provider, and the size of a data image it has not made yet.
+func daemonArgs(provider string, storageMiB int64) string {
+	if storageMiB == 0 {
+		return " --provider " + provider
+	}
+
+	return " --provider " + provider + " --storage-size " + size.Format(storageMiB)
 }
 
 const systemdExecStart = "ExecStart=" + shardBinary + " daemon"
