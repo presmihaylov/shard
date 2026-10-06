@@ -23,10 +23,12 @@ type Rule struct {
 	Match []string
 }
 
-// Hole is what one interface needs through the host firewall, and the name every part of it carries.
+// Hole is what one interface needs through the host firewall, and the marker that proves which parts of it are ours.
 type Hole struct {
-	// Name is the comment on every rule and the firewalld zone, which is how Close finds them again.
+	// Name is the firewalld zone.
 	Name string
+	// Marker is the comment on every rule and the description of the zone and policy: only what carries it is ours to change or remove.
+	Marker string
 	// Interface is what the zone holds.
 	Interface string
 	// Policy lets the zone forward out on firewalld 1.x, where a zone's target no longer covers it.
@@ -109,17 +111,17 @@ func (m *Manager) EnsureRules(ctx context.Context, hole Hole) error {
 
 	// Each goes in at the top, so the last one first keeps the hole's order.
 	for _, rule := range slices.Backward(hole.Rules) {
-		if slices.Contains(lines, "-A "+rule.Chain+" "+strings.Join(rule.args(hole.Name), " ")) {
+		if slices.Contains(lines, "-A "+rule.Chain+" "+strings.Join(rule.args(hole.Marker), " ")) {
 			continue
 		}
-		present, err := m.holds(ctx, rule, hole.Name)
+		present, err := m.holds(ctx, rule, hole.Marker)
 		if err != nil {
 			return err
 		}
 		if present {
 			continue
 		}
-		if _, err := m.run(ctx, m.iptables, slices.Concat([]string{"-w", "-I", rule.Chain, "1"}, rule.args(hole.Name))...); err != nil {
+		if _, err := m.run(ctx, m.iptables, slices.Concat([]string{"-w", "-I", rule.Chain, "1"}, rule.args(hole.Marker))...); err != nil {
 			return fmt.Errorf("let %s through the %s chain: %w", hole.Interface, rule.Chain, err)
 		}
 	}
@@ -127,8 +129,8 @@ func (m *Manager) EnsureRules(ctx context.Context, hole Hole) error {
 	return nil
 }
 
-func (r Rule) args(name string) []string {
-	return slices.Concat(r.Match, []string{"-m", "comment", "--comment", name, "-j", accept})
+func (r Rule) args(marker string) []string {
+	return slices.Concat(r.Match, []string{"-m", "comment", "--comment", marker, "-j", accept})
 }
 
 func (m *Manager) listRules(ctx context.Context) ([]string, error) {
@@ -151,7 +153,7 @@ func filters(lines []string, hole Hole) bool {
 			if fields[0] == "-P" && fields[2] != accept {
 				return true
 			}
-			if fields[0] == "-A" && !tagged(fields, hole.Name) {
+			if fields[0] == "-A" && !tagged(fields, hole.Marker) {
 				return true
 			}
 		}
@@ -160,15 +162,15 @@ func filters(lines []string, hole Hole) bool {
 	return false
 }
 
-func tagged(fields []string, name string) bool {
+func tagged(fields []string, marker string) bool {
 	at := slices.Index(fields, "--comment")
 
-	return at >= 0 && at+1 < len(fields) && fields[at+1] == name
+	return at >= 0 && at+1 < len(fields) && fields[at+1] == marker
 }
 
 // holds asks iptables itself, for a version that prints a rule in another order than Match.
-func (m *Manager) holds(ctx context.Context, rule Rule, name string) (bool, error) {
-	_, err := m.run(ctx, m.iptables, slices.Concat([]string{"-w", "-C", rule.Chain}, rule.args(name))...)
+func (m *Manager) holds(ctx context.Context, rule Rule, marker string) (bool, error) {
+	_, err := m.run(ctx, m.iptables, slices.Concat([]string{"-w", "-C", rule.Chain}, rule.args(marker))...)
 	if err == nil {
 		return true, nil
 	}
@@ -176,7 +178,7 @@ func (m *Manager) holds(ctx context.Context, rule Rule, name string) (bool, erro
 		return false, nil
 	}
 
-	return false, fmt.Errorf("check the %s chain for %s: %w", rule.Chain, name, err)
+	return false, fmt.Errorf("check the %s chain for %s: %w", rule.Chain, marker, err)
 }
 
 // EnsureZone puts the interface in a permanent zone that accepts it, so a firewalld reload brings the zone back.
@@ -210,11 +212,9 @@ func (m *Manager) ensureZone(ctx context.Context, hole Hole) (bool, error) {
 	if err != nil {
 		return false, err
 	}
-	created := !slices.Contains(strings.Fields(zones), hole.Name)
-	if created {
-		if _, err := m.firewall(ctx, "--permanent", "--new-zone="+hole.Name); err != nil {
-			return false, err
-		}
+	created, err := m.claim(ctx, "zone", hole.Name, strings.Fields(zones), hole.Marker)
+	if err != nil {
+		return false, err
 	}
 
 	info, err := m.firewall(ctx, "--permanent", "--info-zone="+hole.Name)
@@ -238,11 +238,9 @@ func (m *Manager) ensurePolicy(ctx context.Context, hole Hole) (bool, error) {
 	if err != nil || !supported {
 		return false, err
 	}
-	created := !slices.Contains(policies, hole.Policy)
-	if created {
-		if _, err := m.firewall(ctx, "--permanent", "--new-policy="+hole.Policy); err != nil {
-			return false, err
-		}
+	created, err := m.claim(ctx, "policy", hole.Policy, policies, hole.Marker)
+	if err != nil {
+		return false, err
 	}
 
 	info, err := m.firewall(ctx, "--permanent", "--info-policy="+hole.Policy)
@@ -261,6 +259,44 @@ func (m *Manager) ensurePolicy(ctx context.Context, hole Hole) (bool, error) {
 	}
 
 	return created || len(steps) > 0, m.firewallEach(ctx, steps)
+}
+
+// claim makes a zone or policy that carries the marker, and refuses one that exists without it as the host's own.
+func (m *Manager) claim(ctx context.Context, kind, name string, listed []string, marker string) (bool, error) {
+	if !slices.Contains(listed, name) {
+		return true, m.firewallEach(ctx, [][]string{
+			{"--permanent", "--new-" + kind + "=" + name},
+			{"--permanent", "--" + kind + "=" + name, "--set-description=" + marker},
+		})
+	}
+
+	owned, err := m.marked(ctx, kind, name, marker)
+	if err != nil {
+		return false, err
+	}
+	if !owned {
+		return false, fmt.Errorf("firewalld has a %s %s without the description %q, so it is the host's own: rename it, or remove it if nothing uses it", kind, name, marker)
+	}
+
+	return false, nil
+}
+
+// ours is whether the zone or policy exists and carries the marker.
+func (m *Manager) ours(ctx context.Context, kind, name string, listed []string, marker string) (bool, error) {
+	if !slices.Contains(listed, name) {
+		return false, nil
+	}
+
+	return m.marked(ctx, kind, name, marker)
+}
+
+func (m *Manager) marked(ctx context.Context, kind, name, marker string) (bool, error) {
+	description, err := m.firewall(ctx, "--permanent", "--"+kind+"="+name, "--get-description")
+	if err != nil {
+		return false, err
+	}
+
+	return strings.TrimSpace(description) == marker, nil
 }
 
 // policies lists the permanent policies, and reports none supported before firewalld 1.0.
@@ -297,7 +333,7 @@ func field(info, key string) string {
 	return ""
 }
 
-// Close drops every rule the hole's name tags, its policy and its zone. It is idempotent.
+// Close drops every rule, the policy and the zone that carry the hole's marker, and leaves the host's own. It is idempotent.
 func (m *Manager) Close(ctx context.Context, hole Hole) error {
 	if err := m.closeRules(ctx, hole); err != nil {
 		return err
@@ -312,15 +348,23 @@ func (m *Manager) Close(ctx context.Context, hole Hole) error {
 	if err != nil {
 		return err
 	}
-	var steps [][]string
-	if slices.Contains(policies, hole.Policy) {
-		steps = append(steps, []string{"--permanent", "--delete-policy=" + hole.Policy})
+	policy, err := m.ours(ctx, "policy", hole.Policy, policies, hole.Marker)
+	if err != nil {
+		return err
 	}
 	zones, err := m.firewall(ctx, "--permanent", "--get-zones")
 	if err != nil {
 		return err
 	}
-	if slices.Contains(strings.Fields(zones), hole.Name) {
+	zone, err := m.ours(ctx, "zone", hole.Name, strings.Fields(zones), hole.Marker)
+	if err != nil {
+		return err
+	}
+	var steps [][]string
+	if policy {
+		steps = append(steps, []string{"--permanent", "--delete-policy=" + hole.Policy})
+	}
+	if zone {
 		steps = append(steps, []string{"--permanent", "--delete-zone=" + hole.Name})
 	}
 	if len(steps) == 0 {
@@ -344,11 +388,11 @@ func (m *Manager) closeRules(ctx context.Context, hole Hole) error {
 	}
 	for _, line := range lines {
 		fields := strings.Fields(line)
-		if len(fields) < 2 || fields[0] != "-A" || !tagged(fields, hole.Name) {
+		if len(fields) < 2 || fields[0] != "-A" || !tagged(fields, hole.Marker) {
 			continue
 		}
 		if _, err := m.run(ctx, m.iptables, slices.Concat([]string{"-w", "-D"}, fields[1:])...); err != nil {
-			return fmt.Errorf("drop the %s rule %q: %w", hole.Name, line, err)
+			return fmt.Errorf("drop the %s rule %q: %w", hole.Marker, line, err)
 		}
 	}
 

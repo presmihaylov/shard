@@ -36,6 +36,8 @@ type fakeHost struct {
 	rules    string
 	zones    string
 	policies string
+	// foreign holds the --zone= and --policy= flags whose description is not shard's marker.
+	foreign []string
 	// asRoot is root itself, with no person who started setup through sudo.
 	asRoot bool
 }
@@ -121,6 +123,10 @@ func (f *fakeHost) run(ctx context.Context, name string, args ...string) ([]byte
 			return []byte(f.policies), nil
 		case slices.Contains(args, "--get-zones"):
 			return []byte(f.zones), nil
+		case slices.Contains(args, "--get-description") && slices.ContainsFunc(f.foreign, func(flag string) bool { return slices.Contains(args, flag) }):
+			return []byte("the admin's own\n"), nil
+		case slices.Contains(args, "--get-description"):
+			return []byte(hostMarker + "\n"), nil
 		}
 		return nil, nil
 	case "mkdir", "install", "mv", "rm", "rmdir", "find", "sh":
@@ -989,23 +995,31 @@ func TestUninstallRemovesTheSharedNetwork(t *testing.T) {
 	said(t, ui, "IP forwarding remains on (net.ipv4.ip_forward = 1). Other software may need it.", "Turn it off with: sudo sysctl -w net.ipv4.ip_forward=0")
 }
 
-// Uninstall drops the iptables rules and the firewalld zone and policy the daemon made, and nothing else. (SHARD-758)
-func TestUninstallClosesTheHostFirewall(t *testing.T) {
+func firewallHost(t *testing.T) (*fakeHost, Manifest) {
+	t.Helper()
+
 	f := newFakeHost(t)
 	m := linuxInstall("v0.1.0")
 	f.installed(t, m)
 	f.write(t, "/sys/class/net/shard0/address", "02:00:00:00:00:01")
 	f.write(t, "/usr/sbin/iptables", "#!/bin/sh\n")
 	f.write(t, "/usr/bin/firewall-cmd", "#!/bin/sh\n")
-	f.rules = "-P INPUT DROP\n-A INPUT -i lo -j ACCEPT\n-A FORWARD -i shard0 -m comment --comment shard -j ACCEPT\n"
+	f.rules = "-P INPUT DROP\n-A INPUT -p tcp -m tcp --dport 22 -m comment --comment shard -j ACCEPT\n-A FORWARD -i shard0 -m comment --comment managed-by-shard -j ACCEPT\n"
 	f.zones = "public shard trusted\n"
 	f.policies = "allow-host-ipv6 shard-forwarding\n"
+
+	return f, m
+}
+
+// Uninstall drops the iptables rules and the firewalld zone and policy the daemon marked, and nothing else. (SHARD-758)
+func TestUninstallClosesTheHostFirewall(t *testing.T) {
+	f, m := firewallHost(t)
 
 	if err := (&Setup{Host: f.host(nil), UI: confirming(true)}).uninstall(t.Context(), m); err != nil {
 		t.Fatalf("uninstall: %v", err)
 	}
 	for _, want := range []string{
-		"iptables -w -D FORWARD -i shard0 -m comment --comment shard -j ACCEPT",
+		"iptables -w -D FORWARD -i shard0 -m comment --comment managed-by-shard -j ACCEPT",
 		"firewall-cmd --permanent --delete-policy=shard-forwarding",
 		"firewall-cmd --permanent --delete-zone=shard",
 		"firewall-cmd --reload",
@@ -1019,6 +1033,22 @@ func TestUninstallClosesTheHostFirewall(t *testing.T) {
 	}
 	if slices.Index(f.calls, "firewall-cmd --reload") > slices.Index(f.calls, "ip link delete shard0") {
 		t.Fatalf("calls = %v, want the firewall closed before the bridge goes", f.calls)
+	}
+}
+
+// A zone named shard that the daemon did not mark is the host's own, and uninstall leaves it. (SHARD-758)
+func TestUninstallLeavesAForeignShardZone(t *testing.T) {
+	f, m := firewallHost(t)
+	f.foreign = []string{"--zone=shard"}
+
+	if err := (&Setup{Host: f.host(nil), UI: confirming(true)}).uninstall(t.Context(), m); err != nil {
+		t.Fatalf("uninstall: %v", err)
+	}
+	if f.called("firewall-cmd --permanent --delete-zone=shard") {
+		t.Fatalf("uninstall deleted the host's own zone: %v", f.calls)
+	}
+	if !f.called("firewall-cmd --permanent --delete-policy=shard-forwarding") {
+		t.Fatalf("calls = %v, want the marked policy deleted", f.calls)
 	}
 }
 

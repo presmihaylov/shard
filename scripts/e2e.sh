@@ -463,10 +463,18 @@ clear_host_net() {
 	fi
 }
 
+# FW_MARKER is the comment and description on what the daemon made in the host firewall, as network.FirewallMarker names it; nothing without it is ours.
+FW_MARKER=managed-by-shard
+
 # shard_fw_rules prints the accepts the daemon put in the iptables chains for the bridge, as iptables -S lists them without the -A (SHARD-758).
 shard_fw_rules() {
 	command -v iptables >/dev/null 2>&1 || return 0
-	iptables -w -S | sed -n 's/^-A \(.* --comment shard -j ACCEPT\)$/\1/p'
+	iptables -w -S | sed -n "s/^-A \(.* --comment ${FW_MARKER} -j ACCEPT\)\$/\1/p"
+}
+
+# fw_ours is whether the firewalld zone or policy $2, listed in $3, carries the marker.
+fw_ours() {
+	[[ "$3" == *" $2 "* ]] && [ "$(firewall-cmd --permanent "--$1=$2" --get-description)" = "${FW_MARKER}" ]
 }
 
 # close_host_firewall drops those accepts and the firewalld zone and policy, which go with the bridge.
@@ -480,11 +488,11 @@ close_host_firewall() {
 	# firewalld before 1.0 has no policies, and refuses the option.
 	policies=" $(firewall-cmd --permanent --get-policies 2>/dev/null || true) "
 	zones=" $(firewall-cmd --permanent --get-zones) "
-	if [[ "${policies}" == *" shard-forwarding "* ]]; then
+	if fw_ours policy shard-forwarding "${policies}"; then
 		firewall-cmd --permanent --delete-policy=shard-forwarding >/dev/null
 		changed=yes
 	fi
-	if [[ "${zones}" == *" shard "* ]]; then
+	if fw_ours zone shard "${zones}"; then
 		firewall-cmd --permanent --delete-zone=shard >/dev/null
 		changed=yes
 	fi

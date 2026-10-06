@@ -60,6 +60,7 @@ const (
 	hostTable  = "shard"
 	hostZone   = "shard"
 	hostPolicy = "shard-forwarding"
+	hostMarker = "managed-by-shard"
 )
 
 var hostTableFamilies = []string{"inet", "bridge"}
@@ -142,7 +143,7 @@ func sweepShared() error {
 			left = append(left, Leftover{What: "the " + family + " table", Path: hostTable, remove: run("nft", "delete", "table", family, hostTable)})
 		}
 	}
-	hole := hostfw.Hole{Name: hostZone, Interface: hostBridge, Policy: hostPolicy}
+	hole := hostfw.Hole{Name: hostZone, Marker: hostMarker, Interface: hostBridge, Policy: hostPolicy}
 	left = append(left, Leftover{What: "the host firewall accepts", Path: hostZone, remove: func() error { return hostfw.Local().Close(context.Background(), hole) }})
 	if shown(hostBridge) {
 		left = append(left, Leftover{What: "the bridge", Path: hostBridge, remove: deleteLink(hostBridge)})

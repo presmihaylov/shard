@@ -700,9 +700,10 @@ const (
 	hostBridge = "shard0"
 	hostTable  = "shard"
 	ipForward  = "/proc/sys/net/ipv4/ip_forward"
-	// hostZone and hostPolicy are the names network.FirewallName and network.FirewallPolicy give the hole.
+	// hostZone, hostPolicy and hostMarker are network.FirewallName, network.FirewallPolicy and network.FirewallMarker.
 	hostZone   = "shard"
 	hostPolicy = "shard-forwarding"
+	hostMarker = "managed-by-shard"
 )
 
 var hostTableFamilies = []string{"inet", "bridge"}
@@ -770,7 +771,7 @@ func closeHostFirewall(ctx context.Context, h Host) error {
 	fw := hostfw.New(func(ctx context.Context, name string, args ...string) ([]byte, error) {
 		return privileged(ctx, h, name, args...)
 	}, tool("iptables"), tool("firewall-cmd"))
-	if err := fw.Close(ctx, hostfw.Hole{Name: hostZone, Interface: hostBridge, Policy: hostPolicy}); err != nil {
+	if err := fw.Close(ctx, hostfw.Hole{Name: hostZone, Marker: hostMarker, Interface: hostBridge, Policy: hostPolicy}); err != nil {
 		return fmt.Errorf("close the host firewall: %w", err)
 	}
 

@@ -17,10 +17,11 @@ type HostFirewall interface {
 	EnsureZone(ctx context.Context, hole hostfw.Hole) error
 }
 
-// The names shard's rules, zone and policy carry in the host's firewall, which removal finds them by.
+// The zone and policy shard makes in the host's firewall, and the marker that tells its rules, zone and policy from the host's own.
 const (
 	FirewallName   = "shard"
 	FirewallPolicy = "shard-forwarding"
+	FirewallMarker = "managed-by-shard"
 )
 
 // OpenFirewall lets the resolver, the proxy and routed traffic past the host's firewall, as Docker does for its bridge.
@@ -55,6 +56,7 @@ func (s *Service) hole() hostfw.Hole {
 
 	return hostfw.Hole{
 		Name:      FirewallName,
+		Marker:    FirewallMarker,
 		Interface: bridge,
 		Policy:    FirewallPolicy,
 		Rules: []hostfw.Rule{
