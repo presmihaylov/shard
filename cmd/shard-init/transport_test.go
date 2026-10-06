@@ -283,6 +283,142 @@ func TestTransportExecNotStartedReports127(t *testing.T) {
 	}
 }
 
+// docker run -w makes a missing work directory, with no command as with one, since every exec defaults to it (SHARD-757).
+func TestTransportARunMakesItsWorkDirectory(t *testing.T) {
+	for name, argv := range map[string][]string{"no command": nil, "a command": childArgv("sleep:60000")} {
+		t.Run(name, func(t *testing.T) {
+			_, dial := startTransport(t)
+			c, err := supervisor.Connect(testContext(t), dial)
+			if err != nil {
+				t.Fatalf("connect: %v", err)
+			}
+			defer c.Close()
+			dir := filepath.Join(shortDir(t), "work", "deep")
+			if err := c.Run(t.Context(), supervisor.RunSpec{Argv: argv, Env: os.Environ(), WorkDir: dir}); err != nil {
+				t.Fatalf("run: %v", err)
+			}
+			awaitKind(t, c, supervisor.KindReady)
+
+			if info, err := os.Stat(dir); err != nil || !info.IsDir() {
+				t.Fatalf("the work directory after the run: %v, want a directory", err)
+			}
+		})
+	}
+}
+
+func TestTransportARunRefusesAWorkDirectoryItCannotMake(t *testing.T) {
+	_, dial := startTransport(t)
+	c, err := supervisor.Connect(testContext(t), dial)
+	if err != nil {
+		t.Fatalf("connect: %v", err)
+	}
+	defer c.Close()
+	file := filepath.Join(shortDir(t), "file")
+	if err := os.WriteFile(file, nil, 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	err = c.Run(t.Context(), supervisor.RunSpec{Argv: childArgv("sleep:60000"), WorkDir: filepath.Join(file, "work")})
+	if !errors.Is(err, supervisor.ErrEntrypointNotStarted) || !strings.Contains(err.Error(), file) {
+		t.Fatalf("run gave %v, want ErrEntrypointNotStarted naming the work directory", err)
+	}
+}
+
+// docker restart makes the work directory again, so a start again after the app removed it still runs.
+func TestTransportARestartMakesTheWorkDirectoryAgain(t *testing.T) {
+	_, dial := startTransport(t)
+	c, err := supervisor.Connect(testContext(t), dial)
+	if err != nil {
+		t.Fatalf("connect: %v", err)
+	}
+	defer c.Close()
+	dir := filepath.Join(shortDir(t), "work")
+	spec := supervisor.RunSpec{Argv: childArgv("run:300:1"), Env: os.Environ(), WorkDir: dir, Restart: models.RestartOnFailure, Retries: 1, Backoff: time.Millisecond}
+	if err := c.Run(t.Context(), spec); err != nil {
+		t.Fatalf("run: %v", err)
+	}
+	if err := os.Remove(dir); err != nil {
+		t.Fatalf("remove the work directory: %v", err)
+	}
+
+	restarts := awaitKind(t, c, supervisor.KindRestarts)
+	if restarts.Restarts == nil || restarts.Restarts.Count != 1 || restarts.Restarts.GaveUp {
+		t.Fatalf("restarts = %+v, want one start again", restarts.Restarts)
+	}
+	if info, err := os.Stat(dir); err != nil || !info.IsDir() {
+		t.Fatalf("the work directory after the restart: %v, want a directory", err)
+	}
+}
+
+// docker exec -w never makes the directory and answers 126; fork's chdir would name the binary instead (SHARD-757).
+func TestTransportAnExecRefusesAWorkDirectoryAndNamesIt(t *testing.T) {
+	_, dial := startTransport(t)
+	ctx := testContext(t)
+	c, err := supervisor.Connect(ctx, dial)
+	if err != nil {
+		t.Fatalf("connect: %v", err)
+	}
+	defer c.Close()
+	root := shortDir(t)
+	work := filepath.Join(root, "work")
+	if err := c.Run(t.Context(), supervisor.RunSpec{Argv: childArgv("sleep:60000"), WorkDir: work}); err != nil {
+		t.Fatalf("run: %v", err)
+	}
+	file := filepath.Join(root, "file")
+	if err := os.WriteFile(file, nil, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	// The sandbox's own work directory, removed after the start, is the one every exec defaults to.
+	if err := os.Remove(work); err != nil {
+		t.Fatalf("remove the work directory: %v", err)
+	}
+
+	for dir, want := range map[string]string{
+		filepath.Join(root, "missing"): "does not exist",
+		work:                           "does not exist",
+		file:                           "is not a directory",
+	} {
+		argv := childArgv("exit:0")
+		_, err := supervisor.Exec(ctx, dial, "sb", supervisor.ExecHeader{Argv: argv, Env: os.Environ(), WorkDir: dir}, models.ExecSpec{})
+		var notStarted *models.CommandNotStartedError
+		if !errors.As(err, &notStarted) || notStarted.Code != 126 {
+			t.Fatalf("an exec in %s gave %v, want CommandNotStartedError with code 126", dir, err)
+		}
+		if !strings.Contains(notStarted.Reason, strconv.Quote(dir)+" "+want) || strings.Contains(notStarted.Reason, argv[0]) {
+			t.Fatalf("the reason %q names the binary or misses %q %s", notStarted.Reason, dir, want)
+		}
+	}
+	for _, dir := range []string{filepath.Join(root, "missing"), work} {
+		if _, err := os.Stat(dir); !errors.Is(err, os.ErrNotExist) {
+			t.Fatalf("the exec made %s: %v", dir, err)
+		}
+	}
+}
+
+// A PID 1 starts under the kernel's umask of 022, which leaves docker's 0755 as it is.
+func TestMakeWorkDirMakesEveryLevelAsDockerDoes(t *testing.T) {
+	old := syscall.Umask(0o022)
+	t.Cleanup(func() { syscall.Umask(old) })
+	root := t.TempDir()
+	dir := filepath.Join(root, "a", "b")
+
+	if err := makeWorkDir(dir); err != nil {
+		t.Fatalf("make the work directory: %v", err)
+	}
+	for _, level := range []string{filepath.Join(root, "a"), dir} {
+		info, err := os.Stat(level)
+		if err != nil {
+			t.Fatalf("stat %s: %v", level, err)
+		}
+		if !info.IsDir() || info.Mode().Perm() != 0o755 {
+			t.Fatalf("%s is %v, want a 0755 directory", level, info.Mode())
+		}
+	}
+	if err := makeWorkDir(dir); err != nil {
+		t.Fatalf("make the work directory again: %v", err)
+	}
+}
+
 func TestTransportSignalRefusesAForeignPID(t *testing.T) {
 	_, dial := startTransport(t)
 	ctx := testContext(t)

@@ -653,6 +653,20 @@ func TestStopKillsAnEntrypointThatIgnoresTermOnceTheGraceRunsOut(t *testing.T) {
 	}
 }
 
+// A cwd runsc could not enter is docker's 126 with runsc's words, which name the directory and never the command.
+func TestAWorkDirectoryRunscCannotEnterIs126(t *testing.T) {
+	reason := `failed to find initial working directory "/missing": no such file or directory`
+	err := gvisor.ExecFailure("amber-otter-1a2b", fmt.Errorf("runsc exec amber-otter-1a2b: %w", &runsc.ExecStartError{Reason: reason, WorkDir: true}))
+
+	notStarted, ok := errors.AsType[*models.CommandNotStartedError](err)
+	if !ok {
+		t.Fatalf("ExecFailure returned %v, want a CommandNotStartedError", err)
+	}
+	if notStarted.Code != models.CommandNotExecutableExitCode || notStarted.Reason != reason {
+		t.Errorf("got code %d and reason %q, want %d and runsc's words", notStarted.Code, notStarted.Reason, models.CommandNotExecutableExitCode)
+	}
+}
+
 // A wait runsc lost is the one sentinel a pause can claim, and it keeps runsc's words beside it (SHARD-486).
 func TestALostWaitIsTheExecLostSentinel(t *testing.T) {
 	err := gvisor.ExecFailure("amber-otter-1a2b", fmt.Errorf("runsc exec amber-otter-1a2b: %w", &runsc.ExecLostError{Reason: "waiting on pid 7: EOF"}))

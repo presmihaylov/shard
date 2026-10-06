@@ -15,8 +15,6 @@ import (
 	"strings"
 	"syscall"
 
-	"golang.org/x/sys/unix"
-
 	fcapi "github.com/presmihaylov/shard/pkg/firecracker"
 	"github.com/presmihaylov/shard/services/datadir"
 	"github.com/presmihaylov/shard/services/kernel"
@@ -58,8 +56,8 @@ const (
 	btrfsMagic = 0x9123683e
 )
 
-// firecrackerImageRoom is twice the smallest data image, since datadir sizes the image at half the free space.
-const firecrackerImageRoom = 20 << 30
+// firecrackerImageRoom is the smallest data image and the space the host keeps beside it.
+const firecrackerImageRoom = (datadir.MinImageMiB + datadir.HostReserveMiB) << 20
 
 // lowDisk is where the disk check warns: one image and a few sandboxes no longer fit.
 const lowDisk = 2 << 30
@@ -298,14 +296,13 @@ func diskSpace(_ context.Context, h Host, l Local) *finding {
 	if err != nil {
 		return failed(fmt.Sprintf("Setup could not check %s: %v.", DataDir, err))
 	}
-	var st unix.Statfs_t
-	if err := unix.Statfs(dir, &st); err != nil {
+	d, err := statDisk(dir)
+	if err != nil {
 		return failed(fmt.Sprintf("Setup could not read the filesystem of %s: %v.", DataDir, err))
 	}
-	free := uint64(st.Bavail) * uint64(st.Bsize) //nolint:gosec // G115: a block size is never negative
-	reflink := int64(st.Type) == xfsMagic || int64(st.Type) == btrfsMagic
+	free := d.avail
 	if h.OS == "linux" && l.Provider == Firecracker {
-		if f := firecrackerDisk(h, dir, free, reflink); f != nil {
+		if f := firecrackerDisk(h, dir, free, d.reflink); f != nil {
 			return f
 		}
 	}
@@ -317,7 +314,7 @@ func diskSpace(_ context.Context, h Host, l Local) *finding {
 }
 
 // firecrackerDisk is datadir's rule ahead of time: a root that cannot clone gets an XFS image, which needs the room and an empty dir.
-func firecrackerDisk(h Host, dir string, free uint64, reflink bool) *finding {
+func firecrackerDisk(h Host, dir string, free int64, reflink bool) *finding {
 	// The type stands in for reflink.Probe, which writes a file and so needs root.
 	if reflink {
 		if err := checkChrootBase(dir); err != nil {
@@ -364,7 +361,7 @@ func nearestDir(dir string) (string, error) {
 	}
 }
 
-func gib(n uint64) string { return fmt.Sprintf("%.1f GiB", float64(n)/(1<<30)) }
+func gib(n int64) string { return fmt.Sprintf("%.1f GiB", float64(n)/(1<<30)) }
 
 // downloadAccess reaches every file setup or the first daemon start downloads, before it changes anything.
 func downloadAccess(ctx context.Context, h Host, l Local) *finding {

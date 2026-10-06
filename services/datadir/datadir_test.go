@@ -28,6 +28,7 @@ type fakeHost struct {
 	noMkfs    bool
 	user      bool
 	formatted bool
+	existing  int64
 	free      int64
 	fstabIn   error
 	lockAt    string
@@ -55,9 +56,10 @@ func (f *fakeHost) host() host {
 			}
 			return nil
 		},
-		isImage: func(string) (bool, error) { return f.formatted, nil },
-		room:    func(string) (int64, error) { return cmp.Or(f.free, plenty), nil },
-		isRoot:  func() bool { return !f.user },
+		isImage:   func(string) (bool, error) { return f.formatted, nil },
+		imageSize: func(string) (int64, error) { return f.existing, nil },
+		room:      func(string) (int64, error) { return cmp.Or(f.free, plenty), nil },
+		isRoot:    func() bool { return !f.user },
 		lock: func(path string) (*store.Lock, error) {
 			f.lockAt = path
 			return store.TryAcquire(path, 0o600)
@@ -213,7 +215,7 @@ func TestEnsureKeepsAnImageThatExistsOnAFullDisk(t *testing.T) {
 func TestEnsureTakesTheConfiguredSize(t *testing.T) {
 	t.Parallel()
 
-	f := &fakeHost{probes: []reflink.Filesystem{ext4, xfsR}, free: 1 << 30}
+	f := &fakeHost{probes: []reflink.Filesystem{ext4, xfsR}, free: 20 << 30}
 	if err := ensure(t.Context(), Config{Dir: filepath.Join(t.TempDir(), "d"), Provider: Firecracker, ImageMiB: 512}, f.host()); err != nil {
 		t.Fatalf("512 MiB: %v", err)
 	}
@@ -321,5 +323,136 @@ func TestEnsureWaitsBehindAnotherBootstrap(t *testing.T) {
 	}
 	if len(f.steps) != 0 {
 		t.Errorf("ran %v under another bootstrap", f.steps)
+	}
+}
+
+func TestEnsureRefusesASizeTheHostCannotSpareBeforeAnyBlock(t *testing.T) {
+	t.Parallel()
+
+	dir := filepath.Join(t.TempDir(), "shard")
+	f := &fakeHost{probes: []reflink.Filesystem{ext4}, free: 30 << 30}
+	err := ensure(t.Context(), Config{Dir: dir, Provider: Firecracker, ImageMiB: 25 << 10}, f.host())
+	for _, want := range []string{dir, "cannot take 25 GiB", "only 30.0 GiB is available", "the most it can reserve is 20 GiB"} {
+		if err == nil || !strings.Contains(err.Error(), want) {
+			t.Errorf("got %v, want %q in it", err, want)
+		}
+	}
+	if len(f.steps) != 0 {
+		t.Errorf("a refusal ran %v", f.steps)
+	}
+}
+
+func TestEnsureRefusesASizeWhereNoImageIsMade(t *testing.T) {
+	t.Parallel()
+
+	cases := []struct {
+		name     string
+		provider string
+		fs       reflink.Filesystem
+		want     string
+	}{
+		{"another provider", "gvisor", ext4, "gvisor reserves no space"},
+		{"a root that clones", Firecracker, xfsR, "xfs, which clones a disk"},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			t.Parallel()
+
+			f := &fakeHost{probes: []reflink.Filesystem{c.fs}}
+			err := ensure(t.Context(), Config{Dir: t.TempDir(), Provider: c.provider, ImageMiB: MinImageMiB}, f.host())
+			if err == nil || !strings.Contains(err.Error(), c.want) {
+				t.Errorf("got %v, want %q in it", err, c.want)
+			}
+			if len(f.steps) != 0 {
+				t.Errorf("a refusal ran %v", f.steps)
+			}
+		})
+	}
+}
+
+// The unit setup writes passes the image's own size on every start, so that size starts the daemon and any other refuses before a step.
+func TestEnsureHoldsAnExistingImageToItsOwnSize(t *testing.T) {
+	t.Parallel()
+
+	cases := []struct {
+		name   string
+		probes []reflink.Filesystem
+		mib    int64
+		want   string
+		steps  []string
+	}{
+		{"mounted, its own size", []reflink.Filesystem{xfsR}, 18 << 10, "", []string{"migrate"}},
+		{"mounted, another size", []reflink.Filesystem{xfsR}, 20 << 10, "already reserves 18 GiB", nil},
+		{"unmounted, its own size", []reflink.Filesystem{ext4, xfsR}, 18 << 10, "", []string{"fstab check", "image", "mount shard.xfs shard", "fstab"}},
+		{"unmounted, another size", []reflink.Filesystem{ext4}, 12 << 10, "already reserves 18 GiB", nil},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			t.Parallel()
+
+			f := &fakeHost{probes: c.probes, formatted: true, existing: 18 << 30}
+			err := ensure(t.Context(), Config{Dir: filepath.Join(t.TempDir(), "shard"), Provider: Firecracker, ImageMiB: c.mib}, f.host())
+			if c.want == "" && err != nil {
+				t.Fatalf("got %v, want the image kept", err)
+			}
+			if c.want != "" && (err == nil || !strings.Contains(err.Error(), c.want) || !strings.Contains(err.Error(), "set the storage size to 18 GiB, or leave it unset")) {
+				t.Errorf("got %v, want %q and the size to set", err, c.want)
+			}
+			if strings.Join(f.steps, ",") != strings.Join(c.steps, ",") {
+				t.Errorf("steps %v, want %v", f.steps, c.steps)
+			}
+		})
+	}
+}
+
+func TestCheckSizeHoldsTheMinimumAndTheHostReserve(t *testing.T) {
+	t.Parallel()
+
+	cases := []struct {
+		name string
+		mib  int64
+		room int64
+		want string
+	}{
+		{"the minimum", 10 << 10, 20 << 30, ""},
+		{"all but the reserve", 90 << 10, 100 << 30, ""},
+		{"below the minimum", 9 << 10, 100 << 30, "9 GiB is below the minimum of 10 GiB"},
+		{"into the reserve", 91 << 10, 100 << 30, "the most it can reserve is 90 GiB"},
+		{"no room at all", 10 << 10, 15 << 30, "only 15.0 GiB is available, and shard keeps 10 GiB of it for the host"},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			t.Parallel()
+
+			err := CheckSize(c.mib, c.room)
+			if c.want == "" && err != nil {
+				t.Errorf("CheckSize(%d, %d) = %v", c.mib, c.room, err)
+			}
+			if c.want != "" && (err == nil || !strings.Contains(err.Error(), c.want)) {
+				t.Errorf("CheckSize(%d, %d) = %v, want %q in it", c.mib, c.room, err, c.want)
+			}
+		})
+	}
+}
+
+func TestDefaultAndMaxMiBRoundDownToWholeGiB(t *testing.T) {
+	t.Parallel()
+
+	cases := []struct {
+		room      int64
+		def, most int64
+	}{
+		{0, 0, 0},
+		{(41 << 30) + 1, 20 << 10, 31 << 10},
+		{(30 << 30) + (512 << 20), 15 << 10, 20 << 10},
+		{1 << 40, maxImageMiB, 1014 << 10},
+	}
+	for _, c := range cases {
+		if got := DefaultMiB(c.room); got != c.def {
+			t.Errorf("DefaultMiB(%d) = %d, want %d", c.room, got, c.def)
+		}
+		if got := MaxMiB(c.room); got != c.most {
+			t.Errorf("MaxMiB(%d) = %d, want %d", c.room, got, c.most)
+		}
 	}
 }

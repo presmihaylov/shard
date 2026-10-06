@@ -556,12 +556,14 @@ var helps = map[string]verbHelp{
 			{"--timeout <duration>", "image download timeout", short(DefaultTimeout)},
 			{"--insecure-registry <host>", "allow HTTP for a registry; repeatable", ""},
 			{"--log <path>", "daemon log file (macOS only)", ""},
+			{"--storage-size <size>", "size of a new Firecracker data image", ""},
 		},
 		notes: []note{
 			para(
 				"The daemon manages local sandboxes and stays active until stopped.",
 				"An existing data directory must use its original provider.",
 				"Use 'shard info' to see the default provider for this host.",
+				"A new Firecracker data image takes half the free space, at most 100GiB, unless --storage-size sets it. An existing one keeps its size, and the daemon refuses any other --storage-size.",
 			),
 			hostOnlyNote,
 		},
@@ -584,11 +586,19 @@ var helps = map[string]verbHelp{
 			{"--remote <url>", "connect to a remote shard server", ""},
 			{"--provider <name>", "firecracker, gvisor, sysbox, runc or vz", ""},
 			{"--start-at-boot <true|false>", "start the daemon at boot", ""},
+			{"--storage-size <size>", "space to reserve for Firecracker sandbox disks", ""},
 			{"--save", "save the remote connection", ""},
 			{"-y, --yes", "apply changes without confirmation", ""},
 		},
 		notes: []note{
 			{title: "Remote authentication", lines: []string{"Set " + client.APIKeyEnv + ". Do not pass the key as a command argument."}},
+			{title: "Storage size", lines: []string{
+				"Without XFS or Btrfs, Firecracker keeps sandbox disks in one XFS image.",
+				"The daemon reserves it whole when it starts, and keeps 10GiB for the host.",
+				"The default is half the available space, at most 100GiB. The minimum is 10GiB.",
+				"Sizes take KiB, MiB, GiB, KB, MB or GB, as --disk does.",
+				"Setup does not resize an existing image. Other providers refuse the option.",
+			}},
 			{title: "Exit codes", rows: []row{
 				{"0", "setup finished, or there was nothing to do"},
 				{"1", "a check or a step failed, an option was refused, or the confirmation was declined"},
@@ -598,6 +608,7 @@ var helps = map[string]verbHelp{
 		examples: []string{
 			"shard setup",
 			"shard setup --local --provider gvisor --start-at-boot=true -y",
+			"shard setup --local --provider firecracker --start-at-boot=true --storage-size 50GiB -y",
 			"shard setup --remote https://shard.example.com --save -y",
 		},
 		spaced: true,

@@ -95,7 +95,7 @@ On a Mac, run `shard daemon --provider vz` without `sudo`. Closing the terminal 
 
 The daemon keeps its state in `/var/lib/shard`: the sandbox records, the images, the secrets and the policies. Setup never asks for another directory.
 
-Firecracker copies a disk for each fork and snapshot. That needs a filesystem that clones a file by sharing its blocks: XFS or Btrfs. On any other filesystem, the daemon makes an XFS image at `/var/lib/shard.xfs` and mounts it over `/var/lib/shard`. The image takes half the free space beside it, up to 100 GiB. Setup refuses Firecracker there when that filesystem has less than 20 GiB free, or when `/var/lib/shard` already holds files.
+Firecracker copies a disk for each fork and snapshot. That needs a filesystem that clones a file by sharing its blocks: XFS or Btrfs. On any other filesystem, the daemon makes an XFS image at `/var/lib/shard.xfs` and mounts it over `/var/lib/shard`. Setup asks how much space to reserve for it, and offers half the available space, up to 100 GiB. The daemon reserves the whole size when it first starts. Setup refuses Firecracker there when that filesystem has less than 20 GiB free, or when `/var/lib/shard` already holds files. [Firecracker on KVM](/docs/guides/kvm/#the-data-directory) has the details.
 
 ## Script it
 
@@ -107,11 +107,13 @@ shard setup --local --provider firecracker --start-at-boot=true -y
 
 `--provider` and `--start-at-boot` also answer the first question, so a run with either one needs no `--local`.
 
-Without a terminal, every question needs its option, and setup never picks a value for you. A local run with options missing fails before any check runs, and names them all at once:
+Without a terminal, every question needs its option, except the storage size below. A local run with options missing fails before any check runs, and names them all at once:
 
 ```text
 no terminal to choose a provider, choose whether shard starts at boot and confirm the changes: pass --provider, --start-at-boot and -y
 ```
+
+Firecracker without XFS or Btrfs reserves storage. Without a terminal, setup takes the default size, half the available space and at most 100 GiB, and prints it, unless `--storage-size` sets one. Every other provider refuses `--storage-size`.
 
 `-y` answers only the confirmation and skips no check. `shard setup --help` lists every option and the exit codes.
 
