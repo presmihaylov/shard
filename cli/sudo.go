@@ -3,9 +3,13 @@ package cli
 import (
 	"cmp"
 	"errors"
+	"fmt"
 	"os"
 	"regexp"
+	"strconv"
 	"strings"
+
+	"github.com/presmihaylov/shard/services/client"
 )
 
 // forUser words the shard commands err names for the user who ran this process, so each works as printed.
@@ -59,6 +63,23 @@ func (a App) sudoed() bool {
 	}
 
 	return underSudo(os.Geteuid(), os.Getenv)
+}
+
+// sudoOwner is the user sudo ran this process for, who takes what a copy writes on the host; nil when there is no sudo.
+func (a App) sudoOwner() (*client.Owner, error) {
+	if !a.sudoed() {
+		return nil, nil
+	}
+	uid, err := strconv.Atoi(os.Getenv("SUDO_UID"))
+	if err != nil {
+		return nil, fmt.Errorf("read SUDO_UID: %w", err)
+	}
+	gid, err := strconv.Atoi(os.Getenv("SUDO_GID"))
+	if err != nil {
+		return nil, fmt.Errorf("read SUDO_GID: %w", err)
+	}
+
+	return &client.Owner{UID: uid, GID: gid}, nil
 }
 
 // underSudo says root runs this process for a user who started it with sudo; root itself runs a command bare.

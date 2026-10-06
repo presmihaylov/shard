@@ -8,7 +8,9 @@ import (
 	"io/fs"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
+	"syscall"
 	"testing"
 
 	"github.com/presmihaylov/shard/models"
@@ -30,7 +32,11 @@ func fakeGuest(t *testing.T, root string) func(models.ExecSpec) (models.ExitStat
 			if _, err := io.ReadFull(spec.Stdin, body); err != nil {
 				return models.ExitStatus{}, err
 			}
-			if err := os.WriteFile(host, body, fs.FileMode(header.Mode)); err != nil {
+			err := os.WriteFile(host, body, fs.FileMode(header.Mode))
+			if errors.Is(err, fs.ErrNotExist) {
+				return models.ExitStatus{}, supervisor.WriteMessage(spec.Stdout, supervisor.FileReply{Error: "no such file or directory", Code: supervisor.FileNotFound})
+			}
+			if err != nil {
 				return models.ExitStatus{}, err
 			}
 			if err := os.Chmod(host, fs.FileMode(header.Mode)); err != nil {
@@ -39,7 +45,11 @@ func fakeGuest(t *testing.T, root string) func(models.ExecSpec) (models.ExitStat
 		}
 
 		if header.Op == supervisor.OpUnpack {
-			if err := tarball.Unpack(spec.Stdin, host, tarball.Options{KeepSetid: true}); err != nil {
+			err := tarball.Unpack(spec.Stdin, host, tarball.Options{KeepSetid: true})
+			if errors.Is(err, fs.ErrNotExist) {
+				return models.ExitStatus{}, supervisor.WriteMessage(spec.Stdout, supervisor.FileReply{Error: "no such file or directory", Code: supervisor.FileNotFound})
+			}
+			if err != nil {
 				return models.ExitStatus{}, supervisor.WriteMessage(spec.Stdout, supervisor.FileReply{Error: err.Error(), Code: supervisor.FileInvalid})
 			}
 			if _, err := io.Copy(io.Discard, spec.Stdin); err != nil {
@@ -202,13 +212,98 @@ func TestCpOutThatIsCutLeavesTheOldFileWhole(t *testing.T) {
 	}
 }
 
-func TestCpKeepsTheGuestsRefusal(t *testing.T) {
-	app, _, _ := newCpApp(t)
-
-	err := app.Run(t.Context(), []string{"cp", "sandbox1:/srv/missing", t.TempDir()})
-	if err == nil || !strings.Contains(err.Error(), `get "/srv/missing": no such file or directory`) {
-		t.Fatalf("cp of a missing file gave %v, want the guest's words", err)
+// A missing guest path names the sandbox and the path, never the daemon's op (SHARD-763).
+func TestCpOfAMissingGuestPathNamesTheSandboxAndThePath(t *testing.T) {
+	cases := []struct {
+		name string
+		args func(t *testing.T) []string
+		want string
+	}{
+		{
+			name: "out",
+			args: func(t *testing.T) []string { return []string{"sandbox1:/srv/missing", t.TempDir()} },
+			want: `"/srv/missing" in sandbox sandbox1: no such file or directory`,
+		},
+		{
+			name: "a file in",
+			args: func(t *testing.T) []string {
+				return []string{writeHostFile(t, "f", "x", 0o644), "sandbox1:/nonexistent/f"}
+			},
+			want: `"/nonexistent/f" in sandbox sandbox1: no such file or directory`,
+		},
+		{
+			name: "a directory in",
+			args: func(t *testing.T) []string {
+				return []string{tree(t, t.TempDir(), "app"), "sandbox1:/nonexistent/dir/"}
+			},
+			want: `"/nonexistent/dir/" in sandbox sandbox1: no such file or directory`,
+		},
 	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			app, _, _ := newCpApp(t)
+
+			err := app.Run(t.Context(), append([]string{"cp"}, c.args(t)...))
+			if err == nil || err.Error() != c.want {
+				t.Fatalf("cp gave %v, want %s", err, c.want)
+			}
+		})
+	}
+}
+
+// A copy out under sudo hands what it writes to the user who ran sudo, not to root (SHARD-771).
+func TestCpOutUnderSudoHandsTheCopyToTheSudoUser(t *testing.T) {
+	app, _, guestRoot := newCpApp(t)
+	hostDir := t.TempDir()
+	gid := otherGroup(t, hostDir)
+	app.asSudo = func() bool { return true }
+	t.Setenv("SUDO_UID", strconv.Itoa(os.Getuid()))
+	t.Setenv("SUDO_GID", strconv.Itoa(gid))
+	if err := os.WriteFile(filepath.Join(guestRoot, "srv", "report.txt"), []byte("all green\n"), 0o600); err != nil {
+		t.Fatalf("seed the guest: %v", err)
+	}
+	tree(t, filepath.Join(guestRoot, "srv"), "data")
+
+	if err := app.Run(t.Context(), []string{"cp", "sandbox1:/srv/report.txt", hostDir}); err != nil {
+		t.Fatalf("cp a file out: %v", err)
+	}
+	if err := app.Run(t.Context(), []string{"cp", "sandbox1:/srv/data", hostDir}); err != nil {
+		t.Fatalf("cp a directory out: %v", err)
+	}
+
+	for _, rel := range []string{"report.txt", "data", "data/app.conf", "data/sub", "data/sub/run.sh", "data/current"} {
+		info, err := os.Lstat(filepath.Join(hostDir, rel))
+		if err != nil {
+			t.Fatalf("stat %s: %v", rel, err)
+		}
+		if got := info.Sys().(*syscall.Stat_t).Gid; got != uint32(gid) {
+			t.Errorf("%s has gid %d, want the sudo user's %d", rel, got, gid)
+		}
+	}
+	checkFile(t, filepath.Join(hostDir, "report.txt"), "all green\n", 0o600)
+	checkTree(t, filepath.Join(hostDir, "data"))
+}
+
+// otherGroup is a group this user is in that dir does not already have, so a chown to it shows; a non-root chown may only pick one of these.
+func otherGroup(t *testing.T, dir string) int {
+	t.Helper()
+
+	info, err := os.Stat(dir)
+	if err != nil {
+		t.Fatalf("stat %s: %v", dir, err)
+	}
+	groups, err := os.Getgroups()
+	if err != nil {
+		t.Fatalf("read this user's groups: %v", err)
+	}
+	for _, g := range groups {
+		if uint32(g) != info.Sys().(*syscall.Stat_t).Gid {
+			return g
+		}
+	}
+	t.Skip("this user is in no group but the one the temp dir already has")
+
+	return 0
 }
 
 func TestCpRefusesASourceThatIsNeitherAFileNorADirectory(t *testing.T) {

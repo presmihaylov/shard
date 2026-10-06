@@ -78,7 +78,7 @@ func (s *Service) StatFile(ctx context.Context, ref, guestPath string) (models.F
 
 	stat, err := supervisor.Stat(conn, guestPath)
 
-	return stat, fileError(errors.Join(err, conn.Close()))
+	return stat, fileError(ref, errors.Join(err, conn.Close()))
 }
 
 // ReadFile answers one guest file's stat and its bytes as they stream; closing the body ends the exec.
@@ -94,7 +94,7 @@ func (s *Service) ReadFile(ctx context.Context, ref, guestPath string) (models.F
 
 	stat, body, err := supervisor.Get(conn, guestPath)
 	if err != nil {
-		return models.FileStat{}, nil, fileError(errors.Join(err, conn.Close()))
+		return models.FileStat{}, nil, fileError(ref, errors.Join(err, conn.Close()))
 	}
 
 	return stat, &fileBody{Reader: body, conn: conn}, nil
@@ -137,7 +137,7 @@ func (s *Service) WriteFile(ctx context.Context, ref string, req FileWrite, src 
 
 	err = supervisor.Put(conn, supervisor.FileHeader{Path: req.Path, Size: req.Size, Mode: req.Mode, Parents: req.Parents}, src)
 
-	return fileError(errors.Join(err, conn.Close()))
+	return fileError(ref, errors.Join(err, conn.Close()))
 }
 
 func (s *Service) putCleanupGrace() time.Duration {
@@ -168,7 +168,7 @@ func (s *Service) ReadArchive(ctx context.Context, ref, guestPath string) (model
 
 	stat, body, err := supervisor.GetArchive(conn, guestPath)
 	if err != nil {
-		return models.FileStat{}, nil, fileError(errors.Join(err, conn.Close()))
+		return models.FileStat{}, nil, fileError(ref, errors.Join(err, conn.Close()))
 	}
 
 	return stat, &fileBody{Reader: body, conn: conn}, nil
@@ -187,7 +187,7 @@ func (s *Service) WriteArchive(ctx context.Context, ref string, req ArchiveWrite
 
 	err = supervisor.PutArchive(conn, req.Path, src)
 
-	return fileError(errors.Join(err, conn.Close()))
+	return fileError(ref, errors.Join(err, conn.Close()))
 }
 
 // ListDir streams the entries of one guest directory, sorted by name and each with its own lstat.
@@ -203,7 +203,7 @@ func (s *Service) ListDir(ctx context.Context, ref, guestPath string) (Listing, 
 
 	entries, err := supervisor.List(conn, guestPath)
 	if err != nil {
-		return nil, fileError(errors.Join(err, conn.Close()))
+		return nil, fileError(ref, errors.Join(err, conn.Close()))
 	}
 
 	return &listing{entries: entries, conn: conn}, nil
@@ -235,7 +235,7 @@ func (s *Service) MakeDir(ctx context.Context, ref string, req MkdirRequest) err
 
 	err = supervisor.Mkdir(conn, supervisor.FileHeader{Path: req.Path, Mode: mode, Parents: req.Parents})
 
-	return fileError(errors.Join(err, conn.Close()))
+	return fileError(ref, errors.Join(err, conn.Close()))
 }
 
 func dirModeOf(raw string) (uint32, error) {
@@ -270,7 +270,7 @@ func (s *Service) DeleteFile(ctx context.Context, ref, guestPath string, recursi
 
 	err = supervisor.Delete(conn, guestPath, recursive)
 
-	return fileError(errors.Join(err, conn.Close()))
+	return fileError(ref, errors.Join(err, conn.Close()))
 }
 
 // openFiles starts one files exec in a running sandbox, as user; every provider runs the same shard-init mode.
@@ -300,7 +300,7 @@ func checkGuestPath(guestPath string) error {
 }
 
 // fileError maps the guest's refusal to the error the API answers: not_found is 404, invalid is 400, the rest is 500.
-func fileError(err error) error {
+func fileError(ref string, err error) error {
 	// The exec plumbing around a user refusal says nothing the caller can fix, so only the refusal goes back.
 	if refused, ok := userRefusal(err); ok {
 		return refused
@@ -310,6 +310,7 @@ func fileError(err error) error {
 	if !errors.As(err, &refusal) {
 		return err
 	}
+	refusal.Sandbox = ref
 
 	switch refusal.Code {
 	case supervisor.FileNotFound:

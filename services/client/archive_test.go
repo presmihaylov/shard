@@ -140,7 +140,7 @@ func TestUnpackArchiveRefusesAHostileGuest(t *testing.T) {
 				t.Fatalf("write the secret: %v", err)
 			}
 
-			err := client.UnpackArchive(hostile(t, append([]*tar.Header{dir}, c.hdrs...)...), dst, "srv")
+			err := client.UnpackArchive(hostile(t, append([]*tar.Header{dir}, c.hdrs...)...), dst, "srv", nil)
 			var refused *tarball.RefusedError
 			if !errors.As(err, &refused) {
 				t.Fatalf("the unpack gave %v, want a refusal", err)
@@ -179,7 +179,7 @@ func TestUnpackArchiveRefusesPastTheEntryCap(t *testing.T) {
 	}()
 	t.Cleanup(func() { pr.Close() })
 
-	err := client.UnpackArchive(pr, t.TempDir(), "")
+	err := client.UnpackArchive(pr, t.TempDir(), "", nil)
 	var refused *tarball.RefusedError
 	if !errors.As(err, &refused) || !strings.Contains(err.Error(), "entries") {
 		t.Fatalf("the unpack gave %v, want the entry cap's refusal", err)
@@ -189,7 +189,7 @@ func TestUnpackArchiveRefusesPastTheEntryCap(t *testing.T) {
 func TestUnpackArchiveDropsSetid(t *testing.T) {
 	dst := t.TempDir()
 
-	err := client.UnpackArchive(hostile(t, &tar.Header{Name: "srv/", Typeflag: tar.TypeDir, Mode: 0o755}, &tar.Header{Name: "srv/run", Typeflag: tar.TypeReg, Mode: 0o6755, Size: 1}), dst, "srv")
+	err := client.UnpackArchive(hostile(t, &tar.Header{Name: "srv/", Typeflag: tar.TypeDir, Mode: 0o755}, &tar.Header{Name: "srv/run", Typeflag: tar.TypeReg, Mode: 0o6755, Size: 1}), dst, "srv", nil)
 	if err != nil {
 		t.Fatalf("UnpackArchive: %v", err)
 	}
