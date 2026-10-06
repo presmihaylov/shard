@@ -301,8 +301,7 @@ func (d *testDaemon) await() error {
 	}
 }
 
-// stop halts the daemon and gives the root back. Every step runs even when one before it failed: a
-// root left mounted is what the next run refuses to start on.
+// stop halts the daemon and gives the root back, every step even after a failure, because a leftover mount blocks the next run.
 func (d *testDaemon) stop() error {
 	// RemoveAll takes the records, the only handle on what a remove missed, and trips over a mount a failed create left.
 	return errors.Join(d.halt(), hostclean.Release(d.root), os.RemoveAll(d.root))
@@ -355,8 +354,7 @@ func newCreateApp(t *testing.T) (App, *bytes.Buffer) {
 	return appFor(daemonUnderTest.root)
 }
 
-// ownDaemon gives one test a daemon wired by env, over a root of its own. A host serves one daemon at a
-// time (SHARD-777), so the package's daemon halts for the test and serves its root again after it.
+// ownDaemon gives one test a daemon wired by env on its own root, and halts the package's daemon for it because a host runs one (SHARD-777).
 func ownDaemon(t *testing.T, env ...string) (App, *bytes.Buffer) {
 	t.Helper()
 

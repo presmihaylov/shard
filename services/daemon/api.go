@@ -98,12 +98,8 @@ func Run(ctx context.Context, cfg Config) error {
 	}
 	// One registry, shared before any task runs, so process.Daemon reports the state supervise keeps.
 	d.states = dmn.states
-	err = dmn.WithReconciler(reconciler{deps: d, lifecycle: life}).Run(ctx)
-
-	// The tasks have stopped, so no new create starts; wait out the ones the daemon still runs in the background.
-	life.wait()
-
-	return err
+	// The background creates end under the locks, so no daemon on another root renders the host while one rolls back.
+	return dmn.WithReconciler(reconciler{deps: d, lifecycle: life}).WithDrain(life.wait).Run(ctx)
 }
 
 // reconciler checks the records against the substrate at start. An empty root needs no provider, so a

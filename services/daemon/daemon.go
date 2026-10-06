@@ -47,6 +47,7 @@ type Daemon struct {
 	states     *taskStates
 	log        *log.Logger
 	reconciler Reconciler
+	drain      func()
 
 	minBackoff   time.Duration
 	maxBackoff   time.Duration
@@ -91,6 +92,10 @@ func (d *Daemon) Run(ctx context.Context) (err error) {
 	}
 	// Removed before the lock is released, so a clean exit leaves no pid for newsyslog to signal.
 	defer func() { err = errors.Join(err, removePID(pid)) }()
+	// Deferred last so it runs first: a rollback still frees veths and rules on the host this daemon holds.
+	if d.drain != nil {
+		defer d.drain()
+	}
 
 	d.log.Printf("daemon holds %s with %d tasks", path, len(d.tasks))
 
@@ -158,6 +163,13 @@ func removePID(path string) error {
 // WithHostLock names the flock a daemon takes when it renders the host's bridge and nft table.
 func (d *Daemon) WithHostLock(path string) *Daemon {
 	d.hostLock = path
+
+	return d
+}
+
+// WithDrain names the background work a stopped daemon waits out before it gives back the root and the host.
+func (d *Daemon) WithDrain(wait func()) *Daemon {
+	d.drain = wait
 
 	return d
 }
