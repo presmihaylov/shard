@@ -3,6 +3,7 @@ package supervisor_test
 import (
 	"context"
 	"errors"
+	"fmt"
 	"io"
 	"net"
 	"os"
@@ -11,6 +12,7 @@ import (
 	"time"
 
 	"github.com/presmihaylov/shard/models"
+	"github.com/presmihaylov/shard/pkg/pty"
 	"github.com/presmihaylov/shard/services/supervisor"
 )
 
@@ -172,5 +174,94 @@ func TestAStdinTheHostCannotReadFailsTheExec(t *testing.T) {
 	_, err = supervisor.Exec(ctx, dial, "sb", supervisor.ExecHeader{Argv: []string{"cat"}}, models.ExecSpec{Stdin: stdin})
 	if err == nil || !strings.Contains(err.Error(), "read the exec's stdin") {
 		t.Fatalf("exec gave %v, want the failed stdin read", err)
+	}
+}
+
+// The guest's terminal does the line discipline, so the host replica passes every key on as typed and echoes none of them (SHARD-760).
+func TestATerminalExecRelaysEveryKeyUntouched(t *testing.T) {
+	pair, err := pty.Open()
+	if errors.Is(err, pty.ErrUnsupported) {
+		t.Skip(err)
+	}
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		if err := pair.Close(); err != nil {
+			t.Error(err)
+		}
+	})
+
+	// Ctrl-C, Tab, arrow-up and Ctrl-R, with no Enter: a cooked replica eats Ctrl-C and holds the rest for a line that never ends.
+	const keys, shown = "ab\x03\t\x1b[A\x12\r", "done"
+	ready, got := make(chan struct{}), make(chan string, 1)
+	dial := guestDialer(t, func(guest net.Conn) error {
+		close(ready)
+		if err := supervisor.WriteJSONFrame(guest, supervisor.StreamStarted, supervisor.StartedFrame{PID: 42}); err != nil {
+			return err
+		}
+		var seen []byte
+		for len(seen) < len(keys) {
+			kind, payload, err := supervisor.ReadFrame(guest)
+			if err != nil {
+				return fmt.Errorf("the guest got %q of %q: %w", seen, keys, err)
+			}
+			if kind == supervisor.StreamStdin {
+				seen = append(seen, payload...)
+			}
+		}
+		got <- string(seen)
+		if err := supervisor.WriteFrame(guest, supervisor.StreamStdout, []byte(shown)); err != nil {
+			return err
+		}
+
+		return supervisor.WriteJSONFrame(guest, supervisor.StreamExit, supervisor.ExitFrame{Code: 3})
+	})
+
+	ctx, cancel := context.WithTimeout(t.Context(), 2*time.Second)
+	defer cancel()
+	type result struct {
+		exit models.ExitStatus
+		err  error
+	}
+	done := make(chan result, 1)
+	go func() {
+		spec := models.ExecSpec{TTY: true, Stdin: pair.Replica, Stdout: pair.Replica, Stderr: pair.Replica}
+		exit, err := supervisor.Exec(ctx, dial, "sb", supervisor.ExecHeader{Argv: []string{"bash"}, TTY: true}, spec)
+		done <- result{exit, err}
+	}()
+	select {
+	case <-ready:
+	case <-ctx.Done():
+		t.Fatal("the exec never reached the guest")
+	}
+	if _, err := pair.Master.Write([]byte(keys)); err != nil {
+		t.Fatal(err)
+	}
+	screen := make(chan result, 1)
+	var text [len(shown)]byte
+	go func() {
+		_, err := io.ReadFull(pair.Master, text[:])
+		screen <- result{err: err}
+	}()
+
+	select {
+	case seen := <-got:
+		if seen != keys {
+			t.Fatalf("the guest got %q, want %q", seen, keys)
+		}
+	case <-ctx.Done():
+		t.Fatal("the keys never reached the guest whole")
+	}
+	if r := <-done; r.err != nil || r.exit.Code != 3 {
+		t.Fatalf("exec gave %+v, %v, want code 3", r.exit, r.err)
+	}
+	select {
+	case r := <-screen:
+		if r.err != nil || string(text[:]) != shown {
+			t.Fatalf("the terminal shows %q, %v, want only the guest's %q", text, r.err, shown)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("the guest's output never reached the terminal")
 	}
 }

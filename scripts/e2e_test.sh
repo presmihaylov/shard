@@ -407,8 +407,28 @@ rm -f "${SHARD_CALLS}"
 echo
 echo "== the teardown drops the bridge and the tables only once no run holds them"
 NET_CALLS=$(mktemp)
+FW_CALLS=$(mktemp)
 nft() { printf 'nft %s\n' "$*" >>"${NET_CALLS}"; }
 ip() { printf 'ip %s\n' "$*" >>"${NET_CALLS}"; }
+STUB_FW_RULES=$'-P INPUT DROP\n-A INPUT -i lo -j ACCEPT\n-A INPUT -p tcp -m tcp --dport 22 -m comment --comment shard -j ACCEPT\n-A FORWARD -i shard0 -m comment --comment managed-by-shard -j ACCEPT'
+iptables() {
+	if [ "$2" = -S ]; then
+		printf '%s\n' "${STUB_FW_RULES}"
+		return
+	fi
+	printf 'iptables %s\n' "$*" >>"${FW_CALLS}"
+}
+# firewalld runs only when STUB_FIREWALLD is set, with an admin's own zone "shard" and shard's policy.
+firewall-cmd() {
+	case "$*" in
+	--state) [ -n "${STUB_FIREWALLD:-}" ] || return 252 ;;
+	"--permanent --get-policies") echo "allow-host-ipv6 shard-forwarding" ;;
+	"--permanent --get-zones") echo "public shard" ;;
+	"--permanent --policy=shard-forwarding --get-description") echo "managed-by-shard" ;;
+	"--permanent --zone=shard --get-description") echo "the admin's own" ;;
+	*) printf 'firewall-cmd %s\n' "$*" >>"${FW_CALLS}" ;;
+	esac
+}
 
 STUB_PORTS=$'shardv3\nshardv4'
 clear_host_net 2>/dev/null
@@ -436,13 +456,21 @@ STUB_PROBE_FAILS=""
 clear_host_net 2>/dev/null
 check "nothing holds them" "${HOST_NET_KEPT}" ""
 check "both tables and the bridge go" "$(cat "${NET_CALLS}")" "$(printf '%s\n' "nft list table inet shard" "nft delete table inet shard" "nft list table bridge shard" "nft delete table bridge shard" "ip link show shard0" "ip link del shard0")"
+check "only the marked firewall rule goes" "$(cat "${FW_CALLS}")" "iptables -w -D FORWARD -i shard0 -m comment --comment managed-by-shard -j ACCEPT"
+: >"${FW_CALLS}"
+STUB_FIREWALLD=yes close_host_firewall
+check "only the marked firewalld policy goes" "$(grep firewall-cmd "${FW_CALLS}")" "$(printf '%s\n' "firewall-cmd --permanent --delete-policy=shard-forwarding" "firewall-cmd --reload")"
 (check_host_net_clear) >/dev/null 2>&1
 check "the end check fails a bridge still there" "$?" "1"
 ip() { return 1; }
 nft() { return 1; }
 (check_host_net_clear) >/dev/null 2>&1
+check "the end check fails a shard firewall rule still there" "$?" "1"
+STUB_FW_RULES=$'-P INPUT DROP\n-A INPUT -i lo -j ACCEPT\n-A INPUT -p tcp -m tcp --dport 22 -m comment --comment shard -j ACCEPT'
+(check_host_net_clear) >/dev/null 2>&1
 check "the end check takes a host with neither" "$?" "0"
-rm -f "${NET_CALLS}"
+unset -f iptables firewall-cmd
+rm -f "${NET_CALLS}" "${FW_CALLS}"
 
 echo "== has_line reads all of stdin, so a match early in it cuts no stage (SHARD-456)"
 STUB_GREP_DIR=$(mktemp -d)

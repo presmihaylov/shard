@@ -219,3 +219,43 @@ func within(t *testing.T, ch <-chan error) error {
 		return nil
 	}
 }
+
+// A relay reads its replica while the daemon closes it, so SizeOf and MakeRaw must leave the close able to end that read (SHARD-760).
+func TestClosingAReplicaEndsItsReadAfterSizeOfAndMakeRaw(t *testing.T) {
+	pair, err := Open()
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		if err := pair.Master.Close(); err != nil {
+			t.Error(err)
+		}
+	})
+	if _, err := SizeOf(pair.Replica); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := MakeRaw(pair.Replica); err != nil {
+		t.Fatal(err)
+	}
+
+	read := make(chan error, 1)
+	go func() {
+		_, err := pair.Replica.Read(make([]byte, 1))
+		read <- err
+	}()
+	// A close before the read starts fails the read at once in either mode, so give the read time to block.
+	time.Sleep(100 * time.Millisecond)
+	if err := pair.Replica.Close(); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case err := <-read:
+		if !errors.Is(err, os.ErrClosed) {
+			t.Fatalf("the read ended with %v, want the replica closed", err)
+		}
+	case <-time.After(time.Second):
+		// A raw replica returns on one byte, which frees the read the close left behind.
+		_, err := pair.Master.Write([]byte("x"))
+		t.Fatalf("the close left the read blocked, so the relay waits out its drain (freeing it: %v)", err)
+	}
+}

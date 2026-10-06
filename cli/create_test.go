@@ -167,6 +167,10 @@ func TestInFlagsWordsARefusalInTheFlags(t *testing.T) {
 			"--memory is 64 MiB, under the 128 MiB provider vz needs; set it to 128 MiB or more"},
 		{"the disk", "the image takes a 900 MiB disk, more than the 512 MiB disk bound; set resources.disk_mib to 900 MiB or more", nil,
 			"the image takes a 900 MiB disk, more than the 512 MiB disk bound; set --disk to 900 MiB or more"},
+		{"a snapshot's disk stopped unclean", "the snapshot's disk was not stopped clean, so it cannot grow to 4096 MiB; omit resources.disk_mib, or start the sandbox it came from, let its entrypoint exit or end it with shard exec, then stop it and snapshot it again", nil,
+			"the snapshot's disk was not stopped clean, so it cannot grow to 4096 MiB; omit --disk, or start the sandbox it came from, let its entrypoint exit or end it with shard exec, then stop it and snapshot it again"},
+		{"a snapshot's disk that grows only so far", "the snapshot's disk grows to at most 16384 MiB, as a mount took the room a larger one needs; set resources.disk_mib to 16384 MiB or less", nil,
+			"the snapshot's disk grows to at most 16384 MiB, as a mount took the room a larger one needs; set --disk to 16384 MiB or less"},
 		{"the cpus", "resources.vcpus is 9, more than the 8 CPUs on this host; set it to 8 or less", nil,
 			"--vcpus is 9, more than the 8 CPUs on this host; set it to 8 or less"},
 	}

@@ -235,9 +235,9 @@ func (c *Client) claim() error {
 	return nil
 }
 
-// absent is a socket with no vmm behind it: never made, or its owner exited and left the path.
+// absent is a socket with no vmm behind it: never made, or its owner exited, or is exiting, and left the path.
 func absent(err error) bool {
-	return errors.Is(err, fs.ErrNotExist) || errors.Is(err, syscall.ECONNREFUSED) || errors.Is(err, syscall.ENOENT)
+	return errors.Is(err, fs.ErrNotExist) || errors.Is(err, syscall.ECONNREFUSED) || errors.Is(err, syscall.ENOENT) || errors.Is(err, ErrExiting)
 }
 
 // await polls the API until the vmm answers; one that exits or stays silent is reported with its console.
@@ -483,7 +483,7 @@ func (c *Client) call(ctx context.Context, method, path string, body, reply any)
 	return pid, request(ctx, conn, method, path, body, reply)
 }
 
-// peer dials the API socket and names the process behind the connection, which the kernel attests.
+// peer dials the API socket and names the process behind the connection, which the kernel attests; a peer already in its exit is ErrExiting, since it may never answer nor end the connection.
 func (c *Client) peer(ctx context.Context, method, path string) (net.Conn, int, error) {
 	conn, err := c.dial(ctx, c.socket, callTimeout)
 	if err != nil {
@@ -492,6 +492,13 @@ func (c *Client) peer(ctx context.Context, method, path string) (net.Conn, int, 
 	pid, err := peercred.PID(conn)
 	if err != nil {
 		return nil, 0, errors.Join(fmt.Errorf("%s %s: read the peer of the api socket: %w", method, path, err), conn.Close())
+	}
+	leaving, err := exiting(pid)
+	if err != nil {
+		return nil, 0, errors.Join(fmt.Errorf("%s %s: %w", method, path, err), conn.Close())
+	}
+	if leaving {
+		return nil, 0, errors.Join(fmt.Errorf("%s %s: pid %d: %w", method, path, pid, ErrExiting), conn.Close())
 	}
 
 	return conn, pid, nil

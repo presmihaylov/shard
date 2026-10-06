@@ -256,12 +256,17 @@ The log has limits:
 - A sandbox keeps at most 16 MiB of log, in two files of 8 MiB each. `shard policy logs` prints the newest 10000 records, and reports on stderr how many it left out. A follow starts from the same newest 10000.
 - A drop that happens while the daemon is down is lost if the kernel log overwrites it first. The daemon keeps its place in the kernel log in `<root>/egress.cursor`, and writes the backlog when it starts, so a restart loses only what the kernel log overwrote.
 
-**Caution: a drop by another firewall on the server is not in the log.** A packet dropped by `ufw`, `firewalld` or a rule of your own leaves no record, and the sandbox simply times out. With `ufw` enabled, a `FORWARD` policy of `DROP` stops all traffic of a sandbox that has no policy, and an `INPUT` policy of `DROP` stops the proxy and the resolver. Let the bridge through:
+**Caution: a drop by another firewall on the server is not in the log.** A packet dropped by a rule of your own leaves no record, and the sandbox simply times out.
 
-```sh
-ufw allow in on shard0
-ufw route allow in on shard0
-```
+## Other firewalls on the host
+
+`ufw` and `firewalld` drop the bridge's traffic by default, so shard lets it through them, as Docker does. Every packet must pass each firewall on the host, so these accepts never weaken a policy: shard's own table still drops what a policy refuses.
+
+- **iptables, which `ufw` uses.** When `INPUT` or `FORWARD` in the `filter` table holds a rule, or has a policy other than `ACCEPT`, the daemon adds rules with the comment `managed-by-shard`. In `INPUT` they accept only the resolver and the proxy ports on the bridge address. In `FORWARD` they accept the traffic out of the bridge and its replies. The daemon checks them every 5 seconds, so it puts back rules that a `ufw reload` flushed within 5 seconds.
+- **`firewalld`.** The daemon puts the bridge in a zone named `shard` with the target `ACCEPT`. On `firewalld` 1.0 or later, it also adds a policy named `shard-forwarding` that accepts traffic from that zone to any zone. Both have the description `managed-by-shard` and are permanent, so they come back after a reload. If a zone `shard` or a policy `shard-forwarding` already exists without that description, the daemon refuses to start a sandbox and changes neither. Rename yours, or remove it if nothing uses it.
+- **No firewall.** When `INPUT` and `FORWARD` hold no rule and accept by default, and `firewalld` does not run, the daemon adds nothing.
+
+The daemon never removes these rules, so a daemon restart never cuts off a running sandbox. Uninstall removes them with the bridge, and removes only what carries `managed-by-shard`.
 
 ## On a Mac
 

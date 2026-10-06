@@ -32,6 +32,12 @@ type fakeHost struct {
 	// listeners is what ss prints for the proxy ports, and tables what nft list tables prints.
 	listeners string
 	tables    string
+	// rules is what iptables -S prints, and zones and policies what firewalld lists.
+	rules    string
+	zones    string
+	policies string
+	// foreign holds the --zone= and --policy= flags whose description is not shard's marker.
+	foreign []string
 	// asRoot is root itself, with no person who started setup through sudo.
 	asRoot bool
 }
@@ -103,6 +109,25 @@ func (f *fakeHost) run(ctx context.Context, name string, args ...string) ([]byte
 		}
 		return nil, nil
 	case "ip":
+		return nil, nil
+	case "iptables":
+		if slices.Contains(args, "-S") {
+			return []byte(f.rules), nil
+		}
+		return nil, nil
+	case "firewall-cmd":
+		switch {
+		case slices.Contains(args, "--version"):
+			return []byte("1.3.4\n"), nil
+		case slices.Contains(args, "--get-policies"):
+			return []byte(f.policies), nil
+		case slices.Contains(args, "--get-zones"):
+			return []byte(f.zones), nil
+		case slices.Contains(args, "--get-description") && slices.ContainsFunc(f.foreign, func(flag string) bool { return slices.Contains(args, flag) }):
+			return []byte("the admin's own\n"), nil
+		case slices.Contains(args, "--get-description"):
+			return []byte(hostMarker + "\n"), nil
+		}
 		return nil, nil
 	case "mkdir", "install", "mv", "rm", "rmdir", "find", "sh":
 		return exec.CommandContext(ctx, name, args...).CombinedOutput()
@@ -968,6 +993,63 @@ func TestUninstallRemovesTheSharedNetwork(t *testing.T) {
 		t.Fatalf("uninstall deleted a table it does not own: %v", f.calls)
 	}
 	said(t, ui, "IP forwarding remains on (net.ipv4.ip_forward = 1). Other software may need it.", "Turn it off with: sudo sysctl -w net.ipv4.ip_forward=0")
+}
+
+func firewallHost(t *testing.T) (*fakeHost, Manifest) {
+	t.Helper()
+
+	f := newFakeHost(t)
+	m := linuxInstall("v0.1.0")
+	f.installed(t, m)
+	f.write(t, "/sys/class/net/shard0/address", "02:00:00:00:00:01")
+	f.write(t, "/usr/sbin/iptables", "#!/bin/sh\n")
+	f.write(t, "/usr/bin/firewall-cmd", "#!/bin/sh\n")
+	f.rules = "-P INPUT DROP\n-A INPUT -p tcp -m tcp --dport 22 -m comment --comment shard -j ACCEPT\n-A FORWARD -i shard0 -m comment --comment managed-by-shard -j ACCEPT\n"
+	f.zones = "public shard trusted\n"
+	f.policies = "allow-host-ipv6 shard-forwarding\n"
+
+	return f, m
+}
+
+// Uninstall drops the iptables rules and the firewalld zone and policy the daemon marked, and nothing else. (SHARD-758)
+func TestUninstallClosesTheHostFirewall(t *testing.T) {
+	f, m := firewallHost(t)
+
+	if err := (&Setup{Host: f.host(nil), UI: confirming(true)}).uninstall(t.Context(), m); err != nil {
+		t.Fatalf("uninstall: %v", err)
+	}
+	for _, want := range []string{
+		"iptables -w -D FORWARD -i shard0 -m comment --comment managed-by-shard -j ACCEPT",
+		"firewall-cmd --permanent --delete-policy=shard-forwarding",
+		"firewall-cmd --permanent --delete-zone=shard",
+		"firewall-cmd --reload",
+	} {
+		if !f.called(want) {
+			t.Fatalf("calls = %v, want %q", f.calls, want)
+		}
+	}
+	if f.called("iptables -w -D INPUT") {
+		t.Fatalf("uninstall dropped a rule it does not own: %v", f.calls)
+	}
+	if slices.Index(f.calls, "firewall-cmd --reload") > slices.Index(f.calls, "ip link delete shard0") {
+		t.Fatalf("calls = %v, want the firewall closed before the bridge goes", f.calls)
+	}
+}
+
+// A zone named shard that the daemon did not mark is the host's own, and uninstall leaves it. (SHARD-758)
+func TestUninstallLeavesAForeignShardZone(t *testing.T) {
+	f, m := firewallHost(t)
+	f.foreign = []string{"--zone=shard"}
+
+	if err := (&Setup{Host: f.host(nil), UI: confirming(true)}).uninstall(t.Context(), m); err != nil {
+		t.Fatalf("uninstall: %v", err)
+	}
+	if f.called("firewall-cmd --permanent --delete-zone=shard") {
+		t.Fatalf("uninstall deleted the host's own zone: %v", f.calls)
+	}
+	if !f.called("firewall-cmd --permanent --delete-policy=shard-forwarding") {
+		t.Fatalf("calls = %v, want the marked policy deleted", f.calls)
+	}
 }
 
 // A daemon that still has a sandbox port on the bridge or serves the proxy keeps the network, and uninstall says so. (SHARD-272, SHARD-669)

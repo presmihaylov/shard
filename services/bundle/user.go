@@ -333,7 +333,7 @@ func CheckUserDatabases(rootfs string) error {
 	defer root.Close() //nolint:errcheck // a read-only handle has nothing left to flush
 
 	for _, rel := range []string{"etc/passwd", "etc/group"} {
-		mode, err := guestMode(root, rel)
+		mode, err := guestMode(root, rel, nil)
 		// A database the guest cannot reach either is one runc does without.
 		if errors.Is(err, fs.ErrNotExist) || errors.Is(err, syscall.ENOTDIR) || errors.Is(err, syscall.ELOOP) {
 			continue
@@ -349,8 +349,11 @@ func CheckUserDatabases(rootfs string) error {
 	return nil
 }
 
+// errMounted is a path that reaches a guest mount, whose tree the host's view of the rootfs does not hold.
+var errMounted = errors.New("the path reaches a mount of the guest")
+
 // guestMode resolves links as the guest does, an absolute one from the top and ".." stopping there, and opens nothing a fifo could block.
-func guestMode(root *os.Root, rel string) (fs.FileMode, error) {
+func guestMode(root *os.Root, rel string, mounts map[string]string) (fs.FileMode, error) {
 	parts := strings.Split(rel, "/")
 	resolved := ""
 	mode := fs.ModeDir
@@ -358,6 +361,9 @@ func guestMode(root *os.Root, rel string) (fs.FileMode, error) {
 	for len(parts) > 0 {
 		part := parts[0]
 		parts = parts[1:]
+		if !mode.IsDir() {
+			return 0, &fs.PathError{Op: "lstat", Path: resolved, Err: syscall.ENOTDIR}
+		}
 		if part == "" || part == "." {
 			continue
 		}
@@ -368,6 +374,19 @@ func guestMode(root *os.Root, rel string) (fs.FileMode, error) {
 		}
 
 		next := filepath.Join(resolved, part)
+		source, mounted := mounts[next]
+		if mounted && source == "" || !mounted && inMount(mounts, resolved) {
+			return 0, &fs.PathError{Op: "lstat", Path: next, Err: errMounted}
+		}
+		// The runtime resolved a bind's source on the host, so a file bound there is a file to the guest.
+		if mounted {
+			info, err := os.Stat(source)
+			if err != nil {
+				return 0, err
+			}
+			resolved, mode = next, info.Mode()
+			continue
+		}
 		info, err := root.Lstat(next)
 		if err != nil {
 			return 0, err
@@ -392,6 +411,17 @@ func guestMode(root *os.Root, rel string) (fs.FileMode, error) {
 	}
 
 	return mode, nil
+}
+
+// inMount is a path at or under a mount, whose tree the rootfs does not hold.
+func inMount(mounts map[string]string, rel string) bool {
+	for dest := range mounts {
+		if rel == dest || strings.HasPrefix(rel, dest+"/") {
+			return true
+		}
+	}
+
+	return false
 }
 
 func notRegular(rel string, mode fs.FileMode) error {

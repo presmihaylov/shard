@@ -457,9 +457,46 @@ clear_host_net() {
 			nft delete table "${table}" shard
 		fi
 	done
+	close_host_firewall
 	if ip link show "${HOST_BRIDGE}" >/dev/null 2>&1; then
 		ip link del "${HOST_BRIDGE}"
 	fi
+}
+
+# FW_MARKER is the comment and description on what the daemon made in the host firewall, as network.FirewallMarker names it; nothing without it is ours.
+FW_MARKER=managed-by-shard
+
+# shard_fw_rules prints the accepts the daemon put in the iptables chains for the bridge, as iptables -S lists them without the -A (SHARD-758).
+shard_fw_rules() {
+	command -v iptables >/dev/null 2>&1 || return 0
+	iptables -w -S | sed -n "s/^-A \(.* --comment ${FW_MARKER} -j ACCEPT\)\$/\1/p"
+}
+
+# fw_ours is whether the firewalld zone or policy $2, listed in $3, carries the marker.
+fw_ours() {
+	[[ "$3" == *" $2 "* ]] && [ "$(firewall-cmd --permanent "--$1=$2" --get-description)" = "${FW_MARKER}" ]
+}
+
+# close_host_firewall drops those accepts and the firewalld zone and policy, which go with the bridge.
+close_host_firewall() {
+	local rules rule policies zones changed=""
+	rules=$(shard_fw_rules)
+	while read -ra rule; do
+		[ "${#rule[@]}" -eq 0 ] || iptables -w -D "${rule[@]}"
+	done <<<"${rules}"
+	command -v firewall-cmd >/dev/null 2>&1 && firewall-cmd --state >/dev/null 2>&1 || return 0
+	# firewalld before 1.0 has no policies, and refuses the option.
+	policies=" $(firewall-cmd --permanent --get-policies 2>/dev/null || true) "
+	zones=" $(firewall-cmd --permanent --get-zones) "
+	if fw_ours policy shard-forwarding "${policies}"; then
+		firewall-cmd --permanent --delete-policy=shard-forwarding >/dev/null
+		changed=yes
+	fi
+	if fw_ours zone shard "${zones}"; then
+		firewall-cmd --permanent --delete-zone=shard >/dev/null
+		changed=yes
+	fi
+	[ -z "${changed}" ] || firewall-cmd --reload >/dev/null
 }
 
 # check_host_net_clear fails a run that left the bridge or a table nothing held, or kept them on a failed probe, and names the holder of one it had to keep.
@@ -473,7 +510,8 @@ check_host_net_clear() {
 	ip link show "${HOST_BRIDGE}" >/dev/null 2>&1 && fail "the bridge ${HOST_BRIDGE} is still on the host"
 	nft list table inet shard >/dev/null 2>&1 && fail "the host still holds table inet shard"
 	nft list table bridge shard >/dev/null 2>&1 && fail "the host still holds table bridge shard"
-	say "the bridge ${HOST_BRIDGE} and both shard nft tables are gone"
+	[ -z "$(shard_fw_rules)" ] || fail "the host firewall still holds the shard rules: $(shard_fw_rules | tr '\n' ';')"
+	say "the bridge ${HOST_BRIDGE}, both shard nft tables and the shard firewall rules are gone"
 }
 
 # start_daemon runs shard daemon over the run's root in the background and waits for its socket line.

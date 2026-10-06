@@ -387,11 +387,9 @@ It needs `/dev/kvm`, which no CI runner and no cloud devbox has, so CI, `make ch
 it, and destroy the box. `SHARD_KERNEL` and `SHARD_KERNEL_SHA256` point the run at a kernel on the
 box. When they are unset, the daemon fetches the release.
 
-The guest reaches the resolver and the proxy on the bridge address. So a host firewall that drops
-`INPUT` discards those packets after shard's own table has accepted them. A rented box with `ufw` on
-is the common case. Before the suite, run `iptables -I INPUT -i shard0 -j ACCEPT` there. The host
-check looks for that direct rule in `INPUT` alone. It fails by name when the policy is `DROP` and
-the rule is absent, even when another chain accepts the bridge.
+The guest reaches the resolver and the proxy on the bridge address, which a rented box with `ufw`
+on drops in `INPUT`. The daemon lets the bridge through `ufw` and `firewalld` itself, so the suite
+needs no firewall step, and its teardown drops those rules with the bridge.
 
 `SHARD_ROOT` is where a run keeps its state, `/var/lib/shard-fc-e2e` by default. The daemon mounts
 the XFS image over it. The image takes half the free space of the disk under the root, at most

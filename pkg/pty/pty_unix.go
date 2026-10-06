@@ -15,8 +15,25 @@ import (
 // inputPoll bounds how long a cancel goes unseen while the input has nothing to read.
 const inputPoll = 50 * time.Millisecond
 
+// control reaches the descriptor of f without Fd, which turns a polled file blocking, so Close no longer ends a read in flight (SHARD-760).
+func control(f *os.File, op func(fd int) error) error {
+	conn, err := f.SyscallConn()
+	if err != nil {
+		return err
+	}
+	var opErr error
+	if err := conn.Control(func(fd uintptr) { opErr = op(int(fd)) }); err != nil {
+		return err
+	}
+
+	return opErr
+}
+
 func resize(f *os.File, size Size) error {
-	if err := unix.IoctlSetWinsize(int(f.Fd()), unix.TIOCSWINSZ, &unix.Winsize{Row: size.Rows, Col: size.Cols}); err != nil {
+	err := control(f, func(fd int) error {
+		return unix.IoctlSetWinsize(fd, unix.TIOCSWINSZ, &unix.Winsize{Row: size.Rows, Col: size.Cols})
+	})
+	if err != nil {
 		return fmt.Errorf("set the window size of %s: %w", f.Name(), err)
 	}
 
@@ -28,13 +45,22 @@ func isTerminal(f *os.File) bool {
 		return false
 	}
 
-	_, err := unix.IoctlGetTermios(int(f.Fd()), getTermios)
+	err := control(f, func(fd int) error {
+		_, err := unix.IoctlGetTermios(fd, getTermios)
+
+		return err
+	})
 
 	return err == nil
 }
 
 func sizeOf(f *os.File) (Size, error) {
-	winsize, err := unix.IoctlGetWinsize(int(f.Fd()), unix.TIOCGWINSZ)
+	var winsize *unix.Winsize
+	err := control(f, func(fd int) (err error) {
+		winsize, err = unix.IoctlGetWinsize(fd, unix.TIOCGWINSZ)
+
+		return err
+	})
 	if err != nil {
 		return Size{}, fmt.Errorf("read the window size of %s: %w", f.Name(), err)
 	}
@@ -43,9 +69,12 @@ func sizeOf(f *os.File) (Size, error) {
 }
 
 func makeRaw(f *os.File) (Restore, error) {
-	fd := int(f.Fd())
+	var previous *unix.Termios
+	err := control(f, func(fd int) (err error) {
+		previous, err = unix.IoctlGetTermios(fd, getTermios)
 
-	previous, err := unix.IoctlGetTermios(fd, getTermios)
+		return err
+	})
 	if err != nil {
 		return nil, fmt.Errorf("read the terminal settings of %s: %w", f.Name(), err)
 	}
@@ -60,12 +89,12 @@ func makeRaw(f *os.File) (Restore, error) {
 	raw.Cc[unix.VMIN] = 1
 	raw.Cc[unix.VTIME] = 0
 
-	if err := unix.IoctlSetTermios(fd, setTermios, &raw); err != nil {
+	if err := control(f, func(fd int) error { return unix.IoctlSetTermios(fd, setTermios, &raw) }); err != nil {
 		return nil, fmt.Errorf("put %s into raw mode: %w", f.Name(), err)
 	}
 
 	return func() error {
-		if err := unix.IoctlSetTermios(fd, setTermios, previous); err != nil {
+		if err := control(f, func(fd int) error { return unix.IoctlSetTermios(fd, setTermios, previous) }); err != nil {
 			return fmt.Errorf("restore the terminal settings of %s: %w", f.Name(), err)
 		}
 
