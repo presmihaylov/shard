@@ -1115,7 +1115,7 @@ func TestARetriedPauseAfterARestartFinishesTheOneACrashLeft(t *testing.T) {
 	}
 
 	// The daemon comes back and the service retries the pause, which finishes the crashed one: the staged checkpoint goes in and the shim goes.
-	again := h.open(t)
+	again := h.reopen(t)
 	if err := again.Pause(t.Context(), spec.ID, snap); err != nil {
 		t.Fatal(err)
 	}
