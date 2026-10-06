@@ -49,8 +49,8 @@ func TestMain(m *testing.M) {
 }
 
 // runShim is shard-init's launch mode, left dumpable so a test that is not root can trace it.
-func runShim(argv []string) int {
-	err := shim(argv, false)
+func runShim(args []string) int {
+	err := shim(args, false)
 	var failed *NotStartedError
 	if !errors.As(err, &failed) {
 		fmt.Fprintln(os.Stderr, err)
@@ -109,7 +109,14 @@ type launchRun struct {
 	waited  bool
 }
 
+// start enters "." as the work directory, so the runtime's own cwd stays the command's.
 func start(t *testing.T, role string, argv []string, setup ...func(*exec.Cmd)) *launchRun {
+	t.Helper()
+
+	return startIn(t, role, ".", argv, setup...)
+}
+
+func startIn(t *testing.T, role, workDir string, argv []string, setup ...func(*exec.Cmd)) *launchRun {
 	t.Helper()
 
 	ch, err := Open()
@@ -123,7 +130,7 @@ func start(t *testing.T, role string, argv []string, setup ...func(*exec.Cmd)) *
 	}
 
 	pidFile := filepath.Join(t.TempDir(), "pid")
-	cmd := exec.Command(self, append([]string{role, pidFile}, argv...)...)
+	cmd := exec.Command(self, append([]string{role, pidFile, workDir}, argv...)...)
 	cmd.ExtraFiles = []*os.File{ch.Guest()}
 	for _, f := range setup {
 		f(cmd)
@@ -322,6 +329,62 @@ func TestTheCommandKeepsItsArgvEnvAndCwd(t *testing.T) {
 	})
 	if strings.Join(kept, "\n") != strings.Join(want, "\n") {
 		t.Errorf("the command saw %q, want %q", kept, want)
+	}
+}
+
+// The shim enters the work directory it was given, whatever cwd the runtime left it in.
+func TestTheCommandRunsInTheWorkDirectory(t *testing.T) {
+	dir := t.TempDir()
+	out := filepath.Join(t.TempDir(), "out")
+	r := startIn(t, middleRole, dir, []string{"/bin/sh", "-c", "pwd > " + out})
+
+	if _, err := r.await(t, r.pid); err != nil {
+		t.Fatalf("Await: %v", err)
+	}
+	if code := r.exit(t); code != 0 {
+		t.Fatalf("the command exited %d, want 0", code)
+	}
+
+	got, err := os.ReadFile(out)
+	if err != nil {
+		t.Fatalf("read what the command wrote: %v", err)
+	}
+	if strings.TrimSpace(string(got)) != dir {
+		t.Errorf("the command ran in %q, want %q", strings.TrimSpace(string(got)), dir)
+	}
+}
+
+// A work directory the shim cannot enter is a refusal of the directory, never of a command that is there.
+func TestAWorkDirectoryThatCannotBeEnteredIsRefusedWithItsErrno(t *testing.T) {
+	dir := t.TempDir()
+	write(t, filepath.Join(dir, "file"), "", 0o644)
+
+	for _, tc := range []struct {
+		name    string
+		workDir string
+		want    syscall.Errno
+	}{
+		{"a missing directory", filepath.Join(dir, "missing"), unix.ENOENT},
+		{"a file", filepath.Join(dir, "file"), unix.ENOTDIR},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			r := startIn(t, middleRole, tc.workDir, []string{"/bin/true"})
+
+			_, err := r.await(t, r.pid)
+			var failed *NotStartedError
+			if !errors.As(err, &failed) {
+				t.Fatalf("Await returned %v, want a NotStartedError", err)
+			}
+			if failed.Errno != tc.want || !failed.Chdir {
+				t.Errorf("the refusal is %+v, want the chdir's %v", *failed, tc.want)
+			}
+			if failed.NotFound() {
+				t.Error("a missing work directory reads as a missing command")
+			}
+			if code := r.exit(t); code != 126 {
+				t.Errorf("the shim exited %d, want 126", code)
+			}
+		})
 	}
 }
 
@@ -554,8 +617,8 @@ func TestAGuestEndClosedWithTheGoByteUnreadSentNoRecord(t *testing.T) {
 		t.Fatalf("CloseGuest: %v", err)
 	}
 
-	if errno, err := ch.errno(); errno != 0 || err != nil {
-		t.Fatalf("errno returned %v, %v, want no record", errno, err)
+	if failed, err := ch.record(); err != nil || failed.Errno != 0 {
+		t.Fatalf("record returned %v, %v, want no record", failed, err)
 	}
 }
 
@@ -592,19 +655,21 @@ func TestAKillBeforeThePinEndsTheShimUnstarted(t *testing.T) {
 func TestARecordIsOneErrno(t *testing.T) {
 	for _, tc := range []struct {
 		blob string
-		want syscall.Errno
+		want NotStartedError
 	}{
-		{string(record(unix.ENOENT)), unix.ENOENT},
-		{"E13", unix.EACCES},
-		{"", 0},
-		{"E", 0},
-		{"E0", 0},
-		{"E4096", 0},
-		{"Eabc", 0},
-		{"R2", 0},
+		{string(record(failed, unix.ENOENT)), NotStartedError{Errno: unix.ENOENT}},
+		{"E13", NotStartedError{Errno: unix.EACCES}},
+		{string(record(unentered, unix.ENOTDIR)), NotStartedError{Errno: unix.ENOTDIR, Chdir: true}},
+		{"", NotStartedError{}},
+		{"E", NotStartedError{}},
+		{"E0", NotStartedError{}},
+		{"E4096", NotStartedError{}},
+		{"Eabc", NotStartedError{}},
+		{"D", NotStartedError{}},
+		{"R2", NotStartedError{}},
 	} {
-		if got := parseRecord([]byte(tc.blob)); got != tc.want {
-			t.Errorf("parseRecord(%q) = %v, want %v", tc.blob, got, tc.want)
+		if got := parseRecord([]byte(tc.blob)); *got != tc.want {
+			t.Errorf("parseRecord(%q) = %+v, want %+v", tc.blob, *got, tc.want)
 		}
 	}
 }

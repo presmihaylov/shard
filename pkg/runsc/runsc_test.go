@@ -736,6 +736,7 @@ func TestExecReportsWhyACommandNeverStarted(t *testing.T) {
 		logged        string
 		reason        string
 		notExecutable bool
+		workDir       bool
 	}{
 		{
 			logged: `executing processes for container: executing command in sandbox: failed to load /bin/nope: no such file or directory`,
@@ -745,6 +746,12 @@ func TestExecReportsWhyACommandNeverStarted(t *testing.T) {
 			logged:        `executing processes for container: failed to load /tmp/data: permission denied`,
 			reason:        "failed to load /tmp/data: permission denied",
 			notExecutable: true,
+		},
+		{
+			// The log is JSON, and the fake's printf turns each \\" into the escaped quote runsc writes, in dash as in bash.
+			logged:  `executing processes for container: failed to find initial working directory \\"/missing\\": no such file or directory`,
+			reason:  `failed to find initial working directory "/missing": no such file or directory`,
+			workDir: true,
 		},
 	}
 
@@ -762,6 +769,9 @@ func TestExecReportsWhyACommandNeverStarted(t *testing.T) {
 		}
 		if start.NotExecutable != c.notExecutable {
 			t.Errorf("%q reported NotExecutable=%v, want %v", c.logged, start.NotExecutable, c.notExecutable)
+		}
+		if start.WorkDir != c.workDir {
+			t.Errorf("%q reported WorkDir=%v, want %v", c.logged, start.WorkDir, c.workDir)
 		}
 	}
 }
