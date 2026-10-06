@@ -423,6 +423,16 @@ func (p *Provider) AdoptStaging(dir string) error {
 
 // Fork captures the running source into the new sandbox's directory, runs the source on, and brings the capture up as the fork.
 func (p *Provider) Fork(ctx context.Context, source string, spec models.SandboxSpec) error {
+	src, _, err := p.open(source)
+	if err != nil {
+		return err
+	}
+	// The copy is admitted before the capture stops the source, so a fork that cannot fit costs the source nothing (SHARD-775).
+	if err := bundle.ReserveCopy(filepath.Join(src, bundle.OverlayDiskFile), filepath.Join(spec.StateDir, bundle.OverlayDiskFile)); err != nil {
+		return fmt.Errorf("sandbox %s on %s: %w", spec.ID, Name, err)
+	}
+	defer bundle.Release(spec.StateDir)
+
 	capture := filepath.Join(spec.StateDir, captureDir)
 	if err := p.capture(ctx, source, capture); err != nil {
 		return errors.Join(err, os.RemoveAll(capture))

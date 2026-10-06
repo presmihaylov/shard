@@ -123,7 +123,21 @@ func AdmitCopy(src, dst string, write func() error) error {
 		return fmt.Errorf("stat %s: %w", src, err)
 	}
 
-	err = admitDisk(dst, st.Size(), write)
+	return copied(admitDisk(dst, st.Size(), write))
+}
+
+// ReserveCopy is Reserve for the disk a later AdmitCopy copies from src, so a copy that cannot fit is refused before the work that stages src.
+func ReserveCopy(src, dst string) error {
+	st, err := os.Stat(src)
+	if err != nil {
+		return fmt.Errorf("stat %s: %w", src, err)
+	}
+
+	return copied(Reserve(dst, st.Size()))
+}
+
+// copied marks a refusal as one of a copy, whose size no flag of the request changes.
+func copied(err error) error {
 	if room, ok := errors.AsType[*NoRoomError](err); ok {
 		room.Copy = true
 	}
