@@ -35,13 +35,19 @@ type Sandboxes interface {
 	Generation() uint64
 }
 
+// Rules is the part of the service the tailer needs: the effective rules a drop's id points into.
+type Rules interface {
+	Effective(sb models.Sandbox) (Effective, error)
+}
+
 // Tailer makes a host drop as durable as a proxy decision. The ring is shared with the whole host and
 // short, so a drop that is only ever read at print time is gone within minutes on a busy box.
 type Tailer struct {
-	root string
-	log  *Log
-	repo Sandboxes
-	out  *log.Logger
+	root  string
+	log   *Log
+	repo  Sandboxes
+	rules Rules
+	out   *log.Logger
 	// ulog is the daemon-wide dedup, so a record this miss path cannot read logs once, not on every drop (SHARD-403).
 	ulog *sandboxstate.UnreadableLog
 
@@ -58,8 +64,8 @@ type Tailer struct {
 	unattributed int
 }
 
-func NewTailer(root string, decisions *Log, repo Sandboxes, ulog *sandboxstate.UnreadableLog, out *log.Logger) *Tailer {
-	return &Tailer{root: root, log: decisions, repo: repo, out: out, ulog: ulog}
+func NewTailer(root string, decisions *Log, repo Sandboxes, rules Rules, ulog *sandboxstate.UnreadableLog, out *log.Logger) *Tailer {
+	return &Tailer{root: root, log: decisions, repo: repo, rules: rules, out: out, ulog: ulog}
 }
 
 // refreshEvery bounds how often a backlog miss rebuilds the address map, so its strays do not list the records once per drop.
@@ -204,7 +210,13 @@ func (t *Tailer) attribute(record drop) (bool, error) {
 			return false, nil
 		}
 
-		err := t.log.Append(sb.ID, record.Record)
+		text, err := t.ruleText(sb, record.Rule)
+		if err != nil {
+			return false, err
+		}
+		record.RuleText = text
+
+		err = t.log.Append(sb.ID, record.Record)
 		if err == nil {
 			return true, nil
 		}
@@ -218,6 +230,26 @@ func (t *Tailer) attribute(record drop) (bool, error) {
 	t.unattributed++
 
 	return false, nil
+}
+
+// ruleText names the policy rule behind a drop's id as the proxy and the resolver do, and a fixed id names none (SHARD-773).
+func (t *Tailer) ruleText(sb models.Sandbox, id string) (string, error) {
+	if id == "" || strings.TrimLeft(id, "0123456789") != "" {
+		return "", nil
+	}
+
+	effective, err := t.rules.Effective(sb)
+	if err != nil {
+		return "", fmt.Errorf("read the rules of sandbox %s: %w", sb.ID, err)
+	}
+	for _, rule := range effective.Rules {
+		// Only a deny drops, so an allow under the id means the policy changed after the drop.
+		if rule.ID == id && rule.Action == models.ActionDeny {
+			return FormatRule(rule.Rule), nil
+		}
+	}
+
+	return "", nil
 }
 
 // forget drops a sandbox the records no longer hold, so the next line rebuilds instead of hitting it.

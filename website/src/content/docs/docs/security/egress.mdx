@@ -192,10 +192,32 @@ The proxy can answer with these statuses:
 | Status | When |
 | --- | --- |
 | `403` | the policy denies the request. The JSON body names the host, the port, the rule and the reason. |
-| `502` | the host does not resolve, or the upstream fails. The body never holds the upstream error. When the host does not resolve, the body names the host and says `no such host` or `the lookup failed`. |
+| `502` | the host does not resolve, or the upstream fails. The body never holds the upstream error. When the host does not resolve, the body names the host and says `no such host` or `the lookup failed`. When the upstream's certificate fails the check, the body names the host and the reason, such as `the upstream's certificate is signed by an authority the host does not trust`. |
 | `503` | the sandbox exceeds its 32 MiB budget for buffered request data and expanded secret values. |
 
-The daemon log keeps the cause of a failed lookup. The proxy writes one line to the daemon log for each request, and that line never holds a header value, a body or a secret.
+The daemon log keeps the cause of a failed lookup, and the reason of a failed certificate check. The proxy writes one line to the daemon log for each request, and that line never holds a header value, a body or a secret.
+
+### An upstream signed by an internal authority
+
+The proxy checks each upstream's certificate against the host's trust store, never the sandbox's. A server signed by an internal or self-signed authority therefore answers a sandbox behind the proxy with a `502`, and `shard policy logs` shows a `certificate` record, until the host trusts that authority. shard has no flag for this. Add the authority's certificate to the host's store, then restart the daemon, because on Linux it reads the store only when it starts:
+
+```sh
+# Debian or Ubuntu
+sudo cp internal-ca.crt /usr/local/share/ca-certificates/internal-ca.crt
+sudo update-ca-certificates
+sudo systemctl restart shard
+
+# Fedora or RHEL
+sudo cp internal-ca.crt /etc/pki/ca-trust/source/anchors/internal-ca.crt
+sudo update-ca-trust
+sudo systemctl restart shard
+
+# macOS
+sudo security add-trusted-cert -d -r trustRoot -k /Library/Keychains/System.keychain internal-ca.crt
+sudo launchctl kickstart -k system/shard.daemon
+```
+
+The sandbox needs no change, because it trusts the proxy's certificate and the proxy checks the upstream. A sandbox with neither a policy nor a secret connects to the server directly, so it needs the authority in its own image.
 
 A sandbox can hold at most 1024 connections open to the proxy. The proxy closes a keep-alive connection after 60 seconds without a request.
 
@@ -229,7 +251,7 @@ A record holds `time`, `source`, `verdict`, `host`, `port`, `address`, `rule`, `
 
 | `source` | One record for |
 | --- | --- |
-| `proxy` | each request the proxy judged, allowed or denied |
+| `proxy` | each request the proxy judged, allowed or denied. A request the proxy allowed but never sent, because the upstream's certificate failed the check, gets a second record: a deny with the rule `certificate`. |
 | `dns` | each question the resolver judged, allowed or denied, with the name under `host` and no port or address |
 | `host` | each packet the host dropped, which the proxy and the resolver never saw. The daemon reads it from the kernel log into the file within a second. |
 
@@ -245,6 +267,9 @@ A record holds `time`, `source`, `verdict`, `host`, `port`, `address`, `rule`, `
 | `ipv6` | an IPv6 packet |
 | `resolve` | the proxy could not resolve the host |
 | `limit` | the sandbox has 1024 connections open to the proxy |
+| `certificate` | the upstream's certificate failed the check on the host, so the proxy never sent the request. `reason` says why. |
+
+`rule_text` is the policy rule behind an id, as `shard policy show` prints it, for every source. A rule from the list above has none.
 
 On a Mac, the list also includes `stack`, `redirect` and `unapplied`. `stack` is a frame that the stack does not forward, such as one that is not a TCP or UDP flow. `redirect` is a flow to port 80 or 443 that missed the proxy, because the stack first saw it before the sandbox went behind the proxy. `unapplied` is a flow the stack saw before the daemon applied the sandbox's rules. On a Mac, `limit` means the sandbox already has 1024 flows open, or the stack has no room for another.
 

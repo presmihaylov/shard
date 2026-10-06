@@ -176,6 +176,16 @@ func (b *Broker) record(id string, req proxy.Request, action models.Action, reco
 	return nil
 }
 
+// Untrusted logs the request whose upstream failed the certificate check, so policy logs says why it never left (SHARD-772).
+func (b *Broker) Untrusted(_ context.Context, req proxy.Request, upstream netip.AddrPort, reason string) error {
+	sb, err := b.sandbox(req.Source)
+	if err != nil {
+		return err
+	}
+
+	return b.record(sb.ID, req, models.ActionDeny, egress.Record{Address: upstream.Addr().String(), Rule: network.RuleCertificate, Reason: reason})
+}
+
 // Rewrite puts the value of every secret granted to the host where the guest wrote its placeholder in a request header, on TLS only.
 func (b *Broker) Rewrite(_ context.Context, req proxy.Request, out *http.Request, body []byte, reserve proxy.Reserve) ([]byte, error) {
 	sb, err := b.sandbox(req.Source)

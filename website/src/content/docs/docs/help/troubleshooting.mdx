@@ -147,6 +147,8 @@ sudo ufw route allow in on shard0
 
 **An HTTPS client fails on a certificate in a sandbox with a secret.** shard's proxy inserts the key on the host, so it presents its own certificate to the client. Most clients trust it without any change. Java and some Rust builds need an extra step, and a client that pins a certificate cannot use a secret. The [secrets reference](/docs/security/secrets/) has the steps.
 
+**A request to an internal server gets a `502` that says `the upstream's certificate is signed by an authority the host does not trust`.** In a sandbox with a policy or a secret, the proxy checks the server's certificate against the host's trust store, not the sandbox's. Add the authority that signed it to the host's store, then restart the daemon. The [egress reference](/docs/security/egress/#an-upstream-signed-by-an-internal-authority) has the commands for each system.
+
 ## A remote server
 
 A client command goes to the server that `--remote` names. Without `--remote` it uses a nonempty `SHARD_REMOTE`, then the saved connection. An explicit `--remote ""` selects the local socket. The API key comes from a nonempty `SHARD_API_KEY`, or from the saved connection when it names the same server.

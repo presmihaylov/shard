@@ -267,6 +267,8 @@ const (
 	RuleMissing = "missing"
 	RuleResolve = "resolve"
 	RuleIPv6    = "ipv6"
+	// RuleCertificate is the proxy's second record of an allowed request it never sent, because the upstream failed the certificate check.
+	RuleCertificate = "certificate"
 	// RuleStack is a VM host's drop: the frames end in the daemon, so nothing a policy allows leaves except through the proxy.
 	RuleStack = "stack"
 	// RuleUnapplied is the judge's drop before the first apply, and RuleLimit a new flow or proxy connection past the sandbox's share.

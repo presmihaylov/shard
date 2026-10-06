@@ -925,6 +925,10 @@ func (t egressLogTailer) Run(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
+	rules, err := t.deps.egress()
+	if err != nil {
+		return err
+	}
 
 	ring, err := kmsg.Open()
 	if err != nil {
@@ -934,7 +938,7 @@ func (t egressLogTailer) Run(ctx context.Context) error {
 
 	logger := log.New(t.deps.cfg.Out, "", log.LstdFlags)
 
-	if err := egress.NewTailer(t.deps.cfg.Root, decisions, repo, t.deps.unreadableLog(), logger).Run(ctx, ring); err != nil {
+	if err := egress.NewTailer(t.deps.cfg.Root, decisions, repo, rules, t.deps.unreadableLog(), logger).Run(ctx, ring); err != nil {
 		return err
 	}
 
