@@ -1,6 +1,7 @@
 package sandbox
 
 import (
+	"cmp"
 	"context"
 	"errors"
 	"fmt"
@@ -247,7 +248,7 @@ func PolicyHolders(repo Reader, name string) ([]string, error) {
 	var holders []string
 	for _, sb := range sandboxes {
 		if sb.Policy == name {
-			holders = append(holders, sb.ID)
+			holders = append(holders, nameOf(sb.ID, sb))
 		}
 	}
 
@@ -409,7 +410,8 @@ func (s *Stores) removeImage(ctx context.Context, ref string, free func() error)
 
 // imageUser is a record that holds an image, by the reference it names and the digest it resolved to.
 type imageUser struct {
-	id        string
+	// name is the holder as its user knows it: its name, else its id.
+	name      string
 	reference string
 	digest    string
 }
@@ -457,7 +459,7 @@ func (s *Stores) unreferenced(ref string) error {
 		var held []string
 		for _, u := range users {
 			if u.reference == canonical || orphanedSet[resolveDigest(u, digestByReference)] {
-				held = append(held, u.id)
+				held = append(held, u.name)
 			}
 		}
 
@@ -500,7 +502,7 @@ func (s *Stores) heldImages() ([]imageUser, error) {
 
 	users := make([]imageUser, 0, len(sandboxes))
 	for _, sb := range sandboxes {
-		users = append(users, imageUser{id: sb.ID, reference: sb.Image, digest: sb.Digest})
+		users = append(users, imageUser{name: nameOf(sb.ID, sb), reference: sb.Image, digest: sb.Digest})
 	}
 
 	return users, nil
@@ -515,7 +517,7 @@ func (s *Stores) snapshotImages() ([]imageUser, error) {
 
 	users := make([]imageUser, 0, len(snaps))
 	for _, snap := range snaps {
-		users = append(users, imageUser{id: snap.ID, reference: snap.Image, digest: snap.Digest})
+		users = append(users, imageUser{name: cmp.Or(snap.Name, snap.ID), reference: snap.Image, digest: snap.Digest})
 	}
 
 	return users, nil

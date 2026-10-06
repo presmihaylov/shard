@@ -137,7 +137,7 @@ func spent(policy string, count, limit int, gaveUp bool) string {
 	return policy
 }
 
-// uptime is how long the sandbox has run since its last start or resume; only a live one is up.
+// uptime is how long the sandbox has run since its last start, which a resume keeps; only a live one is up.
 func uptime(sb client.Sandbox, now time.Time) string {
 	if !sb.State.Live() {
 		return "-"

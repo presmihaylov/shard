@@ -69,6 +69,8 @@ export interface SandboxInfo {
   digest: string | null;
   /** The snapshot the sandbox was made from. */
   snapshot: string | null;
+  /** The id of the sandbox this one was forked from. */
+  forkedFrom: string | null;
   provider: string;
   /** The tag of the guest kernel a microVM last booted; null on a container substrate. */
   kernel: string | null;
@@ -175,6 +177,7 @@ export function sandboxInfo(value: unknown): SandboxInfo {
     image: fields.string("image"),
     digest: fields.optionalString("digest"),
     snapshot: fields.optionalString("snapshot"),
+    forkedFrom: fields.optionalString("forked_from"),
     provider: fields.string("provider"),
     kernel: fields.optionalString("kernel"),
     state: fields.oneOf("state", states),

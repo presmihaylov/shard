@@ -217,6 +217,12 @@ def test_exec_refuses_stdin_of_the_other_mode(daemon: FakeDaemon, shard: Shard) 
     assert [method for method, _, _ in daemon.requests] == ["GET"]
 
 
+def test_a_fork_names_the_sandbox_it_was_forked_from(daemon: FakeDaemon, shard: Shard) -> None:
+    daemon.routes[("GET", "/v0/sandboxes/sb2")] = (200, {**SANDBOX, "id": "sb2", "forked_from": "sb"})
+    assert shard.get("sb2").info.forked_from == "sb"
+    assert shard.get("sb").info.forked_from is None
+
+
 def test_changes_keep_the_handle_current(daemon: FakeDaemon, shard: Shard) -> None:
     daemon.routes[("POST", "/v0/sandboxes/sb/secrets/TOKEN")] = (200, {**SANDBOX, "secrets": ["TOKEN"]})
     daemon.routes[("PUT", "/v0/sandboxes/sb/policy")] = (200, {**SANDBOX, "policy": "web"})

@@ -193,7 +193,7 @@ sandbox.resume()
 
 A pause writes the sandbox's memory and files to disk and frees the memory. A resume brings the processes back, and they continue where they left off.
 
-**Caution: a pause ends every `exec` that is running at that moment.** Let your commands finish before you pause. An `exec` on a paused sandbox fails with `sandbox <id> is paused: resume it with shard resume <id>`.
+**Caution: a pause ends every `exec` that is running at that moment.** Let your commands finish before you pause. An `exec` on a paused sandbox fails with `sandbox <name> is paused: resume it with shard resume <name>`.
 
 `pause` and `resume` work on `gvisor`, `firecracker`, and `vz` on Apple silicon with macOS 14 or later. `sysbox` and `runc` refuse them. `shard capabilities` shows what your server supports.
 

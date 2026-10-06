@@ -250,10 +250,10 @@ func (s *Service) Resume(ctx context.Context, ref string) (models.Sandbox, error
 	}
 
 	if sb.State != models.StatePaused {
-		return models.Sandbox{}, &StateError{ID: id, State: sb.State, Fix: "resume takes a paused sandbox", Code: models.CodeSandboxNotPaused}
+		return models.Sandbox{}, &StateError{Sandbox: nameOf(id, sb), State: sb.State, Fix: "resume takes a paused sandbox", Code: models.CodeSandboxNotPaused}
 	}
 	if sb.Checkpoint == "" {
-		return models.Sandbox{}, &StateError{ID: id, State: sb.State, Fix: fmt.Sprintf("it has no saved state to resume; remove it with shard remove %s and create another sandbox", nameOf(id, sb)), Code: models.CodeNoCheckpoint}
+		return models.Sandbox{}, &StateError{Sandbox: nameOf(id, sb), State: sb.State, Fix: fmt.Sprintf("it has no saved state to resume; remove it with shard remove %s and create another sandbox", nameOf(id, sb)), Code: models.CodeNoCheckpoint}
 	}
 
 	// The lease survived the pause, so this hands back the same address over a namespace built again.
@@ -262,7 +262,7 @@ func (s *Service) Resume(ctx context.Context, ref string) (models.Sandbox, error
 	}
 
 	if err := s.cfg.Provider.Resume(ctx, id, sb.Checkpoint); err != nil {
-		return models.Sandbox{}, imageGone(id, sb.Image, sb.Digest, "resume", errors.Join(err, Reconcile(ctx, s.cfg.Repo, s.cfg.Provider, id, true)))
+		return models.Sandbox{}, imageGone(nameOf(id, sb), sb.Image, sb.Digest, "resume", errors.Join(err, Reconcile(ctx, s.cfg.Repo, s.cfg.Provider, id, true)))
 	}
 
 	// The restore brought the guest up over rules it has no memory of, so the host's go on again now.
@@ -303,6 +303,7 @@ func (s *Service) Fork(ctx context.Context, ref string, req CopyRequest) (sb mod
 
 	// The capture holds the source's run, so an entrypoint that had exited before it has in the fork too.
 	claim, err := s.claimCopy(ctx, &td, req, models.Sandbox{
+		ForkedFrom: source,
 		Image:      src.Image,
 		Digest:     src.Digest,
 		Resources:  src.Resources,
@@ -332,7 +333,7 @@ func (s *Service) Fork(ctx context.Context, ref string, req CopyRequest) (sb mod
 	spec := models.SandboxSpec{ID: id, Name: req.Name, StateDir: claim.dir, Network: claim.net, Resources: src.Resources}
 	if err := s.cfg.Provider.Fork(ctx, source, spec); err != nil {
 		if ctx.Err() == nil {
-			return models.Sandbox{}, imageGone(source, src.Image, src.Digest, "fork", diskRefused(err))
+			return models.Sandbox{}, imageGone(nameOf(source, src), src.Image, src.Digest, "fork", diskRefused(err))
 		}
 		// An interrupt kills the restore process, not what it may already have restored, and only stop ends a sandbox, so a fork that may run is kept.
 		probe, perr := s.status(context.WithoutCancel(ctx), id, "fork")

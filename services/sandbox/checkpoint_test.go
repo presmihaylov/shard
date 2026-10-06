@@ -433,6 +433,27 @@ func TestResumeRunsAPausedSandboxAgain(t *testing.T) {
 	}
 }
 
+// A resume is no start, so ls counts UPTIME from the first one, while liveness still sees a new run (SHARD-770).
+func TestResumeKeepsTheFirstStart(t *testing.T) {
+	paused := pausedSandbox()
+	paused.StartedAt = time.Now().Add(-time.Hour).UTC()
+	paused.RunStartedAt = paused.StartedAt
+	svc, l := newService(t, &recorder{}, paused)
+	l.provider.status = models.Status{}
+
+	sb, err := svc.Resume(t.Context(), "web")
+	if err != nil {
+		t.Fatalf("resume: %v", err)
+	}
+
+	if !sb.StartedAt.Equal(paused.StartedAt) {
+		t.Errorf("the resume moved the start to %s, want the first start %s", sb.StartedAt, paused.StartedAt)
+	}
+	if !sb.RunStartedAt.After(paused.RunStartedAt) {
+		t.Errorf("the resumed run began at %s, want later than the frozen run's %s", sb.RunStartedAt, paused.RunStartedAt)
+	}
+}
+
 func TestResumeRefusesASandboxThatIsNotPaused(t *testing.T) {
 	for _, state := range []models.State{models.StateRunning, models.StateStopped, models.StateCreated} {
 		sb := pausedSandbox()
@@ -807,7 +828,7 @@ func TestForkCarriesThePolicyAndTellsTheHostBeforeTheRestore(t *testing.T) {
 // copyRunState is every record field a copy does not take from its source: its own identity, its run, and what the substrate reports.
 var copyRunState = []string{"ID", "Name", "Provider", "State", "ExitStatus", "StoppedReason", "FailedReason", "FailedPublic", "UnresponsiveReason", "Checkpoint", "Pausing", "Snapshot",
 	"PID", "NetnsPath", "Address", "HostInterface", "ExitChannel",
-	"Restart", "StartedAt", "CreatedAt"}
+	"Restart", "StartedAt", "RunStartedAt", "CreatedAt", "ForkedFrom"}
 
 // withEveryPolicy sets every field a create asks for, so a field a copy drops shows up as a difference.
 func withEveryPolicy(sb models.Sandbox) models.Sandbox {
@@ -822,6 +843,25 @@ func withEveryPolicy(sb models.Sandbox) models.Sandbox {
 	sb.Kernel = "kernel-6.12.110-3"
 
 	return sb
+}
+
+// Inspect reads the source of a fork from the record, and the fork's own first start is its own (SHARD-768).
+func TestForkNamesItsSourceAndStartsItsOwnRun(t *testing.T) {
+	source := forkSource()
+	source.StartedAt = time.Now().Add(-time.Hour).UTC()
+	svc, _ := newService(t, &recorder{}, source)
+
+	sb, err := svc.Fork(t.Context(), "web", sandbox.CopyRequest{Name: "web-2"})
+	if err != nil {
+		t.Fatalf("fork: %v", err)
+	}
+
+	if sb.ForkedFrom != "sandbox1" {
+		t.Errorf("the fork names its source %q, want sandbox1", sb.ForkedFrom)
+	}
+	if !sb.StartedAt.After(source.StartedAt) || !sb.StartedAt.Equal(sb.RunStartedAt) {
+		t.Errorf("the fork started at %s and its run at %s, want both now, after the source's %s", sb.StartedAt, sb.RunStartedAt, source.StartedAt)
+	}
 }
 
 func TestForkCarriesEveryPolicyField(t *testing.T) {

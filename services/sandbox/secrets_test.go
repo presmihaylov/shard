@@ -137,8 +137,12 @@ func TestGrantSecretRefusesARunningSandbox(t *testing.T) {
 func TestGrantSecretRefusesAPausedSandbox(t *testing.T) {
 	svc, _, _ := granted(t, &recorder{}, pausedSandbox())
 
-	if _, err := svc.GrantSecret(context.Background(), "sandbox1", "TOKEN"); err == nil {
+	_, err := svc.GrantSecret(context.Background(), "sandbox1", "TOKEN")
+	if err == nil {
 		t.Fatal("the grant took a paused sandbox, whose checkpoint already holds the environment")
+	}
+	if !strings.Contains(err.Error(), "sandbox web") {
+		t.Errorf("the refusal %v names the sandbox by its id, want the name its user gave", err)
 	}
 }
 
@@ -233,14 +237,14 @@ func TestSecretHoldersNamesEverySandboxThatGrantsIt(t *testing.T) {
 	l.repo.left = []models.Sandbox{
 		{ID: "sandbox1", Secrets: []string{"TOKEN"}},
 		{ID: "sandbox2"},
-		{ID: "sandbox3", Secrets: []string{"OTHER", "TOKEN"}},
+		{ID: "sandbox3", Name: "web", Secrets: []string{"OTHER", "TOKEN"}},
 	}
 
 	holders, err := sandbox.SecretHolders(l.repo, "TOKEN")
 	if err != nil {
 		t.Fatalf("SecretHolders: %v", err)
 	}
-	if !slices.Equal(holders, []string{"sandbox1", "sandbox3"}) {
+	if !slices.Equal(holders, []string{"sandbox1", "web"}) {
 		t.Errorf("SecretHolders = %v", holders)
 	}
 }

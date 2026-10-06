@@ -107,7 +107,7 @@ On `firecracker` and `vz`, an `exec` that is running in the source during the fo
 
 ## Where fork works
 
-Fork works only on a running sandbox. A fork of a stopped sandbox fails with `sandbox <id> is stopped: fork takes a running sandbox`. To copy a stopped sandbox, take a snapshot of it.
+Fork works only on a running sandbox. A fork of a stopped sandbox fails with `sandbox <name> is stopped: fork takes a running sandbox`. To copy a stopped sandbox, take a snapshot of it.
 
 `fork` works on `gvisor`, `firecracker`, and `vz` on Apple silicon with macOS 14 or later. On `sysbox` and `runc` it is refused with an error such as `provider sysbox does not support fork on this host`. `shard capabilities` shows what your server supports.
 

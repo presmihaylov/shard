@@ -275,7 +275,7 @@ func (s *Service) DeleteFile(ctx context.Context, ref, guestPath string, recursi
 
 // openFiles starts one files exec in a running sandbox, as user; every provider runs the same shard-init mode.
 func (s *Service) openFiles(ctx context.Context, ref, user string) (supervisor.FilesConn, error) {
-	id, err := s.readyForExec(ctx, ref)
+	id, _, err := s.readyForExec(ctx, ref)
 	if err != nil {
 		return nil, err
 	}

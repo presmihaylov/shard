@@ -139,6 +139,28 @@ func TestAFailureThatIsNeitherReachesTheCaller(t *testing.T) {
 	}
 }
 
+// The public text keeps the binary and why it failed, and drops the argv and the rule nft echoes, which hold host addresses.
+func TestAFailureNamesTheBinaryAndItsReasonInPublic(t *testing.T) {
+	cases := map[string]struct{ stderr, want string }{
+		"ip":        {"RTNETLINK answers: Operation not permitted", "ip failed: RTNETLINK answers: Operation not permitted"},
+		"nft":       {"/dev/stdin:3:1-20: Error: Could not process rule: No such file or directory\nadd rule inet shard forward ip saddr 10.87.0.2 accept\n^^^^", "ip failed: Could not process rule: No such file or directory"},
+		"no stderr": {"", "ip failed: exit status 2"},
+	}
+	for name, c := range cases {
+		t.Run(name, func(t *testing.T) {
+			m, _ := fake(t, "", c.stderr, 2)
+
+			failed, ok := errors.AsType[*CommandError](m.SetUp(t.Context(), "shardv2"))
+			if !ok {
+				t.Fatal("SetUp failed with no CommandError")
+			}
+			if got := failed.Public(); got != c.want {
+				t.Errorf("Public() = %q, want %q", got, c.want)
+			}
+		})
+	}
+}
+
 func TestLinkExistsReportsAMissingLink(t *testing.T) {
 	m, _ := fake(t, "", "Device \"shardv2\" does not exist.", 1)
 

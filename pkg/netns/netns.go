@@ -377,10 +377,43 @@ func (m *Manager) execute(ctx context.Context, binary string, stdin io.Reader, s
 
 		message := strings.TrimSpace(stderr.String())
 
-		return fmt.Errorf("%s: %w: %s", called, sentinel(message, err), message)
+		return &CommandError{Command: called, Stderr: message, Err: sentinel(message, err)}
 	}
 
 	return nil
+}
+
+// CommandError is a host binary that failed; its public text keeps the binary and its reason, never the argv with host addresses.
+type CommandError struct {
+	Command string
+	Stderr  string
+	Err     error
+}
+
+func (e *CommandError) Error() string { return fmt.Sprintf("%s: %v: %s", e.Command, e.Err, e.Stderr) }
+
+func (e *CommandError) Unwrap() error { return e.Err }
+
+func (e *CommandError) Public() string {
+	binary, _, _ := strings.Cut(e.Command, " ")
+
+	return binary + " failed: " + reason(e.Stderr, e.Err)
+}
+
+// reason is the line of stderr that says why: nft puts its input position before it and echoes the rule after it.
+func reason(stderr string, err error) string {
+	for line := range strings.Lines(stderr) {
+		if _, why, found := strings.Cut(line, "Error: "); found {
+			return strings.TrimSpace(why)
+		}
+	}
+
+	first, _, _ := strings.Cut(stderr, "\n")
+	if first == "" {
+		return err.Error()
+	}
+
+	return strings.TrimSpace(first)
 }
 
 // sentinel turns the two failures a caller must act on into errors it can match.
