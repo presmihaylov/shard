@@ -208,7 +208,7 @@ func (s *Setup) setUpAPI(ctx context.Context, m Manifest, service ServiceState) 
 	if err != nil {
 		return err
 	}
-	l := Local{Provider: m.Provider, StartAtBoot: m.StartAtBoot, API: address}
+	l := Local{Provider: m.Provider, StartAtBoot: m.StartAtBoot, StorageMiB: m.StorageMiB, API: address}
 	f, err := s.runChecks(ctx, []check{{"Administrator access", administratorAccess}, {apiCheckTitle, apiCheck}}, l)
 	if err != nil {
 		return err

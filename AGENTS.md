@@ -75,6 +75,7 @@ pkg/store/                 atomic file write, the daemon singleton lock
 pkg/proxy/                 intercepting HTTP and TLS proxy
 pkg/reflink/               one clone by reference, and whether a directory's filesystem does it
 pkg/xfs/                   mkfs.xfs, the loop mount and the fstab line of one image
+pkg/size/                  the size a flag takes, read and written in whole MiB
 pkg/vz/                    the Virtualization.framework driver: the shim protocol, its client and its server
 pkg/vzshim/                the shim binary embedded in the daemon, installed and ad-hoc signed on first use
 pkg/term/                  the terminal prompts and the live checklist shard setup draws
@@ -117,7 +118,7 @@ website/                   useshards.com: Astro + Starlight, landing at /, docs 
   a driver and it belongs in `services/`. `depguard` enforces this in CI.
 - **Dependencies point one way: `cli` to `services` to `pkg`.** `models` sits
   under all of them.
-- **`cli/` imports `services/client`, `pkg/pty`, `pkg/term`, `pkg/vzshim`, `models`, the
+- **`cli/` imports `services/client`, `pkg/pty`, `pkg/size`, `pkg/term`, `pkg/vzshim`, `models`, the
   request types in `services/sandbox`, and `services/daemon`, `services/serve` and
   `services/setup` for the three verbs that are a process rather than a client.
   Nothing else.** A verb holds no

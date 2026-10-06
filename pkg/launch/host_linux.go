@@ -378,12 +378,12 @@ func (c *Channel) watch(pid int) (int, error) {
 		}
 
 		if ws.Exited() || ws.Signaled() {
-			errno, err := c.errno()
+			failed, err := c.record()
 			if err != nil {
 				return 0, err
 			}
 
-			return 0, &NotStartedError{Errno: errno}
+			return 0, failed
 		}
 
 		switch event(ws) {
@@ -472,11 +472,11 @@ func release(pid int) error {
 	}
 }
 
-// errno reads the record the shim sent before it ended, if it sent one; the socket keeps it after the shim is gone.
-func (c *Channel) errno() (syscall.Errno, error) {
+// record reads the record the shim sent before it ended, if it sent one; the socket keeps it after the shim is gone.
+func (c *Channel) record() (*NotStartedError, error) {
 	conn, err := c.host.SyscallConn()
 	if err != nil {
-		return 0, fmt.Errorf("read the launch shim's record: %w", err)
+		return nil, fmt.Errorf("read the launch shim's record: %w", err)
 	}
 
 	buf := make([]byte, 32)
@@ -487,14 +487,14 @@ func (c *Channel) errno() (syscall.Errno, error) {
 
 		return true
 	}); err != nil {
-		return 0, fmt.Errorf("read the launch shim's record: %w", err)
+		return nil, fmt.Errorf("read the launch shim's record: %w", err)
 	}
 	// A reset is a guest end closed with the go byte unread, so the shim never sent a record.
 	if errors.Is(rerr, unix.EAGAIN) || errors.Is(rerr, unix.ECONNRESET) {
-		return 0, nil
+		return &NotStartedError{}, nil
 	}
 	if rerr != nil {
-		return 0, fmt.Errorf("read the launch shim's record: %w", rerr)
+		return nil, fmt.Errorf("read the launch shim's record: %w", rerr)
 	}
 
 	return parseRecord(buf[:n]), nil

@@ -84,11 +84,22 @@ func (s *Setup) existing(ctx context.Context, inst Installation) error {
 	}
 
 	m := *inst.Manifest
+	storage, reserved, err := existingStorage(s.Host, m)
+	if err != nil {
+		return err
+	}
 	api := "Not set up"
 	if m.API != "" {
 		api = "http://" + m.API
 	}
-	if err := s.UI.Print("This machine already has shard installed", "", "Version:  "+m.Version, "Provider: "+providerTitle(m.Provider), "Service:  "+string(inst.Service), "HTTP API: "+api, ""); err != nil {
+	lines := []string{"This machine already has shard installed", "", "Version:  " + m.Version, "Provider: " + providerTitle(m.Provider), "Service:  " + string(inst.Service)}
+	if storage != "" {
+		lines = append(lines, storage)
+	}
+	if err := s.UI.Print(append(lines, "HTTP API: "+api, "")...); err != nil {
+		return err
+	}
+	if err := s.keepStorage(m.Provider, reserved); err != nil {
 		return err
 	}
 	options := []term.Option{
@@ -153,7 +164,7 @@ func (s *Setup) repair(ctx context.Context, m Manifest, service ServiceState, re
 	if m.StartAtBoot && service != ServiceActive {
 		problems = append(problems, "The background service is not running.")
 	}
-	l := Local{Provider: m.Provider, StartAtBoot: m.StartAtBoot, API: m.API}
+	l := Local{Provider: m.Provider, StartAtBoot: m.StartAtBoot, StorageMiB: m.StorageMiB, API: m.API}
 	account := false
 	if m.API != "" {
 		var apiProblems []string

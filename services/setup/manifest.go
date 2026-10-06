@@ -40,6 +40,7 @@ type Manifest struct {
 	Version     string `json:"version"`
 	Provider    string `json:"provider"`
 	StartAtBoot bool   `json:"start_at_boot"`
+	StorageMiB  int64  `json:"storage_mib,omitempty"`
 	// API is the address shard serve listens on, empty when setup configured no HTTP API.
 	API   string  `json:"http_api,omitempty"`
 	Files []Owned `json:"files"`
@@ -48,7 +49,7 @@ type Manifest struct {
 // RecordOwned adds files to the manifest after setup created them; a file that was already there is never recorded.
 func RecordOwned(ctx context.Context, h Host, local Local, files ...Owned) error {
 	return record(ctx, h, func(m *Manifest) {
-		m.Version, m.Provider, m.StartAtBoot, m.API = h.Version, local.Provider, local.StartAtBoot, local.API
+		m.Version, m.Provider, m.StartAtBoot, m.StorageMiB, m.API = h.Version, local.Provider, local.StartAtBoot, local.StorageMiB, local.API
 	}, files...)
 }
 

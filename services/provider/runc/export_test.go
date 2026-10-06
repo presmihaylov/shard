@@ -4,3 +4,6 @@ package runc
 func (p *Provider) SetCgroupRoot(root string) {
 	p.cgroupRoot = root
 }
+
+// NotStarted is the refusal an exec gets when its launch never took.
+var NotStarted = notStarted

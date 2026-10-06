@@ -1,6 +1,7 @@
 package runc
 
 import (
+	"cmp"
 	"encoding/json"
 	"fmt"
 	"os"
@@ -72,13 +73,15 @@ func readProcess(bundle string) (specs.Process, error) {
 func execProcess(base specs.Process, opts ExecOptions) (specs.Process, error) {
 	process := base
 	process.Args = opts.Argv
-	if opts.Launch != "" {
-		process.Args = append([]string{opts.Launch, launch.Mode}, opts.Argv...)
-	}
 	process.Env = append(slices.Clone(base.Env), opts.Env...)
 	process.Terminal = opts.TTY
 	if opts.WorkDir != "" {
 		process.Cwd = opts.WorkDir
+	}
+	// runc fails a missing cwd before the shim runs, which reads as a broken runtime, so the shim enters it instead.
+	if opts.Launch != "" {
+		process.Args = launch.Args(opts.Launch, cmp.Or(process.Cwd, "/"), opts.Argv)
+		process.Cwd = "/"
 	}
 	if opts.User == "" {
 		return process, nil

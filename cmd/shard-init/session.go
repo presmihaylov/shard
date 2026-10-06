@@ -285,6 +285,10 @@ func (s *session) finish(exit supervisor.ExitFrame) {
 
 // startFailureCode is the shell's convention, which runsc exec reports the same way: 127 missing, 126 not runnable.
 func startFailureCode(err error) int {
+	// docker exec answers 126 for a work directory it cannot enter, whatever the errno.
+	if _, ok := errors.AsType[*workDirError](err); ok {
+		return 126
+	}
 	if errors.Is(err, fs.ErrNotExist) || errors.Is(err, syscall.ENOENT) {
 		return 127
 	}

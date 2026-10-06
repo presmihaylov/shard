@@ -8,10 +8,12 @@ import (
 	"os"
 	"strings"
 
+	"github.com/presmihaylov/shard/pkg/size"
 	"github.com/presmihaylov/shard/pkg/term"
+	"github.com/presmihaylov/shard/services/datadir"
 )
 
-// Local is what a local setup installs: one provider, and whether a service starts it at boot.
+// Local is what a local setup installs: one provider, whether a service starts it at boot, and the data image it reserves.
 type Local struct {
 	Provider    string
 	StartAtBoot bool
@@ -21,6 +23,10 @@ type Local struct {
 	ReplaceKey bool
 	// keyFound says an earlier setup left a key, which setup keeps unless ReplaceKey.
 	keyFound bool
+	// StorageMiB sizes a new Firecracker data image; zero when setup makes none.
+	StorageMiB int64
+	// avail is the space beside the data image when setup read it, for the review.
+	avail int64
 }
 
 // local is §5 to §10: the provider, automatic startup, preflight, review, and apply; h is what becomes of a saved remote.
@@ -48,6 +54,9 @@ func (s *Setup) local(ctx context.Context, h handover) error {
 		if l, err = s.keyChoice(ctx, l); err != nil {
 			return err
 		}
+	}
+	if l, err = s.storageSize(ctx, l); err != nil {
+		return err
 	}
 	if err := s.review(ctx, l, h.review); err != nil {
 		return err
@@ -157,11 +166,15 @@ func (s *Setup) review(ctx context.Context, l Local, removal string) error {
 	if l.StartAtBoot {
 		startup = "Yes"
 	}
+	lines := []string{"", "Ready to set up shard", "", "Provider:          " + title, "Automatic startup: " + startup}
+	if l.StorageMiB > 0 {
+		lines = append(lines, "Storage:           "+size.Show(l.StorageMiB)+", in "+datadir.ImagePath(DataDir), "Host space left:   "+gib(l.avail-l.StorageMiB<<20))
+	}
 	api := "No"
 	if l.API != "" {
 		api = "http://" + l.API
 	}
-	lines := []string{"", "Ready to set up shard", "", "Provider:          " + title, "Automatic startup: " + startup, "HTTP API:          " + api, "", "Setup will:"}
+	lines = append(lines, "HTTP API:          "+api, "", "Setup will:")
 	if names := missingTools(s.Host, l.Provider).names(); len(names) > 0 {
 		lines = append(lines, fmt.Sprintf("  Install the tools required by %s: %s.", title, strings.Join(names, ", ")))
 	}
@@ -237,7 +250,7 @@ func localDone(h Host, l Local, note []string) []string {
 	}
 	lines = append(lines, "Next steps:", "")
 	if !l.StartAtBoot {
-		lines = append(lines, "  Start the daemon, and run the next steps in another terminal:", "    "+sudo+"shard daemon --provider "+l.Provider, "")
+		lines = append(lines, "  Start the daemon, and run the next steps in another terminal:", "    "+sudo+"shard daemon"+daemonArgs(l.Provider, l.StorageMiB), "")
 	}
 
 	return append(lines, nextSteps(sudo)...)

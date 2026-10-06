@@ -23,6 +23,7 @@ type setupFlags struct {
 	httpAPI     boolChoice
 	listen      string
 	replaceKey  bool
+	storageSize *int64
 	save        bool
 	yes         bool
 }
@@ -64,6 +65,7 @@ func (a App) setup(ctx context.Context, args []string) error {
 	flags.Var(&opts.httpAPI, "http-api", "")
 	flags.StringVar(&opts.listen, "listen", "", "")
 	flags.BoolVar(&opts.replaceKey, "replace-api-key", false, "")
+	flags.Var(optionalMiB{&opts.storageSize}, "storage-size", "")
 	flags.BoolVar(&opts.save, "save", false, "")
 	flags.BoolVar(&opts.yes, "y", false, "")
 	flags.BoolVar(&opts.yes, "yes", false, "")
@@ -85,7 +87,7 @@ func (a App) setup(ctx context.Context, args []string) error {
 	if err := ui.unattended(); err != nil {
 		return err
 	}
-	run := setup.Setup{Host: host, UI: ui}
+	run := setup.Setup{Host: host, UI: ui, StorageMiB: opts.storageSize}
 	// Without a terminal the retry hint must carry the flags, since a re-run cannot ask for them.
 	if !ui.t.Interactive() && len(args) > 0 {
 		run.RetrySuffix = " " + strings.Join(args, " ")
@@ -114,16 +116,16 @@ func setupExit(err error) error {
 
 // wantsLocal is a flag that only local setup takes.
 func (o setupFlags) wantsLocal() bool {
-	return o.local || o.provider != "" || o.startAtBoot.set || o.httpAPI.set || o.listen != "" || o.replaceKey
+	return o.local || o.provider != "" || o.startAtBoot.set || o.storageSize != nil || o.httpAPI.set || o.listen != "" || o.replaceKey
 }
 
 // check refuses a local choice beside a remote one, so neither half guesses which was meant, and an HTTP API option that cannot apply.
 func (o setupFlags) check() error {
 	if o.remote != "" && o.wantsLocal() {
-		return errors.New("--remote cannot go with --local, --provider, --start-at-boot, --http-api, --listen or --replace-api-key; pass --remote to connect to a server, or the others to set up this machine")
+		return errors.New("--remote cannot go with --local, --provider, --start-at-boot, --storage-size, --http-api, --listen or --replace-api-key; pass --remote to connect to a server, or the others to set up this machine")
 	}
 	if o.save && o.wantsLocal() {
-		return errors.New("--save applies only to --remote; drop --save, or drop --local, --provider, --start-at-boot, --http-api, --listen and --replace-api-key")
+		return errors.New("--save applies only to --remote; drop --save, or drop --local, --provider, --start-at-boot, --storage-size, --http-api, --listen and --replace-api-key")
 	}
 	if (o.listen != "" || o.replaceKey) && !o.httpAPI.value {
 		return errors.New("--listen and --replace-api-key apply only to --http-api true")
@@ -266,6 +268,10 @@ func (a *answers) Text(ctx context.Context, q setup.Question, prompt, initial st
 			return initial, nil
 		}
 	}
+	if q == setup.AskStorage && !a.t.Interactive() {
+		// A script that ran setup before the question keeps working: it takes the default, which the review then shows.
+		return initial, a.t.Print(prompt+" "+initial+", the default, since there is no terminal to ask.", "")
+	}
 	answer, err := a.t.Text(ctx, prompt, initial)
 
 	return answer, need(q, err)
@@ -308,6 +314,7 @@ var setupQuestion = map[setup.Question]struct{ ask, flag string }{
 	setup.AskExisting:    {"choose what to do with the existing installation", ""},
 	setup.AskRetry:       {"choose what to do after the failed check", ""},
 	setup.AskSwitch:      {"confirm the removal of the saved connection", ""},
+	setup.AskStorage:     {"choose how much space shard reserves", "--storage-size"},
 }
 
 // need words a question asked without a terminal as the option that answers it.

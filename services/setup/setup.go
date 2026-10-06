@@ -104,6 +104,7 @@ const (
 	AskHTTPAPI     Question = "http-api"
 	AskListen      Question = "listen"
 	AskReplaceKey  Question = "replace-api-key"
+	AskStorage     Question = "storage-size"
 )
 
 // ExistingHTTPAPI is the §11 row that sets up the HTTP API over an installation, which --http-api true picks.
@@ -164,6 +165,8 @@ type Setup struct {
 	UI   UI
 	// RetrySuffix repeats this run's flags in the retry hint, so a no-TTY run that fails can be re-run without a terminal.
 	RetrySuffix string
+	// StorageMiB is --storage-size, which setup checks and refuses whole rather than asking again; nil asks.
+	StorageMiB *int64
 	// step reports progress on the running step; apply sets it per step, and it is nil outside apply.
 	step func(detail ...string) error
 }

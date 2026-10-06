@@ -52,7 +52,8 @@ On a host where `/dev/kvm` does not open, `shard info` prints `gvisor` and says 
 1. Installs the tools that Firecracker needs. When they are absent, it downloads Firecracker 1.17.0 and its jailer into `/usr/local/bin`. It keeps an existing `firecracker` of 1.13.0 or newer, and refuses an older one.
 2. Installs `shard` and `shard-init` in `/usr/local/bin`.
 3. Creates the data directory `/var/lib/shard`.
-4. With `--start-at-boot=true`, installs the systemd unit `/etc/systemd/system/shard.service`, starts the daemon, and checks that it answers.
+4. On a filesystem that cannot clone a disk, asks how much space to reserve for sandbox disks. See [The data directory](#the-data-directory).
+5. With `--start-at-boot=true`, installs the systemd unit `/etc/systemd/system/shard.service`, starts the daemon, and checks that it answers.
 
 [Quickstart: server](/docs/quickstart/server/) covers the wizard, the service and how to run the daemon in a terminal.
 
@@ -65,7 +66,17 @@ The daemon prepares Firecracker the first time it needs it. It checks the versio
 
 `pause`, `fork` and a create from a snapshot copy a sandbox's disk and memory files. To keep those copies fast, Firecracker needs a filesystem that clones a file by sharing its blocks: XFS or Btrfs.
 
-On any other filesystem, the daemon makes an XFS image at `/var/lib/shard.xfs` when it first starts. The image takes half the free space beside it, at least 10 GiB and at most 100 GiB. The daemon mounts it over `/var/lib/shard` and adds a line to `/etc/fstab`, so the mount comes back after a reboot. That is why setup needs 20 GiB free there, and an empty `/var/lib/shard`.
+On any other filesystem, the daemon makes an XFS image at `/var/lib/shard.xfs` when it first starts. The daemon mounts it over `/var/lib/shard` and adds a line to `/etc/fstab`, so the mount comes back after a reboot.
+
+Setup shows the total, used and available space of that filesystem, and asks how much space shard should reserve. The default is half the available space, at most 100 GiB. The answer takes the units of `shard create --disk`: KiB, MiB, GiB, KB, MB or GB. The image takes the whole size at once, when the daemon first starts, so the host cannot use that space for anything else. Each sandbox has a 10 GiB disk limit by default, and `shard create --disk` sets a smaller one.
+
+The image is at least 10 GiB, and shard keeps 10 GiB of the filesystem free for the host. That is why setup needs 20 GiB free there, and an empty `/var/lib/shard`. Setup checks the size before it changes anything, and checks the space again just before the daemon starts. A script passes the size with `--storage-size`:
+
+```sh
+shard setup --local --provider firecracker --start-at-boot=true --storage-size 50GiB -y
+```
+
+Without a terminal and without `--storage-size`, setup takes the default and prints it. On XFS or Btrfs, and with every other provider, setup refuses `--storage-size`, because nothing reserves space there. Setup shows the size of an existing image and never resizes it. To change it, uninstall shard, remove the image, and run setup again.
 
 The jailer makes `/dev/kvm` in each VM's jail under `/var/lib/shard` and starts the VM from there. So `/var/lib/shard` must not be on a mount with `nodev` or `noexec`.
 
@@ -145,6 +156,7 @@ Set both variables. With only one, the daemon fails when it prepares Firecracker
 
 - **`Firecracker requires access to /dev/kvm.`** The host has no KVM. Use a bare-metal server, or set up this host with `--provider gvisor`.
 - **`Firecracker needs /var/lib/shard on XFS or Btrfs, or 20.0 GiB free beside it for an XFS image.`** Free space on that filesystem, or put `/var/lib/shard` on XFS or Btrfs.
+- **`only 60.0 GiB is available, and shard keeps 10 GiB of it for the host, so the most it can reserve is 50 GiB`** Choose a smaller storage size, or free space on that filesystem.
 - **`Firecracker mounts an XFS image over /var/lib/shard, so it must be empty on a filesystem that cannot clone a disk.`** Move the files in `/var/lib/shard` aside, then run setup again.
 - **`shard needs 1.13.0 or newer`.** An older `firecracker` is on the host. Remove it so setup installs one, or replace it.
 - **`Firecracker cannot run its jailer under /var/lib/shard.`** Its filesystem is mounted with `nodev` or `noexec`. Remount it without those options.

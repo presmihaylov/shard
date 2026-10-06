@@ -49,5 +49,5 @@ func LocalDaemon(h Host) (Daemon, error) {
 		return Daemon{Hint: "is it set up? shard setup", Log: foregroundLog}, nil
 	}
 
-	return Daemon{Hint: "is it running? " + socketSudo(h) + "shard daemon --provider " + m.Provider, Log: foregroundLog}, nil
+	return Daemon{Hint: "is it running? " + socketSudo(h) + "shard daemon" + daemonArgs(m.Provider, m.StorageMiB), Log: foregroundLog}, nil
 }
