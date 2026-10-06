@@ -200,7 +200,7 @@ func (p *Provider) bringUp(ctx context.Context, spec models.SandboxSpec, exitFil
 	defer func() { err = errors.Join(err, exit.Close()) }()
 
 	// A teardown rmdirs the sandbox's own cgroup, so its parent must exist and be shard's, never the host cgroup root.
-	if err := cgroup.Ensure(filepath.Join(p.cgroupRoot, bundle.CgroupParent)); err != nil {
+	if err := cgroup.EnsureParent(filepath.Join(p.cgroupRoot, bundle.CgroupParent)); err != nil {
 		return err
 	}
 

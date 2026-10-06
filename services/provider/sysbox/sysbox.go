@@ -153,8 +153,8 @@ func (p *Provider) create(ctx context.Context, spec models.SandboxSpec, b bundle
 		return err
 	}
 
-	// runc makes the shard parent at 0755 only when it is missing, so one a gVisor or Firecracker daemon made earlier is opened here.
-	if err := cgroup.Ensure(filepath.Join(p.cgroupRoot, bundle.CgroupParent)); err != nil {
+	// runc makes the shard parent at 0755 only when it is missing, so one an older daemon made at 0750 is opened here.
+	if err := cgroup.EnsureParent(filepath.Join(p.cgroupRoot, bundle.CgroupParent)); err != nil {
 		return errors.Join(err, exit.Close())
 	}
 
