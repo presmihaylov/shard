@@ -70,7 +70,11 @@ func (a App) exec(ctx context.Context, args []string) error {
 		streams.Stdin = a.stdin()
 	}
 
-	status, err := a.runExec(ctx, opts, req, streams)
+	return exitOf(a.runExec(ctx, opts, req, streams))
+}
+
+// exitOf is the verb's answer to a command's end: its exit code, or why it never ran or lost its output.
+func exitOf(status models.ExitStatus, err error) error {
 	// A gap in the output fails the verb even when the command passed, so a caller never takes a cut stream as whole.
 	var lost *client.LostOutputError
 	if errors.As(err, &lost) {
@@ -97,12 +101,12 @@ func (a App) runExec(ctx context.Context, opts execOptions, req sandbox.ExecRequ
 		return c.Exec(ctx, opts.id, req, streams)
 	}
 
-	return a.execOnTerminal(ctx, c, opts, req, streams)
+	return a.execOnTerminal(ctx, c, opts.id, req, streams)
 }
 
 // execOnTerminal puts this terminal into raw mode, so a keystroke reaches the guest untouched. The
 // guest's own terminal is the daemon's. The restore runs on every path out of here, a panic included.
-func (a App) execOnTerminal(ctx context.Context, c *client.Client, opts execOptions, req sandbox.ExecRequest, streams client.ExecStreams) (status models.ExitStatus, err error) {
+func (a App) execOnTerminal(ctx context.Context, c *client.Client, ref string, req sandbox.ExecRequest, streams client.ExecStreams) (status models.ExitStatus, err error) {
 	terminal := a.stdin()
 
 	size, err := pty.SizeOf(terminal)
@@ -117,11 +121,11 @@ func (a App) execOnTerminal(ctx context.Context, c *client.Client, opts execOpti
 	}
 	defer func() { err = errors.Join(err, restore()) }()
 
-	forwarder := forwardResize(ctx, a, c, opts.id, terminal)
+	forwarder := forwardResize(ctx, a, c, ref, terminal)
 	defer forwarder.stop()
 	streams.Started = forwarder.named
 
-	return c.Exec(ctx, opts.id, req, streams)
+	return c.Exec(ctx, ref, req, streams)
 }
 
 // resizes keeps the guest's window the size of this one. A SIGWINCH reaches the exec only once the
@@ -215,17 +219,27 @@ func (r *resizes) stop() {
 // shellCode answers a command that never ran the way a shell does, because runsc reports every one
 // of those as its own 128, which nothing outside runsc means anything by.
 func shellCode(err error) error {
-	var refused *client.APIError
-	if errors.As(err, &refused) && refused.Code == models.CodeCommandNotStarted {
-		return &ExitError{Code: refused.ExitCode, Message: refused.Message}
-	}
-
-	var notStarted *models.CommandNotStartedError
-	if !errors.As(err, &notStarted) {
+	code, message, ok := notStarted(err)
+	if !ok {
 		return err
 	}
 
-	return &ExitError{Code: notStarted.Code, Message: notStarted.Error()}
+	return &ExitError{Code: code, Message: message}
+}
+
+// notStarted reads a command that never ran from either side of the socket: a refused create or an attach that ended so.
+func notStarted(err error) (int, string, bool) {
+	var refused *client.APIError
+	if errors.As(err, &refused) && refused.Code == models.CodeCommandNotStarted {
+		return refused.ExitCode, refused.Message, true
+	}
+
+	var never *models.CommandNotStartedError
+	if !errors.As(err, &never) {
+		return 0, "", false
+	}
+
+	return never.Code, never.Error(), true
 }
 
 // Go stops at the sandbox reference, so guest arguments never reach the flag parser.

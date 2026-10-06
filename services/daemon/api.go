@@ -20,6 +20,7 @@ import (
 	"github.com/presmihaylov/shard/pkg/dns"
 	"github.com/presmihaylov/shard/pkg/kmsg"
 	"github.com/presmihaylov/shard/pkg/proxy"
+	"github.com/presmihaylov/shard/pkg/size"
 	"github.com/presmihaylov/shard/services/api"
 	"github.com/presmihaylov/shard/services/broker"
 	"github.com/presmihaylov/shard/services/datadir"
@@ -47,6 +48,20 @@ type Config struct {
 	Provider string
 	// LogPath is the file a Mac daemon writes its output to and reopens on SIGHUP, so newsyslog can rotate it.
 	LogPath string
+	// StorageMiB sizes a new Firecracker data image; nil sizes it by the free space.
+	StorageMiB *int64
+}
+
+// checkStorage is the data image size a daemon was given, zero when none, held to the minimum before anything is written.
+func checkStorage(given *int64) (int64, error) {
+	if given == nil {
+		return 0, nil
+	}
+	if *given < datadir.MinImageMiB {
+		return 0, fmt.Errorf("a storage size of %s is below the minimum of %s", size.Show(*given), size.Show(datadir.MinImageMiB))
+	}
+
+	return *given, nil
 }
 
 // Run supervises the daemon's tasks over one root until ctx ends.
@@ -64,6 +79,11 @@ func Run(ctx context.Context, cfg Config) error {
 		extra = append(extra, logReopen{path: cfg.LogPath, limit: logCap, interval: logCapInterval, hangups: hangups, out: cfg.Out, reopen: openLog})
 	}
 
+	storageMiB, err := checkStorage(cfg.StorageMiB)
+	if err != nil {
+		return err
+	}
+
 	// The substrate is settled once, here, so no later caller probes the host again and gets another answer.
 	selected, err := SelectProvider(cfg.Provider, cfg.Root)
 	if err != nil {
@@ -78,7 +98,7 @@ func Run(ctx context.Context, cfg Config) error {
 	d := &deps{cfg: cfg}
 	// Before the lock: the lock file would be the first entry the xfs mount hides. The reflink probe writes a file under the root.
 	err = d.reserve().retry("the data dir check", func() error {
-		return datadir.Ensure(ctx, datadir.Config{Dir: cfg.Root, Provider: d.providerName(), Out: cfg.Out})
+		return datadir.Ensure(ctx, datadir.Config{Dir: cfg.Root, Provider: d.providerName(), ImageMiB: storageMiB, Out: cfg.Out})
 	})
 	if err != nil {
 		return err

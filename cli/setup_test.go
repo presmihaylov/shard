@@ -20,9 +20,14 @@ func TestSetupRefusesWhatItCannotRun(t *testing.T) {
 		want string
 	}{
 		{[]string{"setup", "now"}, "setup takes no arguments"},
-		{[]string{"setup", "--remote", "https://shard.example.com", "--provider", "gvisor"}, "--remote cannot go with --local, --provider or --start-at-boot"},
-		{[]string{"setup", "--remote", "https://shard.example.com", "--local"}, "--remote cannot go with --local, --provider or --start-at-boot"},
+		{[]string{"setup", "--remote", "https://shard.example.com", "--provider", "gvisor"}, "--remote cannot go with --local, --provider, --start-at-boot or --storage-size"},
+		{[]string{"setup", "--remote", "https://shard.example.com", "--local"}, "--remote cannot go with --local, --provider, --start-at-boot or --storage-size"},
+		{[]string{"setup", "--remote", "https://shard.example.com", "--storage-size", "50GiB"}, "--remote cannot go with --local, --provider, --start-at-boot or --storage-size"},
 		{[]string{"setup", "--save", "--start-at-boot=false"}, "--save applies only to --remote"},
+		{[]string{"setup", "--save", "--storage-size", "50GiB"}, "drop --local, --provider, --start-at-boot and --storage-size"},
+		{[]string{"setup", "--storage-size", "50XB"}, `invalid value "50XB" for --storage-size: unknown unit "XB"; want KiB, MiB, GiB, KB, MB or GB`},
+		{[]string{"setup", "--storage-size", "1.5GiB"}, "want a whole number; a fraction is never rounded"},
+		{[]string{"setup", "--storage-size", "50"}, "want a unit, such as 50MiB or 2GiB"},
 		{[]string{"setup", "--start-at-boot=yes"}, "want true or false"},
 	} {
 		err := (&App{Version: "test", Root: t.TempDir(), Out: &bytes.Buffer{}}).run(t.Context(), tc.args)
@@ -106,10 +111,21 @@ func TestWithoutATerminalTheErrorNamesWhatAnswers(t *testing.T) {
 	}
 }
 
+func TestWithoutATerminalTheStorageSizeIsTheDefault(t *testing.T) {
+	ui, out := noTerminalOut(t, setupFlags{})
+	got, err := ui.Text(t.Context(), setup.AskStorage, "How much space should shard reserve?", "50GiB")
+	if got != "50GiB" || err != nil {
+		t.Fatalf("got %q, %v; want the default 50GiB", got, err)
+	}
+	if want := "How much space should shard reserve? 50GiB, the default, since there is no terminal to ask."; !strings.Contains(out.String(), want) {
+		t.Errorf("printed %q, want %q", out.String(), want)
+	}
+}
+
 func TestEveryQuestionIsWorded(t *testing.T) {
 	for _, q := range []setup.Question{
 		setup.AskMode, setup.AskProvider, setup.AskStartAtBoot, setup.AskConfirm, setup.AskURL, setup.AskHTTP,
-		setup.AskAPIKey, setup.AskSave, setup.AskSaved, setup.AskExisting, setup.AskRetry, setup.AskSwitch,
+		setup.AskAPIKey, setup.AskSave, setup.AskSaved, setup.AskExisting, setup.AskRetry, setup.AskSwitch, setup.AskStorage,
 	} {
 		if setupQuestion[q].ask == "" {
 			t.Errorf("question %s has no wording", q)
@@ -119,6 +135,7 @@ func TestEveryQuestionIsWorded(t *testing.T) {
 
 func TestALocalRunWithoutATerminalRefusesBeforeAnyCheck(t *testing.T) {
 	boot := boolChoice{set: true, value: true}
+	fifty := int64(50 << 10)
 	for _, tc := range []struct {
 		opts setupFlags
 		want string
@@ -127,6 +144,7 @@ func TestALocalRunWithoutATerminalRefusesBeforeAnyCheck(t *testing.T) {
 		{setupFlags{provider: "gvisor", startAtBoot: boot}, "no terminal to confirm the changes: pass -y"},
 		{setupFlags{local: true, startAtBoot: boot, yes: true}, "no terminal to choose a provider: pass --provider"},
 		{setupFlags{provider: "gvisor", startAtBoot: boot, yes: true}, ""},
+		{setupFlags{storageSize: &fifty}, "no terminal to choose a provider, choose whether shard starts at boot and confirm the changes: pass --provider, --start-at-boot and -y"},
 		{setupFlags{remote: "https://shard.example.com"}, ""},
 		{setupFlags{}, ""},
 	} {

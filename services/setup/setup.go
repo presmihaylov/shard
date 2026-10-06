@@ -97,6 +97,7 @@ const (
 	AskExisting    Question = "existing"
 	AskRetry       Question = "retry"
 	AskSwitch      Question = "switch"
+	AskStorage     Question = "storage-size"
 )
 
 // UI is where every answer comes from and every line goes: a person at a terminal, the flags, or a test.
@@ -154,6 +155,8 @@ type Setup struct {
 	UI   UI
 	// RetrySuffix repeats this run's flags in the retry hint, so a no-TTY run that fails can be re-run without a terminal.
 	RetrySuffix string
+	// StorageMiB is --storage-size, which setup checks and refuses whole rather than asking again; nil asks.
+	StorageMiB *int64
 	// step reports progress on the running step; apply sets it per step, and it is nil outside apply.
 	step func(detail ...string) error
 }
