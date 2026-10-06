@@ -36,6 +36,7 @@ shard is pre-alpha, so a release can change the API, the CLI and the SDKs withou
 - On Linux, when the daemon fails at start, setup and repair stop after about 6 seconds, not 2 minutes. They print `The daemon failed to start:` with the daemon's error, then `Read its log with: sudo journalctl -u shard.service`.
 - When a daemon task keeps failing (3 or more restarts), setup stops its wait after about 3 seconds. It prints `The daemon started, but these tasks keep failing:`, then each task with its last error.
 - When the GitHub API rate limit for your IP address is spent, setup says so and gives the local time when it resets, or says to try again within an hour. The installer prints the reset time too. Setup now downloads its files from the release download URLs, which have no rate limit, so only the check for a newer release uses the API.
+- `shard setup` on an installation that setup did not make still changes nothing, and now exits 1, so a script can tell that refusal from a successful setup. Before, it exited 0.
 
 **Uninstall**
 
@@ -74,8 +75,10 @@ shard is pre-alpha, so a release can change the API, the CLI and the SDKs withou
 - Firecracker and vz: a sandbox makes its work directory at start, so `shard create --workdir /work` works. Before, every exec then failed with `no such file or directory`.
 - Firecracker and vz: `shard exec -it` sends every key to the guest, so Ctrl-C, Tab, the arrow keys and Ctrl-R work, and each line no longer shows twice. The exit no longer waits 2 seconds.
 - Firecracker and vz: an exec of a command that no `PATH` entry holds exits 127, as on gVisor.
+- Firecracker and vz: a stop of a fork's source no longer fails with a lost lifecycle state when the guest closed its control stream during the thaw. shard now connects again and asks the guest whether it is still frozen.
 - An exec with no `--user` no longer waits 20 seconds when a process in the sandbox replaces `/etc/passwd` with a fifo. gVisor refuses a `/etc/passwd` that is not a regular file. On runc and Sysbox, their own init still opens the file, so such an exec can still wait up to 20 seconds.
 - gVisor: `shard exec --workdir` with a file exits 126 with `the work directory "/etc/hosts" is not a directory`, as runc and Sysbox do. Before, the command ran.
+- gVisor: `shard exec -it` and `shard shell` run the command on a terminal in the guest, so `tty` names it, and Ctrl-C and job control work. Before, the command got the host's terminal and `tty` said `not a tty`. On every provider, a terminal exec with no `TERM` now gets `TERM=xterm`.
 - Sysbox: Docker inside a sandbox failed with `permission denied` when it mounted its cgroups, once a gVisor or Firecracker daemon had made `/sys/fs/cgroup/shard` with mode `0750`. shard now makes that directory `0755`, and a Sysbox create or start sets an existing one back to `0755`.
 
 **Site**
