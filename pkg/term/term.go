@@ -186,7 +186,7 @@ func step(options []Option, at, by int) int {
 }
 
 func (t *Terminal) selectLines(title string, options []Option, at int) []string {
-	lines := []string{title, ""}
+	lines := append(strings.Split(title, "\n"), "")
 	described := false
 	for _, o := range options {
 		described = described || len(o.Lines)+len(o.Unavailable) > 0
@@ -289,7 +289,8 @@ func (t *Terminal) line(ctx context.Context, prompt, initial string, masked bool
 
 	value := []byte(initial)
 	var drawn strings.Builder
-	drawn.WriteString(prompt + "\r\n> ")
+	// Raw mode turns no "\n" into a carriage return, so a prompt of several lines would stair-step.
+	drawn.WriteString(strings.ReplaceAll(prompt, "\n", "\r\n") + "\r\n> ")
 	for _, b := range value {
 		drawn.WriteString(shown(b, masked))
 	}

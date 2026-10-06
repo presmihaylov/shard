@@ -17,11 +17,11 @@ The daemon answers `201` with the [Sandbox](/docs/reference/api/sandboxes/#sandb
 
 On the host, the daemon listens on a unix socket, `/var/lib/shard/shard.sock` by default, and never on TCP. The socket needs no token, and a request on it can do anything. If the host has a `shard` group, its members can open the socket without root.
 
-From another host, you reach the API through `shard serve`. It listens on `127.0.0.1:2376` by default, checks each request's token, then passes the request to the socket. Put a proxy that terminates TLS in front of it. Mint a token on the host, then send it in the `Authorization` header:
+From another host, you reach the API through `shard serve`. It listens on `127.0.0.1:7850` by default, checks each request's token, then passes the request to the socket. Put a proxy that terminates TLS in front of it. Mint a token on the host, then send it in the `Authorization` header:
 
 ```sh
 export SHARD_API_KEY=$(shard tokens mint --name ci --scopes sandbox:read,exec | jq -r .token)
-curl -H "Authorization: Bearer $SHARD_API_KEY" http://127.0.0.1:2376/v0/sandboxes
+curl -H "Authorization: Bearer $SHARD_API_KEY" http://127.0.0.1:7850/v0/sandboxes
 ```
 
 A client on another host sends the same header to the proxy.

@@ -15,6 +15,12 @@ import (
 type Local struct {
 	Provider    string
 	StartAtBoot bool
+	// API is the address the HTTP API listens on, empty for local connections only.
+	API string
+	// ReplaceKey mints a new API key over the one already in the key file.
+	ReplaceKey bool
+	// keyFound says an earlier setup left a key, which setup keeps unless ReplaceKey.
+	keyFound bool
 }
 
 // local is §5 to §10: the provider, automatic startup, preflight, review, and apply; h is what becomes of a saved remote.
@@ -27,9 +33,21 @@ func (s *Setup) local(ctx context.Context, h handover) error {
 	if err != nil {
 		return err
 	}
-	l, err := s.checked(ctx, Local{Provider: provider, StartAtBoot: startAtBoot})
+	api := ""
+	// The HTTP API is a background service, so it needs the daemon's.
+	if startAtBoot {
+		if api, err = s.askAPI(ctx); err != nil {
+			return err
+		}
+	}
+	l, err := s.checked(ctx, Local{Provider: provider, StartAtBoot: startAtBoot, API: api})
 	if err != nil {
 		return err
+	}
+	if l.API != "" {
+		if l, err = s.keyChoice(ctx, l); err != nil {
+			return err
+		}
 	}
 	if err := s.review(ctx, l, h.review); err != nil {
 		return err
@@ -139,7 +157,11 @@ func (s *Setup) review(ctx context.Context, l Local, removal string) error {
 	if l.StartAtBoot {
 		startup = "Yes"
 	}
-	lines := []string{"", "Ready to set up shard", "", "Provider:          " + title, "Automatic startup: " + startup, "", "Setup will:"}
+	api := "No"
+	if l.API != "" {
+		api = "http://" + l.API
+	}
+	lines := []string{"", "Ready to set up shard", "", "Provider:          " + title, "Automatic startup: " + startup, "HTTP API:          " + api, "", "Setup will:"}
 	if names := missingTools(s.Host, l.Provider).names(); len(names) > 0 {
 		lines = append(lines, fmt.Sprintf("  Install the tools required by %s: %s.", title, strings.Join(names, ", ")))
 	}
@@ -154,10 +176,18 @@ func (s *Setup) review(ctx context.Context, l Local, removal string) error {
 		return fmt.Errorf("check %s: %w", DataDir, err)
 	}
 	lines = append(lines, startupLine(s.Host, l))
+	var notes []string
+	if l.API != "" {
+		will, apiNotes, err := apiReview(ctx, s.Host, l)
+		if err != nil {
+			return err
+		}
+		lines, notes = append(lines, will...), append([]string{""}, apiNotes...)
+	}
 	if removal != "" {
 		lines = append(lines, removal)
 	}
-	lines = append(lines, "", "Administrator access is required.", "")
+	lines = append(append(lines, notes...), "", "Administrator access is required.", "")
 	if err := s.UI.Print(lines...); err != nil {
 		return err
 	}
@@ -201,6 +231,9 @@ func localDone(h Host, l Local, note []string) []string {
 	}
 	if len(note) > 0 {
 		lines = append(append(lines, note...), "")
+	}
+	if l.API != "" {
+		lines = append(lines, apiDone(h, l)...)
 	}
 	lines = append(lines, "Next steps:", "")
 	if !l.StartAtBoot {

@@ -296,7 +296,7 @@ func TestAKeyTheFrontDoesNotHonourIsRefusedByTheFront(t *testing.T) {
 func TestServeRefusesAnArgument(t *testing.T) {
 	app := App{Version: "test", Root: t.TempDir(), Out: io.Discard}
 
-	if err := app.serve(t.Context(), []string{"127.0.0.1:2376"}); err == nil {
+	if err := app.serve(t.Context(), []string{"127.0.0.1:7850"}); err == nil {
 		t.Error("serve took an argument")
 	}
 }

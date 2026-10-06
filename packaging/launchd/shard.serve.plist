@@ -1,0 +1,34 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!-- shard serve is the network-facing process, off unless it is installed on purpose. The LaunchDaemon mirror of packaging/systemd/shard-serve.service. -->
+<plist version="1.0">
+<dict>
+	<key>Label</key>
+	<string>shard.serve</string>
+	<!-- Plain HTTP; a proxy on this host gives clients HTTPS (https://useshards.com/docs/guides/remote/#3-put-https-in-front). Setup puts the address in. -->
+	<key>ProgramArguments</key>
+	<array>
+		<string>/usr/local/bin/shard</string>
+		<string>serve</string>
+		<string>--listen</string>
+		<string>127.0.0.1:7850</string>
+	</array>
+	<!-- The daemon's own user, who owns its socket and the signing key under /var/lib/shard/auth. -->
+	<key>UserName</key>
+	<string>__USER__</string>
+	<!-- launchd has no BindsTo=: this front runs while the daemon is stopped, and every request fails until it is back. -->
+	<key>RunAtLoad</key>
+	<true/>
+	<key>KeepAlive</key>
+	<dict>
+		<key>SuccessfulExit</key>
+		<false/>
+	</dict>
+	<key>ThrottleInterval</key>
+	<integer>1</integer>
+	<key>StandardOutPath</key>
+	<string>/var/log/shard/serve.log</string>
+	<key>StandardErrorPath</key>
+	<string>/var/log/shard/serve.log</string>
+</dict>
+</plist>

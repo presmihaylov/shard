@@ -78,7 +78,15 @@ func (s *Setup) preflight(ctx context.Context, l Local) (*finding, error) {
 	if l.StartAtBoot {
 		checks = append(checks, check{"Background service support", serviceSupport})
 	}
+	if l.API != "" {
+		checks = append(checks, check{apiCheckTitle, apiCheck})
+	}
 
+	return s.runChecks(ctx, checks, l)
+}
+
+// runChecks shows checks as a checklist and stops at the first failure, which it returns.
+func (s *Setup) runChecks(ctx context.Context, checks []check, l Local) (*finding, error) {
 	titles := make([]string, 0, len(checks))
 	for _, c := range checks {
 		titles = append(titles, c.title)
@@ -218,7 +226,7 @@ func terminal(h Host) bool {
 // installPaths refuses a place a person other than root could change what the root daemon runs or keeps.
 func installPaths(_ context.Context, h Host, _ Local) *finding {
 	if h.OS == "linux" {
-		if f := rootOnly(h, binDir); f != nil {
+		if f := rootOnly(h, binDir, "the root daemon runs shard from it"); f != nil {
 			return f
 		}
 	}
@@ -250,7 +258,7 @@ func installPaths(_ context.Context, h Host, _ Local) *finding {
 	return nil
 }
 
-func rootOnly(h Host, dir string) *finding {
+func rootOnly(h Host, dir, why string) *finding {
 	info, err := os.Stat(rooted(h, dir))
 	if errors.Is(err, fs.ErrNotExist) {
 		return nil
@@ -263,7 +271,7 @@ func rootOnly(h Host, dir string) *finding {
 	}
 	if owner(info) != rootUID || info.Mode().Perm()&0o022 != 0 {
 		return failed(
-			dir+" can be changed by a user other than root, and the root daemon runs shard from it.",
+			dir+" can be changed by a user other than root, and "+why+".",
 			"Make root its owner and remove group and other write access, then run shard setup again.",
 		)
 	}

@@ -6,6 +6,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"net"
 	"net/http"
 	"os"
 	"os/exec"
@@ -38,6 +39,8 @@ type Host struct {
 	Run func(ctx context.Context, name string, args ...string) ([]byte, error)
 	// LookPath finds a command on PATH, so a hint knows whether shard is reachable by name yet.
 	LookPath func(string) (string, error)
+	// Listen binds an address, so the HTTP API check finds a taken port before any change.
+	Listen func(network, address string) (net.Listener, error)
 }
 
 // releases is where setup looks up and downloads a shard release.
@@ -64,6 +67,7 @@ func NewHost(version string) (Host, error) {
 			return exec.CommandContext(ctx, name, args...).CombinedOutput()
 		},
 		LookPath: exec.LookPath,
+		Listen:   net.Listen,
 	}, nil
 }
 
@@ -97,7 +101,13 @@ const (
 	AskExisting    Question = "existing"
 	AskRetry       Question = "retry"
 	AskSwitch      Question = "switch"
+	AskHTTPAPI     Question = "http-api"
+	AskListen      Question = "listen"
+	AskReplaceKey  Question = "replace-api-key"
 )
+
+// ExistingHTTPAPI is the §11 row that sets up the HTTP API over an installation, which --http-api true picks.
+const ExistingHTTPAPI = "http-api"
 
 // UI is where every answer comes from and every line goes: a person at a terminal, the flags, or a test.
 type UI interface {

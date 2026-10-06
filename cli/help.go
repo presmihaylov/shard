@@ -584,11 +584,24 @@ var helps = map[string]verbHelp{
 			{"--remote <url>", "connect to a remote shard server", ""},
 			{"--provider <name>", "firecracker, gvisor, sysbox, runc or vz", ""},
 			{"--start-at-boot <true|false>", "start the daemon at boot", ""},
+			{"--http-api <true|false>", "set up the HTTP API as a background service", "false"},
+			{"--listen <address>", "address of the HTTP API", serve.DefaultListen},
+			{"--replace-api-key", "replace the existing API key of the HTTP API", ""},
 			{"--save", "save the remote connection", ""},
 			{"-y, --yes", "apply changes without confirmation", ""},
 		},
 		notes: []note{
 			{title: "Remote authentication", lines: []string{"Set " + client.APIKeyEnv + ". Do not pass the key as a command argument."}},
+			{title: "HTTP API", lines: []string{
+				"The HTTP API serves plain HTTP. Setup does not configure HTTPS.",
+				serve.DefaultListen + " accepts connections only from this machine.",
+				"Reach it through an SSH tunnel or an HTTPS proxy.",
+				"A VPN address permits direct access through that private network.",
+				"Setup saves the API key in a protected file and shows the file, not the key.",
+				"A repeated setup keeps the key. Pass --replace-api-key to replace it.",
+				"On an existing installation, --http-api true sets up or changes the HTTP API.",
+				"API requests fail when the daemon is stopped.",
+			}},
 			{title: "Exit codes", rows: []row{
 				{"0", "setup finished, or there was nothing to do"},
 				{"1", "a check or a step failed, an option was refused, or the confirmation was declined"},
@@ -598,6 +611,7 @@ var helps = map[string]verbHelp{
 		examples: []string{
 			"shard setup",
 			"shard setup --local --provider gvisor --start-at-boot=true -y",
+			"shard setup --local --provider gvisor --http-api=true --listen 100.64.0.5:7850 -y",
 			"shard setup --remote https://shard.example.com --save -y",
 		},
 		spaced: true,

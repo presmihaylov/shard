@@ -33,12 +33,13 @@ Setup runs as you and uses `sudo` for the steps that need root. An Intel Mac can
 
 ## Run the wizard
 
-Run `shard setup` with no options, or answer `Y` when the installer asks `Start the setup wizard?`. The wizard asks four things:
+Run `shard setup` with no options, or answer `Y` when the installer asks `Start the setup wizard?`. The wizard asks five things:
 
 1. **How do you want to use shard?** Choose `Run sandboxes on this machine`.
 2. **Choose how shard isolates your sandboxes:** The wizard lists all five providers. It marks each provider this host cannot run as unavailable and says why. It recommends macOS Virtualization on a supported Mac, Firecracker on Linux with `/dev/kvm`, and gVisor on other Linux hosts.
 3. **Start shard automatically when this machine starts?** `Yes (recommended)` installs a service that starts the daemon at boot and restarts it after a crash.
-4. **Continue?** Setup first checks the host and shows every change. Nothing changes until you answer.
+4. **Set up the HTTP API?** `No`, the default, keeps the API on this machine. `Yes` asks for a listen address, then runs `shard serve` as a background service with an API key. The wizard asks only after `Yes` to automatic startup. See [How to connect to a remote host?](/docs/guides/remote/).
+5. **Continue?** Setup first checks the host and shows every change. Nothing changes until you answer.
 
 Before it asks to continue, setup checks the operating system, the provider's requirements, administrator access, the install paths, disk space, download access, any earlier installation and the service manager. A failed check changes nothing. When a provider fails its own checks, setup asks you to choose another provider or exit. It never swaps one in for you.
 
@@ -49,6 +50,7 @@ Ready to set up shard
 
 Provider:          gVisor
 Automatic startup: Yes
+HTTP API:          No
 
 Setup will:
   Install the tools required by gVisor: runsc.
@@ -107,7 +109,7 @@ shard setup --local --provider firecracker --start-at-boot=true -y
 
 `--provider` and `--start-at-boot` also answer the first question, so a run with either one needs no `--local`.
 
-Without a terminal, every question needs its option, and setup never picks a value for you. A local run with options missing fails before any check runs, and names them all at once:
+`--http-api=true` sets up the HTTP API, and `--listen` names its address. Without `--http-api`, a run with no terminal leaves the HTTP API off, as the wizard's default does. Without a terminal, every other question needs its option, and setup never picks a value for you. A local run with options missing fails before any check runs, and names them all at once:
 
 ```text
 no terminal to choose a provider, choose whether shard starts at boot and confirm the changes: pass --provider, --start-at-boot and -y
@@ -117,5 +119,5 @@ no terminal to choose a provider, choose whether shard starts at boot and confir
 
 ## Next steps
 
-- Setup never exposes the API. To reach the daemon from other machines, use `shard serve`, a separate process that checks a bearer token and passes each request to the daemon. See [How to connect to a remote host?](/docs/guides/remote/).
+- Setup exposes the API only when you choose the HTTP API. It then runs `shard serve`, a separate process that checks a bearer token and passes each request to the daemon. To reach the daemon from other machines, see [How to connect to a remote host?](/docs/guides/remote/).
 - To check, repair, upgrade or uninstall shard, run `shard setup` again on the same host. See [Install](/docs/install/).

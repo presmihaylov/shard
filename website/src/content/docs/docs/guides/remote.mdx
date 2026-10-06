@@ -57,7 +57,7 @@ with Shard(remote="https://shard.example.com") as shard:
 
 `shard setup --remote` checks that it can reach the server, that the server accepts the key, and which verbs the server supports. With `--save`, it saves the connection, so later commands need no variables.
 
-The server needs three things before a client can connect: a daemon, `shard serve`, and an HTTPS proxy in front of it. The steps below set them up on a Linux host with systemd.
+The server needs three things before a client can connect: a daemon, `shard serve`, and an HTTPS proxy or a tunnel in front of it. The steps below set them up on a Linux host with systemd.
 
 ## 1. Set up the daemon
 
@@ -67,13 +67,33 @@ Set up the host to run sandboxes, as in [Quickstart: server](/docs/quickstart/se
 shard setup --local --provider gvisor --start-at-boot=true -y
 ```
 
-The daemon listens on a unix socket on the host, never on TCP. Setup does not expose it to the network.
+The daemon listens on a unix socket on the host, never on TCP. This step does not expose it to the network.
 
-## 2. Start shard serve
+## 2. Set up the HTTP API
 
-`shard serve` is the only way in from the network. It is a separate process that does not run as root. It checks the token of each request, then passes the request to the daemon's socket. It speaks plain HTTP on `127.0.0.1:2376`, so only a proxy on the same host can reach it.
+`shard serve` is the HTTP API, and the only way in from the network. It is a separate process that does not run as root. It checks the key of each request, then passes the request to the daemon's socket. Setup runs it as a background service:
 
-Each release ships a systemd unit for it. Run these commands on the server:
+```sh
+shard setup --local --provider gvisor --http-api=true -y
+```
+
+On a host that setup already set up, this changes only the HTTP API, the **Set up the HTTP API** row of the existing installation. On a new host, it sets up the daemon too, so step 1 is optional. Without `-y`, setup asks **Set up the HTTP API?** after the daemon startup question.
+
+Setup checks the address, the port, the permissions and the service manager before it changes anything, and shows the configuration first. Then it creates the `shard` account, the token signing key and an API key, and starts the service. The service starts at boot after the daemon, stops with it, and starts again with it. API requests fail while the daemon is stopped. Last, setup sends an authenticated request to prove the API works.
+
+The HTTP API listens on `127.0.0.1:7850` by default, which accepts connections only from the host. Pass `--listen` with a VPN address, such as `--listen 100.64.0.5:7850`, to permit direct access through that private network.
+
+The API key lives in `/etc/shard/api-key`, which only root can read. Setup shows the file, never the key:
+
+```sh
+sudo cat /etc/shard/api-key
+```
+
+A repeated setup keeps the key. Pass `--replace-api-key` to replace it, which cuts off every client that uses the old key. On a Mac, the key is `/var/lib/shard/auth/api-key` and the service is the LaunchDaemon `/Library/LaunchDaemons/shard.serve.plist`.
+
+### By hand
+
+The same service, without setup. Each release ships a systemd unit for it:
 
 ```sh
 sudo groupadd --system shard
@@ -89,18 +109,24 @@ sudo systemctl daemon-reload
 sudo systemctl enable --now shard-serve
 ```
 
-The daemon gives its socket to the `shard` group only when it starts, so the commands restart it once after they create the group. The unit runs as the `shard` user and group, and reads the token signing key from `/etc/shard/serve.secret`. It starts after the daemon and stops with it.
+The daemon gives its socket to the `shard` group only when it starts, so the commands restart it once after they create the group. The unit runs as the `shard` user and group, and reads the token signing key from `/etc/shard/serve.secret`. It starts after the daemon, stops with it, and starts again with it.
 
 ## 3. Put HTTPS in front
 
-`shard serve` has no TLS. Put a proxy or a tunnel in front of it that gives clients an `https` URL on port 443. The proxy must pass WebSocket upgrades through and must not buffer responses. Otherwise `shard exec` and `shard logs -f` stall. It must not log the `Authorization` header, because that header carries the token.
+`shard serve` has no TLS, and setup does not configure HTTPS. For one client, an SSH tunnel is enough. Run this on the client, then use `http://127.0.0.1:7850` as the server URL:
+
+```sh
+ssh -N -L 7850:127.0.0.1:7850 <user>@<server>
+```
+
+For more clients, put a proxy or a tunnel in front of it that gives clients an `https` URL on port 443. The proxy must pass WebSocket upgrades through and must not buffer responses. Otherwise `shard exec` and `shard logs -f` stall. It must not log the `Authorization` header, because that header carries the token.
 
 <Tabs>
 	<TabItem label="Caddy">
 
 ```text
 shard.example.com {
-	reverse_proxy 127.0.0.1:2376 {
+	reverse_proxy 127.0.0.1:7850 {
 		flush_interval -1
 	}
 }
@@ -116,7 +142,7 @@ tunnel: <tunnel id>
 credentials-file: /etc/cloudflared/<tunnel id>.json
 ingress:
   - hostname: shard.example.com
-    service: http://127.0.0.1:2376
+    service: http://127.0.0.1:7850
   - service: http_status:404
 ```
 
@@ -126,7 +152,7 @@ A tunnel needs no inbound port open on the host.
 	<TabItem label="Tailscale Serve">
 
 ```sh
-tailscale serve --bg --https=443 http://127.0.0.1:2376
+tailscale serve --bg --https=443 http://127.0.0.1:7850
 ```
 
 Clients on the same tailnet use `https://<host>.<tailnet>.ts.net`.
@@ -149,6 +175,8 @@ sudo shard tokens mint --name laptop --duration 720h \
 ```text
 {"token":"<jwt>","expires_at":"2026-11-04T18:00:00Z","scopes":["sandbox:read","sandbox:write","sandbox:delete","exec"]}
 ```
+
+Setup's own key, `shard-setup`, can do everything and never expires. Mint a narrower token for each client instead.
 
 The `token` field is the client's API key. Give `shard tokens mint`, `list` and `revoke` the same `--signing-key-file`, so the token lands in the ledger that `shard serve` reads.
 

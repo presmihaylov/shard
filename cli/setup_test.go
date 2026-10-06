@@ -20,10 +20,18 @@ func TestSetupRefusesWhatItCannotRun(t *testing.T) {
 		want string
 	}{
 		{[]string{"setup", "now"}, "setup takes no arguments"},
-		{[]string{"setup", "--remote", "https://shard.example.com", "--provider", "gvisor"}, "--remote cannot go with --local, --provider or --start-at-boot"},
-		{[]string{"setup", "--remote", "https://shard.example.com", "--local"}, "--remote cannot go with --local, --provider or --start-at-boot"},
+		{[]string{"setup", "--remote", "https://shard.example.com", "--provider", "gvisor"}, "--remote cannot go with --local, --provider, --start-at-boot, --http-api, --listen or --replace-api-key"},
+		{[]string{"setup", "--remote", "https://shard.example.com", "--local"}, "--remote cannot go with --local"},
+		{[]string{"setup", "--remote", "https://shard.example.com", "--http-api", "true"}, "--remote cannot go with --local"},
 		{[]string{"setup", "--save", "--start-at-boot=false"}, "--save applies only to --remote"},
+		{[]string{"setup", "--save", "--listen", "127.0.0.1:7850"}, "--save applies only to --remote"},
 		{[]string{"setup", "--start-at-boot=yes"}, "want true or false"},
+		{[]string{"setup", "--http-api"}, "--http-api needs a value"},
+		{[]string{"setup", "--listen", "127.0.0.1:7850"}, "--listen and --replace-api-key apply only to --http-api true"},
+		{[]string{"setup", "--http-api", "false", "--replace-api-key"}, "--listen and --replace-api-key apply only to --http-api true"},
+		{[]string{"setup", "--http-api", "true", "--start-at-boot", "false"}, "--http-api true needs --start-at-boot true: the HTTP API runs as a background service"},
+		{[]string{"setup", "--http-api", "true", "--listen", "0.0.0.0:7850"}, "--listen: 0.0.0.0:7850 listens on every network"},
+		{[]string{"setup", "--http-api", "true", "--listen", "localhost:7850"}, `--listen: "localhost:7850" is not an IP address and port`},
 	} {
 		err := (&App{Version: "test", Root: t.TempDir(), Out: &bytes.Buffer{}}).run(t.Context(), tc.args)
 		if err == nil || !strings.Contains(err.Error(), tc.want) {
@@ -110,6 +118,7 @@ func TestEveryQuestionIsWorded(t *testing.T) {
 	for _, q := range []setup.Question{
 		setup.AskMode, setup.AskProvider, setup.AskStartAtBoot, setup.AskConfirm, setup.AskURL, setup.AskHTTP,
 		setup.AskAPIKey, setup.AskSave, setup.AskSaved, setup.AskExisting, setup.AskRetry, setup.AskSwitch,
+		setup.AskHTTPAPI, setup.AskListen, setup.AskReplaceKey,
 	} {
 		if setupQuestion[q].ask == "" {
 			t.Errorf("question %s has no wording", q)
@@ -127,6 +136,8 @@ func TestALocalRunWithoutATerminalRefusesBeforeAnyCheck(t *testing.T) {
 		{setupFlags{provider: "gvisor", startAtBoot: boot}, "no terminal to confirm the changes: pass -y"},
 		{setupFlags{local: true, startAtBoot: boot, yes: true}, "no terminal to choose a provider: pass --provider"},
 		{setupFlags{provider: "gvisor", startAtBoot: boot, yes: true}, ""},
+		{setupFlags{provider: "gvisor", httpAPI: boot, yes: true}, ""},
+		{setupFlags{httpAPI: boot, yes: true}, "no terminal to choose a provider: pass --provider"},
 		{setupFlags{remote: "https://shard.example.com"}, ""},
 		{setupFlags{}, ""},
 	} {
@@ -220,5 +231,71 @@ func TestSetupExitsOnceItSaidWhy(t *testing.T) {
 	}
 	if err := setupExit(nil); err != nil {
 		t.Errorf("a clean run exits with %v", err)
+	}
+}
+
+var httpAPIOptions = []term.Option{{Name: "true", Label: "Yes"}, {Name: "false", Label: "No", Default: true}}
+
+func TestTheHTTPAPIFlags(t *testing.T) {
+	yes := boolChoice{set: true, value: true}
+	for _, tc := range []struct {
+		name string
+		opts setupFlags
+		want string
+	}{
+		{"is No without a terminal or a flag", setupFlags{provider: "gvisor", startAtBoot: yes, yes: true}, "false"},
+		{"is the flag", setupFlags{provider: "gvisor", httpAPI: yes, yes: true}, "true"},
+		{"is the flag when it says No", setupFlags{provider: "gvisor", startAtBoot: yes, httpAPI: boolChoice{set: true}, yes: true}, "false"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			chosen, err := noTerminal(t, tc.opts).Select(t.Context(), setup.AskHTTPAPI, "Set up the HTTP API?", httpAPIOptions)
+			if err != nil || httpAPIOptions[chosen].Name != tc.want {
+				t.Fatalf("chose %d, %v; want %s", chosen, err, tc.want)
+			}
+		})
+	}
+
+	ui := noTerminal(t, setupFlags{provider: "gvisor", httpAPI: yes, yes: true})
+	if boot, ok := ui.flagged(setup.AskStartAtBoot); !ok || boot != "true" {
+		t.Errorf("--http-api true answered the start at boot with %q, %v; want true", boot, ok)
+	}
+	if replace, err := ui.Confirm(t.Context(), setup.AskReplaceKey, "Replace the API key?", false); err != nil || replace {
+		t.Errorf("-y alone replaced the key: %v, %v", replace, err)
+	}
+	if replace, err := noTerminal(t, setupFlags{httpAPI: yes, replaceKey: true}).Confirm(t.Context(), setup.AskReplaceKey, "Replace the API key?", false); err != nil || !replace {
+		t.Errorf("--replace-api-key answered %v, %v; want a replacement", replace, err)
+	}
+}
+
+func TestTheAddressIsTheFlagOrTheOfferOnlyOnce(t *testing.T) {
+	yes := boolChoice{set: true, value: true}
+	for _, tc := range []struct {
+		listen, want string
+	}{
+		{"100.64.0.5:7850", "100.64.0.5:7850"},
+		{"", "127.0.0.1:9000"},
+	} {
+		ui := noTerminal(t, setupFlags{httpAPI: yes, listen: tc.listen})
+		if address, err := ui.Text(t.Context(), setup.AskListen, "Listen address for the HTTP API:", "127.0.0.1:9000"); err != nil || address != tc.want {
+			t.Errorf("the address is %q, %v; want %q", address, err, tc.want)
+		}
+		if _, err := ui.Text(t.Context(), setup.AskListen, "Listen address for the HTTP API:", "127.0.0.1:9000"); err == nil || err.Error() != "no terminal to read the HTTP API address: pass --listen" {
+			t.Errorf("a second ask answered %v, want the person asked", err)
+		}
+	}
+}
+
+func TestHTTPAPITrueSetsUpTheAPIOverAnInstallation(t *testing.T) {
+	menu := []term.Option{{Name: "repair"}, {Name: "upgrade"}, {Name: setup.ExistingHTTPAPI, Label: "Set up the HTTP API"}, {Name: "uninstall"}, {Name: "exit"}}
+	ui := noTerminal(t, setupFlags{provider: "gvisor", httpAPI: boolChoice{set: true, value: true}, yes: true})
+	if chosen, err := ui.Select(t.Context(), setup.AskExisting, "What would you like to do?", menu); err != nil || menu[chosen].Name != setup.ExistingHTTPAPI {
+		t.Errorf("--http-api true chose %d, %v; want the HTTP API row", chosen, err)
+	}
+	menu[2].Unavailable = []string{"this installation does not start shard automatically."}
+	if _, err := ui.Select(t.Context(), setup.AskExisting, "What would you like to do?", menu); err == nil || err.Error() != "--http-api true: Set up the HTTP API is unavailable: this installation does not start shard automatically." {
+		t.Errorf("an unavailable row gave %v", err)
+	}
+	if _, err := noTerminal(t, setupFlags{provider: "gvisor", httpAPI: boolChoice{set: true}, yes: true}).Select(t.Context(), setup.AskExisting, "What would you like to do?", menu); err == nil || !strings.HasPrefix(err.Error(), "no terminal to choose what to do with the existing installation") {
+		t.Errorf("--http-api false picked a row: %v", err)
 	}
 }

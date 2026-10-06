@@ -167,7 +167,7 @@ func socketSudo(h Host) string {
 }
 
 // localSteps are the steps that set up l on this host, in checklist order; each is safe to run again.
-func (s *Setup) localSteps(_ context.Context, l Local) ([]Step, error) {
+func (s *Setup) localSteps(ctx context.Context, l Local) ([]Step, error) {
 	p := newLocalPlan(s.Host, l)
 	p.progress = func(detail ...string) error {
 		if s.step == nil {
@@ -187,13 +187,29 @@ func (s *Setup) localSteps(_ context.Context, l Local) ([]Step, error) {
 	if !l.StartAtBoot {
 		return steps, nil
 	}
-
-	return append(steps,
+	if l.API != "" {
+		// The daemon gives the shard group its socket only when the group exists at its start.
+		account, missing, err := accountStep(ctx, s.Host)
+		if err != nil {
+			return nil, err
+		}
+		if missing {
+			steps = append(steps, account)
+		}
+	}
+	steps = append(steps,
 		Step{Title: "Configure the background service", Do: p.service},
 		Step{Title: "Start the daemon", Do: p.start},
-		Step{Title: "Verify the daemon connection", Do: func(ctx context.Context) error { return verifyDaemon(ctx, p.h) }},
-	), nil
+		Step{Title: verifyDaemonTitle, Do: func(ctx context.Context) error { return verifyDaemon(ctx, p.h) }},
+	)
+	if l.API == "" {
+		return steps, nil
+	}
+
+	return append(steps, apiSteps(s.Host, l)...), nil
 }
+
+const verifyDaemonTitle = "Verify the daemon connection"
 
 // compatible repeats the checks a change could have undone since preflight: the provider still runs here, and root is still in reach.
 func (p *localPlan) compatible(ctx context.Context) error {
@@ -650,7 +666,7 @@ func unitFailed(ctx context.Context, h Host) (bool, error) {
 	if h.OS == "darwin" {
 		return false, nil
 	}
-	state, err := unitState(ctx, h)
+	state, err := unitState(ctx, h, serviceName)
 
 	return state == "failed", err
 }

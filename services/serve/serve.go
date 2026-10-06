@@ -26,7 +26,7 @@ import (
 )
 
 // DefaultListen is loopback, so only a proxy on the same host reaches the plain HTTP front.
-const DefaultListen = "127.0.0.1:2376"
+const DefaultListen = "127.0.0.1:7850"
 
 const (
 	// headBytes bounds the request head the front reads before it decides, so no client grows one forever.

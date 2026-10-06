@@ -133,7 +133,7 @@ shard serve
 
 | Option | Description | Default |
 | --- | --- | --- |
-| `--listen <address>` | listen address | `127.0.0.1:2376` |
+| `--listen <address>` | listen address | `127.0.0.1:7850` |
 | `--signing-key-file <path>` | token signing key | `<root>/auth/signing-key` |
 
 The local daemon must be active. Use `shard tokens mint` to create API keys.
@@ -159,23 +159,31 @@ shard setup [OPTIONS]
 ```sh
 shard setup
 shard setup --local --provider gvisor --start-at-boot=true -y
+shard setup --local --provider gvisor --http-api=true --listen 100.64.0.5:7850 -y
 shard setup --remote https://shard.example.com --save -y
 ```
 
 **Options**
 
-| Option | Description |
-| --- | --- |
-| `--local` | set up this machine to run sandboxes |
-| `--remote <url>` | connect to a remote shard server |
-| `--provider <name>` | firecracker, gvisor, sysbox, runc or vz |
-| `--start-at-boot <true\|false>` | start the daemon at boot |
-| `--save` | save the remote connection |
-| `-y, --yes` | apply changes without confirmation |
+| Option | Description | Default |
+| --- | --- | --- |
+| `--local` | set up this machine to run sandboxes |  |
+| `--remote <url>` | connect to a remote shard server |  |
+| `--provider <name>` | firecracker, gvisor, sysbox, runc or vz |  |
+| `--start-at-boot <true\|false>` | start the daemon at boot |  |
+| `--http-api <true\|false>` | set up the HTTP API as a background service | `false` |
+| `--listen <address>` | address of the HTTP API | `127.0.0.1:7850` |
+| `--replace-api-key` | replace the existing API key of the HTTP API |  |
+| `--save` | save the remote connection |  |
+| `-y, --yes` | apply changes without confirmation |  |
 
 **Remote authentication**
 
 Set `SHARD_API_KEY`. Do not pass the key as a command argument.
+
+**HTTP API**
+
+The HTTP API serves plain HTTP. Setup does not configure HTTPS. 127.0.0.1:7850 accepts connections only from this machine. Reach it through an SSH tunnel or an HTTPS proxy. A VPN address permits direct access through that private network. Setup saves the API key in a protected file and shows the file, not the key. A repeated setup keeps the key. Pass `--replace-api-key` to replace it. On an existing installation, `--http-api` true sets up or changes the HTTP API. API requests fail when the daemon is stopped.
 
 **Exit codes**
 

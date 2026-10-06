@@ -36,10 +36,12 @@ type localHost struct {
 	rs    *releaseServer
 	env   map[string]string
 	calls []string
-	// fail makes a command whose line starts with a key fail, printing its value.
+	// fail makes a command whose line starts with a key fail, printing its value; the longest key wins.
 	fail map[string]string
-	// answer makes a command whose line starts with a key succeed, printing its value.
+	// answer makes a command whose line starts with a key succeed, printing its value; the longest key wins.
 	answer map[string]string
+	// listenErr is what binding the HTTP API address returns, such as a port in use.
+	listenErr error
 }
 
 func newLocalHost(t *testing.T) *localHost {
@@ -63,6 +65,12 @@ func (l *localHost) host() Host {
 		Releases:   l.rs.URL + "/releases", HTTP: l.rs.Client(),
 		Env: func(k string) string { return l.env[k] },
 		Run: l.run,
+		Listen: func(string, string) (net.Listener, error) {
+			if l.listenErr != nil {
+				return nil, l.listenErr
+			}
+			return net.Listen("tcp", "127.0.0.1:0")
+		},
 	}
 }
 
@@ -81,18 +89,26 @@ func (l *localHost) mac() Host {
 func (l *localHost) run(ctx context.Context, name string, args ...string) ([]byte, error) {
 	line := strings.Join(append([]string{name}, args...), " ")
 	l.calls = append(l.calls, line)
-	for prefix, out := range l.fail {
-		if strings.HasPrefix(line, prefix) {
-			return []byte(out), errors.New("exit status 1")
-		}
+	if prefix, ok := longest(l.fail, line); ok {
+		return []byte(l.fail[prefix]), errors.New("exit status 1")
 	}
-	for prefix, out := range l.answer {
-		if strings.HasPrefix(line, prefix) {
-			return []byte(out), nil
-		}
+	if prefix, ok := longest(l.answer, line); ok {
+		return []byte(l.answer[prefix]), nil
 	}
 
 	return l.do(ctx, name, args...)
+}
+
+// longest is the longest key of m that line starts with, so "systemctl is-active shard-serve" outranks "systemctl is-active shard".
+func longest(m map[string]string, line string) (string, bool) {
+	best, found := "", false
+	for prefix := range m {
+		if strings.HasPrefix(line, prefix) && len(prefix) >= len(best) {
+			best, found = prefix, true
+		}
+	}
+
+	return best, found
 }
 
 func (l *localHost) do(ctx context.Context, name string, args ...string) ([]byte, error) {
@@ -242,7 +258,7 @@ func (u *localUI) Select(ctx context.Context, q Question, title string, options 
 
 func newLocalUI(startAtBoot string, confirm bool, providers ...string) *localUI {
 	return &localUI{
-		fakeUI:    &fakeUI{selects: map[Question]string{AskStartAtBoot: startAtBoot}, confirms: map[Question]bool{AskConfirm: confirm}},
+		fakeUI:    &fakeUI{selects: map[Question]string{AskStartAtBoot: startAtBoot, AskHTTPAPI: "false"}, confirms: map[Question]bool{AskConfirm: confirm}},
 		providers: providers,
 	}
 }
@@ -271,7 +287,7 @@ func TestLocalSetsUpGVisorWithAService(t *testing.T) {
 		t.Fatalf("local = %v; printed %q", err, ui.printed)
 	}
 
-	if want := []Question{AskProvider, AskStartAtBoot, AskConfirm}; !slices.Equal(ui.asked, want) {
+	if want := []Question{AskProvider, AskStartAtBoot, AskHTTPAPI, AskConfirm}; !slices.Equal(ui.asked, want) {
 		t.Fatalf("asked %v, want %v", ui.asked, want)
 	}
 	said(t, ui.fakeUI,
@@ -452,7 +468,7 @@ func TestAProviderFailureOffersTheOthers(t *testing.T) {
 	if last := again[len(again)-1]; last.Name != exitOption {
 		t.Fatalf("the second question has no Exit: %+v", last)
 	}
-	if want := []Question{AskProvider, AskStartAtBoot, AskProvider, AskConfirm}; !slices.Equal(ui.asked, want) {
+	if want := []Question{AskProvider, AskStartAtBoot, AskHTTPAPI, AskProvider, AskConfirm}; !slices.Equal(ui.asked, want) {
 		t.Fatalf("asked %v, want %v", ui.asked, want)
 	}
 	if l.changed() {
@@ -576,6 +592,8 @@ func TestServiceTemplatesMatchPackaging(t *testing.T) {
 		"../../packaging/systemd/shard.service":        systemdUnitTemplate,
 		"../../packaging/launchd/shard.daemon.plist":   launchdPlistTemplate,
 		"../../packaging/launchd/shard.newsyslog.conf": newsyslogTemplate,
+		"../../packaging/systemd/shard-serve.service":  serveUnitTemplate,
+		"../../packaging/launchd/shard.serve.plist":    servePlistTemplate,
 	} {
 		packaged, err := os.ReadFile(file)
 		if err != nil {

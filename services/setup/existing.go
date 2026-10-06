@@ -25,7 +25,7 @@ import (
 const serviceName = "shard"
 
 // manualPaths are where an install without setup puts the binaries and the release's service files.
-var manualPaths = []string{shardBinary, initBinary, systemdUnit, "/etc/systemd/system/shard-serve.service", launchdPlist, newsyslog}
+var manualPaths = []string{shardBinary, initBinary, systemdUnit, serveUnit, launchdPlist, servePlist, newsyslog}
 
 // ServiceState is the Service line of the summary.
 type ServiceState string
@@ -84,25 +84,36 @@ func (s *Setup) existing(ctx context.Context, inst Installation) error {
 	}
 
 	m := *inst.Manifest
-	if err := s.UI.Print("This machine already has shard installed", "", "Version:  "+m.Version, "Provider: "+providerTitle(m.Provider), "Service:  "+string(inst.Service), ""); err != nil {
+	api := "Not set up"
+	if m.API != "" {
+		api = "http://" + m.API
+	}
+	if err := s.UI.Print("This machine already has shard installed", "", "Version:  "+m.Version, "Provider: "+providerTitle(m.Provider), "Service:  "+string(inst.Service), "HTTP API: "+api, ""); err != nil {
 		return err
 	}
-	choice, err := s.UI.Select(ctx, AskExisting, "What would you like to do?", []term.Option{
+	options := []term.Option{
 		{Name: "repair", Label: "Check or repair the installation", Default: true},
 		{Name: "upgrade", Label: "Upgrade shard"},
+		{Name: ExistingHTTPAPI, Label: "Set up the HTTP API"},
 		{Name: "uninstall", Label: uninstallLabel},
 		{Name: "exit", Label: "Exit"},
-	})
+	}
+	if !m.StartAtBoot {
+		options[2].Unavailable = []string{"The HTTP API runs as a background service, and this installation does not start shard automatically."}
+	}
+	choice, err := s.UI.Select(ctx, AskExisting, "What would you like to do?", options)
 	if err != nil {
 		return err
 	}
 
-	switch choice {
-	case 0:
+	switch options[choice].Name {
+	case "repair":
 		return s.switched(ctx, func(ctx context.Context, removal string) error { return s.repair(ctx, m, inst.Service, removal) })
-	case 1:
+	case "upgrade":
 		return s.switched(ctx, func(ctx context.Context, removal string) error { return s.upgrade(ctx, m, inst.Service, removal) })
-	case 2:
+	case ExistingHTTPAPI:
+		return s.setUpAPI(ctx, m, inst.Service)
+	case "uninstall":
 		return s.uninstall(ctx, m)
 	}
 
@@ -142,19 +153,28 @@ func (s *Setup) repair(ctx context.Context, m Manifest, service ServiceState, re
 	if m.StartAtBoot && service != ServiceActive {
 		problems = append(problems, "The background service is not running.")
 	}
+	l := Local{Provider: m.Provider, StartAtBoot: m.StartAtBoot, API: m.API}
+	account := false
+	if m.API != "" {
+		var apiProblems []string
+		if apiProblems, account, err = s.apiProblems(ctx, &l); err != nil {
+			return err
+		}
+		problems = append(problems, apiProblems...)
+	}
 
 	if len(problems) == 0 {
 		return s.UI.Print("✓ No problems found", "", "Installed correctly: shard "+m.Version+" with "+providerTitle(m.Provider)+".")
 	}
 
-	steps, err := s.localSteps(ctx, Local{Provider: m.Provider, StartAtBoot: m.StartAtBoot})
+	steps, err := s.localSteps(ctx, l)
 	if err != nil {
 		return err
 	}
-	// A running daemon built its provider already, and puts the runtime files back only when it builds it again.
-	if len(runtime) > 0 && service == ServiceActive {
+	// A running daemon built its provider already, and puts the runtime files back only when it builds it again; it gives a new shard group its socket only at a start too.
+	if (len(runtime) > 0 || account) && service == ServiceActive {
 		restart := Step{Title: "Restart the daemon", Do: func(ctx context.Context) error { return restartService(ctx, s.Host, m) }}
-		steps = slices.Insert(steps, len(steps)-1, restart)
+		steps = slices.Insert(steps, slices.IndexFunc(steps, func(st Step) bool { return st.Title == verifyDaemonTitle }), restart)
 	}
 	if len(runtime) > 0 && service != ServiceNone {
 		steps = append(steps, Step{Title: "Restore the provider's files", Do: func(ctx context.Context) error { return s.restoreRuntime(ctx, m.Provider) }})
@@ -392,9 +412,15 @@ func (s *Setup) upgrade(ctx context.Context, m Manifest, service ServiceState, r
 	if service == ServiceActive {
 		steps = append(steps,
 			Step{Title: "Restart the daemon", Do: func(ctx context.Context) error { return restartService(ctx, h, m) }},
-			Step{Title: "Verify the daemon connection", Do: func(ctx context.Context) error { return verifyDaemon(ctx, h) }},
+			Step{Title: verifyDaemonTitle, Do: func(ctx context.Context) error { return verifyDaemon(ctx, h) }},
 		)
 		done = "Upgraded to shard " + rel.Tag + ", and the daemon is running."
+	}
+	if service == ServiceActive && m.API != "" {
+		steps = append(steps,
+			Step{Title: "Restart the HTTP API", Do: func(ctx context.Context) error { return restartAPI(ctx, h) }},
+			Step{Title: verifyAPITitle, Do: func(ctx context.Context) error { return verifyAPI(ctx, h, m.API) }},
+		)
 	}
 	if err := s.apply(ctx, "Upgrading shard", steps); err != nil {
 		return err
@@ -642,32 +668,40 @@ func stopService(ctx context.Context, h Host, m Manifest) error {
 		if err != nil {
 			return fmt.Errorf("check %s: %w", f.Path, err)
 		}
+		// The HTTP API stops before the daemon it carries requests to.
+		if f.Path == serveUnit || f.Path == servePlist {
+			units = slices.Insert(units, 0, f.Path)
+			continue
+		}
 		units = append(units, f.Path)
-	}
-	if len(units) == 0 {
-		return nil
-	}
-
-	if h.OS == "darwin" {
-		out, err := h.Run(ctx, "launchctl", "print", launchdLabel)
-		if err != nil && bytes.Contains(out, []byte("Could not find service")) {
-			return nil
-		}
-		if err != nil {
-			return fmt.Errorf("check the background service: %w%s", err, outputTail(out))
-		}
-		if _, err := privileged(ctx, h, "launchctl", "bootout", launchdLabel); err != nil {
-			return fmt.Errorf("stop the background service: %w", err)
-		}
-
-		return nil
 	}
 
 	for _, u := range units {
+		if h.OS == "darwin" {
+			if err := bootout(ctx, h, "system/"+strings.TrimSuffix(filepath.Base(u), ".plist")); err != nil {
+				return err
+			}
+			continue
+		}
 		name := strings.TrimSuffix(filepath.Base(u), ".service")
 		if _, err := privileged(ctx, h, "systemctl", "disable", "--now", name); err != nil {
 			return fmt.Errorf("stop %s: %w", name, err)
 		}
+	}
+
+	return nil
+}
+
+func bootout(ctx context.Context, h Host, label string) error {
+	out, err := h.Run(ctx, "launchctl", "print", label)
+	if err != nil && bytes.Contains(out, []byte("Could not find service")) {
+		return nil
+	}
+	if err != nil {
+		return fmt.Errorf("check the %s service: %w%s", label, err, outputTail(out))
+	}
+	if _, err := privileged(ctx, h, "launchctl", "bootout", label); err != nil {
+		return fmt.Errorf("stop the %s service: %w", label, err)
 	}
 
 	return nil
@@ -786,6 +820,11 @@ func uninstalled(h Host, m Manifest, netHeld bool) ([]string, error) {
 		lines = append(lines, tools...)
 	}
 
+	if h.OS == "linux" && m.API != "" {
+		lines = append(lines, "",
+			"The HTTP API keys remain in "+apiDir+".", "Remove them with: "+sudoFor(h)+"rm -r "+apiDir,
+			"The "+apiAccount+" account remains.", "Remove it with: "+sudoFor(h)+"userdel "+apiAccount)
+	}
 	if h.OS == "linux" {
 		network, err := networkLeft(h, netHeld)
 		if err != nil {
@@ -1135,21 +1174,10 @@ func serviceState(ctx context.Context, h Host, m Manifest) (ServiceState, error)
 	}
 
 	if h.OS == "darwin" {
-		out, err := h.Run(ctx, "launchctl", "print", launchdLabel)
-		if err != nil && bytes.Contains(out, []byte("Could not find service")) {
-			return ServiceInactive, nil
-		}
-		if err != nil {
-			return "", fmt.Errorf("check the background service: %w%s", err, outputTail(out))
-		}
-		if bytes.Contains(out, []byte("state = running")) {
-			return ServiceActive, nil
-		}
-
-		return ServiceInactive, nil
+		return launchdState(ctx, h, launchdLabel)
 	}
 
-	state, err := unitState(ctx, h)
+	state, err := unitState(ctx, h, serviceName)
 	if err != nil {
 		return "", err
 	}
@@ -1160,13 +1188,28 @@ func serviceState(ctx context.Context, h Host, m Manifest) (ServiceState, error)
 	return ServiceInactive, nil
 }
 
-// unitState is the state systemctl names for the service: active, activating, failed and the rest.
-func unitState(ctx context.Context, h Host) (string, error) {
+func launchdState(ctx context.Context, h Host, label string) (ServiceState, error) {
+	out, err := h.Run(ctx, "launchctl", "print", label)
+	if err != nil && bytes.Contains(out, []byte("Could not find service")) {
+		return ServiceInactive, nil
+	}
+	if err != nil {
+		return "", fmt.Errorf("check the %s service: %w%s", label, err, outputTail(out))
+	}
+	if bytes.Contains(out, []byte("state = running")) {
+		return ServiceActive, nil
+	}
+
+	return ServiceInactive, nil
+}
+
+// unitState is the state systemctl names for a unit: active, activating, failed and the rest.
+func unitState(ctx context.Context, h Host, unit string) (string, error) {
 	// is-active exits non-zero for every state but active, and still prints the state.
-	out, err := h.Run(ctx, "systemctl", "is-active", serviceName)
+	out, err := h.Run(ctx, "systemctl", "is-active", unit)
 	state := strings.TrimSpace(string(out))
 	if err != nil && state == "" {
-		return "", fmt.Errorf("check the background service: %w", err)
+		return "", fmt.Errorf("check the %s service: %w", unit, err)
 	}
 
 	return state, nil

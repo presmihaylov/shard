@@ -166,6 +166,27 @@ func TestTextStartsAsTheInitialLine(t *testing.T) {
 	}
 }
 
+// Raw mode makes no carriage return of "\n", so every line of a long prompt must start at the left edge.
+func TestTextDrawsEachLineOfThePrompt(t *testing.T) {
+	var out bytes.Buffer
+	if _, err := keyed(&out, "\r").Text(t.Context(), "Address\n  only this machine", "a"); err != nil {
+		t.Fatal(err)
+	}
+	if want := "Address\r\n  only this machine\r\n> a\r\n\r\n"; out.String() != want {
+		t.Errorf("drew %q, want %q", out.String(), want)
+	}
+}
+
+func TestSelectDrawsEachLineOfTheTitle(t *testing.T) {
+	var out bytes.Buffer
+	if _, err := keyed(&out, "\r").Select(t.Context(), "Set up?\n\nWhy it matters.", []Option{{Name: "a", Label: "A"}}); err != nil {
+		t.Fatal(err)
+	}
+	if !strings.HasPrefix(out.String(), "\x1b[2KSet up?\r\n\x1b[2K\r\n\x1b[2KWhy it matters.\r\n\x1b[2K\r\n") {
+		t.Errorf("drew %q, want each title line on its own row", out.String())
+	}
+}
+
 func TestTextEditsTheInitialLine(t *testing.T) {
 	var out bytes.Buffer
 	got, err := keyed(&out, "\x15https://b.exa\x1b[3~\x1b[Dmpler\x7f\r").Text(t.Context(), "URL", "https://a.example")

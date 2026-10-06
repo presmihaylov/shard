@@ -13,8 +13,8 @@ func TestTheDefaultAddressIsLoopback(t *testing.T) {
 		t.Fatalf("parse %q: %v", DefaultListen, err)
 	}
 
-	if !addr.Addr().IsLoopback() || addr.Port() != 2376 {
-		t.Errorf("DefaultListen is %s, want a loopback address on port 2376", addr)
+	if !addr.Addr().IsLoopback() || addr.Port() != 7850 {
+		t.Errorf("DefaultListen is %s, want a loopback address on port 7850", addr)
 	}
 }
 
@@ -23,11 +23,11 @@ func TestLoopbackNamesOnlyThisHost(t *testing.T) {
 		addr net.Addr
 		want bool
 	}{
-		{&net.TCPAddr{IP: net.ParseIP("127.0.0.1"), Port: 2376}, true},
-		{&net.TCPAddr{IP: net.ParseIP("::1"), Port: 2376}, true},
-		{&net.TCPAddr{IP: net.ParseIP("0.0.0.0"), Port: 2376}, false},
-		{&net.TCPAddr{IP: net.ParseIP("::"), Port: 2376}, false},
-		{&net.TCPAddr{IP: net.ParseIP("192.0.2.10"), Port: 2376}, false},
+		{&net.TCPAddr{IP: net.ParseIP("127.0.0.1"), Port: 7850}, true},
+		{&net.TCPAddr{IP: net.ParseIP("::1"), Port: 7850}, true},
+		{&net.TCPAddr{IP: net.ParseIP("0.0.0.0"), Port: 7850}, false},
+		{&net.TCPAddr{IP: net.ParseIP("::"), Port: 7850}, false},
+		{&net.TCPAddr{IP: net.ParseIP("192.0.2.10"), Port: 7850}, false},
 		{&net.UnixAddr{Name: "/run/shard.sock", Net: "unix"}, false},
 	}
 

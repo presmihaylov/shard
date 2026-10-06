@@ -59,7 +59,7 @@ A sandbox also outlives its own command. When the command exits, the sandbox sta
 
 ## Remote access
 
-The daemon never listens on TCP. To reach it from another machine, run `shard serve` on the same host. `shard serve` listens on `127.0.0.1:2376` by default, behind a proxy that terminates TLS. It rejects a request without a valid token before it connects to the daemon. It reads the request line and all the headers. Before it connects to the daemon, it checks that the token's scopes cover the route. It adds the token's scopes as a header and asks the daemon to close the connection after the answer. Then it passes the body and the answer on unchanged.
+The daemon never listens on TCP. To reach it from another machine, run `shard serve` on the same host. `shard serve` listens on `127.0.0.1:7850` by default, behind a proxy that terminates TLS. It rejects a request without a valid token before it connects to the daemon. It reads the request line and all the headers. Before it connects to the daemon, it checks that the token's scopes cover the route. It adds the token's scopes as a header and asks the daemon to close the connection after the answer. Then it passes the body and the answer on unchanged.
 
 On Linux, a non-root user needs membership in the `shard` group to reach the socket. Without that group, only root can reach it. On a Mac, run `shard serve` as the daemon's user.
 

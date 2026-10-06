@@ -168,7 +168,7 @@ The socket has mode `0600`, so only the user the daemon runs as can use it. On L
 
 ## Remote access goes through shard serve
 
-A client on another host reaches the daemon through `shard serve`, a separate process that checks a token on every request and then passes the bytes to the socket. By default it listens on `127.0.0.1:2376` and speaks plain HTTP.
+A client on another host reaches the daemon through `shard serve`, a separate process that checks a token on every request and then passes the bytes to the socket. By default it listens on `127.0.0.1:7850` and speaks plain HTTP.
 
 **Caution: put an HTTPS proxy or a tunnel in front of shard serve before any token crosses a network.** Over plain HTTP, the token travels in clear text. `shard serve` logs a line when it starts if its listen address is not loopback.
 

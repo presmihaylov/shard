@@ -295,7 +295,7 @@ func TestExistingShowsTheSummaryAndExits(t *testing.T) {
 	if err != nil {
 		t.Fatalf("existing: %v", err)
 	}
-	want := []string{"This machine already has shard installed", "", "Version:  v0.1.0", "Provider: " + providerTitle("gvisor"), "Service:  Active", ""}
+	want := []string{"This machine already has shard installed", "", "Version:  v0.1.0", "Provider: " + providerTitle("gvisor"), "Service:  Active", "HTTP API: Not set up", ""}
 	if !slices.Equal(ui.printed, want) {
 		t.Fatalf("summary = %q, want %q", ui.printed, want)
 	}
@@ -303,8 +303,8 @@ func TestExistingShowsTheSummaryAndExits(t *testing.T) {
 	for _, o := range ui.options[AskExisting] {
 		names = append(names, o.Name)
 	}
-	if !slices.Equal(names, []string{"repair", "upgrade", "uninstall", "exit"}) || !ui.options[AskExisting][0].Default {
-		t.Fatalf("the menu offers %v, want repair (the default), upgrade, uninstall, exit", names)
+	if !slices.Equal(names, []string{"repair", "upgrade", ExistingHTTPAPI, "uninstall", "exit"}) || !ui.options[AskExisting][0].Default {
+		t.Fatalf("the menu offers %v, want repair (the default), upgrade, http-api, uninstall, exit", names)
 	}
 	if len(f.calls) != 0 {
 		t.Fatalf("Exit ran %v", f.calls)

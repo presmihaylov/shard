@@ -93,7 +93,7 @@ shard tokens mint --name sdk --duration 720h
 shard serve
 ```
 
-`shard serve` listens on `127.0.0.1:2376`. Set `SHARD_API_KEY` to the `token` field that `shard tokens mint` printed, then point the SDK at the Mac:
+`shard serve` listens on `127.0.0.1:7850`. Set `SHARD_API_KEY` to the `token` field that `shard tokens mint` printed, then point the SDK at the Mac:
 
 <Tabs syncKey="lang">
 	<TabItem label="TypeScript">
@@ -102,7 +102,7 @@ shard serve
 import { Shard } from "useshards";
 
 // Reads SHARD_API_KEY.
-const shard = new Shard({ remote: "http://127.0.0.1:2376" });
+const shard = new Shard({ remote: "http://127.0.0.1:7850" });
 try {
   const app = await shard.run("python:3.12", ["sleep", "infinity"], { name: "demo", memoryMiB: 512 });
   const result = await app.sandbox.exec(["uname", "-a"]);
@@ -120,7 +120,7 @@ try {
 from useshards import Shard
 
 # Reads SHARD_API_KEY.
-with Shard(remote="http://127.0.0.1:2376") as shard:
+with Shard(remote="http://127.0.0.1:7850") as shard:
     app = shard.run("python:3.12", ["sleep", "infinity"], name="demo", memory_mib=512)
     result = app.sandbox.exec(["uname", "-a"])
     print(result.stdout)

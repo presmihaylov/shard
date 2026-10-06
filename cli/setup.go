@@ -20,6 +20,9 @@ type setupFlags struct {
 	remote      string
 	provider    string
 	startAtBoot boolChoice
+	httpAPI     boolChoice
+	listen      string
+	replaceKey  bool
 	save        bool
 	yes         bool
 }
@@ -58,6 +61,9 @@ func (a App) setup(ctx context.Context, args []string) error {
 	flags.StringVar(&opts.remote, "remote", "", "")
 	flags.StringVar(&opts.provider, "provider", "", "")
 	flags.Var(&opts.startAtBoot, "start-at-boot", "")
+	flags.Var(&opts.httpAPI, "http-api", "")
+	flags.StringVar(&opts.listen, "listen", "", "")
+	flags.BoolVar(&opts.replaceKey, "replace-api-key", false, "")
 	flags.BoolVar(&opts.save, "save", false, "")
 	flags.BoolVar(&opts.yes, "y", false, "")
 	flags.BoolVar(&opts.yes, "yes", false, "")
@@ -107,15 +113,29 @@ func setupExit(err error) error {
 }
 
 // wantsLocal is a flag that only local setup takes.
-func (o setupFlags) wantsLocal() bool { return o.local || o.provider != "" || o.startAtBoot.set }
+func (o setupFlags) wantsLocal() bool {
+	return o.local || o.provider != "" || o.startAtBoot.set || o.httpAPI.set || o.listen != "" || o.replaceKey
+}
 
-// check refuses a local choice beside a remote one, so neither half guesses which was meant.
+// check refuses a local choice beside a remote one, so neither half guesses which was meant, and an HTTP API option that cannot apply.
 func (o setupFlags) check() error {
 	if o.remote != "" && o.wantsLocal() {
-		return errors.New("--remote cannot go with --local, --provider or --start-at-boot; pass --remote to connect to a server, or the others to set up this machine")
+		return errors.New("--remote cannot go with --local, --provider, --start-at-boot, --http-api, --listen or --replace-api-key; pass --remote to connect to a server, or the others to set up this machine")
 	}
 	if o.save && o.wantsLocal() {
-		return errors.New("--save applies only to --remote; drop --save, or drop --local, --provider and --start-at-boot")
+		return errors.New("--save applies only to --remote; drop --save, or drop --local, --provider, --start-at-boot, --http-api, --listen and --replace-api-key")
+	}
+	if (o.listen != "" || o.replaceKey) && !o.httpAPI.value {
+		return errors.New("--listen and --replace-api-key apply only to --http-api true")
+	}
+	if o.httpAPI.value && o.startAtBoot.set && !o.startAtBoot.value {
+		return errors.New("--http-api true needs --start-at-boot true: the HTTP API runs as a background service")
+	}
+	if o.listen == "" {
+		return nil
+	}
+	if err := setup.CheckListen(o.listen); err != nil {
+		return fmt.Errorf("--listen: %w", err)
 	}
 
 	return nil
@@ -128,6 +148,8 @@ type answers struct {
 	env  func(string) string
 	// urlAsked is set once the URL was answered, so an edit after a failed check asks the person and never loops on the flag.
 	urlAsked bool
+	// listenAsked does for --listen what urlAsked does for --remote.
+	listenAsked bool
 }
 
 // flagged is the option name a flag picks for a question, and whether one does.
@@ -143,7 +165,19 @@ func (a *answers) flagged(q setup.Question) (string, bool) {
 	case setup.AskProvider:
 		return a.opts.provider, a.opts.provider != ""
 	case setup.AskStartAtBoot:
+		// The HTTP API runs as a background service, so --http-api true is a start at boot.
+		if a.opts.httpAPI.value {
+			return "true", true
+		}
 		return a.opts.startAtBoot.String(), a.opts.startAtBoot.set
+	case setup.AskHTTPAPI:
+		// No is the default, and it keeps a script that predates the question as it was.
+		if !a.opts.httpAPI.set && !a.t.Interactive() {
+			return "false", true
+		}
+		return a.opts.httpAPI.String(), a.opts.httpAPI.set
+	case setup.AskExisting:
+		return setup.ExistingHTTPAPI, a.opts.httpAPI.value
 	case setup.AskSaved:
 		if a.opts.remote != "" {
 			return "replace", true
@@ -176,6 +210,9 @@ func pick(q setup.Question, options []term.Option, name string) (int, error) {
 			names = append(names, o.Name)
 			continue
 		}
+		if len(o.Unavailable) > 0 && q == setup.AskExisting {
+			return 0, fmt.Errorf("--http-api true: %s is unavailable: %s", o.Label, o.Unavailable[0])
+		}
 		if len(o.Unavailable) > 0 {
 			return 0, fmt.Errorf("%s %s: %s is unavailable: %s", setupQuestion[q].flag, name, o.Label, o.Unavailable[0])
 		}
@@ -191,6 +228,8 @@ func (a *answers) Confirm(ctx context.Context, q setup.Question, text string, ye
 	case slices.Contains(confirmations, q) && a.opts.yes:
 		return true, a.note(text)
 	case q == setup.AskSave && a.opts.save:
+		return true, a.note(text)
+	case q == setup.AskReplaceKey && a.opts.replaceKey:
 		return true, a.note(text)
 	case q == setup.AskSave && (a.opts.yes || !a.t.Interactive()):
 		return false, nil
@@ -215,6 +254,16 @@ func (a *answers) Text(ctx context.Context, q setup.Question, prompt, initial st
 		a.urlAsked = true
 		if url := cmp.Or(a.opts.remote, a.env(client.RemoteEnv)); url != "" {
 			return url, nil
+		}
+	}
+	if q == setup.AskListen && !a.listenAsked {
+		a.listenAsked = true
+		if a.opts.listen != "" {
+			return a.opts.listen, nil
+		}
+		// The offered address is the default, or the one an earlier setup recorded.
+		if !a.t.Interactive() {
+			return initial, nil
 		}
 	}
 	answer, err := a.t.Text(ctx, prompt, initial)
@@ -247,6 +296,9 @@ var setupQuestion = map[setup.Question]struct{ ask, flag string }{
 	setup.AskMode:        {"choose local or remote setup", "--local or --remote <url>"},
 	setup.AskProvider:    {"choose a provider", "--provider"},
 	setup.AskStartAtBoot: {"choose whether shard starts at boot", "--start-at-boot"},
+	setup.AskHTTPAPI:     {"choose whether to set up the HTTP API", "--http-api"},
+	setup.AskListen:      {"read the HTTP API address", "--listen"},
+	setup.AskReplaceKey:  {"confirm the replacement of the API key", "--replace-api-key"},
 	setup.AskConfirm:     {"confirm the changes", "-y"},
 	setup.AskHTTP:        {"confirm a connection over HTTP", "-y"},
 	setup.AskURL:         {"read the server URL", "--remote"},
@@ -283,7 +335,7 @@ func (a *answers) unattended() error {
 	if a.opts.provider == "" {
 		missing = append(missing, setup.AskProvider)
 	}
-	if !a.opts.startAtBoot.set {
+	if !a.opts.startAtBoot.set && !a.opts.httpAPI.value {
 		missing = append(missing, setup.AskStartAtBoot)
 	}
 	if !a.opts.yes {

@@ -37,20 +37,28 @@ type Owned struct {
 
 // Manifest is what setup installed, in the order it did it.
 type Manifest struct {
-	Version     string  `json:"version"`
-	Provider    string  `json:"provider"`
-	StartAtBoot bool    `json:"start_at_boot"`
-	Files       []Owned `json:"files"`
+	Version     string `json:"version"`
+	Provider    string `json:"provider"`
+	StartAtBoot bool   `json:"start_at_boot"`
+	// API is the address shard serve listens on, empty when setup configured no HTTP API.
+	API   string  `json:"http_api,omitempty"`
+	Files []Owned `json:"files"`
 }
 
 // RecordOwned adds files to the manifest after setup created them; a file that was already there is never recorded.
 func RecordOwned(ctx context.Context, h Host, local Local, files ...Owned) error {
+	return record(ctx, h, func(m *Manifest) {
+		m.Version, m.Provider, m.StartAtBoot, m.API = h.Version, local.Provider, local.StartAtBoot, local.API
+	}, files...)
+}
+
+func record(ctx context.Context, h Host, set func(*Manifest), files ...Owned) error {
 	m, _, err := LoadManifest(h)
 	if err != nil {
 		return err
 	}
 
-	m.Version, m.Provider, m.StartAtBoot = h.Version, local.Provider, local.StartAtBoot
+	set(&m)
 	for _, f := range files {
 		if err := f.valid(); err != nil {
 			return err
