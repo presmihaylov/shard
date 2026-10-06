@@ -1,10 +1,12 @@
 package setup
 
 import (
+	"bytes"
 	"compress/gzip"
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -23,6 +25,7 @@ import (
 
 	"github.com/presmihaylov/shard/pkg/size"
 	"github.com/presmihaylov/shard/pkg/tarball"
+	"github.com/presmihaylov/shard/services/api"
 	"github.com/presmihaylov/shard/services/client"
 )
 
@@ -49,6 +52,12 @@ var (
 	verifyWait = 2 * time.Minute
 	verifyPoll = time.Second
 )
+
+// verifyRestarts is the failed runs after which a task in backoff is a loop the rest of the wait will not end.
+const verifyRestarts = 3
+
+// taskBackoff is the daemon's state for a task that waits to restart, which setup reads from daemon status and cannot import.
+const taskBackoff = "backoff"
 
 // rooted is p on the host setup works on, which a test moves under a temp dir.
 func rooted(h Host, p string) string { return filepath.Join(h.Root, p) }
@@ -624,9 +633,16 @@ func verifyDaemon(ctx context.Context, h Host) error {
 	}
 	deadline := time.Now().Add(verifyWait)
 	for {
-		out, err := ask(ctx, h, shardBinary, "--remote", "", "daemon", "status")
+		out, err := ask(ctx, h, shardBinary, "--remote", "", "daemon", "status", "--format", "json")
 		if err == nil {
 			return nil
+		}
+		looping, decodeErr := loopingTasks(out)
+		if decodeErr != nil {
+			return decodeErr
+		}
+		if len(looping) > 0 {
+			return tasksFailing(h, looping)
 		}
 		failed, stateErr := unitFailed(ctx, h)
 		if stateErr != nil {
@@ -647,6 +663,32 @@ func verifyDaemon(ctx context.Context, h Host) error {
 		case <-time.After(verifyPoll):
 		}
 	}
+}
+
+// loopingTasks are the tasks of a status that answered which keep failing; a daemon that never answered printed no JSON.
+func loopingTasks(out []byte) ([]api.TaskState, error) {
+	if !bytes.HasPrefix(bytes.TrimSpace(out), []byte("{")) {
+		return nil, nil
+	}
+	var status api.Daemon
+	// Decode reads the JSON alone, and leaves the error line daemon status printed after it.
+	if err := json.NewDecoder(bytes.NewReader(out)).Decode(&status); err != nil {
+		return nil, fmt.Errorf("read the daemon status: %w", err)
+	}
+
+	return slices.DeleteFunc(status.Tasks, func(t api.TaskState) bool {
+		return t.State != taskBackoff || t.Restarts < verifyRestarts
+	}), nil
+}
+
+// tasksFailing names each task that keeps failing with the error it last met, which the wait would otherwise hide behind its names.
+func tasksFailing(h Host, tasks []api.TaskState) error {
+	lines := []string{"The daemon started, but these tasks keep failing:"}
+	for _, t := range tasks {
+		lines = append(lines, fmt.Sprintf("  %s: %s", t.Name, t.LastError))
+	}
+
+	return &Problem{Lines: append(lines, logHint(h))}
 }
 
 // unitFailed says systemd stopped restarting the daemon, which a refusal at start brings within seconds; launchd keeps retrying, so a Mac waits.

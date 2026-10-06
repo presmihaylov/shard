@@ -720,7 +720,7 @@ func TestUpgradeVerifiesBeforeItReplaces(t *testing.T) {
 	if !slices.Equal(steps[len(steps)-2:], []string{"Restart the daemon", "Verify the daemon connection"}) {
 		t.Fatalf("the steps are %q, want the restart and then the verify last", steps)
 	}
-	restart, verify := slices.Index(f.calls, "systemctl restart shard"), slices.Index(f.calls, "/usr/local/bin/shard --remote  daemon status")
+	restart, verify := slices.Index(f.calls, "systemctl restart shard"), slices.Index(f.calls, "/usr/local/bin/shard --remote  daemon status --format json")
 	if restart < 0 || verify < restart {
 		t.Fatalf("calls = %v, want the daemon asked after the restart", f.calls)
 	}

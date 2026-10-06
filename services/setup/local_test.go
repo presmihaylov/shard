@@ -6,6 +6,7 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"maps"
@@ -24,6 +25,7 @@ import (
 
 	"github.com/presmihaylov/shard/models"
 	"github.com/presmihaylov/shard/pkg/term"
+	"github.com/presmihaylov/shard/services/api"
 	"github.com/presmihaylov/shard/services/client"
 	"github.com/presmihaylov/shard/services/daemon"
 	"github.com/presmihaylov/shard/services/sandboxstate"
@@ -631,7 +633,7 @@ func TestVerifyStopsWhenTheUnitFails(t *testing.T) {
 			states, asked := []string{"activating", "activating", "failed"}, 0
 			h := Host{OS: "linux", Euid: 1000, Env: func(string) string { return "" }, Run: func(_ context.Context, name string, args ...string) ([]byte, error) {
 				switch call := strings.Join(append([]string{name}, args...), " "); call {
-				case "sudo -n -- " + shardBinary + " --remote  daemon status":
+				case "sudo -n -- " + shardBinary + " --remote  daemon status --format json":
 					asked++
 					return []byte("shard: the daemon is not running\n"), errors.New("exit status 1")
 				case "systemctl is-active shard":
@@ -656,6 +658,74 @@ func TestVerifyStopsWhenTheUnitFails(t *testing.T) {
 			}
 			if asked != 3 {
 				t.Fatalf("daemon status asked %d times, want 3: once per state read", asked)
+			}
+		})
+	}
+}
+
+// Setup reads the task state from daemon status, so its name for backoff must be the daemon's.
+func TestTaskBackoffIsTheDaemons(t *testing.T) {
+	if taskBackoff != daemon.TaskBackoff {
+		t.Fatalf("setup reads %q, and the daemon reports %q", taskBackoff, daemon.TaskBackoff)
+	}
+}
+
+// A task that keeps failing ends the verify early with its last error, while one that heals lets setup go on. (SHARD-781)
+func TestVerifyNamesATaskThatKeepsFailing(t *testing.T) {
+	wait, poll := verifyWait, verifyPoll
+	verifyWait, verifyPoll = time.Hour, time.Millisecond
+	t.Cleanup(func() { verifyWait, verifyPoll = wait, poll })
+
+	refusal := "open the firewall: the zone shard belongs to another tool"
+	status := func(tasks ...api.TaskState) []byte {
+		out, err := json.Marshal(api.Daemon{Tasks: tasks})
+		if err != nil {
+			t.Fatal(err)
+		}
+
+		return append(out, "\nshard: tasks in backoff\n"...)
+	}
+	for _, c := range []struct {
+		name     string
+		statuses [][]byte
+		want     []string
+	}{
+		{"a loop", [][]byte{
+			status(api.TaskState{Name: "proxy", State: taskBackoff, Restarts: 1, LastError: refusal}, api.TaskState{Name: "api", State: "running"}),
+			status(api.TaskState{Name: "proxy", State: taskBackoff, Restarts: 3, LastError: refusal}, api.TaskState{Name: "dns", State: taskBackoff, Restarts: 3, LastError: refusal}),
+		}, []string{"The daemon started, but these tasks keep failing:", "  proxy: " + refusal, "  dns: " + refusal, "Read its log with: sudo journalctl -u shard.service"}},
+		{"a task that heals", [][]byte{
+			status(api.TaskState{Name: "dns", State: taskBackoff, Restarts: 2, LastError: refusal}),
+			nil,
+		}, nil},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			asked := 0
+			h := Host{OS: "linux", Euid: 1000, Env: func(string) string { return "" }, Run: func(_ context.Context, name string, args ...string) ([]byte, error) {
+				switch call := strings.Join(append([]string{name}, args...), " "); call {
+				case "sudo -n -- " + shardBinary + " --remote  daemon status --format json":
+					out := c.statuses[asked]
+					asked++
+					if out == nil {
+						return []byte("{}\n"), nil
+					}
+					return out, errors.New("exit status 1")
+				case "systemctl is-active shard":
+					return []byte("active\n"), nil
+				default:
+					t.Errorf("unexpected command %s", call)
+					return nil, errors.New("unexpected command")
+				}
+			}}
+			ctx, cancel := context.WithTimeout(t.Context(), 10*time.Second)
+			defer cancel()
+
+			err := verifyDaemon(ctx, h)
+			if (err == nil) != (c.want == nil) || err != nil && !slices.Equal(problemLines(err), c.want) {
+				t.Fatalf("verify = %v, want the lines %q", err, c.want)
+			}
+			if asked != len(c.statuses) {
+				t.Fatalf("daemon status asked %d times, want %d", asked, len(c.statuses))
 			}
 		})
 	}
