@@ -139,12 +139,14 @@ func TestAFailureThatIsNeitherReachesTheCaller(t *testing.T) {
 	}
 }
 
-// The public text keeps the binary and why it failed, and drops the argv and the rule nft echoes, which hold host addresses.
-func TestAFailureNamesTheBinaryAndItsReasonInPublic(t *testing.T) {
+// The public text keeps the binary and a known errno, and leaves every other reason, which may hold a host path or address, to the daemon log.
+func TestAFailureNamesTheBinaryAndOnlyAKnownReasonInPublic(t *testing.T) {
 	cases := map[string]struct{ stderr, want string }{
-		"ip":        {"RTNETLINK answers: Operation not permitted", "ip failed: RTNETLINK answers: Operation not permitted"},
-		"nft":       {"/dev/stdin:3:1-20: Error: Could not process rule: No such file or directory\nadd rule inet shard forward ip saddr 10.87.0.2 accept\n^^^^", "ip failed: Could not process rule: No such file or directory"},
-		"no stderr": {"", "ip failed: exit status 2"},
+		"ip":             {"RTNETLINK answers: Operation not permitted", "ip failed: Operation not permitted"},
+		"nft":            {"/dev/stdin:3:1-20: Error: Could not process rule: No such file or directory\nadd rule inet shard forward ip saddr 10.87.0.2 accept\n^^^^", "ip failed: No such file or directory"},
+		"a host path":    {`Cannot create namespace file "/var/run/netns/synthetic": Permission denied`, "ip failed: Permission denied"},
+		"unknown reason": {`Error: any valid prefix is expected rather than "10.87.0.300/16".`, "ip failed; the daemon log has the cause"},
+		"no stderr":      {"", "ip failed; the daemon log has the cause"},
 	}
 	for name, c := range cases {
 		t.Run(name, func(t *testing.T) {
@@ -158,6 +160,26 @@ func TestAFailureNamesTheBinaryAndItsReasonInPublic(t *testing.T) {
 				t.Errorf("Public() = %q, want %q", got, c.want)
 			}
 		})
+	}
+}
+
+// An ip that cannot run prints no stderr, and its exec error names the host path, so only the daemon log sees it.
+func TestABinaryThatCannotRunKeepsItsPathOutOfPublic(t *testing.T) {
+	binary := filepath.Join(t.TempDir(), "ip")
+	if err := os.WriteFile(binary, []byte("#!/bin/sh\n"), 0o644); err != nil {
+		t.Fatalf("write the fake ip: %v", err)
+	}
+	m := &Manager{ipPath: binary, nftPath: binary}
+
+	failed, ok := errors.AsType[*CommandError](m.SetUp(t.Context(), "shardv2"))
+	if !ok {
+		t.Fatal("SetUp failed with no CommandError")
+	}
+	if got, want := failed.Public(), "ip failed; the daemon log has the cause"; got != want {
+		t.Errorf("Public() = %q, want %q", got, want)
+	}
+	if !strings.Contains(failed.Error(), binary) {
+		t.Errorf("Error() = %q, want the path for the daemon log", failed.Error())
 	}
 }
 

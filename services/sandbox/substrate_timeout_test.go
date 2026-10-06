@@ -172,8 +172,7 @@ func TestStartFailsFastAndTypedWhenTheRuntimeWedges(t *testing.T) {
 	}
 }
 
-// A stop and a start, or a pause and a resume, that reused the PID during the tick changes RunStartedAt, so PID
-// alone would miss the new run: the guard catches it and never applies the old run's status to the new one.
+// RunStartedAt prevents an old probe from changing a resumed run that reuses its PID.
 func TestLivenessBailsWhenAReusedPidHidesANewRun(t *testing.T) {
 	cases := map[string]func(*models.Sandbox){
 		"a stop and a start": func(sb *models.Sandbox) {

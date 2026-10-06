@@ -205,7 +205,11 @@ func TestAFailedNetworkSetUpNamesItsCause(t *testing.T) {
 	}{
 		"a host binary": {
 			cause: &netns.CommandError{Command: "nft -f -", Stderr: "/dev/stdin:3:1-20: Error: Could not process rule: No such file or directory", Err: errors.New("exit status 1")},
-			want:  "set up the sandbox network on the host: nft failed: Could not process rule: No such file or directory",
+			want:  "set up the sandbox network on the host: nft failed: No such file or directory",
+		},
+		"a host binary with an unknown reason": {
+			cause: &netns.CommandError{Command: "ip netns add synthetic", Stderr: `Cannot open "/var/run/netns/synthetic": Read-only file system`, Err: errors.New("exit status 1")},
+			want:  "set up the sandbox network on the host: ip failed; the daemon log has the cause",
 		},
 		"a full pool": {
 			cause: fmt.Errorf("%w in 10.87.0.0/16", network.ErrNoFreeAddress),

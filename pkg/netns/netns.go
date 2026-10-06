@@ -383,7 +383,7 @@ func (m *Manager) execute(ctx context.Context, binary string, stdin io.Reader, s
 	return nil
 }
 
-// CommandError is a host binary that failed; its public text keeps the binary and its reason, never the argv with host addresses.
+// CommandError is a host binary that failed; its public text keeps the binary and a known errno, and the daemon log the rest.
 type CommandError struct {
 	Command string
 	Stderr  string
@@ -394,14 +394,33 @@ func (e *CommandError) Error() string { return fmt.Sprintf("%s: %v: %s", e.Comma
 
 func (e *CommandError) Unwrap() error { return e.Err }
 
+// knownReasons are the errno texts a failure ends with; they name no host path or address, so a client may read them.
+var knownReasons = []string{
+	"Operation not permitted",
+	"Permission denied",
+	"No such file or directory",
+	"File exists",
+	"Operation not supported",
+	"Device or resource busy",
+}
+
 func (e *CommandError) Public() string {
 	binary, _, _ := strings.Cut(e.Command, " ")
 
-	return binary + " failed: " + reason(e.Stderr, e.Err)
+	why := reason(e.Stderr)
+	if i := strings.LastIndex(why, ": "); i >= 0 {
+		why = why[i+len(": "):]
+	}
+
+	if !slices.Contains(knownReasons, why) {
+		return binary + " failed; the daemon log has the cause"
+	}
+
+	return binary + " failed: " + why
 }
 
 // reason is the line of stderr that says why: nft puts its input position before it and echoes the rule after it.
-func reason(stderr string, err error) string {
+func reason(stderr string) string {
 	for line := range strings.Lines(stderr) {
 		if _, why, found := strings.Cut(line, "Error: "); found {
 			return strings.TrimSpace(why)
@@ -409,9 +428,6 @@ func reason(stderr string, err error) string {
 	}
 
 	first, _, _ := strings.Cut(stderr, "\n")
-	if first == "" {
-		return err.Error()
-	}
 
 	return strings.TrimSpace(first)
 }
