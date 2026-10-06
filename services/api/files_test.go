@@ -115,8 +115,8 @@ func TestPutFileRefusesWhatItCannotRead(t *testing.T) {
 	}
 }
 
-// trickle sends a put to route by hand, one byte after each pause, since the client transport holds a sized body back in its buffer.
-func trickle(t *testing.T, s seeded, route string, pauses []time.Duration) int {
+// put opens a put to route by hand, the head that states size and sent in one write, since the client transport holds a sized body back in its buffer.
+func put(t *testing.T, s seeded, route string, size int, sent string) net.Conn {
 	t.Helper()
 
 	conn, err := net.Dial("tcp", s.server.Listener.Addr().String())
@@ -125,16 +125,16 @@ func trickle(t *testing.T, s seeded, route string, pauses []time.Duration) int {
 	}
 	t.Cleanup(func() { conn.Close() })
 
-	if _, err := fmt.Fprintf(conn, "PUT /v0/sandboxes/%s/%s HTTP/1.1\r\nHost: shard\r\nContent-Length: %d\r\n\r\n", s.running.ID, route, len(pauses)); err != nil {
+	if _, err := fmt.Fprintf(conn, "PUT /v0/sandboxes/%s/%s HTTP/1.1\r\nHost: shard\r\nContent-Length: %d\r\n\r\n%s", s.running.ID, route, size, sent); err != nil {
 		t.Fatalf("send the head: %v", err)
 	}
-	for _, pause := range pauses {
-		time.Sleep(pause)
-		// A server that cut the body may already have closed the connection; its answer says why.
-		if _, err := conn.Write([]byte("x")); err != nil {
-			break
-		}
-	}
+
+	return conn
+}
+
+// answer reads the status the server answered a put on conn with.
+func answer(t *testing.T, conn net.Conn) int {
+	t.Helper()
 
 	resp, err := http.ReadResponse(bufio.NewReader(conn), nil)
 	if err != nil {
@@ -145,9 +145,39 @@ func trickle(t *testing.T, s seeded, route string, pauses []time.Duration) int {
 	return resp.StatusCode
 }
 
+// trickle sends a put to route one byte after each pause.
+func trickle(t *testing.T, s seeded, route string, pauses []time.Duration) int {
+	t.Helper()
+
+	conn := put(t, s, route, len(pauses), "")
+	for _, pause := range pauses {
+		time.Sleep(pause)
+		if _, err := conn.Write([]byte("x")); err != nil {
+			t.Fatalf("send a byte of the body: %v", err)
+		}
+	}
+
+	return answer(t, conn)
+}
+
+// stall sends a put to route whose body stops one byte short, all with the head, so no runner's stall can split what lands.
+func stall(t *testing.T, s seeded, route string, sent int) int {
+	t.Helper()
+
+	return answer(t, put(t, s, route, sent+1, strings.Repeat("x", sent)))
+}
+
+// ahead runs the idle body's clock an hour ahead, so no stall reaches its deadline and only the ReadTimeout of the request could cut a body.
+func ahead(t *testing.T) {
+	t.Helper()
+
+	api.SetClock(t, func() time.Time { return time.Now().Add(time.Hour) })
+}
+
 // A put's body streams past the ReadTimeout while it keeps moving, so a large file is never cut at the bound.
 func TestAPutOutlivesTheReadTimeoutWhileItsBodyMoves(t *testing.T) {
 	s := slow(t, seed(t), 200*time.Millisecond)
+	ahead(t)
 
 	status := trickle(t, s, "files?path=/srv/big", slices.Repeat([]time.Duration{20 * time.Millisecond}, 20))
 	if status != http.StatusNoContent || s.verbs.landed != strings.Repeat("x", 20) {
@@ -159,9 +189,9 @@ func TestAPutOutlivesTheReadTimeoutWhileItsBodyMoves(t *testing.T) {
 func TestAPutWhoseBodyStallsIsCut(t *testing.T) {
 	s := slow(t, seed(t), 200*time.Millisecond)
 
-	status := trickle(t, s, "files?path=/srv/big", append(slices.Repeat([]time.Duration{20 * time.Millisecond}, 15), time.Second))
+	status := stall(t, s, "files?path=/srv/big", 15)
 	if status == http.StatusNoContent || s.verbs.landed != strings.Repeat("x", 15) {
-		t.Fatalf("a body that stalled for 1 s answered %d and landed %q, want a failure after the 15 bytes before the stall", status, s.verbs.landed)
+		t.Fatalf("a body that stopped one byte short answered %d and landed %q, want a failure after the 15 bytes it sent", status, s.verbs.landed)
 	}
 }
 
