@@ -7,6 +7,7 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -663,4 +664,64 @@ func TestALostWaitIsTheExecLostSentinel(t *testing.T) {
 	if _, ok := errors.AsType[*models.CommandNotStartedError](err); ok {
 		t.Errorf("ExecFailure returned %v, want no command that never started", err)
 	}
+}
+
+// runsc reads the guest's passwd for HOME when the env has none, so the exec carries the HOME it would find (SHARD-752).
+func TestExecOptionsCarryTheHomeOfTheExecUser(t *testing.T) {
+	cases := map[string]struct {
+		spec models.ExecSpec
+		want []string
+	}{
+		"nobody named": {spec: models.ExecSpec{}, want: []string{"HOME=/root"}},
+		"a named user": {spec: models.ExecSpec{User: "build"}, want: []string{"HOME=/home/build"}},
+		"a HOME given": {spec: models.ExecSpec{Env: []string{"HOME=/work"}}, want: []string{"HOME=/work"}},
+	}
+	for name, c := range cases {
+		t.Run(name, func(t *testing.T) {
+			stateDir := t.TempDir()
+			writeUsers(t, filepath.Join(stateDir, "bundle", "rootfs"), guestPasswd, guestGroup)
+			config := `{"process":{"args":["/usr/local/bin/shard-init"],"cwd":"/"}}`
+			if err := os.WriteFile(filepath.Join(stateDir, "bundle", "config.json"), []byte(config), 0o600); err != nil {
+				t.Fatalf("write config.json: %v", err)
+			}
+			b, err := bundle.Open(stateDir)
+			if err != nil {
+				t.Fatalf("open the bundle: %v", err)
+			}
+
+			c.spec.Argv = []string{"true"}
+			opts, err := gvisor.ExecOptions(b, c.spec)
+			if err != nil {
+				t.Fatalf("ExecOptions: %v", err)
+			}
+			if got := homes(opts.Env); !slices.Equal(got, c.want) {
+				t.Errorf("the exec sets %q, want %q", got, c.want)
+			}
+		})
+	}
+}
+
+const (
+	guestPasswd = "root:x:0:0:root:/root:/bin/sh\nbuild:x:1000:1000::/home/build:/bin/sh\n"
+	guestGroup  = "root:x:0:\nbuild:x:1000:\n"
+)
+
+// writeUsers gives a rootfs the passwd and group an exec resolves its user and HOME against.
+func writeUsers(t *testing.T, rootfs, passwd, group string) {
+	t.Helper()
+
+	if err := os.MkdirAll(filepath.Join(rootfs, "etc"), 0o755); err != nil {
+		t.Fatalf("create etc: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(rootfs, "etc/passwd"), []byte(passwd), 0o600); err != nil {
+		t.Fatalf("write the passwd: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(rootfs, "etc/group"), []byte(group), 0o600); err != nil {
+		t.Fatalf("write the group: %v", err)
+	}
+}
+
+// homes is every HOME an env sets, in order.
+func homes(env []string) []string {
+	return slices.DeleteFunc(slices.Clone(env), func(entry string) bool { return !strings.HasPrefix(entry, "HOME=") })
 }

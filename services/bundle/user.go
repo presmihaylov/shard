@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"errors"
 	"fmt"
+	"io"
 	"io/fs"
 	"os"
 	"path/filepath"
@@ -43,6 +44,7 @@ const (
 	passwdFields = 4
 	groupFields  = 3
 	memberField  = 3
+	homeField    = 5
 )
 
 // Identity is the whole of a user, because dropping to one means adopting all of it and not just its ids.
@@ -333,9 +335,8 @@ func CheckUserDatabases(rootfs string) error {
 	defer root.Close() //nolint:errcheck // a read-only handle has nothing left to flush
 
 	for _, rel := range []string{"etc/passwd", "etc/group"} {
-		mode, err := guestMode(root, rel)
-		// A database the guest cannot reach either is one runc does without.
-		if errors.Is(err, fs.ErrNotExist) || errors.Is(err, syscall.ENOTDIR) || errors.Is(err, syscall.ELOOP) {
+		_, mode, err := guestPath(root, rel)
+		if unreachable(err) {
 			continue
 		}
 		if err != nil {
@@ -349,8 +350,13 @@ func CheckUserDatabases(rootfs string) error {
 	return nil
 }
 
-// guestMode resolves links as the guest does, an absolute one from the top and ".." stopping there, and opens nothing a fifo could block.
-func guestMode(root *os.Root, rel string) (fs.FileMode, error) {
+// unreachable is a database the guest's own lookup cannot reach either, which runc and runsc both do without.
+func unreachable(err error) bool {
+	return errors.Is(err, fs.ErrNotExist) || errors.Is(err, syscall.ENOTDIR) || errors.Is(err, syscall.ELOOP)
+}
+
+// guestPath resolves links as the guest does, an absolute one from the top and ".." stopping there, and opens nothing a fifo could block.
+func guestPath(root *os.Root, rel string) (string, fs.FileMode, error) {
 	parts := strings.Split(rel, "/")
 	resolved := ""
 	mode := fs.ModeDir
@@ -370,7 +376,7 @@ func guestMode(root *os.Root, rel string) (fs.FileMode, error) {
 		next := filepath.Join(resolved, part)
 		info, err := root.Lstat(next)
 		if err != nil {
-			return 0, err
+			return "", 0, err
 		}
 		if info.Mode()&fs.ModeSymlink == 0 {
 			resolved, mode = next, info.Mode()
@@ -379,11 +385,11 @@ func guestMode(root *os.Root, rel string) (fs.FileMode, error) {
 
 		links++
 		if links > maxLinks {
-			return 0, &fs.PathError{Op: "lstat", Path: next, Err: syscall.ELOOP}
+			return "", 0, &fs.PathError{Op: "lstat", Path: next, Err: syscall.ELOOP}
 		}
 		target, err := root.Readlink(next)
 		if err != nil {
-			return 0, err
+			return "", 0, err
 		}
 		if filepath.IsAbs(target) {
 			resolved = ""
@@ -391,7 +397,97 @@ func guestMode(root *os.Root, rel string) (fs.FileMode, error) {
 		parts = append(strings.Split(target, "/"), parts...)
 	}
 
-	return mode, nil
+	return resolved, mode, nil
+}
+
+// maxPasswd bounds the one read a HOME takes, so a sparse passwd the guest grew cannot hold an exec past its budget.
+const maxPasswd = 4 << 20
+
+// AddHome sets the HOME runsc and runc 1.3 would read from the guest's passwd, so neither opens a file the guest can swap for a fifo (SHARD-752).
+func AddHome(rootfs, user string, env []string) ([]string, error) {
+	// A HOME already set wins even when empty, as runsc keeps it.
+	if slices.ContainsFunc(env, func(entry string) bool { return strings.HasPrefix(entry, "HOME=") }) {
+		return env, nil
+	}
+
+	// An exec that names nobody runs as config.json's process user, which is root.
+	uid := uint32(0)
+	if uidText, _, _ := strings.Cut(user, ":"); uidText != "" {
+		id, ok := parseID(uidText)
+		if !ok {
+			return nil, fmt.Errorf("the exec user %q has no numeric uid to find a home for", user)
+		}
+		uid = id
+	}
+
+	home, err := guestHome(rootfs, uid)
+	if err != nil {
+		return nil, err
+	}
+
+	return append(env, "HOME="+home), nil
+}
+
+// guestHome is what runsc finds, the home of the first entry with the uid and "/" without one, through one bounded read of a file proven regular.
+func guestHome(rootfs string, uid uint32) (string, error) {
+	const rel = "etc/passwd"
+
+	root, err := os.OpenRoot(rootfs)
+	if err != nil {
+		return "", fmt.Errorf("open the rootfs %s: %w", rootfs, err)
+	}
+	defer root.Close() //nolint:errcheck // a read-only handle has nothing left to flush
+
+	resolved, mode, err := guestPath(root, rel)
+	if unreachable(err) {
+		return "/", nil
+	}
+	if err != nil {
+		return "", fmt.Errorf("find the guest's /%s: %w", rel, err)
+	}
+	if !mode.IsRegular() {
+		return "", notRegular(rel, mode)
+	}
+
+	// The open proves the file regular on its own handle, so whatever the guest put at the path since the walk is refused, never waited on.
+	full := filepath.Join(rootfs, resolved)
+	f, err := openDatabase(root, resolved, full)
+	if unreachable(err) {
+		return "/", nil
+	}
+	if _, refused := errors.AsType[*UserDatabaseError](err); refused {
+		return "", err
+	}
+	if err != nil {
+		return "", openFailed(root, resolved, full, err)
+	}
+	defer f.Close()
+
+	data, err := io.ReadAll(io.LimitReader(f, maxPasswd+1))
+	if err != nil {
+		return "", fmt.Errorf("read %s: %w", full, err)
+	}
+	if len(data) > maxPasswd {
+		return "", &UserDatabaseError{Err: fmt.Errorf("/%s is over %d MiB, more than a user database may hold", rel, maxPasswd>>20)}
+	}
+
+	for line := range strings.SplitSeq(string(data), "\n") {
+		fields := strings.Split(strings.TrimSpace(line), ":")
+		if len(fields) < 3 {
+			continue
+		}
+		if id, ok := parseID(fields[2]); !ok || id != uid {
+			continue
+		}
+		// An entry with no home field leaves HOME empty, as runsc and runc both do.
+		if len(fields) <= homeField {
+			return "", nil
+		}
+
+		return fields[homeField], nil
+	}
+
+	return "/", nil
 }
 
 func notRegular(rel string, mode fs.FileMode) error {

@@ -571,11 +571,12 @@ func (p *Provider) Exec(ctx context.Context, id string, spec models.ExecSpec) (m
 	}
 
 	// sysbox-runc mounts its own overlay as the guest root, and the host's mount of the same layers can show a stale tree (SHARD-653).
-	if err := bundle.CheckUserDatabases(filepath.Join(p.procRoot, strconv.Itoa(pid), "root")); err != nil {
+	guest := filepath.Join(p.procRoot, strconv.Itoa(pid), "root")
+	if err := bundle.CheckUserDatabases(guest); err != nil {
 		return models.ExitStatus{}, err
 	}
 
-	opts, err := execOptions(b, spec)
+	opts, err := execOptions(b, guest, spec)
 	if err != nil {
 		return models.ExitStatus{}, err
 	}
@@ -626,8 +627,8 @@ func notStarted(id string, err error) error {
 	return &models.CommandNotStartedError{Sandbox: id, Reason: failed.Reason(), Code: code}
 }
 
-// execOptions resolves users against the live sandbox because it can differ from the image.
-func execOptions(b bundle.Bundle, spec models.ExecSpec) (runc.ExecOptions, error) {
+// execOptions resolves users against the live sandbox because it can differ from the image, and reads HOME from guest, the root PID 1 sees.
+func execOptions(b bundle.Bundle, guest string, spec models.ExecSpec) (runc.ExecOptions, error) {
 	runtime, err := b.Runtime()
 	if err != nil {
 		return runc.ExecOptions{}, err
@@ -656,6 +657,11 @@ func execOptions(b bundle.Bundle, spec models.ExecSpec) (runc.ExecOptions, error
 		}
 		opts.User = fmt.Sprintf("%d:%d", identity.UID, identity.GID)
 		opts.Groups = identity.Groups
+	}
+
+	opts.Env, err = bundle.AddHome(guest, opts.User, opts.Env)
+	if err != nil {
+		return runc.ExecOptions{}, err
 	}
 
 	return opts, nil

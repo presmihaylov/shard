@@ -595,6 +595,11 @@ func execOptions(b bundle.Bundle, spec models.ExecSpec) (runccli.ExecOptions, er
 		opts.Groups = identity.Groups
 	}
 
+	opts.Env, err = bundle.AddHome(b.RootFS, opts.User, opts.Env)
+	if err != nil {
+		return runccli.ExecOptions{}, err
+	}
+
 	return opts, nil
 }
 
