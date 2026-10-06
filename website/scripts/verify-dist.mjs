@@ -1,4 +1,4 @@
-// Checks the built site: every route exists, the search index was built, every internal link resolves, the landing page matches its design to the byte, and /install is the script.
+// Checks the built site: every route exists, the search index was built, every internal link resolves, every page carries its SEO head, the landing page matches its design to the byte, and /install is the script.
 import { createHash } from 'node:crypto';
 import { existsSync, readdirSync, readFileSync, statSync } from 'node:fs';
 import { join, relative } from 'node:path';
@@ -8,7 +8,7 @@ const pub = new URL('../public/', import.meta.url).pathname;
 
 // The landing page ships exactly as designed: change these hashes only together with a new design.
 const landing = [
-	['index.html', '9b8c6f549b1a5f30d9bca7a3b1ebf3819b7a2493e6dfdc0cd700c42c3bd2074f'],
+	['index.html', 'b3f6e141dc0eaaa04777c3ce9d24d981f320bfe940c1b4ceb9d32083055aa95f'],
 	['prism-core.js', '6caad316dd991f24f8004e0b9c19c055cb5829ff65e973fbee406f96d81b8e7e'],
 	['prism-clike.js', 'c76ba4e240932bdc75546be30e550f5ba5e13815ff71511c76e9e27ac3072444'],
 	['prism-javascript.js', '0345ea83e12b7b974e953c79a64dea35a40308309449db70b82020fb688ac321'],
@@ -32,6 +32,17 @@ const requiredFiles = [
 	'pagefind/pagefind.js',
 	'shard-mark.svg',
 	'install',
+	'robots.txt',
+	'sitemap.xml',
+	'sitemap-index.xml',
+	'llms.txt',
+	'llms-full.txt',
+	'docs.md',
+	'docs/install.md',
+	'favicon.ico',
+	'icon.png',
+	'apple-touch-icon.png',
+	'og/index.png',
 	...landing.map(([file]) => file),
 ];
 
@@ -52,6 +63,14 @@ function resolves(href) {
 	});
 }
 
+function textFiles(dir) {
+	return readdirSync(dir).flatMap((name) => {
+		const path = join(dir, name);
+		if (statSync(path).isDirectory()) return textFiles(path);
+		return /\.(html|md|txt|xml)$/.test(name) ? [path] : [];
+	});
+}
+
 const problems = requiredFiles.filter((file) => !existsSync(join(dist, file))).map((file) => `missing ${file}`);
 
 for (const file of htmlFiles(dist)) {
@@ -60,6 +79,56 @@ for (const file of htmlFiles(dist)) {
 		if (href.startsWith('//') || resolves(href)) continue;
 		problems.push(`${relative(dist, file)}: broken link ${href}`);
 	}
+}
+
+// The sitemaps, the llms files, the Markdown twins and the meta tags name pages by their full URL.
+for (const file of textFiles(dist)) {
+	const text = readFileSync(file, 'utf8');
+	for (const [, path] of text.matchAll(/https:\/\/useshards\.com(\/[^\s"'<>)`\]]*)?/g)) {
+		if (resolves(path ?? '/')) continue;
+		problems.push(`${relative(dist, file)}: broken link https://useshards.com${path ?? ''}`);
+	}
+}
+
+const titles = new Map();
+const descriptions = new Map();
+for (const file of htmlFiles(dist)) {
+	const name = relative(dist, file);
+	if (name === '404.html' || name.startsWith('pagefind/')) continue;
+	const html = readFileSync(file, 'utf8');
+	const head = html.split('</head>')[0];
+	const body = html.slice(head.length);
+	const has = (pattern) => pattern.test(head);
+	const title = /<title>([^<]*)<\/title>/.exec(head)?.[1];
+	if (!title) problems.push(`${name}: no title`);
+	if (title && titles.has(title)) problems.push(`${name}: title "${title}" also on ${titles.get(title)}`);
+	titles.set(title, name);
+	const description = /<meta name="description" content="([^"]+)"/.exec(head)?.[1];
+	if (!description) problems.push(`${name}: no meta description`);
+	if (description && descriptions.has(description)) problems.push(`${name}: description also on ${descriptions.get(description)}`);
+	descriptions.set(description, name);
+	if (!has(/<link rel="canonical" href="https:\/\/useshards\.com\//)) problems.push(`${name}: no canonical`);
+	if (!has(/<meta name="robots" content="index, follow"/)) problems.push(`${name}: not index, follow`);
+	for (const tag of ['og:title', 'og:description', 'og:url', 'og:site_name', 'og:locale', 'og:type', 'og:image', 'og:image:alt']) {
+		if (!has(new RegExp(`<meta property="${tag}" content="[^"]+"`))) problems.push(`${name}: no ${tag}`);
+	}
+	for (const tag of ['twitter:card', 'twitter:title', 'twitter:description', 'twitter:image', 'twitter:image:alt']) {
+		if (!has(new RegExp(`<meta name="${tag}" content="[^"]+"`))) problems.push(`${name}: no ${tag}`);
+	}
+	if (!has(/<script type="application\/ld\+json">/)) problems.push(`${name}: no JSON-LD`);
+	const h1s = body.match(/<h1[\s>]/g)?.length ?? 0;
+	if (h1s !== 1) problems.push(`${name}: ${h1s} h1 elements, want 1`);
+	for (const [img] of body.matchAll(/<img\b[^>]*>/g)) {
+		if (!/\salt="/.test(img)) problems.push(`${name}: an img with no alt`);
+	}
+}
+
+// The landing OG image renders from src/seo.ts, so its title and description must match the static landing.
+const landingHead = readFileSync(join(pub, 'index.html'), 'utf8').split('</head>')[0];
+const seo = readFileSync(new URL('../src/seo.ts', import.meta.url), 'utf8');
+for (const pattern of [/<title>([^<]*)<\/title>/, /<meta name="description" content="([^"]*)"/]) {
+	const value = pattern.exec(landingHead)?.[1];
+	if (!value || !seo.includes(`'${value}'`)) problems.push(`src/seo.ts: LANDING does not match the landing's ${value}`);
 }
 
 const sha256 = (path) => createHash('sha256').update(readFileSync(path)).digest('hex');
@@ -76,4 +145,4 @@ if (problems.length > 0) {
 	console.error(problems.join('\n'));
 	process.exit(1);
 }
-console.log(`dist ok: ${requiredFiles.length} required files, ${landing.length} landing files byte-identical, every internal link resolves`);
+console.log(`dist ok: ${requiredFiles.length} required files, ${landing.length} landing files byte-identical, every internal link resolves, ${titles.size} pages carry their SEO head`);
