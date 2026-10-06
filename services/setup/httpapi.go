@@ -394,7 +394,7 @@ func createAccount(ctx context.Context, h Host) error {
 		}
 	}
 	if user {
-		if _, err := privileged(ctx, h, "useradd", "--system", "--no-create-home", "--gid", apiAccount, apiAccount); err != nil {
+		if _, err := privileged(ctx, h, "useradd", "--system", "--no-create-home", "--shell", "/usr/sbin/nologin", "--gid", apiAccount, apiAccount); err != nil {
 			return &Problem{Lines: []string{fmt.Sprintf("Could not create the %s user: %v.", apiAccount, err)}}
 		}
 	}

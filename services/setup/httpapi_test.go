@@ -180,7 +180,7 @@ func TestLocalSetsUpTheHTTPAPI(t *testing.T) {
 		t.Fatalf("manifest = %+v, %v", m, err)
 	}
 	group, start := called(l.calls, "groupadd --system shard"), slices.Index(l.calls, "systemctl start shard.service")
-	if group < 0 || start < group || called(l.calls, "useradd --system --no-create-home --gid shard shard") < 0 {
+	if group < 0 || start < group || called(l.calls, "useradd --system --no-create-home --shell /usr/sbin/nologin --gid shard shard") < 0 {
 		t.Fatalf("calls = %q, want the account made before the daemon starts", l.calls)
 	}
 	for _, c := range []string{"systemctl enable shard-serve.service", "systemctl restart shard-serve.service", mintLine + " --name shard-setup --signing-key-file /etc/shard/serve.secret"} {

@@ -97,7 +97,7 @@ The same service, without setup. Each release ships a systemd unit for it:
 
 ```sh
 sudo groupadd --system shard
-sudo useradd --system --no-create-home --gid shard shard
+sudo useradd --system --no-create-home --shell /usr/sbin/nologin --gid shard shard
 sudo systemctl restart shard
 sudo install -d -m2750 -o root -g shard /etc/shard
 sudo sh -c 'umask 077; openssl rand -hex 32 > /etc/shard/serve.secret'
