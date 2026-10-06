@@ -576,6 +576,9 @@ An empty `ExecSpec.User` means the user the entrypoint runs as, which is how `do
 it. The supervisor's own process runs as root. So the entrypoint's user is recorded as the
 `-user uid:gid` in the supervisor's argv, and the provider reads it back from the sandbox.
 
+On runc 1.1.15 and sysbox-runc 0.7.1, runc init opens `/etc/passwd` and `/etc/group` by path on
+every exec, so a guest that swaps its own passwd for a FIFO hangs the exec for its 20 s start budget.
+
 `ExecSpec` carries `*os.File` instead of `io.Reader`, because a TTY is one pty replica that the
 caller allocates on the host, and a pipe cannot be one.
 
