@@ -76,6 +76,7 @@ shard is pre-alpha, so a release can change the API, the CLI and the SDKs withou
 - Firecracker and vz: an exec of a command that no `PATH` entry holds exits 127, as on gVisor.
 - An exec with no `--user` no longer waits 20 seconds when a process in the sandbox replaces `/etc/passwd` with a fifo. gVisor refuses a `/etc/passwd` that is not a regular file. On runc and Sysbox, their own init still opens the file, so such an exec can still wait up to 20 seconds.
 - gVisor: `shard exec --workdir` with a file exits 126 with `the work directory "/etc/hosts" is not a directory`, as runc and Sysbox do. Before, the command ran.
+- Sysbox: Docker inside a sandbox failed with `permission denied` when it mounted its cgroups, once a gVisor or Firecracker daemon had made `/sys/fs/cgroup/shard` with mode `0750`. shard now makes that directory `0755`, and a Sysbox create or start sets an existing one back to `0755`.
 
 **Site**
 
