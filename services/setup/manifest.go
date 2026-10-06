@@ -40,6 +40,7 @@ type Manifest struct {
 	Version     string  `json:"version"`
 	Provider    string  `json:"provider"`
 	StartAtBoot bool    `json:"start_at_boot"`
+	StorageMiB  int64   `json:"storage_mib,omitempty"`
 	Files       []Owned `json:"files"`
 }
 
@@ -50,7 +51,7 @@ func RecordOwned(ctx context.Context, h Host, local Local, files ...Owned) error
 		return err
 	}
 
-	m.Version, m.Provider, m.StartAtBoot = h.Version, local.Provider, local.StartAtBoot
+	m.Version, m.Provider, m.StartAtBoot, m.StorageMiB = h.Version, local.Provider, local.StartAtBoot, local.StorageMiB
 	for _, f := range files {
 		if err := f.valid(); err != nil {
 			return err

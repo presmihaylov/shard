@@ -265,7 +265,7 @@ func TestFirecrackerDisk(t *testing.T) {
 		name    string
 		reflink bool
 		chroot  error
-		free    uint64
+		free    int64
 		files   bool
 		want    *finding
 	}{

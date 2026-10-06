@@ -84,7 +84,18 @@ func (s *Setup) existing(ctx context.Context, inst Installation) error {
 	}
 
 	m := *inst.Manifest
-	if err := s.UI.Print("This machine already has shard installed", "", "Version:  "+m.Version, "Provider: "+providerTitle(m.Provider), "Service:  "+string(inst.Service), ""); err != nil {
+	storage, reserved, err := existingStorage(s.Host, m)
+	if err != nil {
+		return err
+	}
+	lines := []string{"This machine already has shard installed", "", "Version:  " + m.Version, "Provider: " + providerTitle(m.Provider), "Service:  " + string(inst.Service)}
+	if storage != "" {
+		lines = append(lines, storage)
+	}
+	if err := s.UI.Print(append(lines, "")...); err != nil {
+		return err
+	}
+	if err := s.keepStorage(m.Provider, reserved); err != nil {
 		return err
 	}
 	choice, err := s.UI.Select(ctx, AskExisting, "What would you like to do?", []term.Option{
@@ -147,7 +158,7 @@ func (s *Setup) repair(ctx context.Context, m Manifest, service ServiceState, re
 		return s.UI.Print("✓ No problems found", "", "Installed correctly: shard "+m.Version+" with "+providerTitle(m.Provider)+".")
 	}
 
-	steps, err := s.localSteps(ctx, Local{Provider: m.Provider, StartAtBoot: m.StartAtBoot})
+	steps, err := s.localSteps(ctx, Local{Provider: m.Provider, StartAtBoot: m.StartAtBoot, StorageMiB: m.StorageMiB})
 	if err != nil {
 		return err
 	}
