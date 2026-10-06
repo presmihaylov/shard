@@ -9,6 +9,7 @@ import (
 	"runtime"
 	"slices"
 	"strings"
+	"syscall"
 	"testing"
 	"time"
 
@@ -698,6 +699,32 @@ func TestExecOptionsCarryTheHomeOfTheExecUser(t *testing.T) {
 				t.Errorf("the exec sets %q, want %q", got, c.want)
 			}
 		})
+	}
+}
+
+// A HOME already set skips the read, yet a passwd no exec may open is still refused before runsc runs (SHARD-752).
+func TestExecOptionsRefuseAFifoPasswdWhenHomeIsSet(t *testing.T) {
+	stateDir := t.TempDir()
+	rootfs := filepath.Join(stateDir, "bundle", "rootfs")
+	writeUsers(t, rootfs, guestPasswd, guestGroup)
+	if err := os.Remove(filepath.Join(rootfs, "etc/passwd")); err != nil {
+		t.Fatalf("remove the passwd: %v", err)
+	}
+	if err := syscall.Mkfifo(filepath.Join(rootfs, "etc/passwd"), 0o600); err != nil {
+		t.Fatalf("make the passwd a fifo: %v", err)
+	}
+	config := `{"process":{"args":["/usr/local/bin/shard-init"],"cwd":"/"}}`
+	if err := os.WriteFile(filepath.Join(stateDir, "bundle", "config.json"), []byte(config), 0o600); err != nil {
+		t.Fatalf("write config.json: %v", err)
+	}
+	b, err := bundle.Open(stateDir)
+	if err != nil {
+		t.Fatalf("open the bundle: %v", err)
+	}
+
+	_, err = gvisor.ExecOptions(b, models.ExecSpec{Argv: []string{"true"}, Env: []string{"HOME=/work"}})
+	if _, refused := errors.AsType[*bundle.UserDatabaseError](err); !refused || !strings.Contains(err.Error(), "/etc/passwd is a named pipe") {
+		t.Errorf("ExecOptions = %v, want the fifo passwd refused", err)
 	}
 }
 

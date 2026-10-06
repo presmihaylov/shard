@@ -328,13 +328,22 @@ const maxLinks = 40
 
 // CheckUserDatabases refuses a passwd or group that is not a regular file, since runc opens both before every exec and a fifo stalls it (SHARD-653).
 func CheckUserDatabases(rootfs string) error {
+	return checkDatabases(rootfs, "etc/passwd", "etc/group")
+}
+
+// CheckPasswd is the same refusal for runsc, which opens the passwd and never the group.
+func CheckPasswd(rootfs string) error {
+	return checkDatabases(rootfs, "etc/passwd")
+}
+
+func checkDatabases(rootfs string, rels ...string) error {
 	root, err := os.OpenRoot(rootfs)
 	if err != nil {
 		return fmt.Errorf("open the rootfs %s: %w", rootfs, err)
 	}
 	defer root.Close() //nolint:errcheck // a read-only handle has nothing left to flush
 
-	for _, rel := range []string{"etc/passwd", "etc/group"} {
+	for _, rel := range rels {
 		_, mode, err := guestPath(root, rel)
 		if unreachable(err) {
 			continue
