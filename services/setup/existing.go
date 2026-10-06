@@ -1149,17 +1149,27 @@ func serviceState(ctx context.Context, h Host, m Manifest) (ServiceState, error)
 		return ServiceInactive, nil
 	}
 
-	// is-active exits non-zero for every state but active, and still prints the state.
-	out, err := h.Run(ctx, "systemctl", "is-active", serviceName)
-	state := strings.TrimSpace(string(out))
+	state, err := unitState(ctx, h)
+	if err != nil {
+		return "", err
+	}
 	if state == "active" {
 		return ServiceActive, nil
 	}
+
+	return ServiceInactive, nil
+}
+
+// unitState is the state systemctl names for the service: active, activating, failed and the rest.
+func unitState(ctx context.Context, h Host) (string, error) {
+	// is-active exits non-zero for every state but active, and still prints the state.
+	out, err := h.Run(ctx, "systemctl", "is-active", serviceName)
+	state := strings.TrimSpace(string(out))
 	if err != nil && state == "" {
 		return "", fmt.Errorf("check the background service: %w", err)
 	}
 
-	return ServiceInactive, nil
+	return state, nil
 }
 
 // confirm asks before a change; a no is ErrDeclined, so the run ends having changed nothing.

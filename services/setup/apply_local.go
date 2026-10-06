@@ -624,6 +624,13 @@ func verifyDaemon(ctx context.Context, h Host) error {
 		if err == nil {
 			return nil
 		}
+		failed, stateErr := unitFailed(ctx, h)
+		if stateErr != nil {
+			return stateErr
+		}
+		if failed {
+			return startFailure(ctx, h)
+		}
 		if time.Now().After(deadline) {
 			return &Problem{Lines: []string{
 				fmt.Sprintf("The daemon is not ready after %s: %s.", verifyWait, notReady(out, err)),
@@ -636,6 +643,41 @@ func verifyDaemon(ctx context.Context, h Host) error {
 		case <-time.After(verifyPoll):
 		}
 	}
+}
+
+// unitFailed says systemd stopped restarting the daemon, which a refusal at start brings within seconds; launchd keeps retrying, so a Mac waits.
+func unitFailed(ctx context.Context, h Host) (bool, error) {
+	if h.OS == "darwin" {
+		return false, nil
+	}
+	state, err := unitState(ctx, h)
+
+	return state == "failed", err
+}
+
+// startFailure is the error the daemon printed on its last start, read from that run's own journal so an older run's line never answers for it.
+func startFailure(ctx context.Context, h Host) error {
+	gaveUp := "The daemon failed to start, and systemd stopped restarting it."
+	out, err := run(ctx, h, "systemctl", "show", "--property=InvocationID", "--value", serviceName)
+	if err != nil {
+		return &Problem{Lines: []string{gaveUp, fmt.Sprintf("Could not find its last run: %v.", err), logHint(h)}}
+	}
+	id := strings.TrimSpace(string(out))
+	if id == "" {
+		return &Problem{Lines: []string{gaveUp, logHint(h)}}
+	}
+	out, err = privileged(ctx, h, "journalctl", "_SYSTEMD_INVOCATION_ID="+id, "--output=cat", "--no-pager")
+	if err != nil {
+		return &Problem{Lines: []string{gaveUp, fmt.Sprintf("Could not read its log: %v.", err), logHint(h)}}
+	}
+	lines := strings.Split(strings.TrimSpace(string(out)), "\n")
+	for _, line := range slices.Backward(lines) {
+		if reason, ok := strings.CutPrefix(strings.TrimSpace(line), "shard: "); ok {
+			return &Problem{Lines: []string{fmt.Sprintf("The daemon failed to start: %s.", reason), logHint(h)}}
+		}
+	}
+
+	return &Problem{Lines: []string{gaveUp, logHint(h)}}
 }
 
 // notReady is the reason daemon status printed, without the command line behind it, else the error whole.

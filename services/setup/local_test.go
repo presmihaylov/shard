@@ -18,6 +18,7 @@ import (
 	"strings"
 	"syscall"
 	"testing"
+	"time"
 
 	"github.com/klauspost/compress/zstd"
 
@@ -608,6 +609,55 @@ func TestNotReadyIsTheDaemonsReason(t *testing.T) {
 		if got := notReady([]byte(out), err); got != want {
 			t.Errorf("notReady(%q) = %q, want %q", out, got, want)
 		}
+	}
+}
+
+// A daemon systemd stopped restarting ends the verify at once, with the error it printed on its last start. (SHARD-753)
+func TestVerifyStopsWhenTheUnitFails(t *testing.T) {
+	wait, poll := verifyWait, verifyPoll
+	verifyWait, verifyPoll = time.Hour, time.Millisecond
+	t.Cleanup(func() { verifyWait, verifyPoll = wait, poll })
+
+	refusal := "--provider gvisor contradicts the root, which is firecracker's: /var/lib/shard.xfs exists; name firecracker or leave --provider out"
+	hint := "Read its log with: sudo journalctl -u shard.service"
+	for _, c := range []struct {
+		name, journal string
+		want          []string
+	}{
+		{"the daemon's error", "starting\nshard: " + refusal + "\n", []string{"The daemon failed to start: " + refusal + ".", hint}},
+		{"no error line", "signal: killed\n", []string{"The daemon failed to start, and systemd stopped restarting it.", hint}},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			states, asked := []string{"activating", "activating", "failed"}, 0
+			h := Host{OS: "linux", Euid: 1000, Env: func(string) string { return "" }, Run: func(_ context.Context, name string, args ...string) ([]byte, error) {
+				switch call := strings.Join(append([]string{name}, args...), " "); call {
+				case "sudo -n -- " + shardBinary + " --remote  daemon status":
+					asked++
+					return []byte("shard: the daemon is not running\n"), errors.New("exit status 1")
+				case "systemctl is-active shard":
+					state := states[0]
+					states = states[1:]
+					return []byte(state + "\n"), errors.New("exit status 3")
+				case "systemctl show --property=InvocationID --value shard":
+					return []byte("inv-1\n"), nil
+				case "sudo -n -- journalctl _SYSTEMD_INVOCATION_ID=inv-1 --output=cat --no-pager":
+					return []byte(c.journal), nil
+				default:
+					t.Errorf("unexpected command %s", call)
+					return nil, errors.New("unexpected command")
+				}
+			}}
+			ctx, cancel := context.WithTimeout(t.Context(), 10*time.Second)
+			defer cancel()
+
+			err := verifyDaemon(ctx, h)
+			if p, ok := errors.AsType[*Problem](err); !ok || !slices.Equal(p.Lines, c.want) {
+				t.Fatalf("verify = %v, want the lines %q", err, c.want)
+			}
+			if asked != 3 {
+				t.Fatalf("daemon status asked %d times, want 3: once per state read", asked)
+			}
+		})
 	}
 }
 
