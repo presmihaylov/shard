@@ -191,7 +191,6 @@ func TestAnAdmissionWaitsOutAReplace(t *testing.T) {
 	}
 }
 
-// reserve stands in for a Reserve whose bound the host could never hold, so the test owns every number.
 // A fork reserves its copy before the capture, so a copy that cannot fit is refused by the copy's text, and one that fits is held for the AdmitCopy that writes it (SHARD-775).
 func TestReserveCopyHoldsTheSourcesSize(t *testing.T) {
 	sandboxes := filepath.Join(t.TempDir(), "sandboxes")
@@ -219,6 +218,7 @@ func TestReserveCopyHoldsTheSourcesSize(t *testing.T) {
 	}
 }
 
+// reserve stands in for a Reserve whose bound the host could never hold, so the test owns every number.
 func reserve(t *testing.T, dir string, bound int64) {
 	t.Helper()
 	admitting.Lock()

@@ -15,6 +15,7 @@ import (
 
 	"github.com/presmihaylov/shard/models"
 	"github.com/presmihaylov/shard/pkg/vz"
+	"github.com/presmihaylov/shard/services/bundle"
 	"github.com/presmihaylov/shard/services/provider/vzvm"
 	"github.com/presmihaylov/shard/services/supervisor"
 )
@@ -258,6 +259,29 @@ func TestAForkOntoALiveIDIsRefusedBeforeAnyFreeze(t *testing.T) {
 		t.Errorf("the guest of the source read %q, want no freeze", got)
 	}
 	requireRunning(t, h.provider, other.ID, otherPID, "the refused fork")
+}
+
+// A fork whose disk copy cannot fit is refused before the capture, so the source is never frozen or paused for it (SHARD-775).
+func TestAForkThatCannotFitIsRefusedBeforeTheCapture(t *testing.T) {
+	h, spec, pid := runningShim(t)
+	fork := h.newSpec(t)
+	mark(t, spec.StateDir, orderFile)
+	// No host holds 8 TiB free, and a sparse disk takes none of it.
+	if err := os.Truncate(filepath.Join(spec.StateDir, "disk.img"), 8<<40); err != nil {
+		t.Fatal(err)
+	}
+
+	err := h.provider.Fork(t.Context(), spec.ID, fork)
+	if room, ok := errors.AsType[*bundle.NoRoomError](err); !ok || !room.Copy {
+		t.Fatalf("Fork = %v, want the copy refused for room", err)
+	}
+	if got := lines(t, spec.StateDir, orderFile); len(got) != 0 {
+		t.Errorf("the guest of the source read %q, want no freeze", got)
+	}
+	requireRunning(t, h.provider, spec.ID, pid, "the refused fork")
+	if _, err := os.Stat(filepath.Join(fork.StateDir, vzvm.CaptureDir)); !errors.Is(err, fs.ErrNotExist) {
+		t.Errorf("the capture after the refusal: %v, want none", err)
+	}
 }
 
 // A fork takes a running source only: a paused one is refused by name, and the fork's directory keeps no record and no capture (SHARD-463).
