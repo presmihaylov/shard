@@ -20,3 +20,6 @@ func (p *Provider) SetProcRoot(root string) {
 func ExecOptions(b bundle.Bundle, guest string, spec models.ExecSpec) (runc.ExecOptions, error) {
 	return execOptions(b, guest, spec)
 }
+
+// NotStarted is the refusal an exec gets when its launch never took.
+var NotStarted = notStarted

@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/presmihaylov/shard/models"
+	"github.com/presmihaylov/shard/pkg/launch"
 	"github.com/presmihaylov/shard/pkg/runc"
 	"github.com/presmihaylov/shard/services/bundle"
 	"github.com/presmihaylov/shard/services/provider/sysbox"
@@ -382,4 +383,20 @@ func writeUsers(t *testing.T, rootfs, passwd, group string) {
 // homes is every HOME an env sets, in order.
 func homes(env []string) []string {
 	return slices.DeleteFunc(slices.Clone(env), func(entry string) bool { return !strings.HasPrefix(entry, "HOME=") })
+}
+
+// A work directory the exec cannot enter is refused by name with docker's 126, never as a missing command.
+func TestAnExecThatCannotEnterItsWorkDirectoryNamesIt(t *testing.T) {
+	err := sysbox.NotStarted("amber-otter-1a2b", "/missing", &launch.NotStartedError{Errno: syscall.ENOENT, Chdir: true})
+
+	var notStarted *models.CommandNotStartedError
+	if !errors.As(err, &notStarted) {
+		t.Fatalf("got %v, want a CommandNotStartedError", err)
+	}
+	if notStarted.Code != models.CommandNotExecutableExitCode {
+		t.Errorf("the code is %d, want %d", notStarted.Code, models.CommandNotExecutableExitCode)
+	}
+	if want := `the work directory "/missing" does not exist`; notStarted.Reason != want {
+		t.Errorf("the reason is %q, want %q", notStarted.Reason, want)
+	}
 }

@@ -15,3 +15,6 @@ func (p *Provider) SetCgroupRoot(root string) {
 func ExecOptions(b bundle.Bundle, spec models.ExecSpec) (runccli.ExecOptions, error) {
 	return execOptions(b, spec)
 }
+
+// NotStarted is the refusal an exec gets when its launch never took.
+var NotStarted = notStarted
