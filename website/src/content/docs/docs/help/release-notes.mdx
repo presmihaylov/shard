@@ -63,6 +63,7 @@ shard is pre-alpha, so a release can change the API, the CLI and the SDKs withou
 
 - vz: when the daemon loses its connection to a guest and cannot read the VM state, the sandbox no longer shows as `stopped`. The daemon tries again, then reports the error.
 - vz: a connection to a guest that times out no longer leaves a goroutine or a handle in the daemon.
+- vz: when the process that runs a VM ends, the sandbox shows as `stopped` at once. It could show as `running` for a while, and for good when the daemon had lost its connection to that process.
 - gVisor, runc and Sysbox: the restart count comes back with the exit record, which the host holds, so a process in the sandbox can no longer change it. A file left in `/.shard` no longer makes `stop` or `start` fail.
 - `shard rm` no longer fails when the egress log writes into the sandbox directory during the remove.
 
