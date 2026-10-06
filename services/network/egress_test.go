@@ -29,7 +29,7 @@ func TestTheRulesetGivesEveryPolicyItsOwnChain(t *testing.T) {
 		Policy:  true,
 		Rules: []Compiled{
 			{Action: models.ActionAllow, Protocol: "tcp", Ports: []int{80, 443}, Prefixes: []netip.Prefix{netip.MustParsePrefix("93.184.216.34/32")}},
-			{ID: "2", Action: models.ActionDeny, Prefixes: []netip.Prefix{netip.MustParsePrefix("0.0.0.0/0")}},
+			{ID: "2", Sum: "0123456789ab", Action: models.ActionDeny, Prefixes: []netip.Prefix{netip.MustParsePrefix("0.0.0.0/0")}},
 			{Action: models.ActionAllow, Protocol: "udp", Ports: []int{53}},
 		},
 	}, {
@@ -53,7 +53,7 @@ func TestTheRulesetGivesEveryPolicyItsOwnChain(t *testing.T) {
 		"type filter hook prerouting priority filter; policy accept;\n\t\tiifname \"shardv2\" ether type ip6 limit rate 2/second burst 10 packets log prefix \"shard-egress rule=ipv6 \"\n\t\tiifname \"shardv2\" ether type ip6 drop\n\t\tiifname \"shardv2\" ether type ip ip saddr != 10.87.0.2 drop\n\t\tiifname \"shardv2\" arp saddr ip != 10.87.0.2 drop",
 		"iifname \"shardv3\" ether type ip ip saddr != 10.87.0.3 drop",
 		"ip saddr 10.87.0.2 ip daddr { 10.0.0.0/8, 172.16.0.0/12, 192.168.0.0/16, 169.254.0.0/16, 127.0.0.0/8, 100.64.0.0/10 } limit rate 2/second burst 10 packets log prefix \"shard-egress rule=private \"\n\t\tip saddr 10.87.0.3 ip daddr { 10.0.0.0/8, 172.16.0.0/12, 192.168.0.0/16, 169.254.0.0/16, 127.0.0.0/8, 100.64.0.0/10 } limit rate 2/second burst 10 packets log prefix \"shard-egress rule=private \"\n\t\tip daddr { 10.0.0.0/8, 172.16.0.0/12, 192.168.0.0/16, 169.254.0.0/16, 127.0.0.0/8, 100.64.0.0/10 } drop\n\t\tip saddr 10.87.0.2 jump egress_shardv2",
-		"chain egress_shardv2 {\n\t\tip daddr { 93.184.216.34/32 } meta l4proto tcp tcp dport { 80, 443 } accept\n\t\tip daddr { 0.0.0.0/0 } limit rate 2/second burst 10 packets log prefix \"shard-egress rule=2 \"\n\t\tip daddr { 0.0.0.0/0 } drop\n\t\t# no address\n\t\tlimit rate 2/second burst 10 packets log prefix \"shard-egress rule=default \"\n\t\tdrop\n\t}",
+		"chain egress_shardv2 {\n\t\tip daddr { 93.184.216.34/32 } meta l4proto tcp tcp dport { 80, 443 } accept\n\t\tip daddr { 0.0.0.0/0 } limit rate 2/second burst 10 packets log prefix \"shard-egress rule=2 sum=0123456789ab \"\n\t\tip daddr { 0.0.0.0/0 } drop\n\t\t# no address\n\t\tlimit rate 2/second burst 10 packets log prefix \"shard-egress rule=default \"\n\t\tdrop\n\t}",
 	} {
 		if !strings.Contains(got, want) {
 			t.Errorf("the ruleset has no %q:\n%s", want, got)

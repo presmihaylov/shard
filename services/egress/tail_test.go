@@ -102,16 +102,21 @@ func TestTailWritesEveryDropTheRingHolds(t *testing.T) {
 	}
 }
 
-// A host drop names the policy rule behind its id as a proxy decision does, and a fixed id or a changed policy names none (SHARD-773).
+// A host drop names the policy rule behind its id as a proxy decision does, and a fixed id or a rule the policy since changed names none (SHARD-773).
 func TestTailNamesThePolicyRuleOfADrop(t *testing.T) {
 	sb := sandbox(t)
 	deny := EffectiveRule{ID: "2", Rule: models.Rule{Action: models.ActionDeny, Destination: models.Destination{Kind: models.DestinationCIDR, Value: "203.0.113.0/24"}, Protocol: "tcp", Ports: []int{25}}}
-	allow := EffectiveRule{ID: "3", Rule: models.Rule{Action: models.ActionAllow, Destination: models.Destination{Kind: models.DestinationCIDR, Value: "203.0.113.0/24"}, Protocol: "tcp", Ports: []int{443}}}
+	before := models.Rule{Action: models.ActionDeny, Destination: models.Destination{Kind: models.DestinationCIDR, Value: "198.51.100.0/24"}}
 	root := t.TempDir()
 	decisions := NewLog(fakeDirs{root: root})
-	tailer := NewTailer(root, decisions, &fakeSandboxes{sandboxes: []models.Sandbox{sb}}, fakeRules{rules: []EffectiveRule{deny, allow}}, nil, log.New(io.Discard, "", 0))
+	tailer := NewTailer(root, decisions, &fakeSandboxes{sandboxes: []models.Sandbox{sb}}, fakeRules{rules: []EffectiveRule{deny}}, nil, log.New(io.Discard, "", 0))
 
-	ring := &fakeRing{records: []kmsg.Record{drops(7, 110, "2"), drops(8, 120, "3"), drops(9, 130, "private")}}
+	ring := &fakeRing{records: []kmsg.Record{
+		drops(7, 110, "2 sum="+RuleSum(deny.Rule)),
+		drops(8, 120, "2 sum="+RuleSum(before)),
+		drops(9, 130, "2"),
+		drops(10, 140, "private"),
+	}}
 	if err := tailer.Run(t.Context(), ring); err != nil {
 		t.Fatalf("Run: %v", err)
 	}
@@ -124,7 +129,7 @@ func TestTailNamesThePolicyRuleOfADrop(t *testing.T) {
 	for _, record := range records {
 		texts = append(texts, record.RuleText)
 	}
-	if want := []string{FormatRule(deny.Rule), "", ""}; !slices.Equal(texts, want) {
+	if want := []string{FormatRule(deny.Rule), "", "", ""}; !slices.Equal(texts, want) {
 		t.Errorf("the records carry the rule texts %q, want %q", texts, want)
 	}
 }
@@ -136,7 +141,7 @@ func TestTailFailsOnAPolicyItCannotRead(t *testing.T) {
 	decisions := NewLog(fakeDirs{root: root})
 	tailer := NewTailer(root, decisions, &fakeSandboxes{sandboxes: []models.Sandbox{sb}}, fakeRules{err: errors.New("the policy file is torn")}, nil, log.New(io.Discard, "", 0))
 
-	err := tailer.Run(t.Context(), &fakeRing{records: []kmsg.Record{drops(7, 110, "private"), drops(8, 120, "2")}})
+	err := tailer.Run(t.Context(), &fakeRing{records: []kmsg.Record{drops(7, 110, "private"), drops(8, 120, "2 sum=0123456789ab")}})
 	if err == nil || !strings.Contains(err.Error(), "the policy file is torn") || !strings.Contains(err.Error(), "sandbox sb") {
 		t.Fatalf("Run returned %v, want the policy read named", err)
 	}

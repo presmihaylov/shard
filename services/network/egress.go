@@ -86,7 +86,9 @@ type Chain struct {
 // Compiled is one rule with every name already resolved to prefixes. Protocol empty is every protocol.
 type Compiled struct {
 	// ID names the rule in the log line the chain writes when it drops a packet.
-	ID       string
+	ID string
+	// Sum rides with ID on that line, because ID is only a place in the order and a later policy can put another rule there.
+	Sum      string
 	Action   models.Action
 	Protocol string
 	Ports    []int
@@ -255,7 +257,7 @@ func render(rule Compiled) []string {
 		return []string{match + " accept"}
 	}
 
-	return []string{match + " " + logStatement(rule.ID), match + " drop"}
+	return []string{match + " " + logLine("rule="+rule.ID+" sum="+rule.Sum), match + " drop"}
 }
 
 // The ids a decision carries when no rule of the policy decided it.
@@ -284,5 +286,9 @@ const LogPrefix = "shard-egress"
 // logStatement writes one line into the kernel ring and names the rule that wrote it. The ring is shared and
 // short, so a probe storm must not fill it: each statement carries its own limit.
 func logStatement(id string) string {
-	return fmt.Sprintf("limit rate 2/second burst 10 packets log prefix %q", LogPrefix+" rule="+id+" ")
+	return logLine("rule=" + id)
+}
+
+func logLine(fields string) string {
+	return fmt.Sprintf("limit rate 2/second burst 10 packets log prefix %q", LogPrefix+" "+fields+" ")
 }

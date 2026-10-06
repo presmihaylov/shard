@@ -210,7 +210,7 @@ func (t *Tailer) attribute(record drop) (bool, error) {
 			return false, nil
 		}
 
-		text, err := t.ruleText(sb, record.Rule)
+		text, err := t.ruleText(sb, record.Rule, record.sum)
 		if err != nil {
 			return false, err
 		}
@@ -232,9 +232,10 @@ func (t *Tailer) attribute(record drop) (bool, error) {
 	return false, nil
 }
 
-// ruleText names the policy rule behind a drop's id as the proxy and the resolver do, and a fixed id names none (SHARD-773).
-func (t *Tailer) ruleText(sb models.Sandbox, id string) (string, error) {
-	if id == "" || strings.TrimLeft(id, "0123456789") != "" {
+// ruleText names the rule behind a drop's id (SHARD-773); the policy may have changed since, so only the same text under the id dropped it.
+func (t *Tailer) ruleText(sb models.Sandbox, id, sum string) (string, error) {
+	// Only a policy rule's line carries a sum, so a fixed id names no rule.
+	if sum == "" {
 		return "", nil
 	}
 
@@ -243,8 +244,7 @@ func (t *Tailer) ruleText(sb models.Sandbox, id string) (string, error) {
 		return "", fmt.Errorf("read the rules of sandbox %s: %w", sb.ID, err)
 	}
 	for _, rule := range effective.Rules {
-		// Only a deny drops, so an allow under the id means the policy changed after the drop.
-		if rule.ID == id && rule.Action == models.ActionDeny {
+		if rule.ID == id && RuleSum(rule.Rule) == sum {
 			return FormatRule(rule.Rule), nil
 		}
 	}
