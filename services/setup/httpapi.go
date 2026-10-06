@@ -450,6 +450,9 @@ func (p *apiPlan) systemdService(ctx context.Context, dir string) error {
 	if _, err := privileged(ctx, p.h, "install", "-d", "-o", "0", "-g", apiAccount, "-m", "2750", rooted(p.h, apiDir)); err != nil {
 		return &Problem{Lines: []string{fmt.Sprintf("Could not create %s: %v.", apiDir, err)}}
 	}
+	if err := p.regroup(ctx); err != nil {
+		return err
+	}
 	if err := p.signingKey(ctx, dir); err != nil {
 		return err
 	}
@@ -470,6 +473,24 @@ func (p *apiPlan) systemdService(ctx context.Context, dir string) error {
 	}
 
 	return p.record(ctx, serveUnit)
+}
+
+// regroup gives the files shard serve reads back to the shard group, since an account made again after an uninstall can get another id.
+func (p *apiPlan) regroup(ctx context.Context) error {
+	for _, file := range []string{signingKeyFile, serve.TokensPath(signingKeyFile)} {
+		found, err := present(ctx, p.h, file)
+		if err != nil {
+			return err
+		}
+		if !found {
+			continue
+		}
+		if _, err := privileged(ctx, p.h, "chgrp", apiAccount, rooted(p.h, file)); err != nil {
+			return &Problem{Lines: []string{fmt.Sprintf("Could not give %s to the %s group: %v.", file, apiAccount, err)}}
+		}
+	}
+
+	return nil
 }
 
 // signingKey makes the key that signs API keys, and keeps one that is there, since a new one would end every key it signed.

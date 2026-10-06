@@ -409,6 +409,9 @@ func TestTheHTTPAPIRowKeepsOrReplacesTheKey(t *testing.T) {
 	if ui.initials[0] != first || !slices.Contains(ui.asked, AskReplaceKey) || called(l.calls, mintLine) >= 0 || l.read("/etc/shard/api-key") != setupKey+"\n" {
 		t.Fatalf("a second run did not keep the key: asked %v, initial %q, calls %q", ui.asked, ui.initials, l.calls)
 	}
+	if called(l.calls, "chgrp shard "+filepath.Join(l.root, signingKeyFile)) < 0 {
+		t.Fatalf("calls = %q, want the kept signing key given back to the shard group", l.calls)
+	}
 
 	l.answer[mintLine] = minted("sk_test_new")
 	ui = setUp(apiServer(t, "sk_test_new"), true)
