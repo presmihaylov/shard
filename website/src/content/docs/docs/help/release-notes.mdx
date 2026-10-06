@@ -17,6 +17,71 @@ To upgrade the CLI, run the installer again. To upgrade a host that setup prepar
 
 shard is pre-alpha, so a release can change the API, the CLI and the SDKs without any compatibility guarantees.
 
+## v0.1.4
+
+6 October 2026. [Full notes](https://github.com/presmihaylov/shard/releases/tag/v0.1.4).
+
+**New**
+
+- `shard shell SANDBOX` opens an interactive shell in a sandbox: `bash`, or `sh` when the image has no `bash`. It takes `--workdir` and `--user`, and exits with the shell's exit code. When the image has no shell at all, it says so.
+- `shard stop`, `shard remove`, `shard pause` and `shard resume` take several sandboxes. A failure does not stop the others: the command prints each failure and exits non-zero.
+- `shard list -q` (`--quiet`) prints only the ids. It does not go with `--format`.
+- `shard prune` removes every stopped sandbox, and asks first. With no terminal, it needs `--force`.
+- `shard setup` can set up the HTTP API (`shard serve`) as a background service. A first install asks, and a new "Set up the HTTP API" row adds it to an existing install. The flags are `--http-api`, `--listen` (default `127.0.0.1:7850`) and `--replace-api-key`. Setup creates an API key and saves it in `/etc/shard/api-key`, which only root can read, or in `/var/lib/shard/auth/api-key` on a Mac. It never prints the key. A repeated setup keeps the key, and `--replace-api-key` replaces it. With no terminal, `--http-api` defaults to `false`.
+- Firecracker and vz: a sandbox created with no `--memory`, or with `--memory 0`, gets 512 MiB. Before, the create failed. A fork keeps the memory of its source, and a create from a snapshot keeps the memory of the snapshot. Under 128 MiB still fails, with `--memory is 100 MiB, under the 128 MiB provider firecracker needs; set it to 128 MiB or more`.
+
+**Install and setup**
+
+- `shard setup --storage-size <size>` and `shard daemon --storage-size <size>` set how much space shard reserves for its data. They apply only to Firecracker on a filesystem that cannot clone files, such as ext4. Elsewhere the flag fails and says why. The default is half of the free space, at most 100 GiB. The minimum is 10 GiB, and 10 GiB always stays free for the host. Setup shows the size of an existing image and never resizes it. With no terminal and no flag, setup takes the default and prints it.
+- On Linux, when the daemon fails at start, setup and repair stop after about 6 seconds, not 2 minutes. They print `The daemon failed to start:` with the daemon's error, then `Read its log with: sudo journalctl -u shard.service`.
+- When a daemon task keeps failing (3 or more restarts), setup stops its wait after about 3 seconds. It prints `The daemon started, but these tasks keep failing:`, then each task with its last error.
+- When the GitHub API rate limit for your IP address is spent, setup says so and gives the local time when it resets, or says to try again within an hour. The installer prints the reset time too. Setup now downloads its files from the release download URLs, which have no rate limit, so only the check for a newer release uses the API.
+
+**Uninstall**
+
+- Uninstall removes the `shard-serve` unit that setup wrote. A `shard-serve` unit that you installed yourself stays. Uninstall says that a new setup does not start it, and prints `sudo systemctl start shard-serve` and the commands that remove it. Before, the next setup after an uninstall could delete it.
+- On Linux, uninstall also removes the iptables rules and the firewalld zone that shard added for its bridge.
+
+**CLI**
+
+- Errors name a sandbox by its name, or by its id when it has no name.
+- `shard inspect` shows `forked_from`, the id of the sandbox that a fork came from.
+- When a file is missing, `shard cp` names the path and the sandbox: `"/missing" in sandbox sb: no such file or directory`.
+- `sudo shard cp` from a sandbox leaves the copied files owned by the user who ran `sudo`, not by root. A directory that is already there keeps its owner and mode.
+- A disk that the provider refuses names `--disk` and the fix. A fork cannot set its disk, so its refusal says to remove a sandbox.
+- `shard exec --workdir` with a directory that does not exist exits 126 on every provider. On every provider but gVisor, the error says `the work directory "/missing" does not exist`.
+
+**API and SDKs**
+
+- The sandbox record has a new `forked_from` field: the id of the sandbox a fork came from.
+- A resume keeps `started_at`, so the uptime counts from the first start.
+- Errors and the `in_use` holder lists name a sandbox by its name, or by its id when it has none.
+- A failed create names its network cause, such as `set up the sandbox network on the host: nft failed: No such file or directory`. Host paths and addresses stay in the daemon log. When no address is free, the error says `no free address left: every sandbox holds one until it is removed, run shard list --all and remove the ones you no longer need`.
+- A disk that the provider refuses at create, fork or pause is a `400 invalid_request` that names the fix, not a `500 internal`.
+- An exec with a work directory that does not exist is a `422`. runc and Sysbox answered `500` before.
+- A sandbox with a secret or a policy needs an image with a CA bundle. Without one, create, `secret grant` and `policy attach` answer `400 invalid_request`, not `500`: `image index.docker.io/library/node:22-bookworm-slim has no CA bundle, which a sandbox with a secret or a policy needs: use an image with ca-certificates`.
+- When the host does not trust the certificate of an upstream, the `502` from the proxy has `host` and `reason` in its body, such as `the upstream's certificate is signed by an authority the host does not trust`. `shard policy logs` shows it as a deny of the rule `certificate`. To trust an internal CA, add it to the host's certificate store and restart the daemon.
+- In `shard policy logs`, a drop by a host rule has `rule_text`, as long as the rule has not changed since.
+- Every client and SDK gets the new text of the `cp` file errors.
+
+**Fixes**
+
+- On a host with ufw or firewalld, sandboxes got no DNS, no proxy and no routed traffic, because the host firewall dropped them first. shard now opens its bridge as Docker does: iptables rules with the comment `shard`, and a firewalld zone `shard`. The daemon checks them every 5 seconds, so it repairs them after a `ufw reload`. The docs no longer tell you to run `ufw allow`. If firewalld already has a `shard` zone that shard did not make, shard does not change it, and the error says to rename or remove that zone.
+- A second daemon on another root no longer removes the network rules of the first daemon's sandboxes. It refuses to start: `shard: another shard daemon, over the root /var/lib/shard, already serves this host's sandbox bridge and nft table: a host runs one daemon, so stop that one or use its root`.
+- Under the `UMask=0077` that setup gives the daemon, `/etc` and the work directory of a sandbox were `0700`, so users other than root and apt failed. Directories that shard makes in a sandbox are `0755` now, and every exec runs with umask `0022`. Mount points that Sysbox makes itself still take the daemon's umask.
+- Firecracker and vz: after a resume or a fork, the guest clock matches the host clock. Before, it was behind by the length of the pause, so TLS checks failed. This also holds for Firecracker on arm64, so the limits page no longer lists it.
+- Firecracker and vz: a fork whose disk copy cannot fit fails before shard captures the source. The source no longer freezes and pauses for it, which took 12 to 14 seconds on Firecracker.
+- Firecracker and vz: a sandbox makes its work directory at start, so `shard create --workdir /work` works. Before, every exec then failed with `no such file or directory`.
+- Firecracker and vz: `shard exec -it` sends every key to the guest, so Ctrl-C, Tab, the arrow keys and Ctrl-R work, and each line no longer shows twice. The exit no longer waits 2 seconds.
+- Firecracker and vz: an exec of a command that no `PATH` entry holds exits 127, as on gVisor.
+- An exec with no `--user` no longer waits 20 seconds when a process in the sandbox replaces `/etc/passwd` with a fifo. gVisor refuses a `/etc/passwd` that is not a regular file. On runc and Sysbox, their own init still opens the file, so such an exec can still wait up to 20 seconds.
+- gVisor: `shard exec --workdir` with a file exits 126 with `the work directory "/etc/hosts" is not a directory`, as runc and Sysbox do. Before, the command ran.
+
+**Site**
+
+- The landing page scales with the width of a big screen.
+- The landing page and every docs page have a full SEO head and an OG image. The site serves `robots.txt`, `sitemap.xml`, `llms.txt` and `llms-full.txt`.
+
 ## v0.1.3
 
 6 October 2026. [Full notes](https://github.com/presmihaylov/shard/releases/tag/v0.1.3).
