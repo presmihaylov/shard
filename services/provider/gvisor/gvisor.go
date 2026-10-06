@@ -200,7 +200,7 @@ func (p *Provider) bringUp(ctx context.Context, spec models.SandboxSpec, exitFil
 	defer func() { err = errors.Join(err, exit.Close()) }()
 
 	// A teardown rmdirs the sandbox's own cgroup, so its parent must exist and be shard's, never the host cgroup root.
-	if err := cgroup.Ensure(filepath.Join(p.cgroupRoot, bundle.CgroupParent)); err != nil {
+	if err := cgroup.EnsureParent(filepath.Join(p.cgroupRoot, bundle.CgroupParent)); err != nil {
 		return err
 	}
 
@@ -706,13 +706,18 @@ func execOptions(b bundle.Bundle, spec models.ExecSpec) (runsc.ExecOptions, erro
 	if err != nil {
 		return runsc.ExecOptions{}, err
 	}
+	// AddHome skips the passwd when HOME is set, so the refusal runc and Sysbox make up front is made here too.
+	if err := bundle.CheckPasswd(b.RootFS); err != nil {
+		return runsc.ExecOptions{}, err
+	}
 
 	opts := runsc.ExecOptions{
 		Bundle:  b.Dir,
 		Argv:    spec.Argv,
-		Env:     runspec.MergeEnv(runtime.Env, spec.Env),
+		Env:     runspec.ExecEnv(runtime.Env, spec.Env, spec.TTY),
 		WorkDir: firstNonEmpty(spec.WorkDir, runtime.WorkDir, "/"),
 		TTY:     spec.TTY,
+		Relay:   bundle.GuestInitPath,
 		Stdin:   spec.Stdin,
 		Stdout:  spec.Stdout,
 		Stderr:  spec.Stderr,
@@ -729,6 +734,11 @@ func execOptions(b bundle.Bundle, spec models.ExecSpec) (runsc.ExecOptions, erro
 		}
 		opts.User = fmt.Sprintf("%d:%d", identity.UID, identity.GID)
 		opts.Groups = identity.Groups
+	}
+
+	opts.Env, err = bundle.AddHome(b.RootFS, opts.User, opts.Env)
+	if err != nil {
+		return runsc.ExecOptions{}, err
 	}
 
 	return opts, nil

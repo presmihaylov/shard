@@ -452,6 +452,56 @@ func TestAMicroVMResumesFromItsCheckpointWithItsMemory(t *testing.T) {
 	}
 }
 
+// A guest on tsc wakes from a load at the time of its save, so shard-init takes the host's clock with the reseed (SHARD-776).
+func TestARestoredMicroVMTakesTheHostClock(t *testing.T) {
+	h := newVMHarness(t)
+
+	spec := h.newSpec(t, "/bin/sleep", "3600")
+	if err := h.provider.Create(t.Context(), spec); err != nil {
+		t.Fatal(err)
+	}
+	if err := h.provider.Start(t.Context(), spec.ID); err != nil {
+		t.Fatal(err)
+	}
+	dir := t.TempDir()
+	if err := h.provider.Pause(t.Context(), spec.ID, dir); err != nil {
+		t.Fatalf("Pause: %v", err)
+	}
+
+	// Past the skew allowed, so a guest left at the time of its save fails.
+	time.Sleep(3 * time.Second)
+	if err := h.provider.Resume(t.Context(), spec.ID, dir); err != nil {
+		t.Fatalf("Resume: %v", err)
+	}
+	assertHostClock(t, h.provider, spec.ID)
+
+	time.Sleep(3 * time.Second)
+	fork := h.forkSpec(t)
+	if err := h.provider.ForkCheckpoint(t.Context(), dir, fork); err != nil {
+		t.Fatalf("Fork into %s: %v", fork.ID, err)
+	}
+	assertHostClock(t, h.provider, fork.ID)
+}
+
+// assertHostClock fails a guest whose wall clock is a second or more off the host's.
+func assertHostClock(t *testing.T, p models.Provider, id string) {
+	t.Helper()
+
+	// Busybox date has no %N, so the guest waits for its next second and the host reads its own clock as that second lands.
+	status, out := runIn(t, p, id, `s=$(date +%s); while [ "$(date +%s)" = "$s" ]; do :; done; date +%s`)
+	host := time.Now()
+	if status.Code != 0 {
+		t.Fatalf("date in %s = %+v: %s", id, status, out)
+	}
+	sec, err := strconv.ParseInt(strings.TrimSpace(out), 10, 64)
+	if err != nil {
+		t.Fatalf("date in %s wrote %q: %v", id, out, err)
+	}
+	if skew := host.Sub(time.Unix(sec, 0)).Abs(); skew >= time.Second {
+		t.Errorf("the clock of %s is %s off the host's, want under 1s", id, skew)
+	}
+}
+
 // The fork AC: one checkpoint brings up many sandboxes, each with the source's memory and its own copy of the disk, and the source and the checkpoint outlive them all.
 func TestManyMicroVMsForkFromOneCheckpoint(t *testing.T) {
 	h := newVMHarness(t)

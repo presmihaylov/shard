@@ -57,7 +57,7 @@ func TestAttachStreamsTheAppOutputThenHowItEnded(t *testing.T) {
 // A sandbox that create made has no app, and the refusal is a 409 before the 101 like every other route's.
 func TestAttachRefusesASandboxWithNoAppBeforeTheUpgrade(t *testing.T) {
 	s := seed(t)
-	s.verbs.err = &sandbox.StateError{ID: s.running.ID, State: models.StateRunning, Fix: "shard run starts a sandbox with an app", Code: models.CodeNoApp}
+	s.verbs.err = &sandbox.StateError{Sandbox: s.running.ID, State: models.StateRunning, Fix: "shard run starts a sandbox with an app", Code: models.CodeNoApp}
 
 	_, resp, err := dial(t, s, "/v0/sandboxes/"+s.running.ID+"/attach")
 	if err == nil {
@@ -107,7 +107,7 @@ func TestAppStopPassesTheForce(t *testing.T) {
 
 func TestAppStopRefusesAnAppThatEnded(t *testing.T) {
 	s := seed(t)
-	s.verbs.err = &sandbox.StateError{ID: s.running.ID, State: models.StateRunning, Fix: "the app already ended", Code: models.CodeAppEnded}
+	s.verbs.err = &sandbox.StateError{Sandbox: s.running.ID, State: models.StateRunning, Fix: "the app already ended", Code: models.CodeAppEnded}
 
 	status, body := send(t, s.server, http.MethodPost, "/v0/sandboxes/"+s.running.ID+"/app/stop", `{"force":true}`)
 	if status != http.StatusConflict || errorOf(t, body).code != string(models.CodeAppEnded) {

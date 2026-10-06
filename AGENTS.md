@@ -190,7 +190,9 @@ so the integration tests in `cli/` start one `shard daemon` in `TestMain`, over 
 temp root of their own, and drive the verbs against it through `services/client`.
 The teardown ends that daemon by its pid and proves its socket is gone. `make e2e`
 does the same in the shell. No run ever speaks to the daemon of the systemd unit,
-and none of them uses the default root, so a box can run both at once.
+and none of them uses the default root. A host serves one daemon at a time
+(SHARD-777), so stop the unit before a run, and a test that needs a daemon of its
+own halts the package's one until it ends.
 
 **An integration run gives the host back.** A run owns its temp roots and nothing
 else: a record under one of them is what names the process, the cgroup, the
@@ -229,7 +231,9 @@ or a sandbox.
 - **The daemon is the single writer of the state.** Every verb that changes a
   sandbox, an image, a secret or a policy goes over the socket, so nothing else
   writes those stores and they need no lock between processes. `daemon.lock`
-  keeps a second daemon off a root the first one owns. The token ledger is not
+  keeps a second daemon off a root the first one owns, and
+  `/var/run/shard/host.lock` keeps a daemon on another root off the bridge and
+  the nft table that every root shares. The token ledger is not
   daemon state: the local `tokens` verbs write it under `serve.tokens.lock`.
 - **Never log a secret value, and never write one into a state file.** A sandbox
   references a secret by name and never holds a value. A secret is granted to a

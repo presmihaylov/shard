@@ -29,7 +29,7 @@ type cpOptions struct {
 	user string
 }
 
-// cp copies a file or a directory between the host and a running sandbox; a refusal is the daemon's own words, which name the op and the path.
+// cp copies a file or a directory between the host and a running sandbox; a refusal is the daemon's own words, which name the path and the sandbox.
 func (a App) cp(ctx context.Context, args []string) error {
 	opts, err := parseCp(args)
 	if err != nil {
@@ -204,6 +204,11 @@ func dirTarget(ctx context.Context, c *client.Client, dst cpTarget, name string)
 
 // cpOut writes a guest file to the host through a temp name, so a copy cut midway never leaves a half file at dst; a directory comes as a tar.
 func (a App) cpOut(ctx context.Context, c *client.Client, opts cpOptions) (err error) {
+	owner, err := a.sudoOwner()
+	if err != nil {
+		return err
+	}
+
 	src, err := c.StatFile(ctx, opts.src.ref, opts.src.path)
 	// A refused stat has no body to say why, so the get goes ahead and fails in the daemon's own words.
 	var refused *client.APIError
@@ -211,7 +216,7 @@ func (a App) cpOut(ctx context.Context, c *client.Client, opts cpOptions) (err e
 		return err
 	}
 	if err == nil && src.Type == models.FileDir {
-		return a.cpDirOut(ctx, c, opts)
+		return a.cpDirOut(ctx, c, opts, owner)
 	}
 
 	stat, body, err := c.GetFile(ctx, opts.src.ref, opts.src.path)
@@ -225,7 +230,7 @@ func (a App) cpOut(ctx context.Context, c *client.Client, opts cpOptions) (err e
 		target = filepath.Join(target, path.Base(opts.src.path))
 	}
 
-	if err := writeAtomic(target, body, os.FileMode(stat.Mode).Perm()); err != nil {
+	if err := writeAtomic(target, body, os.FileMode(stat.Mode).Perm(), owner); err != nil {
 		return fmt.Errorf("copy %s:%s to %s: %w", opts.src.ref, opts.src.path, target, err)
 	}
 
@@ -233,7 +238,7 @@ func (a App) cpOut(ctx context.Context, c *client.Client, opts cpOptions) (err e
 }
 
 // cpDirOut unpacks a guest directory's tar at dst, which the sandbox sends and so is untrusted: nothing in it lands outside dst.
-func (a App) cpDirOut(ctx context.Context, c *client.Client, opts cpOptions) (err error) {
+func (a App) cpDirOut(ctx context.Context, c *client.Client, opts cpOptions, owner *client.Owner) (err error) {
 	name := path.Base(opts.src.path)
 	target := opts.dst.path
 	if info, err := os.Stat(target); err == nil && info.IsDir() {
@@ -254,8 +259,13 @@ func (a App) cpDirOut(ctx context.Context, c *client.Client, opts cpOptions) (er
 	if info, err := os.Lstat(target); err != nil || !info.IsDir() {
 		return errors.Join(fmt.Errorf("copy %s:%s to %s, which is not a directory", opts.src.ref, opts.src.path, target), err)
 	}
+	if made && owner != nil {
+		if err := os.Lchown(target, owner.UID, owner.GID); err != nil {
+			return fmt.Errorf("chown %s: %w", target, err)
+		}
+	}
 
-	if err := client.UnpackArchive(body, target, name); err != nil {
+	if err := client.UnpackArchive(body, target, name, owner); err != nil {
 		return fmt.Errorf("copy %s:%s to %s: %w", opts.src.ref, opts.src.path, target, err)
 	}
 	// The unpack leaves a directory already there as it was, so only one this copy made takes the guest's mode.
@@ -269,7 +279,7 @@ func (a App) cpDirOut(ctx context.Context, c *client.Client, opts cpOptions) (er
 	return nil
 }
 
-func writeAtomic(target string, src io.Reader, mode os.FileMode) (err error) {
+func writeAtomic(target string, src io.Reader, mode os.FileMode, owner *client.Owner) (err error) {
 	tmp, err := os.CreateTemp(filepath.Dir(target), "."+filepath.Base(target)+".shard-cp-*")
 	if err != nil {
 		return fmt.Errorf("create a temp file beside %s: %w", target, err)
@@ -282,6 +292,11 @@ func writeAtomic(target string, src io.Reader, mode os.FileMode) (err error) {
 
 	if _, err := io.Copy(tmp, src); err != nil {
 		return errors.Join(fmt.Errorf("write %s: %w", tmp.Name(), err), tmp.Close())
+	}
+	if owner != nil {
+		if err := tmp.Chown(owner.UID, owner.GID); err != nil {
+			return errors.Join(fmt.Errorf("chown %s: %w", tmp.Name(), err), tmp.Close())
+		}
 	}
 	if err := tmp.Chmod(mode); err != nil {
 		return errors.Join(fmt.Errorf("chmod %s: %w", tmp.Name(), err), tmp.Close())

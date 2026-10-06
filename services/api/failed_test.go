@@ -27,7 +27,7 @@ var bodies = map[string]string{
 func TestEveryVerbButGetAndRmIs409OnAFailedSandbox(t *testing.T) {
 	s := seed(t)
 	failed := create(t, s.repo, "broken", models.StateFailed)
-	s.verbs.err = &sandbox.StateError{ID: failed.ID, State: models.StateFailed, Fix: "remove it", Code: models.CodeSandboxFailed}
+	s.verbs.err = &sandbox.StateError{Sandbox: failed.ID, State: models.StateFailed, Fix: "remove it", Code: models.CodeSandboxFailed}
 
 	subst := strings.NewReplacer("{id}", failed.ID, "{exec}", "e1", "{name}", "n1")
 	walked := 0

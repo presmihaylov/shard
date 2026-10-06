@@ -717,6 +717,7 @@ export interface components {
             egress?: components["schemas"]["Effective"];
             exit_status?: components["schemas"]["ExitStatus"];
             failed_reason?: string;
+            forked_from?: string;
             id: string;
             image: string;
             kernel?: string;
@@ -823,6 +824,7 @@ export interface components {
             digest?: string;
             exit_status?: components["schemas"]["ExitStatus"];
             failed_reason?: string;
+            forked_from?: string;
             id: string;
             image: string;
             kernel?: string;

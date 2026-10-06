@@ -2,6 +2,7 @@ package bundle_test
 
 import (
 	"errors"
+	"fmt"
 	"net"
 	"os"
 	"path/filepath"
@@ -172,6 +173,180 @@ func TestCheckUserDatabasesPassesWhatRuncReadsOrDoesWithout(t *testing.T) {
 				t.Errorf("CheckUserDatabases = %v, want nil", err)
 			}
 		})
+	}
+}
+
+// runsc and runc 1.3 take HOME from the first passwd entry with the uid, and "/" when there is none (SHARD-752).
+func TestAddHomeTakesTheEntryOfTheUid(t *testing.T) {
+	const passwd = "root:x:0:0:root:/root:/bin/sh\n  build:x:1000:1000::/home/build:/bin/sh  \n" +
+		"again:x:1000:1000::/home/again:/bin/sh\nshort:x:2000:2000:\nblank:x:3000:3000:::/bin/sh\n"
+
+	cases := map[string]struct {
+		passwd string
+		user   string
+		want   string
+	}{
+		"nobody named":               {passwd: passwd, want: "HOME=/root"},
+		"the first entry, trimmed":   {passwd: passwd, user: "1000:1000", want: "HOME=/home/build"},
+		"an unlisted uid":            {passwd: passwd, user: "4242", want: "HOME=/"},
+		"no passwd":                  {user: "1000:1000", want: "HOME=/"},
+		"an entry with no home":      {passwd: passwd, user: "2000:2000", want: "HOME="},
+		"an entry with a home of ''": {passwd: passwd, user: "3000:3000", want: "HOME="},
+	}
+	for name, c := range cases {
+		t.Run(name, func(t *testing.T) {
+			got, err := bundle.AddHome(rootFSWith(t, c.passwd, ""), c.user, []string{"PATH=/bin"})
+			if err != nil {
+				t.Fatalf("AddHome: %v", err)
+			}
+			if want := []string{"PATH=/bin", c.want}; !slices.Equal(got, want) {
+				t.Errorf("got %q, want %q", got, want)
+			}
+		})
+	}
+}
+
+// A HOME the caller or the image set wins, even an empty one, so the passwd is not read at all.
+func TestAddHomeKeepsAHomeAlreadySet(t *testing.T) {
+	rootfs := emptyRootFS(t)
+	mkfifo(t, rootfs, "etc/passwd")
+
+	for _, env := range [][]string{{"HOME=/work"}, {"PATH=/bin", "HOME="}} {
+		got, err := bundle.AddHome(rootfs, "", env)
+		if err != nil || !slices.Equal(got, env) {
+			t.Errorf("AddHome(%q) = %q, %v, want it unchanged", env, got, err)
+		}
+	}
+}
+
+// The passwd is the one the guest's own lookup reaches, and no link leads the read onto the host.
+func TestAddHomeReadsThePasswdTheGuestLookupReaches(t *testing.T) {
+	host := filepath.Join(t.TempDir(), "passwd")
+	if err := os.WriteFile(host, []byte("root:x:0:0::/host:/bin/sh\n"), 0o600); err != nil {
+		t.Fatalf("write the host passwd: %v", err)
+	}
+
+	cases := map[string]struct {
+		target string
+		want   string
+	}{
+		"an absolute link":                {target: "/real/passwd", want: "HOME=/guest"},
+		"a relative link":                 {target: "../real/passwd", want: "HOME=/guest"},
+		"a link that climbs past the top": {target: "../../../../real/passwd", want: "HOME=/guest"},
+		"a link to a host path":           {target: host, want: "HOME=/"},
+	}
+	for name, c := range cases {
+		t.Run(name, func(t *testing.T) {
+			rootfs := emptyRootFS(t)
+			if err := os.Mkdir(filepath.Join(rootfs, "real"), 0o755); err != nil {
+				t.Fatalf("make the real dir: %v", err)
+			}
+			if err := os.WriteFile(filepath.Join(rootfs, "real/passwd"), []byte("root:x:0:0::/guest:/bin/sh\n"), 0o600); err != nil {
+				t.Fatalf("write the guest passwd: %v", err)
+			}
+			symlink(t, c.target, filepath.Join(rootfs, "etc/passwd"))
+
+			got, err := bundle.AddHome(rootfs, "", nil)
+			if err != nil || !slices.Equal(got, []string{c.want}) {
+				t.Errorf("AddHome = %q, %v, want [%s]", got, err, c.want)
+			}
+		})
+	}
+}
+
+// A passwd that is no regular file, or one too big to read, is refused at once and names the guest's path.
+func TestAddHomeRefusesAPasswdItWillNotRead(t *testing.T) {
+	cases := map[string]struct {
+		lay  func(t *testing.T, rootfs string)
+		want string
+	}{
+		"a fifo": {func(t *testing.T, rootfs string) { mkfifo(t, rootfs, "etc/passwd") }, "/etc/passwd is a named pipe"},
+		"a directory": {func(t *testing.T, rootfs string) {
+			if err := os.Mkdir(filepath.Join(rootfs, "etc/passwd"), 0o755); err != nil {
+				t.Fatalf("make the passwd directory: %v", err)
+			}
+		}, "/etc/passwd is a directory"},
+		"a sparse file over the bound": {func(t *testing.T, rootfs string) {
+			if err := os.WriteFile(filepath.Join(rootfs, "etc/passwd"), nil, 0o600); err != nil {
+				t.Fatalf("write the passwd: %v", err)
+			}
+			if err := os.Truncate(filepath.Join(rootfs, "etc/passwd"), 1<<30); err != nil {
+				t.Fatalf("grow the passwd: %v", err)
+			}
+		}, "/etc/passwd is over 4 MiB"},
+	}
+	for name, c := range cases {
+		t.Run(name, func(t *testing.T) {
+			rootfs := emptyRootFS(t)
+			c.lay(t, rootfs)
+
+			failed := make(chan error, 1)
+			go func() {
+				_, err := bundle.AddHome(rootfs, "", nil)
+				failed <- err
+			}()
+			select {
+			case err := <-failed:
+				requireGuestRefusal(t, err, rootfs, c.want)
+			case <-time.After(resolveBudget):
+				t.Fatalf("AddHome did not answer within %s", resolveBudget)
+			}
+		})
+	}
+}
+
+// The guest can swap its passwd for a fifo between any two calls, so the read must come from the handle that proved it regular (SHARD-752).
+func TestAddHomeNeverWaitsOnAPasswdSwappedForAFifo(t *testing.T) {
+	rootfs := rootFSWith(t, "root:x:0:0:root:/root:/bin/sh\n", "")
+	etc := filepath.Join(rootfs, "etc")
+	regular, fifo, next := filepath.Join(etc, "regular"), filepath.Join(etc, "fifo"), filepath.Join(etc, "next")
+	if err := os.Link(filepath.Join(etc, "passwd"), regular); err != nil {
+		t.Fatalf("keep the regular passwd: %v", err)
+	}
+	mkfifo(t, rootfs, "etc/fifo")
+
+	stop := make(chan struct{})
+	swapped := make(chan error, 1)
+	go func() {
+		for i := 0; ; i++ {
+			select {
+			case <-stop:
+				swapped <- nil
+				return
+			default:
+			}
+			if err := os.Link([]string{fifo, regular}[i%2], next); err != nil {
+				swapped <- err
+				return
+			}
+			if err := os.Rename(next, filepath.Join(etc, "passwd")); err != nil {
+				swapped <- err
+				return
+			}
+		}
+	}()
+
+	for range 500 {
+		answered := make(chan error, 1)
+		go func() {
+			got, err := bundle.AddHome(rootfs, "", nil)
+			if err == nil && !slices.Equal(got, []string{"HOME=/root"}) {
+				err = fmt.Errorf("got %q", got)
+			}
+			answered <- err
+		}()
+		select {
+		case err := <-answered:
+			if _, refused := errors.AsType[*bundle.UserDatabaseError](err); err != nil && !refused {
+				t.Fatalf("AddHome over a swapping passwd: %v, want HOME=/root or a refusal", err)
+			}
+		case <-time.After(resolveBudget):
+			t.Fatalf("AddHome did not answer within %s, so it opened the fifo it swapped in", resolveBudget)
+		}
+	}
+	close(stop)
+	if err := <-swapped; err != nil {
+		t.Fatalf("swap the passwd: %v", err)
 	}
 }
 

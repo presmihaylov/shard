@@ -8,6 +8,28 @@ import (
 	"github.com/presmihaylov/shard/services/runspec"
 )
 
+// SHARD-778: a terminal exec with no TERM gets the one docker exec -t sets, and one the caller or the image names stays.
+func TestExecEnvNamesATerminalOnlyWhenNothingElseDoes(t *testing.T) {
+	cases := []struct {
+		name            string
+		base, overrides []string
+		tty             bool
+		want            []string
+	}{
+		{"a terminal with no TERM", []string{"PATH=/bin"}, nil, true, []string{"PATH=/bin", "TERM=xterm"}},
+		{"a pipe exec", []string{"PATH=/bin"}, nil, false, []string{"PATH=/bin"}},
+		{"the image's TERM", []string{"TERM=vt100"}, nil, true, []string{"TERM=vt100"}},
+		{"the caller's TERM", []string{"PATH=/bin"}, []string{"TERM=screen"}, true, []string{"PATH=/bin", "TERM=screen"}},
+		{"an empty TERM the caller set", nil, []string{"TERM="}, true, []string{"TERM="}},
+	}
+
+	for _, c := range cases {
+		if got := runspec.ExecEnv(c.base, c.overrides, c.tty); !slices.Equal(got, c.want) {
+			t.Errorf("%s: got %q, want %q", c.name, got, c.want)
+		}
+	}
+}
+
 // The image's own command never runs, but what it says about the process still applies to every one the sandbox starts.
 func TestResolveNeverTakesTheImageEntrypointOrCmd(t *testing.T) {
 	got := runspec.Resolve(models.SandboxSpec{}, models.ImageConfig{

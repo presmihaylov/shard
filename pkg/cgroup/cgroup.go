@@ -206,6 +206,21 @@ func Ensure(dir string) error {
 	return nil
 }
 
+// EnsureParent makes the cgroup every sandbox sits under exist at 0755, and sets that mode on one that already does.
+func EnsureParent(dir string) error {
+	//nolint:gosec // G301: a sysbox guest's own runc mounts cgroup2 as an unprivileged host uid, which must walk this directory.
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		return fmt.Errorf("make the cgroup %s: %w", dir, err)
+	}
+	// MkdirAll keeps the mode an older daemon or a strict umask gave it, and 0750 or 0700 breaks docker in sysbox.
+	//nolint:gosec // G302: the same walk as above; the per-sandbox cgroups under it stay 0750.
+	if err := os.Chmod(dir, 0o755); err != nil {
+		return fmt.Errorf("open the cgroup %s to the sandboxes under it: %w", dir, err)
+	}
+
+	return nil
+}
+
 // Remove drops an empty cgroup, and one that is already gone counts as dropped.
 func Remove(dir string) error {
 	err := os.Remove(dir)

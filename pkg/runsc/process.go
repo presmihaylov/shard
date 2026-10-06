@@ -1,6 +1,7 @@
 package runsc
 
 import (
+	"cmp"
 	"encoding/json"
 	"fmt"
 	"os"
@@ -10,6 +11,8 @@ import (
 	"strings"
 
 	"github.com/opencontainers/runtime-spec/specs-go"
+
+	"github.com/presmihaylov/shard/pkg/termrelay"
 )
 
 // writeProcess spells the whole exec, because runsc's exec flags hand every uid config.json's capabilities (SHARD-498).
@@ -69,6 +72,11 @@ func execProcess(base specs.Process, opts ExecOptions) (specs.Process, error) {
 	process.Capabilities = execCapabilities(base.Capabilities, user.UID)
 	if opts.WorkDir != "" {
 		process.Cwd = opts.WorkDir
+	}
+	if relays(opts) {
+		process.Args = termrelay.Args(opts.Relay, cmp.Or(process.Cwd, "/"), opts.Argv)
+		// The relay enters the work directory itself, so a refusal there is its record and not runsc's.
+		process.Cwd = "/"
 	}
 
 	return process, nil

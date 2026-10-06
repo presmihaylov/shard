@@ -191,6 +191,33 @@ func TestAnAdmissionWaitsOutAReplace(t *testing.T) {
 	}
 }
 
+// A fork reserves its copy before the capture, so a copy that cannot fit is refused by the copy's text, and one that fits is held for the AdmitCopy that writes it (SHARD-775).
+func TestReserveCopyHoldsTheSourcesSize(t *testing.T) {
+	sandboxes := filepath.Join(t.TempDir(), "sandboxes")
+	src := filepath.Join(sandboxes, "source", "disk.img")
+	dst := filepath.Join(sandboxes, "copy", "disk.img")
+	sparse(t, src, 8<<40)
+	if err := os.Mkdir(filepath.Dir(dst), 0o750); err != nil {
+		t.Fatal(err)
+	}
+	err := ReserveCopy(src, dst)
+	if err == nil || !strings.Contains(err.Error(), "a copy of the 8388608 MiB disk") || strings.Contains(err.Error(), "disk_mib") {
+		t.Fatalf("got %v, want the 8 TiB copy refused with no disk bound to set", err)
+	}
+	if _, ok := reservation(t, filepath.Dir(dst)); ok {
+		t.Error("a refused copy left a reservation")
+	}
+
+	sparse(t, src, bytesPerMiB)
+	if err := ReserveCopy(src, dst); err != nil {
+		t.Fatalf("ReserveCopy: %v", err)
+	}
+	t.Cleanup(func() { Release(filepath.Dir(dst)) })
+	if bound, ok := reservation(t, filepath.Dir(dst)); !ok || bound != bytesPerMiB {
+		t.Errorf("reserved %d (%v), want the source's %d", bound, ok, bytesPerMiB)
+	}
+}
+
 // reserve stands in for a Reserve whose bound the host could never hold, so the test owns every number.
 func reserve(t *testing.T, dir string, bound int64) {
 	t.Helper()

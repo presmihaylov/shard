@@ -106,6 +106,7 @@ html{color-scheme:dark}.sr-only{position:absolute;width:1px;height:1px;overflow:
 <style>.copy,.final-cta .copy,.copy:hover,.hero .copy:hover,.final-cta .copy:hover{background:transparent;border:0;color:#91C4ED;box-shadow:none}.copy:hover{color:#e4f3fc}</style>
 <style>.install{cursor:pointer}</style>
 <style>.copy{justify-items:end;padding-right:6px}</style>
+<style>/* Past 1440 wide the design scales with the width in 1/8 steps, capped by the height past 2.1:1, and the column keeps its 1440 share. */@media(min-width:1620px) and (min-height:765px){:root{--z:1.125}}@media(min-width:1800px) and (min-height:850px){:root{--z:1.25}}@media(min-width:1980px) and (min-height:935px){:root{--z:1.375}}@media(min-width:2160px) and (min-height:1020px){:root{--z:1.5}}@media(min-width:2340px) and (min-height:1105px){:root{--z:1.625}}@media(min-width:2520px) and (min-height:1190px){:root{--z:1.75}}@media(min-width:2700px) and (min-height:1275px){:root{--z:1.875}}@media(min-width:2880px) and (min-height:1360px){:root{--z:2}}@media(min-width:3060px) and (min-height:1445px){:root{--z:2.125}}@media(min-width:3240px) and (min-height:1530px){:root{--z:2.25}}@media(min-width:3420px) and (min-height:1615px){:root{--z:2.375}}@media(min-width:3600px) and (min-height:1700px){:root{--z:2.5}}@media(min-width:1620px) and (min-height:765px){body{zoom:var(--z)}.connection-winter:before{inset:0 calc(50% - 50vw / var(--z))}}@media(min-width:1441px){nav{max-width:calc(85.556vw / var(--z,1))}.container,.footer{max-width:calc(81.111vw / var(--z,1))}}</style>
 </head>
 <body>
 <nav aria-label="Main navigation"><a class="wordmark" href="#" aria-label="Shard home"><svg class="pixel-logo" viewBox="0 0 160 140" aria-hidden="true"><g fill="#2D81BE24" stroke="currentColor" stroke-width="3" stroke-dasharray="6 4"><path d="M79 8L50 73L79 124L111 70Z"/><path d="M37 51L12 91L29 124L59 124Z"/><path d="M134 65L108 98L119 124H148L148 91Z"/></g><g fill="#2D81BE66"><path d="M79 8V57L111 70Z"/><path d="M37 51V90L59 124L49 86Z"/><path d="M134 65V91H148Z"/></g><g fill="none" stroke="currentColor" stroke-width="2"><path d="M79 8V57L111 70M79 57V124M37 51V90L59 124M134 65V91L148 91M134 91L119 124"/></g><g fill="currentColor"><path d="M83 66h3v3h-3zM90 66h3v3h-3zM83 75h3v3h-3zM90 75h3v3h-3zM83 84h3v3h-3zM90 84h3v3h-3zM83 93h3v3h-3zM83 102h3v3h-3zM41 92h3v3h-3zM44 102h3v3h-3zM129 99h3v3h-3zM126 109h3v3h-3z"/></g><path d="M9 130H62M72 133H99M109 130H152" stroke="currentColor" stroke-width="3" stroke-dasharray="7 4"/></svg><span>shard</span></a><div class="navlinks"><a href="https://useshards.com/docs/">Docs</a><a href="https://github.com/presmihaylov/shard">GitHub ↗</a></div></nav>
@@ -165,8 +166,12 @@ let winterSeed=517;
 function winterRandom(){winterSeed=(winterSeed*16807)%2147483647;return(winterSeed-1)/2147483646}
 const flakes=Array.from({length:115},()=>({x:winterRandom(),y:winterRandom(),speed:.015+winterRandom()*.025,drift:winterRandom()*6,depth:winterRandom(),glyph:['*','+','·','✧'][Math.floor(winterRandom()*4)]}));
 
-function resizeWinter(){winterCanvas.style.width=document.documentElement.clientWidth+'px';const box=winterCanvas.getBoundingClientRect();sceneWidth=box.width;sceneHeight=box.height;const ratio=Math.min(devicePixelRatio||1,2);winterCanvas.width=Math.round(sceneWidth*ratio);winterCanvas.height=Math.round(sceneHeight*ratio);ctx.setTransform(ratio,0,0,ratio,0,0)}
-new ResizeObserver(resizeWinter).observe(winterCanvas);
+// The body zoom scales px, so a canvas draws in page px on a screen-px backing store, and refits on a zoom step no observer sees.
+function pageZoom(){return parseFloat(getComputedStyle(document.documentElement).getPropertyValue('--z'))||1}
+function fitCanvas(canvas,context){const box=canvas.getBoundingClientRect(),zoom=pageZoom(),ratio=Math.min(devicePixelRatio||1,2);canvas.width=Math.round(box.width*ratio);canvas.height=Math.round(box.height*ratio);context.setTransform(ratio*zoom,0,0,ratio*zoom,0,0);return [box.width/zoom,box.height/zoom]}
+function refit(canvas,fit){new ResizeObserver(fit).observe(canvas);addEventListener('resize',fit)}
+function resizeWinter(){winterCanvas.style.width=document.documentElement.clientWidth/pageZoom()+'px';[sceneWidth,sceneHeight]=fitCanvas(winterCanvas,ctx)}
+refit(winterCanvas,resizeWinter);
 function polygon(points,fill,stroke){ctx.beginPath();points.forEach(([x,y],index)=>{if(index===0){ctx.moveTo(x,y);return}ctx.lineTo(x,y)});ctx.closePath();ctx.fillStyle=fill;ctx.fill();if(stroke){ctx.strokeStyle=stroke;ctx.lineWidth=.7;ctx.stroke()}}
 function ridge(points,base,color){polygon([...points,[sceneWidth+20,base],[-20,base]],color)}
 
@@ -196,7 +201,7 @@ document.fonts.ready.then(()=>{resizeWinter();drawWinter(0);requestAnimationFram
 
 
 const flowCanvas=document.getElementById('host-flow'),flowCtx=flowCanvas.getContext('2d');let fw=0,fh=0,flowVisible=false,flowTime=0,flowLast=0;
-new ResizeObserver(()=>{const box=flowCanvas.getBoundingClientRect();fw=box.width;fh=box.height;const ratio=Math.min(devicePixelRatio||1,2);flowCanvas.width=Math.round(fw*ratio);flowCanvas.height=Math.round(fh*ratio);flowCtx.setTransform(ratio,0,0,ratio,0,0)}).observe(flowCanvas);
+refit(flowCanvas,()=>{[fw,fh]=fitCanvas(flowCanvas,flowCtx)});
 new IntersectionObserver(entries=>{flowVisible=entries[0].isIntersecting}).observe(flowCanvas);
 
 let flowMode='remote';
@@ -218,7 +223,7 @@ const lifeModes=['stop','snapshot','pause','fork'];
 const lifeCopy={stop:['Stop the sandbox. Keep the files.','Start it again with the same files. Its processes start fresh.'],snapshot:['Save a workspace. Start another.','A filesystem snapshot gives the next agent the same code and tools.'],pause:['Freeze the moment. Continue from it.','Save memory and files, then resume the processes from that state.'],fork:['One starting point. Two paths.','Copy memory and files into a new sandbox. Explore another path.']};
 function selectLife(mode){lifeIndex=lifeModes.indexOf(mode);lifeTime=0;document.querySelectorAll('[data-life]').forEach(button=>{const active=button.dataset.life===mode;button.classList.toggle('active',active);button.setAttribute('aria-selected',String(active));button.tabIndex=active?0:-1});document.getElementById('life-title').textContent=lifeCopy[mode][0];document.getElementById('life-desc').textContent=lifeCopy[mode][1];document.getElementById('life-panel').setAttribute('aria-label',mode+' demonstration')}
 document.querySelectorAll('[data-life]').forEach(button=>{button.addEventListener('click',()=>{lifeSelected=true;selectLife(button.dataset.life)});button.addEventListener('mouseenter',()=>{lifeHover=true;if(!lifeSelected)selectLife(button.dataset.life)});button.addEventListener('mouseleave',()=>lifeHover=false);button.addEventListener('focus',()=>{lifeHover=true;if(!lifeSelected)selectLife(button.dataset.life)});button.addEventListener('blur',()=>lifeHover=false);button.addEventListener('keydown',event=>{if(!['ArrowRight','ArrowLeft'].includes(event.key))return;event.preventDefault();lifeSelected=true;const index=(lifeIndex+(event.key==='ArrowRight'?1:3))%4;selectLife(lifeModes[index]);document.querySelector('[data-life="'+lifeModes[index]+'"]').focus()})});
-new ResizeObserver(()=>{const box=lifeCanvas.getBoundingClientRect();lw=box.width;lh=box.height;const ratio=Math.min(devicePixelRatio||1,2);lifeCanvas.width=Math.round(lw*ratio);lifeCanvas.height=Math.round(lh*ratio);lc.setTransform(ratio,0,0,ratio,0,0)}).observe(lifeCanvas);
+refit(lifeCanvas,()=>{[lw,lh]=fitCanvas(lifeCanvas,lc)});
 new IntersectionObserver(entries=>{lifeVisible=entries[0].isIntersecting}).observe(lifeCanvas);
 function lifeText(label,x,y,color='#91C4ED',size=10){lc.font=size+'px Mono,monospace';lc.fillStyle=color;lc.textAlign='center';lc.fillText(label,x,y)}
 function lifeIce(x,y,size,opacity=1,freeze=false){drawHeroShard(lc,x,y,size,opacity,freeze)}
@@ -255,11 +260,11 @@ new IntersectionObserver(entries=>{pVisible=entries[0].isIntersecting}).observe(
 function providerFrame(now){requestAnimationFrame(providerFrame);if(now-pLast<50)return;const delta=Math.min((now-pLast)/1000,.1);pLast=now;if(!pVisible||document.hidden)return;if(!reduced&&!pPaused){pTime+=delta;if(pTime>=9&&!pHover&&!pSelected)selectProvider(providerNames[(pIndex+1)%providerNames.length])}}requestAnimationFrame(providerFrame);selectProvider('firecracker');
 
 const connectionSnow=document.querySelector('.connection-snow'),connectionSnowCtx=connectionSnow.getContext('2d');let csWidth=0,csHeight=0,csVisible=false;
-new ResizeObserver(()=>{const r=connectionSnow.getBoundingClientRect(),ratio=Math.min(devicePixelRatio||1,2);csWidth=r.width;csHeight=r.height;connectionSnow.width=Math.round(r.width*ratio);connectionSnow.height=Math.round(r.height*ratio);connectionSnowCtx.setTransform(ratio,0,0,ratio,0,0)}).observe(connectionSnow);
+refit(connectionSnow,()=>{[csWidth,csHeight]=fitCanvas(connectionSnow,connectionSnowCtx)});
 new IntersectionObserver(entries=>{csVisible=entries[0].isIntersecting}).observe(connectionSnow);
 function connectionSnowFrame(now){requestAnimationFrame(connectionSnowFrame);if(!csVisible||document.hidden)return;const c=connectionSnowCtx,w=csWidth,h=csHeight,t=reduced?0:now/1000;c.clearRect(0,0,w,h);for(let i=0;i<64;i++){const x=((i*137)%997)/997*w+Math.sin(t*.15+i)*6,y=(((i*79)%991)/991*h+t*(2+i%4))%h;c.fillStyle=i%7===0?'#d5edff45':'#91C4ED25';const size=i%5===0?2:1;c.fillRect(x,y,size,size)}for(let row=0;row<4;row++){c.fillStyle='#91C4ED12';for(let x=0;x<w;x+=20){if(Math.sin(x*.023+row+t*.18)<.5)continue;c.fillRect(x,h-35+row*7,12,1)}}}requestAnimationFrame(connectionSnowFrame);
 const safetyCanvas=document.getElementById('safety-world'),sc=safetyCanvas.getContext('2d');let sw=0,sh=0,sTime=0,sLast=0,sVisible=false;
-new ResizeObserver(()=>{const box=safetyCanvas.getBoundingClientRect();sw=box.width;sh=box.height;const ratio=Math.min(devicePixelRatio||1,2);safetyCanvas.width=Math.round(sw*ratio);safetyCanvas.height=Math.round(sh*ratio);sc.setTransform(ratio,0,0,ratio,0,0)}).observe(safetyCanvas);
+refit(safetyCanvas,()=>{[sw,sh]=fitCanvas(safetyCanvas,sc)});
 new IntersectionObserver(entries=>{sVisible=entries[0].isIntersecting}).observe(safetyCanvas);
 function drawSafety(t){const c=sc,w=sw,h=sh,sx=w*.19,shieldX=w*.51,dx=w*.84,y=h*.56,allowY=h*.35,denyY=h*.78,phase=t%10;
 function text(label,x,y,color='#91C4ED',size=9){c.font=size+'px Mono,monospace';c.fillStyle=color;c.textAlign='center';c.fillText(label,x,y)}

@@ -5,6 +5,8 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
+
+	"golang.org/x/sys/unix"
 )
 
 // A mkfs.xfs stand-in: it fails while FAKE_MKFS_FAIL is set, and writes the superblock magic otherwise.
@@ -45,10 +47,22 @@ func TestMakeImageLeavesNothingAtThePathUntilTheFormatSucceeds(t *testing.T) {
 
 // A crashed format leaves its staging file behind, and MakeImage removes it first, so its blocks count as room.
 func TestRoomCountsTheStagingFileOfACrashedFormat(t *testing.T) {
+	// Other writers on the disk move its free count between two reads, so the test pins it.
+	const free = 1 << 30
+	statfs = func(dir string, fs *unix.Statfs_t) error {
+		if err := unix.Statfs(dir, fs); err != nil {
+			return err
+		}
+		fs.Bavail, fs.Bsize = free/4096, 4096
+
+		return nil
+	}
+	t.Cleanup(func() { statfs = unix.Statfs })
+
 	image := filepath.Join(t.TempDir(), "shard.xfs")
 	before, err := Room(image)
-	if err != nil || before <= 0 {
-		t.Fatalf("room beside a fresh image: %d, %v", before, err)
+	if err != nil || before != free {
+		t.Fatalf("room beside a fresh image: %d, %v; want %d", before, err, free)
 	}
 	if err := reserve(image+stagingSuffix, 64<<20); err != nil {
 		t.Fatal(err)
@@ -58,9 +72,8 @@ func TestRoomCountsTheStagingFileOfACrashedFormat(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	// Other writers on the host move the free space a little between the two reads.
-	if diff := after - before; diff < -(4<<20) || diff > 4<<20 {
-		t.Errorf("room moved by %d bytes across a 64 MiB staging file, want about zero", diff)
+	if staged := after - before; staged < 64<<20 {
+		t.Errorf("room grew by %d bytes across a 64 MiB staging file, want at least %d", staged, 64<<20)
 	}
 
 	if _, err := Room(filepath.Join(t.TempDir(), "missing", "shard.xfs")); err == nil {

@@ -18,7 +18,9 @@ type Sandbox struct {
 	Digest string `json:"digest,omitempty"`
 	// Snapshot is the id of the snapshot the sandbox was created from, empty for one made from an image.
 	Snapshot string `json:"snapshot,omitempty"`
-	Provider string `json:"provider"`
+	// ForkedFrom is the id of the sandbox this one was forked from, empty for one that was not.
+	ForkedFrom string `json:"forked_from,omitempty"`
+	Provider   string `json:"provider"`
 	// Kernel is the guest kernel a microVM substrate last booted, as its release tag or local-<sha12>; empty on a container substrate.
 	Kernel string `json:"kernel,omitempty"`
 	State  State  `json:"state"`
@@ -63,7 +65,9 @@ type Sandbox struct {
 	// the internet and nothing private.
 	Policy string `json:"policy,omitempty"`
 
-	// StartedAt is when the daemon last started the sandbox: ls reads its uptime, and liveness tells one run from the next.
+	// StartedAt is when the daemon last started the sandbox, which a resume keeps: ls reads its uptime from it.
 	StartedAt time.Time `json:"started_at,omitzero"`
-	CreatedAt time.Time `json:"created_at"`
+	// RunStartedAt is when this run began, a resume included, so liveness tells one run from the next; never served.
+	RunStartedAt time.Time `json:"run_started_at,omitzero"`
+	CreatedAt    time.Time `json:"created_at"`
 }

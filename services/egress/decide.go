@@ -2,6 +2,8 @@ package egress
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"fmt"
 	"net/netip"
 	"slices"
@@ -330,4 +332,11 @@ func FormatRule(rule models.Rule) string {
 	}
 
 	return text + ":" + strings.Join(ports, ",")
+}
+
+// RuleSum fingerprints a rule's text for its log line, so a drop read after the policy changed cannot name the rule that holds its id now.
+func RuleSum(rule models.Rule) string {
+	sum := sha256.Sum256([]byte(FormatRule(rule)))
+
+	return hex.EncodeToString(sum[:6])
 }

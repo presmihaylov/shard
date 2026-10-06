@@ -679,6 +679,9 @@
           "failed_reason": {
             "type": "string"
           },
+          "forked_from": {
+            "type": "string"
+          },
           "id": {
             "type": "string"
           },
@@ -1073,6 +1076,9 @@
             "$ref": "#/components/schemas/ExitStatus"
           },
           "failed_reason": {
+            "type": "string"
+          },
+          "forked_from": {
             "type": "string"
           },
           "id": {

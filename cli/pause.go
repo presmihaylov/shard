@@ -1,18 +1,16 @@
 package cli
 
-import (
-	"context"
-	"fmt"
-)
+import "context"
 
-// pause asks the daemon to write the sandbox into its checkpoint and prints the id it acted on.
+// pause asks the daemon to write each sandbox into its checkpoint and prints the id it acted on.
 func (a App) pause(ctx context.Context, args []string) error {
 	rest, err := parseArgs("pause", args)
 	if err != nil {
 		return err
 	}
-	if len(rest) != 1 {
-		return fmt.Errorf("pause takes one sandbox id or name, got %s", gotArgs(rest))
+	ids, err := sandboxRefs("pause", rest)
+	if err != nil {
+		return err
 	}
 
 	c, err := a.client()
@@ -20,10 +18,12 @@ func (a App) pause(ctx context.Context, args []string) error {
 		return err
 	}
 
-	sb, err := c.PauseSandbox(ctx, rest[0])
-	if err != nil {
-		return err
-	}
+	return a.each(ctx, ids, func(ref string) error {
+		sb, err := c.PauseSandbox(ctx, ref)
+		if err != nil {
+			return err
+		}
 
-	return a.print(sb.ID)
+		return a.print(sb.ID)
+	})
 }

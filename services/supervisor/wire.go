@@ -66,6 +66,8 @@ type Message struct {
 	Address *Address `json:"address,omitempty"`
 	// Seed is host entropy for a restored guest's crng, which woke with the key of every other restore of the same save.
 	Seed []byte `json:"seed,omitempty"`
+	// Now on a reseed is the host's wall clock in Unix nanoseconds; a guest on tsc wakes at the time of its save, which no load moves (SHARD-776).
+	Now int64 `json:"now,omitempty"`
 	// Verb on a freeze names what holds the guest frozen, which a command the guest refuses meanwhile is told.
 	Verb string `json:"verb,omitempty"`
 	// Ready says the entrypoint forked; a state replay on a new connection carries it too.

@@ -248,6 +248,70 @@ func TestExecOnATerminalHasItsWindowBeforeTheCommandStarts(t *testing.T) {
 	}
 }
 
+// SHARD-778: gVisor gave the command the host's tty as fd 0, so tty said "not a tty" and the shell had no TERM.
+func TestExecOnATerminalIsTheCommandsControllingTerminal(t *testing.T) {
+	app, id := runningSandbox(t)
+
+	terminal, chunks := sizedTerminal(t, pty.Size{Rows: 24, Cols: 80})
+	app.Out, app.Err, app.in = terminal.Replica, terminal.Replica, terminal.Replica
+
+	runErr := app.Run(context.Background(), []string{"exec", "-it", id, "/bin/sh", "-c", `tty; echo "TERM=$TERM."; exit 3`})
+
+	var exit *ExitError
+	if !errors.As(runErr, &exit) || exit.Code != 3 {
+		t.Fatalf("exec on a terminal returned %v, want exit code 3", runErr)
+	}
+
+	deadline := time.After(terminalReadBudget)
+	var out string
+	for strings.Count(out, "\n") < 2 {
+		select {
+		case chunk := <-chunks:
+			out += chunk
+		case <-deadline:
+			t.Fatalf("the command wrote %q to its terminal, want its tty and its TERM", out)
+		}
+	}
+	if !strings.Contains(out, "/dev/pts/") || !strings.Contains(out, "TERM=xterm.") {
+		t.Errorf("the command wrote %q, want a /dev/pts tty and TERM=xterm", out)
+	}
+}
+
+// A terminal exec whose command never ran keeps a shell's codes, the same as a pipe exec.
+func TestExecOnATerminalOfACommandThatNeverRanIsAShellCode(t *testing.T) {
+	app, id := runningSandbox(t)
+
+	if _, err := runExec(t, app, "exec", id, "/bin/sh", "-c", "echo x > /not-executable"); err != nil {
+		t.Fatalf("write the file the sandbox may not run: %v", err)
+	}
+
+	cases := []struct {
+		command string
+		want    int
+	}{
+		{"/bin/nope", 127},
+		{"nope", 127},
+		{"/not-executable", 126},
+	}
+
+	for _, c := range cases {
+		t.Run(c.command, func(t *testing.T) {
+			terminal, _ := sizedTerminal(t, pty.Size{Rows: 24, Cols: 80})
+			app.Out, app.Err, app.in = terminal.Replica, terminal.Replica, terminal.Replica
+
+			runErr := app.Run(context.Background(), []string{"exec", "-it", id, c.command})
+
+			var exit *ExitError
+			if !errors.As(runErr, &exit) {
+				t.Fatalf("exec on a terminal returned %v, want an ExitError", runErr)
+			}
+			if exit.Code != c.want {
+				t.Errorf("exec on a terminal exited %d, want %d", exit.Code, c.want)
+			}
+		})
+	}
+}
+
 // sizedTerminal hands back chunks, not a read to the end: the master hangs up only once every replica copy is gone.
 func sizedTerminal(t *testing.T, size pty.Size) (*pty.Pty, <-chan string) {
 	t.Helper()

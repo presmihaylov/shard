@@ -7,6 +7,7 @@ import (
 	"io/fs"
 	"net"
 	"os"
+	"os/exec"
 	"sync"
 	"syscall"
 
@@ -289,7 +290,8 @@ func startFailureCode(err error) int {
 	if _, ok := errors.AsType[*workDirError](err); ok {
 		return 126
 	}
-	if errors.Is(err, fs.ErrNotExist) || errors.Is(err, syscall.ENOENT) {
+	// A bare name no PATH entry holds is exec.ErrNotFound, which is no ENOENT, and runsc says 127 for it (SHARD-759).
+	if errors.Is(err, fs.ErrNotExist) || errors.Is(err, syscall.ENOENT) || errors.Is(err, exec.ErrNotFound) {
 		return 127
 	}
 

@@ -297,11 +297,12 @@ of the overlay and a reflinked copy of the memory file in its jail, and it does 
 checkpoint. Firecracker maps the memory private, so the vmm never writes to that copy. `fork` builds
 on this restore (SHARD-462). It freezes and stops the running source as `pause` does, writes the
 same capture into the fork's own directory, and runs the source on in the same vmm. The fork loads
-that capture, and the capture then goes. Firecracker cannot pause the wall clock, so the guest's
-clock is corrected at the load on x86_64, where it reads kvm-clock, and nowhere else. Every load of
-one checkpoint also wakes with the same guest crng key, and the kernel has no vmgenid driver. So
-each `resume` sends the guest 32 bytes of host entropy, and `shard-init` rekeys from them before the
-verb returns (SHARD-266). A restore keeps a marker until the seed lands. If the daemon is
+that capture, and the capture then goes. Every load wakes the guest clock at the time of its save.
+The load moves only kvm-clock, and the guest kernel reads tsc, so the reseed below also carries the
+host's wall clock, and `shard-init` sets the guest's to it before any process runs again
+(SHARD-776). Every load of one checkpoint also wakes with the same guest crng key, and the kernel
+has no vmgenid driver. So each `resume` sends the guest 32 bytes of host entropy, and `shard-init`
+rekeys from them before the verb returns (SHARD-266). A restore keeps a marker until the seed lands. If the daemon is
 interrupted in between, it reseeds the guest it adopts, and it ends a guest that refuses the reseed
 or the thaw. No guest process draws from the saved key in between, because the checkpoint holds the
 guest frozen. `pause` has `shard-init` freeze the sandbox cgroup and then the root's writes before
@@ -387,11 +388,9 @@ It needs `/dev/kvm`, which no CI runner and no cloud devbox has, so CI, `make ch
 it, and destroy the box. `SHARD_KERNEL` and `SHARD_KERNEL_SHA256` point the run at a kernel on the
 box. When they are unset, the daemon fetches the release.
 
-The guest reaches the resolver and the proxy on the bridge address. So a host firewall that drops
-`INPUT` discards those packets after shard's own table has accepted them. A rented box with `ufw` on
-is the common case. Before the suite, run `iptables -I INPUT -i shard0 -j ACCEPT` there. The host
-check looks for that direct rule in `INPUT` alone. It fails by name when the policy is `DROP` and
-the rule is absent, even when another chain accepts the bridge.
+The guest reaches the resolver and the proxy on the bridge address, which a rented box with `ufw`
+on drops in `INPUT`. The daemon lets the bridge through `ufw` and `firewalld` itself, so the suite
+needs no firewall step, and its teardown drops those rules with the bridge.
 
 `SHARD_ROOT` is where a run keeps its state, `/var/lib/shard-fc-e2e` by default. The daemon mounts
 the XFS image over it. The image takes half the free space of the disk under the root, at most
@@ -575,6 +574,9 @@ the verb useful. An error means the exec never ran, and an exit code means it di
 An empty `ExecSpec.User` means the user the entrypoint runs as, which is how `docker exec` inherits
 it. The supervisor's own process runs as root. So the entrypoint's user is recorded as the
 `-user uid:gid` in the supervisor's argv, and the provider reads it back from the sandbox.
+
+On runc 1.1.15 and sysbox-runc 0.7.1, runc init opens `/etc/passwd` and `/etc/group` by path on
+every exec, so a guest that swaps its own passwd for a FIFO hangs the exec for its 20 s start budget.
 
 `ExecSpec` carries `*os.File` instead of `io.Reader`, because a TTY is one pty replica that the
 caller allocates on the host, and a pipe cannot be one.

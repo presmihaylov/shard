@@ -257,6 +257,11 @@ func spawnDaemon(env ...string) (*testDaemon, error) {
 		return nil, fmt.Errorf("make a state root: %w", err)
 	}
 
+	return daemonOver(root, env...)
+}
+
+// daemonOver runs the daemon over root, which may hold the records of a daemon that served it before.
+func daemonOver(root string, env ...string) (*testDaemon, error) {
 	log, err := os.CreateTemp("", "shard-daemon")
 	if err != nil {
 		return nil, fmt.Errorf("make a daemon log: %w", err)
@@ -296,9 +301,14 @@ func (d *testDaemon) await() error {
 	}
 }
 
-// stop ends the daemon by its own pid, proves its socket is gone, and gives the root back. Every step
-// runs even when one before it failed: a root left mounted is what the next run refuses to start on.
+// stop halts the daemon and gives the root back, every step even after a failure, because a leftover mount blocks the next run.
 func (d *testDaemon) stop() error {
+	// RemoveAll takes the records, the only handle on what a remove missed, and trips over a mount a failed create left.
+	return errors.Join(d.halt(), hostclean.Release(d.root), os.RemoveAll(d.root))
+}
+
+// halt ends the daemon by its own pid and proves its socket is gone. The root and its sandboxes stay, for daemonOver.
+func (d *testDaemon) halt() error {
 	var errs []error
 	if err := d.cmd.Process.Signal(os.Interrupt); err != nil && !errors.Is(err, os.ErrProcessDone) {
 		errs = append(errs, fmt.Errorf("signal the daemon: %w", err))
@@ -312,10 +322,7 @@ func (d *testDaemon) stop() error {
 		errs = append(errs, fmt.Errorf("the socket %s outlived the daemon: %w", socket, err))
 	}
 
-	// RemoveAll takes the records, the only handle on what a remove missed, and trips over a mount a failed create left.
-	errs = append(errs, hostclean.Release(d.root))
-
-	return errors.Join(append(errs, os.RemoveAll(d.root), os.Remove(d.log))...)
+	return errors.Join(append(errs, os.Remove(d.log))...)
 }
 
 // logged is what the daemon wrote, which is the only account of a failure that happened inside it.
@@ -347,9 +354,22 @@ func newCreateApp(t *testing.T) (App, *bytes.Buffer) {
 	return appFor(daemonUnderTest.root)
 }
 
-// ownDaemon gives one test a second daemon, wired by env, over a root the package's daemon never holds.
+// ownDaemon gives one test a daemon wired by env on its own root, and halts the package's daemon for it because a host runs one (SHARD-777).
 func ownDaemon(t *testing.T, env ...string) (App, *bytes.Buffer) {
 	t.Helper()
+
+	if err := daemonUnderTest.halt(); err != nil {
+		t.Fatalf("halt the package's daemon: %v", err)
+	}
+	// Registered first, so it runs after the stop of this test's daemon has given the host back.
+	t.Cleanup(func() {
+		resumed, err := daemonOver(daemonUnderTest.root)
+		if err != nil {
+			t.Errorf("serve the package's root again: %v", err)
+			return
+		}
+		daemonUnderTest = resumed
+	})
 
 	d, err := spawnDaemon(env...)
 	if err != nil {

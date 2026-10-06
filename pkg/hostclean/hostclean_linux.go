@@ -3,6 +3,7 @@
 package hostclean
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -17,6 +18,7 @@ import (
 	"time"
 
 	"github.com/presmihaylov/shard/pkg/cgroup"
+	"github.com/presmihaylov/shard/pkg/hostfw"
 	"github.com/presmihaylov/shard/pkg/netns"
 	"github.com/presmihaylov/shard/pkg/proxy"
 	"github.com/presmihaylov/shard/pkg/xfs"
@@ -52,10 +54,13 @@ var runtimes = map[string]string{"gvisor": "runsc", "sysbox": "sysbox-runc", "ru
 // mountinfo is where the kernel lists what is mounted, and the only account of a mount a run leaked.
 const mountinfo = "/proc/self/mountinfo"
 
-// The bridge and the policy tables every root on the host shares, by the names services/network gives them.
+// The bridge, the policy tables and the host firewall hole every root on the host shares, by the names services/network gives them.
 const (
 	hostBridge = "shard0"
 	hostTable  = "shard"
+	hostZone   = "shard"
+	hostPolicy = "shard-forwarding"
+	hostMarker = "managed-by-shard"
 )
 
 var hostTableFamilies = []string{"inet", "bridge"}
@@ -138,6 +143,8 @@ func sweepShared() error {
 			left = append(left, Leftover{What: "the " + family + " table", Path: hostTable, remove: run("nft", "delete", "table", family, hostTable)})
 		}
 	}
+	hole := hostfw.Hole{Name: hostZone, Marker: hostMarker, Interface: hostBridge, Policy: hostPolicy}
+	left = append(left, Leftover{What: "the host firewall accepts", Path: hostZone, remove: func() error { return hostfw.Local().Close(context.Background(), hole) }})
 	if shown(hostBridge) {
 		left = append(left, Leftover{What: "the bridge", Path: hostBridge, remove: deleteLink(hostBridge)})
 	}

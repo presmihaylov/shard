@@ -300,6 +300,9 @@ const frozenFile = "frozen-root"
 // cutFreezeFile in the state directory lets the next freeze reach the guest and loses its answer, as a reset between the two would.
 const cutFreezeFile = "cut-freeze-answer"
 
+// cutThawFile in the state directory resets every stream under the next thaw, before the guest reads it.
+const cutThawFile = "cut-thaw"
+
 // resetOnPauseFile in the state directory resets every stream under the next VM pause, and holds that pause until the host dialed again.
 const resetOnPauseFile = "reset-on-pause"
 
@@ -775,6 +778,17 @@ func (s *stream) Write(p []byte) (int, error) {
 
 // freezeOrThaw records the freeze or the thaw in p: the machine's state, the thaw a done must answer, and a cut a freeze asked for.
 func (s *stream) freezeOrThaw(p []byte, kind string, frozen bool) error {
+	if !frozen {
+		cut, err := s.machine.take(cutThawFile)
+		if err != nil {
+			return err
+		}
+		if cut {
+			s.machine.dropStreams()
+
+			return net.ErrClosed
+		}
+	}
 	if err := errors.Join(s.machine.setFrozen(frozen), s.machine.note(kind)); err != nil {
 		return err
 	}

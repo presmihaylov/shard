@@ -16,6 +16,7 @@ import (
 
 	"github.com/presmihaylov/shard/models"
 	fcapi "github.com/presmihaylov/shard/pkg/firecracker"
+	"github.com/presmihaylov/shard/pkg/hostfw"
 	"github.com/presmihaylov/shard/pkg/hostmem"
 	"github.com/presmihaylov/shard/pkg/netns"
 	"github.com/presmihaylov/shard/pkg/netstack"
@@ -225,7 +226,7 @@ func (d *deps) netLocked() (hostNetwork, error) {
 
 	// The provider says whether its sandboxes own their namespaces, and it is asked at the first
 	// Allocate, not here: the proxy builds the network at boot on a host that may have no substrate.
-	cfg := network.Config{Root: d.cfg.Root, Egress: source, Userns: d.userns, Report: d.logger().Printf}
+	cfg := network.Config{Root: d.cfg.Root, Egress: source, Userns: d.userns, Report: d.logger().Printf, Firewall: hostfw.Local()}
 	// A microVM gets a tap beside its veth, inside the namespace its vmm joins.
 	cfg.Tap = d.providerName() == firecracker.Name
 	svc, err := network.New(cfg, manager)
@@ -301,8 +302,12 @@ func (d *deps) stackLocked() (*netstack.Stack, error) {
 	if err != nil {
 		return nil, err
 	}
+	rules, err := d.egressLocked()
+	if err != nil {
+		return nil, err
+	}
 	logger := log.New(d.cfg.Out, "", log.LstdFlags)
-	drops := &stackDrops{tailer: egress.NewTailer(d.cfg.Root, d.egressLogLocked(repo), repo, d.unreadableLogLocked(), logger), gateway: gateway, out: logger}
+	drops := &stackDrops{tailer: egress.NewTailer(d.cfg.Root, d.egressLogLocked(repo), repo, rules, d.unreadableLogLocked(), logger), gateway: gateway, out: logger}
 	// The host chains dnat a fronted guest's 80 and 443 onto the proxy, and the stack does the same with its own table; every other flow is judged by the same chains.
 	stack, err := netstack.New(netstack.Config{
 		Address:    gateway,

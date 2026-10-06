@@ -53,6 +53,13 @@ type note struct {
 // para is a note with no title, one line per sentence the help prints.
 func para(lines ...string) note { return note{lines: lines} }
 
+// manyNote is what a verb that takes several sandboxes does when one of them fails.
+var manyNote = para(
+	"With more than one sandbox, each ID prints as soon as that sandbox succeeds.",
+	"If a sandbox fails, the command goes on to the next one.",
+	"The failures print at the end, and the exit code is 1.",
+)
+
 // flagHelp is one flag as the help spells it, as --memory <size> or -f, --follow.
 type flagHelp struct {
 	spell string
@@ -71,13 +78,15 @@ var wants = map[string]string{
 
 // The arguments more than one verb takes.
 var (
-	imageArg    = row{"IMAGE", "image to use; downloaded if needed"}
-	sandboxArg  = row{"SANDBOX", "sandbox ID or name"}
-	sourceArg   = row{"SANDBOX", "source sandbox ID or name"}
-	argsArg     = row{"ARGS", "arguments for the command"}
-	snapshotArg = row{"SNAPSHOT", "snapshot ID or name"}
-	secretArg   = row{"NAME", "secret name"}
-	policyArg   = row{"NAME", "policy name"}
+	imageArg   = row{"IMAGE", "image to use; downloaded if needed"}
+	sandboxArg = row{"SANDBOX", "sandbox ID or name"}
+	// sandboxesArg is the argument of a verb that takes several sandboxes and acts on each in turn.
+	sandboxesArg = row{"SANDBOX", "sandbox ID or name; repeatable"}
+	sourceArg    = row{"SANDBOX", "source sandbox ID or name"}
+	argsArg      = row{"ARGS", "arguments for the command"}
+	snapshotArg  = row{"SNAPSHOT", "snapshot ID or name"}
+	secretArg    = row{"NAME", "secret name"}
+	policyArg    = row{"NAME", "policy name"}
 )
 
 // signingKeyDefault is the key serve and every tokens verb use without --signing-key-file.
@@ -88,7 +97,7 @@ var verbGroups = []struct {
 	title string
 	verbs []string
 }{
-	{"Sandboxes", []string{"create", "run", "exec", "shell", "list", "logs", "inspect", "stop", "start", "remove", "pause", "resume", "fork", "cp"}},
+	{"Sandboxes", []string{"create", "run", "exec", "shell", "list", "logs", "inspect", "stop", "start", "remove", "prune", "pause", "resume", "fork", "cp"}},
 	{"Images, snapshots, secrets and network policies", []string{"pull", "image", "snapshot", "secret", "policy"}},
 	{"Host and access", []string{"capabilities", "daemon", "info", "serve", "setup", "tokens", "version"}},
 }
@@ -253,10 +262,14 @@ var helps = map[string]verbHelp{
 		summary: "list active sandboxes",
 		flags: []flagHelp{
 			{"--all", "include stopped sandboxes", ""},
+			{"-q, --quiet", "print only sandbox IDs, one per line", ""},
 			formatTableHelp,
 		},
-		notes:    []note{para("Table columns: ID, NAME, IMAGE, STATE, UPTIME, RESTART and POLICY.")},
-		examples: []string{"shard list", "shard list --all", "shard list --format json"},
+		notes: []note{
+			para("Table columns: ID, NAME, IMAGE, STATE, UPTIME, RESTART and POLICY."),
+			para("Use --quiet to pass the IDs to another command, as in 'shard stop $(shard list -q)'.", "--quiet cannot be combined with --format."),
+		},
+		examples: []string{"shard list", "shard list --all", "shard list --format json", "shard list -q"},
 	},
 	"logs": {
 		usage:    []string{"logs [OPTIONS] SANDBOX"},
@@ -273,17 +286,18 @@ var helps = map[string]verbHelp{
 		examples: []string{"shard inspect web", "shard inspect --format table web"},
 	},
 	"stop": {
-		usage:   []string{"stop SANDBOX"},
-		summary: "stop a sandbox and preserve its files",
-		args:    []row{sandboxArg},
+		usage:   []string{"stop SANDBOX [SANDBOX...]"},
+		summary: "stop sandboxes and preserve their files",
+		args:    []row{sandboxesArg},
 		notes: []note{
 			para(
 				"The main command has up to "+strconv.Itoa(int(models.StopGrace/time.Second))+" seconds to exit before it is terminated.",
 				"Files remain available, but memory and process state are lost.",
 			),
 			para("Use 'shard start' to start the sandbox again.", "Use 'shard snapshot create' to save its files as a snapshot."),
+			manyNote,
 		},
-		examples: []string{"shard stop web"},
+		examples: []string{"shard stop web", "shard stop web worker", "shard stop $(shard list -q)"},
 	},
 	"start": {
 		usage:    []string{"start SANDBOX"},
@@ -293,32 +307,50 @@ var helps = map[string]verbHelp{
 		examples: []string{"shard start web"},
 	},
 	"remove": {
-		usage:   []string{"remove [OPTIONS] SANDBOX"},
-		summary: "remove a sandbox and its files",
-		args:    []row{sandboxArg},
-		flags:   []flagHelp{{"--force", "stop the sandbox first if needed; ignore a missing sandbox", ""}},
-		notes: []note{para(
-			"Stop a running or paused sandbox before removal, or use --force.",
-			"A sandbox with an image download in progress can be removed directly.",
-		)},
-		examples: []string{"shard remove web", "shard remove --force web"},
+		usage:   []string{"remove [OPTIONS] SANDBOX [SANDBOX...]"},
+		summary: "remove sandboxes and their files",
+		args:    []row{sandboxesArg},
+		flags:   []flagHelp{{"--force", "stop each sandbox first if needed; ignore a missing sandbox", ""}},
+		notes: []note{
+			para(
+				"Stop a running or paused sandbox before removal, or use --force.",
+				"A sandbox with an image download in progress can be removed directly.",
+			),
+			manyNote,
+		},
+		examples: []string{"shard remove web", "shard remove --force web", "shard remove --force web worker"},
 	},
 	"pause": {
-		usage:   []string{"pause SANDBOX"},
-		summary: "save a sandbox's state and suspend it",
-		args:    []row{sandboxArg},
-		notes: []note{para(
-			"Memory and files are saved so its processes can continue after resume.",
-			"The sandbox must be running. Availability depends on the provider.",
-		)},
-		examples: []string{"shard pause web"},
+		usage:   []string{"pause SANDBOX [SANDBOX...]"},
+		summary: "suspend sandboxes and save their state",
+		args:    []row{sandboxesArg},
+		notes: []note{
+			para(
+				"Memory and files are saved so its processes can continue after resume.",
+				"The sandbox must be running. Availability depends on the provider.",
+			),
+			manyNote,
+		},
+		examples: []string{"shard pause web", "shard pause web worker"},
 	},
 	"resume": {
-		usage:    []string{"resume SANDBOX"},
-		summary:  "resume a paused sandbox from its saved state",
-		args:     []row{sandboxArg},
-		notes:    []note{para("Processes continue from where they paused.")},
-		examples: []string{"shard resume web"},
+		usage:    []string{"resume SANDBOX [SANDBOX...]"},
+		summary:  "resume paused sandboxes from their saved state",
+		args:     []row{sandboxesArg},
+		notes:    []note{para("Processes continue from where they paused."), manyNote},
+		examples: []string{"shard resume web", "shard resume web worker"},
+	},
+	"prune": {
+		usage:   []string{"prune [OPTIONS]"},
+		summary: "remove all stopped sandboxes",
+		about:   "Remove every stopped sandbox and its files, and print the ID of each one removed.",
+		flags:   []flagHelp{{"--force", "remove without asking for confirmation", ""}},
+		notes: []note{para(
+			"Running and paused sandboxes are never removed.",
+			"Before it removes anything, prune lists the stopped sandboxes and asks for confirmation.",
+			"Without a terminal, it refuses unless --force is given.",
+		)},
+		examples: []string{"shard prune", "shard prune --force"},
 	},
 	"fork": {
 		usage:   []string{"fork [OPTIONS] SANDBOX"},
@@ -621,7 +653,7 @@ var helps = map[string]verbHelp{
 			}},
 			{title: "Exit codes", rows: []row{
 				{"0", "setup finished, or there was nothing to do"},
-				{"1", "a check or a step failed, an option was refused, or the confirmation was declined"},
+				{"1", "a check or a step failed, an option was refused, the confirmation was declined, or setup found a manual installation"},
 				{"130", "Ctrl+C left setup; the steps done so far stay in place"},
 			}},
 		},

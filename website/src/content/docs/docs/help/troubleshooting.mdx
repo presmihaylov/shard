@@ -108,6 +108,10 @@ On a Mac the daemon runs as your user, so local sandbox commands need no `sudo`.
 
 A root can have only one daemon, so a second `shard daemon` on the same root refuses to start. This happens when you start a daemon by hand while the service is already running one. Use the service, or stop it first.
 
+### `another shard daemon, over the root ..., already serves this host's sandbox bridge and nft table`
+
+Every root on a Linux host shares one sandbox bridge and one nft table, so a host runs one daemon. A daemon on a second root refuses to start while another one runs, and the message names the root of the one that runs. This happens when you start a daemon by hand with `--root` while the service is running. Stop the service with `sudo systemctl stop shard`, or use its root.
+
 ### `task proxy failed, restart in ...`
 
 The daemon log repeats this line, and the same line for `dns`, while every `shard create` fails. The host has no `nft`. Setup installs it, so this happens after an [install by hand](/docs/install/#install-by-hand). Install the `nftables` package. The next restart of each task succeeds, and the daemon itself needs no restart.
@@ -136,16 +140,18 @@ An ordinary daemon restart leaves already running sandboxes alive, and the next 
 
 **`running (exited 7)`.** The entrypoint exited with code 7, but the sandbox is still up. A sandbox outlives its entrypoint, so you can still `exec` into it until `shard stop` ends it.
 
-**An outgoing request from the sandbox times out.** A firewall on the host can drop the request before shard sees it, most often on a host with `ufw` turned on. Let traffic through the bridge:
+**An outgoing request from the sandbox times out.** A firewall rule of your own on the host can drop the request before shard sees it. shard lets the bridge `shard0` through `ufw` and `firewalld` itself, so look for another rule that drops traffic on `shard0`:
 
 ```sh
-sudo ufw allow in on shard0
-sudo ufw route allow in on shard0
+sudo iptables -S
+sudo nft list ruleset
 ```
 
 **A name does not resolve, or a request gets a `403`, in a sandbox with a network policy.** Check the policy and shard's private-address restrictions. `shard policy logs <name>` shows each decision and the rule or restriction that made it. A policy with only address rules needs `--allow dns` before names resolve. The [egress reference](/docs/security/egress/) lists every rule.
 
 **An HTTPS client fails on a certificate in a sandbox with a secret.** shard's proxy inserts the key on the host, so it presents its own certificate to the client. Most clients trust it without any change. Java and some Rust builds need an extra step, and a client that pins a certificate cannot use a secret. The [secrets reference](/docs/security/secrets/) has the steps.
+
+**A request to an internal server gets a `502` that says `the upstream's certificate is signed by an authority the host does not trust`.** In a sandbox with a policy or a secret, the proxy checks the server's certificate against the host's trust store, not the sandbox's. Add the authority that signed it to the host's store, then restart the daemon. The [egress reference](/docs/security/egress/#an-upstream-signed-by-an-internal-authority) has the commands for each system.
 
 ## A remote server
 

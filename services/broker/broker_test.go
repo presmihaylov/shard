@@ -783,6 +783,30 @@ func TestDecideLogsAHostItCannotResolve(t *testing.T) {
 	}
 }
 
+// A request the proxy never sent, because the upstream's certificate failed, gets a deny of its own after the allow (SHARD-772).
+func TestUntrustedLogsTheCertificateFailure(t *testing.T) {
+	records := fakeRecords{sandboxes: []models.Sandbox{{ID: "locked", Policy: "web", Address: netip.MustParsePrefix("10.87.0.2/16")}}}
+	b, log := newBrokerLog(t, records, fakeSecrets{}, models.Policy{Name: "web"})
+	reason := "the upstream's certificate is signed by an authority the host does not trust"
+
+	if err := b.Untrusted(t.Context(), proxy.Request{Source: source, Host: "api.example.com", Port: 443, TLS: true}, netip.AddrPortFrom(upstream, 443), reason); err != nil {
+		t.Fatalf("Untrusted: %v", err)
+	}
+
+	want := egress.Record{Source: egress.SourceProxy, Verdict: string(models.ActionDeny), Host: "api.example.com", Port: 443, Address: upstream.String(), Rule: network.RuleCertificate, Reason: reason}
+	if len(log.records) != 1 || log.ids[0] != "locked" {
+		t.Fatalf("the log holds %+v for %v", log.records, log.ids)
+	}
+	got := log.records[0]
+	if got.Time.IsZero() {
+		t.Error("the record has no time")
+	}
+	want.Time = got.Time
+	if got != want {
+		t.Errorf("the record is %+v, want %+v", got, want)
+	}
+}
+
 // An unlogged decision would make the log a half-truth, so a log that refuses closes the door.
 func TestDecideRefusesWhenTheLogRefuses(t *testing.T) {
 	records := fakeRecords{sandboxes: []models.Sandbox{{ID: "locked", Policy: "web", Address: netip.MustParsePrefix("10.87.0.2/16")}}}
