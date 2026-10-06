@@ -17,6 +17,7 @@ import (
 
 	"github.com/presmihaylov/shard/pkg/pty"
 	"github.com/presmihaylov/shard/pkg/runsc"
+	"github.com/presmihaylov/shard/pkg/termrelay"
 )
 
 // fake stands in for the binary: it records the argv it was called with, then prints what a test asked for.
@@ -846,6 +847,125 @@ func TestExecPassesNoFdToATerminal(t *testing.T) {
 
 	if got := argv(t, argvFile); slices.Contains(got, "--pass-fd") {
 		t.Errorf("the argv is %q, want no --pass-fd for a terminal", got)
+	}
+}
+
+// SHARD-778: runsc hands the guest the host's tty, which no guest process can make its controlling terminal, so the relay runs the command on a guest pty.
+func TestExecRunsATerminalUnderTheRelay(t *testing.T) {
+	r, argvFile := fakeBinary(t, savingProcess()+"printf S >&3\n")
+
+	if _, err := r.Exec(t.Context(), "amber-otter-1a2b", terminalExec(t, []string{"sh", "-l"})); err != nil {
+		t.Fatalf("Exec: %v", err)
+	}
+
+	got := argv(t, argvFile)
+	if id := slices.Index(got, "amber-otter-1a2b"); id < 0 || !slices.Contains(pairs(got[:id]), "--pass-fd 3:3") {
+		t.Errorf("the argv is %q, want --pass-fd 3:3 before the id", got)
+	}
+	process := savedProcess(t, argvFile)
+	if want := []string{"/.shard/init", "terminal", "/srv", "sh", "-l"}; !slices.Equal(process.Args, want) {
+		t.Errorf("the args are %q, want %q", process.Args, want)
+	}
+	if process.Cwd != "/" || !process.Terminal {
+		t.Errorf("cwd %q terminal %t, want the relay at / on a terminal", process.Cwd, process.Terminal)
+	}
+}
+
+// A pipe exec needs no pty, so the relay path is left out of it.
+func TestExecRunsAPipeExecWithoutTheRelay(t *testing.T) {
+	r, argvFile := fakeBinary(t, savingProcess())
+
+	if _, err := r.Exec(t.Context(), "amber-otter-1a2b", runsc.ExecOptions{Bundle: bundle(t), Argv: []string{"sh"}, WorkDir: "/srv", Relay: "/.shard/init"}); err != nil {
+		t.Fatalf("Exec: %v", err)
+	}
+
+	if got := argv(t, argvFile); slices.Contains(pairs(got), "--pass-fd 3:3") {
+		t.Errorf("the argv is %q, want no record fd for a pipe exec", got)
+	}
+	if process := savedProcess(t, argvFile); !slices.Equal(process.Args, []string{"sh"}) || process.Cwd != "/srv" {
+		t.Errorf("args %q cwd %q, want the command itself at /srv", process.Args, process.Cwd)
+	}
+}
+
+// The relay sends the errno of a command it could not start, and Exec splits it as it splits runsc's own refusals.
+func TestExecReportsWhyTheRelayNeverStartedItsCommand(t *testing.T) {
+	cases := []struct {
+		record        string
+		reason        string
+		notExecutable bool
+		workDir       bool
+	}{
+		{record: "E2", reason: "no such file or directory"},
+		{record: "E13", reason: "permission denied", notExecutable: true},
+		{record: "D20", reason: `the work directory "/srv" is not a directory`, workDir: true},
+	}
+
+	for _, c := range cases {
+		var reported []int
+		opts := terminalExec(t, []string{"nope"})
+		opts.Report = func(pid int) { reported = append(reported, pid) }
+		r, _ := fakeBinary(t, writingPID(4242)+"printf "+c.record+" >&3\nexit 127\n")
+
+		_, err := r.Exec(t.Context(), "amber-otter-1a2b", opts)
+
+		start, ok := errors.AsType[*runsc.ExecStartError](err)
+		if !ok {
+			t.Fatalf("record %s: Exec returned %v, want an ExecStartError", c.record, err)
+		}
+		if start.Reason != c.reason || start.NotExecutable != c.notExecutable || start.WorkDir != c.workDir {
+			t.Errorf("record %s: got %+v, want reason %q, NotExecutable=%v, WorkDir=%v", c.record, start, c.reason, c.notExecutable, c.workDir)
+		}
+		// The pid file names the relay as it forks, so it is no pid of a command that ran.
+		if len(reported) != 0 {
+			t.Errorf("record %s: Exec reported %v, want no pid", c.record, reported)
+		}
+	}
+}
+
+// The relay's pid is the one Signal reaches the command through, once the relay said the command runs.
+func TestExecReportsThePIDOfARelayWhoseCommandStarted(t *testing.T) {
+	r, _ := fakeBinary(t, writingPID(4242)+"printf S >&3\n")
+
+	var got []int
+	opts := terminalExec(t, []string{"sh"})
+	opts.Report = func(pid int) { got = append(got, pid) }
+	if _, err := r.Exec(t.Context(), "amber-otter-1a2b", opts); err != nil {
+		t.Fatalf("Exec: %v", err)
+	}
+
+	if !slices.Equal(got, []int{4242}) {
+		t.Errorf("Exec reported %v, want the one pid 4242", got)
+	}
+}
+
+// A relay that ended with no record never said its command ran, so its exit code answers nothing.
+func TestExecRefusesARelayThatSentNoRecord(t *testing.T) {
+	r, _ := fakeBinary(t, writingPID(4242)+"exit 0\n")
+
+	if _, err := r.Exec(t.Context(), "amber-otter-1a2b", terminalExec(t, []string{"sh"})); !errors.Is(err, termrelay.ErrNoRecord) {
+		t.Errorf("Exec returned %v, want termrelay.ErrNoRecord", err)
+	}
+}
+
+// terminalExec is a tty exec under the relay at /srv, on a pty of the test's own.
+func terminalExec(t *testing.T, command []string) runsc.ExecOptions {
+	t.Helper()
+
+	terminal, err := pty.Open()
+	if err != nil {
+		t.Fatalf("open a pty: %v", err)
+	}
+	t.Cleanup(func() {
+		if err := terminal.Close(); err != nil {
+			t.Errorf("close the pty: %v", err)
+		}
+	})
+
+	replica := terminal.Replica
+
+	return runsc.ExecOptions{
+		Bundle: bundle(t), Argv: command, WorkDir: "/srv", Relay: "/.shard/init",
+		TTY: true, Stdin: replica, Stdout: replica, Stderr: replica,
 	}
 }
 

@@ -710,9 +710,10 @@ func execOptions(b bundle.Bundle, spec models.ExecSpec) (runsc.ExecOptions, erro
 	opts := runsc.ExecOptions{
 		Bundle:  b.Dir,
 		Argv:    spec.Argv,
-		Env:     runspec.MergeEnv(runtime.Env, spec.Env),
+		Env:     runspec.ExecEnv(runtime.Env, spec.Env, spec.TTY),
 		WorkDir: firstNonEmpty(spec.WorkDir, runtime.WorkDir, "/"),
 		TTY:     spec.TTY,
+		Relay:   bundle.GuestInitPath,
 		Stdin:   spec.Stdin,
 		Stdout:  spec.Stdout,
 		Stderr:  spec.Stderr,
