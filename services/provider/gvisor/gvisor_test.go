@@ -4,10 +4,12 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io/fs"
 	"os"
 	"path/filepath"
 	"runtime"
 	"strings"
+	"syscall"
 	"testing"
 	"time"
 
@@ -662,5 +664,23 @@ func TestALostWaitIsTheExecLostSentinel(t *testing.T) {
 	}
 	if _, ok := errors.AsType[*models.CommandNotStartedError](err); ok {
 		t.Errorf("ExecFailure returned %v, want no command that never started", err)
+	}
+}
+
+// A workdir that is a file is runc's 126 and the kernel's words, and any other failure of the check stays an error (SHARD-769).
+func TestAWorkDirThatIsAFileIsACommandThatNeverStarted(t *testing.T) {
+	err := gvisor.WorkDirFailure("amber-otter-1a2b", &fs.PathError{Op: "chdir", Path: "/etc/hostname", Err: syscall.ENOTDIR})
+
+	notStarted, ok := errors.AsType[*models.CommandNotStartedError](err)
+	if !ok || notStarted.Code != models.CommandNotExecutableExitCode || notStarted.Reason != "not a directory" {
+		t.Fatalf("WorkDirFailure returned %#v, want a command that never started, with 126 and \"not a directory\"", err)
+	}
+
+	err = gvisor.WorkDirFailure("amber-otter-1a2b", fs.ErrPermission)
+	if _, ok := errors.AsType[*models.CommandNotStartedError](err); ok || !errors.Is(err, fs.ErrPermission) {
+		t.Errorf("WorkDirFailure returned %v, want the check's own error", err)
+	}
+	if gvisor.WorkDirFailure("amber-otter-1a2b", nil) != nil {
+		t.Error("WorkDirFailure refused a workdir the check passed")
 	}
 }
