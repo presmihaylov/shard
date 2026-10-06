@@ -644,6 +644,9 @@ func (p *Provider) Exec(ctx context.Context, id string, spec models.ExecSpec) (m
 	if err != nil {
 		return models.ExitStatus{}, err
 	}
+	if err := b.CheckWorkDir(id, opts.WorkDir); err != nil {
+		return models.ExitStatus{}, err
+	}
 
 	code, err := p.runsc.Exec(ctx, id, opts)
 	if err != nil {
@@ -688,7 +691,8 @@ func execFailure(id string, err error) error {
 	}
 
 	code := models.CommandNotFoundExitCode
-	if start.NotExecutable {
+	// docker exec answers 126 for a work directory it cannot enter, and runsc's words already name it.
+	if start.NotExecutable || start.WorkDir {
 		code = models.CommandNotExecutableExitCode
 	}
 

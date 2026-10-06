@@ -126,7 +126,7 @@ func TestAdmitDiskWritesWhatFits(t *testing.T) {
 	}
 }
 
-// A copy keeps the size of its source, so that size is the bound admitted.
+// A copy keeps the size of its source, so that size is the bound admitted, and no smaller bound is the fix (SHARD-751).
 func TestAdmitCopyTakesTheBoundFromTheSource(t *testing.T) {
 	sandboxes := filepath.Join(t.TempDir(), "sandboxes")
 	src := filepath.Join(sandboxes, "source", "disk.img")
@@ -143,6 +143,9 @@ func TestAdmitCopyTakesTheBoundFromTheSource(t *testing.T) {
 	})
 	if err == nil || !strings.Contains(err.Error(), "8388608 MiB disk") {
 		t.Fatalf("got %v, want a refusal of the 8 TiB copy", err)
+	}
+	if !strings.HasSuffix(err.Error(), "; remove a sandbox") || strings.Contains(err.Error(), "disk_mib") {
+		t.Errorf("got %v, want the copy refused with no disk bound to set", err)
 	}
 }
 

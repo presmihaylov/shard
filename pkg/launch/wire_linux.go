@@ -15,23 +15,25 @@ const (
 	ready   byte = 'R'
 	proceed byte = 'G'
 	failed  byte = 'E'
+	// unentered is a record of the chdir into the work directory, which fails before the search starts.
+	unentered byte = 'D'
 )
 
-// record is the shim's report of the errno that ended its search.
-func record(errno syscall.Errno) []byte {
-	return strconv.AppendUint([]byte{failed}, uint64(errno), 10)
+// record is the shim's report of the errno that ended its launch.
+func record(kind byte, errno syscall.Errno) []byte {
+	return strconv.AppendUint([]byte{kind}, uint64(errno), 10)
 }
 
 // parseRecord reads an errno record; anything else is no record at all.
-func parseRecord(blob []byte) syscall.Errno {
-	if len(blob) < 2 || blob[0] != failed {
-		return 0
+func parseRecord(blob []byte) *NotStartedError {
+	if len(blob) < 2 || (blob[0] != failed && blob[0] != unentered) {
+		return &NotStartedError{}
 	}
 
 	errno, err := strconv.Atoi(string(blob[1:]))
 	if err != nil || errno <= 0 || errno > 4095 {
-		return 0
+		return &NotStartedError{}
 	}
 
-	return syscall.Errno(errno)
+	return &NotStartedError{Errno: syscall.Errno(errno), Chdir: blob[0] == unentered}
 }

@@ -37,9 +37,9 @@ func TestExecProcessSetsTheGIDOnlyWhenTheUserNamesOne(t *testing.T) {
 	}
 }
 
-// A launch hands the channel over as the first preserved fd, and the supervisor's shim runs ahead of the command.
+// A launch hands the channel over as the first preserved fd, and the supervisor's shim runs ahead of the command and enters its directory.
 func TestALaunchRunsTheCommandUnderTheShim(t *testing.T) {
-	opts := ExecOptions{Argv: []string{"/bin/sh", "-c", "echo hi"}, Launch: "/.shard/init"}
+	opts := ExecOptions{Argv: []string{"/bin/sh", "-c", "echo hi"}, WorkDir: "/srv", Launch: "/.shard/init"}
 
 	args := execArgs("amber-otter-1a2b", "/tmp/pid", "/tmp/process.json", opts)
 	if want := []string{"exec", "--pid-file", "/tmp/pid", "--process", "/tmp/process.json", "--preserve-fds", "1", "amber-otter-1a2b"}; !slices.Equal(args, want) {
@@ -50,8 +50,20 @@ func TestALaunchRunsTheCommandUnderTheShim(t *testing.T) {
 	if err != nil {
 		t.Fatalf("execProcess: %v", err)
 	}
-	if want := []string{"/.shard/init", "launch", "/bin/sh", "-c", "echo hi"}; !slices.Equal(process.Args, want) {
+	if want := []string{"/.shard/init", "launch", "/srv", "/bin/sh", "-c", "echo hi"}; !slices.Equal(process.Args, want) {
 		t.Errorf("got args %q, want %q", process.Args, want)
+	}
+	// runc fails a missing cwd before the shim runs, so it only ever enters the root.
+	if process.Cwd != "/" {
+		t.Errorf("the cwd is %q, want / with the shim entering /srv", process.Cwd)
+	}
+
+	process, err = execProcess(specs.Process{Cwd: "/home"}, ExecOptions{Argv: []string{"/bin/true"}, Launch: "/.shard/init"})
+	if err != nil {
+		t.Fatalf("execProcess: %v", err)
+	}
+	if want := []string{"/.shard/init", "launch", "/home", "/bin/true"}; !slices.Equal(process.Args, want) {
+		t.Errorf("got args %q, want the bundle's cwd for the shim to enter, %q", process.Args, want)
 	}
 }
 

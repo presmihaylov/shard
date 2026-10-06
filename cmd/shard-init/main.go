@@ -56,7 +56,7 @@ func init() {
 }
 
 func main() {
-	// The daemon runs [/.shard/init launch <argv>] as an exec's own process, to prove the command's execve took.
+	// The daemon runs [/.shard/init launch <dir> <argv>] as an exec's own process, to prove the command's execve took.
 	if len(os.Args) > 1 && os.Args[1] == launch.Mode {
 		os.Exit(runLaunch(os.Args[2:]))
 	}
@@ -74,8 +74,8 @@ func main() {
 }
 
 // runLaunch returns only when the command did not start; the host has the errno already, so a shell's code is enough here.
-func runLaunch(argv []string) int {
-	err := launch.Shim(argv)
+func runLaunch(args []string) int {
+	err := launch.Shim(args)
 	var failed *launch.NotStartedError
 	if !errors.As(err, &failed) {
 		fmt.Fprintln(os.Stderr, "shard-init:", err)
@@ -300,6 +300,10 @@ func newGuest(report reporter, restart restartPolicy) *guest {
 
 // launch starts the entrypoint once and says so, which is the host's only proof that it ran.
 func (g *guest) launch(ep entrypoint) error {
+	// Every exec defaults to the work directory, so it is made even when no command runs.
+	if err := makeWorkDir(ep.dir); err != nil {
+		return fmt.Errorf("%w: %w", errNoEntrypoint, err)
+	}
 	// The image's own command never runs, so with none the supervisor runs alone and is ready at once.
 	if len(ep.argv) == 0 {
 		g.started = true
@@ -474,7 +478,7 @@ func (g *guest) end() {
 
 // restartEntrypoint forks it once more and records the count; an image that no longer starts is a give-up.
 func (g *guest) restartEntrypoint() int {
-	pid, err := g.start(g.ep, nil, false)
+	pid, err := g.startEntrypointAgain()
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "shard-init: start %q again: %v\n", g.ep.argv[0], err)
 		g.count.GaveUp = true
@@ -487,6 +491,15 @@ func (g *guest) restartEntrypoint() int {
 	g.record()
 
 	return pid
+}
+
+// startEntrypointAgain is a start like the first, so the work directory is made again as docker makes it at every start.
+func (g *guest) startEntrypointAgain() (int, error) {
+	if err := makeWorkDir(g.ep.dir); err != nil {
+		return 0, err
+	}
+
+	return g.start(g.ep, nil, false)
 }
 
 // A sandbox outlives its entrypoint, so a lost count is reported and never fatal (AGENTS.md).
@@ -769,6 +782,10 @@ func (g *guest) start(ep entrypoint, files []*os.File, tty bool) (int, error) {
 // ForkExec, not os/exec: an os/exec Wait would race the wait4(-1) that collects every other child.
 // files are the child's fds, or nil for the entrypoint's: /dev/null and the log.
 func startProcess(ep entrypoint, files []*os.File, tty bool) (int, error) {
+	// The fork's chdir fails with the same ENOENT as a missing binary, and the binary is what its error names.
+	if err := checkWorkDir(ep.dir); err != nil {
+		return 0, err
+	}
 	binary, err := lookPath(ep)
 	if err != nil {
 		return 0, fmt.Errorf("look up %q: %w", ep.argv[0], unrunnable{err})
@@ -844,6 +861,46 @@ func statExeced(stat string) (bool, error) {
 	}
 
 	return flags&pfForkNoExec == 0, nil
+}
+
+// workDirError is a work directory a process cannot start in, which an exec never creates.
+type workDirError struct {
+	dir   string
+	errno syscall.Errno
+}
+
+func (e *workDirError) Error() string { return launch.WorkDirReason(e.dir, e.errno) }
+
+// makeWorkDir makes the work directory as docker does at a start: every missing level, root-owned, 0755.
+func makeWorkDir(dir string) error {
+	if dir == "" {
+		return nil
+	}
+	//nolint:gosec // G301: docker's mode for a work directory, which the sandbox's own users enter.
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		return fmt.Errorf("make the work directory %q: %w", dir, err)
+	}
+
+	return nil
+}
+
+// checkWorkDir refuses a work directory that is not there now, whether an exec named it or the sandbox lost it.
+func checkWorkDir(dir string) error {
+	if dir == "" {
+		return nil
+	}
+	info, err := os.Stat(dir)
+	if errno, ok := errors.AsType[syscall.Errno](err); ok {
+		return &workDirError{dir: dir, errno: errno}
+	}
+	if err != nil {
+		return fmt.Errorf("check the work directory %q: %w", dir, err)
+	}
+	if !info.IsDir() {
+		return &workDirError{dir: dir, errno: syscall.ENOTDIR}
+	}
+
+	return nil
 }
 
 // lookPath resolves argv[0] on the entrypoint's own PATH, in the entrypoint's own directory: in a VM shard-init's environ is the kernel's, which has none.

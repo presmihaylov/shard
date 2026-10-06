@@ -145,7 +145,7 @@ shard exec [OPTIONS] SANDBOX COMMAND [ARGS...]
 ```sh
 shard exec web python script.py
 shard exec --workdir /app web npm test
-shard exec -it web /bin/sh
+shard exec -it web python
 ```
 
 **Arguments**
@@ -166,7 +166,38 @@ shard exec -it web /bin/sh
 | `--workdir <dir>` | directory for this command |
 | `--user <user>` | user for this command |
 
-The command uses the sandbox's default directory and user unless overridden. The exit code is the command's exit code.
+The command uses the sandbox's default directory and user unless overridden. The exit code is the command's exit code. To open a shell in the sandbox, use `shard shell`.
+
+## shard shell
+
+Open an interactive shell in a running sandbox.
+
+```text
+shard shell [OPTIONS] SANDBOX
+```
+
+**Examples**
+
+```sh
+shard shell web
+shard shell --workdir /app web
+shard shell --user root web
+```
+
+**Arguments**
+
+| Argument | Description |
+| --- | --- |
+| `SANDBOX` | sandbox ID or name |
+
+**Options**
+
+| Option | Description |
+| --- | --- |
+| `--workdir <dir>` | directory for the shell |
+| `--user <user>` | user for the shell |
+
+The shell is bash if the sandbox has it, and sh if not. It keeps the PATH the image sets. It uses the sandbox's default directory and user unless overridden. Standard input must be a terminal. To run a command without one, use `shard exec`. The exit code is the shell's exit code.
 
 ## shard list
 

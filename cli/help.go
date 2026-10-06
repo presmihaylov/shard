@@ -97,7 +97,7 @@ var verbGroups = []struct {
 	title string
 	verbs []string
 }{
-	{"Sandboxes", []string{"create", "run", "exec", "list", "logs", "inspect", "stop", "start", "remove", "prune", "pause", "resume", "fork", "cp"}},
+	{"Sandboxes", []string{"create", "run", "exec", "shell", "list", "logs", "inspect", "stop", "start", "remove", "prune", "pause", "resume", "fork", "cp"}},
 	{"Images, snapshots, secrets and network policies", []string{"pull", "image", "snapshot", "secret", "policy"}},
 	{"Host and access", []string{"capabilities", "daemon", "info", "serve", "setup", "tokens", "version"}},
 }
@@ -234,8 +234,28 @@ var helps = map[string]verbHelp{
 			{"--workdir <dir>", "directory for this command", ""},
 			{"--user <user>", "user for this command", ""},
 		},
-		notes:    []note{para("The command uses the sandbox's default directory and user unless overridden.", "The exit code is the command's exit code.")},
-		examples: []string{"shard exec web python script.py", "shard exec --workdir /app web npm test", "shard exec -it web /bin/sh"},
+		notes: []note{para(
+			"The command uses the sandbox's default directory and user unless overridden.",
+			"The exit code is the command's exit code.",
+			"To open a shell in the sandbox, use 'shard shell'.",
+		)},
+		examples: []string{"shard exec web python script.py", "shard exec --workdir /app web npm test", "shard exec -it web python"},
+	},
+	"shell": {
+		usage:   []string{"shell [OPTIONS] SANDBOX"},
+		summary: "open an interactive shell in a running sandbox",
+		args:    []row{sandboxArg},
+		flags: []flagHelp{
+			{"--workdir <dir>", "directory for the shell", ""},
+			{"--user <user>", "user for the shell", ""},
+		},
+		notes: []note{para(
+			"The shell is bash if the sandbox has it, and sh if not. It keeps the PATH the image sets.",
+			"It uses the sandbox's default directory and user unless overridden.",
+			"Standard input must be a terminal. To run a command without one, use 'shard exec'.",
+			"The exit code is the shell's exit code.",
+		)},
+		examples: []string{"shard shell web", "shard shell --workdir /app web", "shard shell --user root web"},
 	},
 	"list": {
 		usage:   []string{"list [OPTIONS]"},
@@ -588,12 +608,14 @@ var helps = map[string]verbHelp{
 			{"--timeout <duration>", "image download timeout", short(DefaultTimeout)},
 			{"--insecure-registry <host>", "allow HTTP for a registry; repeatable", ""},
 			{"--log <path>", "daemon log file (macOS only)", ""},
+			{"--storage-size <size>", "size of a new Firecracker data image", ""},
 		},
 		notes: []note{
 			para(
 				"The daemon manages local sandboxes and stays active until stopped.",
 				"An existing data directory must use its original provider.",
 				"Use 'shard info' to see the default provider for this host.",
+				"A new Firecracker data image takes half the free space, at most 100GiB, unless --storage-size sets it. An existing one keeps its size, and the daemon refuses any other --storage-size.",
 			),
 			hostOnlyNote,
 		},
@@ -616,11 +638,19 @@ var helps = map[string]verbHelp{
 			{"--remote <url>", "connect to a remote shard server", ""},
 			{"--provider <name>", "firecracker, gvisor, sysbox, runc or vz", ""},
 			{"--start-at-boot <true|false>", "start the daemon at boot", ""},
+			{"--storage-size <size>", "space to reserve for Firecracker sandbox disks", ""},
 			{"--save", "save the remote connection", ""},
 			{"-y, --yes", "apply changes without confirmation", ""},
 		},
 		notes: []note{
 			{title: "Remote authentication", lines: []string{"Set " + client.APIKeyEnv + ". Do not pass the key as a command argument."}},
+			{title: "Storage size", lines: []string{
+				"Without XFS or Btrfs, Firecracker keeps sandbox disks in one XFS image.",
+				"The daemon reserves it whole when it starts, and keeps 10GiB for the host.",
+				"The default is half the available space, at most 100GiB. The minimum is 10GiB.",
+				"Sizes take KiB, MiB, GiB, KB, MB or GB, as --disk does.",
+				"Setup does not resize an existing image. Other providers refuse the option.",
+			}},
 			{title: "Exit codes", rows: []row{
 				{"0", "setup finished, or there was nothing to do"},
 				{"1", "a check or a step failed, an option was refused, or the confirmation was declined"},
@@ -630,6 +660,7 @@ var helps = map[string]verbHelp{
 		examples: []string{
 			"shard setup",
 			"shard setup --local --provider gvisor --start-at-boot=true -y",
+			"shard setup --local --provider firecracker --start-at-boot=true --storage-size 50GiB -y",
 			"shard setup --remote https://shard.example.com --save -y",
 		},
 		spaced: true,
