@@ -1,6 +1,7 @@
 package setup
 
 import (
+	"bytes"
 	"context"
 	"crypto/rand"
 	"encoding/hex"
@@ -59,6 +60,9 @@ func CheckListen(address string) error {
 	if err != nil {
 		return fmt.Errorf("%q is not an IP address and port, such as %s", address, serve.DefaultListen)
 	}
+	if ap.Addr().Zone() != "" {
+		return fmt.Errorf("%s names an IPv6 zone, which a client URL cannot carry; name an address without one", address)
+	}
 	if ap.Addr().IsUnspecified() {
 		return fmt.Errorf("%s listens on every network, and the HTTP API serves plain HTTP; name one address, such as %s or a VPN address", address, serve.DefaultListen)
 	}
@@ -83,7 +87,6 @@ func (s *Setup) askAPI(ctx context.Context) (string, error) {
 	return s.askListen(ctx, serve.DefaultListen)
 }
 
-// askListen asks for the address until one passes CheckListen.
 func (s *Setup) askListen(ctx context.Context, initial string) (string, error) {
 	prompt := "Listen address for the HTTP API:\n" +
 		"  " + serve.DefaultListen + " accepts connections only from this machine.\n" +
@@ -104,6 +107,14 @@ func (s *Setup) askListen(ctx context.Context, initial string) (string, error) {
 	}
 }
 
+func apiServiceFile(h Host) string {
+	if h.OS == "darwin" {
+		return servePlist
+	}
+
+	return serveUnit
+}
+
 // signingKeyPath is the key that signs every API key: setup's own on Linux, and the default under the daemon's root on a Mac.
 func signingKeyPath(h Host) string {
 	if h.OS == "darwin" {
@@ -113,7 +124,6 @@ func signingKeyPath(h Host) string {
 	return signingKeyFile
 }
 
-// keys says whether the API key file and the signing key it needs are there.
 func (s *Setup) keys(ctx context.Context) (key, signing bool, err error) {
 	// /etc/shard keeps everyone but root and the shard group out, so only sudo can look.
 	if _, err := os.Lstat(rooted(s.Host, apiKeyFile(s.Host))); errors.Is(err, fs.ErrPermission) {
@@ -223,9 +233,15 @@ func (s *Setup) setUpAPI(ctx context.Context, m Manifest, service ServiceState) 
 	if err != nil {
 		return err
 	}
-	will, notes, err := apiReview(ctx, s.Host, l)
+	will, notes := apiReview(s.Host, l, missing)
+	file := apiServiceFile(s.Host)
+	exists, err := present(ctx, s.Host, file)
 	if err != nil {
 		return err
+	}
+	// Uninstall removes the file once setup has written it, so a person who installed it by hand learns it is replaced.
+	if exists && !slices.ContainsFunc(m.Files, func(f Owned) bool { return f.Path == file }) {
+		will = append(will, "  Replace the existing HTTP API service in "+file+".")
 	}
 	var steps []Step
 	if missing {
@@ -522,8 +538,8 @@ func (p *apiPlan) mint(ctx context.Context) (string, error) {
 		return "", &Problem{Lines: []string{fmt.Sprintf("Could not create the API key: %v.", err)}}
 	}
 	var minted serve.Token
-	// A decode error can quote what mint printed, which holds the key, so it is not passed on.
-	if json.Unmarshal(out, &minted) != nil || minted.Token == "" {
+	// sudo can warn on stderr before the JSON line; a decode error stays out, since it can quote a character of the key.
+	if json.Unmarshal(lastLine(out), &minted) != nil || minted.Token == "" {
 		return "", &Problem{Lines: []string{"Could not create the API key: shard tokens mint printed no key."}}
 	}
 
@@ -578,10 +594,8 @@ func (p *apiPlan) start(ctx context.Context) error {
 		return nil
 	}
 
-	if _, err := privileged(ctx, p.h, "launchctl", "print", serveLabel); err == nil {
-		if _, err := privileged(ctx, p.h, "launchctl", "bootout", serveLabel); err != nil {
-			return &Problem{Lines: []string{fmt.Sprintf("Could not stop the HTTP API: %v.", err)}}
-		}
+	if err := bootout(ctx, p.h, serveLabel); err != nil {
+		return &Problem{Lines: []string{fmt.Sprintf("Could not stop the HTTP API: %v.", err)}}
 	}
 	if _, err := privileged(ctx, p.h, "launchctl", "bootstrap", "system", rooted(p.h, servePlist)); err != nil {
 		return &Problem{Lines: []string{fmt.Sprintf("Could not start the HTTP API: %v.", err)}}
@@ -646,23 +660,31 @@ func apiFailed(ctx context.Context, h Host) error {
 // readKey reads the key file, through sudo where it is root's and setup is not.
 func readKey(ctx context.Context, h Host) (string, error) {
 	file := apiKeyFile(h)
-	var data []byte
-	var err error
-	if h.OS == "linux" && h.Euid != 0 {
-		data, err = privileged(ctx, h, "cat", rooted(h, file))
-	}
-	if h.OS != "linux" || h.Euid == 0 {
-		data, err = os.ReadFile(rooted(h, file))
-	}
+	data, err := keyBytes(ctx, h, file)
 	if err != nil {
 		return "", fmt.Errorf("read the API key: %w", err)
 	}
-	key := strings.TrimSpace(string(data))
+	// sudo cat can put a warning before the key.
+	key := string(lastLine(data))
 	if key == "" {
 		return "", &Problem{Lines: []string{"The API key file " + file + " is empty.", "Run shard setup again and replace the API key."}}
 	}
 
 	return key, nil
+}
+
+func lastLine(out []byte) []byte {
+	trimmed := bytes.TrimSpace(out)
+
+	return trimmed[bytes.LastIndexByte(trimmed, '\n')+1:]
+}
+
+func keyBytes(ctx context.Context, h Host, file string) ([]byte, error) {
+	if h.OS == "linux" && h.Euid != 0 {
+		return privileged(ctx, h, "cat", rooted(h, file))
+	}
+
+	return os.ReadFile(rooted(h, file))
 }
 
 func apiLogHint(h Host) string {
@@ -673,7 +695,6 @@ func apiLogHint(h Host) string {
 	return "Read its log with: " + sudoFor(h) + "journalctl -u " + serveUnitName
 }
 
-// apiState is the state of the HTTP API service, as serviceState is the daemon's.
 func apiState(ctx context.Context, h Host) (ServiceState, error) {
 	if h.OS == "darwin" {
 		return launchdState(ctx, h, serveLabel)
@@ -703,15 +724,9 @@ func restartAPI(ctx context.Context, h Host) error {
 }
 
 // apiReview is the HTTP API part of the review: what setup will do, and what the API does not do.
-func apiReview(ctx context.Context, h Host, l Local) (will, notes []string, err error) {
-	if h.OS == "linux" {
-		group, user, err := accountMissing(ctx, h)
-		if err != nil {
-			return nil, nil, err
-		}
-		if group || user {
-			will = append(will, "  Create the "+apiAccount+" account, which runs the HTTP API.")
-		}
+func apiReview(h Host, l Local, account bool) (will, notes []string) {
+	if account {
+		will = append(will, "  Create the "+apiAccount+" account, which runs the HTTP API.")
 	}
 	file := apiKeyFile(h)
 	switch {
@@ -732,7 +747,7 @@ func apiReview(ctx context.Context, h Host, l Local) (will, notes []string, err 
 		"API requests fail when the daemon is stopped.",
 	}
 
-	return will, notes, nil
+	return will, notes
 }
 
 // apiDone is where the HTTP API answers, where its key is, and how a client reaches it: a tunnel or a proxy for a loopback address, and the address itself on a private network.
@@ -767,9 +782,9 @@ func apiDone(h Host, l Local) []string {
 	)
 }
 
-// serveUnitText is packaging/systemd/shard-serve.service with the address named; systemd reads % as a specifier, so a zone keeps it doubled.
+// serveUnitText is packaging/systemd/shard-serve.service with the address named.
 func serveUnitText(address string) string {
-	return strings.Replace(serveUnitTemplate, serveExecStart, serveExecStart+" --listen "+strings.ReplaceAll(address, "%", "%%"), 1)
+	return strings.Replace(serveUnitTemplate, serveExecStart, serveExecStart+" --listen "+address, 1)
 }
 
 const serveExecStart = "ExecStart=" + shardBinary + " --root " + DataDir + " serve --signing-key-file " + signingKeyFile

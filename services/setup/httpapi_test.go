@@ -106,7 +106,7 @@ func TestCheckListen(t *testing.T) {
 		"127.0.0.1:7850":       "",
 		"100.64.0.5:9000":      "",
 		"[fd7a::1]:7850":       "",
-		"[fe80::1%eth0]:7850":  "",
+		"[fe80::1%eth0]:7850":  "[fe80::1%eth0]:7850 names an IPv6 zone, which a client URL cannot carry; name an address without one",
 		"localhost:7850":       `"localhost:7850" is not an IP address and port, such as 127.0.0.1:7850`,
 		"127.0.0.1":            `"127.0.0.1" is not an IP address and port, such as 127.0.0.1:7850`,
 		"0.0.0.0:7850":         "0.0.0.0:7850 listens on every network, and the HTTP API serves plain HTTP; name one address, such as 127.0.0.1:7850 or a VPN address",
@@ -347,6 +347,8 @@ func installedWithoutAPI(t *testing.T, l *localHost) Manifest {
 func TestTheHTTPAPIRowSetsUpOverAnInstallation(t *testing.T) {
 	l := newAPIHost(t)
 	m := installedWithoutAPI(t, l)
+	// sudo can warn on stderr, which reaches setup before the key.
+	l.answer[mintLine] = "sudo: unable to resolve host box: Name or service not known\n" + minted(setupKey)
 	address := apiServer(t, setupKey)
 	ui := &fakeUI{selects: map[Question]string{AskExisting: ExistingHTTPAPI}, texts: map[Question]string{AskListen: address}, confirms: map[Question]bool{AskConfirm: true}}
 
@@ -401,6 +403,9 @@ func TestTheHTTPAPIRowKeepsOrReplacesTheKey(t *testing.T) {
 
 	ui := setUp(first, false)
 	said(t, ui, "An API key already exists in /etc/shard/api-key.", "  Keep the API key in /etc/shard/api-key.")
+	if slices.Contains(ui.printed, "  Replace the existing HTTP API service in "+serveUnit+".") {
+		t.Fatalf("setup's own service reads as one installed by hand: %q", ui.printed)
+	}
 	if ui.initials[0] != first || !slices.Contains(ui.asked, AskReplaceKey) || called(l.calls, mintLine) >= 0 || l.read("/etc/shard/api-key") != setupKey+"\n" {
 		t.Fatalf("a second run did not keep the key: asked %v, initial %q, calls %q", ui.asked, ui.initials, l.calls)
 	}
@@ -413,6 +418,19 @@ func TestTheHTTPAPIRowKeepsOrReplacesTheKey(t *testing.T) {
 		t.Fatalf("calls = %q, want the old key revoked before a new one is saved", l.calls)
 	}
 	hidesTheKey(t, l, ui, "sk_test_new")
+}
+
+func TestTheHTTPAPIRowNamesAServiceInstalledByHand(t *testing.T) {
+	l := newAPIHost(t)
+	l.withAccount()
+	m := installedWithoutAPI(t, l)
+	l.write(serveUnit, "[Service]\nExecStart=/usr/local/bin/shard serve\n")
+	ui := &fakeUI{texts: map[Question]string{AskListen: apiServer(t, setupKey)}, confirms: map[Question]bool{AskConfirm: true}}
+
+	if err := (&Setup{Host: l.host(), UI: ui}).setUpAPI(t.Context(), m, ServiceActive); err != nil {
+		t.Fatalf("setUpAPI = %v; printed %q", err, ui.printed)
+	}
+	said(t, ui, "  Replace the existing HTTP API service in "+serveUnit+".")
 }
 
 func TestTheHTTPAPIRowNeedsAStartAtBootInstallation(t *testing.T) {
@@ -562,6 +580,17 @@ func TestVerifyAPIStops(t *testing.T) {
 	})
 }
 
+func TestVerifyAPIReadsTheKeyPastASudoWarning(t *testing.T) {
+	l := newAPIHost(t)
+	h := l.host()
+	h.Euid = 1000
+	l.answer["sudo -n -- cat "+filepath.Join(l.root, "/etc/shard/api-key")] = "sudo: unable to resolve host box: Name or service not known\n" + setupKey + "\n"
+
+	if err := verifyAPI(t.Context(), h, apiServer(t, setupKey)); err != nil {
+		t.Fatalf("verify = %v", err)
+	}
+}
+
 func TestAStartFailureNamesTheStep(t *testing.T) {
 	l := newAPIHost(t)
 	l.fail["systemctl restart shard-serve.service"] = "Job for shard-serve.service failed.\n"
@@ -609,12 +638,6 @@ func TestTheHTTPAPIOnAMacRunsAsThePerson(t *testing.T) {
 		t.Fatalf("a Mac is told to use sudo: %q", ui.printed)
 	}
 	hidesTheKey(t, l, ui.fakeUI, setupKey)
-}
-
-func TestServeUnitTextDoublesAZonesPercent(t *testing.T) {
-	if unit := serveUnitText("[fe80::1%eth0]:7850"); !strings.Contains(unit, "--listen [fe80::1%%eth0]:7850\n") {
-		t.Fatalf("the unit is:\n%s", unit)
-	}
 }
 
 func TestAPIDoneNamesTheWayIn(t *testing.T) {

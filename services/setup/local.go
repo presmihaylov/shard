@@ -191,10 +191,11 @@ func (s *Setup) review(ctx context.Context, l Local, removal string) error {
 	lines = append(lines, startupLine(s.Host, l))
 	var notes []string
 	if l.API != "" {
-		will, apiNotes, err := apiReview(ctx, s.Host, l)
+		_, account, err := accountStep(ctx, s.Host)
 		if err != nil {
 			return err
 		}
+		will, apiNotes := apiReview(s.Host, l, account)
 		lines, notes = append(lines, will...), append([]string{""}, apiNotes...)
 	}
 	if removal != "" {
