@@ -240,13 +240,12 @@ shard policy create --allow 1.1.1.1 --allow dns --allow "${ECHO_HOST}" --allow "
 holds "e2e-policy" shard policy list || fail "shard policy list does not list e2e-policy"
 say "the policy allows the probe, dns and the two echo names, and denies the rest"
 
-step "refuse a create with no memory"
-# --memory 0 is the default, which means unbounded on Linux; a microVM has no unbounded and refuses it by name.
-CODE=0
-REFUSAL=$(shard create "${IMAGE}" 2>&1) || CODE=$?
-[ "${CODE}" != "0" ] || fail "create ran a microVM with no --memory"
-holds "memory" echo "${REFUSAL}" || fail "create said '${REFUSAL}', want it to name --memory"
-say "create refuses a microVM with no --memory: ${REFUSAL#shard: }"
+step "size a create with no memory"
+# A microVM has no unbounded memory, so the daemon gives a create with no --memory 512 MiB (SHARD-761).
+DEFAULT_ID=$(shard create "${IMAGE}")
+[ -n "${DEFAULT_ID}" ] || fail "create with no --memory printed no id"
+expect "$(grep -o '"memory_mib": *[0-9]*' "${SHARD_ROOT}/sandboxes/${DEFAULT_ID}/sandbox.json" | grep -o '[0-9]*$')" "512" "the record of a create with no --memory holds 512 MiB"
+shard remove --force "${DEFAULT_ID}" >/dev/null
 
 step "run a microVM detached"
 create_it() { ID=$(shard run -d --memory "${MEMORY}MiB" --secret E2E_TOKEN --secret E2E_SHAPED --policy e2e-policy "${IMAGE}" /bin/sh -c 'echo shard-e2e-entrypoint; exec /bin/sleep 600'); }

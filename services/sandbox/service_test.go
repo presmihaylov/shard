@@ -221,6 +221,118 @@ func withDisks(d *diskProvider) func(*sandbox.Config) {
 	}
 }
 
+// memoryProvider is a VM substrate, which sizes a guest the request left at 0 and refuses a bound under its least.
+type memoryProvider struct {
+	models.Provider
+
+	checked []int64
+}
+
+func (m *memoryProvider) DefaultMemoryMiB() int64 { return 512 }
+
+func (m *memoryProvider) CheckResources(res models.Resources) error {
+	m.checked = append(m.checked, res.MemoryMiB)
+	if res.MemoryMiB < 128 {
+		return fmt.Errorf("provider vm needs resources.memory_mib of 128 MiB or more, got %d", res.MemoryMiB)
+	}
+
+	return m.Provider.CheckResources(res)
+}
+
+func withMemory(m *memoryProvider) func(*sandbox.Config) {
+	return func(c *sandbox.Config) {
+		m.Provider = c.Provider
+		c.Provider = m
+	}
+}
+
+// A VM has no unbounded memory, so a create that names none runs under the substrate's default, and the record says so (SHARD-761).
+func TestCreateOnAVMWithNoMemoryGetsTheDefault(t *testing.T) {
+	for name, memory := range map[string]*int64{"absent": nil, "zero": new(int64(0))} {
+		t.Run(name, func(t *testing.T) {
+			sizer := &memoryProvider{}
+			svc, l := newService(t, &recorder{}, models.Sandbox{}, withMemory(sizer))
+			req := alpine()
+			req.Resources.MemoryMiB = memory
+
+			sb, err := svc.Create(t.Context(), req)
+			if err != nil {
+				t.Fatalf("create: %v", err)
+			}
+			if sb.Resources.MemoryMiB != 512 || l.repo.sb.Resources.MemoryMiB != 512 {
+				t.Errorf("create answered memory %d and the record holds %d, want the default 512", sb.Resources.MemoryMiB, l.repo.sb.Resources.MemoryMiB)
+			}
+			if l.provider.spec.Resources.MemoryMiB != 512 {
+				t.Errorf("the substrate ran the guest with memory %d, want the default 512", l.provider.spec.Resources.MemoryMiB)
+			}
+			if !slices.Equal(sizer.checked, []int64{512}) {
+				t.Errorf("the substrate checked the memory %v, want the default 512", sizer.checked)
+			}
+		})
+	}
+}
+
+func TestCreateOnAVMKeepsAnExplicitMemory(t *testing.T) {
+	svc, l := newService(t, &recorder{}, models.Sandbox{}, withMemory(&memoryProvider{}))
+	req := alpine()
+	req.Resources.MemoryMiB = new(int64(256))
+
+	sb, err := svc.Create(t.Context(), req)
+	if err != nil {
+		t.Fatalf("create: %v", err)
+	}
+	if sb.Resources.MemoryMiB != 256 || l.provider.spec.Resources.MemoryMiB != 256 {
+		t.Errorf("the record holds memory %d and the guest ran with %d, want the request's 256", sb.Resources.MemoryMiB, l.provider.spec.Resources.MemoryMiB)
+	}
+}
+
+// The default fills only an absent bound, so one under the substrate's least is still refused by name.
+func TestCreateOnAVMRefusesAMemoryUnderTheLeast(t *testing.T) {
+	r := &recorder{}
+	svc, l := newService(t, r, models.Sandbox{}, withMemory(&memoryProvider{}))
+	req := alpine()
+	req.Resources.MemoryMiB = new(int64(64))
+
+	_, err := svc.Create(t.Context(), req)
+
+	var refused *sandbox.RequestError
+	if !errors.As(err, &refused) || !strings.Contains(err.Error(), "128 MiB or more, got 64") {
+		t.Fatalf("create = %v, want a request error with the substrate's reason", err)
+	}
+	if slices.Contains(r.calls, "repo.Create") || l.repo.sb.ID != "" {
+		t.Errorf("a refused create reached the store: %v", r.calls)
+	}
+}
+
+// The default is a real bound on a real host, so the host check holds it to the host's memory.
+func TestCreateOnAVMRefusesADefaultMemoryPastTheHost(t *testing.T) {
+	r := &recorder{}
+	svc, _ := newService(t, r, models.Sandbox{}, withMemory(&memoryProvider{}), func(c *sandbox.Config) { c.HostMemoryMiB = 256 })
+
+	_, err := svc.Create(t.Context(), alpine())
+
+	var refused *sandbox.RequestError
+	if !errors.As(err, &refused) || !strings.Contains(err.Error(), "resources.memory_mib is 512 MiB, more than the 256 MiB of memory on this host") {
+		t.Fatalf("create = %v, want a request error that names the default and the host", err)
+	}
+	if slices.Contains(r.calls, "repo.Create") {
+		t.Errorf("a refused create reached the store: %v", r.calls)
+	}
+}
+
+// gVisor, runc and Sysbox name no default, so a create with no memory there has no bound.
+func TestCreateOnAContainerSubstrateWithNoMemoryHasNoBound(t *testing.T) {
+	svc, l := newService(t, &recorder{}, models.Sandbox{})
+
+	sb, err := svc.Create(t.Context(), alpine())
+	if err != nil {
+		t.Fatalf("create: %v", err)
+	}
+	if sb.Resources.MemoryMiB != 0 || l.provider.spec.Resources.MemoryMiB != 0 {
+		t.Errorf("the record holds memory %d and the sandbox ran with %d, want no bound", sb.Resources.MemoryMiB, l.provider.spec.Resources.MemoryMiB)
+	}
+}
+
 // A root the admission could not read is the daemon's fault, so the create is no bad request.
 func TestCreateWhoseRootCannotBeReadIsNoBadRequest(t *testing.T) {
 	disks := &diskProvider{refuse: fmt.Errorf("statfs /var/lib/shard: %w", os.ErrPermission)}

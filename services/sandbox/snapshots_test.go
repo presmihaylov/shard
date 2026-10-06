@@ -246,6 +246,22 @@ func TestCreateFromASnapshotTakesAnExplicitMemory(t *testing.T) {
 	}
 }
 
+// A snapshot's bound is what its source ran with, so a VM's default never replaces it.
+func TestCreateFromASnapshotOnAVMKeepsTheSnapshotMemory(t *testing.T) {
+	svc, l := newService(t, &recorder{}, models.Sandbox{}, withMemory(&memoryProvider{}))
+	snap := baseSnapshot()
+	snap.MemoryMiB = 1024
+	storedSnapshot(t, l, snap)
+
+	sb, err := svc.Create(t.Context(), sandbox.CreateRequest{Snapshot: "base"})
+	if err != nil {
+		t.Fatalf("create: %v", err)
+	}
+	if sb.Resources.MemoryMiB != 1024 || l.provider.spec.Resources.MemoryMiB != 1024 {
+		t.Errorf("the record holds memory %d and the guest ran with %d, want the snapshot's 1024", sb.Resources.MemoryMiB, l.provider.spec.Resources.MemoryMiB)
+	}
+}
+
 // A microVM grows its copy of the snapshot's disk, so a create there takes a larger --disk and refuses a smaller one.
 func TestCreateFromASnapshotOnAMicroVMOnlyGrowsTheDisk(t *testing.T) {
 	r := &recorder{}

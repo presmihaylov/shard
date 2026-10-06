@@ -171,14 +171,14 @@ type CreateRequest struct {
 	Restart *models.RestartSpec `json:"restart,omitempty"`
 }
 
-// ResourceRequest is the bounds a create asks for. A nil memory is an omitted --memory, which a snapshot fills, and 0 is no bound.
+// ResourceRequest is the bounds a create asks for. A nil memory is an omitted --memory, which a snapshot fills, and 0 is no bound on a container substrate.
 type ResourceRequest struct {
-	MemoryMiB *int64 `json:"memory_mib,omitempty" minimum:"0" maximum:"16777216"`
+	MemoryMiB *int64 `json:"memory_mib,omitempty" minimum:"0" maximum:"16777216" doc:"The memory bound in MiB. Absent, a create from a snapshot takes the snapshot's bound. Otherwise absent or 0 is 512 on the firecracker and vz providers, and no bound on gvisor, runc and sysbox."`
 	VCPUs     int    `json:"vcpus" required:"false" minimum:"0"`
 	DiskMiB   int64  `json:"disk_mib" required:"false" minimum:"0" maximum:"16777088"`
 }
 
-// bounds is what the record keeps, where an omitted memory is no bound.
+// bounds is the request as resources, where an omitted memory is 0.
 func (r ResourceRequest) bounds() models.Resources {
 	res := models.Resources{VCPUs: r.VCPUs, DiskMiB: r.DiskMiB}
 	if r.MemoryMiB != nil {
@@ -496,7 +496,7 @@ func (s *Service) Prepare(ctx context.Context, req CreateRequest) (models.Sandbo
 		defer seed.unlock()
 		req, snapshot = seed.req, seed.id
 	}
-	res := req.Resources.bounds()
+	res := s.resources(req.Resources)
 	// A bound the substrate refuses is the request's fault, and it must not leave a failed record behind.
 	if err := s.cfg.Provider.CheckResources(res); err != nil {
 		return models.Sandbox{}, &RequestError{Err: err}
@@ -638,6 +638,22 @@ func guestKernel(provider models.Provider) string {
 	return booter.GuestKernel()
 }
 
+// memorySizer is a VM substrate, whose guest needs a memory size where a container runs with no bound.
+type memorySizer interface {
+	DefaultMemoryMiB() int64
+}
+
+// resources is the bounds the record keeps and the substrate runs under, where a VM substrate sizes a guest the request left at 0.
+func (s *Service) resources(r ResourceRequest) models.Resources {
+	res := r.bounds()
+	sizer, ok := s.cfg.Provider.(memorySizer)
+	if ok && res.MemoryMiB == 0 {
+		res.MemoryMiB = sizer.DefaultMemoryMiB()
+	}
+
+	return res
+}
+
 // Complete pulls the image, builds the sandbox and starts it, then moves the record from pending to
 // running. A failure that is not a shutdown leaves the record failed with the reason, so a get reads why
 // and rm still frees it. It pushes every claim before the commit point onto the teardown stack.
@@ -740,7 +756,7 @@ func (s *Service) Complete(ctx context.Context, id string, req CreateRequest) (e
 		WorkDir:    req.WorkDir,
 		User:       req.User,
 		Network:    resolvedThrough(netSpec, req.Policy),
-		Resources:  req.Resources.bounds(),
+		Resources:  s.resources(req.Resources),
 		Restart:    restartSpecOf(withRestartDefaults(req.Restart)),
 		Seed:       seed.files,
 		ProxyCA:    proxyCA,

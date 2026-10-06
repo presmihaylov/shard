@@ -138,7 +138,7 @@ Check `shard capabilities` before you build on `pause`, `resume` or `fork`.
 
 | Bound | gVisor | Firecracker | vz | Sysbox and runc |
 | --- | --- | --- | --- | --- |
-| `--memory` | optional, at least 64 MiB | required, at least 128 MiB | required, at least 128 MiB | optional |
+| `--memory` | default no bound, at least 64 MiB | default 512 MiB, at least 128 MiB | default 512 MiB, at least 128 MiB | default no bound |
 | `--vcpus` | a CPU time quota | virtual CPUs, at most 32 | virtual CPUs | a CPU time quota |
 | `--disk` | default 10 GiB | default 10 GiB | default 10 GiB | default 10 GiB |
 | Processes | at most 4096 | no bound | no bound | at most 4096 |

@@ -114,7 +114,7 @@ Not as its first process. shard's own supervisor is the first process in every s
 
 ## Does a sandbox need a memory bound?
 
-On `firecracker` and `vz`, yes. Those providers refuse a create without `--memory`, and the bound must be 128 MiB or more. On the other providers, a sandbox without `--memory` has no memory bound, so set one anyway. shard refuses a bound larger than the host's memory.
+On `firecracker` and `vz`, a sandbox always has one. A create without `--memory` gets 512 MiB, and a bound under 128 MiB is refused. On the other providers, a sandbox without `--memory` has no memory bound, so set one anyway. shard refuses a bound larger than the host's memory.
 
 ## Can a sandbox read my API keys?
 

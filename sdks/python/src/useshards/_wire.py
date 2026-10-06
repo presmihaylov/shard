@@ -78,7 +78,7 @@ def create_body(
     disk_mib: int | None,
     restart: Restart | None,
 ) -> models.CreateRequest:
-    """The body of a create. A None memory takes the snapshot's bound or none, a None vcpus or disk the default."""
+    """The body of a create. A None memory takes the snapshot's or provider's bound, None vcpus or disk the default."""
     if (image is None) == (snapshot is None):
         raise ValueError("a sandbox is made from an image or a snapshot, exactly one of them")
     return models.CreateRequest(

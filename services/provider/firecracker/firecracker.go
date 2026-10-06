@@ -40,6 +40,9 @@ const cmdline = "console=ttyS0 reboot=k panic=1 pci=off -- -transport vsock -bas
 // MinMemoryMiB is the smallest --memory a guest boots with: the kernel and shard-init keep 32 MiB, and the bound needs room under that.
 const MinMemoryMiB = 128
 
+// DefaultMemoryMiB is the memory a create that names none gets, as a guest has no unbounded memory.
+const DefaultMemoryMiB = 512
+
 // MaxVCPUs is the most firecracker gives one guest.
 const MaxVCPUs = 32
 
@@ -261,6 +264,9 @@ func (p *Provider) Name() string { return Name }
 
 // GuestKernel is the tag of the kernel a fresh boot runs; a restored VM runs the one its memory image holds.
 func (p *Provider) GuestKernel() string { return p.cfg.KernelTag }
+
+// DefaultMemoryMiB is the memory the sandbox service gives a create that names none.
+func (p *Provider) DefaultMemoryMiB() int64 { return DefaultMemoryMiB }
 
 // Capabilities are pause, resume and fork, which every host with /dev/kvm has: a snapshot is two files the vmm writes.
 func (p *Provider) Capabilities() models.Capabilities {

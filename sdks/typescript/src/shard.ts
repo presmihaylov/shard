@@ -37,7 +37,7 @@ export interface CreateOptions {
   /** The names of the secrets to grant. */
   secrets?: string[];
   policy?: string;
-  /** The memory bound; left out, a snapshot's own bound or none. */
+  /** The memory bound; left out, a snapshot's own bound, or else 512 MiB on firecracker and vz and none on gvisor, runc and sysbox. */
   memoryMiB?: number;
   /** Left out, the daemon's default. */
   vcpus?: number;

@@ -279,6 +279,18 @@ func TestCheckResourcesRefusesWhatCreateRefuses(t *testing.T) {
 	}
 }
 
+// The sandbox service puts the default in place of an absent --memory before it asks, so the default must be a bound the provider takes (SHARD-761).
+func TestTheDefaultMemoryIsABoundTheProviderTakes(t *testing.T) {
+	h := newHarness(t)
+
+	if got := h.provider.DefaultMemoryMiB(); got != 512 {
+		t.Fatalf("DefaultMemoryMiB = %d, want 512", got)
+	}
+	if err := h.provider.CheckResources(models.Resources{MemoryMiB: vzvm.DefaultMemoryMiB}); err != nil {
+		t.Fatalf("CheckResources(the default) = %v, want nil", err)
+	}
+}
+
 // An image with no PATH gets the OCI default, as the bundle gives it on Linux, so a named entrypoint resolves in the guest.
 func TestCreateGivesAnImageWithoutAPathTheDefault(t *testing.T) {
 	h := newHarness(t)

@@ -768,7 +768,7 @@ export interface components {
         ResourceRequest: {
             /** Format: int64 */
             disk_mib?: number;
-            /** Format: int64 */
+            /** @description The memory bound in MiB. Absent, a create from a snapshot takes the snapshot's bound. Otherwise absent or 0 is 512 on the firecracker and vz providers, and no bound on gvisor, runc and sysbox (int64). */
             memory_mib?: number;
             /** Format: int64 */
             vcpus?: number;

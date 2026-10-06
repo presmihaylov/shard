@@ -563,6 +563,22 @@ func TestForkStartsANewSandboxFromACaptureOfTheRunningSource(t *testing.T) {
 }
 
 // A fork captures the source as it runs now, so a source that does not run is refused before anything is claimed (SHARD-457).
+// A fork runs the source's guest, so it keeps the source's memory and never takes a VM's default.
+func TestForkOnAVMKeepsTheSourceMemory(t *testing.T) {
+	source := forkSource()
+	source.Resources = models.Resources{MemoryMiB: 256}
+	sizer := &memoryProvider{}
+	svc, l := newService(t, &recorder{}, source, withMemory(sizer))
+
+	sb, err := svc.Fork(t.Context(), "web", sandbox.CopyRequest{Name: "web-2"})
+	if err != nil {
+		t.Fatalf("fork: %v", err)
+	}
+	if sb.Resources.MemoryMiB != 256 || l.provider.spec.Resources.MemoryMiB != 256 {
+		t.Errorf("the fork's record holds memory %d and its guest ran with %d, want the source's 256", sb.Resources.MemoryMiB, l.provider.spec.Resources.MemoryMiB)
+	}
+}
+
 func TestForkRefusesASourceThatDoesNotRun(t *testing.T) {
 	for _, state := range []models.State{models.StatePaused, models.StateStopped, models.StateUnresponsive} {
 		r := &recorder{}

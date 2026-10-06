@@ -13,7 +13,7 @@ curl --unix-socket /var/lib/shard/shard.sock -X POST http://localhost/v0/sandbox
 curl --unix-socket /var/lib/shard/shard.sock -X POST http://localhost/v0/sandboxes/web/start
 ```
 
-Every `{id}` in a path takes a sandbox's id or name. A create on vz or Firecracker needs `resources.memory_mib`, because the memory of a VM is real memory on the host.
+Every `{id}` in a path takes a sandbox's id or name. A create on vz or Firecracker with no `resources.memory_mib` gets 512 MiB, because a VM always needs a memory size. On gVisor, runc and Sysbox it has no bound.
 
 {/* make openapi writes this part from the routes. Edit the routes, not this part. */}
 
@@ -444,7 +444,7 @@ A create that names secrets also needs the secret:\* scope, and one that names a
 | Field | Type | Required | Description |
 | --- | --- | --- | --- |
 | `disk_mib` | integer (int64) | no | From 0 to 16777088. |
-| `memory_mib` | integer (int64) | no | From 0 to 16777216. |
+| `memory_mib` | integer (int64) | no | The memory bound in MiB. Absent, a create from a snapshot takes the snapshot's bound. Otherwise absent or 0 is 512 on the firecracker and vz providers, and no bound on gvisor, runc and sysbox. From 0 to 16777216. |
 | `vcpus` | integer (int64) | no | At least 0. |
 
 ### Resources

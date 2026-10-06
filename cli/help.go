@@ -101,7 +101,7 @@ var sandboxFlagHelps = []flagHelp{
 	{"--policy <name>", "outbound network policy", ""},
 	{"--workdir <dir>", "default directory for commands", ""},
 	{"--user <user>", "default user for commands", ""},
-	{"--memory <size>", "memory limit", ""},
+	{"--memory <size>", "memory limit; 512MiB by default on Firecracker and vz, none on gVisor, runc and Sysbox", ""},
 	{"--vcpus <n>", "CPU count; 0 uses all available host CPUs, up to 32 on Firecracker", ""},
 	{"--disk <size>", "disk limit; 0 uses the default", ""},
 }

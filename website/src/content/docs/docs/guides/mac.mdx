@@ -138,7 +138,7 @@ The SDKs warn that `http` does not encrypt the connection. On `127.0.0.1` the tr
 | --- | --- | --- |
 | Isolation | A micro VM for each sandbox, with its own Linux kernel | A user-space kernel |
 | `pause`, `resume`, `fork` | Yes | Yes |
-| `--memory` | Required. `0` is refused, and the smallest is 128 MiB | Optional. `0` means no bound |
+| `--memory` | Optional. `0`, the default, means 512 MiB, and the smallest is 128 MiB | Optional. `0`, the default, means no bound |
 | `--vcpus 0` | One virtual CPU for each host CPU, up to the limit of the framework | Every host CPU |
 | Host access | None: no shared folders, no host mounts, no route to the LAN | None |
 | Docker inside a sandbox | Yes, IPv4 only | No |

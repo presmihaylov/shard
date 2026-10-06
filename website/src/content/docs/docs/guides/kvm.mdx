@@ -88,7 +88,7 @@ A sandbox outlives the daemon. After a restart, the daemon picks up each running
 
 | Flag | On Firecracker |
 | --- | --- |
-| `--memory` | Required. `0` is refused, and the smallest is 128 MiB. A bound above the host's total memory is refused. |
+| `--memory` | `0`, the default, means 512 MiB. A bound under 128 MiB is refused, and so is a bound above the host's total memory. |
 | `--vcpus` | The VM's virtual CPUs. `0`, the default, gives one for each host CPU, up to 32. A value above 32, or above the number of host CPUs, is refused. |
 | `--disk` | The size of the writable disk. `0`, the default, means 10240 MiB. A bound under 11 MiB is refused. |
 
@@ -148,6 +148,5 @@ Set both variables. With only one, the daemon fails when it prepares Firecracker
 - **`Firecracker mounts an XFS image over /var/lib/shard, so it must be empty on a filesystem that cannot clone a disk.`** Move the files in `/var/lib/shard` aside, then run setup again.
 - **`shard needs 1.13.0 or newer`.** An older `firecracker` is on the host. Remove it so setup installs one, or replace it.
 - **`Firecracker cannot run its jailer under /var/lib/shard.`** Its filesystem is mounted with `nodev` or `noexec`. Remount it without those options.
-- **`provider firecracker needs --memory`.** Every create and run needs `--memory`, `128MiB` or more.
 - **A sandbox reaches nothing on a host with `ufw`.** ufw drops the bridge's traffic by default. Let it through with `sudo ufw allow in on shard0` and `sudo ufw route allow in on shard0`.
 - **The daemon does not start.** Read its log with `sudo journalctl -u shard`.

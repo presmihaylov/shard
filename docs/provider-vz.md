@@ -336,7 +336,7 @@ verb means one thing on every substrate: a checkpoint on disk and the memory giv
 
 Save and restore are macOS 14 APIs. A pause that frees memory needs the save. So on macOS 13 all
 three optional verbs are `false`, and they refuse by name, for example `provider vz does not support pause on this
-host; use a server that supports pause`, the same as Sysbox. `--memory` is required on this substrate, `0` is refused by name, and the value is a hard cap,
+host; use a server that supports pause`, the same as Sysbox. A create with no `--memory` gets 512 MiB on this substrate, and the value is a hard cap,
 because a VM's memory is real memory on a laptop. Past the cap the whole sandbox dies and `Status`
 says `OOMKilled`, as on Linux. `shard-init` bounds the guest under a cgroup 32 MB short of the VM's
 memory. It reports the kill and holds the guest until the host has the marker on disk and says

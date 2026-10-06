@@ -112,7 +112,7 @@ A sandbox can have four bounds: memory, CPU, processes and disk.
 `create` refuses these bounds:
 
 - a bound above the server's total memory, on every provider
-- no bound, or a bound under 128 MiB, on `vz` and `firecracker`
+- a bound from 1 to 127 MiB on `vz` and `firecracker`, where 0 or no `--memory` means 512 MiB
 - a bound from 1 to 63 MiB on `gvisor`, where 0 means no bound
 
 **CPU.** `--vcpus` accepts a non-negative whole number. On gVisor, Sysbox and runc, `0` sets no CPU-time quota. On Firecracker and `vz`, `0` gives the VM as many CPUs as the host and provider allow; Firecracker uses at most 32, and `vz` follows Virtualization.framework's range. Firecracker refuses a count above 32, and `vz` refuses a count outside its allowed range.

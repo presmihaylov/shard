@@ -30,6 +30,9 @@ const cmdline = "console=hvc0 -- -transport vsock -root /dev/vda"
 // MinMemoryMiB is the smallest --memory a guest boots with: the kernel and shard-init keep 32 MiB, and the bound needs room under that.
 const MinMemoryMiB = 128
 
+// DefaultMemoryMiB is the memory a create that names none gets, as a guest has no unbounded memory.
+const DefaultMemoryMiB = 512
+
 // The files under a sandbox's state directory, all the provider's own.
 const (
 	recordFile   = "vm.json"
@@ -143,6 +146,9 @@ func (p *Provider) Name() string { return Name }
 
 // GuestKernel is the tag of the kernel a fresh boot runs; a restored VM runs the one its memory image holds.
 func (p *Provider) GuestKernel() string { return p.cfg.KernelTag }
+
+// DefaultMemoryMiB is the memory the sandbox service gives a create that names none.
+func (p *Provider) DefaultMemoryMiB() int64 { return DefaultMemoryMiB }
 
 // CheckResources is checkMemory before any record exists, so a refused --memory leaves no failed sandbox in ls.
 func (p *Provider) CheckResources(res models.Resources) error { return checkResources(res) }

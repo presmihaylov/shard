@@ -186,8 +186,10 @@ has a capability flag. They are `CheckResources`, `Create`, `Start`, `Stop`, `Re
 
 `CheckResources` answers whether the substrate can run under a bound before the orchestrator writes
 a record, so a refusal leaves nothing in `list`. A VM's memory is real memory, so vz and
-Firecracker refuse `--memory 0` and a bound under 128 MiB by name, and a `--disk` whose last block
-group cannot hold its own metadata. Firecracker also refuses a `--vcpus` above 32 and a `--disk`
+Firecracker refuse a memory bound of 0 or under 128 MiB by name, and a `--disk` whose last block
+group cannot hold its own metadata. A VM substrate names a `DefaultMemoryMiB` of 512, which the
+orchestrator puts in place of a 0 before it asks. So a create with no `--memory` gets 512 MiB and
+the record says so, while a create from a snapshot keeps the snapshot's bound. Firecracker also refuses a `--vcpus` above 32 and a `--disk`
 under 11 MiB. gVisor refuses a `--memory` from 1 to 63 MiB, because the sentry itself costs about
 30 MiB, and takes 0 as unbounded. Sysbox and runc take every bound. `Create` checks its spec again,
 so a create from a snapshot or a fork is held to the same rule.
@@ -218,7 +220,7 @@ release once under the root, and `SHARD_KERNEL` and `SHARD_KERNEL_SHA256` overri
 it under `<root>/vz`. That build also embeds the static linux `shard-init` for this Mac's arch, and
 the daemon installs it under `<root>/vz` as the initrd's `/init`. A `go build` alone has neither,
 and the first sandbox says so. `SHARD_INIT_PATH` names a guest `shard-init` of your own instead.
-`--memory` is required and is a hard cap, and `0` is refused by name. There is no bridge. The daemon
+`--memory` is a hard cap, and a create with none gets 512 MiB. There is no bridge. The daemon
 leases each guest an address from the pool and terminates its frames in a userspace stack that
 answers for the gateway alone. It serves the proxy and the resolver on that stack. The stack's own
 NAT table sends a guest's port 80 and 443 to the proxy wherever the guest dialed them, as the host
@@ -255,8 +257,8 @@ daemon restart adopts a running vmm by its socket. It also resumes a vmm that an
 left paused, because that stopped guest would answer no handshake. A vmm that does not answer that
 adopt within 4 s reads `unresponsive` with its pid. It keeps running, because a thawed vmm gives
 back the same VM (SHARD-392). A vmm that the daemon holds reads `unresponsive` the same way when it
-misses a probe of 4 s, and a later answer reads `running` again (SHARD-439). `--memory` is required,
-`0` is refused by name, and 128 MiB is the least a guest boots with. The guest's network is a veth
+misses a probe of 4 s, and a later answer reads `running` again (SHARD-439). A create with no
+`--memory` gets 512 MiB, and 128 MiB is the least a guest boots with. The guest's network is a veth
 on the same bridge that the other substrates use. Its host end is named `shardv<n>`, and it is a
 port under the same host rules. The anti-spoof pair, the IPv6 drop and the egress chain key on that
 name. The proxy redirect keys on the leased address, and the private floor keys on the bridge. So a

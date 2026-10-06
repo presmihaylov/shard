@@ -80,10 +80,10 @@ Call `shard.close()` when you are done. It releases the pooled connections so th
 | `user` | A user name or uid in the sandbox, such as `nobody` or `1000`. |
 | `secrets` | The names of the secrets to grant. |
 | `policy` | The name of the network policy. |
-| `memoryMiB` | The memory bound. Without it, the sandbox takes the snapshot's own bound, or has no bound. |
+| `memoryMiB` | The memory bound. Without it, the sandbox takes the snapshot's own bound. From an image, it gets 512 MiB on Firecracker and `vz`, and no bound on gVisor, runc and Sysbox. |
 | `vcpus`, `diskMiB` | The CPU count and the disk size. Without them, the daemon's defaults apply. A sandbox from a snapshot takes the snapshot's disk size. |
 
-Firecracker and `vz` require a memory bound of at least 128 MiB. Set `memoryMiB` when you create from an image. A snapshot supplies its saved bound when you leave the option out.
+On Firecracker and `vz`, a `memoryMiB` from 1 to 127 is refused.
 
 `shard.get(ref)` finds a sandbox by ID or name. `shard.list()` returns `{ sandboxes, warnings }` for the active sandboxes, and `shard.list({ all: true })` adds the stopped ones. The warnings name entries that the daemon could not read, so check them before you treat the list as complete.
 

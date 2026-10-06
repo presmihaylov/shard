@@ -884,6 +884,7 @@
             "type": "integer"
           },
           "memory_mib": {
+            "description": "The memory bound in MiB. Absent, a create from a snapshot takes the snapshot's bound. Otherwise absent or 0 is 512 on the firecracker and vz providers, and no bound on gvisor, runc and sysbox.",
             "format": "int64",
             "maximum": 16777216,
             "minimum": 0,
