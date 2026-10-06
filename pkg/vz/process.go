@@ -15,7 +15,7 @@ type Process struct {
 	Start int64 `json:"start"`
 }
 
-// Identify reads the start time of a live pid; a pid that is gone, or a zombie, is ESRCH.
+// Identify reads the start time of a live pid; a pid that is gone, in its exit or a zombie is ESRCH.
 func Identify(pid int) (Process, error) {
 	if pid <= 1 {
 		return Process{}, fmt.Errorf("identify pid %d: not a shim", pid)

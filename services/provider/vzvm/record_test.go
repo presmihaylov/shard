@@ -5,9 +5,12 @@ import (
 	"context"
 	"encoding/binary"
 	"errors"
+	"io"
+	"log"
 	"net"
 	"net/netip"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"reflect"
 	"strings"
@@ -323,4 +326,75 @@ func TestReconnectOnceKeepsAFailedStateReadLostNotGone(t *testing.T) {
 	if past != reconnectLost || err == nil {
 		t.Fatalf("past grace: step=%v err=%v; want reconnectLost with the read error", past, err)
 	}
+}
+
+// A shim that died while the follower still redials reads stopped at the next status, not running until the redial notices (SHARD-618).
+func TestStatusReadsAShimThatDiedMidRedialAsStopped(t *testing.T) {
+	shim, end := standInShim(t)
+	logger := log.New(io.Discard, "", 0)
+	p := &Provider{cfg: Config{Log: logger}}
+	m := &machine{id: "sb-1", dir: t.TempDir(), client: vz.Open(filepath.Join(t.TempDir(), "absent.sock")), shim: shim, events: make(chan struct{}), refusals: supervisor.NewRefusals(logger, "sb-1"), started: true}
+	m.following, m.unfollow = context.WithCancel(context.Background())
+	t.Cleanup(m.unfollow)
+	host, dropped := net.Pipe()
+	m.control.Store(supervisor.ControlOver(host))
+	go p.follow(m)
+
+	// The follower's state read fails while the shim lives, so it sleeps out a poll before the next one.
+	if err := dropped.Close(); err != nil {
+		t.Fatal(err)
+	}
+	time.Sleep(pollInterval / 2)
+	end()
+	p.probe(t.Context(), m, adoptBound)
+
+	if status := m.status(p); status.State != models.StateStopped {
+		t.Fatalf("status of a sandbox whose shim died mid-redial = %+v, want stopped", status)
+	}
+}
+
+// A follower that lost the shim past grace leaves gone unset, so a status after the shim died must still read stopped, never running for good (SHARD-618).
+func TestStatusReadsAShimThatDiedAfterTheFollowerLostItAsStopped(t *testing.T) {
+	shim, end := standInShim(t)
+	p := &Provider{}
+	m := &machine{id: "sb-1", dir: t.TempDir(), client: vz.Open(filepath.Join(t.TempDir(), "absent.sock")), shim: shim, events: make(chan struct{}), started: true}
+	var control supervisor.Control
+	m.control.Store(&control)
+	close(m.events)
+	end()
+	p.probe(t.Context(), m, adoptBound)
+
+	if status := m.status(p); status.State != models.StateStopped {
+		t.Fatalf("status of a sandbox whose follower lost the shim = %+v, want stopped", status)
+	}
+}
+
+// standInShim runs a process that stands in for the shim by its pid, and the end that kills it and reaps it as vz.Start does.
+func standInShim(t *testing.T) (vz.Process, func()) {
+	t.Helper()
+	cmd := exec.Command("sleep", "60")
+	if err := cmd.Start(); err != nil {
+		t.Fatal(err)
+	}
+	shim, err := vz.Identify(cmd.Process.Pid)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ended := false
+	end := func() {
+		if ended {
+			return
+		}
+		ended = true
+		if err := cmd.Process.Kill(); err != nil {
+			t.Errorf("kill the stand-in shim: %v", err)
+		}
+		var exit *exec.ExitError
+		if err := cmd.Wait(); !errors.As(err, &exit) {
+			t.Errorf("reap the stand-in shim = %v, want its kill", err)
+		}
+	}
+	t.Cleanup(end)
+
+	return shim, end
 }

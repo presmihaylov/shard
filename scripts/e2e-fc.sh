@@ -314,7 +314,7 @@ expect_exec "1" "the entrypoint is a child of PID 1, which is shard-init" /bin/s
 
 step "run exits with the app's code, and the microVM outlives the app"
 CODE=0
-OUT=$(shard run --memory "${MEMORY}MiB" --name e2e-exited "${IMAGE}" /bin/sh -c 'echo e2e-run-out; exit 3' 2>/dev/null) || CODE=$?
+OUT=$(shard run --memory "${MEMORY}MiB" --name e2e-exited "${IMAGE}" /bin/sh -c 'echo e2e-run-out; exit 3') || CODE=$?
 EXIT_ID=$(id_of e2e-exited)
 expect "${CODE}" "3" "run exits with the app's code"
 expect "${OUT}" "e2e-run-out" "run prints the app output once"
