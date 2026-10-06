@@ -161,5 +161,4 @@ Set both variables. With only one, the daemon fails when it prepares Firecracker
 - **`shard needs 1.13.0 or newer`.** An older `firecracker` is on the host. Remove it so setup installs one, or replace it.
 - **`Firecracker cannot run its jailer under /var/lib/shard.`** Its filesystem is mounted with `nodev` or `noexec`. Remount it without those options.
 - **`provider firecracker needs --memory`.** Every create and run needs `--memory`, `128MiB` or more.
-- **A sandbox reaches nothing on a host with `ufw`.** ufw drops the bridge's traffic by default. Let it through with `sudo ufw allow in on shard0` and `sudo ufw route allow in on shard0`.
 - **The daemon does not start.** Read its log with `sudo journalctl -u shard`.
