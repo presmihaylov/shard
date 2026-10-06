@@ -96,7 +96,6 @@ func TestWithoutATerminalTheErrorNamesWhatAnswers(t *testing.T) {
 	_, confirm := ui.Confirm(t.Context(), setup.AskConfirm, "Continue?", true)
 	_, key := ui.Secret(t.Context(), setup.AskAPIKey, "API key")
 	_, existing := ui.Select(t.Context(), setup.AskExisting, "What would you like to do?", providers)
-	_, storage := ui.Text(t.Context(), setup.AskStorage, "How much space should shard reserve?", "50GiB")
 
 	// Each question is worded for a person and keeps the option that answers it (SHARD-740).
 	for got, want := range map[error]string{
@@ -105,11 +104,21 @@ func TestWithoutATerminalTheErrorNamesWhatAnswers(t *testing.T) {
 		confirm:  "no terminal to confirm the changes: pass -y",
 		key:      "no terminal to read the API key: set SHARD_API_KEY",
 		existing: "no terminal to choose what to do with the existing installation: run shard setup in a terminal",
-		storage:  "no terminal to choose how much space shard reserves: pass --storage-size",
 	} {
 		if got == nil || got.Error() != want {
 			t.Errorf("got %v, want %q", got, want)
 		}
+	}
+}
+
+func TestWithoutATerminalTheStorageSizeIsTheDefault(t *testing.T) {
+	ui, out := noTerminalOut(t, setupFlags{})
+	got, err := ui.Text(t.Context(), setup.AskStorage, "How much space should shard reserve?", "50GiB")
+	if got != "50GiB" || err != nil {
+		t.Fatalf("got %q, %v; want the default 50GiB", got, err)
+	}
+	if want := "How much space should shard reserve? 50GiB, the default, since there is no terminal to ask."; !strings.Contains(out.String(), want) {
+		t.Errorf("printed %q, want %q", out.String(), want)
 	}
 }
 

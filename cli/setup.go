@@ -221,6 +221,10 @@ func (a *answers) Text(ctx context.Context, q setup.Question, prompt, initial st
 			return url, nil
 		}
 	}
+	if q == setup.AskStorage && !a.t.Interactive() {
+		// A script that ran setup before the question keeps working: it takes the default, which the review then shows.
+		return initial, a.t.Print(prompt+" "+initial+", the default, since there is no terminal to ask.", "")
+	}
 	answer, err := a.t.Text(ctx, prompt, initial)
 
 	return answer, need(q, err)

@@ -76,7 +76,7 @@ The image is at least 10 GiB, and shard keeps 10 GiB of the filesystem free for 
 shard setup --local --provider firecracker --start-at-boot=true --storage-size 50GiB -y
 ```
 
-Without a terminal, setup needs `--storage-size` on such a filesystem. On XFS or Btrfs, and with every other provider, setup refuses `--storage-size`, because nothing reserves space there. Setup shows the size of an existing image and never resizes it. To change it, uninstall shard, remove the image, and run setup again.
+Without a terminal and without `--storage-size`, setup takes the default and prints it. On XFS or Btrfs, and with every other provider, setup refuses `--storage-size`, because nothing reserves space there. Setup shows the size of an existing image and never resizes it. To change it, uninstall shard, remove the image, and run setup again.
 
 The jailer makes `/dev/kvm` in each VM's jail under `/var/lib/shard` and starts the VM from there. So `/var/lib/shard` must not be on a mount with `nodev` or `noexec`.
 
