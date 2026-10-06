@@ -94,7 +94,12 @@ func (s *Service) Pause(ctx context.Context, ref string) (models.Sandbox, error)
 		}
 
 		// A pause that spent its budget leaves pctx done, so the reconcile probes under a budget of its own.
-		return models.Sandbox{}, errors.Join(diskRefused(err), s.reconcileGone(base, id, dir))
+		if gone := s.reconcileGone(base, id, dir); gone != nil {
+			return models.Sandbox{}, errors.Join(err, gone)
+		}
+
+		// Only a sandbox the reconcile left running and unmarked makes a disk refusal the request's fault.
+		return models.Sandbox{}, diskRefused(err)
 	}
 
 	if err := s.recordPaused(id, dir); err != nil {

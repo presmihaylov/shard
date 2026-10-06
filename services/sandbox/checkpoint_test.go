@@ -592,6 +592,25 @@ func TestPauseTheRootHasNoRoomForIsABadRequest(t *testing.T) {
 	if public, _ := sandbox.PublicText(err); !strings.HasPrefix(public, "the 1024 MiB of sandbox memory to save does not fit") {
 		t.Errorf("public text = %q, want the memory refusal", public)
 	}
+	if sb := l.repo.sb; sb.State != models.StateRunning || sb.Pausing {
+		t.Errorf("the record is %s with mark %v, want running and unmarked", sb.State, sb.Pausing)
+	}
+}
+
+// A refused pause whose reconcile did not settle the sandbox broke the daemon, whatever the refusal was (SHARD-750).
+func TestPauseTheRootHasNoRoomForStaysInternalWhenTheSandboxIsGone(t *testing.T) {
+	svc, l := newService(t, &recorder{}, running())
+	l.provider.pauseErr = fmt.Errorf("sandbox sandbox1 on fake: %w", &bundle.NoRoomError{Bound: 1024 << 20, Memory: true})
+	l.provider.status = models.Status{}
+
+	_, err := svc.Pause(t.Context(), "sandbox1")
+
+	if _, ok := errors.AsType[*sandbox.RequestError](err); ok {
+		t.Fatalf("pause = %v, want no request error over a sandbox that is gone", err)
+	}
+	if err == nil || !strings.Contains(err.Error(), "is gone") {
+		t.Errorf("pause = %v, want the refusal and that the sandbox is gone", err)
+	}
 }
 
 // A fork captures the source as it runs now, so a source that does not run is refused before anything is claimed (SHARD-457).
