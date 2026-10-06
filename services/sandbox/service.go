@@ -194,6 +194,8 @@ func (r CreateRequest) fronted() bool { return r.Policy != "" || len(r.Secrets) 
 // RequestError is a request refused before anything was claimed, and never the state of a sandbox.
 type RequestError struct {
 	Err error
+	// Text is all a public route answers when set, so the substrate's wrapping of a refusal stays in the daemon log.
+	Text string
 }
 
 func (e *RequestError) Error() string { return e.Err.Error() }
@@ -201,7 +203,13 @@ func (e *RequestError) Error() string { return e.Err.Error() }
 func (e *RequestError) Unwrap() error { return e.Err }
 
 // Public answers the whole text: every site wraps only what the caller sent, or a typed refusal of it.
-func (e *RequestError) Public() string { return e.Err.Error() }
+func (e *RequestError) Public() string {
+	if e.Text != "" {
+		return e.Text
+	}
+
+	return e.Err.Error()
+}
 
 // StateError is a verb refused for the state the sandbox is in. Fix says what the operator does instead.
 type StateError struct {
@@ -587,10 +595,13 @@ func policyRefused(name string, err error) error {
 	return err
 }
 
-// diskRefused makes the request's fault only a disk that does not fit; a root it could not read broke the create.
+// diskRefused makes the request's fault only a disk that does not fit, or a bound the image or the snapshot cannot take; a root it could not read broke the verb.
 func diskRefused(err error) error {
-	if _, ok := errors.AsType[*bundle.NoRoomError](err); ok {
-		return &RequestError{Err: err}
+	if room, ok := errors.AsType[*bundle.NoRoomError](err); ok {
+		return &RequestError{Err: err, Text: room.Public()}
+	}
+	if bound, ok := errors.AsType[*bundle.BoundError](err); ok {
+		return &RequestError{Err: err, Text: bound.Public()}
 	}
 
 	return err
@@ -751,7 +762,7 @@ func (s *Service) Complete(ctx context.Context, id string, req CreateRequest) (e
 	td.Push(func(ctx context.Context) error { return s.cfg.Provider.Remove(ctx, id) })
 
 	if err := s.cfg.Provider.Create(ctx, spec); err != nil {
-		return imageGone(id, sb.Image, img.Digest, "create", userRefused(err))
+		return imageGone(id, sb.Image, img.Digest, "create", diskRefused(userRefused(err)))
 	}
 
 	if err := s.recordCreated(ctx, spec, img.Digest); err != nil {

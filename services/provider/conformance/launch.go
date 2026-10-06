@@ -9,6 +9,7 @@ import (
 
 	"github.com/presmihaylov/shard/models"
 	"github.com/presmihaylov/shard/pkg/pty"
+	"github.com/presmihaylov/shard/services/bundle"
 )
 
 // launchDir holds the files whose modes the refusals need, in the one sandbox RunLaunch drives.
@@ -18,6 +19,7 @@ type refusal struct {
 	name string
 	argv []string
 	user string
+	dir  string
 	code int
 }
 
@@ -36,19 +38,21 @@ func RunLaunch(t *testing.T, s Subject) {
 	}
 
 	refusals := []refusal{
-		{"APathThatIsNotThere", []string{"/no/such/binary"}, "", models.CommandNotFoundExitCode},
-		{"ANameOnNoPATHEntry", []string{"no-such-command"}, "", models.CommandNotFoundExitCode},
-		{"AFileWithNoExecuteBit", []string{launchDir + "/plain"}, "", models.CommandNotExecutableExitCode},
-		{"AnInterpreterThatIsNotThere", []string{launchDir + "/orphan"}, "", models.CommandNotFoundExitCode},
-		{"ADirectory", []string{launchDir}, "", models.CommandNotExecutableExitCode},
-		{"ARootFile0700ToNobody", []string{launchDir + "/private"}, "nobody", models.CommandNotExecutableExitCode},
+		{"APathThatIsNotThere", []string{"/no/such/binary"}, "", "", models.CommandNotFoundExitCode},
+		{"ANameOnNoPATHEntry", []string{"no-such-command"}, "", "", models.CommandNotFoundExitCode},
+		{"AFileWithNoExecuteBit", []string{launchDir + "/plain"}, "", "", models.CommandNotExecutableExitCode},
+		{"AnInterpreterThatIsNotThere", []string{launchDir + "/orphan"}, "", "", models.CommandNotFoundExitCode},
+		{"ADirectory", []string{launchDir}, "", "", models.CommandNotExecutableExitCode},
+		{"ARootFile0700ToNobody", []string{launchDir + "/private"}, "nobody", "", models.CommandNotExecutableExitCode},
+		{"AWorkDirThatIsAFile", []string{"/bin/true"}, "", launchDir + "/plain", models.CommandNotExecutableExitCode},
+		{"AWorkDirThatIsABoundFile", []string{"/bin/true"}, "", bundle.GuestInitPath, models.CommandNotExecutableExitCode},
 	}
 
 	for _, tty := range []bool{false, true} {
 		for _, r := range refusals {
 			t.Run(terminalName(r.name, tty), func(t *testing.T) {
 				reported := &reports{}
-				_, _, err := s.launch(t, id, models.ExecSpec{Argv: r.argv, User: r.user, Report: reported.add}, tty)
+				_, _, err := s.launch(t, id, models.ExecSpec{Argv: r.argv, User: r.user, WorkDir: r.dir, Report: reported.add}, tty)
 
 				var refused *models.CommandNotStartedError
 				if !errors.As(err, &refused) {

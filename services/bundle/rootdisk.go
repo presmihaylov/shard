@@ -18,7 +18,7 @@ func CloneRootDisk(base, dst string, r models.Resources) (shared bool, err error
 	}
 	// The image size is known only after the pull, so the provider cannot refuse this bound up front.
 	if need := ceilMiB(st.Size()); st.Size() > DiskBytes(r) {
-		return false, fmt.Errorf("the image takes a %d MiB disk, more than the %d MiB disk bound; set resources.disk_mib to %d MiB or more", need, DiskBound(r), need)
+		return false, &BoundError{Fix: fmt.Sprintf("the image takes a %d MiB disk, more than the %d MiB disk bound; set resources.disk_mib to %d MiB or more", need, DiskBound(r), need)}
 	}
 
 	err = admitDisk(dst, DiskBytes(r), func() error {
@@ -56,17 +56,35 @@ func GrowSeed(dst string, r models.Resources, copy func() error) error {
 // seedRefusal names the resources.disk_mib that works when ext4 cannot grow a snapshot's disk.
 func seedRefusal(err error, mib int64) error {
 	if errors.Is(err, ext4.ErrNeedsRecovery) {
-		return fmt.Errorf("the snapshot's disk was not stopped clean, so it cannot grow to %d MiB; omit resources.disk_mib, or start the sandbox it came from, let its entrypoint exit or end it with shard exec, then stop it and snapshot it again: %w", mib, err)
+		return &BoundError{Fix: fmt.Sprintf("the snapshot's disk was not stopped clean, so it cannot grow to %d MiB; omit resources.disk_mib, or start the sandbox it came from, let its entrypoint exit or end it with shard exec, then stop it and snapshot it again", mib), Err: err}
 	}
 	var taken *ext4.DescriptorTakenError
 	if errors.As(err, &taken) {
 		most := taken.Max / bytesPerMiB
 
-		return fmt.Errorf("the snapshot's disk grows to at most %d MiB, as a mount took the room a larger one needs; set resources.disk_mib to %d MiB or less: %w", most, most, err)
+		return &BoundError{Fix: fmt.Sprintf("the snapshot's disk grows to at most %d MiB, as a mount took the room a larger one needs; set resources.disk_mib to %d MiB or less", most, most), Err: err}
 	}
 
 	return fmt.Errorf("grow the snapshot's disk to the %d MiB bound: %w", mib, err)
 }
+
+// BoundError is a disk bound the image or the snapshot cannot take; Fix is what a public route answers, and Err stays in the daemon log.
+type BoundError struct {
+	Fix string
+	Err error
+}
+
+func (e *BoundError) Error() string {
+	if e.Err == nil {
+		return e.Fix
+	}
+
+	return e.Fix + ": " + e.Err.Error()
+}
+
+func (e *BoundError) Unwrap() error { return e.Err }
+
+func (e *BoundError) Public() string { return e.Fix }
 
 // CloneFile copies base to dst as it is, sharing the blocks where the filesystem can; shared says it did.
 func CloneFile(base, dst string) (bool, error) {

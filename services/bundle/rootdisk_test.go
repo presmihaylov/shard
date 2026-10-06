@@ -156,6 +156,9 @@ func TestCloneRootDiskRefusesABoundUnderTheImage(t *testing.T) {
 	if !strings.Contains(err.Error(), "MiB or more") || strings.Contains(err.Error(), "blocks") {
 		t.Errorf("CloneRootDisk = %v, want the bound to set with its unit and no ext4 internals", err)
 	}
+	if _, ok := errors.AsType[*bundle.BoundError](err); !ok {
+		t.Errorf("CloneRootDisk = %v, want a BoundError a public route answers", err)
+	}
 	if _, err := os.Stat(dst); err == nil {
 		t.Error("the refused clone stayed behind")
 	}
