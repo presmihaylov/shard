@@ -264,22 +264,30 @@ func TestTransportExecMovesTheStreams(t *testing.T) {
 	}
 }
 
+// A path that is not there and a name no PATH entry holds are both 127, so shell can tell a missing sh on every substrate (SHARD-759).
 func TestTransportExecNotStartedReports127(t *testing.T) {
-	_, dial := startTransport(t)
-	ctx := testContext(t)
-	c, err := supervisor.Connect(ctx, dial)
-	if err != nil {
-		t.Fatalf("connect: %v", err)
-	}
-	defer c.Close()
-	if err := c.Run(t.Context(), supervisor.RunSpec{Argv: childArgv("sleep:60000")}); err != nil {
-		t.Fatalf("run: %v", err)
-	}
+	for name, header := range map[string]supervisor.ExecHeader{
+		"a path": {Argv: []string{"/nonexistent/cmd"}},
+		"a name": {Argv: []string{"sh"}, Env: []string{"PATH=/nonexistent"}},
+	} {
+		t.Run(name, func(t *testing.T) {
+			_, dial := startTransport(t)
+			ctx := testContext(t)
+			c, err := supervisor.Connect(ctx, dial)
+			if err != nil {
+				t.Fatalf("connect: %v", err)
+			}
+			defer c.Close()
+			if err := c.Run(t.Context(), supervisor.RunSpec{Argv: childArgv("sleep:60000")}); err != nil {
+				t.Fatalf("run: %v", err)
+			}
 
-	_, err = supervisor.Exec(ctx, dial, "sb", supervisor.ExecHeader{Argv: []string{"/nonexistent/cmd"}}, models.ExecSpec{})
-	var notStarted *models.CommandNotStartedError
-	if !errors.As(err, &notStarted) || notStarted.Code != 127 {
-		t.Fatalf("exec gave %v, want CommandNotStartedError with code 127", err)
+			_, err = supervisor.Exec(ctx, dial, "sb", header, models.ExecSpec{})
+			var notStarted *models.CommandNotStartedError
+			if !errors.As(err, &notStarted) || notStarted.Code != 127 {
+				t.Fatalf("exec gave %v, want CommandNotStartedError with code 127", err)
+			}
+		})
 	}
 }
 
