@@ -47,13 +47,16 @@ const jailerFile = "jailer.json"
 // sessionsFile beside the jail base takes the pid of every vmm the fake jailer starts, which leads the session its whole guest stays in.
 const sessionsFile = "vmm-sessions"
 
-// Files a test puts in the state directory: controlsFile takes one line per reseed, freeze and thaw the guest reads, and an attach per control stream the host opens.
+// Files a test puts in the state directory: controlsFile takes one line per reseed, freeze and thaw the guest reads, an attach per control stream the host opens, and a thawedKind per thaw the guest answered.
 const (
 	controlsFile = "controls"
+	thawedKind   = "thawed"
 	// refuseFreezeFile, while it exists, has the guest refuse every freeze, as one that cannot hold its root does.
 	refuseFreezeFile = "refuse-freeze"
 	// loseFreezeFile has the next freeze reach the guest and a drop take its answer, once.
 	loseFreezeFile = "lose-freeze"
+	// cutThawFile has the next thaw end every stream before the guest reads it, once.
+	cutThawFile = "cut-thaw"
 	// refuseReseedFile, while it exists, has the guest refuse every reseed.
 	refuseReseedFile = "refuse-reseed"
 	// oldGuestFile, while it exists, drops the overlay freeze from the guest's state, as a shard-init from before it sends.
@@ -964,9 +967,24 @@ type control struct {
 	host  io.Writer
 	// losing is a freeze passed to the guest whose answer the drop takes instead of the host.
 	losing atomic.Bool
+	// thaw is the id of the thaw sent to the guest and not yet answered, or 0.
+	thaw atomic.Int64
+	// partial is the guest's output since its last full line.
+	partial []byte
 }
 
 func (c *control) intoGuest(p []byte) (int, error) {
+	if carries(p, supervisor.KindThaw) {
+		err := os.Remove(filepath.Join(c.dir, cutThawFile))
+		if err != nil && !errors.Is(err, os.ErrNotExist) {
+			return 0, err
+		}
+		if err == nil {
+			c.f.drop(false)
+
+			return 0, errors.New("the drop took the thaw")
+		}
+	}
 	for _, kind := range []string{supervisor.KindReseed, supervisor.KindFreeze, supervisor.KindThaw} {
 		if !carries(p, kind) {
 			continue
@@ -974,6 +992,13 @@ func (c *control) intoGuest(p []byte) (int, error) {
 		if err := note(filepath.Join(c.dir, controlsFile), kind); err != nil {
 			return 0, err
 		}
+	}
+	if carries(p, supervisor.KindThaw) {
+		var sent supervisor.Message
+		if err := json.Unmarshal(bytes.TrimSpace(p), &sent); err != nil {
+			return 0, fmt.Errorf("read the thaw the host sent: %w", err)
+		}
+		c.thaw.Store(int64(sent.ID))
 	}
 	if carries(p, supervisor.KindThaw) || carries(p, supervisor.KindStop) {
 		c.f.freeze(false)
@@ -1012,6 +1037,9 @@ func (c *control) intoHost(p []byte) (int, error) {
 
 		return 0, errors.New("the drop took the answer to the freeze")
 	}
+	if err := c.noteThawed(p); err != nil {
+		return 0, err
+	}
 	if _, err := os.Stat(filepath.Join(c.dir, oldGuestFile)); err == nil && carries(p, supervisor.KindState) {
 		if _, err := io.WriteString(c.host, strings.Replace(string(p), `,"freezes_overlay":true`, "", 1)); err != nil {
 			return 0, err
@@ -1021,6 +1049,34 @@ func (c *control) intoHost(p []byte) (int, error) {
 	}
 
 	return c.host.Write(p)
+}
+
+// noteThawed notes thawedKind once the guest's done answers the thaw, since the thaw line is noted as the host sent it.
+func (c *control) noteThawed(written []byte) error {
+	c.partial = append(c.partial, written...)
+	for {
+		end := bytes.IndexByte(c.partial, '\n')
+		if end < 0 {
+			return nil
+		}
+		line := c.partial[:end]
+		c.partial = c.partial[end+1:]
+		thaw := c.thaw.Load()
+		if thaw == 0 {
+			continue
+		}
+		var answer supervisor.Message
+		if err := json.Unmarshal(line, &answer); err != nil {
+			return fmt.Errorf("read the guest's answer to the thaw: %w", err)
+		}
+		if answer.ID != int(thaw) || answer.Kind != supervisor.KindDone {
+			continue
+		}
+		c.thaw.Store(0)
+		if err := note(filepath.Join(c.dir, controlsFile), thawedKind); err != nil {
+			return err
+		}
+	}
 }
 
 func (f *fake) freeze(frozen bool) {

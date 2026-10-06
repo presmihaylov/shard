@@ -10,6 +10,7 @@ import (
 	"net"
 	"os"
 	"sync"
+	"syscall"
 	"time"
 
 	"github.com/presmihaylov/shard/models"
@@ -26,6 +27,9 @@ const (
 
 // ErrEventFlood ends a stream whose guest queued events past one of those bounds before the host read them.
 var ErrEventFlood = fmt.Errorf("the guest queued more than %d events or %d bytes the host has not read", maxQueuedEvents, maxQueuedBytes)
+
+// ErrGone is a request whose stream ended before the guest answered it, which a stream dialed again can carry.
+var ErrGone = errors.New("the guest went away")
 
 // Dialer opens one connection to a guest port. pkg/vz's Client.Connect is one, over the shim socket.
 type Dialer func(ctx context.Context, port uint32) (net.Conn, error)
@@ -261,7 +265,7 @@ func (c *Control) request(ctx context.Context, m Message) error {
 	if ended != nil {
 		c.mu.Unlock()
 
-		return fmt.Errorf("%s: the guest went away: %w", m.Kind, ended)
+		return fmt.Errorf("%s: %w: %w", m.Kind, ErrGone, ended)
 	}
 	err := c.send(ctx, m)
 	c.mu.Unlock()
@@ -269,6 +273,9 @@ func (c *Control) request(ctx context.Context, m Message) error {
 		c.pendingMu.Lock()
 		delete(c.pending, m.ID)
 		c.pendingMu.Unlock()
+		if closed(err) {
+			return fmt.Errorf("%s: %w: %w", m.Kind, ErrGone, err)
+		}
 
 		return fmt.Errorf("%s: %w", m.Kind, err)
 	}
@@ -286,7 +293,7 @@ func (c *Control) request(ctx context.Context, m Message) error {
 		return fmt.Errorf("%s: the guest did not answer: %w", m.Kind, ctx.Err())
 	}
 	if !ok {
-		return fmt.Errorf("%s: the guest went away before it answered", m.Kind)
+		return fmt.Errorf("%s: %w before it answered", m.Kind, ErrGone)
 	}
 	if answer.Kind == KindFailure {
 		return fmt.Errorf("%s: %s", m.Kind, answer.Error)
@@ -312,6 +319,11 @@ func (c *Control) send(ctx context.Context, m Message) error {
 	}
 
 	return nil
+}
+
+// closed is a write the peer's close refused, unlike a deadline, which a guest that stopped reading runs into.
+func closed(err error) bool {
+	return errors.Is(err, syscall.EPIPE) || errors.Is(err, syscall.ECONNRESET) || errors.Is(err, net.ErrClosed) || errors.Is(err, io.ErrClosedPipe)
 }
 
 // Exec runs one command over a fresh exec connection, moves its streams to the files in spec, and returns how it ended.

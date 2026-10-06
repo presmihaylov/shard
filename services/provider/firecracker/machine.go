@@ -900,8 +900,10 @@ func (p *Provider) adopt(m *machine, control *supervisor.Control, state supervis
 			thawed = fmt.Errorf("sandbox %s: thaw the guest: %w", m.id, err)
 		}
 	}
+	// A stream that ended under the thaw is dialed again, and that replay says whether the guest is still frozen, so no lost state is kept (SHARD-755).
+	adopted := !errors.Is(thawed, supervisor.ErrGone)
 
-	return true, errors.Join(thawed, p.reconcile(m, state), closeControl(dropped))
+	return adopted, errors.Join(thawed, p.reconcile(m, state), closeControl(dropped))
 }
 
 // closeControl ends a control stream that a redial which ran out may have ended already.
