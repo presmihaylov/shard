@@ -272,6 +272,8 @@ type fakeLifecycleProvider struct {
 	startGate chan struct{}
 	// startErr is what Start answers, as a substrate whose app never ran does.
 	startErr error
+	// createErr is what Create answers, as a VM substrate that refuses a disk does.
+	createErr error
 }
 
 func (f *fakeLifecycleProvider) Restarts(context.Context, string) (models.RestartCount, error) {
@@ -384,8 +386,11 @@ func (f *fakeLifecycleProvider) Status(context.Context, string) (models.Status, 
 // Create records the spec, so a test says what a create through the daemon handed the substrate.
 func (f *fakeLifecycleProvider) Create(_ context.Context, spec models.SandboxSpec) error {
 	f.created = spec
+	if err := f.r.record("provider.Create"); err != nil {
+		return err
+	}
 
-	return f.r.record("provider.Create")
+	return f.createErr
 }
 
 func (f *fakeLifecycleProvider) Start(context.Context, string) error {

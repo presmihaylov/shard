@@ -3,6 +3,7 @@ package sandbox_test
 import (
 	"context"
 	"errors"
+	"fmt"
 	"net/netip"
 	"os"
 	"path/filepath"
@@ -13,6 +14,7 @@ import (
 	"time"
 
 	"github.com/presmihaylov/shard/models"
+	"github.com/presmihaylov/shard/services/bundle"
 	"github.com/presmihaylov/shard/services/sandbox"
 	"github.com/presmihaylov/shard/services/sandboxstate"
 )
@@ -559,6 +561,55 @@ func TestForkStartsANewSandboxFromACaptureOfTheRunningSource(t *testing.T) {
 	}
 	if l.repo.deleted {
 		t.Error("a fork that succeeded deleted a record")
+	}
+}
+
+// A copy the root has no room for is the request's fault, and its text names no bound a fork could set (SHARD-750, SHARD-751).
+func TestForkTheRootHasNoRoomForIsABadRequest(t *testing.T) {
+	svc, l := newService(t, &recorder{}, forkSource())
+	l.provider.forkErr = fmt.Errorf("copy the checkpoint disk for sandbox sandbox2 on fake: %w", &bundle.NoRoomError{Bound: 4096 << 20, Copy: true})
+
+	_, err := svc.Fork(t.Context(), "web", sandbox.CopyRequest{Name: "web-2"})
+
+	if _, ok := errors.AsType[*sandbox.RequestError](err); !ok {
+		t.Fatalf("fork = %v, want a request error", err)
+	}
+	if public, _ := sandbox.PublicText(err); strings.Contains(public, "sandbox2") || !strings.HasSuffix(public, "; remove a sandbox") {
+		t.Errorf("public text = %q, want the refusal alone, ending on the fix", public)
+	}
+}
+
+// A memory the root has no room for refuses the pause as the request's fault, not as a broken daemon (SHARD-750).
+func TestPauseTheRootHasNoRoomForIsABadRequest(t *testing.T) {
+	svc, l := newService(t, &recorder{}, running())
+	l.provider.pauseErr = fmt.Errorf("sandbox sandbox1 on fake: %w", &bundle.NoRoomError{Bound: 1024 << 20, Memory: true})
+
+	_, err := svc.Pause(t.Context(), "sandbox1")
+
+	if _, ok := errors.AsType[*sandbox.RequestError](err); !ok {
+		t.Fatalf("pause = %v, want a request error", err)
+	}
+	if public, _ := sandbox.PublicText(err); !strings.HasPrefix(public, "the 1024 MiB of sandbox memory to save does not fit") {
+		t.Errorf("public text = %q, want the memory refusal", public)
+	}
+	if sb := l.repo.sb; sb.State != models.StateRunning || sb.Pausing {
+		t.Errorf("the record is %s with mark %v, want running and unmarked", sb.State, sb.Pausing)
+	}
+}
+
+// A refused pause whose reconcile did not settle the sandbox broke the daemon, whatever the refusal was (SHARD-750).
+func TestPauseTheRootHasNoRoomForStaysInternalWhenTheSandboxIsGone(t *testing.T) {
+	svc, l := newService(t, &recorder{}, running())
+	l.provider.pauseErr = fmt.Errorf("sandbox sandbox1 on fake: %w", &bundle.NoRoomError{Bound: 1024 << 20, Memory: true})
+	l.provider.status = models.Status{}
+
+	_, err := svc.Pause(t.Context(), "sandbox1")
+
+	if _, ok := errors.AsType[*sandbox.RequestError](err); ok {
+		t.Fatalf("pause = %v, want no request error over a sandbox that is gone", err)
+	}
+	if err == nil || !strings.Contains(err.Error(), "is gone") {
+		t.Errorf("pause = %v, want the refusal and that the sandbox is gone", err)
 	}
 }
 
