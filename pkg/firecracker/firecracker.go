@@ -10,6 +10,9 @@ import (
 // ErrSocketInUse says a live firecracker answers on the API socket, so a second one must not replace it.
 var ErrSocketInUse = errors.New("firecracker: a vmm already serves this socket")
 
+// ErrExiting says the vmm that took the dial has begun its exit, so it is as gone as one that refuses the dial.
+var ErrExiting = errors.New("firecracker: the vmm behind this socket is exiting")
+
 // Jail is where the jailer puts one vmm: a chroot under Base, a uid and gid of its own, and the cgroup it joins before the vmm exists.
 type Jail struct {
 	// Jailer and Exec are host paths; the jailer copies Exec into the chroot and runs it there, as UID.

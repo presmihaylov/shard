@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"github.com/presmihaylov/shard/models"
+	"github.com/presmihaylov/shard/pkg/pty"
 )
 
 // ErrEntrypointNotStarted is a run the guest refused, with the guest's own words for why behind it.
@@ -316,6 +317,12 @@ func (c *Control) send(ctx context.Context, m Message) error {
 
 // Exec runs one command over a fresh exec connection, moves its streams to the files in spec, and returns how it ended.
 func Exec(ctx context.Context, dial Dialer, id string, header ExecHeader, spec models.ExecSpec) (models.ExitStatus, error) {
+	// The guest's terminal does the line discipline, so a cooked replica eats Ctrl-C, holds keys until Enter and echoes twice; it closes with this exec, so nothing restores it (SHARD-760).
+	if header.TTY && spec.Stdin != nil {
+		if _, err := pty.MakeRaw(spec.Stdin); err != nil {
+			return models.ExitStatus{}, fmt.Errorf("exec %q: relay the terminal: %w", header.Argv[0], err)
+		}
+	}
 	conn, err := dial(ctx, ExecPort)
 	if err != nil {
 		return models.ExitStatus{}, fmt.Errorf("open an exec connection: %w", err)

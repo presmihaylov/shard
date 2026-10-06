@@ -60,8 +60,9 @@ shard daemon --provider gvisor
 | `--timeout <duration>` | image download timeout | `30m` |
 | `--insecure-registry <host>` | allow HTTP for a registry; repeatable |  |
 | `--log <path>` | daemon log file (macOS only) |  |
+| `--storage-size <size>` | size of a new Firecracker data image |  |
 
-The daemon manages local sandboxes and stays active until stopped. An existing data directory must use its original provider. Use `shard info` to see the default provider for this host.
+The daemon manages local sandboxes and stays active until stopped. An existing data directory must use its original provider. Use `shard info` to see the default provider for this host. A new Firecracker data image takes half the free space, at most 100GiB, unless `--storage-size` sets it. An existing one keeps its size, and the daemon refuses any other `--storage-size`.
 
 Runs only on the daemon host and refuses `--remote`, `SHARD_REMOTE` and a saved connection.
 
@@ -159,6 +160,7 @@ shard setup [OPTIONS]
 ```sh
 shard setup
 shard setup --local --provider gvisor --start-at-boot=true -y
+shard setup --local --provider firecracker --start-at-boot=true --storage-size 50GiB -y
 shard setup --remote https://shard.example.com --save -y
 ```
 
@@ -170,12 +172,17 @@ shard setup --remote https://shard.example.com --save -y
 | `--remote <url>` | connect to a remote shard server |
 | `--provider <name>` | firecracker, gvisor, sysbox, runc or vz |
 | `--start-at-boot <true\|false>` | start the daemon at boot |
+| `--storage-size <size>` | space to reserve for Firecracker sandbox disks |
 | `--save` | save the remote connection |
 | `-y, --yes` | apply changes without confirmation |
 
 **Remote authentication**
 
 Set `SHARD_API_KEY`. Do not pass the key as a command argument.
+
+**Storage size**
+
+Without XFS or Btrfs, Firecracker keeps sandbox disks in one XFS image. The daemon reserves it whole when it starts, and keeps 10GiB for the host. The default is half the available space, at most 100GiB. The minimum is 10GiB. Sizes take KiB, MiB, GiB, KB, MB or GB, as `--disk` does. Setup does not resize an existing image. Other providers refuse the option.
 
 **Exit codes**
 

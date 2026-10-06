@@ -93,7 +93,7 @@ The daemon gives its socket to the `shard` group only when it starts, so the com
 
 ## 3. Put HTTPS in front
 
-`shard serve` has no TLS. Put a proxy or a tunnel in front of it that gives clients an `https` URL on port 443. The proxy must pass WebSocket upgrades through and must not buffer responses. Otherwise `shard exec` and `shard logs -f` stall. It must not log the `Authorization` header, because that header carries the token.
+`shard serve` has no TLS. Put a proxy or a tunnel in front of it that gives clients an `https` URL on port 443. The proxy must pass WebSocket upgrades through and must not buffer responses. Otherwise `shard exec`, `shard shell` and `shard logs -f` stall. It must not log the `Authorization` header, because that header carries the token.
 
 <Tabs>
 	<TabItem label="Caddy">
@@ -177,7 +177,7 @@ sudo shard tokens list --signing-key-file /etc/shard/serve.secret
 sudo shard tokens revoke --name laptop --signing-key-file /etc/shard/serve.secret
 ```
 
-`shard serve` refuses a revoked token on the next request, with no restart. It also closes any open stream that uses that token, such as `shard exec` or `shard logs -f`, within a second. The command and its sandbox keep running.
+`shard serve` refuses a revoked token on the next request, with no restart. It also closes any open stream that uses that token, such as `shard exec`, `shard shell` or `shard logs -f`, within a second. The command and its sandbox keep running.
 
 ## Commands that run on the server only
 

@@ -68,6 +68,8 @@ type Config struct {
 	Tap bool
 	// Report takes the held sandboxes of a ReapplyAll, which then succeeds; nil fails it instead.
 	Report func(format string, v ...any)
+	// Firewall lets the bridge through the host's own firewall. Nil leaves that firewall alone.
+	Firewall HostFirewall
 }
 
 // Service allocates and releases a sandbox's network. It holds nothing in memory between calls, so
@@ -80,6 +82,10 @@ type Service struct {
 
 	// ensure serializes the whole-host render: the daemon owns the ruleset, so one process is all of it.
 	ensure sync.Mutex
+
+	firewall sync.Mutex
+	// zoned is the firewalld zone made by this process, which a reload keeps.
+	zoned bool
 }
 
 // New validates the layout and finds the host's network binaries.
@@ -167,6 +173,10 @@ func (s *Service) Ensure(ctx context.Context) error {
 	}
 
 	if err := s.manager.EnableForwarding(); err != nil {
+		return err
+	}
+
+	if err := s.OpenFirewall(ctx); err != nil {
 		return err
 	}
 

@@ -1789,9 +1789,7 @@ func TestAHeldShimTooFrozenToAnswerReadsUnresponsiveUntilItAnswers(t *testing.T)
 		t.Fatalf("Status after the thaw = %+v, %v; want running again with the same shim", status, err)
 	}
 
-	if err := syscall.Kill(shim, syscall.SIGSTOP); err != nil {
-		t.Fatalf("freeze the fake shim again: %v", err)
-	}
+	freeze(t, shim)
 	if status, err := h.provider.Status(t.Context(), spec.ID); err != nil || status.State != models.StateUnresponsive {
 		t.Fatalf("Status after the second freeze = %+v, %v; want unresponsive", status, err)
 	}
@@ -1841,14 +1839,21 @@ func frozenShimOn(t *testing.T, h *harness, restart bool) (*harness, models.Sand
 			t.Fatalf("close the provider: %v", err)
 		}
 	}
-	if err := syscall.Kill(shim, syscall.SIGSTOP); err != nil {
-		t.Fatalf("freeze the fake shim: %v", err)
-	}
+	freeze(t, shim)
 	if restart {
 		h.open(t)
 	}
 
 	return h, spec, shim
+}
+
+// freeze stops the fake shim and returns once no thread of it runs, so it answers no request sent after.
+func freeze(t *testing.T, shim int) {
+	t.Helper()
+	if err := syscall.Kill(shim, syscall.SIGSTOP); err != nil {
+		t.Fatalf("freeze the fake shim: %v", err)
+	}
+	awaitStopped(t, shim)
 }
 
 // runningShim starts a sandbox whose fake guest and shim the test kills at its end, whatever a verb left, and answers the shim's pid.

@@ -18,7 +18,7 @@ const idleTimeout = 30 * time.Second
 func newHTTPClient(idle time.Duration) *http.Client {
 	dialer := &net.Dialer{Timeout: idle}
 
-	return &http.Client{Transport: &idleTransport{idle: idle, base: &http.Transport{
+	return &http.Client{Transport: &idleTransport{idle: idle, after: afterFunc, base: &http.Transport{
 		Proxy:                 http.ProxyFromEnvironment,
 		DialContext:           dialer.DialContext,
 		ForceAttemptHTTP2:     true,
@@ -27,10 +27,19 @@ func newHTTPClient(idle time.Duration) *http.Client {
 	}}}
 }
 
+// timer is a body's idle timer: a *time.Timer, or a test's own that fires only when the test moves its clock.
+type timer interface {
+	Reset(d time.Duration) bool
+	Stop() bool
+}
+
+func afterFunc(d time.Duration, f func()) timer { return time.AfterFunc(d, f) }
+
 // idleTransport ends a response whose body sends nothing for idle; without it a dropped connection waits out the kernel's retries, about 17 minutes.
 type idleTransport struct {
-	idle time.Duration
-	base http.RoundTripper
+	idle  time.Duration
+	base  http.RoundTripper
+	after func(time.Duration, func()) timer
 }
 
 func (t *idleTransport) RoundTrip(req *http.Request) (*http.Response, error) {
@@ -42,7 +51,7 @@ func (t *idleTransport) RoundTrip(req *http.Request) (*http.Response, error) {
 		return nil, err
 	}
 	body := &idleBody{ReadCloser: resp.Body, idle: t.idle, cancel: cancel}
-	body.timer = time.AfterFunc(t.idle, body.expire)
+	body.timer = t.after(t.idle, body.expire)
 	resp.Body = body
 
 	return resp, nil
@@ -52,7 +61,7 @@ func (t *idleTransport) RoundTrip(req *http.Request) (*http.Response, error) {
 type idleBody struct {
 	io.ReadCloser
 	idle    time.Duration
-	timer   *time.Timer
+	timer   timer
 	cancel  context.CancelFunc
 	expired atomic.Bool
 }

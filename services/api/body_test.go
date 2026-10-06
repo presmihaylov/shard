@@ -106,6 +106,8 @@ func slow(t *testing.T, s seeded, timeout time.Duration) seeded {
 	t.Helper()
 
 	server := httptest.NewUnstartedServer(s.handler)
+	// The daemon's own head bound, since without one net/http bounds the head by the ReadTimeout and a runner's stall before the head cuts the request.
+	server.Config.ReadHeaderTimeout = 10 * time.Second
 	server.Config.ReadTimeout = timeout
 	server.Start()
 	t.Cleanup(server.Close)

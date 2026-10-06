@@ -19,6 +19,8 @@ func (a App) daemon(ctx context.Context, args []string) error {
 	timeout := flags.Duration("timeout", DefaultTimeout, "")
 	var insecure []string
 	flags.Var((*hostList)(&insecure), "insecure-registry", "")
+	var storage *int64
+	flags.Var(optionalMiB{&storage}, "storage-size", "")
 
 	if err := parseVerb(flags, args); err != nil {
 		return err
@@ -39,6 +41,7 @@ func (a App) daemon(ctx context.Context, args []string) error {
 		InitPath:    a.InitPath,
 		Provider:    *provider,
 		LogPath:     *logPath,
+		StorageMiB:  storage,
 	})
 }
 

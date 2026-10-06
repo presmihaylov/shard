@@ -24,10 +24,13 @@ func reserve(path string, size int64) error {
 	return f.Close()
 }
 
+// statfs is a var so a test can pin the free count, which other writers on a shared disk move.
+var statfs = unix.Statfs
+
 func room(path string) (int64, error) {
 	dir := filepath.Dir(path)
 	var fs unix.Statfs_t
-	if err := unix.Statfs(dir, &fs); err != nil {
+	if err := statfs(dir, &fs); err != nil {
 		return 0, fmt.Errorf("statfs %s: %w", dir, err)
 	}
 	free := int64(fs.Bavail) * fs.Bsize //nolint:gosec // G115: no disk holds 8 EiB free

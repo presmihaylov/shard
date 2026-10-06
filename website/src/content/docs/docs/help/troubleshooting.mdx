@@ -136,11 +136,11 @@ An ordinary daemon restart leaves already running sandboxes alive, and the next 
 
 **`running (exited 7)`.** The entrypoint exited with code 7, but the sandbox is still up. A sandbox outlives its entrypoint, so you can still `exec` into it until `shard stop` ends it.
 
-**An outgoing request from the sandbox times out.** A firewall on the host can drop the request before shard sees it, most often on a host with `ufw` turned on. Let traffic through the bridge:
+**An outgoing request from the sandbox times out.** A firewall rule of your own on the host can drop the request before shard sees it. shard lets the bridge `shard0` through `ufw` and `firewalld` itself, so look for another rule that drops traffic on `shard0`:
 
 ```sh
-sudo ufw allow in on shard0
-sudo ufw route allow in on shard0
+sudo iptables -S
+sudo nft list ruleset
 ```
 
 **A name does not resolve, or a request gets a `403`, in a sandbox with a network policy.** Check the policy and shard's private-address restrictions. `shard policy logs <name>` shows each decision and the rule or restriction that made it. A policy with only address rules needs `--allow dns` before names resolve. The [egress reference](/docs/security/egress/) lists every rule.

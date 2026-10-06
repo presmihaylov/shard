@@ -47,10 +47,18 @@ func idleBounded(w http.ResponseWriter, r *http.Request) io.Reader {
 	return &idleBody{body: r.Body, control: http.NewResponseController(w), idle: server.ReadTimeout}
 }
 
+// now is the clock an idle body's deadline counts from, so a test can keep a runner's stall from reaching it.
+var now = time.Now
+
+// readDeadliner is the one control an idle body needs: an *http.ResponseController, or a test's recorder.
+type readDeadliner interface {
+	SetReadDeadline(deadline time.Time) error
+}
+
 // idleBody moves the read deadline before each read and stops at the end, since net/http clears it then for its own background read.
 type idleBody struct {
 	body    io.Reader
-	control *http.ResponseController
+	control readDeadliner
 	idle    time.Duration
 	ended   bool
 }
@@ -59,7 +67,7 @@ func (b *idleBody) Read(p []byte) (int, error) {
 	if b.ended {
 		return 0, io.EOF
 	}
-	if err := b.control.SetReadDeadline(time.Now().Add(b.idle)); err != nil {
+	if err := b.control.SetReadDeadline(now().Add(b.idle)); err != nil {
 		return 0, fmt.Errorf("move the body's read deadline: %w", err)
 	}
 

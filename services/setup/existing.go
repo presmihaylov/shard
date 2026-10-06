@@ -13,6 +13,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/presmihaylov/shard/pkg/hostfw"
 	"github.com/presmihaylov/shard/pkg/mountinfo"
 	"github.com/presmihaylov/shard/pkg/proxy"
 	"github.com/presmihaylov/shard/pkg/term"
@@ -87,7 +88,18 @@ func (s *Setup) existing(ctx context.Context, inst Installation) error {
 	}
 
 	m := *inst.Manifest
-	if err := s.UI.Print("This machine already has shard installed", "", "Version:  "+m.Version, "Provider: "+providerTitle(m.Provider), "Service:  "+string(inst.Service), ""); err != nil {
+	storage, reserved, err := existingStorage(s.Host, m)
+	if err != nil {
+		return err
+	}
+	lines := []string{"This machine already has shard installed", "", "Version:  " + m.Version, "Provider: " + providerTitle(m.Provider), "Service:  " + string(inst.Service)}
+	if storage != "" {
+		lines = append(lines, storage)
+	}
+	if err := s.UI.Print(append(lines, "")...); err != nil {
+		return err
+	}
+	if err := s.keepStorage(m.Provider, reserved); err != nil {
 		return err
 	}
 	choice, err := s.UI.Select(ctx, AskExisting, "What would you like to do?", []term.Option{
@@ -150,7 +162,7 @@ func (s *Setup) repair(ctx context.Context, m Manifest, service ServiceState, re
 		return s.UI.Print("✓ No problems found", "", "Installed correctly: shard "+m.Version+" with "+providerTitle(m.Provider)+".")
 	}
 
-	steps, err := s.localSteps(ctx, Local{Provider: m.Provider, StartAtBoot: m.StartAtBoot})
+	steps, err := s.localSteps(ctx, Local{Provider: m.Provider, StartAtBoot: m.StartAtBoot, StorageMiB: m.StorageMiB})
 	if err != nil {
 		return err
 	}
@@ -702,6 +714,10 @@ const (
 	hostBridge = "shard0"
 	hostTable  = "shard"
 	ipForward  = "/proc/sys/net/ipv4/ip_forward"
+	// hostZone, hostPolicy and hostMarker are network.FirewallName, network.FirewallPolicy and network.FirewallMarker.
+	hostZone   = "shard"
+	hostPolicy = "shard-forwarding"
+	hostMarker = "managed-by-shard"
 )
 
 var hostTableFamilies = []string{"inet", "bridge"}
@@ -740,6 +756,10 @@ func removeNetwork(ctx context.Context, h Host) (held bool, err error) {
 		}
 	}
 
+	if err := closeHostFirewall(ctx, h); err != nil {
+		return false, err
+	}
+
 	_, err = os.Lstat(filepath.Join(h.Root, "/sys/class/net", hostBridge))
 	if errors.Is(err, fs.ErrNotExist) {
 		return false, nil
@@ -752,6 +772,24 @@ func removeNetwork(ctx context.Context, h Host) (held bool, err error) {
 	}
 
 	return false, nil
+}
+
+// closeHostFirewall drops the rules and the firewalld zone the daemon made, since the daemon never removes them itself.
+func closeHostFirewall(ctx context.Context, h Host) error {
+	tool := func(name string) string {
+		if _, ok := lookPath(h, name); ok {
+			return name
+		}
+		return ""
+	}
+	fw := hostfw.New(func(ctx context.Context, name string, args ...string) ([]byte, error) {
+		return privileged(ctx, h, name, args...)
+	}, tool("iptables"), tool("firewall-cmd"))
+	if err := fw.Close(ctx, hostfw.Hole{Name: hostZone, Marker: hostMarker, Interface: hostBridge, Policy: hostPolicy}); err != nil {
+		return fmt.Errorf("close the host firewall: %w", err)
+	}
+
+	return nil
 }
 
 // uninstalled names what stays and how to remove it, since uninstall removes no shared tool and no data.

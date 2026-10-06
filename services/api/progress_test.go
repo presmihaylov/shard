@@ -148,6 +148,33 @@ func TestCreateWaitStreamsThePullThenTheRecord(t *testing.T) {
 	}
 }
 
+// A disk refusal answers its fix on 400, and the daemon log keeps the host path the substrate wrapped it in (SHARD-750).
+func TestCreateAnswersADiskRefusalWithItsFixAlone(t *testing.T) {
+	const fix = "the snapshot's disk grows to at most 16384 MiB, as a mount took the room a larger one needs; set resources.disk_mib to 16384 MiB or less"
+	refused := &sandbox.RequestError{Err: errors.New("vz: grow /var/lib/shard/sandboxes/sb1/disk.img: " + fix), Text: fix}
+
+	s := seed(t)
+	s.verbs.err = refused
+	status, got := send(t, s.server, http.MethodPost, "/v0/sandboxes", `{"image":"alpine:3.20"}`)
+	if answer := errorOf(t, got); status != http.StatusBadRequest || answer.code != "invalid_request" || answer.message != fix {
+		t.Errorf("POST /v0/sandboxes answered %d %v, want 400 invalid_request with the fix alone", status, got)
+	}
+
+	s = seed(t)
+	s.verbs.pulled = []image.Event{{Status: image.StatusCached, Reference: "docker.io/library/alpine:3.20", Path: "/images/alpine"}}
+	s.verbs.err = refused
+	_, _, lines := sendStreamed(t, s.server, "/v0/sandboxes?wait=true", `{"image":"alpine:3.20"}`)
+	if len(lines) != 2 {
+		t.Fatalf("the create streamed %v, want the event and the refusal", lines)
+	}
+	if answer := errorOf(t, lines[1]); answer.code != "invalid_request" || answer.message != fix {
+		t.Errorf("the last line is %+v, want invalid_request with the fix alone", answer)
+	}
+	if !strings.Contains(s.log.String(), "/var/lib/shard/sandboxes/sb1/disk.img") {
+		t.Errorf("the daemon log %q lacks the host path", s.log.String())
+	}
+}
+
 // A user the image does not list is the request's fault on every create shape, and each names the user.
 func TestCreateRefusesAnUnknownUserOnEveryShape(t *testing.T) {
 	const body = `{"image":"alpine:3.20","user":"nobody2"}`
