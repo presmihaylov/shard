@@ -100,40 +100,49 @@ func relay(child *os.Process, pair *pty.Pty, signals <-chan os.Signal) (int, err
 		copyOutput(os.Stdout, pair.Master, ended, hangUp)
 	}()
 
-	waited := make(chan error, 1)
-	var state *os.ProcessState
+	waited := make(chan waitResult, 1)
 	go func() {
-		var err error
-		state, err = child.Wait()
-		waited <- err
+		state, err := child.Wait()
+		waited <- waitResult{state: state, err: err}
 	}()
 
 	for {
+		var err error
 		select {
 		case sig := <-signals:
-			if err := pass(child, pair, sig); err != nil {
-				return 0, err
-			}
+			err = pass(child, pair, sig)
 		case <-hangUp:
-			if err := child.Signal(unix.SIGHUP); err != nil && !errors.Is(err, os.ErrProcessDone) {
-				return 0, fmt.Errorf("hang up the command: %w", err)
-			}
-		case err := <-waited:
-			if err != nil {
-				return 0, fmt.Errorf("wait for the command: %w", err)
-			}
-			close(ended)
-			if err := pair.Master.SetReadDeadline(time.Now().Add(drainIdle)); err != nil {
-				return 0, fmt.Errorf("bound the drain of the guest terminal: %w", err)
-			}
-			select {
-			case <-drained:
-			case <-time.After(drainBudget):
-			}
-
-			return exitCode(state), nil
+			err = hangUpCommand(child)
+		case result := <-waited:
+			return drain(result, pair.Master, ended, drained)
+		}
+		if err != nil {
+			return 0, err
 		}
 	}
+}
+
+type waitResult struct {
+	state *os.ProcessState
+	err   error
+}
+
+// drain gives the copy a bounded time for what the command left on the terminal, then reports how the command ended.
+func drain(result waitResult, master *os.File, ended chan<- struct{}, drained <-chan struct{}) (int, error) {
+	if result.err != nil {
+		return 0, fmt.Errorf("wait for the command: %w", result.err)
+	}
+
+	close(ended)
+	if err := master.SetReadDeadline(time.Now().Add(drainIdle)); err != nil {
+		return 0, fmt.Errorf("bound the drain of the guest terminal: %w", err)
+	}
+	select {
+	case <-drained:
+	case <-time.After(drainBudget):
+	}
+
+	return exitCode(result.state), nil
 }
 
 // pass hands one signal to the command; SIGWINCH is the host tty's new size, which the guest pty takes on.
@@ -149,47 +158,72 @@ func pass(child *os.Process, pair *pty.Pty, sig os.Signal) error {
 	return nil
 }
 
+// hangUpCommand tells the command its terminal went away; one that just ended is the wait's to report.
+func hangUpCommand(child *os.Process) error {
+	if err := child.Signal(unix.SIGHUP); err != nil && !errors.Is(err, os.ErrProcessDone) {
+		return fmt.Errorf("hang up the command: %w", err)
+	}
+
+	return nil
+}
+
 // copyInput feeds the host's keystrokes to the guest pty; its end, by EOF or by error, is the host hanging up.
 func copyInput(master *os.File, host io.Reader, hangUp chan<- struct{}) {
 	buf := make([]byte, 32<<10)
 	for {
 		n, err := host.Read(buf)
-		if n > 0 {
-			if _, werr := master.Write(buf[:n]); werr != nil {
-				break
-			}
-		}
-		if err != nil {
+		if werr := forward(master, buf[:n]); werr != nil || err != nil {
 			break
 		}
 	}
 	hangUp <- struct{}{}
 }
 
-// copyOutput copies the guest pty out until no process holds it, or it idles once the command ended. A host that hung up is told once, and the rest is read and dropped so the command never blocks on it.
+// copyOutput copies the guest pty out until no process holds it, or it idles once the command ended.
 func copyOutput(host io.Writer, master *os.File, ended <-chan struct{}, hangUp chan<- struct{}) {
+	sink := &hostSink{host: host, hangUp: hangUp}
 	buf := make([]byte, 32<<10)
-	hungUp := false
 	for {
 		n, err := master.Read(buf)
-		if n > 0 && !hungUp {
-			if _, werr := host.Write(buf[:n]); werr != nil {
-				hungUp = true
-				hangUp <- struct{}{}
-			}
-		}
-		if err != nil {
+		sink.write(buf[:n])
+		if err != nil || extendDrain(master, ended) != nil {
 			return
 		}
+	}
+}
 
-		select {
-		case <-ended:
-			// More output once the command ended pushes the idle out, until the budget runs out.
-			if err := master.SetReadDeadline(time.Now().Add(drainIdle)); err != nil {
-				return
-			}
-		default:
-		}
+// hostSink tells a host that hung up once, then drops the rest so the command never blocks on it.
+type hostSink struct {
+	host   io.Writer
+	hangUp chan<- struct{}
+	hungUp bool
+}
+
+func (s *hostSink) write(chunk []byte) {
+	if s.hungUp || forward(s.host, chunk) == nil {
+		return
+	}
+	s.hungUp = true
+	s.hangUp <- struct{}{}
+}
+
+// forward writes what one read returned; a read that returned nothing writes nothing.
+func forward(dst io.Writer, chunk []byte) error {
+	if len(chunk) == 0 {
+		return nil
+	}
+	_, err := dst.Write(chunk)
+
+	return err
+}
+
+// extendDrain pushes the idle out on more output once the command ended, until the budget runs out.
+func extendDrain(master *os.File, ended <-chan struct{}) error {
+	select {
+	case <-ended:
+		return master.SetReadDeadline(time.Now().Add(drainIdle))
+	default:
+		return nil
 	}
 }
 
