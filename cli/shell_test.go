@@ -129,7 +129,7 @@ func TestParseShellRefusesAnythingButOneSandbox(t *testing.T) {
 	}
 }
 
-// A login shell on a pipe would print its prompt into a script, so shell refuses and points to exec.
+// An interactive shell on a pipe would print its prompt into a script, so shell refuses and points to exec.
 func TestShellRefusesAStdinThatIsNotATerminal(t *testing.T) {
 	var out bytes.Buffer
 
@@ -151,7 +151,7 @@ func TestShellRefusesAStdinThatIsNotATerminal(t *testing.T) {
 }
 
 // The choice of shell is the sandbox's, so the one exec carries the script, the flags and this window.
-func TestShellOpensALoginShellOnTheTerminal(t *testing.T) {
+func TestShellOpensAnInteractiveShellOnTheTerminal(t *testing.T) {
 	var out bytes.Buffer
 
 	app, _, guest := newShellApp(t, &out)

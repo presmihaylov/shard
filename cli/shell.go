@@ -12,8 +12,8 @@ import (
 	"github.com/presmihaylov/shard/services/sandbox"
 )
 
-// shellScript makes the choice in the sandbox, so an image without bash still opens a shell.
-const shellScript = "command -v bash >/dev/null 2>&1 && exec bash -l; exec sh -l"
+// shellScript picks the shell in the sandbox, and no login shell, whose /etc/profile resets the image's PATH.
+const shellScript = "command -v bash >/dev/null 2>&1 && exec bash -i; exec sh -i"
 
 // shellOptions is one parsed shard shell invocation.
 type shellOptions struct {
@@ -22,7 +22,7 @@ type shellOptions struct {
 	user    string
 }
 
-// shell opens a login shell on this terminal over the exec routes exec -it takes, so a remote needs no new scope.
+// shell opens an interactive shell on this terminal over the exec routes exec -it takes, so a remote needs no new scope.
 func (a App) shell(ctx context.Context, args []string) error {
 	opts, err := parseShell(args)
 	if err != nil {

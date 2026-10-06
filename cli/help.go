@@ -241,7 +241,7 @@ var helps = map[string]verbHelp{
 			{"--user <user>", "user for the shell", ""},
 		},
 		notes: []note{para(
-			"The shell is a login shell: bash if the sandbox has it, and sh if not.",
+			"The shell is bash if the sandbox has it, and sh if not. It keeps the PATH the image sets.",
 			"It uses the sandbox's default directory and user unless overridden.",
 			"Standard input must be a terminal. To run a command without one, use 'shard exec'.",
 			"The exit code is the shell's exit code.",
