@@ -108,6 +108,10 @@ On a Mac the daemon runs as your user, so local sandbox commands need no `sudo`.
 
 A root can have only one daemon, so a second `shard daemon` on the same root refuses to start. This happens when you start a daemon by hand while the service is already running one. Use the service, or stop it first.
 
+### `another shard daemon, over the root ..., already serves this host's sandbox bridge and nft table`
+
+Every root on a Linux host shares one sandbox bridge and one nft table, so a host runs one daemon. A daemon on a second root refuses to start while another one runs, and the message names the root of the one that runs. This happens when you start a daemon by hand with `--root` while the service is running. Stop the service with `sudo systemctl stop shard`, or use its root.
+
 ### `task proxy failed, restart in ...`
 
 The daemon log repeats this line, and the same line for `dns`, while every `shard create` fails. The host has no `nft`. Setup installs it, so this happens after an [install by hand](/docs/install/#install-by-hand). Install the `nftables` package. The next restart of each task succeeds, and the daemon itself needs no restart.

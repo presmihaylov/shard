@@ -61,6 +61,45 @@ func TestRunRefusesASecondDaemon(t *testing.T) {
 	}
 }
 
+// SHARD-777: a second daemon's first render replaced the shared nft table and dropped the first one's egress rules.
+func TestRunRefusesADaemonOnAnotherRootAndNamesTheRootThatHoldsTheHost(t *testing.T) {
+	hostLock := filepath.Join(t.TempDir(), "host.lock")
+	firstRoot, secondRoot := t.TempDir(), t.TempDir()
+	held := &fakeTask{}
+
+	ctx, cancel := context.WithCancel(t.Context())
+	done := make(chan error, 1)
+	go func() { done <- fast(New(firstRoot, io.Discard, held)).WithHostLock(hostLock).Run(ctx) }()
+	waitHeld(t, held)
+
+	refused := &fakeTask{}
+	err := New(secondRoot, io.Discard, refused).WithHostLock(hostLock).Run(t.Context())
+	if err == nil || !strings.Contains(err.Error(), "over the root "+firstRoot+",") {
+		t.Errorf("a daemon on another root got %v, want a refusal that names %s", err, firstRoot)
+	}
+	if refused.runs.Load() != 0 {
+		t.Error("the refused daemon ran a task")
+	}
+	if _, err := os.Stat(filepath.Join(secondRoot, PIDFile)); !errors.Is(err, os.ErrNotExist) {
+		t.Errorf("the refused daemon left a pid file: %v", err)
+	}
+
+	cancel()
+	if err := <-done; err != nil {
+		t.Fatalf("the first daemon ended with %v", err)
+	}
+
+	// The first daemon gave the host back, so the second one now takes it.
+	next := &fakeTask{}
+	ctx, cancel = context.WithCancel(t.Context())
+	go func() { done <- fast(New(secondRoot, io.Discard, next)).WithHostLock(hostLock).Run(ctx) }()
+	waitHeld(t, next)
+	cancel()
+	if err := <-done; err != nil {
+		t.Fatalf("the second daemon ended with %v", err)
+	}
+}
+
 func TestRunNamesItsPidUntilItEnds(t *testing.T) {
 	root := t.TempDir()
 	held := &fakeTask{}
