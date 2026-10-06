@@ -24,6 +24,19 @@ func Resolve(s models.SandboxSpec, cfg models.ImageConfig) models.SandboxSpec {
 	return s
 }
 
+// defaultTerm is what docker exec -t sets, since a terminal with no TERM leaves a shell and curses tools guessing.
+const defaultTerm = "TERM=xterm"
+
+// ExecEnv is the env of one exec over what the entrypoint runs with; a terminal exec that names no TERM gets xterm.
+func ExecEnv(base, overrides []string, tty bool) []string {
+	env := MergeEnv(base, overrides)
+	if !tty || slices.ContainsFunc(env, func(entry string) bool { return strings.HasPrefix(entry, "TERM=") }) {
+		return env
+	}
+
+	return append(env, defaultTerm)
+}
+
 // MergeEnv keeps the base order, so a base that sets a variable twice still resolves the same way.
 // An exec merges the same way over what the entrypoint runs with, which is why this is exported.
 func MergeEnv(imageEnv, overrides []string) []string {

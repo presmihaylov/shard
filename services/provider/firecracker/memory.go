@@ -81,7 +81,7 @@ func (p *Provider) sweep(ctx context.Context, id string) error {
 // boundVMM makes the host cgroup a sandbox's vmm is spawned into and returns its path.
 func boundVMM(root, id string, r models.Resources) (string, error) {
 	parent := filepath.Join(root, bundle.CgroupParent)
-	if err := cgroup.Ensure(parent); err != nil {
+	if err := cgroup.EnsureParent(parent); err != nil {
 		return "", err
 	}
 	// Nothing else makes this parent, so the controller it withholds is one no sandbox under it can bound.

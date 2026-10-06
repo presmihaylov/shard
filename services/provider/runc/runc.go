@@ -577,7 +577,7 @@ func execOptions(b bundle.Bundle, spec models.ExecSpec) (runccli.ExecOptions, er
 	opts := runccli.ExecOptions{
 		Bundle:  b.Dir,
 		Argv:    spec.Argv,
-		Env:     runspec.MergeEnv(runtime.Env, spec.Env),
+		Env:     runspec.ExecEnv(runtime.Env, spec.Env, spec.TTY),
 		WorkDir: firstNonEmpty(spec.WorkDir, runtime.WorkDir, "/"),
 		Launch:  bundle.GuestInitPath,
 		TTY:     spec.TTY,

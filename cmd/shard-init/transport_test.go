@@ -468,6 +468,45 @@ func TestTransportRefusesAShortReseed(t *testing.T) {
 	}
 }
 
+// A guest on tsc wakes from a restore at the time of its save, so the reseed sets its clock to the host's (SHARD-776).
+func TestTransportReseedSetsTheClockToTheHostTime(t *testing.T) {
+	var set int64
+	tr := &transport{setClock: func(ns int64) error {
+		set = ns
+
+		return nil
+	}}
+	now := time.Now().UnixNano()
+	if err := tr.handle(supervisor.Message{Kind: supervisor.KindReseed, Seed: make([]byte, supervisor.SeedSize), Now: now}); err != nil {
+		t.Fatalf("reseed: %v", err)
+	}
+	if set != now {
+		t.Fatalf("the reseed set the clock to %d, want the host's %d", set, now)
+	}
+}
+
+func TestTransportRefusesAReseedWithNoHostTime(t *testing.T) {
+	err := (&transport{}).handle(supervisor.Message{Kind: supervisor.KindReseed, Seed: make([]byte, supervisor.SeedSize)})
+	if err == nil || !strings.Contains(err.Error(), "carries no host time") {
+		t.Fatalf("a reseed with no time gave %v, want the refusal", err)
+	}
+}
+
+// The guest refuses a reseed with no time, so one that lands proves the host sent its own.
+func TestTransportTakesTheHostsReseed(t *testing.T) {
+	_, dial := startTransport(t)
+	ctx := testContext(t)
+	c, err := supervisor.Connect(ctx, dial)
+	if err != nil {
+		t.Fatalf("connect: %v", err)
+	}
+	defer c.Close()
+
+	if err := c.Reseed(ctx); err != nil {
+		t.Fatalf("reseed: %v", err)
+	}
+}
+
 func TestTransportExecCancelKillsTheCommand(t *testing.T) {
 	_, dial := startTransport(t)
 	ctx := testContext(t)

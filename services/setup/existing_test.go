@@ -32,6 +32,12 @@ type fakeHost struct {
 	// listeners is what ss prints for the proxy ports, and tables what nft list tables prints.
 	listeners string
 	tables    string
+	// rules is what iptables -S prints, and zones and policies what firewalld lists.
+	rules    string
+	zones    string
+	policies string
+	// foreign holds the --zone= and --policy= flags whose description is not shard's marker.
+	foreign []string
 	// asRoot is root itself, with no person who started setup through sudo.
 	asRoot bool
 }
@@ -103,6 +109,25 @@ func (f *fakeHost) run(ctx context.Context, name string, args ...string) ([]byte
 		}
 		return nil, nil
 	case "ip":
+		return nil, nil
+	case "iptables":
+		if slices.Contains(args, "-S") {
+			return []byte(f.rules), nil
+		}
+		return nil, nil
+	case "firewall-cmd":
+		switch {
+		case slices.Contains(args, "--version"):
+			return []byte("1.3.4\n"), nil
+		case slices.Contains(args, "--get-policies"):
+			return []byte(f.policies), nil
+		case slices.Contains(args, "--get-zones"):
+			return []byte(f.zones), nil
+		case slices.Contains(args, "--get-description") && slices.ContainsFunc(f.foreign, func(flag string) bool { return slices.Contains(args, flag) }):
+			return []byte("the admin's own\n"), nil
+		case slices.Contains(args, "--get-description"):
+			return []byte(hostMarker + "\n"), nil
+		}
 		return nil, nil
 	case "mkdir", "install", "mv", "rm", "rmdir", "find", "sh":
 		return exec.CommandContext(ctx, name, args...).CombinedOutput()
@@ -242,10 +267,22 @@ func TestDetect(t *testing.T) {
 		}
 	})
 
+	// The serve unit outlives an uninstall, and runs no daemon of its own (SHARD-774).
+	t.Run("the serve unit alone", func(t *testing.T) {
+		f := newFakeHost(t)
+		f.write(t, serveUnit, "unit")
+
+		_, ok, err := Detect(t.Context(), f.host(nil))
+		if err != nil || ok {
+			t.Fatalf("Detect = %v, %v; the serve unit alone is no installation", ok, err)
+		}
+	})
+
 	t.Run("manual install", func(t *testing.T) {
 		f := newFakeHost(t)
 		f.write(t, "/usr/local/bin/shard", "bin")
 		f.write(t, "/etc/systemd/system/shard.service", "unit")
+		f.write(t, serveUnit, "unit")
 
 		inst, ok, err := Detect(t.Context(), f.host(nil))
 		if err != nil || !ok || inst.Manifest != nil {
@@ -323,8 +360,9 @@ func TestManualInstallChangesNothing(t *testing.T) {
 	}
 	ui := &fakeUI{}
 
-	if err := (&Setup{Host: h, UI: ui}).existing(t.Context(), inst); err != nil {
-		t.Fatalf("existing: %v", err)
+	err = (&Setup{Host: h, UI: ui}).existing(t.Context(), inst)
+	if stopped, ok := errors.AsType[*StoppedError](err); !ok || stopped.Step != "Existing shard installation" {
+		t.Fatalf("existing = %v, want the refusal a script reads as exit 1 (SHARD-780)", err)
 	}
 	want := []string{"Manual installation detected.", "",
 		"Installed:      shard v0.0.9",
@@ -392,6 +430,12 @@ func TestManualInstallClaimsOnlyWhatItFound(t *testing.T) {
 		{name: "unreadable sandboxes", os: "linux", locked: true,
 			files: map[string]string{systemdUnit: "KillMode=process\n", "/var/lib/shard/sandboxes/sb_1/sandbox.json": record},
 			want:  []string{"In setup, choose the provider your sandboxes use: sudo shard daemon status names it.", keep}},
+		{name: "the serve unit stays out of the route", os: "linux",
+			files: map[string]string{systemdUnit: "KillMode=process\n", serveUnit: "unit"},
+			want: []string{"  sudo rm /etc/systemd/system/shard.service /usr/local/bin/shard",
+				"The shard serve unit remains at " + serveUnit + ", because setup did not install it.",
+				"After you set up shard again, start it with: sudo systemctl start shard-serve"},
+			never: []string{"  " + serveUnit}},
 		{name: "setup runs from the manual binary", os: "linux", fromManual: true,
 			files: map[string]string{systemdUnit: "KillMode=process\n"},
 			want:  []string{"  sudo rm /etc/systemd/system/shard.service /usr/local/bin/shard", "  curl -fsSL https://useshards.com/install | sh"},
@@ -429,8 +473,8 @@ func TestManualInstallClaimsOnlyWhatItFound(t *testing.T) {
 			}
 			ui := &fakeUI{}
 
-			if err := (&Setup{Host: h, UI: ui}).manual(t.Context(), inst); err != nil {
-				t.Fatalf("manual: %v", err)
+			if _, ok := errors.AsType[*StoppedError]((&Setup{Host: h, UI: ui}).manual(t.Context(), inst)); !ok {
+				t.Fatal("manual did not stop")
 			}
 			said(t, ui, tt.want...)
 			for _, line := range tt.never {
@@ -720,7 +764,7 @@ func TestUpgradeVerifiesBeforeItReplaces(t *testing.T) {
 	if !slices.Equal(steps[len(steps)-2:], []string{"Restart the daemon", "Verify the daemon connection"}) {
 		t.Fatalf("the steps are %q, want the restart and then the verify last", steps)
 	}
-	restart, verify := slices.Index(f.calls, "systemctl restart shard"), slices.Index(f.calls, "/usr/local/bin/shard --remote  daemon status")
+	restart, verify := slices.Index(f.calls, "systemctl restart shard"), slices.Index(f.calls, "/usr/local/bin/shard --remote  daemon status --format json")
 	if restart < 0 || verify < restart {
 		t.Fatalf("calls = %v, want the daemon asked after the restart", f.calls)
 	}
@@ -970,6 +1014,63 @@ func TestUninstallRemovesTheSharedNetwork(t *testing.T) {
 	said(t, ui, "IP forwarding remains on (net.ipv4.ip_forward = 1). Other software may need it.", "Turn it off with: sudo sysctl -w net.ipv4.ip_forward=0")
 }
 
+func firewallHost(t *testing.T) (*fakeHost, Manifest) {
+	t.Helper()
+
+	f := newFakeHost(t)
+	m := linuxInstall("v0.1.0")
+	f.installed(t, m)
+	f.write(t, "/sys/class/net/shard0/address", "02:00:00:00:00:01")
+	f.write(t, "/usr/sbin/iptables", "#!/bin/sh\n")
+	f.write(t, "/usr/bin/firewall-cmd", "#!/bin/sh\n")
+	f.rules = "-P INPUT DROP\n-A INPUT -p tcp -m tcp --dport 22 -m comment --comment shard -j ACCEPT\n-A FORWARD -i shard0 -m comment --comment managed-by-shard -j ACCEPT\n"
+	f.zones = "public shard trusted\n"
+	f.policies = "allow-host-ipv6 shard-forwarding\n"
+
+	return f, m
+}
+
+// Uninstall drops the iptables rules and the firewalld zone and policy the daemon marked, and nothing else. (SHARD-758)
+func TestUninstallClosesTheHostFirewall(t *testing.T) {
+	f, m := firewallHost(t)
+
+	if err := (&Setup{Host: f.host(nil), UI: confirming(true)}).uninstall(t.Context(), m); err != nil {
+		t.Fatalf("uninstall: %v", err)
+	}
+	for _, want := range []string{
+		"iptables -w -D FORWARD -i shard0 -m comment --comment managed-by-shard -j ACCEPT",
+		"firewall-cmd --permanent --delete-policy=shard-forwarding",
+		"firewall-cmd --permanent --delete-zone=shard",
+		"firewall-cmd --reload",
+	} {
+		if !f.called(want) {
+			t.Fatalf("calls = %v, want %q", f.calls, want)
+		}
+	}
+	if f.called("iptables -w -D INPUT") {
+		t.Fatalf("uninstall dropped a rule it does not own: %v", f.calls)
+	}
+	if slices.Index(f.calls, "firewall-cmd --reload") > slices.Index(f.calls, "ip link delete shard0") {
+		t.Fatalf("calls = %v, want the firewall closed before the bridge goes", f.calls)
+	}
+}
+
+// A zone named shard that the daemon did not mark is the host's own, and uninstall leaves it. (SHARD-758)
+func TestUninstallLeavesAForeignShardZone(t *testing.T) {
+	f, m := firewallHost(t)
+	f.foreign = []string{"--zone=shard"}
+
+	if err := (&Setup{Host: f.host(nil), UI: confirming(true)}).uninstall(t.Context(), m); err != nil {
+		t.Fatalf("uninstall: %v", err)
+	}
+	if f.called("firewall-cmd --permanent --delete-zone=shard") {
+		t.Fatalf("uninstall deleted the host's own zone: %v", f.calls)
+	}
+	if !f.called("firewall-cmd --permanent --delete-policy=shard-forwarding") {
+		t.Fatalf("calls = %v, want the marked policy deleted", f.calls)
+	}
+}
+
 // A daemon that still has a sandbox port on the bridge or serves the proxy keeps the network, and uninstall says so. (SHARD-272, SHARD-669)
 func TestUninstallLeavesANetworkADaemonStillUses(t *testing.T) {
 	cases := map[string]func(f *fakeHost){
@@ -1104,6 +1205,50 @@ func TestUninstallNamesTheDataItKeeps(t *testing.T) {
 				if slices.ContainsFunc(lines, func(l string) bool { return strings.Contains(l, line) }) {
 					t.Errorf("output %q names %q", lines, line)
 				}
+			}
+		})
+	}
+}
+
+// A new setup starts the daemon and not the serve unit that BindsTo it, so uninstall names the restart (SHARD-774).
+func TestUninstallNamesTheServeUnitItKeeps(t *testing.T) {
+	want := []string{"",
+		"The shard serve unit remains at /etc/systemd/system/shard-serve.service, because setup did not install it.",
+		"It stops with the daemon, and a new setup does not start it.",
+		"After you set up shard again, start it with: sudo systemctl start shard-serve",
+		"To remove it, run:",
+		"  sudo systemctl disable --now shard-serve",
+		"  sudo rm /etc/systemd/system/shard-serve.service",
+		"  sudo systemctl daemon-reload",
+	}
+	for _, tc := range []struct {
+		name  string
+		os    string
+		serve bool
+		want  []string
+	}{
+		{name: "linux with the unit", os: "linux", serve: true, want: want},
+		{name: "linux without the unit", os: "linux"},
+		{name: "mac", os: "darwin", serve: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			f := newFakeHost(t)
+			if tc.serve {
+				f.write(t, serveUnit, "unit")
+			}
+			h := f.host(nil)
+			h.OS = tc.os
+
+			lines, err := uninstalled(h, linuxInstall("v0.1.0"), false)
+			if err != nil {
+				t.Fatalf("uninstalled: %v", err)
+			}
+			i := slices.Index(lines, want[1])
+			if tc.want == nil && i >= 0 {
+				t.Fatalf("output %q names the serve unit", lines)
+			}
+			if tc.want != nil && (i < 1 || len(lines) < i-1+len(tc.want) || !slices.Equal(lines[i-1:i-1+len(tc.want)], tc.want)) {
+				t.Fatalf("output = %q, want %q", lines, tc.want)
 			}
 		})
 	}

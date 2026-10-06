@@ -200,7 +200,7 @@ func (p *Provider) bringUp(ctx context.Context, spec models.SandboxSpec, exitFil
 	defer func() { err = errors.Join(err, exit.Close()) }()
 
 	// A teardown rmdirs the sandbox's own cgroup, so its parent must exist and be shard's, never the host cgroup root.
-	if err := cgroup.Ensure(filepath.Join(p.cgroupRoot, bundle.CgroupParent)); err != nil {
+	if err := cgroup.EnsureParent(filepath.Join(p.cgroupRoot, bundle.CgroupParent)); err != nil {
 		return err
 	}
 
@@ -644,6 +644,9 @@ func (p *Provider) Exec(ctx context.Context, id string, spec models.ExecSpec) (m
 	if err != nil {
 		return models.ExitStatus{}, err
 	}
+	if err := b.CheckWorkDir(id, opts.WorkDir); err != nil {
+		return models.ExitStatus{}, err
+	}
 
 	code, err := p.runsc.Exec(ctx, id, opts)
 	if err != nil {
@@ -707,9 +710,10 @@ func execOptions(b bundle.Bundle, spec models.ExecSpec) (runsc.ExecOptions, erro
 	opts := runsc.ExecOptions{
 		Bundle:  b.Dir,
 		Argv:    spec.Argv,
-		Env:     runspec.MergeEnv(runtime.Env, spec.Env),
+		Env:     runspec.ExecEnv(runtime.Env, spec.Env, spec.TTY),
 		WorkDir: firstNonEmpty(spec.WorkDir, runtime.WorkDir, "/"),
 		TTY:     spec.TTY,
+		Relay:   bundle.GuestInitPath,
 		Stdin:   spec.Stdin,
 		Stdout:  spec.Stdout,
 		Stderr:  spec.Stderr,

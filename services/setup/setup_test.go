@@ -4,9 +4,16 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"os"
 	"slices"
 	"testing"
 )
+
+// A verify in a test trusts the first status that answers; the tests of the steady window set their own.
+func TestMain(m *testing.M) {
+	verifySteady = 0
+	os.Exit(m.Run())
+}
 
 // The first choice preselects remote on a machine no provider runs on, and says why on local. (SHARD-666)
 func TestRunAsksLocalOrRemoteFirst(t *testing.T) {

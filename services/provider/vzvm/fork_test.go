@@ -222,6 +222,28 @@ func TestASourceAFailedForkLeftFrozenThawsOnALaterStream(t *testing.T) {
 	execOK(t, h.provider, spec.ID, "the thaw")
 }
 
+// A stream that ends under the follower's thaw is dialed again and thaws the source there, with no lost state left for a later verb (SHARD-755).
+func TestAThawWhoseStreamEndsThawsOnTheNextOne(t *testing.T) {
+	h, spec, _, pid := severedFork(t)
+	mark(t, spec.StateDir, thawedFile, cutThawFile)
+	unmark(t, spec.StateDir, holdDialsFile)
+	deadline := time.Now().Add(10 * time.Second)
+	for len(lines(t, spec.StateDir, thawedFile)) == 0 {
+		if time.Now().After(deadline) {
+			t.Fatalf("the guest of the source answered no thaw within 10s, and read %q", lines(t, spec.StateDir, orderFile))
+		}
+		time.Sleep(50 * time.Millisecond)
+	}
+	if _, err := os.Stat(filepath.Join(spec.StateDir, cutThawFile)); !errors.Is(err, fs.ErrNotExist) {
+		t.Fatalf("the cut thaw marker = %v, want taken by the first thaw", err)
+	}
+	requireRunning(t, h.provider, spec.ID, pid, "the thaw")
+	execOK(t, h.provider, spec.ID, "the thaw")
+	if err := h.provider.Stop(t.Context(), spec.ID, stopGrace); err != nil {
+		t.Fatalf("Stop after a thaw whose stream ended: %v, want no lost state", err)
+	}
+}
+
 // A save the VM refuses runs the source on, thawed, and leaves no capture and no fork behind (SHARD-463).
 func TestAFailedSaveRunsTheSourceOn(t *testing.T) {
 	h, spec, pid := runningShim(t)

@@ -132,7 +132,7 @@ The TypeScript SDK emits the same text as a process warning, and the Python SDK 
 
 ## The data directory
 
-The daemon keeps its state under its root, `/var/lib/shard` by default. One daemon serves one root: `daemon.lock` keeps a second daemon off a root that another daemon already holds. Two daemons can run side by side under two roots.
+The daemon keeps its state under its root, `/var/lib/shard` by default. One daemon serves one root: `daemon.lock` keeps a second daemon off a root that another daemon already holds. On Linux every root shares the sandbox bridge and its nft table, so a host runs one daemon: `/var/run/shard/host.lock` keeps a daemon on a second root from starting while another one runs.
 
 The main paths under the root:
 

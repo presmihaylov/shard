@@ -11,6 +11,7 @@ import (
 	"os"
 	"path/filepath"
 	"strconv"
+	"strings"
 	"sync"
 	"time"
 
@@ -19,6 +20,9 @@ import (
 
 // LockFile is the singleton flock under the root: one daemon per root.
 const LockFile = "daemon.lock"
+
+// HostLock is the flock over the host's sandbox bridge and its nft table, which every root shares (SHARD-777).
+const HostLock = "/var/run/shard/host.lock"
 
 // PIDFile names the daemon's pid for newsyslog to signal; the lock, not this file, says whether a daemon is up.
 const PIDFile = "daemon.pid"
@@ -38,10 +42,12 @@ type Reconciler interface {
 // Daemon supervises the background tasks for one root.
 type Daemon struct {
 	root       string
+	hostLock   string
 	tasks      []Task
 	states     *taskStates
 	log        *log.Logger
 	reconciler Reconciler
+	drain      func()
 
 	minBackoff   time.Duration
 	maxBackoff   time.Duration
@@ -71,12 +77,25 @@ func (d *Daemon) Run(ctx context.Context) (err error) {
 	}
 	defer func() { err = errors.Join(err, lock.Release()) }()
 
+	// Before the reconcile, whose first render replaces the shared table with this root's rules alone.
+	if d.hostLock != "" {
+		host, hostErr := takeHostLock(d.hostLock, d.root)
+		if hostErr != nil {
+			return hostErr
+		}
+		defer func() { err = errors.Join(err, host.Release()) }()
+	}
+
 	pid := filepath.Join(d.root, PIDFile)
 	if err := store.WriteFile(pid, []byte(strconv.Itoa(os.Getpid())+"\n"), 0o600); err != nil {
 		return fmt.Errorf("write the pid file: %w", err)
 	}
 	// Removed before the lock is released, so a clean exit leaves no pid for newsyslog to signal.
 	defer func() { err = errors.Join(err, removePID(pid)) }()
+	// Deferred last so it runs first: a rollback still frees veths and rules on the host this daemon holds.
+	if d.drain != nil {
+		defer d.drain()
+	}
 
 	d.log.Printf("daemon holds %s with %d tasks", path, len(d.tasks))
 
@@ -108,12 +127,51 @@ func takeLock(path string) (*store.Lock, error) {
 	return lock, nil
 }
 
+// takeHostLock keeps a daemon on another root off the bridge and the nft table, and notes this root for the one it refuses.
+func takeHostLock(path, root string) (*store.Lock, error) {
+	lock, err := store.TryAcquire(path, 0o600)
+	if err != nil {
+		return nil, err
+	}
+	if lock == nil {
+		return nil, hostHeld(path)
+	}
+	if err := lock.Note([]byte(root + "\n")); err != nil {
+		return nil, errors.Join(err, lock.Release())
+	}
+
+	return lock, nil
+}
+
+func hostHeld(path string) error {
+	holder, err := os.ReadFile(path)
+	if err != nil {
+		return fmt.Errorf("another shard daemon holds %s, and its root cannot be read: %w", path, err)
+	}
+
+	return fmt.Errorf("another shard daemon, over the root %s, already serves this host's sandbox bridge and nft table: a host runs one daemon, so stop that one or use its root", strings.TrimSpace(string(holder)))
+}
+
 func removePID(path string) error {
 	if err := os.Remove(path); err != nil {
 		return fmt.Errorf("remove the pid file: %w", err)
 	}
 
 	return nil
+}
+
+// WithHostLock names the flock a daemon takes when it renders the host's bridge and nft table.
+func (d *Daemon) WithHostLock(path string) *Daemon {
+	d.hostLock = path
+
+	return d
+}
+
+// WithDrain names the background work a stopped daemon waits out before it gives back the root and the host.
+func (d *Daemon) WithDrain(wait func()) *Daemon {
+	d.drain = wait
+
+	return d
 }
 
 // WithReconciler names what the daemon runs over the records once it holds the root.

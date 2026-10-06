@@ -427,9 +427,9 @@ func (p *Provider) installed(id string) (bool, error) {
 	return true, nil
 }
 
-// absent is a socket with no vmm behind it: never made, or its owner exited and the path stayed.
+// absent is a socket with no vmm behind it: never made, or its owner exited, or is exiting, and the path stayed.
 func absent(err error) bool {
-	return errors.Is(err, fs.ErrNotExist) || errors.Is(err, syscall.ECONNREFUSED) || errors.Is(err, syscall.ENOENT)
+	return errors.Is(err, fs.ErrNotExist) || errors.Is(err, syscall.ECONNREFUSED) || errors.Is(err, syscall.ENOENT) || errors.Is(err, fcapi.ErrExiting)
 }
 
 // exists reports whether a stat found the path; a missing path is no error, any other stat failure is.
@@ -900,8 +900,10 @@ func (p *Provider) adopt(m *machine, control *supervisor.Control, state supervis
 			thawed = fmt.Errorf("sandbox %s: thaw the guest: %w", m.id, err)
 		}
 	}
+	// A stream that ended under the thaw is dialed again, and that replay says whether the guest is still frozen, so no lost state is kept (SHARD-755).
+	adopted := !errors.Is(thawed, supervisor.ErrGone)
 
-	return true, errors.Join(thawed, p.reconcile(m, state), closeControl(dropped))
+	return adopted, errors.Join(thawed, p.reconcile(m, state), closeControl(dropped))
 }
 
 // closeControl ends a control stream that a redial which ran out may have ended already.
