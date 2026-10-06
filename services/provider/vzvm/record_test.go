@@ -369,6 +369,33 @@ func TestStatusReadsAShimThatDiedAfterTheFollowerLostItAsStopped(t *testing.T) {
 	}
 }
 
+// A probe whose bound ends while the follower still lands its last events waits for them, and so does one that comes in that wait, so neither reads running (SHARD-618).
+func TestStatusNeverReadsRunningWhileTheFollowerHandsOffADeadShim(t *testing.T) {
+	shim, end := standInShim(t)
+	p := &Provider{}
+	m := &machine{id: "sb-1", dir: t.TempDir(), client: vz.Open(filepath.Join(t.TempDir(), "absent.sock")), shim: shim, events: make(chan struct{}), started: true}
+	var control supervisor.Control
+	m.control.Store(&control)
+	end()
+	bound := 20 * time.Millisecond
+	handoff := time.AfterFunc(10*bound, func() { close(m.events) })
+	t.Cleanup(func() { handoff.Stop() })
+
+	first := make(chan models.Status, 1)
+	go func() {
+		p.probe(t.Context(), m, bound)
+		first <- m.status(p)
+	}()
+	time.Sleep(3 * bound)
+	p.probe(t.Context(), m, bound)
+	if status := m.status(p); status.State != models.StateStopped {
+		t.Fatalf("status from a probe that came in the handoff = %+v, want stopped", status)
+	}
+	if status := <-first; status.State != models.StateStopped {
+		t.Fatalf("status from a probe whose bound ended in the handoff = %+v, want stopped", status)
+	}
+}
+
 // standInShim runs a process that stands in for the shim by its pid, and the end that kills it and reaps it as vz.Start does.
 func standInShim(t *testing.T) (vz.Process, func()) {
 	t.Helper()
