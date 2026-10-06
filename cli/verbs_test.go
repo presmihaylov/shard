@@ -2,6 +2,7 @@ package cli
 
 import (
 	"bytes"
+	"fmt"
 	"path/filepath"
 	"slices"
 	"strings"
@@ -9,6 +10,7 @@ import (
 
 	"github.com/presmihaylov/shard/models"
 	"github.com/presmihaylov/shard/services/api"
+	"github.com/presmihaylov/shard/services/bundle"
 )
 
 // newDaemonCreateApp is newClientApp with an image service that pulls nothing, so a create round trip needs no registry.
@@ -69,6 +71,21 @@ func TestCreatePrintsTheDaemonsRefusalAsItCame(t *testing.T) {
 	}
 	if slices.Contains(r.seen(), "images.Pull") {
 		t.Errorf("a refused create still cost a pull: %v", r.seen())
+	}
+}
+
+// A disk the substrate refuses is the operator's to fix, so create names the flag and keeps the path in the daemon log. (SHARD-750, SHARD-751)
+func TestCreatePrintsADiskRefusalInTheFlag(t *testing.T) {
+	var out bytes.Buffer
+
+	app, d, _ := newDaemonCreateApp(t, &out)
+	d.providerSvc.(*fakeLifecycleProvider).createErr = fmt.Errorf("seed /var/lib/shard/sandboxes/sandbox2/disk.img: %w", &bundle.BoundError{
+		Fix: "the image takes a 900 MiB disk, more than the 512 MiB disk bound; set resources.disk_mib to 900 MiB or more",
+	})
+
+	err := app.Run(t.Context(), []string{"create", "--disk", "512MiB", "alpine:3.20"})
+	if err == nil || err.Error() != "the image takes a 900 MiB disk, more than the 512 MiB disk bound; set --disk to 900 MiB or more" {
+		t.Errorf("create = %v, want the fix in the flag alone", err)
 	}
 }
 
