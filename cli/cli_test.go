@@ -87,9 +87,10 @@ func TestCommandsThatNeedAnArgument(t *testing.T) {
 		{"start"},
 		{"start", "one", "two"},
 		{"pause"},
-		{"pause", "one", "two"},
 		{"resume"},
-		{"resume", "one", "two"},
+		{"stop"},
+		{"remove"},
+		{"prune", "one"},
 		{"fork"},
 		{"fork", "one", "two"},
 		{"snapshot"},
@@ -194,7 +195,8 @@ func TestFlagErrorsReadAsTheHelpSpellsThem(t *testing.T) {
 		`--remote goes before the verb: shard --remote <url> image list`:                                    {"image", "list", "--remote", "https://shard.example"},
 		`logs takes one sandbox id or name, got ["web" "-f"]; put the flags before the arguments`:           {"logs", "web", "-f"},
 		`tokens revoke takes one token id, got ["abc" "--name" "ci"]; put the flags before the arguments`:   {"tokens", "revoke", "abc", "--name", "ci"},
-		`stop takes one sandbox id or name, got ["web" "--" "-x"]`:                                          {"stop", "web", "--", "-x"},
+		`start takes one sandbox id or name, got ["web" "--" "-x"]`:                                         {"start", "web", "--", "-x"},
+		`stop takes one or more sandbox ids or names, got ["web" "-x"]; put the flags before the arguments`: {"stop", "web", "-x"},
 	}
 
 	for want, args := range cases {

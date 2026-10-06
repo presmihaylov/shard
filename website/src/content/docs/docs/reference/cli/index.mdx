@@ -42,11 +42,12 @@ Run `shard COMMAND --help` for options and examples.
 | [`shard list`](/docs/reference/cli/sandboxes/#shard-list) | list active sandboxes |
 | [`shard logs`](/docs/reference/cli/sandboxes/#shard-logs) | show output from the sandbox's main command |
 | [`shard inspect`](/docs/reference/cli/sandboxes/#shard-inspect) | show detailed information about a sandbox |
-| [`shard stop`](/docs/reference/cli/sandboxes/#shard-stop) | stop a sandbox and preserve its files |
+| [`shard stop`](/docs/reference/cli/sandboxes/#shard-stop) | stop sandboxes and preserve their files |
 | [`shard start`](/docs/reference/cli/sandboxes/#shard-start) | start a stopped sandbox with its saved files |
-| [`shard remove`](/docs/reference/cli/sandboxes/#shard-remove) | remove a sandbox and its files |
-| [`shard pause`](/docs/reference/cli/sandboxes/#shard-pause) | save a sandbox's state and suspend it |
-| [`shard resume`](/docs/reference/cli/sandboxes/#shard-resume) | resume a paused sandbox from its saved state |
+| [`shard remove`](/docs/reference/cli/sandboxes/#shard-remove) | remove sandboxes and their files |
+| [`shard prune`](/docs/reference/cli/sandboxes/#shard-prune) | remove all stopped sandboxes |
+| [`shard pause`](/docs/reference/cli/sandboxes/#shard-pause) | suspend sandboxes and save their state |
+| [`shard resume`](/docs/reference/cli/sandboxes/#shard-resume) | resume paused sandboxes from their saved state |
 | [`shard fork`](/docs/reference/cli/sandboxes/#shard-fork) | create a sandbox from a running sandbox's memory and files |
 | [`shard cp`](/docs/reference/cli/sandboxes/#shard-cp) | copy files or directories between your machine and a running sandbox |
 
@@ -128,6 +129,7 @@ Short options:
 | Command | Short | Long |
 | --- | --- | --- |
 | `exec` | `-i`, `-t`, `-it` for both | `--interactive`, `--tty` |
+| `list` | `-q` | `--quiet` |
 | `logs`, `policy logs` | `-f` | `--follow` |
 | `run` | `-d` | `--detach` |
 | `setup` | `-y` | `--yes` |
@@ -144,15 +146,18 @@ The Format column shows the default `--format`. A dash means the command has no 
 | `create` | - | the id |
 | `run` | - | the app's output, or the id with `--detach` |
 | `exec` | - | the command's output |
-| `list` | table | the sandboxes |
+| `list` | table | the sandboxes, or one id per line with `-q` |
 | `logs` | - | the main command's output |
 | `inspect` | json | the record |
-| `stop`, `start`, `pause`, `resume` | - | the id |
-| `remove` | - | the id, or nothing for a missing sandbox with `--force` |
+| `stop`, `start`, `pause`, `resume` | - | the id of each sandbox |
+| `remove` | - | the id of each sandbox, or nothing for a missing one with `--force` |
+| `prune` | - | the id of each stopped sandbox it removed |
 | `fork` | - | the new id |
 | `cp` | - | nothing |
 
-Without `--all`, `list` leaves out stopped sandboxes. The table then ends with a count on stderr, such as `2 stopped sandboxes; shard list --all`. JSON output has no such line.
+Without `--all`, `list` leaves out stopped sandboxes. The table then ends with a count on stderr, such as `2 stopped sandboxes; shard list --all`. JSON and `-q` output have no such line.
+
+`stop`, `remove`, `pause` and `resume` take more than one sandbox, as in `shard stop $(shard list -q)`. Each id prints as soon as its sandbox succeeds. If a sandbox fails, the command goes on to the next one. It prints the failures on stderr at the end and exits with code 1.
 
 **Images, snapshots, secrets and network policies**
 

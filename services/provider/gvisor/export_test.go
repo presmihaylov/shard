@@ -7,6 +7,7 @@ import (
 	"github.com/presmihaylov/shard/models"
 	"github.com/presmihaylov/shard/pkg/cgroup"
 	"github.com/presmihaylov/shard/pkg/runsc"
+	"github.com/presmihaylov/shard/services/bundle"
 )
 
 // BoundMemory drives what create does to the cgroup runsc just made. A test cannot reach it through
@@ -150,3 +151,8 @@ func (RunscStub) State(ctx context.Context, id string) (runsc.State, error) {
 func (RunscStub) Forget(id string) error { return nil }
 func (RunscStub) Executable() string     { return "" }
 func (RunscStub) DropNullNetns() error   { return nil }
+
+// ExecOptions is the process an exec hands runsc, reachable without a running sandbox.
+func ExecOptions(b bundle.Bundle, spec models.ExecSpec) (runsc.ExecOptions, error) {
+	return execOptions(b, spec)
+}

@@ -317,15 +317,32 @@ for (const shell of shells) {
 			assert.deepEqual(leftovers(box), []);
 		});
 
-		test('a spent API rate limit fails with its cause and never falls back to a fixed version', async () => {
+		test('a spent API rate limit names when it resets and never falls back to a fixed version', async () => {
 			reset();
-			state.releases = { status: 403, headers: { 'x-ratelimit-remaining': '0' }, body: '{"message":"API rate limit exceeded"}' };
+			state.releases = {
+				status: 403,
+				headers: { 'x-ratelimit-remaining': '0', 'x-ratelimit-reset': '1759745745' },
+				body: '{"message":"API rate limit exceeded"}',
+			};
 			const box = sandbox();
-			const result = await install(shell, box).done;
+			const result = await install(shell, box, { env: { TZ: 'UTC' } }).done;
 			assert.equal(result.code, 1);
-			assert.ok(result.stderr.includes('the GitHub releases API rate limit for this IP address is spent (HTTP 403).'));
+			assert.ok(
+				result.stderr.includes(
+					'the GitHub releases API rate limit for this IP address is spent (HTTP 403). It resets at 10:15 UTC. Run the installer again after that.',
+				),
+				result.stderr,
+			);
 			assert.deepEqual(downloads(), []);
 			assert.deepEqual(leftovers(box), []);
+		});
+
+		test('a spent API rate limit with no reset header still says when to retry', async () => {
+			reset();
+			state.releases = { status: 429, headers: { 'x-ratelimit-remaining': '0' }, body: '{}' };
+			const result = await install(shell, sandbox()).done;
+			assert.equal(result.code, 1);
+			assert.ok(result.stderr.includes('is spent (HTTP 429). Run the installer again within an hour.'), result.stderr);
 		});
 
 		test('other API failures name the status or the network', async () => {

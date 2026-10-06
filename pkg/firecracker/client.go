@@ -177,7 +177,7 @@ func (c *Client) load(snap Snapshot) error {
 		Memory:    memoryBackend{Type: "File", Path: snap.Memory},
 		// A snapshot does not keep the dirty-page log, so each load turns it on again.
 		TrackDirtyPages: true,
-		// The guest's clock stopped at the snapshot; this moves it up to now, on x86_64 only.
+		// This moves only kvm-clock up to now, on x86_64; a guest on tsc keeps the time of its save until the reseed (SHARD-776).
 		ClockRealtime: true,
 	}
 	if snap.Tap != "" {

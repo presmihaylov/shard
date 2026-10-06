@@ -18,6 +18,9 @@ import (
 	"strings"
 	"sync"
 	"time"
+
+	"github.com/presmihaylov/shard/pkg/launch"
+	"github.com/presmihaylov/shard/pkg/termrelay"
 )
 
 // ErrNotFound is what a verb aimed at a container runsc does not hold returns. Match it with errors.Is.
@@ -38,6 +41,9 @@ const pidPoll = 10 * time.Millisecond
 
 // diagnosticTail bounds what a failed create quotes back, because the guest shares that file with it.
 const diagnosticTail = 4 << 10
+
+// recordGrace bounds the read of a terminal relay's record once runsc ended, since a lost wait can leave the relay holding its pipe.
+const recordGrace = time.Second
 
 // signalBudget bounds the signal a cancelled exec sends into the sandbox, which runs off its own context.
 const signalBudget = 5 * time.Second
@@ -227,6 +233,8 @@ type ExecOptions struct {
 	Groups []uint32
 	// TTY says the three files below are one pty replica, which is the only way the guest gets a terminal.
 	TTY bool
+	// Relay is the guest path of shard-init, which a terminal exec runs under so the command gets a guest pty.
+	Relay string
 	// The files the guest process gets. They are files, not pipes, so a pty replica passes straight through.
 	Stdin  *os.File
 	Stdout *os.File
@@ -273,6 +281,12 @@ func (r *Runner) Exec(ctx context.Context, id string, opts ExecOptions) (code in
 		cmd.Stderr, cmd.ExtraFiles = own, []*os.File{opts.Stderr}
 	}
 
+	record, err := watchRelay(cmd, opts)
+	if err != nil {
+		return 0, fmt.Errorf("runsc exec %s: %w", id, err)
+	}
+	defer func() { err = errors.Join(err, record.close()) }()
+
 	// The driver dies with the daemon, so a restart orphans no runsc exec; the guest process lives in the sentry and outlives both.
 	cmd.SysProcAttr = execAttr(opts.TTY)
 
@@ -289,29 +303,133 @@ func (r *Runner) Exec(ctx context.Context, id string, opts ExecOptions) (code in
 		report := func(pid int) { once.Do(func() { opts.Report(pid) }) }
 		reportCtx, stop := context.WithCancel(ctx)
 		defer stop()
-		go reportPID(reportCtx, pidFile, report)
+		// Under the relay the pid file names the relay as it forks, before its command is known to run.
+		go func() {
+			select {
+			case <-record.started:
+				reportPID(reportCtx, pidFile, report)
+			case <-reportCtx.Done():
+			}
+		}()
 		// A command that ends inside one poll still forked, and the caller must hear it before Exec returns.
 		defer func() {
+			if !record.hasStarted() {
+				return
+			}
 			if pid, perr := readPID(pidFile); perr == nil {
 				report(pid)
 			}
 		}()
 	}
 
-	if err := cmd.Run(); err != nil {
-		// A cancelled call says nothing about how the command would have ended.
-		if ctx.Err() != nil {
-			return 0, fmt.Errorf("runsc exec %s: %w", id, ctx.Err())
-		}
-
-		if exit, ok := errors.AsType[*exec.ExitError](err); ok {
-			return classifyExit(id, exit, pidFile, logFile, ownFile)
-		}
-
-		return 0, fmt.Errorf("runsc exec %s: %w", id, err)
+	runErr := cmd.Run()
+	// A cancelled call says nothing about how the command would have ended.
+	if runErr != nil && ctx.Err() != nil {
+		return 0, fmt.Errorf("runsc exec %s: %w", id, ctx.Err())
 	}
 
-	return 0, nil
+	relayErr := record.await()
+	if failed, ok := errors.AsType[*launch.NotStartedError](relayErr); ok {
+		return 0, relayStartFailure(opts.WorkDir, failed)
+	}
+	code, err = exitOf(id, runErr, pidFile, logFile, ownFile)
+	if err != nil {
+		return 0, err
+	}
+	// A relay with no record never said its command ran, so its exit code is not the command's.
+	if relayErr != nil {
+		return 0, fmt.Errorf("runsc exec %s exited %d: %w", id, code, relayErr)
+	}
+
+	return code, nil
+}
+
+// exitOf is runsc's exit as the command's code, or the error that says runsc never saw the command end.
+func exitOf(id string, runErr error, pidFile, logFile, ownFile string) (int, error) {
+	if runErr == nil {
+		return 0, nil
+	}
+	if exit, ok := errors.AsType[*exec.ExitError](runErr); ok {
+		return classifyExit(id, exit, pidFile, logFile, ownFile)
+	}
+
+	return 0, fmt.Errorf("runsc exec %s: %w", id, runErr)
+}
+
+// relayStartFailure puts the relay's errno in the words and the split of a refusal runsc reports itself.
+func relayStartFailure(workDir string, failed *launch.NotStartedError) error {
+	if failed.Chdir {
+		return &ExecStartError{Reason: launch.WorkDirReason(workDir, failed.Errno), WorkDir: true}
+	}
+
+	return &ExecStartError{Reason: failed.Reason(), NotExecutable: !failed.NotFound()}
+}
+
+// relayRecord is the terminal relay's word on its command; an exec with no relay started when runsc forked.
+type relayRecord struct {
+	read, write *os.File
+	started     chan struct{}
+	result      chan error
+}
+
+// watchRelay hands a terminal exec's relay the write end of its record as fd 3, and reads the record as it lands.
+func watchRelay(cmd *exec.Cmd, opts ExecOptions) (*relayRecord, error) {
+	record := &relayRecord{started: make(chan struct{}), result: make(chan error, 1)}
+	if !relays(opts) {
+		close(record.started)
+		record.result <- nil
+
+		return record, nil
+	}
+
+	read, write, err := os.Pipe()
+	if err != nil {
+		return nil, fmt.Errorf("open the record pipe of the terminal relay: %w", err)
+	}
+	record.read, record.write = read, write
+	cmd.ExtraFiles = []*os.File{write}
+	go func() { record.result <- termrelay.Await(read, func() { close(record.started) }) }()
+
+	return record, nil
+}
+
+func (rec *relayRecord) hasStarted() bool {
+	select {
+	case <-rec.started:
+		return true
+	default:
+		return false
+	}
+}
+
+// await is the record once runsc ended; with our write end closed a relay that never wrote reads as EOF.
+func (rec *relayRecord) await() error {
+	if rec.write == nil {
+		return <-rec.result
+	}
+
+	err := rec.write.Close()
+	rec.write = nil
+	if err != nil {
+		return fmt.Errorf("close the record pipe of the terminal relay: %w", err)
+	}
+	if err := rec.read.SetReadDeadline(time.Now().Add(recordGrace)); err != nil {
+		return fmt.Errorf("bound the read of the terminal relay's record: %w", err)
+	}
+
+	return <-rec.result
+}
+
+func (rec *relayRecord) close() error {
+	var errs []error
+	if rec.write != nil {
+		errs = append(errs, rec.write.Close())
+	}
+	if rec.read != nil {
+		errs = append(errs, rec.read.Close())
+	}
+
+	return errors.Join(errs...)
 }
 
 // classifyExit is the command's exit code, unless runsc refused it, lost its wait on it, or died first.
@@ -408,8 +526,16 @@ func execArgs(id, pidFile, processFile string, opts ExecOptions) []string {
 	if passesStderr(opts) {
 		args = append(args, "--pass-fd", "3:2")
 	}
+	if relays(opts) {
+		args = append(args, "--pass-fd", fmt.Sprintf("%d:%d", termrelay.FD, termrelay.FD))
+	}
 
 	return append(args, "--process", processFile, id)
+}
+
+// relays says a terminal exec runs under the guest relay, since the host tty runsc hands the guest can be no controlling terminal.
+func relays(opts ExecOptions) bool {
+	return opts.TTY && opts.Relay != ""
 }
 
 // passesStderr says the guest's stderr goes to runsc as fd 3, which a tty cannot: runsc needs all three of its own to be one.

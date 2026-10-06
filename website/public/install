@@ -131,6 +131,20 @@ pick_version() {
 	END { print best }'
 }
 
+# GitHub names the reset as epoch seconds; date -r reads them on BSD and macOS, date -d on GNU and busybox.
+rate_limit_retry() {
+	reset=$(awk -F ': *' 'tolower($1) == "x-ratelimit-reset" { print $2 + 0 }' "$tmp/headers")
+	at=""
+	if [ -n "$reset" ] && [ "$reset" -gt 0 ]; then
+		at=$(date -r "$reset" '+%H:%M %Z' 2>/dev/null || date -d "@$reset" '+%H:%M %Z' 2>/dev/null)
+	fi
+	if [ -z "$at" ]; then
+		echo "Run the installer again within an hour."
+		return
+	fi
+	echo "It resets at $at. Run the installer again after that."
+}
+
 resolve_version() {
 	status=$(curl -sS -D "$tmp/headers" -o "$tmp/releases.json" -w '%{http_code}' -H 'Accept: application/vnd.github+json' "$RELEASES_URL") ||
 		fail "could not reach the GitHub releases API at api.github.com. Check the network and run the installer again."
@@ -138,7 +152,7 @@ resolve_version() {
 	200) ;;
 	403 | 429)
 		if grep -i -q '^x-ratelimit-remaining: *0' "$tmp/headers"; then
-			fail "the GitHub releases API rate limit for this IP address is spent (HTTP $status). Run the installer again in an hour."
+			fail "the GitHub releases API rate limit for this IP address is spent (HTTP $status). $(rate_limit_retry)"
 		fi
 		fail "the GitHub releases API refused the request (HTTP $status)."
 		;;

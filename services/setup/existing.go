@@ -25,8 +25,11 @@ import (
 
 const serviceName = "shard"
 
-// manualPaths are where an install without setup puts the binaries and the release's service files.
-var manualPaths = []string{shardBinary, initBinary, systemdUnit, "/etc/systemd/system/shard-serve.service", launchdPlist, newsyslog}
+// manualPaths are where an install without setup puts the binaries and the daemon's service files.
+var manualPaths = []string{shardBinary, initBinary, systemdUnit, launchdPlist, newsyslog}
+
+// serveUnit is the unit guides/remote installs by hand beside any daemon, so it alone is no install, and uninstall keeps it (SHARD-774).
+const serveUnit = "/etc/systemd/system/shard-serve.service"
 
 // ServiceState is the Service line of the summary.
 type ServiceState string
@@ -353,7 +356,7 @@ func (s *Setup) upgrade(ctx context.Context, m Manifest, service ServiceState, r
 			if fetched[t.asset] {
 				continue
 			}
-			if err := rel.Fetch(ctx, h, t.asset, t.tmp, 0o755); err != nil {
+			if err := FetchAsset(ctx, h, rel.Tag, t.asset, t.tmp, 0o755); err != nil {
 				return err
 			}
 			fetched[t.asset] = true
@@ -831,6 +834,11 @@ func uninstalled(h Host, m Manifest, netHeld bool) ([]string, error) {
 		}
 		lines = append(lines, network...)
 	}
+	serve, err := serveLeft(h)
+	if err != nil {
+		return nil, err
+	}
+	lines = append(lines, serve...)
 
 	commands, err := leftCommands(h)
 	if err != nil {
@@ -848,6 +856,31 @@ func uninstalled(h Host, m Manifest, netHeld bool) ([]string, error) {
 	}
 
 	return lines, nil
+}
+
+// serveLeft names the serve unit a setup leaves alone: it stops with the daemon, and the next daemon does not start it.
+func serveLeft(h Host) ([]string, error) {
+	if h.OS != "linux" {
+		return nil, nil
+	}
+	_, err := os.Lstat(rooted(h, serveUnit))
+	if errors.Is(err, fs.ErrNotExist) {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, fmt.Errorf("check %s: %w", serveUnit, err)
+	}
+
+	sudo := sudoFor(h)
+	return []string{"",
+		"The shard serve unit remains at " + serveUnit + ", because setup did not install it.",
+		"It stops with the daemon, and a new setup does not start it.",
+		"After you set up shard again, start it with: " + sudo + "systemctl start shard-serve",
+		"To remove it, run:",
+		"  " + sudo + "systemctl disable --now shard-serve",
+		"  " + sudo + "rm " + serveUnit,
+		"  " + sudo + "systemctl daemon-reload",
+	}, nil
 }
 
 // networkLeft names the shared bridge and tables a daemon still uses, or else IP forwarding, which other software may need on.
@@ -1013,7 +1046,7 @@ func leftCommands(h Host) ([]string, error) {
 	return left, nil
 }
 
-// manual reports an install setup did not make, changes nothing in it, and names the route that moves it to setup.
+// manual reports an install setup did not make, changes nothing in it, names the route that moves it to setup, and stops, so a script reads it as a refusal.
 func (s *Setup) manual(ctx context.Context, inst Installation) error {
 	h := s.Host
 	versions, err := manualVersions(ctx, h, inst.Manual)
@@ -1022,6 +1055,11 @@ func (s *Setup) manual(ctx context.Context, inst Installation) error {
 	}
 	sudo := socketSudo(h)
 	sandboxes, err := manualSandboxes(h, inst.Manual, sudo)
+	if err != nil {
+		return err
+	}
+
+	serve, err := serveLeft(h)
 	if err != nil {
 		return err
 	}
@@ -1038,11 +1076,15 @@ func (s *Setup) manual(ctx context.Context, inst Installation) error {
 		manualMove(h, inst.Manual),
 		[]string{
 			"", "To remove it instead, remove every sandbox first (" + sudo + "shard list --all), then run the lines above without the last.",
-			"", "Your saved data in " + DataDir + " is not part of this.",
 		},
+		serve,
+		[]string{"", "Your saved data in " + DataDir + " is not part of this."},
 	)
+	if err := s.UI.Print(lines...); err != nil {
+		return err
+	}
 
-	return s.UI.Print(lines...)
+	return &StoppedError{Step: "Existing shard installation", Err: &Problem{Lines: lines}}
 }
 
 // manualVersions names the version the found binary reports beside the one setup installs.

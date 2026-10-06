@@ -61,6 +61,84 @@ func TestRunRefusesASecondDaemon(t *testing.T) {
 	}
 }
 
+// SHARD-777: a second daemon's first render replaced the shared nft table and dropped the first one's egress rules.
+func TestRunRefusesADaemonOnAnotherRootAndNamesTheRootThatHoldsTheHost(t *testing.T) {
+	hostLock := filepath.Join(t.TempDir(), "host.lock")
+	firstRoot, secondRoot := t.TempDir(), t.TempDir()
+	held := &fakeTask{}
+
+	ctx, cancel := context.WithCancel(t.Context())
+	done := make(chan error, 1)
+	go func() { done <- fast(New(firstRoot, io.Discard, held)).WithHostLock(hostLock).Run(ctx) }()
+	waitHeld(t, held)
+
+	refused := &fakeTask{}
+	err := New(secondRoot, io.Discard, refused).WithHostLock(hostLock).Run(t.Context())
+	if err == nil || !strings.Contains(err.Error(), "over the root "+firstRoot+",") {
+		t.Errorf("a daemon on another root got %v, want a refusal that names %s", err, firstRoot)
+	}
+	if refused.runs.Load() != 0 {
+		t.Error("the refused daemon ran a task")
+	}
+	if _, err := os.Stat(filepath.Join(secondRoot, PIDFile)); !errors.Is(err, os.ErrNotExist) {
+		t.Errorf("the refused daemon left a pid file: %v", err)
+	}
+
+	cancel()
+	if err := <-done; err != nil {
+		t.Fatalf("the first daemon ended with %v", err)
+	}
+
+	// The first daemon gave the host back, so the second one now takes it.
+	next := &fakeTask{}
+	ctx, cancel = context.WithCancel(t.Context())
+	go func() { done <- fast(New(secondRoot, io.Discard, next)).WithHostLock(hostLock).Run(ctx) }()
+	waitHeld(t, next)
+	cancel()
+	if err := <-done; err != nil {
+		t.Fatalf("the second daemon ended with %v", err)
+	}
+}
+
+// A create still rolling back after the tasks stop frees veths and rules, so no daemon on another root may take the host until it ends.
+func TestRunHoldsTheHostUntilTheBackgroundCreatesEnd(t *testing.T) {
+	hostLock := filepath.Join(t.TempDir(), "host.lock")
+	held := &fakeTask{}
+	life := &lifecycle{}
+	rollback := make(chan struct{})
+	life.wg.Go(func() { <-rollback })
+	draining := make(chan struct{})
+	drain := func() {
+		close(draining)
+		life.wait()
+	}
+
+	ctx, cancel := context.WithCancel(t.Context())
+	done := make(chan error, 1)
+	go func() {
+		done <- fast(New(t.TempDir(), io.Discard, held)).WithHostLock(hostLock).WithDrain(drain).Run(ctx)
+	}()
+	waitHeld(t, held)
+	cancel()
+	<-draining
+
+	// A cancelled context ends a daemon that wrongly took the host at once, rather than hanging the test.
+	stopped, stop := context.WithCancel(t.Context())
+	stop()
+	err := New(t.TempDir(), io.Discard, &fakeTask{}).WithHostLock(hostLock).Run(stopped)
+	if err == nil || !strings.Contains(err.Error(), "already serves this host's sandbox bridge") {
+		t.Errorf("a daemon on another root during the rollback got %v, want the host refusal", err)
+	}
+
+	close(rollback)
+	if err := <-done; err != nil {
+		t.Fatalf("the first daemon ended with %v", err)
+	}
+	if err := New(t.TempDir(), io.Discard, &fakeTask{}).WithHostLock(hostLock).Run(stopped); err != nil {
+		t.Errorf("a daemon on another root after the rollback got %v, want the host", err)
+	}
+}
+
 func TestRunNamesItsPidUntilItEnds(t *testing.T) {
 	root := t.TempDir()
 	held := &fakeTask{}

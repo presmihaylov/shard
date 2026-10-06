@@ -24,7 +24,7 @@ func TestParseListFlags(t *testing.T) {
 
 	for name, args := range map[string][]string{
 		"an argument":     {"sandbox1"},
-		"an unknown flag": {"--quiet"},
+		"an unknown flag": {"--recursive"},
 	} {
 		if _, err := parseList(args); err == nil {
 			t.Errorf("parseList(%s) returned no error", name)

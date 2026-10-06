@@ -61,6 +61,9 @@ type App struct {
 
 	// asSudo replaces the check for sudo. A test sets it: go test runs neither as root nor under sudo.
 	asSudo func() bool
+
+	// confirm replaces the terminal's yes or no question. A test sets it: go test holds no terminal.
+	confirm func(ctx context.Context, question string, yes bool) (bool, error)
 }
 
 // stdin is what exec hands the guest and what secret set reads the value from.
@@ -228,6 +231,7 @@ func commands() []command {
 		{name: "remove", aliases: []string{"rm"}, run: App.remove},
 		{name: "pause", run: App.pause},
 		{name: "resume", run: App.resume},
+		{name: "prune", run: App.prune},
 		{name: "fork", run: App.fork},
 		{name: "cp", run: App.cp},
 		{name: "snapshot", subs: []command{

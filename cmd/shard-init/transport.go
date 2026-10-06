@@ -33,6 +33,8 @@ type transport struct {
 	logs     *logSink
 	// rekey reseeds the guest crng; nil in a test on a Linux host, whose crng is the host's own.
 	rekey func([]byte) error
+	// setClock sets the guest wall clock; nil in a test on a Linux host, whose clock is the host's own.
+	setClock func(int64) error
 	// freezing puts one freeze and its answer before the next, so a freeze undone for want of a host never undoes a later one.
 	freezing sync.Mutex
 	// bound is the sandbox cgroup a freeze stops before it holds the root; nil off a VM.
@@ -96,6 +98,7 @@ func serveTransport(name string, boot guestBoot) error {
 	if boot.set() {
 		t.g.oomProbe = oomKilledGuest
 		t.rekey = reseed
+		t.setClock = setClock
 	}
 	go t.acceptControl(listeners[0])
 	go t.acceptExec(listeners[1])
@@ -452,6 +455,14 @@ func (t *transport) handle(m supervisor.Message) error {
 			return fmt.Errorf("a reseed message carries %d bytes, under the %d a crng key takes", len(m.Seed), supervisor.SeedSize)
 		}
 
+		if m.Now <= 0 {
+			return errors.New("a reseed message carries no host time")
+		}
+		if t.setClock != nil {
+			if err := t.setClock(m.Now); err != nil {
+				return err
+			}
+		}
 		if t.rekey == nil {
 			return nil
 		}

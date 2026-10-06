@@ -113,7 +113,7 @@ There is no process bound. A process in the guest is a process inside the VM, so
 
 `shard pause` saves the guest's memory and state under `/var/lib/shard/checkpoints/<id>`, beside a copy of its disk, then ends the VM. A paused sandbox holds disk space, but no memory and no CPU. In most cases, a pause writes only the memory pages that the guest changed since it booted or last resumed.
 
-`shard resume` loads that state into a new VM, and the processes carry on where they left off. On every load of saved state, by `resume` or `fork`, shard corrects the guest's clock. It also gives the guest a fresh random seed from the host before any process runs again. So a fork never shares random numbers with its source.
+`shard resume` loads that state into a new VM, and the processes carry on where they left off. On every load of saved state, by `resume` or `fork`, shard sets the guest's clock to the host's time. It also gives the guest a fresh random seed from the host before any process runs again. So a fork never shares random numbers with its source.
 
 `shard fork` copies a running sandbox, memory included:
 

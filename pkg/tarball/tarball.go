@@ -109,6 +109,14 @@ type Options struct {
 	// MaxBytes caps the bytes of every file together, and MaxEntries the entries; zero leaves that one unbounded.
 	MaxBytes   int64
 	MaxEntries int
+	// Owner, when set, takes every entry this unpack makes; one already there keeps its own.
+	Owner *Owner
+}
+
+// Owner is who a host unpack hands what it makes to, as a copy out under sudo does for the user who ran it.
+type Owner struct {
+	UID int
+	GID int
 }
 
 // RefusedError names the entry an unpack refused and why; the unpack writes nothing after it.
@@ -121,7 +129,7 @@ func (e *RefusedError) Error() string {
 	return fmt.Sprintf("refuse the entry %q: %s", e.Name, e.Reason)
 }
 
-// Unpack writes the tar under dst and never outside it. An existing directory keeps its own mode, and nothing is ever chowned.
+// Unpack writes the tar under dst and never outside it. An existing directory keeps its own mode and owner, and only an Owner chowns.
 func Unpack(r io.Reader, dst string, opts Options) error {
 	root, err := os.OpenRoot(dst)
 	if err != nil {
@@ -256,6 +264,9 @@ func (u *unpacker) dir(name string, hdr *tar.Header) error {
 	if err != nil {
 		return u.refusal(hdr.Name, err)
 	}
+	if err := u.own(name, hdr.Name); err != nil {
+		return err
+	}
 	u.dirs = append(u.dirs, madeDir{name: name, mode: u.mode(hdr)})
 
 	return nil
@@ -275,6 +286,10 @@ func (u *unpacker) file(name string, hdr *tar.Header, r io.Reader) error {
 	f, err := u.root.OpenFile(tmp, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o600)
 	if err != nil {
 		return u.refusal(hdr.Name, err)
+	}
+	// The chown goes before the chmod, as a chown clears setuid and setgid.
+	if err := u.own(tmp, hdr.Name); err != nil {
+		return errors.Join(err, f.Close(), u.removeTemp(tmp))
 	}
 	if err := fill(f, r, hdr.Size, u.mode(hdr)); err != nil {
 		return errors.Join(fmt.Errorf("unpack %s: %w", hdr.Name, err), u.removeTemp(tmp))
@@ -305,6 +320,9 @@ func (u *unpacker) symlink(name string, hdr *tar.Header) error {
 	tmp := u.tempName(name)
 	if err := u.root.Symlink(hdr.Linkname, tmp); err != nil {
 		return u.refusal(hdr.Name, err)
+	}
+	if err := u.own(tmp, hdr.Name); err != nil {
+		return errors.Join(err, u.removeTemp(tmp))
 	}
 	if u.opts.ConfineLinks {
 		u.links = append(u.links, madeLink{name: name, entry: hdr.Name})
@@ -370,12 +388,35 @@ func (u *unpacker) place(tmp, name, entry string, file bool) error {
 	return nil
 }
 
+// parent makes each missing directory above name as mkdir -p does, one at a time so the owner takes each one it makes.
 func (u *unpacker) parent(name, entry string) error {
 	dir := path.Dir(name)
 	if dir == "." {
 		return nil
 	}
-	if err := u.root.MkdirAll(dir, 0o755); err != nil { //nolint:gosec // G301: a parent reads as mkdir -p makes it, as tar does
+	err := u.root.Mkdir(dir, 0o755) //nolint:gosec // G301: a parent reads as mkdir -p makes it, as tar does
+	if errors.Is(err, fs.ErrNotExist) {
+		if err := u.parent(dir, entry); err != nil {
+			return err
+		}
+		err = u.root.Mkdir(dir, 0o755) //nolint:gosec // G301: as above
+	}
+	if errors.Is(err, fs.ErrExist) {
+		return nil
+	}
+	if err != nil {
+		return u.refusal(entry, err)
+	}
+
+	return u.own(dir, entry)
+}
+
+// own hands a name this unpack made to the Owner, when there is one.
+func (u *unpacker) own(name, entry string) error {
+	if u.opts.Owner == nil {
+		return nil
+	}
+	if err := u.root.Lchown(name, u.opts.Owner.UID, u.opts.Owner.GID); err != nil {
 		return u.refusal(entry, err)
 	}
 

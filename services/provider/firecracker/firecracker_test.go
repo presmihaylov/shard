@@ -1371,6 +1371,35 @@ func TestAForkOfARunningSandboxLeavesTheSourceRunning(t *testing.T) {
 	}
 }
 
+// A fork whose copy of the overlay cannot fit is refused before the capture, so the source is never frozen or paused for it (SHARD-775).
+func TestAForkThatCannotFitIsRefusedBeforeTheCapture(t *testing.T) {
+	h := newHarness(t)
+	spec, pid := h.runLong(t)
+	watchControls(t, spec)
+	fork := h.forkSpec(t)
+	// No host holds 8 TiB free, and a sparse overlay takes none of it.
+	if err := os.Truncate(filepath.Join(spec.StateDir, bundle.OverlayDiskFile), 8<<40); err != nil {
+		t.Fatal(err)
+	}
+
+	err := h.provider.Fork(t.Context(), spec.ID, fork)
+	if room, ok := errors.AsType[*bundle.NoRoomError](err); !ok || !room.Copy {
+		t.Fatalf("Fork = %v, want the copy refused for room", err)
+	}
+	if got := controls(t, spec.StateDir, supervisor.KindFreeze, supervisor.KindThaw); len(got) != 0 {
+		t.Errorf("the guest of the source read %q, want no freeze", got)
+	}
+	status, err := h.provider.Status(t.Context(), spec.ID)
+	if err != nil || status.State != models.StateRunning || status.PID != pid {
+		t.Fatalf("Status of the source = %+v, %v, want running as pid %d", status, err, pid)
+	}
+	for _, path := range []string{filepath.Join(spec.StateDir, firecracker.CaptureFile), filepath.Join(fork.StateDir, firecracker.CaptureDir)} {
+		if _, err := os.Stat(path); !errors.Is(err, os.ErrNotExist) {
+			t.Errorf("%s after the refusal: %v, want none", path, err)
+		}
+	}
+}
+
 // An exec that starts while a fork holds the source frozen is refused by name, and the control stream the capture reset is dialed again and thaws the source (SHARD-462).
 func TestAnExecWhileAForkHoldsTheSourceIsRefused(t *testing.T) {
 	h := newHarness(t)
@@ -1432,17 +1461,51 @@ func TestASourceAFailedForkLeftFrozenThawsOnALaterStream(t *testing.T) {
 	if err := syscall.Kill(pid, syscall.SIGUSR2); err != nil {
 		t.Fatalf("let streams through the fake vmm again: %v", err)
 	}
-	want := []string{supervisor.KindFreeze, "attach", supervisor.KindThaw}
+	// The exec waits on the guest's answer, not the thaw as sent, or it races the guest still frozen.
+	want := []string{supervisor.KindFreeze, "attach", supervisor.KindThaw, thawedKind}
 	deadline := time.Now().Add(10 * time.Second)
 	for got := controls(t, spec.StateDir, want...); !slices.Equal(got, want); got = controls(t, spec.StateDir, want...) {
 		if time.Now().After(deadline) {
-			t.Fatalf("the guest of the source read %q, want the freeze, then a stream dialed again and the thaw on it", got)
+			t.Fatalf("the guest of the source read %q, want the freeze, then a stream dialed again and the thaw on it answered", got)
 		}
 		time.Sleep(50 * time.Millisecond)
 	}
 	exit, err := h.provider.Exec(t.Context(), spec.ID, models.ExecSpec{Argv: []string{"/bin/sh", "-c", "exit 0"}})
 	if err != nil || exit.Code != 0 {
 		t.Fatalf("Exec on the thawed source = %+v, %v, want exit 0", exit, err)
+	}
+}
+
+// A stream that ends under the follower's thaw is dialed again and thaws the source there, with no lost state left for a later verb (SHARD-755).
+func TestAThawWhoseStreamEndsThawsOnTheNextOne(t *testing.T) {
+	h := newHarness(t)
+	spec, pid := h.severedFork(t)
+
+	if err := os.WriteFile(filepath.Join(spec.StateDir, cutThawFile), nil, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Remove(filepath.Join(spec.StateDir, severOnResetFile)); err != nil {
+		t.Fatal(err)
+	}
+	if err := syscall.Kill(pid, syscall.SIGUSR2); err != nil {
+		t.Fatalf("let streams through the fake vmm again: %v", err)
+	}
+	deadline := time.Now().Add(10 * time.Second)
+	for !slices.Contains(controls(t, spec.StateDir, thawedKind), thawedKind) {
+		if time.Now().After(deadline) {
+			t.Fatalf("the guest of the source answered no thaw within 10s, and read %q", controls(t, spec.StateDir, supervisor.KindFreeze, "attach", supervisor.KindThaw))
+		}
+		time.Sleep(50 * time.Millisecond)
+	}
+	if _, err := os.Stat(filepath.Join(spec.StateDir, cutThawFile)); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("the cut thaw marker = %v, want taken by the first thaw", err)
+	}
+	exit, err := h.provider.Exec(t.Context(), spec.ID, models.ExecSpec{Argv: []string{"/bin/sh", "-c", "exit 0"}})
+	if err != nil || exit.Code != 0 {
+		t.Fatalf("Exec on the thawed source = %+v, %v, want exit 0", exit, err)
+	}
+	if err := h.provider.Stop(t.Context(), spec.ID, stopGrace); err != nil {
+		t.Fatalf("Stop after a thaw whose stream ended: %v, want no lost state", err)
 	}
 }
 

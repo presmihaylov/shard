@@ -58,15 +58,17 @@ type FileError struct {
 	Path    string
 	Code    string
 	Message string
+	// Sandbox is the caller's name for the sandbox, which the public text names in place of the op.
+	Sandbox string
 }
 
 func (e *FileError) Error() string {
 	return fmt.Sprintf("%s %s: %s", e.Op, e.Path, e.Message)
 }
 
-// Public quotes the guest path and folds the guest's words onto one line, as either can hold a newline.
+// Public quotes the guest path and folds the guest's words onto one line, as either can hold a newline; the op is plumbing no caller asked for.
 func (e *FileError) Public() string {
-	return fmt.Sprintf("%s %q: %s", e.Op, e.Path, strings.Join(strings.Fields(e.Message), " "))
+	return fmt.Sprintf("%q in sandbox %s: %s", e.Path, e.Sandbox, strings.Join(strings.Fields(e.Message), " "))
 }
 
 // Stat asks the guest for the shape of one path. It never follows a final symlink.

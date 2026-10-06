@@ -10,6 +10,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"syscall"
 	"testing"
 
 	"github.com/presmihaylov/shard/pkg/tarball"
@@ -487,4 +488,63 @@ func TestUnpackHardLinksAFileEarlierInTheArchive(t *testing.T) {
 	if errA != nil || errB != nil || !os.SameFile(a, b) {
 		t.Fatalf("dir/b is not a hard link of a: %v, %v", errA, errB)
 	}
+}
+
+// An Owner takes every entry the unpack makes, its parents too, while a directory already there keeps its own group.
+func TestUnpackHandsWhatItMakesToTheOwner(t *testing.T) {
+	dst, _ := sandbox(t)
+	if err := os.Mkdir(filepath.Join(dst, "kept"), 0o755); err != nil {
+		t.Fatalf("make kept: %v", err)
+	}
+	keptGID := gidOf(t, filepath.Join(dst, "kept"))
+	gid := -1
+	groups, err := os.Getgroups()
+	if err != nil {
+		t.Fatalf("read this user's groups: %v", err)
+	}
+	for _, g := range groups {
+		if uint32(g) != keptGID {
+			gid = g
+		}
+	}
+	if gid < 0 {
+		t.Skip("this user is in no group but the one dst already has")
+	}
+
+	ar := archive(t,
+		entry{name: "made/", typ: tar.TypeDir, mode: 0o755},
+		entry{name: "made/f", typ: tar.TypeReg, body: "x"},
+		entry{name: "made/run", typ: tar.TypeReg, body: "x", mode: 0o6755},
+		entry{name: "made/l", typ: tar.TypeSymlink, link: "f"},
+		entry{name: "made/h", typ: tar.TypeLink, link: "made/f"},
+		entry{name: "deep/a/b/f", typ: tar.TypeReg, body: "x"},
+		entry{name: "kept/g", typ: tar.TypeReg, body: "x"},
+	)
+	if err := tarball.Unpack(ar, dst, tarball.Options{KeepSetid: true, Owner: &tarball.Owner{UID: os.Getuid(), GID: gid}}); err != nil {
+		t.Fatalf("unpack: %v", err)
+	}
+
+	for _, name := range []string{"made", "made/f", "made/run", "made/l", "made/h", "deep", "deep/a", "deep/a/b", "deep/a/b/f", "kept/g"} {
+		if got := gidOf(t, filepath.Join(dst, name)); got != uint32(gid) {
+			t.Errorf("%s has gid %d, want the owner's %d", name, got, gid)
+		}
+	}
+	if got := gidOf(t, filepath.Join(dst, "kept")); got != keptGID {
+		t.Errorf("kept has gid %d, want its own %d", got, keptGID)
+	}
+	info, err := os.Stat(filepath.Join(dst, "made/run"))
+	if err != nil || info.Mode()&(fs.ModeSetuid|fs.ModeSetgid) != fs.ModeSetuid|fs.ModeSetgid {
+		t.Fatalf("made/run is %v, %v, want setuid and setgid kept past the chown", info, err)
+	}
+}
+
+func gidOf(t *testing.T, name string) uint32 {
+	t.Helper()
+
+	info, err := os.Lstat(name)
+	if err != nil {
+		t.Fatalf("stat %s: %v", name, err)
+	}
+
+	return info.Sys().(*syscall.Stat_t).Gid
 }

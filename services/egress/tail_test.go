@@ -7,6 +7,7 @@ import (
 	"log"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -49,13 +50,23 @@ func (f *fakeSandboxes) List() ([]models.Sandbox, error) {
 
 func (f *fakeSandboxes) Generation() uint64 { return f.gen }
 
+// fakeRules gives every sandbox the same effective rules, or an error, as the policy store would.
+type fakeRules struct {
+	rules []EffectiveRule
+	err   error
+}
+
+func (f fakeRules) Effective(models.Sandbox) (Effective, error) {
+	return Effective{Rules: f.rules}, f.err
+}
+
 func newTailer(t *testing.T, out io.Writer, sandboxes ...models.Sandbox) (*Tailer, string, *Log) {
 	t.Helper()
 
 	root := t.TempDir()
 	decisions := NewLog(fakeDirs{root: root})
 
-	return NewTailer(root, decisions, &fakeSandboxes{sandboxes: sandboxes}, nil, log.New(out, "", 0)), root, decisions
+	return NewTailer(root, decisions, &fakeSandboxes{sandboxes: sandboxes}, fakeRules{}, nil, log.New(out, "", 0)), root, decisions
 }
 
 func drops(sequence uint64, at int64, rule string) kmsg.Record {
@@ -88,6 +99,59 @@ func TestTailWritesEveryDropTheRingHolds(t *testing.T) {
 
 	if cursor := readCursor(t, root); cursor != "8" {
 		t.Errorf("the cursor holds %q", cursor)
+	}
+}
+
+// A host drop names the policy rule behind its id as a proxy decision does, and a fixed id or a rule the policy since changed names none (SHARD-773).
+func TestTailNamesThePolicyRuleOfADrop(t *testing.T) {
+	sb := sandbox(t)
+	deny := EffectiveRule{ID: "2", Rule: models.Rule{Action: models.ActionDeny, Destination: models.Destination{Kind: models.DestinationCIDR, Value: "203.0.113.0/24"}, Protocol: "tcp", Ports: []int{25}}}
+	before := models.Rule{Action: models.ActionDeny, Destination: models.Destination{Kind: models.DestinationCIDR, Value: "198.51.100.0/24"}}
+	root := t.TempDir()
+	decisions := NewLog(fakeDirs{root: root})
+	tailer := NewTailer(root, decisions, &fakeSandboxes{sandboxes: []models.Sandbox{sb}}, fakeRules{rules: []EffectiveRule{deny}}, nil, log.New(io.Discard, "", 0))
+
+	ring := &fakeRing{records: []kmsg.Record{
+		drops(7, 110, "2 sum="+RuleSum(deny.Rule)),
+		drops(8, 120, "2 sum="+RuleSum(before)),
+		drops(9, 130, "2"),
+		drops(10, 140, "private"),
+	}}
+	if err := tailer.Run(t.Context(), ring); err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+
+	records, _, err := decisions.Tail(sb.ID)
+	if err != nil {
+		t.Fatalf("Tail: %v", err)
+	}
+	texts := make([]string, 0, len(records))
+	for _, record := range records {
+		texts = append(texts, record.RuleText)
+	}
+	if want := []string{FormatRule(deny.Rule), "", "", ""}; !slices.Equal(texts, want) {
+		t.Errorf("the records carry the rule texts %q, want %q", texts, want)
+	}
+}
+
+// A policy the tailer cannot read fails the run, as a log it cannot write does, and a fixed id never reads it.
+func TestTailFailsOnAPolicyItCannotRead(t *testing.T) {
+	sb := sandbox(t)
+	root := t.TempDir()
+	decisions := NewLog(fakeDirs{root: root})
+	tailer := NewTailer(root, decisions, &fakeSandboxes{sandboxes: []models.Sandbox{sb}}, fakeRules{err: errors.New("the policy file is torn")}, nil, log.New(io.Discard, "", 0))
+
+	err := tailer.Run(t.Context(), &fakeRing{records: []kmsg.Record{drops(7, 110, "private"), drops(8, 120, "2 sum=0123456789ab")}})
+	if err == nil || !strings.Contains(err.Error(), "the policy file is torn") || !strings.Contains(err.Error(), "sandbox sb") {
+		t.Fatalf("Run returned %v, want the policy read named", err)
+	}
+
+	records, _, err := decisions.Tail(sb.ID)
+	if err != nil {
+		t.Fatalf("Tail: %v", err)
+	}
+	if len(records) != 1 || records[0].Rule != "private" {
+		t.Errorf("the log holds %+v, want the private drop alone", records)
 	}
 }
 
@@ -267,7 +331,7 @@ func TestTailCountsADropWhoseSandboxWentAwayFirst(t *testing.T) {
 	var out strings.Builder
 	root := t.TempDir()
 	decisions := NewLog(goneDirs{root: root})
-	tailer := NewTailer(root, decisions, &fakeSandboxes{sandboxes: []models.Sandbox{sandbox(t)}}, nil, log.New(&out, "", 0))
+	tailer := NewTailer(root, decisions, &fakeSandboxes{sandboxes: []models.Sandbox{sandbox(t)}}, fakeRules{}, nil, log.New(&out, "", 0))
 
 	if err := tailer.Run(t.Context(), &fakeRing{records: []kmsg.Record{drops(7, 110, "2")}}); err != nil {
 		t.Fatalf("Run: %v", err)
@@ -382,7 +446,7 @@ func TestTailWritesADropToTheSandboxThatTookTheAddress(t *testing.T) {
 	gone := sandbox(t)
 	took := models.Sandbox{ID: "sb2", Address: gone.Address, CreatedAt: time.Unix(105, 0).UTC()}
 	decisions := NewLog(staleDirs{root: root, gone: gone.ID})
-	tailer := NewTailer(root, decisions, &relet{sandboxes: []models.Sandbox{gone, took}}, nil, log.New(&out, "", 0))
+	tailer := NewTailer(root, decisions, &relet{sandboxes: []models.Sandbox{gone, took}}, fakeRules{}, nil, log.New(&out, "", 0))
 
 	if err := tailer.Run(t.Context(), &fakeRing{records: []kmsg.Record{drops(7, 110, "default")}}); err != nil {
 		t.Fatalf("Run: %v", err)
@@ -457,7 +521,7 @@ func TestTailWritesADropToTheCreateThatTookAPendingHoldersAddress(t *testing.T) 
 	repo := &fakeSandboxes{sandboxes: []models.Sandbox{pending}}
 	root := t.TempDir()
 	decisions := NewLog(fakeDirs{root: root})
-	tailer := NewTailer(root, decisions, repo, nil, log.New(io.Discard, "", 0))
+	tailer := NewTailer(root, decisions, repo, fakeRules{}, nil, log.New(io.Discard, "", 0))
 	writeCursor(t, root, "6")
 
 	ring := turnRing{records: []kmsg.Record{drops(7, 110, "a"), drops(8, 120, "b")}, turn: func() {
@@ -520,7 +584,7 @@ func TestTailListsAgainForALiveDrop(t *testing.T) {
 	root := t.TempDir()
 	decisions := NewLog(fakeDirs{root: root})
 	repo := &keyedLate{sandbox: sb}
-	tailer := NewTailer(root, decisions, repo, nil, log.New(io.Discard, "", 0))
+	tailer := NewTailer(root, decisions, repo, fakeRules{}, nil, log.New(io.Discard, "", 0))
 
 	ring := liveRing{records: []kmsg.Record{drops(7, 110, "ipv6"), drops(8, 110, "private")}}
 	if err := tailer.Run(t.Context(), ring); err != nil {
@@ -539,7 +603,7 @@ func TestTailListsAgainForALiveDrop(t *testing.T) {
 func TestTailListsTheRecordsOnceForTheBacklogsStrays(t *testing.T) {
 	repo := &fakeSandboxes{}
 	root := t.TempDir()
-	tailer := NewTailer(root, NewLog(fakeDirs{root: root}), repo, nil, log.New(io.Discard, "", 0))
+	tailer := NewTailer(root, NewLog(fakeDirs{root: root}), repo, fakeRules{}, nil, log.New(io.Discard, "", 0))
 
 	ring := &fakeRing{records: []kmsg.Record{drops(7, 110, "2"), drops(8, 111, "2"), drops(9, 112, "2")}}
 	if err := tailer.Run(t.Context(), ring); err != nil {
@@ -558,7 +622,7 @@ func TestTailLogsAnUnreadableRecordOnceOverLiveDrops(t *testing.T) {
 	logger := log.New(&out, "", 0)
 	ulog := sandboxstate.NewUnreadableLog(logger.Printf)
 	repo := partialRecords{unreadable: &sandboxstate.UnreadableError{ID: "broken", Err: errors.New("decode sandbox.json: unexpected end of JSON input")}}
-	tailer := NewTailer(root, NewLog(fakeDirs{root: root}), repo, ulog, logger)
+	tailer := NewTailer(root, NewLog(fakeDirs{root: root}), repo, fakeRules{}, ulog, logger)
 
 	ring := liveRing{records: []kmsg.Record{drops(7, 110, "a"), drops(8, 111, "b"), drops(9, 112, "c")}}
 	if err := tailer.Run(t.Context(), ring); err != nil {

@@ -138,6 +138,48 @@ func TestDelegatingAControllerToTheChildren(t *testing.T) {
 	}
 }
 
+// A sysbox guest's runc walks the shard parent as an unprivileged host uid, so a missing one is made 0755 and a stricter one opened.
+func TestEnsureParentLeavesTheCgroupAt0755(t *testing.T) {
+	for name, existing := range map[string]os.FileMode{"missing": 0, "0750": 0o750, "0700": 0o700} {
+		t.Run(name, func(t *testing.T) {
+			dir := filepath.Join(t.TempDir(), "shard")
+			if existing != 0 {
+				if err := os.Mkdir(dir, existing); err != nil {
+					t.Fatalf("make the cgroup: %v", err)
+				}
+			}
+
+			if err := cgroup.EnsureParent(dir); err != nil {
+				t.Fatalf("EnsureParent: %v", err)
+			}
+
+			info, err := os.Stat(dir)
+			if err != nil {
+				t.Fatalf("stat the cgroup: %v", err)
+			}
+			if mode := info.Mode().Perm(); mode != 0o755 {
+				t.Fatalf("the cgroup is %#o, want 0755", mode)
+			}
+		})
+	}
+}
+
+// A sandbox's own cgroup holds its pids and usage, so no other host user may read them.
+func TestEnsureKeepsASandboxCgroupPrivate(t *testing.T) {
+	dir := filepath.Join(t.TempDir(), "shard", "sandbox")
+	if err := cgroup.Ensure(dir); err != nil {
+		t.Fatalf("Ensure: %v", err)
+	}
+
+	info, err := os.Stat(dir)
+	if err != nil {
+		t.Fatalf("stat the cgroup: %v", err)
+	}
+	if mode := info.Mode().Perm(); mode&0o007 != 0 {
+		t.Fatalf("the sandbox cgroup is %#o, want nothing for other users", mode)
+	}
+}
+
 // TestReadingTheEventCounters pins the parse against the real file's shape, which is one key and one
 // count per line, with keys this driver does not use mixed in.
 func TestReadingTheEventCounters(t *testing.T) {

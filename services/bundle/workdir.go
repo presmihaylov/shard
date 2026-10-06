@@ -36,7 +36,7 @@ func (b Bundle) CheckWorkDir(id, dir string) error {
 	}
 	defer root.Close() //nolint:errcheck // a read-only handle has nothing left to flush
 
-	mode, err := guestMode(root, strings.TrimPrefix(dir, "/"), mounts)
+	_, mode, err := guestPath(root, strings.TrimPrefix(dir, "/"), mounts)
 	if errors.Is(err, syscall.ENOTDIR) || err == nil && !mode.IsDir() {
 		return &models.CommandNotStartedError{Sandbox: id, Reason: launch.WorkDirReason(dir, syscall.ENOTDIR), Code: models.CommandNotExecutableExitCode}
 	}

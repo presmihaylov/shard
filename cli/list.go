@@ -20,6 +20,9 @@ type listOptions struct {
 	format outputFormat
 }
 
+// formatIDs is what --quiet prints, one id per line for a script to hand to another verb; --format never takes it.
+const formatIDs outputFormat = "ids"
+
 // list asks the daemon and nothing else: the state it lists is what the last verb left in the record.
 func (a App) list(ctx context.Context, args []string) error {
 	opts, err := parseList(args)
@@ -56,9 +59,9 @@ func (a App) list(ctx context.Context, args []string) error {
 	return errors.New(strings.Join(result.Warnings, "\n"))
 }
 
-// noteHidden says on stderr how many stopped sandboxes the table left out; JSON is for a script, which asks with --all.
+// noteHidden says on stderr how many stopped sandboxes the table left out; any other output is for a script, which asks with --all.
 func (a App) noteHidden(format outputFormat, hidden int) error {
-	if hidden == 0 || format == formatJSON || a.Err == nil {
+	if hidden == 0 || format != formatTable || a.Err == nil {
 		return nil
 	}
 	noun := "sandboxes"
@@ -77,11 +80,24 @@ func (a App) noteHidden(format outputFormat, hidden int) error {
 }
 
 func (a App) writeList(format outputFormat, sandboxes []client.Sandbox, now time.Time) error {
+	if format == formatIDs {
+		return writeIDs(a.Out, sandboxes)
+	}
 	if format != formatJSON {
 		return writeTable(a.Out, sandboxes, now)
 	}
 
 	return writeJSON(a.Out, sandboxes)
+}
+
+func writeIDs(w io.Writer, sandboxes []client.Sandbox) error {
+	for _, sb := range sandboxes {
+		if _, err := fmt.Fprintln(w, sb.ID); err != nil {
+			return fmt.Errorf("write the output: %w", err)
+		}
+	}
+
+	return nil
 }
 
 func writeTable(w io.Writer, sandboxes []client.Sandbox, now time.Time) error {
@@ -166,11 +182,20 @@ func parseList(args []string) (listOptions, error) {
 	flags := newFlags("list")
 	flags.BoolVar(&opts.all, "all", false, "")
 	format := addFormatFlag(flags, formatTable)
+	var quiet bool
+	flags.BoolVar(&quiet, "q", false, "")
+	flags.BoolVar(&quiet, "quiet", false, "")
 
 	if err := parseVerb(flags, args); err != nil {
 		return listOptions{}, err
 	}
 	opts.format = *format
+	if quiet && formatSet(flags) {
+		return listOptions{}, errors.New("list takes --quiet or --format, not both")
+	}
+	if quiet {
+		opts.format = formatIDs
+	}
 
 	if rest := flags.Args(); len(rest) != 0 {
 		return listOptions{}, fmt.Errorf("list takes no arguments, got %s", gotArgs(rest))
