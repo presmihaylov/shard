@@ -571,12 +571,16 @@ func (p *Provider) Exec(ctx context.Context, id string, spec models.ExecSpec) (m
 	}
 
 	// sysbox-runc mounts its own overlay as the guest root, and the host's mount of the same layers can show a stale tree (SHARD-653).
-	if err := bundle.CheckUserDatabases(filepath.Join(p.procRoot, strconv.Itoa(pid), "root")); err != nil {
+	guest := filepath.Join(p.procRoot, strconv.Itoa(pid), "root")
+	if err := bundle.CheckUserDatabases(guest); err != nil {
 		return models.ExitStatus{}, err
 	}
 
 	opts, err := execOptions(b, spec)
 	if err != nil {
+		return models.ExitStatus{}, err
+	}
+	if err := bundle.CheckWorkDirIn(id, guest, opts.WorkDir); err != nil {
 		return models.ExitStatus{}, err
 	}
 

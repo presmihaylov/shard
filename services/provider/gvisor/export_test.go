@@ -111,11 +111,6 @@ func ExecFailure(id string, err error) error {
 	return execFailure(id, err)
 }
 
-// WorkDirFailure is how Exec answers the workdir check, reachable without runsc or a bundle.
-func WorkDirFailure(id string, err error) error {
-	return workDirFailure(id, err)
-}
-
 // Vanished is the classification stale runs on a read of /proc that failed, reachable with an error.
 func Vanished(err error) bool {
 	return vanished(err)

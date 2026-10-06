@@ -644,7 +644,7 @@ func (p *Provider) Exec(ctx context.Context, id string, spec models.ExecSpec) (m
 	if err != nil {
 		return models.ExitStatus{}, err
 	}
-	if err := workDirFailure(id, b.CheckWorkDir(opts.WorkDir)); err != nil {
+	if err := b.CheckWorkDir(id, opts.WorkDir); err != nil {
 		return models.ExitStatus{}, err
 	}
 
@@ -696,18 +696,6 @@ func execFailure(id string, err error) error {
 	}
 
 	return &models.CommandNotStartedError{Sandbox: id, Reason: start.Reason, Code: code}
-}
-
-// workDirFailure answers a workdir that is not a directory as runc's launch does: the kernel's words and a shell's 126.
-func workDirFailure(id string, err error) error {
-	if err == nil {
-		return nil
-	}
-	if !errors.Is(err, syscall.ENOTDIR) {
-		return fmt.Errorf("sandbox %s: %w", id, err)
-	}
-
-	return &models.CommandNotStartedError{Sandbox: id, Reason: syscall.ENOTDIR.Error(), Code: models.CommandNotExecutableExitCode}
 }
 
 // execOptions puts the exec where the entrypoint runs. config.json is the only record of that, and
