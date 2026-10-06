@@ -49,6 +49,8 @@ var errNoEntrypoint = errors.New("the entrypoint did not start")
 var errNoHost = errors.New("no host attached")
 
 func init() {
+	// runc before 1.2 hands an exec the daemon's umask, 0077 under setup's unit, so every process here starts from docker's 0022 (SHARD-764).
+	syscall.Umask(0o022)
 	// The host traces the launch shim's main thread alone, so the execve has to run on it.
 	if len(os.Args) > 1 && os.Args[1] == launch.Mode {
 		runtime.LockOSThread()
