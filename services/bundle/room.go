@@ -123,7 +123,12 @@ func AdmitCopy(src, dst string, write func() error) error {
 		return fmt.Errorf("stat %s: %w", src, err)
 	}
 
-	return admitDisk(dst, st.Size(), write)
+	err = admitDisk(dst, st.Size(), write)
+	if room, ok := errors.AsType[*NoRoomError](err); ok {
+		room.Copy = true
+	}
+
+	return err
 }
 
 // ReplaceDisk runs write, which swaps a disk in place for one of the same bound, under the admission lock: an admission inside the swap would miss that bound.
@@ -148,11 +153,17 @@ type NoRoomError struct {
 	Bound, Free, Held int64
 	// Memory says Bound is a checkpoint's memory, which no smaller --disk makes room for.
 	Memory bool
+	// Copy says Bound is a copy of a disk, which keeps its size whatever the request names.
+	Copy bool
 }
 
 func (e *NoRoomError) Error() string {
 	if e.Memory {
 		return fmt.Sprintf("the %d MiB of sandbox memory to save does not fit on the host disk: it has %d MiB free, the disks of the sandboxes on it are bound to %d MiB, and %d MiB stays free for the daemon; remove a sandbox",
+			e.Bound/bytesPerMiB, e.Free/bytesPerMiB, e.Held/bytesPerMiB, diskHeadroom/bytesPerMiB)
+	}
+	if e.Copy {
+		return fmt.Sprintf("a copy of the %d MiB disk does not fit on the host disk: it has %d MiB free, the disks of the other sandboxes on it are bound to %d MiB, and %d MiB stays free for the daemon; remove a sandbox",
 			e.Bound/bytesPerMiB, e.Free/bytesPerMiB, e.Held/bytesPerMiB, diskHeadroom/bytesPerMiB)
 	}
 

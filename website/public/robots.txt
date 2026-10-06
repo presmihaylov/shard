@@ -1,0 +1,26 @@
+User-Agent: *
+Allow: /
+
+User-Agent: OAI-SearchBot
+User-Agent: ChatGPT-User
+User-Agent: GPTBot
+User-Agent: ClaudeBot
+User-Agent: Claude-Web
+User-Agent: anthropic-ai
+User-Agent: PerplexityBot
+User-Agent: Perplexity-User
+User-Agent: Google-Extended
+User-Agent: Applebot-Extended
+User-Agent: Amazonbot
+User-Agent: Bytespider
+User-Agent: CCBot
+User-Agent: DuckAssistBot
+User-Agent: FacebookBot
+User-Agent: Meta-ExternalAgent
+User-Agent: cohere-ai
+User-Agent: Diffbot
+User-Agent: Timpibot
+Allow: /
+
+Sitemap: https://useshards.com/sitemap.xml
+Sitemap: https://useshards.com/sitemap-index.xml

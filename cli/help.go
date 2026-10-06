@@ -88,7 +88,7 @@ var verbGroups = []struct {
 	title string
 	verbs []string
 }{
-	{"Sandboxes", []string{"create", "run", "exec", "list", "logs", "inspect", "stop", "start", "remove", "pause", "resume", "fork", "cp"}},
+	{"Sandboxes", []string{"create", "run", "exec", "shell", "list", "logs", "inspect", "stop", "start", "remove", "pause", "resume", "fork", "cp"}},
 	{"Images, snapshots, secrets and network policies", []string{"pull", "image", "snapshot", "secret", "policy"}},
 	{"Host and access", []string{"capabilities", "daemon", "info", "serve", "setup", "tokens", "version"}},
 }
@@ -225,8 +225,28 @@ var helps = map[string]verbHelp{
 			{"--workdir <dir>", "directory for this command", ""},
 			{"--user <user>", "user for this command", ""},
 		},
-		notes:    []note{para("The command uses the sandbox's default directory and user unless overridden.", "The exit code is the command's exit code.")},
-		examples: []string{"shard exec web python script.py", "shard exec --workdir /app web npm test", "shard exec -it web /bin/sh"},
+		notes: []note{para(
+			"The command uses the sandbox's default directory and user unless overridden.",
+			"The exit code is the command's exit code.",
+			"To open a shell in the sandbox, use 'shard shell'.",
+		)},
+		examples: []string{"shard exec web python script.py", "shard exec --workdir /app web npm test", "shard exec -it web python"},
+	},
+	"shell": {
+		usage:   []string{"shell [OPTIONS] SANDBOX"},
+		summary: "open an interactive shell in a running sandbox",
+		args:    []row{sandboxArg},
+		flags: []flagHelp{
+			{"--workdir <dir>", "directory for the shell", ""},
+			{"--user <user>", "user for the shell", ""},
+		},
+		notes: []note{para(
+			"The shell is bash if the sandbox has it, and sh if not. It keeps the PATH the image sets.",
+			"It uses the sandbox's default directory and user unless overridden.",
+			"Standard input must be a terminal. To run a command without one, use 'shard exec'.",
+			"The exit code is the shell's exit code.",
+		)},
+		examples: []string{"shard shell web", "shard shell --workdir /app web", "shard shell --user root web"},
 	},
 	"list": {
 		usage:   []string{"list [OPTIONS]"},
