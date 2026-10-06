@@ -13,6 +13,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/presmihaylov/shard/pkg/hostfw"
 	"github.com/presmihaylov/shard/pkg/mountinfo"
 	"github.com/presmihaylov/shard/pkg/proxy"
 	"github.com/presmihaylov/shard/pkg/term"
@@ -699,6 +700,9 @@ const (
 	hostBridge = "shard0"
 	hostTable  = "shard"
 	ipForward  = "/proc/sys/net/ipv4/ip_forward"
+	// hostZone and hostPolicy are the names network.FirewallName and network.FirewallPolicy give the hole.
+	hostZone   = "shard"
+	hostPolicy = "shard-forwarding"
 )
 
 var hostTableFamilies = []string{"inet", "bridge"}
@@ -737,6 +741,10 @@ func removeNetwork(ctx context.Context, h Host) (held bool, err error) {
 		}
 	}
 
+	if err := closeHostFirewall(ctx, h); err != nil {
+		return false, err
+	}
+
 	_, err = os.Lstat(filepath.Join(h.Root, "/sys/class/net", hostBridge))
 	if errors.Is(err, fs.ErrNotExist) {
 		return false, nil
@@ -749,6 +757,24 @@ func removeNetwork(ctx context.Context, h Host) (held bool, err error) {
 	}
 
 	return false, nil
+}
+
+// closeHostFirewall drops the rules and the firewalld zone the daemon made, since the daemon never removes them itself.
+func closeHostFirewall(ctx context.Context, h Host) error {
+	tool := func(name string) string {
+		if _, ok := lookPath(h, name); ok {
+			return name
+		}
+		return ""
+	}
+	fw := hostfw.New(func(ctx context.Context, name string, args ...string) ([]byte, error) {
+		return privileged(ctx, h, name, args...)
+	}, tool("iptables"), tool("firewall-cmd"))
+	if err := fw.Close(ctx, hostfw.Hole{Name: hostZone, Interface: hostBridge, Policy: hostPolicy}); err != nil {
+		return fmt.Errorf("close the host firewall: %w", err)
+	}
+
+	return nil
 }
 
 // uninstalled names what stays and how to remove it, since uninstall removes no shared tool and no data.

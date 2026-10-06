@@ -16,6 +16,7 @@ import (
 
 	"github.com/presmihaylov/shard/models"
 	fcapi "github.com/presmihaylov/shard/pkg/firecracker"
+	"github.com/presmihaylov/shard/pkg/hostfw"
 	"github.com/presmihaylov/shard/pkg/hostmem"
 	"github.com/presmihaylov/shard/pkg/netns"
 	"github.com/presmihaylov/shard/pkg/netstack"
@@ -225,7 +226,7 @@ func (d *deps) netLocked() (hostNetwork, error) {
 
 	// The provider says whether its sandboxes own their namespaces, and it is asked at the first
 	// Allocate, not here: the proxy builds the network at boot on a host that may have no substrate.
-	cfg := network.Config{Root: d.cfg.Root, Egress: source, Userns: d.userns, Report: d.logger().Printf}
+	cfg := network.Config{Root: d.cfg.Root, Egress: source, Userns: d.userns, Report: d.logger().Printf, Firewall: hostfw.Local()}
 	// A microVM gets a tap beside its veth, inside the namespace its vmm joins.
 	cfg.Tap = d.providerName() == firecracker.Name
 	svc, err := network.New(cfg, manager)

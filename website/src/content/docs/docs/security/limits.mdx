@@ -129,7 +129,7 @@ A sandbox can have four bounds: memory, CPU, processes and disk.
 - **No IPv6.** A sandbox gets one IPv4 address, and the host drops every IPv6 packet it sends.
 - **A name rule covers only TCP ports 80 and 443.** For any other port, write an address rule.
 - **Names resolve when the rules are applied.** The host resolves each name rule to its addresses when it writes the rules. If a host's addresses change, store the policy again.
-- **The log does not record every drop.** A packet dropped by another firewall on the server, such as `ufw`, leaves no record. On Linux, the host logs at most 2 drops a second for each rule of a sandbox, with a burst of 10.
+- **The log does not record every drop.** A packet dropped by another firewall rule on the server leaves no record. On Linux, the host logs at most 2 drops a second for each rule of a sandbox, with a burst of 10.
 - **A client that pins a certificate refuses the proxy.** The proxy reads HTTPS using its own certificate authority. Java, and Rust built with `webpki-roots`, need an extra step to trust it.
 
 For policies and the decision log, see [egress](/docs/security/egress/).
