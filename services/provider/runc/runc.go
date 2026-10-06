@@ -513,9 +513,6 @@ func (p *Provider) Exec(ctx context.Context, id string, spec models.ExecSpec) (m
 	if err != nil {
 		return models.ExitStatus{}, err
 	}
-	if err := b.CheckWorkDir(id, opts.WorkDir); err != nil {
-		return models.ExitStatus{}, err
-	}
 
 	code, err := p.runner.Exec(ctx, id, opts)
 	if err != nil {

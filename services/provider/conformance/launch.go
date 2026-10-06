@@ -9,6 +9,7 @@ import (
 
 	"github.com/presmihaylov/shard/models"
 	"github.com/presmihaylov/shard/pkg/pty"
+	"github.com/presmihaylov/shard/services/bundle"
 )
 
 // launchDir holds the files whose modes the refusals need, in the one sandbox RunLaunch drives.
@@ -44,6 +45,7 @@ func RunLaunch(t *testing.T, s Subject) {
 		{"ADirectory", []string{launchDir}, "", "", models.CommandNotExecutableExitCode},
 		{"ARootFile0700ToNobody", []string{launchDir + "/private"}, "nobody", "", models.CommandNotExecutableExitCode},
 		{"AWorkDirThatIsAFile", []string{"/bin/true"}, "", launchDir + "/plain", models.CommandNotExecutableExitCode},
+		{"AWorkDirThatIsABoundFile", []string{"/bin/true"}, "", bundle.GuestInitPath, models.CommandNotExecutableExitCode},
 	}
 
 	for _, tty := range []bool{false, true} {

@@ -678,5 +678,3 @@ func TestALostWaitIsTheExecLostSentinel(t *testing.T) {
 		t.Errorf("ExecFailure returned %v, want no command that never started", err)
 	}
 }
-
-// A workdir that is a file is runc's 126 and the kernel's words, and any other failure of the check stays an error (SHARD-769).
