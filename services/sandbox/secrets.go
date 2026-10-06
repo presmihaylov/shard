@@ -73,7 +73,7 @@ func (s *Service) GrantSecret(ctx context.Context, ref, name string) (models.San
 	}
 
 	if err := b.TrustProxy(proxyCA); err != nil {
-		return models.Sandbox{}, err
+		return models.Sandbox{}, noCABundle(sb.Image, err)
 	}
 
 	if err := b.SetEnv(name, sec.Placeholder); err != nil {

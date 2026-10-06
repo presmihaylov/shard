@@ -39,7 +39,7 @@ func (s *Service) AttachPolicy(ctx context.Context, ref, name string) (models.Sa
 	// An attach on a sandbox that held neither policy nor secret is what fronts it, so the CA goes first.
 	if !egress.Fronted(sb) {
 		if err := s.trustProxy(id); err != nil {
-			return models.Sandbox{}, err
+			return models.Sandbox{}, noCABundle(sb.Image, err)
 		}
 	}
 

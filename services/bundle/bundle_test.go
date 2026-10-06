@@ -8,6 +8,7 @@ import (
 	"path/filepath"
 	"slices"
 	"strings"
+	"syscall"
 	"testing"
 
 	specs "github.com/opencontainers/runtime-spec/specs-go"
@@ -503,6 +504,42 @@ func TestBuildWritesTheResolverConfigIntoTheWritableLayer(t *testing.T) {
 	for _, want := range []string{"127.0.0.1\tlocalhost", "10.87.0.2\tamber-otter"} {
 		if !strings.Contains(hosts, want) {
 			t.Errorf("the hosts file has no %q:\n%s", want, hosts)
+		}
+	}
+}
+
+// SHARD-764: setup's unit runs the daemon under umask 0077, and a 0700 /etc broke every non-root reader and apt.
+func TestBuildMakesTheLayerFilesWorldReadablePastTheDaemonUmask(t *testing.T) {
+	spec := newSpec(t)
+	if err := os.MkdirAll(filepath.Join(spec.RootFS, "etc/ssl/certs"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	write(t, filepath.Join(spec.RootFS, "etc/ssl/certs/ca-certificates.crt"), imageRoots)
+	spec.ProxyCA = []byte(proxyCA)
+	spec.Network = models.NetworkSpec{
+		Address:     netip.MustParsePrefix("10.87.0.2/16"),
+		Nameservers: []netip.Addr{netip.MustParseAddr("1.1.1.1")},
+	}
+	old := syscall.Umask(0o077)
+	t.Cleanup(func() { syscall.Umask(old) })
+
+	b, _ := build(t, spec, models.ImageConfig{})
+
+	modes := map[string]os.FileMode{
+		"etc":                               0o755,
+		"etc/ssl":                           0o755,
+		"etc/ssl/certs":                     0o755,
+		"etc/resolv.conf":                   0o644,
+		"etc/hosts":                         0o644,
+		"etc/ssl/certs/ca-certificates.crt": 0o644,
+	}
+	for name, want := range modes {
+		info, err := os.Stat(filepath.Join(b.Upper, name))
+		if err != nil {
+			t.Fatalf("stat %s: %v", name, err)
+		}
+		if got := info.Mode().Perm(); got != want {
+			t.Errorf("%s has mode %#o, want %#o", name, got, want)
 		}
 	}
 }

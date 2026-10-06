@@ -196,6 +196,33 @@ func TestGrantSecretOverAnUnreadableEnvironmentIsNoBadRequest(t *testing.T) {
 	}
 }
 
+// SHARD-766: the image is the request's fault, so the grant names it and the fix instead of a 500.
+func TestGrantSecretRefusesAnImageWithNoCABundle(t *testing.T) {
+	svc, _, b := granted(t, &recorder{}, withImage(stopped()))
+	dropRoots(t, b)
+
+	_, err := svc.GrantSecret(t.Context(), "sandbox1", "TOKEN")
+
+	if public, ok := sandbox.PublicText(err); !ok || public != noRootsText {
+		t.Fatalf("grant = %v, want the public text %q", err, noRootsText)
+	}
+}
+
+const noRootsText = "image index.docker.io/library/alpine:3.20 has no CA bundle, which a sandbox with a secret or a policy needs: use an image with ca-certificates"
+
+// dropRoots takes the CA bundle out of the image under b, as node:22-bookworm-slim ships.
+func dropRoots(t *testing.T, b bundle.Bundle) {
+	t.Helper()
+
+	rt, err := b.Runtime()
+	if err != nil {
+		t.Fatalf("Runtime: %v", err)
+	}
+	if err := os.Remove(filepath.Join(rt.RootFS, "etc/ssl/certs/ca-certificates.crt")); err != nil {
+		t.Fatal(err)
+	}
+}
+
 func TestUngrantSecretTakesThePlaceholderBackAndLeavesTheCA(t *testing.T) {
 	svc, l, b := granted(t, &recorder{}, stopped())
 

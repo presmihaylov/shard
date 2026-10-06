@@ -121,6 +121,18 @@ func TestAttachPolicyLeavesTheCAOfASandboxThatWasFronted(t *testing.T) {
 	}
 }
 
+// SHARD-766: the attach that fronts the sandbox refuses an image with no CA bundle as a grant does.
+func TestAttachPolicyRefusesAnImageWithNoCABundle(t *testing.T) {
+	svc, _, b := attachable(t, &recorder{}, withImage(stopped()))
+	dropRoots(t, b)
+
+	_, err := svc.AttachPolicy(t.Context(), "sandbox1", "locked")
+
+	if public, ok := sandbox.PublicText(err); !ok || public != noRootsText {
+		t.Fatalf("attach = %v, want the public text %q", err, noRootsText)
+	}
+}
+
 func TestAttachPolicyRefusesARunningSandbox(t *testing.T) {
 	svc, _, _ := attachable(t, &recorder{}, running())
 

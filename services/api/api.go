@@ -681,13 +681,14 @@ func classify(err error) (int, models.Code) {
 	var notStarted *models.CommandNotStartedError
 	var fileInvalid *sandbox.FileInvalidError
 	var imageGone *sandbox.ImageGoneError
+	var noCABundle *sandbox.NoCABundleError
 
 	switch {
 	case errors.As(err, &scope):
 		return http.StatusForbidden, models.CodeForbidden
 	case errors.As(err, &tooLarge):
 		return http.StatusRequestEntityTooLarge, models.CodeBodyTooLarge
-	case errors.As(err, &invalid), errors.As(err, &request), errors.As(err, &fileInvalid), errors.Is(err, image.ErrBadReference):
+	case errors.As(err, &invalid), errors.As(err, &request), errors.As(err, &fileInvalid), errors.As(err, &noCABundle), errors.Is(err, image.ErrBadReference):
 		return http.StatusBadRequest, models.CodeInvalidRequest
 	case errors.Is(err, sandboxstate.ErrNotFound), errors.Is(err, sandboxstate.ErrSnapshotNotFound), errors.Is(err, egress.ErrNotFound),
 		errors.Is(err, secret.ErrNotFound), errors.Is(err, image.ErrNotFound), errors.As(err, &fileNotFound), errors.As(err, &imageGone):

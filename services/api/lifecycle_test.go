@@ -790,6 +790,8 @@ func TestTheStatusAndTheCodeFollowTheError(t *testing.T) {
 		{"gone from the substrate", &sandbox.UnavailableError{ID: "sandbox1", Why: "is gone from gvisor", Fix: "remove it with shard remove sandbox1 and create another sandbox"}, http.StatusConflict, "sandbox_not_running", "gone from gvisor"},
 		{"an image gone from the host", &sandbox.ImageGoneError{ID: "sandbox1", Image: "index.docker.io/library/alpine@sha256:0a1b", Verb: "start",
 			Err: fmt.Errorf("the image at /var/lib/shard/rootfs/sha256-0a1b is gone: %w", models.ErrImageGone)}, http.StatusNotFound, "not_found", "pull that image, then start"},
+		{"an image with no CA bundle", &sandbox.NoCABundleError{Image: "node:22-bookworm-slim", Err: errors.New("the image rootfs /var/lib/shard/rootfs/sha256-0a1b has no CA bundle")},
+			http.StatusBadRequest, "invalid_request", "image node:22-bookworm-slim has no CA bundle, which a sandbox with a secret or a policy needs: use an image with ca-certificates"},
 		{"an unclaimed verb", models.Unsupported("gvisor", "fork"), http.StatusConflict, "unsupported", "provider gvisor does not support fork on this host; use a server that supports fork"},
 		{"a status past its budget", &sandbox.SubstrateTimeoutError{ID: "sandbox1", Op: "stop", Budget: time.Second}, http.StatusGatewayTimeout, "timeout", "did not answer within 1s"},
 		{"anything else", errors.New("runsc: boom"), http.StatusInternalServerError, "internal", "the daemon log has the cause"},

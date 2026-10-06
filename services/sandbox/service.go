@@ -264,6 +264,30 @@ func imageGone(id, ref, digest, verb string, err error) error {
 	return gone
 }
 
+// NoCABundleError is a secret or a policy on an image with no CA bundle, which the proxy CA has to join.
+type NoCABundleError struct {
+	Image string
+	Err   error
+}
+
+func (e *NoCABundleError) Error() string { return e.Public() + ": " + e.Err.Error() }
+
+func (e *NoCABundleError) Unwrap() error { return e.Err }
+
+// Public names the image and the fix, never the host path of its rootfs.
+func (e *NoCABundleError) Public() string {
+	return fmt.Sprintf("image %s has no CA bundle, which a sandbox with a secret or a policy needs: use an image with ca-certificates", e.Image)
+}
+
+// noCABundle names the image whose tree has no roots for the proxy CA; any other error passes through.
+func noCABundle(ref string, err error) error {
+	if !errors.Is(err, bundle.ErrNoCABundle) {
+		return err
+	}
+
+	return &NoCABundleError{Image: ref, Err: err}
+}
+
 // wrongState refuses a verb on the record's state, and names why an unresponsive one is silent, as https://useshards.com/docs/concepts/lifecycle/#unresponsive promises.
 func wrongState(id string, sb models.Sandbox, fix string, code models.Code) *StateError {
 	refused := &StateError{ID: id, State: sb.State, Fix: fix, Code: code}
@@ -751,7 +775,7 @@ func (s *Service) Complete(ctx context.Context, id string, req CreateRequest) (e
 	td.Push(func(ctx context.Context) error { return s.cfg.Provider.Remove(ctx, id) })
 
 	if err := s.cfg.Provider.Create(ctx, spec); err != nil {
-		return imageGone(id, sb.Image, img.Digest, "create", userRefused(err))
+		return imageGone(id, sb.Image, img.Digest, "create", noCABundle(sb.Image, userRefused(err)))
 	}
 
 	if err := s.recordCreated(ctx, spec, img.Digest); err != nil {

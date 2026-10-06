@@ -17,6 +17,9 @@ import (
 // libraries trust the proxy; curl reads CURL_CA_BUNDLE first, and the official curl image sets its own.
 var TrustEnv = []string{"SSL_CERT_FILE", "REQUESTS_CA_BUNDLE", "NODE_EXTRA_CA_CERTS", "CURL_CA_BUNDLE"}
 
+// ErrNoCABundle is an image tree with none of the roots the proxy CA joins, so no fronted sandbox can run on it.
+var ErrNoCABundle = errors.New("no CA bundle")
+
 // rootPaths is where the common image families keep their CA bundle, relative to the rootfs.
 var rootPaths = []string{"etc/ssl/certs/ca-certificates.crt", "etc/pki/tls/certs/ca-bundle.crt", "etc/ssl/ca-bundle.pem"}
 
@@ -100,7 +103,7 @@ func imageRoots(rootfs string, env []string) (string, []byte, error) {
 		return rel, roots, nil
 	}
 
-	return "", nil, fmt.Errorf("the image rootfs %s has no CA bundle to add the proxy CA to; tried /%s", rootfs, strings.Join(candidates, ", /"))
+	return "", nil, fmt.Errorf("the image rootfs %s has %w to add the proxy CA to; tried /%s", rootfs, ErrNoCABundle, strings.Join(candidates, ", /"))
 }
 
 func envValue(env []string, name string) string {

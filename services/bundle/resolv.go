@@ -3,6 +3,7 @@ package bundle
 import (
 	"errors"
 	"fmt"
+	"io/fs"
 	"net/netip"
 	"os"
 	"path/filepath"
@@ -47,7 +48,7 @@ func writeLayer(layer, name string, data []byte, shift idShift) error {
 		return fmt.Errorf("open the writable layer %s: %w", layer, err)
 	}
 
-	if err := root.MkdirAll(filepath.Dir(name), etcDirPerm); err != nil {
+	if err := mkdirLevels(root, filepath.Dir(name), etcDirPerm); err != nil {
 		return errors.Join(fmt.Errorf("create %s in the writable layer %s: %w", filepath.Dir(name), layer, err), root.Close())
 	}
 	if err := store.WriteFileIn(root, name, data, etcFilePerm); err != nil { // #nosec G306
@@ -58,6 +59,27 @@ func writeLayer(layer, name string, data []byte, shift idShift) error {
 	}
 
 	return root.Close()
+}
+
+// mkdirLevels makes each missing level of dir at perm whatever the daemon's umask, and leaves a level that exists as the guest or the image set it.
+func mkdirLevels(root *os.Root, dir string, perm fs.FileMode) error {
+	parts := strings.Split(filepath.Clean(dir), string(filepath.Separator))
+	for i := range parts {
+		level := filepath.Join(parts[:i+1]...)
+
+		err := root.Mkdir(level, perm)
+		if errors.Is(err, fs.ErrExist) {
+			continue
+		}
+		if err != nil {
+			return err
+		}
+		if err := root.Chmod(level, perm); err != nil {
+			return err
+		}
+	}
+
+	return nil
 }
 
 // resolvConf lists the nameservers the network service allocated. A sandbox with none resolves no
