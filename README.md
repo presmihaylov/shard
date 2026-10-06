@@ -37,6 +37,7 @@ sudo shard remove --force demo
 ```
 
 The third command prints `hello from shard`. On a Mac the daemon runs as your user, so drop `sudo`.
+To open a shell in the sandbox, run `sudo shard shell demo` before you remove it.
 
 ## Documentation
 

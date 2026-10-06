@@ -219,6 +219,7 @@ func commands() []command {
 		{name: "create", run: App.create},
 		{name: "run", run: App.launch},
 		{name: "exec", run: App.exec},
+		{name: "shell", run: App.shell},
 		{name: "list", aliases: []string{"ls"}, run: App.list},
 		{name: "logs", run: App.logs},
 		{name: "inspect", run: App.inspect},

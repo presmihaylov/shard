@@ -20,6 +20,8 @@ sudo shard exec demo echo hello
 sudo shard remove --force demo
 ```
 
+To open a shell in the sandbox, run `sudo shard shell demo` before you remove it.
+
 Those commands set up a Linux host with gVisor. On a Mac, use `--provider vz` and leave out `sudo`. When `~/.local/bin` is not on your `PATH`, the installer prints the line that adds it.
 
 ## What you need

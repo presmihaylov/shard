@@ -103,7 +103,7 @@ On a machine that only connects to a remote server, run the installer again. It 
 
 On a sandbox host, run `shard setup`, choose **Run sandboxes on this machine**, then **Upgrade shard**. The daemon runs the copy that setup installed in `/usr/local/bin`, so the installer alone does not upgrade it. Setup downloads and verifies the new release before it replaces anything. It replaces `/usr/local/bin/shard`, `/usr/local/bin/shard-init` on Linux, and the `shard` you ran it from, and keeps the provider. If the installed version is already the newest, setup says so and changes nothing.
 
-Setup tells you before it restarts the daemon. A running background service restarts on the new version, and the upgrade waits until the daemon answers. Your sandboxes keep running while the daemon restarts. Open `shard exec` sessions disconnect, and their commands keep running. If you start the daemon yourself, restart `shard daemon` after the upgrade.
+Setup tells you before it restarts the daemon. A running background service restarts on the new version, and the upgrade waits until the daemon answers. Your sandboxes keep running while the daemon restarts. Open `shard exec` and `shard shell` sessions disconnect, and their commands keep running. If you start the daemon yourself, restart `shard daemon` after the upgrade.
 
 ## Uninstall
 
