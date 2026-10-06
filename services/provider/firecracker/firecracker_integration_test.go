@@ -487,16 +487,17 @@ func TestARestoredMicroVMTakesTheHostClock(t *testing.T) {
 func assertHostClock(t *testing.T, p models.Provider, id string) {
 	t.Helper()
 
-	status, out := runIn(t, p, id, "date +%s%N")
+	// Busybox date has no %N, so the guest waits for its next second and the host reads its own clock as that second lands.
+	status, out := runIn(t, p, id, `s=$(date +%s); while [ "$(date +%s)" = "$s" ]; do :; done; date +%s`)
 	host := time.Now()
 	if status.Code != 0 {
 		t.Fatalf("date in %s = %+v: %s", id, status, out)
 	}
-	ns, err := strconv.ParseInt(strings.TrimSpace(out), 10, 64)
+	sec, err := strconv.ParseInt(strings.TrimSpace(out), 10, 64)
 	if err != nil {
 		t.Fatalf("date in %s wrote %q: %v", id, out, err)
 	}
-	if skew := host.Sub(time.Unix(0, ns)).Abs(); skew >= time.Second {
+	if skew := host.Sub(time.Unix(sec, 0)).Abs(); skew >= time.Second {
 		t.Errorf("the clock of %s is %s off the host's, want under 1s", id, skew)
 	}
 }
