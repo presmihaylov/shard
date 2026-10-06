@@ -213,14 +213,14 @@ func (c *Control) Readdress(ctx context.Context, a Address) error {
 // SeedSize is the host entropy one reseed carries, the size of the kernel's crng key.
 const SeedSize = 32
 
-// Reseed gives a restored guest fresh host entropy and rekeys its crng from it, so two restores of one save draw different bytes.
+// Reseed gives a restored guest fresh host entropy and rekeys its crng from it, so two restores of one save draw different bytes, and sets its wall clock to the host's.
 func (c *Control) Reseed(ctx context.Context) error {
 	seed := make([]byte, SeedSize)
 	if _, err := rand.Read(seed); err != nil {
 		return fmt.Errorf("draw the seed: %w", err)
 	}
 
-	return c.request(ctx, Message{Kind: KindReseed, Seed: seed})
+	return c.request(ctx, Message{Kind: KindReseed, Seed: seed, Now: time.Now().UnixNano()})
 }
 
 // Freeze flushes the guest's root and holds every write to it, so a disk copied while the VM is paused is whole; verb is what holds it.

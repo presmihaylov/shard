@@ -158,5 +158,4 @@ A daemon uses one provider for every sandbox on the server. A root stays tied to
 ## Pause and fork
 
 - **A gVisor pause that fails partway loses the sandbox.** When a checkpoint begins but does not finish, the sandbox ends and its record says `failed`.
-- **A Firecracker guest's clock is corrected after a restore only on x86_64.** On arm64, nothing corrects the guest's clock after a resume or a fork.
 - **An `exec` that runs across a Firecracker fork loses its stream.** It fails with an error, and its command keeps running in the sandbox with nothing reading its output. An `exec` that starts while the fork holds the sandbox frozen is refused. Run it again when the fork returns.

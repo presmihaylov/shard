@@ -297,11 +297,12 @@ of the overlay and a reflinked copy of the memory file in its jail, and it does 
 checkpoint. Firecracker maps the memory private, so the vmm never writes to that copy. `fork` builds
 on this restore (SHARD-462). It freezes and stops the running source as `pause` does, writes the
 same capture into the fork's own directory, and runs the source on in the same vmm. The fork loads
-that capture, and the capture then goes. Firecracker cannot pause the wall clock, so the guest's
-clock is corrected at the load on x86_64, where it reads kvm-clock, and nowhere else. Every load of
-one checkpoint also wakes with the same guest crng key, and the kernel has no vmgenid driver. So
-each `resume` sends the guest 32 bytes of host entropy, and `shard-init` rekeys from them before the
-verb returns (SHARD-266). A restore keeps a marker until the seed lands. If the daemon is
+that capture, and the capture then goes. Every load wakes the guest clock at the time of its save.
+The load moves only kvm-clock, and the guest kernel reads tsc, so the reseed below also carries the
+host's wall clock, and `shard-init` sets the guest's to it before any process runs again
+(SHARD-776). Every load of one checkpoint also wakes with the same guest crng key, and the kernel
+has no vmgenid driver. So each `resume` sends the guest 32 bytes of host entropy, and `shard-init`
+rekeys from them before the verb returns (SHARD-266). A restore keeps a marker until the seed lands. If the daemon is
 interrupted in between, it reseeds the guest it adopts, and it ends a guest that refuses the reseed
 or the thaw. No guest process draws from the saved key in between, because the checkpoint holds the
 guest frozen. `pause` has `shard-init` freeze the sandbox cgroup and then the root's writes before
