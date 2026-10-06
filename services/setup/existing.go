@@ -688,16 +688,21 @@ func stopService(ctx context.Context, h Host, m Manifest) error {
 	}
 
 	for _, u := range units {
-		if h.OS == "darwin" {
-			if err := bootout(ctx, h, "system/"+strings.TrimSuffix(filepath.Base(u), ".plist")); err != nil {
-				return err
-			}
-			continue
+		if err := stopUnit(ctx, h, u); err != nil {
+			return err
 		}
-		name := strings.TrimSuffix(filepath.Base(u), ".service")
-		if _, err := privileged(ctx, h, "systemctl", "disable", "--now", name); err != nil {
-			return fmt.Errorf("stop %s: %w", name, err)
-		}
+	}
+
+	return nil
+}
+
+func stopUnit(ctx context.Context, h Host, unit string) error {
+	if h.OS == "darwin" {
+		return bootout(ctx, h, "system/"+strings.TrimSuffix(filepath.Base(unit), ".plist"))
+	}
+	name := strings.TrimSuffix(filepath.Base(unit), ".service")
+	if _, err := privileged(ctx, h, "systemctl", "disable", "--now", name); err != nil {
+		return fmt.Errorf("stop %s: %w", name, err)
 	}
 
 	return nil
