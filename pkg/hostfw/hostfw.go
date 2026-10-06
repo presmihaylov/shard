@@ -275,11 +275,24 @@ func (m *Manager) claim(ctx context.Context, kind, name string, listed []string,
 		return false, err
 	}
 	if !owned {
-		return false, fmt.Errorf("firewalld has a %s %s without the description %q, so it is the host's own: rename it, or remove it if nothing uses it", kind, name, marker)
+		return false, &ForeignError{Kind: kind, Name: name, Marker: marker}
 	}
 
 	return false, nil
 }
+
+// ForeignError is a zone or policy the host made itself; its text holds no host address, so a client may read it.
+type ForeignError struct {
+	Kind   string
+	Name   string
+	Marker string
+}
+
+func (e *ForeignError) Error() string {
+	return fmt.Sprintf("firewalld has a %s %s without the description %q, so it is the host's own: rename it, or remove it if nothing uses it", e.Kind, e.Name, e.Marker)
+}
+
+func (e *ForeignError) Public() string { return e.Error() }
 
 // ours is whether the zone or policy exists and carries the marker.
 func (m *Manager) ours(ctx context.Context, kind, name string, listed []string, marker string) (bool, error) {

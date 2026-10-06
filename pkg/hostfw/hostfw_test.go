@@ -2,6 +2,7 @@ package hostfw_test
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"slices"
 	"strings"
@@ -387,8 +388,9 @@ func TestEnsureZoneRefusesAZoneOrPolicyItDidNotMake(t *testing.T) {
 			f, m := firewalldHost(answers)
 
 			err := m.EnsureZone(t.Context(), hole)
-			if err == nil || !strings.Contains(err.Error(), "the host's own") {
-				t.Fatalf("EnsureZone = %v, want a refusal of the %s", err, kind)
+			foreign, ok := errors.AsType[*hostfw.ForeignError](err)
+			if !ok || foreign.Kind != kind || foreign.Public() != err.Error() || !strings.Contains(err.Error(), "the host's own") {
+				t.Fatalf("EnsureZone = %v, want a refusal of the %s that a client may read", err, kind)
 			}
 			if slices.ContainsFunc(f.calls, func(call string) bool {
 				return strings.Contains(call, "--set-") || strings.Contains(call, "--add-") || strings.Contains(call, "--reload")

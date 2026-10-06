@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/presmihaylov/shard/models"
+	"github.com/presmihaylov/shard/pkg/hostfw"
 	"github.com/presmihaylov/shard/pkg/netns"
 	"github.com/presmihaylov/shard/services/bundle"
 	"github.com/presmihaylov/shard/services/network"
@@ -210,6 +211,10 @@ func TestAFailedNetworkSetUpNamesItsCause(t *testing.T) {
 		"a host binary with an unknown reason": {
 			cause: &netns.CommandError{Command: "ip netns add synthetic", Stderr: `Cannot open "/var/run/netns/synthetic": Read-only file system`, Err: errors.New("exit status 1")},
 			want:  "set up the sandbox network on the host: ip failed; the daemon log has the cause",
+		},
+		"a foreign firewalld zone": {
+			cause: fmt.Errorf("open the host firewall for shard0: %w", &hostfw.ForeignError{Kind: "zone", Name: "shard", Marker: network.FirewallMarker}),
+			want:  `set up the sandbox network on the host: firewalld has a zone shard without the description "managed-by-shard", so it is the host's own: rename it, or remove it if nothing uses it`,
 		},
 		"a full pool": {
 			cause: fmt.Errorf("%w in 10.87.0.0/16", network.ErrNoFreeAddress),
