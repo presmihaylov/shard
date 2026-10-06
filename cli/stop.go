@@ -1,16 +1,13 @@
 package cli
 
-import (
-	"context"
-	"fmt"
-)
+import "context"
 
 // stopOptions is one parsed shard stop invocation.
 type stopOptions struct {
-	id string
+	ids []string
 }
 
-// stop asks the daemon to end the sandbox and prints the id it acted on, which is never the name typed.
+// stop asks the daemon to end each sandbox and prints the id it acted on, which is never the name typed.
 func (a App) stop(ctx context.Context, args []string) error {
 	opts, err := parseStop(args)
 	if err != nil {
@@ -22,12 +19,14 @@ func (a App) stop(ctx context.Context, args []string) error {
 		return err
 	}
 
-	sb, err := c.StopSandbox(ctx, opts.id)
-	if err != nil {
-		return err
-	}
+	return a.each(ctx, opts.ids, func(ref string) error {
+		sb, err := c.StopSandbox(ctx, ref)
+		if err != nil {
+			return err
+		}
 
-	return a.print(sb.ID)
+		return a.print(sb.ID)
+	})
 }
 
 func parseStop(args []string) (stopOptions, error) {
@@ -39,12 +38,11 @@ func parseStop(args []string) (stopOptions, error) {
 		return stopOptions{}, err
 	}
 
-	rest := flags.Args()
-	if len(rest) != 1 {
-		return stopOptions{}, fmt.Errorf("stop takes one sandbox id or name, got %s", gotArgs(rest))
+	ids, err := sandboxRefs("stop", flags.Args())
+	if err != nil {
+		return stopOptions{}, err
 	}
-
-	opts.id = rest[0]
+	opts.ids = ids
 
 	return opts, nil
 }

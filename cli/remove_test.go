@@ -1,24 +1,27 @@
 package cli
 
-import "testing"
+import (
+	"slices"
+	"testing"
+)
 
 func TestParseRemoveFlags(t *testing.T) {
-	opts, err := parseRemove([]string{"--force", "sandbox1"})
+	opts, err := parseRemove([]string{"--force", "sandbox1", "sandbox2"})
 	if err != nil {
 		t.Fatalf("parseRemove: %v", err)
 	}
 
-	if opts.id != "sandbox1" || !opts.force {
-		t.Errorf("parseRemove gave %+v, want sandbox1 and force", opts)
+	if !slices.Equal(opts.ids, []string{"sandbox1", "sandbox2"}) || !opts.force {
+		t.Errorf("parseRemove gave %+v, want both sandboxes and force", opts)
 	}
 }
 
 func TestParseRemoveRejections(t *testing.T) {
 	cases := map[string][]string{
-		"no id":           {},
-		"two ids":         {"sandbox1", "sandbox2"},
-		"a flag after id": {"sandbox1", "--force"},
-		"an unknown flag": {"--recursive", "sandbox1"},
+		"no id":            {},
+		"a flag after id":  {"sandbox1", "--force"},
+		"a flag after two": {"sandbox1", "sandbox2", "--force"},
+		"an unknown flag":  {"--recursive", "sandbox1"},
 	}
 
 	for name, args := range cases {

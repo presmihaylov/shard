@@ -182,6 +182,7 @@ shard list [OPTIONS]
 shard list
 shard list --all
 shard list --format json
+shard list -q
 ```
 
 **Options**
@@ -189,9 +190,12 @@ shard list --format json
 | Option | Description | Default |
 | --- | --- | --- |
 | `--all` | include stopped sandboxes |  |
+| `-q, --quiet` | print only sandbox IDs, one per line |  |
 | `--format <format>` | output format: json or table | `table` |
 
 Table columns: ID, NAME, IMAGE, STATE, UPTIME, RESTART and POLICY.
+
+`--quiet` prints the IDs for another command to take, as in shard stop $(shard list -q). It cannot be combined with `--format`.
 
 ## shard logs
 
@@ -249,27 +253,31 @@ shard inspect --format table web
 
 ## shard stop
 
-Stop a sandbox and preserve its files.
+Stop sandboxes and preserve their files.
 
 ```text
-shard stop SANDBOX
+shard stop SANDBOX [SANDBOX...]
 ```
 
-**Example**
+**Examples**
 
 ```sh
 shard stop web
+shard stop web worker
+shard stop $(shard list -q)
 ```
 
 **Arguments**
 
 | Argument | Description |
 | --- | --- |
-| `SANDBOX` | sandbox ID or name |
+| `SANDBOX` | sandbox ID or name; give more than one to act on each |
 
 The main command has up to 30 seconds to exit before it is terminated. Files remain available, but memory and process state are lost.
 
 Use `shard start` to start the sandbox again. Use `shard snapshot create` to save its files as a snapshot.
+
+With more than one sandbox, each ID prints as its sandbox succeeds. A failure does not stop the rest: every failure prints at the end, and the exit code is 1.
 
 ## shard start
 
@@ -295,10 +303,10 @@ If the sandbox has a main command, it starts from the beginning.
 
 ## shard remove
 
-Remove a sandbox and its files.
+Remove sandboxes and their files.
 
 ```text
-shard remove [OPTIONS] SANDBOX
+shard remove [OPTIONS] SANDBOX [SANDBOX...]
 ```
 
 **Examples**
@@ -306,65 +314,97 @@ shard remove [OPTIONS] SANDBOX
 ```sh
 shard remove web
 shard remove --force web
+shard remove --force web worker
 ```
 
 **Arguments**
 
 | Argument | Description |
 | --- | --- |
-| `SANDBOX` | sandbox ID or name |
+| `SANDBOX` | sandbox ID or name; give more than one to act on each |
 
 **Options**
 
 | Option | Description |
 | --- | --- |
-| `--force` | stop the sandbox first if needed; ignore a missing sandbox |
+| `--force` | stop each sandbox first if needed; ignore a missing sandbox |
 
 Stop a running or paused sandbox before removal, or use `--force`. A sandbox with an image download in progress can be removed directly.
 
-## shard pause
+With more than one sandbox, each ID prints as its sandbox succeeds. A failure does not stop the rest: every failure prints at the end, and the exit code is 1.
 
-Save a sandbox's state and suspend it.
+## shard prune
+
+Remove every stopped sandbox and its files, and print each removed ID.
 
 ```text
-shard pause SANDBOX
+shard prune [OPTIONS]
 ```
 
-**Example**
+**Examples**
+
+```sh
+shard prune
+shard prune --force
+```
+
+**Options**
+
+| Option | Description |
+| --- | --- |
+| `--force` | remove without asking for confirmation |
+
+Running and paused sandboxes are never removed. prune lists the stopped sandboxes and asks before it removes them. Without a terminal to ask on, it refuses unless `--force` is given.
+
+## shard pause
+
+Save sandboxes' state and suspend them.
+
+```text
+shard pause SANDBOX [SANDBOX...]
+```
+
+**Examples**
 
 ```sh
 shard pause web
+shard pause web worker
 ```
 
 **Arguments**
 
 | Argument | Description |
 | --- | --- |
-| `SANDBOX` | sandbox ID or name |
+| `SANDBOX` | sandbox ID or name; give more than one to act on each |
 
 Memory and files are saved so its processes can continue after resume. The sandbox must be running. Availability depends on the provider.
 
+With more than one sandbox, each ID prints as its sandbox succeeds. A failure does not stop the rest: every failure prints at the end, and the exit code is 1.
+
 ## shard resume
 
-Resume a paused sandbox from its saved state.
+Resume paused sandboxes from their saved state.
 
 ```text
-shard resume SANDBOX
+shard resume SANDBOX [SANDBOX...]
 ```
 
-**Example**
+**Examples**
 
 ```sh
 shard resume web
+shard resume web worker
 ```
 
 **Arguments**
 
 | Argument | Description |
 | --- | --- |
-| `SANDBOX` | sandbox ID or name |
+| `SANDBOX` | sandbox ID or name; give more than one to act on each |
 
 Processes continue from where they paused.
+
+With more than one sandbox, each ID prints as its sandbox succeeds. A failure does not stop the rest: every failure prints at the end, and the exit code is 1.
 
 ## shard fork
 
