@@ -672,9 +672,9 @@ func TestTaskBackoffIsTheDaemons(t *testing.T) {
 
 // A task that keeps failing ends the verify early with its last error, while one that heals lets setup go on. (SHARD-781)
 func TestVerifyNamesATaskThatKeepsFailing(t *testing.T) {
-	wait, poll := verifyWait, verifyPoll
-	verifyWait, verifyPoll = time.Hour, time.Millisecond
-	t.Cleanup(func() { verifyWait, verifyPoll = wait, poll })
+	wait, poll, steady := verifyWait, verifyPoll, verifySteady
+	verifyWait, verifyPoll, verifySteady = time.Hour, time.Millisecond, 20*time.Millisecond
+	t.Cleanup(func() { verifyWait, verifyPoll, verifySteady = wait, poll, steady })
 
 	refusal := "open the firewall: the zone shard belongs to another tool"
 	status := func(tasks ...api.TaskState) []byte {
@@ -704,7 +704,7 @@ func TestVerifyNamesATaskThatKeepsFailing(t *testing.T) {
 			h := Host{OS: "linux", Euid: 1000, Env: func(string) string { return "" }, Run: func(_ context.Context, name string, args ...string) ([]byte, error) {
 				switch call := strings.Join(append([]string{name}, args...), " "); call {
 				case "sudo -n -- " + shardBinary + " --remote  daemon status --format json":
-					out := c.statuses[asked]
+					out := c.statuses[min(asked, len(c.statuses)-1)]
 					asked++
 					if out == nil {
 						return []byte("{}\n"), nil
@@ -724,11 +724,78 @@ func TestVerifyNamesATaskThatKeepsFailing(t *testing.T) {
 			if (err == nil) != (c.want == nil) || err != nil && !slices.Equal(problemLines(err), c.want) {
 				t.Fatalf("verify = %v, want the lines %q", err, c.want)
 			}
-			if asked != len(c.statuses) {
-				t.Fatalf("daemon status asked %d times, want %d", asked, len(c.statuses))
+			if asked < len(c.statuses) {
+				t.Fatalf("daemon status asked %d times, want at least %d", asked, len(c.statuses))
 			}
 		})
 	}
+}
+
+// A status that answers before any task has failed proves nothing, so setup waits until no task restarts for verifySteady. (SHARD-781)
+func TestVerifyWaitsForTheTasksToHoldSteady(t *testing.T) {
+	wait, poll, steady := verifyWait, verifyPoll, verifySteady
+	verifyWait, verifyPoll = time.Hour, time.Millisecond
+	t.Cleanup(func() { verifyWait, verifyPoll, verifySteady = wait, poll, steady })
+
+	refusal := "open the firewall: the zone shard belongs to another tool"
+	type answer struct {
+		ok    bool
+		tasks []api.TaskState
+	}
+	tasks := func(state string, restarts int) []api.TaskState {
+		return []api.TaskState{
+			{Name: "proxy", State: state, Restarts: restarts, LastError: refusal},
+			{Name: "dns", State: state, Restarts: restarts, LastError: refusal},
+		}
+	}
+	running := func(restarts int) answer { return answer{ok: true, tasks: tasks("running", restarts)} }
+	failing := func(restarts int) answer { return answer{tasks: tasks(taskBackoff, restarts)} }
+	verify := func(t *testing.T, answers ...answer) ([]time.Time, error) {
+		var asked []time.Time
+		h := Host{OS: "linux", Euid: 1000, Env: func(string) string { return "" }, Run: func(_ context.Context, name string, args ...string) ([]byte, error) {
+			switch call := strings.Join(append([]string{name}, args...), " "); call {
+			case "sudo -n -- " + shardBinary + " --remote  daemon status --format json":
+				a := answers[min(len(asked), len(answers)-1)]
+				asked = append(asked, time.Now())
+				out, err := json.Marshal(api.Daemon{Tasks: a.tasks})
+				if err != nil {
+					t.Error(err)
+				}
+				if a.ok {
+					return append(out, '\n'), nil
+				}
+				return append(out, "\nshard: tasks in backoff\n"...), errors.New("exit status 1")
+			case "systemctl is-active shard":
+				return []byte("active\n"), nil
+			default:
+				t.Errorf("unexpected command %s", call)
+				return nil, errors.New("unexpected command")
+			}
+		}}
+		ctx, cancel := context.WithTimeout(t.Context(), 10*time.Second)
+		defer cancel()
+
+		return asked, verifyDaemon(ctx, h)
+	}
+
+	t.Run("an early poll before the first failure", func(t *testing.T) {
+		verifySteady = time.Hour
+		_, err := verify(t, running(0), failing(1), failing(3))
+		want := []string{"The daemon started, but these tasks keep failing:", "  proxy: " + refusal, "  dns: " + refusal, "Read its log with: sudo journalctl -u shard.service"}
+		if err == nil || !slices.Equal(problemLines(err), want) {
+			t.Fatalf("verify = %v, want the lines %q", err, want)
+		}
+	})
+	t.Run("a restart the poll saw only as a count", func(t *testing.T) {
+		verifySteady = 50 * time.Millisecond
+		asked, err := verify(t, running(0), running(1))
+		if err != nil || len(asked) < 2 {
+			t.Fatalf("verify = %v after %d asks, want nil once the tasks held", err, len(asked))
+		}
+		if took := time.Since(asked[1]); took < verifySteady {
+			t.Fatalf("verify ended %s after the restart, want at least %s", took, verifySteady)
+		}
+	})
 }
 
 // transportFunc answers a request without a network.
