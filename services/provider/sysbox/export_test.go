@@ -9,3 +9,6 @@ func (p *Provider) SetCgroupRoot(root string) {
 func (p *Provider) SetProcRoot(root string) {
 	p.procRoot = root
 }
+
+// NotStarted is the refusal an exec gets when its launch never took.
+var NotStarted = notStarted

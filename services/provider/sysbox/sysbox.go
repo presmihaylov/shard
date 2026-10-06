@@ -582,7 +582,7 @@ func (p *Provider) Exec(ctx context.Context, id string, spec models.ExecSpec) (m
 
 	code, err := p.runner.Exec(ctx, id, opts)
 	if err != nil {
-		return models.ExitStatus{}, notStarted(id, err)
+		return models.ExitStatus{}, notStarted(id, opts.WorkDir, err)
 	}
 
 	// Signal stays 0: runc reports an exec's exit code and nothing about the signal that ended it.
@@ -612,10 +612,14 @@ func (p *Provider) StopApp(ctx context.Context, id string, force bool) error {
 }
 
 // notStarted gives a command whose execve never took a name the cli answers with a shell's own exit code.
-func notStarted(id string, err error) error {
+func notStarted(id, workDir string, err error) error {
 	var failed *launch.NotStartedError
 	if !errors.As(err, &failed) {
 		return err
+	}
+	// docker exec answers 126 for a work directory it cannot enter, whatever the errno.
+	if failed.Chdir {
+		return &models.CommandNotStartedError{Sandbox: id, Reason: launch.WorkDirReason(workDir, failed.Errno), Code: models.CommandNotExecutableExitCode}
 	}
 
 	code := models.CommandNotExecutableExitCode

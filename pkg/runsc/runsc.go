@@ -53,6 +53,8 @@ const (
 	// The kernel gives runsc EACCES for a file it may not execute and ENOENT for everything else,
 	// a missing interpreter of a script included, which is what a shell answers 126 and 127 for.
 	notExecutableMessage = "permission denied"
+	// runsc checks the exec's cwd inside the sandbox before it looks the command up.
+	workDirMessage = "initial working directory"
 	// runsc wraps a refusal in the call that hit it, and only the innermost part of that says why.
 	innermostMessage = "failed to "
 )
@@ -347,6 +349,8 @@ type ExecStartError struct {
 	Reason string
 	// NotExecutable separates a command the sandbox found and could not run from one it never found.
 	NotExecutable bool
+	// WorkDir is a cwd the sandbox could not enter, before any search for the command.
+	WorkDir bool
 }
 
 func (e *ExecStartError) Error() string { return e.Reason }
@@ -366,7 +370,7 @@ func startFailure(reason string) error {
 		reason = reason[at:]
 	}
 
-	return &ExecStartError{Reason: reason, NotExecutable: strings.Contains(reason, notExecutableMessage)}
+	return &ExecStartError{Reason: reason, NotExecutable: strings.Contains(reason, notExecutableMessage), WorkDir: strings.Contains(reason, workDirMessage)}
 }
 
 // logReason keeps the last error runsc logged, a copy of the refusal that a tty mixes into the guest's stderr.
