@@ -242,10 +242,22 @@ func TestDetect(t *testing.T) {
 		}
 	})
 
+	// The serve unit outlives an uninstall, and runs no daemon of its own (SHARD-774).
+	t.Run("the serve unit alone", func(t *testing.T) {
+		f := newFakeHost(t)
+		f.write(t, serveUnit, "unit")
+
+		_, ok, err := Detect(t.Context(), f.host(nil))
+		if err != nil || ok {
+			t.Fatalf("Detect = %v, %v; the serve unit alone is no installation", ok, err)
+		}
+	})
+
 	t.Run("manual install", func(t *testing.T) {
 		f := newFakeHost(t)
 		f.write(t, "/usr/local/bin/shard", "bin")
 		f.write(t, "/etc/systemd/system/shard.service", "unit")
+		f.write(t, serveUnit, "unit")
 
 		inst, ok, err := Detect(t.Context(), f.host(nil))
 		if err != nil || !ok || inst.Manifest != nil {
@@ -392,6 +404,12 @@ func TestManualInstallClaimsOnlyWhatItFound(t *testing.T) {
 		{name: "unreadable sandboxes", os: "linux", locked: true,
 			files: map[string]string{systemdUnit: "KillMode=process\n", "/var/lib/shard/sandboxes/sb_1/sandbox.json": record},
 			want:  []string{"In setup, choose the provider your sandboxes use: sudo shard daemon status names it.", keep}},
+		{name: "the serve unit stays out of the route", os: "linux",
+			files: map[string]string{systemdUnit: "KillMode=process\n", serveUnit: "unit"},
+			want: []string{"  sudo rm /etc/systemd/system/shard.service /usr/local/bin/shard",
+				"The shard serve unit remains at " + serveUnit + ", because setup did not install it.",
+				"After you set up shard again, start it with: sudo systemctl start shard-serve"},
+			never: []string{"  " + serveUnit}},
 		{name: "setup runs from the manual binary", os: "linux", fromManual: true,
 			files: map[string]string{systemdUnit: "KillMode=process\n"},
 			want:  []string{"  sudo rm /etc/systemd/system/shard.service /usr/local/bin/shard", "  curl -fsSL https://useshards.com/install | sh"},
@@ -1104,6 +1122,50 @@ func TestUninstallNamesTheDataItKeeps(t *testing.T) {
 				if slices.ContainsFunc(lines, func(l string) bool { return strings.Contains(l, line) }) {
 					t.Errorf("output %q names %q", lines, line)
 				}
+			}
+		})
+	}
+}
+
+// A new setup starts the daemon and not the serve unit that BindsTo it, so uninstall names the restart (SHARD-774).
+func TestUninstallNamesTheServeUnitItKeeps(t *testing.T) {
+	want := []string{"",
+		"The shard serve unit remains at /etc/systemd/system/shard-serve.service, because setup did not install it.",
+		"It stops with the daemon, and a new setup does not start it.",
+		"After you set up shard again, start it with: sudo systemctl start shard-serve",
+		"To remove it, run:",
+		"  sudo systemctl disable --now shard-serve",
+		"  sudo rm /etc/systemd/system/shard-serve.service",
+		"  sudo systemctl daemon-reload",
+	}
+	for _, tc := range []struct {
+		name  string
+		os    string
+		serve bool
+		want  []string
+	}{
+		{name: "linux with the unit", os: "linux", serve: true, want: want},
+		{name: "linux without the unit", os: "linux"},
+		{name: "mac", os: "darwin", serve: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			f := newFakeHost(t)
+			if tc.serve {
+				f.write(t, serveUnit, "unit")
+			}
+			h := f.host(nil)
+			h.OS = tc.os
+
+			lines, err := uninstalled(h, linuxInstall("v0.1.0"), false)
+			if err != nil {
+				t.Fatalf("uninstalled: %v", err)
+			}
+			i := slices.Index(lines, want[1])
+			if tc.want == nil && i >= 0 {
+				t.Fatalf("output %q names the serve unit", lines)
+			}
+			if tc.want != nil && (i < 1 || len(lines) < i-1+len(tc.want) || !slices.Equal(lines[i-1:i-1+len(tc.want)], tc.want)) {
+				t.Fatalf("output = %q, want %q", lines, tc.want)
 			}
 		})
 	}

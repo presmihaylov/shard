@@ -89,7 +89,7 @@ sudo systemctl daemon-reload
 sudo systemctl enable --now shard-serve
 ```
 
-The daemon gives its socket to the `shard` group only when it starts, so the commands restart it once after they create the group. The unit runs as the `shard` user and group, and reads the token signing key from `/etc/shard/serve.secret`. It starts after the daemon and stops with it.
+The daemon gives its socket to the `shard` group only when it starts, so the commands restart it once after they create the group. The unit runs as the `shard` user and group, and reads the token signing key from `/etc/shard/serve.secret`. It starts after the daemon and stops with it. `shard setup` never installs or removes this unit, so after you set shard up again, start it with `sudo systemctl start shard-serve`.
 
 ## 3. Put HTTPS in front
 
