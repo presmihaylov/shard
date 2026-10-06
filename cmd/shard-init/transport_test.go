@@ -264,22 +264,30 @@ func TestTransportExecMovesTheStreams(t *testing.T) {
 	}
 }
 
+// A path that is not there and a name no PATH entry holds are both 127, so shell can tell a missing sh on every substrate (SHARD-759).
 func TestTransportExecNotStartedReports127(t *testing.T) {
-	_, dial := startTransport(t)
-	ctx := testContext(t)
-	c, err := supervisor.Connect(ctx, dial)
-	if err != nil {
-		t.Fatalf("connect: %v", err)
-	}
-	defer c.Close()
-	if err := c.Run(t.Context(), supervisor.RunSpec{Argv: childArgv("sleep:60000")}); err != nil {
-		t.Fatalf("run: %v", err)
-	}
+	for name, header := range map[string]supervisor.ExecHeader{
+		"a path": {Argv: []string{"/nonexistent/cmd"}},
+		"a name": {Argv: []string{"sh"}, Env: []string{"PATH=/nonexistent"}},
+	} {
+		t.Run(name, func(t *testing.T) {
+			_, dial := startTransport(t)
+			ctx := testContext(t)
+			c, err := supervisor.Connect(ctx, dial)
+			if err != nil {
+				t.Fatalf("connect: %v", err)
+			}
+			defer c.Close()
+			if err := c.Run(t.Context(), supervisor.RunSpec{Argv: childArgv("sleep:60000")}); err != nil {
+				t.Fatalf("run: %v", err)
+			}
 
-	_, err = supervisor.Exec(ctx, dial, "sb", supervisor.ExecHeader{Argv: []string{"/nonexistent/cmd"}}, models.ExecSpec{})
-	var notStarted *models.CommandNotStartedError
-	if !errors.As(err, &notStarted) || notStarted.Code != 127 {
-		t.Fatalf("exec gave %v, want CommandNotStartedError with code 127", err)
+			_, err = supervisor.Exec(ctx, dial, "sb", header, models.ExecSpec{})
+			var notStarted *models.CommandNotStartedError
+			if !errors.As(err, &notStarted) || notStarted.Code != 127 {
+				t.Fatalf("exec gave %v, want CommandNotStartedError with code 127", err)
+			}
+		})
 	}
 }
 
@@ -465,6 +473,45 @@ func TestTransportRefusesAShortReseed(t *testing.T) {
 		if err == nil || !strings.Contains(err.Error(), "under the 32 a crng key takes") {
 			t.Fatalf("a reseed of %d bytes gave %v, want the refusal", len(seed), err)
 		}
+	}
+}
+
+// A guest on tsc wakes from a restore at the time of its save, so the reseed sets its clock to the host's (SHARD-776).
+func TestTransportReseedSetsTheClockToTheHostTime(t *testing.T) {
+	var set int64
+	tr := &transport{setClock: func(ns int64) error {
+		set = ns
+
+		return nil
+	}}
+	now := time.Now().UnixNano()
+	if err := tr.handle(supervisor.Message{Kind: supervisor.KindReseed, Seed: make([]byte, supervisor.SeedSize), Now: now}); err != nil {
+		t.Fatalf("reseed: %v", err)
+	}
+	if set != now {
+		t.Fatalf("the reseed set the clock to %d, want the host's %d", set, now)
+	}
+}
+
+func TestTransportRefusesAReseedWithNoHostTime(t *testing.T) {
+	err := (&transport{}).handle(supervisor.Message{Kind: supervisor.KindReseed, Seed: make([]byte, supervisor.SeedSize)})
+	if err == nil || !strings.Contains(err.Error(), "carries no host time") {
+		t.Fatalf("a reseed with no time gave %v, want the refusal", err)
+	}
+}
+
+// The guest refuses a reseed with no time, so one that lands proves the host sent its own.
+func TestTransportTakesTheHostsReseed(t *testing.T) {
+	_, dial := startTransport(t)
+	ctx := testContext(t)
+	c, err := supervisor.Connect(ctx, dial)
+	if err != nil {
+		t.Fatalf("connect: %v", err)
+	}
+	defer c.Close()
+
+	if err := c.Reseed(ctx); err != nil {
+		t.Fatalf("reseed: %v", err)
 	}
 }
 

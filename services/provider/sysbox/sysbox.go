@@ -153,6 +153,11 @@ func (p *Provider) create(ctx context.Context, spec models.SandboxSpec, b bundle
 		return err
 	}
 
+	// runc makes the shard parent at 0755 only when it is missing, so one an older daemon made at 0750 is opened here.
+	if err := cgroup.EnsureParent(filepath.Join(p.cgroupRoot, bundle.CgroupParent)); err != nil {
+		return errors.Join(err, exit.Close())
+	}
+
 	if err := p.runner.Create(ctx, spec.ID, runc.CreateOptions{Bundle: b.Dir, Stdout: out, Stderr: out, Stdin: exit}); err != nil {
 		return errors.Join(err, exit.Close())
 	}
@@ -571,11 +576,12 @@ func (p *Provider) Exec(ctx context.Context, id string, spec models.ExecSpec) (m
 	}
 
 	// sysbox-runc mounts its own overlay as the guest root, and the host's mount of the same layers can show a stale tree (SHARD-653).
-	if err := bundle.CheckUserDatabases(filepath.Join(p.procRoot, strconv.Itoa(pid), "root")); err != nil {
+	guest := filepath.Join(p.procRoot, strconv.Itoa(pid), "root")
+	if err := bundle.CheckUserDatabases(guest); err != nil {
 		return models.ExitStatus{}, err
 	}
 
-	opts, err := execOptions(b, spec)
+	opts, err := execOptions(b, guest, spec)
 	if err != nil {
 		return models.ExitStatus{}, err
 	}
@@ -630,8 +636,8 @@ func notStarted(id, workDir string, err error) error {
 	return &models.CommandNotStartedError{Sandbox: id, Reason: failed.Reason(), Code: code}
 }
 
-// execOptions resolves users against the live sandbox because it can differ from the image.
-func execOptions(b bundle.Bundle, spec models.ExecSpec) (runc.ExecOptions, error) {
+// execOptions resolves users against the live sandbox because it can differ from the image, and reads HOME from guest, the root PID 1 sees.
+func execOptions(b bundle.Bundle, guest string, spec models.ExecSpec) (runc.ExecOptions, error) {
 	runtime, err := b.Runtime()
 	if err != nil {
 		return runc.ExecOptions{}, err
@@ -640,7 +646,7 @@ func execOptions(b bundle.Bundle, spec models.ExecSpec) (runc.ExecOptions, error
 	opts := runc.ExecOptions{
 		Bundle:  b.Dir,
 		Argv:    spec.Argv,
-		Env:     runspec.MergeEnv(runtime.Env, spec.Env),
+		Env:     runspec.ExecEnv(runtime.Env, spec.Env, spec.TTY),
 		WorkDir: firstNonEmpty(spec.WorkDir, runtime.WorkDir, "/"),
 		Launch:  bundle.GuestInitPath,
 		TTY:     spec.TTY,
@@ -660,6 +666,11 @@ func execOptions(b bundle.Bundle, spec models.ExecSpec) (runc.ExecOptions, error
 		}
 		opts.User = fmt.Sprintf("%d:%d", identity.UID, identity.GID)
 		opts.Groups = identity.Groups
+	}
+
+	opts.Env, err = bundle.AddHome(guest, opts.User, opts.Env)
+	if err != nil {
+		return runc.ExecOptions{}, err
 	}
 
 	return opts, nil

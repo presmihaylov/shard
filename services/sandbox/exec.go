@@ -87,7 +87,8 @@ type Attached struct {
 
 // UnavailableError is a sandbox no command can run in, because the substrate no longer holds it.
 type UnavailableError struct {
-	ID string
+	// Sandbox is the name the user gave it, else its id.
+	Sandbox string
 	// Why is what became of the sandbox, and Fix what the operator does about it.
 	Why string
 	Fix string
@@ -100,11 +101,11 @@ func (e *UnavailableError) Error() string {
 		return e.Public()
 	}
 
-	return fmt.Sprintf("sandbox %s %s: %s: %s", e.ID, e.Why, e.Detail, e.Fix)
+	return fmt.Sprintf("sandbox %s %s: %s: %s", e.Sandbox, e.Why, e.Detail, e.Fix)
 }
 
 func (e *UnavailableError) Public() string {
-	return fmt.Sprintf("sandbox %s %s: %s", e.ID, e.Why, e.Fix)
+	return fmt.Sprintf("sandbox %s %s: %s", e.Sandbox, e.Why, e.Fix)
 }
 
 // AttachedError is an exec a client already watches: one attach at a time replays and streams its output.
@@ -156,8 +157,9 @@ func (e *ExecRunningError) Public() string { return e.Error() }
 
 // ExecLimitError is a create past the execs one sandbox, or the whole daemon, runs at once. No running exec is evicted to make room.
 type ExecLimitError struct {
-	ID    string
-	Limit int
+	// Sandbox is the name the user gave it, else its id.
+	Sandbox string
+	Limit   int
 	// Daemon is a refusal by the bound across every sandbox, not by the sandbox's own.
 	Daemon bool
 }
@@ -167,7 +169,7 @@ func (e *ExecLimitError) Error() string {
 		return fmt.Sprintf("the daemon runs %d execs, the most it runs at once across all sandboxes: wait for one to exit, or kill one", e.Limit)
 	}
 
-	return fmt.Sprintf("sandbox %s runs %d execs, the most one sandbox runs at once: wait for one to exit, or kill one", e.ID, e.Limit)
+	return fmt.Sprintf("sandbox %s runs %d execs, the most one sandbox runs at once: wait for one to exit, or kill one", e.Sandbox, e.Limit)
 }
 
 func (e *ExecLimitError) Public() string { return e.Error() }
@@ -491,10 +493,12 @@ func (w bufWriter) Write(p []byte) (int, error) {
 type execSession struct {
 	id        string
 	sandboxID string
-	command   []string
-	tty       bool
-	stdinReq  bool
-	startedAt time.Time
+	// sandboxName is the sandbox as its user knows it, which a refused start names.
+	sandboxName string
+	command     []string
+	tty         bool
+	stdinReq    bool
+	startedAt   time.Time
 
 	cancel context.CancelFunc
 	done   chan struct{}
@@ -617,6 +621,7 @@ func (e *execSession) setResult(exit models.ExitStatus, err error) {
 	case errors.As(err, &notStarted):
 		// The provider knows the reason, and the session the program the caller named.
 		named := *notStarted
+		named.Sandbox = e.sandboxName
 		named.Command = e.command[0]
 		e.startErr = &named
 		e.exit = &models.ExitStatus{Code: notStarted.Code}
@@ -714,7 +719,7 @@ func (s *Service) CreateExec(ctx context.Context, ref string, req ExecRequest) (
 		return models.Exec{}, &RequestError{Err: errors.New("the request names no command to run")}
 	}
 
-	id, err := s.readyForExec(ctx, ref)
+	id, sb, err := s.readyForExec(ctx, ref)
 	if err != nil {
 		return models.Exec{}, err
 	}
@@ -724,10 +729,11 @@ func (s *Service) CreateExec(ctx context.Context, ref string, req ExecRequest) (
 		return models.Exec{}, err
 	}
 
-	if err := s.admitExec(id); err != nil {
+	name := nameOf(id, sb)
+	if err := s.admitExec(id, name); err != nil {
 		return models.Exec{}, err
 	}
-	session, err := s.startExec(id, execID, req)
+	session, err := s.startExec(id, name, execID, req)
 	if err != nil {
 		s.releaseExec(id)
 		return models.Exec{}, err
@@ -830,21 +836,22 @@ func (s *Service) execCleanupGrace() time.Duration {
 }
 
 // startExec opens the command's stdio and runs it in the background, so the create waits on its launch with a bound.
-func (s *Service) startExec(id, execID string, req ExecRequest) (*execSession, error) {
+func (s *Service) startExec(id, name, execID string, req ExecRequest) (*execSession, error) {
 	ctx, cancel := context.WithCancel(context.Background())
 
 	session := &execSession{
-		id:        execID,
-		sandboxID: id,
-		command:   slices.Clone(req.Command),
-		tty:       req.TTY,
-		stdinReq:  req.Stdin,
-		startedAt: time.Now().UTC(),
-		cancel:    cancel,
-		done:      make(chan struct{}),
-		buf:       newExecBuffer(req.Attach),
-		pidSet:    make(chan struct{}),
-		state:     models.ExecRunning,
+		id:          execID,
+		sandboxID:   id,
+		sandboxName: name,
+		command:     slices.Clone(req.Command),
+		tty:         req.TTY,
+		stdinReq:    req.Stdin,
+		startedAt:   time.Now().UTC(),
+		cancel:      cancel,
+		done:        make(chan struct{}),
+		buf:         newExecBuffer(req.Attach),
+		pidSet:      make(chan struct{}),
+		state:       models.ExecRunning,
 	}
 
 	spec := specOf(req)
@@ -984,12 +991,12 @@ func drain(drained <-chan error, buf *execBuffer) error {
 func (s *Service) Attach(ctx context.Context, ref, execID string, streams Streams) (attached Attached, err error) {
 	ctx, cancel := context.WithCancel(ctx)
 	defer cancel()
-	id, _, err := s.resolveForExec(ref)
+	id, sb, err := s.resolveForExec(ref)
 	if err != nil {
 		return Attached{}, err
 	}
 
-	session, err := s.execOf(id, execID)
+	session, err := s.execOf(id, nameOf(id, sb), execID)
 	if err != nil {
 		return Attached{}, err
 	}
@@ -1159,12 +1166,12 @@ func (s *Service) KillExec(ctx context.Context, ref, execID, signal string) erro
 		return err
 	}
 
-	id, _, err := s.resolveForExec(ref)
+	id, sb, err := s.resolveForExec(ref)
 	if err != nil {
 		return err
 	}
 
-	session, err := s.execOf(id, execID)
+	session, err := s.execOf(id, nameOf(id, sb), execID)
 	if err != nil {
 		return err
 	}
@@ -1190,12 +1197,12 @@ func (s *Service) KillExec(ctx context.Context, ref, execID, signal string) erro
 
 // DeleteExec forgets an exec that has ended and frees its buffer. An exec still running is refused.
 func (s *Service) DeleteExec(_ context.Context, ref, execID string) error {
-	id, _, err := s.resolveForExec(ref)
+	id, sb, err := s.resolveForExec(ref)
 	if err != nil {
 		return err
 	}
 
-	session, err := s.execOf(id, execID)
+	session, err := s.execOf(id, nameOf(id, sb), execID)
 	if err != nil {
 		return err
 	}
@@ -1214,23 +1221,23 @@ func (s *Service) DeleteExec(_ context.Context, ref, execID string) error {
 
 // ResizeExec sets the window of one exec that runs on a terminal, which is what a SIGWINCH forwards.
 func (s *Service) ResizeExec(_ context.Context, ref, execID string, size TerminalSize) error {
-	id, _, err := s.resolveForExec(ref)
+	id, sb, err := s.resolveForExec(ref)
 	if err != nil {
 		return err
 	}
 
-	session, err := s.execOf(id, execID)
+	session, err := s.execOf(id, nameOf(id, sb), execID)
 	if err != nil {
 		return err
 	}
 
 	// An exec that ended, or one that runs on pipes, has no terminal to resize.
 	if session.pair == nil {
-		return models.NotFound(sandboxstate.ErrNotFound, fmt.Sprintf("exec %s of sandbox %s has no terminal to resize; only an exec created with tty has one", execID, id))
+		return models.NotFound(sandboxstate.ErrNotFound, fmt.Sprintf("exec %s of sandbox %s has no terminal to resize; only an exec created with tty has one", execID, nameOf(id, sb)))
 	}
 	select {
 	case <-session.done:
-		return models.NotFound(sandboxstate.ErrNotFound, fmt.Sprintf("exec %s of sandbox %s has ended; it has no terminal to resize", execID, id))
+		return models.NotFound(sandboxstate.ErrNotFound, fmt.Sprintf("exec %s of sandbox %s has ended; it has no terminal to resize", execID, nameOf(id, sb)))
 	default:
 	}
 
@@ -1274,21 +1281,22 @@ func (s *Service) dropExecs(id string) {
 
 // execFor resolves a reference and finds one of its execs, the path a get and a wait share.
 func (s *Service) execFor(ref, execID string) (*execSession, error) {
-	id, _, err := s.resolveForExec(ref)
+	id, sb, err := s.resolveForExec(ref)
 	if err != nil {
 		return nil, err
 	}
 
-	return s.execOf(id, execID)
+	return s.execOf(id, nameOf(id, sb), execID)
 }
 
-func (s *Service) execOf(id, execID string) (*execSession, error) {
+// execOf finds one exec of sandbox id, and a miss names the sandbox as its user knows it.
+func (s *Service) execOf(id, name, execID string) (*execSession, error) {
 	s.execMu.Lock()
 	defer s.execMu.Unlock()
 
 	session := s.execs[execID]
 	if session == nil || session.sandboxID != id || !session.shown {
-		return nil, models.NotFound(sandboxstate.ErrNotFound, fmt.Sprintf("exec %s not found in sandbox %s", execID, id))
+		return nil, models.NotFound(sandboxstate.ErrNotFound, fmt.Sprintf("exec %s not found in sandbox %s", execID, name))
 	}
 
 	return session, nil
@@ -1341,16 +1349,16 @@ func (s *Service) dropHidden(session *execSession) {
 	}
 }
 
-// admitExec takes one running slot of sandbox id, or refuses when the sandbox or the daemon has none left.
-func (s *Service) admitExec(id string) error {
+// admitExec takes one running slot of sandbox id, or refuses by its name when the sandbox or the daemon has none left.
+func (s *Service) admitExec(id, name string) error {
 	s.execMu.Lock()
 	defer s.execMu.Unlock()
 
 	if s.running[id] >= maxRunningExecsPerSandbox {
-		return &ExecLimitError{ID: id, Limit: maxRunningExecsPerSandbox}
+		return &ExecLimitError{Sandbox: name, Limit: maxRunningExecsPerSandbox}
 	}
 	if s.runningAll >= maxRunningExecs {
-		return &ExecLimitError{ID: id, Limit: maxRunningExecs, Daemon: true}
+		return &ExecLimitError{Sandbox: name, Limit: maxRunningExecs, Daemon: true}
 	}
 	s.running[id]++
 	s.runningAll++
@@ -1428,59 +1436,59 @@ func (s *Service) resolveForExec(ref string) (string, models.Sandbox, error) {
 // readyForExec resolves the reference and refuses a sandbox no command can run in. The record
 // answers for an id nobody created, and the substrate for the state, because a record saying
 // running outlives a host restart.
-func (s *Service) readyForExec(ctx context.Context, ref string) (string, error) {
+func (s *Service) readyForExec(ctx context.Context, ref string) (string, models.Sandbox, error) {
 	id, sb, err := s.resolveForExec(ref)
 	if err != nil {
-		return "", err
+		return "", models.Sandbox{}, err
 	}
 
 	// A record that says stopped outranks the oom count the cgroup kept, and a paused one never has a cgroup.
 	if sb.State == models.StateStopped {
-		return "", &StateError{ID: id, State: sb.State, Fix: "start it again with shard start " + nameOf(id, sb), Code: models.CodeSandboxNotRunning}
+		return "", models.Sandbox{}, &StateError{Sandbox: nameOf(id, sb), State: sb.State, Fix: "start it again with shard start " + nameOf(id, sb), Code: models.CodeSandboxNotRunning}
 	}
 
 	// The provider holds nothing of a paused sandbox, and gone is the wrong word for one a resume brings back.
 	if sb.State == models.StatePaused {
-		return "", pausedRefusal(id, sb)
+		return "", models.Sandbox{}, pausedRefusal(id, sb)
 	}
 
 	status, err := s.cfg.Provider.Status(ctx, id)
 	if err != nil {
 		// A pause removes the substrate's state before its record says paused, so its question fails mid-pause.
-		return "", s.pauseOutranks(id, err)
+		return "", models.Sandbox{}, s.pauseOutranks(id, err)
 	}
 	// The substrate is asked even for an unresponsive record, so an exec works as soon as the process answers again.
 	if status.State == models.StateUnresponsive {
 		if err := s.noteUnresponsive(id, sb, status.Reason); err != nil {
-			return "", err
+			return "", models.Sandbox{}, err
 		}
 
-		return "", &UnavailableError{ID: id, Why: "is unresponsive", Detail: status.Reason, Fix: "wait for it to answer, or end it with shard stop " + nameOf(id, sb)}
+		return "", models.Sandbox{}, &UnavailableError{Sandbox: nameOf(id, sb), Why: "is unresponsive", Detail: status.Reason, Fix: "wait for it to answer, or end it with shard stop " + nameOf(id, sb)}
 	}
 	if status.Alive() {
-		return id, nil
+		return id, sb, nil
 	}
 
 	// A pause ends the substrate's run before its record says paused, so the record read again names that pause and no stop (SHARD-478).
 	paused, err := s.pausedMeanwhile(id)
 	if err != nil {
-		return "", err
+		return "", models.Sandbox{}, err
 	}
 	if paused {
-		return "", pausedRefusal(id, sb)
+		return "", models.Sandbox{}, pausedRefusal(id, sb)
 	}
 
 	// The exit file records a 137 for this, which is what a plain kill -9 records too, so the reason
 	// is named here or an operator never learns it.
 	if status.OOMKilled {
-		return "", &UnavailableError{ID: id, Why: OOMKilledReason, Fix: fmt.Sprintf("start it again with shard start %s, over the files it kept; more memory needs a new sandbox with a larger resources.memory_mib", nameOf(id, sb))}
+		return "", models.Sandbox{}, &UnavailableError{Sandbox: nameOf(id, sb), Why: OOMKilledReason, Fix: fmt.Sprintf("start it again with shard start %s, over the files it kept; more memory needs a new sandbox with a larger resources.memory_mib", nameOf(id, sb))}
 	}
 
 	if !status.Exists {
-		return "", &UnavailableError{ID: id, Why: "is gone from " + s.cfg.Provider.Name(), Fix: fmt.Sprintf("remove it with shard remove %s and create another sandbox", nameOf(id, sb))}
+		return "", models.Sandbox{}, &UnavailableError{Sandbox: nameOf(id, sb), Why: "is gone from " + s.cfg.Provider.Name(), Fix: fmt.Sprintf("remove it with shard remove %s and create another sandbox", nameOf(id, sb))}
 	}
 
-	return "", &StateError{ID: id, State: status.State, Fix: "start it again with shard start " + nameOf(id, sb), Code: models.CodeSandboxNotRunning}
+	return "", models.Sandbox{}, &StateError{Sandbox: nameOf(id, sb), State: status.State, Fix: "start it again with shard start " + nameOf(id, sb), Code: models.CodeSandboxNotRunning}
 }
 
 // pausedMeanwhile says a pause that holds no lock against an exec completed since the record was read, recorded or not yet.
@@ -1502,7 +1510,7 @@ func (s *Service) pausedMeanwhile(id string) (bool, error) {
 
 // pausedRefusal is the one text of every exec a pause refuses, whichever layer met the pause first (SHARD-482).
 func pausedRefusal(id string, sb models.Sandbox) *StateError {
-	return &StateError{ID: id, State: models.StatePaused, Fix: "resume it with shard resume " + nameOf(id, sb), Code: models.CodeSandboxNotRunning}
+	return &StateError{Sandbox: nameOf(id, sb), State: models.StatePaused, Fix: "resume it with shard resume " + nameOf(id, sb), Code: models.CodeSandboxNotRunning}
 }
 
 // nameOf is the sandbox as its user knows it: the name they gave it, or its id when it has none.
@@ -1558,7 +1566,7 @@ func (s *Service) endedUnderExec(id string, session *execSession, err error) err
 		return errors.Join(err, getErr)
 	}
 	if sb.State != models.StateRunning {
-		return &StateError{ID: id, State: sb.State, Fix: "start it again with shard start " + nameOf(id, sb), Code: models.CodeSandboxNotRunning}
+		return &StateError{Sandbox: nameOf(id, sb), State: sb.State, Fix: "start it again with shard start " + nameOf(id, sb), Code: models.CodeSandboxNotRunning}
 	}
 
 	return err

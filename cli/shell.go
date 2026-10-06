@@ -61,7 +61,7 @@ func (a App) noShell(ctx context.Context, c *client.Client, opts shellOptions, r
 
 	code, _, ok := notStarted(err)
 	if ok && code == models.CommandNotFoundExitCode {
-		return &ExitError{Code: code, Message: fmt.Sprintf("shard found no shell in sandbox %s: it has neither bash nor sh", opts.id)}
+		return &ExitError{Code: code, Message: fmt.Sprintf("found no shell in sandbox %s: it has neither bash nor sh", opts.id)}
 	}
 	if err != nil && !ok {
 		refused = fmt.Sprintf("%s; and the check for a shell failed: %v", refused, err)

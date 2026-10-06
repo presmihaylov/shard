@@ -59,13 +59,13 @@ func (a App) runApp(ctx context.Context, args []string) error {
 		return err
 	}
 	if asked > 0 {
-		return a.cancelApp(ctx, c, sb.ID, interrupts, asked, opts.detach)
+		return a.cancelApp(ctx, c, sb, interrupts, asked, opts.detach)
 	}
 	if opts.detach {
 		return a.printCreated(sb)
 	}
 
-	return a.attachApp(ctx, c, sb.ID, interrupts, 0, a.Out)
+	return a.attachApp(ctx, c, sb, interrupts, 0, a.Out)
 }
 
 // createCaught counts the interrupts that land during the create and never leaves it, as the daemon starts the app of a create its caller left.
@@ -101,9 +101,9 @@ func createNote(force bool) string {
 }
 
 // cancelApp stops an app the operator interrupted before it began and waits for its end, so the run leaves no app behind.
-func (a App) cancelApp(ctx context.Context, c *client.Client, id string, interrupts <-chan os.Signal, asked int, detach bool) error {
+func (a App) cancelApp(ctx context.Context, c *client.Client, sb client.Sandbox, interrupts <-chan os.Signal, asked int, detach bool) error {
 	// The stop lands before any leave, so a run that leaves on a later interrupt strands no app.
-	if err := stopApp(ctx, c, id, asked == 2); err != nil {
+	if err := stopApp(ctx, c, sb, asked == 2); err != nil {
 		return err
 	}
 
@@ -112,13 +112,13 @@ func (a App) cancelApp(ctx context.Context, c *client.Client, id string, interru
 		out = io.Discard
 	}
 
-	err := a.attachApp(ctx, c, id, interrupts, asked, out)
+	err := a.attachApp(ctx, c, sb, interrupts, asked, out)
 	var exit *ExitError
 	if err != nil && (!errors.As(err, &exit) || exit.Message != "") {
 		return err
 	}
 
-	return &ExitError{Code: InterruptedExitCode, Message: fmt.Sprintf("interrupted; the main command of sandbox %s ended, and the sandbox stays running", id)}
+	return &ExitError{Code: InterruptedExitCode, Message: fmt.Sprintf("interrupted; the main command of sandbox %s ended, and the sandbox stays running", sandboxName(sb))}
 }
 
 // attachedApp is how the attach ended: the app's last exit, or why the attach failed.
@@ -129,10 +129,10 @@ type attachedApp struct {
 
 // attachApp prints the app's output until its policy ends; interrupts stop, then kill, then leave, and the sandbox runs on.
 // asked counts the stops already sent.
-func (a App) attachApp(ctx context.Context, c *client.Client, id string, interrupts <-chan os.Signal, asked int, out io.Writer) error {
+func (a App) attachApp(ctx context.Context, c *client.Client, sb client.Sandbox, interrupts <-chan os.Signal, asked int, out io.Writer) error {
 	attached := make(chan attachedApp, 1)
 	go func() {
-		exit, err := c.AttachApp(ctx, id, out)
+		exit, err := c.AttachApp(ctx, sb.ID, out)
 		attached <- attachedApp{exit: exit, err: err}
 	}()
 
@@ -155,12 +155,12 @@ func (a App) attachApp(ctx context.Context, c *client.Client, id string, interru
 		case <-interrupts:
 			asked++
 			if asked > 2 {
-				return &ExitError{Code: InterruptedExitCode, Message: fmt.Sprintf("left the run; sandbox %s stays running", id)}
+				return &ExitError{Code: InterruptedExitCode, Message: fmt.Sprintf("left the run; sandbox %s stays running", sandboxName(sb))}
 			}
 
 			force := asked == 2
 			a.note(stopNote(force))
-			go func() { stopped <- stopApp(ctx, c, id, force) }()
+			go func() { stopped <- stopApp(ctx, c, sb, force) }()
 		}
 	}
 }
@@ -174,14 +174,14 @@ func stopNote(force bool) string {
 }
 
 // stopApp asks the daemon to stop the app; one that already ended is what the stop asked for, and the attach brings its exit.
-func stopApp(ctx context.Context, c *client.Client, id string, force bool) error {
-	err := c.StopApp(ctx, id, force)
+func stopApp(ctx context.Context, c *client.Client, sb client.Sandbox, force bool) error {
+	err := c.StopApp(ctx, sb.ID, force)
 	var answer *client.APIError
 	if errors.As(err, &answer) && answer.Code == models.CodeAppEnded {
 		return nil
 	}
 	if err != nil {
-		return fmt.Errorf("stop the main command of sandbox %s: %w", id, err)
+		return fmt.Errorf("stop the main command of sandbox %s: %w", sandboxName(sb), err)
 	}
 
 	return nil

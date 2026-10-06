@@ -32,6 +32,14 @@ func addFormatFlag(flags *flag.FlagSet, def outputFormat) *outputFormat {
 	return &format
 }
 
+// formatSet says --format was typed rather than left at its default.
+func formatSet(flags *flag.FlagSet) bool {
+	set := false
+	flags.Visit(func(f *flag.Flag) { set = set || f.Name == "format" })
+
+	return set
+}
+
 // parseFormatArgs is parseArgs for a verb whose only flag is --format.
 func parseFormatArgs(verb string, args []string, def outputFormat) ([]string, outputFormat, error) {
 	flags := newFlags(verb)

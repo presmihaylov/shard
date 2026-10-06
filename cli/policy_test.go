@@ -228,8 +228,8 @@ func TestPolicyAttachAndDetachRoundTrip(t *testing.T) {
 	// policy remove and the POLICY column read the record, so both follow the attach without a change of their own.
 	repo.left = []models.Sandbox{repo.sb}
 	err := app.Run(t.Context(), []string{"policy", "remove", "locked"})
-	if err == nil || !strings.Contains(err.Error(), "sandbox1") {
-		t.Errorf("policy remove of an attached policy = %v", err)
+	if err == nil || !strings.Contains(err.Error(), "held by sandbox web") {
+		t.Errorf("policy remove of an attached policy = %v, want the holder by its name", err)
 	}
 
 	out.Reset()

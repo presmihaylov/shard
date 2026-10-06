@@ -52,7 +52,7 @@ func (s *Service) CreateSnapshot(ctx context.Context, req SnapshotRequest) (mode
 		return models.Snapshot{}, err
 	}
 	if sb.State != models.StateStopped {
-		return models.Snapshot{}, wrongState(id, sb, fmt.Sprintf("stop it first with shard stop %s: a snapshot copies what a stop kept", id), models.CodeSandboxNotStopped)
+		return models.Snapshot{}, wrongState(id, sb, fmt.Sprintf("stop it first with shard stop %s: a snapshot copies what a stop kept", nameOf(id, sb)), models.CodeSandboxNotStopped)
 	}
 
 	img, found, err := s.cfg.Images.Lookup(sb.Image)
@@ -60,11 +60,11 @@ func (s *Service) CreateSnapshot(ctx context.Context, req SnapshotRequest) (mode
 		return models.Snapshot{}, err
 	}
 	if !found {
-		return models.Snapshot{}, &RequestError{Err: fmt.Errorf("sandbox %s was created from %s, which this host no longer holds, so a snapshot of it could never start: run shard pull %s first", id, sb.Image, sb.Image)}
+		return models.Snapshot{}, &RequestError{Err: fmt.Errorf("sandbox %s was created from %s, which this host no longer holds, so a snapshot of it could never start: run shard pull %s first", nameOf(id, sb), sb.Image, sb.Image)}
 	}
 	// A create from the snapshot looks the tag up, so a tag that moved would mount the layer over another image.
 	if img.Digest != sb.Digest {
-		return models.Snapshot{}, &RequestError{Err: fmt.Errorf("sandbox %s was created from %s at %s, and this host now holds that tag at %s, so a snapshot of it could never start; snapshot a sandbox created from the current %s instead", id, sb.Image, sb.Digest, img.Digest, sb.Image)}
+		return models.Snapshot{}, &RequestError{Err: fmt.Errorf("sandbox %s was created from %s at %s, and this host now holds that tag at %s, so a snapshot of it could never start; snapshot a sandbox created from the current %s instead", nameOf(id, sb), sb.Image, sb.Digest, img.Digest, sb.Image)}
 	}
 
 	return s.cfg.Snapshots.Create(models.Snapshot{

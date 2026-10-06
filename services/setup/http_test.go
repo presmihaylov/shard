@@ -8,6 +8,7 @@ import (
 	"net/http/httptest"
 	"slices"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 )
@@ -93,9 +94,16 @@ func TestProgressLine(t *testing.T) {
 
 // A download slower than the idle time in total still completes while each chunk comes within it. (SHARD-681)
 func TestASlowDownloadThatMovesCompletes(t *testing.T) {
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+	const idle = 200 * time.Millisecond
+	next := make(chan struct{})
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.(http.Flusher).Flush()
 		for range 8 {
-			time.Sleep(50 * time.Millisecond)
+			select {
+			case <-next:
+			case <-r.Context().Done():
+				return
+			}
 			if _, err := io.WriteString(w, "chunk"); err != nil {
 				t.Error(err)
 			}
@@ -103,8 +111,11 @@ func TestASlowDownloadThatMovesCompletes(t *testing.T) {
 		}
 	}))
 	t.Cleanup(server.Close)
+	client := newHTTPClient(idle)
+	clock := &fakeTimer{}
+	client.Transport.(*idleTransport).after = clock.start
 
-	resp, err := newHTTPClient(200 * time.Millisecond).Get(server.URL)
+	resp, err := client.Get(server.URL)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -113,9 +124,65 @@ func TestASlowDownloadThatMovesCompletes(t *testing.T) {
 			t.Error(err)
 		}
 	})
-	body, err := io.ReadAll(resp.Body)
+	var body []byte
+	for range 8 {
+		clock.advance(idle * 3 / 4)
+		next <- struct{}{}
+		chunk := make([]byte, len("chunk"))
+		if _, err := io.ReadFull(resp.Body, chunk); err != nil {
+			t.Fatalf("after %q the next chunk failed with %v; want it within the idle time", body, err)
+		}
+		body = append(body, chunk...)
+	}
+	rest, err := io.ReadAll(resp.Body)
 
-	if err != nil || string(body) != strings.Repeat("chunk", 8) {
-		t.Errorf("read %q, %v; want every chunk and no error", body, err)
+	if err != nil || string(body)+string(rest) != strings.Repeat("chunk", 8) {
+		t.Errorf("read %q, %v; want every chunk and no error", string(body)+string(rest), err)
+	}
+}
+
+// fakeTimer is an idle timer on a clock only the test moves, so a scheduler stall on a loaded runner cannot fire it.
+type fakeTimer struct {
+	mu     sync.Mutex
+	d      time.Duration
+	waited time.Duration
+	fire   func()
+}
+
+func (f *fakeTimer) start(d time.Duration, fire func()) timer {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.d, f.fire = d, fire
+
+	return f
+}
+
+func (f *fakeTimer) Reset(d time.Duration) bool {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.d, f.waited = d, 0
+
+	return true
+}
+
+func (f *fakeTimer) Stop() bool {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.fire = nil
+
+	return true
+}
+
+// advance moves the clock by d, and fires the timer once the time since its last reset reaches its duration.
+func (f *fakeTimer) advance(d time.Duration) {
+	f.mu.Lock()
+	f.waited += d
+	fire := f.fire
+	if f.waited < f.d {
+		fire = nil
+	}
+	f.mu.Unlock()
+	if fire != nil {
+		fire()
 	}
 }

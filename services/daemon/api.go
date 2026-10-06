@@ -110,16 +110,16 @@ func Run(ctx context.Context, cfg Config) error {
 	life := &lifecycle{deps: d, base: ctx}
 	self := process{deps: d, startedAt: time.Now().UTC().Truncate(time.Second)}
 
-	tasks := []Task{apiTask{deps: d, lifecycle: life, process: self}, proxyTask{deps: d}, dnsTask{deps: d}, egressLogTailer{deps: d}, heldLogRotation{deps: d}, liveness{deps: d, lifecycle: life, interval: livenessInterval}, restartPolicy{deps: d, lifecycle: life, interval: restartInterval}}
+	tasks := []Task{apiTask{deps: d, lifecycle: life, process: self}, proxyTask{deps: d}, dnsTask{deps: d}, egressLogTailer{deps: d}, heldLogRotation{deps: d}, liveness{deps: d, lifecycle: life, interval: livenessInterval}, hostFirewall{deps: d, interval: firewallInterval}, restartPolicy{deps: d, lifecycle: life, interval: restartInterval}}
 	dmn := New(cfg.Root, cfg.Out, append(tasks, extra...)...)
+	// vz has no bridge, and a daemon that is not root cannot write the host's netfilter, so neither has the table to share.
+	if cfg.Provider != vzvm.Name && os.Geteuid() == 0 {
+		dmn = dmn.WithHostLock(HostLock)
+	}
 	// One registry, shared before any task runs, so process.Daemon reports the state supervise keeps.
 	d.states = dmn.states
-	err = dmn.WithReconciler(reconciler{deps: d, lifecycle: life}).Run(ctx)
-
-	// The tasks have stopped, so no new create starts; wait out the ones the daemon still runs in the background.
-	life.wait()
-
-	return err
+	// The background creates end under the locks, so no daemon on another root renders the host while one rolls back.
+	return dmn.WithReconciler(reconciler{deps: d, lifecycle: life}).WithDrain(life.wait).Run(ctx)
 }
 
 // reconciler checks the records against the substrate at start. An empty root needs no provider, so a
@@ -945,6 +945,10 @@ func (t egressLogTailer) Run(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
+	rules, err := t.deps.egress()
+	if err != nil {
+		return err
+	}
 
 	ring, err := kmsg.Open()
 	if err != nil {
@@ -954,7 +958,7 @@ func (t egressLogTailer) Run(ctx context.Context) error {
 
 	logger := log.New(t.deps.cfg.Out, "", log.LstdFlags)
 
-	if err := egress.NewTailer(t.deps.cfg.Root, decisions, repo, t.deps.unreadableLog(), logger).Run(ctx, ring); err != nil {
+	if err := egress.NewTailer(t.deps.cfg.Root, decisions, repo, rules, t.deps.unreadableLog(), logger).Run(ctx, ring); err != nil {
 		return err
 	}
 

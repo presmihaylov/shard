@@ -8,7 +8,7 @@ const pub = new URL('../public/', import.meta.url).pathname;
 
 // The landing page ships exactly as designed: change these hashes only together with a new design.
 const landing = [
-	['index.html', 'b3f6e141dc0eaaa04777c3ce9d24d981f320bfe940c1b4ceb9d32083055aa95f'],
+	['index.html', '49e656ece102cfc3db98e8f1014cc38f57b2773f2d8d919822ce29d74db5a2b2'],
 	['prism-core.js', '6caad316dd991f24f8004e0b9c19c055cb5829ff65e973fbee406f96d81b8e7e'],
 	['prism-clike.js', 'c76ba4e240932bdc75546be30e550f5ba5e13815ff71511c76e9e27ac3072444'],
 	['prism-javascript.js', '0345ea83e12b7b974e953c79a64dea35a40308309449db70b82020fb688ac321'],

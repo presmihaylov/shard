@@ -377,10 +377,59 @@ func (m *Manager) execute(ctx context.Context, binary string, stdin io.Reader, s
 
 		message := strings.TrimSpace(stderr.String())
 
-		return fmt.Errorf("%s: %w: %s", called, sentinel(message, err), message)
+		return &CommandError{Command: called, Stderr: message, Err: sentinel(message, err)}
 	}
 
 	return nil
+}
+
+// CommandError is a host binary that failed; its public text keeps the binary and a known errno, and the daemon log the rest.
+type CommandError struct {
+	Command string
+	Stderr  string
+	Err     error
+}
+
+func (e *CommandError) Error() string { return fmt.Sprintf("%s: %v: %s", e.Command, e.Err, e.Stderr) }
+
+func (e *CommandError) Unwrap() error { return e.Err }
+
+// knownReasons are the errno texts a failure ends with; they name no host path or address, so a client may read them.
+var knownReasons = []string{
+	"Operation not permitted",
+	"Permission denied",
+	"No such file or directory",
+	"File exists",
+	"Operation not supported",
+	"Device or resource busy",
+}
+
+func (e *CommandError) Public() string {
+	binary, _, _ := strings.Cut(e.Command, " ")
+
+	why := reason(e.Stderr)
+	if i := strings.LastIndex(why, ": "); i >= 0 {
+		why = why[i+len(": "):]
+	}
+
+	if !slices.Contains(knownReasons, why) {
+		return binary + " failed; the daemon log has the cause"
+	}
+
+	return binary + " failed: " + why
+}
+
+// reason is the line of stderr that says why: nft puts its input position before it and echoes the rule after it.
+func reason(stderr string) string {
+	for line := range strings.Lines(stderr) {
+		if _, why, found := strings.Cut(line, "Error: "); found {
+			return strings.TrimSpace(why)
+		}
+	}
+
+	first, _, _ := strings.Cut(stderr, "\n")
+
+	return strings.TrimSpace(first)
 }
 
 // sentinel turns the two failures a caller must act on into errors it can match.

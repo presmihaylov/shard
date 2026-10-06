@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"errors"
 	"fmt"
+	"io"
 	"io/fs"
 	"os"
 	"path/filepath"
@@ -43,6 +44,7 @@ const (
 	passwdFields = 4
 	groupFields  = 3
 	memberField  = 3
+	homeField    = 5
 )
 
 // Identity is the whole of a user, because dropping to one means adopting all of it and not just its ids.
@@ -326,16 +328,24 @@ const maxLinks = 40
 
 // CheckUserDatabases refuses a passwd or group that is not a regular file, since runc opens both before every exec and a fifo stalls it (SHARD-653).
 func CheckUserDatabases(rootfs string) error {
+	return checkDatabases(rootfs, "etc/passwd", "etc/group")
+}
+
+// CheckPasswd is the same refusal for runsc, which opens the passwd and never the group.
+func CheckPasswd(rootfs string) error {
+	return checkDatabases(rootfs, "etc/passwd")
+}
+
+func checkDatabases(rootfs string, rels ...string) error {
 	root, err := os.OpenRoot(rootfs)
 	if err != nil {
 		return fmt.Errorf("open the rootfs %s: %w", rootfs, err)
 	}
 	defer root.Close() //nolint:errcheck // a read-only handle has nothing left to flush
 
-	for _, rel := range []string{"etc/passwd", "etc/group"} {
-		mode, err := guestMode(root, rel, nil)
-		// A database the guest cannot reach either is one runc does without.
-		if errors.Is(err, fs.ErrNotExist) || errors.Is(err, syscall.ENOTDIR) || errors.Is(err, syscall.ELOOP) {
+	for _, rel := range rels {
+		_, mode, err := guestPath(root, rel, nil)
+		if unreachable(err) {
 			continue
 		}
 		if err != nil {
@@ -349,11 +359,16 @@ func CheckUserDatabases(rootfs string) error {
 	return nil
 }
 
+// unreachable is a database the guest's own lookup cannot reach either, which runc and runsc both do without.
+func unreachable(err error) bool {
+	return errors.Is(err, fs.ErrNotExist) || errors.Is(err, syscall.ENOTDIR) || errors.Is(err, syscall.ELOOP)
+}
+
 // errMounted is a path that reaches a guest mount, whose tree the host's view of the rootfs does not hold.
 var errMounted = errors.New("the path reaches a mount of the guest")
 
-// guestMode resolves links as the guest does, an absolute one from the top and ".." stopping there, and opens nothing a fifo could block.
-func guestMode(root *os.Root, rel string, mounts map[string]string) (fs.FileMode, error) {
+// guestPath resolves links as the guest does, an absolute one from the top and ".." stopping there, and opens nothing a fifo could block.
+func guestPath(root *os.Root, rel string, mounts map[string]string) (string, fs.FileMode, error) {
 	parts := strings.Split(rel, "/")
 	resolved := ""
 	mode := fs.ModeDir
@@ -362,7 +377,7 @@ func guestMode(root *os.Root, rel string, mounts map[string]string) (fs.FileMode
 		part := parts[0]
 		parts = parts[1:]
 		if !mode.IsDir() {
-			return 0, &fs.PathError{Op: "lstat", Path: resolved, Err: syscall.ENOTDIR}
+			return "", 0, &fs.PathError{Op: "lstat", Path: resolved, Err: syscall.ENOTDIR}
 		}
 		if part == "" || part == "." {
 			continue
@@ -376,20 +391,20 @@ func guestMode(root *os.Root, rel string, mounts map[string]string) (fs.FileMode
 		next := filepath.Join(resolved, part)
 		source, mounted := mounts[next]
 		if mounted && source == "" || !mounted && inMount(mounts, resolved) {
-			return 0, &fs.PathError{Op: "lstat", Path: next, Err: errMounted}
+			return "", 0, &fs.PathError{Op: "lstat", Path: next, Err: errMounted}
 		}
 		// The runtime resolved a bind's source on the host, so a file bound there is a file to the guest.
 		if mounted {
 			info, err := os.Stat(source)
 			if err != nil {
-				return 0, err
+				return "", 0, err
 			}
 			resolved, mode = next, info.Mode()
 			continue
 		}
 		info, err := root.Lstat(next)
 		if err != nil {
-			return 0, err
+			return "", 0, err
 		}
 		if info.Mode()&fs.ModeSymlink == 0 {
 			resolved, mode = next, info.Mode()
@@ -398,11 +413,11 @@ func guestMode(root *os.Root, rel string, mounts map[string]string) (fs.FileMode
 
 		links++
 		if links > maxLinks {
-			return 0, &fs.PathError{Op: "lstat", Path: next, Err: syscall.ELOOP}
+			return "", 0, &fs.PathError{Op: "lstat", Path: next, Err: syscall.ELOOP}
 		}
 		target, err := root.Readlink(next)
 		if err != nil {
-			return 0, err
+			return "", 0, err
 		}
 		if filepath.IsAbs(target) {
 			resolved = ""
@@ -410,7 +425,97 @@ func guestMode(root *os.Root, rel string, mounts map[string]string) (fs.FileMode
 		parts = append(strings.Split(target, "/"), parts...)
 	}
 
-	return mode, nil
+	return resolved, mode, nil
+}
+
+// maxPasswd bounds the one read a HOME takes, so a sparse passwd the guest grew cannot hold an exec past its budget.
+const maxPasswd = 4 << 20
+
+// AddHome sets the HOME runsc and runc 1.3 would read from the guest's passwd, so neither opens a file the guest can swap for a fifo (SHARD-752).
+func AddHome(rootfs, user string, env []string) ([]string, error) {
+	// A HOME already set wins even when empty, as runsc keeps it.
+	if slices.ContainsFunc(env, func(entry string) bool { return strings.HasPrefix(entry, "HOME=") }) {
+		return env, nil
+	}
+
+	// An exec that names nobody runs as config.json's process user, which is root.
+	uid := uint32(0)
+	if uidText, _, _ := strings.Cut(user, ":"); uidText != "" {
+		id, ok := parseID(uidText)
+		if !ok {
+			return nil, fmt.Errorf("the exec user %q has no numeric uid to find a home for", user)
+		}
+		uid = id
+	}
+
+	home, err := guestHome(rootfs, uid)
+	if err != nil {
+		return nil, err
+	}
+
+	return append(env, "HOME="+home), nil
+}
+
+// guestHome is what runsc finds, the home of the first entry with the uid and "/" without one, through one bounded read of a file proven regular.
+func guestHome(rootfs string, uid uint32) (string, error) {
+	const rel = "etc/passwd"
+
+	root, err := os.OpenRoot(rootfs)
+	if err != nil {
+		return "", fmt.Errorf("open the rootfs %s: %w", rootfs, err)
+	}
+	defer root.Close() //nolint:errcheck // a read-only handle has nothing left to flush
+
+	resolved, mode, err := guestPath(root, rel, nil)
+	if unreachable(err) {
+		return "/", nil
+	}
+	if err != nil {
+		return "", fmt.Errorf("find the guest's /%s: %w", rel, err)
+	}
+	if !mode.IsRegular() {
+		return "", notRegular(rel, mode)
+	}
+
+	// The open proves the file regular on its own handle, so whatever the guest put at the path since the walk is refused, never waited on.
+	full := filepath.Join(rootfs, resolved)
+	f, err := openDatabase(root, resolved, full)
+	if unreachable(err) {
+		return "/", nil
+	}
+	if _, refused := errors.AsType[*UserDatabaseError](err); refused {
+		return "", err
+	}
+	if err != nil {
+		return "", openFailed(root, resolved, full, err)
+	}
+	defer f.Close()
+
+	data, err := io.ReadAll(io.LimitReader(f, maxPasswd+1))
+	if err != nil {
+		return "", fmt.Errorf("read %s: %w", full, err)
+	}
+	if len(data) > maxPasswd {
+		return "", &UserDatabaseError{Err: fmt.Errorf("/%s is over %d MiB, more than a user database may hold", rel, maxPasswd>>20)}
+	}
+
+	for line := range strings.SplitSeq(string(data), "\n") {
+		fields := strings.Split(strings.TrimSpace(line), ":")
+		if len(fields) < 3 {
+			continue
+		}
+		if id, ok := parseID(fields[2]); !ok || id != uid {
+			continue
+		}
+		// An entry with no home field leaves HOME empty, as runsc and runc both do.
+		if len(fields) <= homeField {
+			return "", nil
+		}
+
+		return fields[homeField], nil
+	}
+
+	return "/", nil
 }
 
 // inMount is a path at or under a mount, whose tree the rootfs does not hold.

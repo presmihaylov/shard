@@ -50,6 +50,7 @@ func TestPutArchiveStreamsTheBodyAsTheQuerySays(t *testing.T) {
 
 func TestAPutArchiveOutlivesTheReadTimeoutWhileItsBodyMoves(t *testing.T) {
 	s := slow(t, seed(t), 200*time.Millisecond)
+	ahead(t)
 
 	status := trickle(t, s, "archive?path=/srv", slices.Repeat([]time.Duration{20 * time.Millisecond}, 20))
 	if status != http.StatusNoContent || s.verbs.landed != strings.Repeat("x", 20) {
@@ -61,9 +62,9 @@ func TestAPutArchiveOutlivesTheReadTimeoutWhileItsBodyMoves(t *testing.T) {
 func TestAPutArchiveWhoseBodyStallsIsCut(t *testing.T) {
 	s := slow(t, seed(t), 200*time.Millisecond)
 
-	status := trickle(t, s, "archive?path=/srv", append(slices.Repeat([]time.Duration{20 * time.Millisecond}, 15), time.Second))
+	status := stall(t, s, "archive?path=/srv", 15)
 	if status == http.StatusNoContent || s.verbs.landed != strings.Repeat("x", 15) {
-		t.Fatalf("a body that stalled for 1 s answered %d and landed %q, want a failure after the 15 bytes before the stall", status, s.verbs.landed)
+		t.Fatalf("a body that stopped one byte short answered %d and landed %q, want a failure after the 15 bytes it sent", status, s.verbs.landed)
 	}
 }
 

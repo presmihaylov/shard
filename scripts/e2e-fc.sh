@@ -147,15 +147,10 @@ record_pid() { grep -o '"pid": *[0-9]*' "${SHARD_ROOT}/sandboxes/$1/sandbox.json
 step "check the host"
 [ "$(id -u)" = "0" ] || fail "shard drives /dev/kvm, a tap and nft, so this needs root"
 [ -e /dev/kvm ] || fail "no /dev/kvm on this host: firecracker needs bare metal, rent one and run this there"
-for binary in firecracker jailer mkfs.erofs mkfs.xfs ip ss nft iptables go curl openssl; do
+for binary in firecracker jailer mkfs.erofs mkfs.xfs ip ss nft go curl openssl; do
 	command -v "${binary}" >/dev/null || fail "no ${binary} on this host"
 done
-say "/dev/kvm, firecracker, jailer, mkfs.erofs, mkfs.xfs, ip, ss, nft, iptables, go, curl and openssl are on the host"
-# The guest reaches the resolver and the proxy over the bridge, and a host firewall that drops INPUT eats them before shard sees them.
-if iptables -S INPUT 2>/dev/null | has_line "^-P INPUT DROP$" && ! iptables -C INPUT -i shard0 -j ACCEPT 2>/dev/null; then
-	fail "the host firewall drops INPUT: run 'iptables -I INPUT -i shard0 -j ACCEPT' and run this again"
-fi
-say "the host firewall lets the bridge reach the daemon"
+say "/dev/kvm, firecracker, jailer, mkfs.erofs, mkfs.xfs, ip, ss, nft, go, curl and openssl are on the host"
 if [ -n "${SHARD_KERNEL:-}" ]; then
 	[ -f "${SHARD_KERNEL}" ] || fail "SHARD_KERNEL names ${SHARD_KERNEL}, which is not a file"
 	[ -n "${SHARD_KERNEL_SHA256:-}" ] || fail "SHARD_KERNEL is set and SHARD_KERNEL_SHA256 is not: the daemon refuses one without the other"

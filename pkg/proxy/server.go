@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"crypto/tls"
+	"crypto/x509"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -92,6 +93,8 @@ type Director interface {
 	Decide(ctx context.Context, req Request) (Decision, error)
 	// Rewrite edits the outbound request in place and reserves each byte a value adds before it exists; body is nil when none was held, and what comes back is sent.
 	Rewrite(ctx context.Context, req Request, out *http.Request, body []byte, reserve Reserve) ([]byte, error)
+	// Untrusted records an allowed request the proxy never sent, because the upstream failed the certificate check; reason is fixed text, never the error.
+	Untrusted(ctx context.Context, req Request, upstream netip.AddrPort, reason string) error
 }
 
 // Config is what a Server is built from.
@@ -277,8 +280,14 @@ func (s *Server) handle(stopped context.Context, w http.ResponseWriter, r *http.
 	defer s.held.give(req.Source, charged)
 
 	sw := &statusWriter{ResponseWriter: w}
-	s.forward(req.Source).ServeHTTP(sw, out) //nolint:gosec // forwarding the guest's request is the job, and the director pinned where it dials
-	s.cfg.Log.Printf("proxy: %s %s %s:%d %d", req.Source, clip(r.Method), req.Host, req.Port, sw.status)
+	var reason string
+	s.forward(req, decision.Upstream, &reason).ServeHTTP(sw, out) //nolint:gosec // forwarding the guest's request is the job, and the director pinned where it dials
+	if reason == "" {
+		s.cfg.Log.Printf("proxy: %s %s %s:%d %d", req.Source, clip(r.Method), req.Host, req.Port, sw.status)
+
+		return
+	}
+	s.cfg.Log.Printf("proxy: %s %s %s:%d %d: %s", req.Source, clip(r.Method), req.Host, req.Port, sw.status, reason)
 }
 
 // request reads who is asking and for what; the name must be one the host can judge.
@@ -485,17 +494,50 @@ type joinedBody struct {
 
 func (j *joinedBody) Close() error { return j.closer.Close() }
 
-func (s *Server) forward(source netip.Addr) *httputil.ReverseProxy {
+// forward sends the outbound request, and sets reason when the upstream failed the certificate check.
+func (s *Server) forward(req Request, upstream netip.AddrPort, reason *string) *httputil.ReverseProxy {
 	return &httputil.ReverseProxy{
 		// The outbound request is already built, so the rewrite has nothing left to do.
 		Rewrite:   func(*httputil.ProxyRequest) {},
 		Transport: s.transport,
-		ErrorLog:  s.log.Logger(func(string) netip.Addr { return source }),
-		// The error can quote the rewritten request, which holds secret values, so neither the guest nor the log reads it (SHARD-299).
-		ErrorHandler: func(w http.ResponseWriter, _ *http.Request, _ error) {
-			writeJSON(w, http.StatusBadGateway, map[string]string{"error": "the request to the upstream failed"})
+		ErrorLog:  s.log.Logger(func(string) netip.Addr { return req.Source }),
+		// The error can quote the rewritten request, which holds secret values, so the guest and the logs get a fixed reason at most (SHARD-299).
+		ErrorHandler: func(w http.ResponseWriter, out *http.Request, err error) {
+			*reason = untrusted(err)
+			if *reason == "" {
+				writeJSON(w, http.StatusBadGateway, map[string]string{"error": "the request to the upstream failed"})
+
+				return
+			}
+			// The record goes in before the 502, so a follow has it when the guest reads why; the request failed already, so the daemon log is all a lost record can reach.
+			if err := s.cfg.Director.Untrusted(out.Context(), req, upstream, *reason); err != nil {
+				s.log.Printf(req.Source, "proxy: %s %s %s:%d: %v", req.Source, clip(out.Method), req.Host, req.Port, err)
+			}
+			writeJSON(w, http.StatusBadGateway, map[string]string{"error": "the request to the upstream failed", "host": req.Host, "reason": *reason})
 		},
 	}
+}
+
+// untrusted names in fixed words why the upstream failed the certificate check, and is empty for every other failure (SHARD-772).
+func untrusted(err error) string {
+	var verify *tls.CertificateVerificationError
+	if !errors.As(err, &verify) {
+		return ""
+	}
+	var authority x509.UnknownAuthorityError
+	if errors.As(err, &authority) {
+		return "the upstream's certificate is signed by an authority the host does not trust"
+	}
+	var hostname x509.HostnameError
+	if errors.As(err, &hostname) {
+		return "the upstream's certificate does not name the host"
+	}
+	var invalid x509.CertificateInvalidError
+	if errors.As(err, &invalid) && invalid.Reason == x509.Expired {
+		return "the upstream's certificate has expired or is not valid yet"
+	}
+
+	return "the upstream's certificate failed the check"
 }
 
 func (s *Server) refuse(w http.ResponseWriter, r *http.Request, status int, message string) {

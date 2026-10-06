@@ -115,7 +115,7 @@ A sandbox is always in one of seven states.
 
 **`start`** runs a `stopped` sandbox again, with the files the stop kept. Memory, processes and open sockets are lost at the stop. If the sandbox has a main command, it starts again from the beginning.
 
-**`pause`** saves the memory and the processes to disk and frees the memory. **`resume`** continues from that checkpoint, and the processes carry on where they left off. A `pause` ends any `exec` that is still running. An `exec` on a paused sandbox fails with `sandbox <id> is paused: resume it with shard resume <id>`.
+**`pause`** saves the memory and the processes to disk and frees the memory. **`resume`** continues from that checkpoint, and the processes carry on where they left off. A `pause` ends any `exec` that is still running. An `exec` on a paused sandbox fails with `sandbox <name> is paused: resume it with shard resume <name>`.
 
 **`fork`** works only on a `running` sandbox. It freezes the source, copies its memory and files, then lets it continue. The new sandbox goes from `created` to `running`. On gVisor the capture has a 10-minute limit. If it exceeds that limit, the fork fails and shard tries to resume the source. Fork works on the same providers as pause.
 

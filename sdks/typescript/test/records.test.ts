@@ -13,6 +13,11 @@ test("a sandbox create made runs no app", () => {
   assert.equal(info.createdAt.toISOString(), "2026-10-04T10:00:00.123Z");
 });
 
+test("a fork names the sandbox it was forked from", () => {
+  assert.equal(sandboxInfo(sandboxRecord({ forked_from: "sb_1" })).forkedFrom, "sb_1");
+  assert.equal(sandboxInfo(sandboxRecord()).forkedFrom, null);
+});
+
 test("a run's app carries its exit and its restart policy, and a signal of 0 is none", () => {
   const info = sandboxInfo(
     sandboxRecord({

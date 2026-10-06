@@ -241,6 +241,9 @@ func TestAFileRefusalAnswersTheAPICode(t *testing.T) {
 			if !strings.Contains(err.Error(), "refused /srv/app") {
 				t.Fatalf("stat gave %v, want the guest's words", err)
 			}
+			if text, ok := sandbox.PublicText(err); text != `"/srv/app" in sandbox sandbox1: refused /srv/app` {
+				t.Fatalf("the public text is %q, %v; want the path, the sandbox and the guest's words, with no op", text, ok)
+			}
 		})
 	}
 }

@@ -23,6 +23,7 @@ import (
 	"github.com/presmihaylov/shard/pkg/launch"
 	"github.com/presmihaylov/shard/pkg/memfd"
 	"github.com/presmihaylov/shard/pkg/store"
+	"github.com/presmihaylov/shard/pkg/termrelay"
 	"github.com/presmihaylov/shard/services/supervisor"
 )
 
@@ -49,8 +50,8 @@ var errNoEntrypoint = errors.New("the entrypoint did not start")
 var errNoHost = errors.New("no host attached")
 
 func init() {
-	// The host traces the launch shim's main thread alone, so the execve has to run on it.
-	if len(os.Args) > 1 && os.Args[1] == launch.Mode {
+	// The host traces the launch shim's main thread alone, and the relay's command dies with the thread that forked it.
+	if len(os.Args) > 1 && (os.Args[1] == launch.Mode || os.Args[1] == termrelay.Mode) {
 		runtime.LockOSThread()
 	}
 }
@@ -59,6 +60,10 @@ func main() {
 	// The daemon runs [/.shard/init launch <dir> <argv>] as an exec's own process, to prove the command's execve took.
 	if len(os.Args) > 1 && os.Args[1] == launch.Mode {
 		os.Exit(runLaunch(os.Args[2:]))
+	}
+	// gVisor runs [/.shard/init terminal <dir> <argv>] as a terminal exec's own process, to give the command a guest pty.
+	if len(os.Args) > 1 && os.Args[1] == termrelay.Mode {
+		os.Exit(runTerminal(os.Args[2:]))
 	}
 	// The daemon runs [/.shard/init files] through an exec for one file operation, as the user that exec runs as.
 	if len(os.Args) == 2 && os.Args[1] == supervisor.FilesMode {
@@ -73,9 +78,23 @@ func main() {
 	os.Exit(exitCodeFor(err))
 }
 
-// runLaunch returns only when the command did not start; the host has the errno already, so a shell's code is enough here.
+// runLaunch returns only when the command did not start.
 func runLaunch(args []string) int {
-	err := launch.Shim(args)
+	return notStartedCode(launch.Shim(args))
+}
+
+// runTerminal returns the command's exit code, or a shell's code for one that never ran.
+func runTerminal(args []string) int {
+	code, err := termrelay.Relay(args)
+	if err == nil {
+		return code
+	}
+
+	return notStartedCode(err)
+}
+
+// notStartedCode is a shell's code for a command that never ran; the host has the errno already, so the code is enough here.
+func notStartedCode(err error) int {
 	var failed *launch.NotStartedError
 	if !errors.As(err, &failed) {
 		fmt.Fprintln(os.Stderr, "shard-init:", err)

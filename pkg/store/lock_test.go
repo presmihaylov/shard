@@ -66,6 +66,42 @@ func TestTryAcquireReportsAHeldLock(t *testing.T) {
 	}
 }
 
+// A holder notes who it is over what an earlier, longer note left, on the file the lock is held on.
+func TestNoteReplacesTheLockFileContentInPlace(t *testing.T) {
+	path := lockPath(t)
+	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(path, []byte("/var/lib/an-earlier-and-longer-root\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	l, err := TryAcquire(path, 0o600)
+	if err != nil || l == nil {
+		t.Fatalf("TryAcquire: %v, %v", l, err)
+	}
+	t.Cleanup(func() {
+		if err := l.Release(); err != nil {
+			t.Errorf("Release: %v", err)
+		}
+	})
+	if err := l.Note([]byte("/srv/b\n")); err != nil {
+		t.Fatalf("Note: %v", err)
+	}
+
+	got, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(got) != "/srv/b\n" {
+		t.Errorf("the lock file holds %q, want /srv/b alone", got)
+	}
+	// Still held: a note that renamed the file would free the path for anyone.
+	if again, err := TryAcquire(path, 0o600); err != nil || again != nil {
+		t.Errorf("TryAcquire after the note got %v, %v, want the lock still held", again, err)
+	}
+}
+
 func TestAcquireWaitsForARelease(t *testing.T) {
 	path := lockPath(t)
 

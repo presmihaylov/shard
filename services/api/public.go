@@ -18,6 +18,7 @@ type Sandbox struct {
 	Image         string             `json:"image"`
 	Digest        string             `json:"digest,omitempty"`
 	Snapshot      string             `json:"snapshot,omitempty"`
+	ForkedFrom    string             `json:"forked_from,omitempty"`
 	Provider      string             `json:"provider"`
 	Kernel        string             `json:"kernel,omitempty"`
 	State         models.State       `json:"state" enum:"pending,created,running,paused,unresponsive,stopped,failed"`
@@ -58,6 +59,7 @@ func PublicSandbox(sb models.Sandbox) Sandbox {
 		Image:         sb.Image,
 		Digest:        sb.Digest,
 		Snapshot:      sb.Snapshot,
+		ForkedFrom:    sb.ForkedFrom,
 		Provider:      sb.Provider,
 		Kernel:        sb.Kernel,
 		State:         sb.State,

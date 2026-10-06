@@ -113,7 +113,7 @@ There is no process bound. A process in the guest is a process inside the VM, so
 
 `shard pause` saves the guest's memory and state under `/var/lib/shard/checkpoints/<id>`, beside a copy of its disk, then ends the VM. A paused sandbox holds disk space, but no memory and no CPU. In most cases, a pause writes only the memory pages that the guest changed since it booted or last resumed.
 
-`shard resume` loads that state into a new VM, and the processes carry on where they left off. On every load of saved state, by `resume` or `fork`, shard corrects the guest's clock. It also gives the guest a fresh random seed from the host before any process runs again. So a fork never shares random numbers with its source.
+`shard resume` loads that state into a new VM, and the processes carry on where they left off. On every load of saved state, by `resume` or `fork`, shard sets the guest's clock to the host's time. It also gives the guest a fresh random seed from the host before any process runs again. So a fork never shares random numbers with its source.
 
 `shard fork` copies a running sandbox, memory included:
 
@@ -160,5 +160,4 @@ Set both variables. With only one, the daemon fails when it prepares Firecracker
 - **`Firecracker mounts an XFS image over /var/lib/shard, so it must be empty on a filesystem that cannot clone a disk.`** Move the files in `/var/lib/shard` aside, then run setup again.
 - **`shard needs 1.13.0 or newer`.** An older `firecracker` is on the host. Remove it so setup installs one, or replace it.
 - **`Firecracker cannot run its jailer under /var/lib/shard.`** Its filesystem is mounted with `nodev` or `noexec`. Remount it without those options.
-- **A sandbox reaches nothing on a host with `ufw`.** ufw drops the bridge's traffic by default. Let it through with `sudo ufw allow in on shard0` and `sudo ufw route allow in on shard0`.
 - **The daemon does not start.** Read its log with `sudo journalctl -u shard`.

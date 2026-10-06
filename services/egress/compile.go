@@ -243,7 +243,7 @@ func (s *Service) Compiles(ctx context.Context, policy models.Policy) error {
 }
 
 func (s *Service) compile(ctx context.Context, rule EffectiveRule) (network.Compiled, error) {
-	compiled := network.Compiled{ID: rule.ID, Action: rule.Action, Protocol: rule.Protocol, Ports: slices.Clone(rule.Ports)}
+	compiled := network.Compiled{ID: rule.ID, Sum: RuleSum(rule.Rule), Action: rule.Action, Protocol: rule.Protocol, Ports: slices.Clone(rule.Ports)}
 
 	switch rule.Destination.Kind {
 	case models.DestinationCIDR:

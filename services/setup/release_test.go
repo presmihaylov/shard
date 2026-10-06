@@ -12,13 +12,15 @@ import (
 	"strings"
 	"sync/atomic"
 	"testing"
+	"time"
 )
 
-// releaseServer is a fake releases API whose assets point back at itself.
+// releaseServer is a fake releases API, with the download URLs that serve its files.
 type releaseServer struct {
 	*httptest.Server
 	releases  []Release
 	files     map[string]string
+	api       atomic.Int32
 	downloads atomic.Int32
 }
 
@@ -28,20 +30,12 @@ func newReleaseServer(t *testing.T) *releaseServer {
 	rs := &releaseServer{files: map[string]string{}}
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /releases", func(w http.ResponseWriter, r *http.Request) {
+		rs.api.Add(1)
 		if r.URL.Query().Get("per_page") != "100" {
 			http.Error(w, "want per_page=100", http.StatusBadRequest)
 			return
 		}
 		writeJSON(t, w, rs.releases)
-	})
-	mux.HandleFunc("GET /releases/tags/{tag}", func(w http.ResponseWriter, r *http.Request) {
-		for _, rel := range rs.releases {
-			if rel.Tag == r.PathValue("tag") {
-				writeJSON(t, w, rel)
-				return
-			}
-		}
-		http.NotFound(w, r)
 	})
 	mux.HandleFunc("GET /download/{tag}/{name}", func(w http.ResponseWriter, r *http.Request) {
 		rs.downloads.Add(1)
@@ -66,19 +60,17 @@ func (rs *releaseServer) add(tag string, draft, pre, sums bool, files map[string
 	var list strings.Builder
 	for name, body := range files {
 		rs.files[tag+"/"+name] = body
-		rel.Assets = append(rel.Assets, Asset{Name: name, URL: rs.URL + "/download/" + tag + "/" + name})
 		sum := sha256.Sum256([]byte(body))
 		list.WriteString(hex.EncodeToString(sum[:]) + "  " + name + "\n")
 	}
 	if sums {
 		rs.files[tag+"/"+sumsAsset] = list.String()
-		rel.Assets = append(rel.Assets, Asset{Name: sumsAsset, URL: rs.URL + "/download/" + tag + "/" + sumsAsset})
 	}
 	rs.releases = append(rs.releases, rel)
 }
 
 func (rs *releaseServer) host() Host {
-	return Host{Releases: rs.URL + "/releases", HTTP: rs.Client()}
+	return Host{Releases: rs.URL + "/releases", Downloads: rs.URL + "/download", HTTP: rs.Client()}
 }
 
 func writeJSON(t *testing.T, w http.ResponseWriter, v any) {
@@ -121,14 +113,31 @@ func TestLatestReleaseRefusesAListWithNoStableTag(t *testing.T) {
 }
 
 func TestLatestReleaseNamesAnAPIFailure(t *testing.T) {
-	api := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
-		http.Error(w, "rate limited", http.StatusForbidden)
-	}))
-	t.Cleanup(api.Close)
+	reset := time.Unix(1759745745, 0)
+	cases := map[string]struct {
+		status  int
+		headers map[string]string
+		want    string
+	}{
+		"a refusal":               {status: http.StatusForbidden, headers: map[string]string{"X-RateLimit-Remaining": "12"}, want: ": 403 Forbidden"},
+		"a spent limit":           {status: http.StatusForbidden, headers: map[string]string{"X-RateLimit-Remaining": "0", "X-RateLimit-Reset": "1759745745"}, want: "the GitHub API rate limit for this IP address is spent (403 Forbidden); it resets at " + reset.Local().Format("15:04 MST") + ", so run shard setup again after that"},
+		"a spent limit, no reset": {status: http.StatusTooManyRequests, headers: map[string]string{"X-RateLimit-Remaining": "0"}, want: "is spent (429 Too Many Requests); run shard setup again within an hour"},
+	}
+	for name, tc := range cases {
+		t.Run(name, func(t *testing.T) {
+			api := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+				for k, v := range tc.headers {
+					w.Header().Set(k, v)
+				}
+				http.Error(w, "rate limited", tc.status)
+			}))
+			t.Cleanup(api.Close)
 
-	_, err := LatestRelease(context.Background(), Host{Releases: api.URL + "/releases", HTTP: api.Client()})
-	if err == nil || !strings.Contains(err.Error(), "403 Forbidden") {
-		t.Fatalf("LatestRelease error = %v, want the 403 named", err)
+			_, err := LatestRelease(context.Background(), Host{Releases: api.URL + "/releases", HTTP: api.Client()})
+			if err == nil || !strings.Contains(err.Error(), tc.want) {
+				t.Fatalf("LatestRelease error = %v, want %q", err, tc.want)
+			}
+		})
 	}
 }
 
@@ -154,6 +163,9 @@ func TestFetchAssetWritesOnlyAVerifiedFile(t *testing.T) {
 	if info.Mode().Perm() != 0o755 {
 		t.Fatalf("FetchAsset mode = %v, want 0755", info.Mode().Perm())
 	}
+	if rs.api.Load() != 0 {
+		t.Fatalf("FetchAsset made %d GitHub API calls, want none", rs.api.Load())
+	}
 }
 
 func TestFetchAssetRefusesABadOrMissingSum(t *testing.T) {
@@ -163,7 +175,7 @@ func TestFetchAssetRefusesABadOrMissingSum(t *testing.T) {
 		tamper bool
 		want   string
 	}{
-		"no SHA256SUMS":  {asset: "shard-linux-amd64", sums: false, want: "has no file SHA256SUMS"},
+		"no SHA256SUMS":  {asset: "shard-linux-amd64", sums: false, want: "download SHA256SUMS of shard release v0.2.0"},
 		"hash mismatch":  {asset: "shard-linux-amd64", sums: true, tamper: true, want: "SHA256SUMS says"},
 		"no line for it": {asset: "shard-init-linux-amd64", sums: true, want: "has no line for shard-init-linux-amd64"},
 	}
@@ -197,23 +209,15 @@ func TestFetchAssetNamesAMissingTag(t *testing.T) {
 	rs.add("v0.2.0", false, false, true, nil)
 
 	err := FetchAsset(context.Background(), rs.host(), "dev-abc123", "shard-init-linux-amd64", filepath.Join(t.TempDir(), "x"), 0o755)
-	if err == nil || !strings.Contains(err.Error(), "find shard release dev-abc123") || !strings.Contains(err.Error(), "404") {
+	if err == nil || !strings.Contains(err.Error(), "SHA256SUMS of shard release dev-abc123") || !strings.Contains(err.Error(), "404") {
 		t.Fatalf("FetchAsset error = %v, want the missing tag and 404 named", err)
 	}
 }
 
-func TestAssetURLNamesAMissingFile(t *testing.T) {
-	rs := newReleaseServer(t)
-	rs.add("v0.2.0", false, false, true, map[string]string{"shard-init-linux-amd64": "init"})
+func TestAssetURLIsTheDownloadURL(t *testing.T) {
+	h := Host{Downloads: "https://github.com/presmihaylov/shard/releases/download"}
 
-	got, err := AssetURL(context.Background(), rs.host(), "v0.2.0", "shard-init-linux-amd64")
-	if err != nil || got != rs.URL+"/download/v0.2.0/shard-init-linux-amd64" {
-		t.Fatalf("AssetURL = %q, %v", got, err)
-	}
-	if rs.downloads.Load() != 0 {
-		t.Fatalf("AssetURL downloaded %d files", rs.downloads.Load())
-	}
-	if _, err := AssetURL(context.Background(), rs.host(), "v0.2.0", "shard-init-linux-arm64"); err == nil || !strings.Contains(err.Error(), "shard-init-linux-arm64") {
-		t.Fatalf("AssetURL error = %v, want the missing file named", err)
+	if got := AssetURL(h, "v0.2.0", "shard-init-linux-amd64"); got != h.Downloads+"/v0.2.0/shard-init-linux-amd64" {
+		t.Fatalf("AssetURL = %q", got)
 	}
 }

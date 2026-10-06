@@ -21,13 +21,13 @@ func sandbox(t *testing.T) models.Sandbox {
 }
 
 func TestHostDropReadsTheLineTheChainsWrote(t *testing.T) {
-	drop, ok := hostDrop("shard-egress rule=2 IN=shard0 OUT=eth0 SRC=10.87.0.2 DST=203.0.113.7 PROTO=TCP DPT=25")
+	drop, ok := hostDrop("shard-egress rule=2 sum=0123456789ab IN=shard0 OUT=eth0 SRC=10.87.0.2 DST=203.0.113.7 PROTO=TCP DPT=25")
 	if !ok {
 		t.Fatal("hostDrop refused a line of ours")
 	}
 
-	if drop.source != "10.87.0.2" {
-		t.Errorf("the source became %q", drop.source)
+	if drop.source != "10.87.0.2" || drop.sum != "0123456789ab" {
+		t.Errorf("the source became %q and the sum %q", drop.source, drop.sum)
 	}
 	if drop.Source != SourceHost || drop.Verdict != string(models.ActionDeny) {
 		t.Errorf("the record became %+v", drop.Record)

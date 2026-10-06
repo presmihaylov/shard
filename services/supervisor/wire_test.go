@@ -368,8 +368,8 @@ func TestRequestAfterTheReaderEndedIsRefused(t *testing.T) {
 	go func() { done <- c.Signal(t.Context(), 1, "KILL") }()
 	select {
 	case err := <-done:
-		if err == nil || !strings.Contains(err.Error(), "went away") {
-			t.Fatalf("signal = %v, want the refusal", err)
+		if !errors.Is(err, supervisor.ErrGone) {
+			t.Fatalf("signal = %v, want supervisor.ErrGone", err)
 		}
 	case <-time.After(5 * time.Second):
 		t.Fatal("signal blocked after the reader ended")
@@ -428,6 +428,25 @@ func TestARequestTheGuestNeverReadsEndsAtItsDeadline(t *testing.T) {
 	}
 	if err := c.Thaw(t.Context()); !errors.Is(err, os.ErrDeadlineExceeded) {
 		t.Fatalf("thaw after a failed write = %v, want the same refusal", err)
+	}
+}
+
+// A stream that ends between the guest's read and its answer is gone, not stuck, so the caller can ask again on the next one (SHARD-755).
+func TestARequestWhoseStreamEndsBeforeTheAnswerIsGone(t *testing.T) {
+	host, guest := net.Pipe()
+	defer host.Close()
+	read := make(chan error, 1)
+	go func() {
+		var m supervisor.Message
+		read <- errors.Join(supervisor.ReadMessage(bufio.NewReader(guest), &m), guest.Close())
+	}()
+
+	c := supervisor.ControlOver(host)
+	if err := c.Thaw(t.Context()); !errors.Is(err, supervisor.ErrGone) {
+		t.Fatalf("thaw = %v, want supervisor.ErrGone", err)
+	}
+	if err := <-read; err != nil {
+		t.Fatal(err)
 	}
 }
 

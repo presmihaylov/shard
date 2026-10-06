@@ -1,10 +1,12 @@
 package setup
 
 import (
+	"bytes"
 	"compress/gzip"
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -23,6 +25,7 @@ import (
 
 	"github.com/presmihaylov/shard/pkg/size"
 	"github.com/presmihaylov/shard/pkg/tarball"
+	"github.com/presmihaylov/shard/services/api"
 	"github.com/presmihaylov/shard/services/client"
 )
 
@@ -48,7 +51,15 @@ const (
 var (
 	verifyWait = 2 * time.Minute
 	verifyPoll = time.Second
+	// verifySteady is how long no task may restart before setup trusts the daemon; a task that fails at start reaches its third restart well inside it.
+	verifySteady = 10 * time.Second
 )
+
+// verifyRestarts is the failed runs after which a task in backoff is a loop the rest of the wait will not end.
+const verifyRestarts = 3
+
+// taskBackoff is the daemon's state for a task that waits to restart, which setup reads from daemon status and cannot import.
+const taskBackoff = "backoff"
 
 // rooted is p on the host setup works on, which a test moves under a temp dir.
 func rooted(h Host, p string) string { return filepath.Join(h.Root, p) }
@@ -616,30 +627,18 @@ func (p *localPlan) start(ctx context.Context) error {
 	return nil
 }
 
-// verifyDaemon asks the daemon for its status until it answers, through sudo on Linux where the socket is root's; --remote "" keeps any remote out of it.
+// verifyDaemon asks the daemon for its status until its tasks hold steady, through sudo on Linux where the socket is root's; --remote "" keeps any remote out of it.
 func verifyDaemon(ctx context.Context, h Host) error {
 	ask := privileged
 	if h.OS == "darwin" {
 		ask = run
 	}
-	deadline := time.Now().Add(verifyWait)
+	w := &daemonWait{h: h, deadline: time.Now().Add(verifyWait)}
 	for {
-		out, err := ask(ctx, h, shardBinary, "--remote", "", "daemon", "status")
-		if err == nil {
-			return nil
-		}
-		failed, stateErr := unitFailed(ctx, h)
-		if stateErr != nil {
-			return stateErr
-		}
-		if failed {
-			return startFailure(ctx, h)
-		}
-		if time.Now().After(deadline) {
-			return &Problem{Lines: []string{
-				fmt.Sprintf("The daemon is not ready after %s: %s.", verifyWait, notReady(out, err)),
-				logHint(h),
-			}}
+		out, err := ask(ctx, h, shardBinary, "--remote", "", "daemon", "status", "--format", "json")
+		steady, verdict := w.judge(ctx, out, err)
+		if steady || verdict != nil {
+			return verdict
 		}
 		select {
 		case <-ctx.Done():
@@ -647,6 +646,89 @@ func verifyDaemon(ctx context.Context, h Host) error {
 		case <-time.After(verifyPoll):
 		}
 	}
+}
+
+// daemonWait is one verify: its deadline, and since when the status has answered with no restart count rising.
+type daemonWait struct {
+	h        Host
+	deadline time.Time
+	since    time.Time
+	restarts map[string]int
+}
+
+// judge reads one status: an answer counts toward the steady window, and a refusal ends the wait only on a loop, a failed unit or the deadline.
+func (w *daemonWait) judge(ctx context.Context, out []byte, err error) (bool, error) {
+	tasks, decodeErr := statusTasks(out)
+	if decodeErr != nil {
+		return false, decodeErr
+	}
+	if err == nil {
+		return w.held(tasks, time.Now()), nil
+	}
+
+	w.since = time.Time{}
+	if looping := loopingTasks(tasks); len(looping) > 0 {
+		return false, tasksFailing(w.h, looping)
+	}
+	failed, stateErr := unitFailed(ctx, w.h)
+	if stateErr != nil {
+		return false, stateErr
+	}
+	if failed {
+		return false, startFailure(ctx, w.h)
+	}
+	if time.Now().After(w.deadline) {
+		return false, &Problem{Lines: []string{
+			fmt.Sprintf("The daemon is not ready after %s: %s.", verifyWait, notReady(out, err)),
+			logHint(w.h),
+		}}
+	}
+
+	return false, nil
+}
+
+// held says no task has restarted for verifySteady; a restart the poll missed in backoff still shows as a higher count.
+func (w *daemonWait) held(tasks []api.TaskState, now time.Time) bool {
+	restarts := make(map[string]int, len(tasks))
+	for _, t := range tasks {
+		restarts[t.Name] = t.Restarts
+	}
+	if w.since.IsZero() || !maps.Equal(restarts, w.restarts) {
+		w.since, w.restarts = now, restarts
+	}
+
+	return now.Sub(w.since) >= verifySteady
+}
+
+// statusTasks are the tasks of a status that answered; a daemon that never answered printed no JSON.
+func statusTasks(out []byte) ([]api.TaskState, error) {
+	if !bytes.HasPrefix(bytes.TrimSpace(out), []byte("{")) {
+		return nil, nil
+	}
+	var status api.Daemon
+	// Decode reads the JSON alone, and leaves the error line daemon status printed after it.
+	if err := json.NewDecoder(bytes.NewReader(out)).Decode(&status); err != nil {
+		return nil, fmt.Errorf("read the daemon status: %w", err)
+	}
+
+	return status.Tasks, nil
+}
+
+// loopingTasks are the tasks which keep failing, which the rest of the wait will not heal.
+func loopingTasks(tasks []api.TaskState) []api.TaskState {
+	return slices.DeleteFunc(tasks, func(t api.TaskState) bool {
+		return t.State != taskBackoff || t.Restarts < verifyRestarts
+	})
+}
+
+// tasksFailing names each task that keeps failing with the error it last met, which the wait would otherwise hide behind its names.
+func tasksFailing(h Host, tasks []api.TaskState) error {
+	lines := []string{"The daemon started, but these tasks keep failing:"}
+	for _, t := range tasks {
+		lines = append(lines, fmt.Sprintf("  %s: %s", t.Name, t.LastError))
+	}
+
+	return &Problem{Lines: append(lines, logHint(h))}
 }
 
 // unitFailed says systemd stopped restarting the daemon, which a refusal at start brings within seconds; launchd keeps retrying, so a Mac waits.

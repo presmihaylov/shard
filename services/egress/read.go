@@ -26,11 +26,12 @@ func (r *LogReader) Read(sb models.Sandbox) ([]Record, int, error) {
 	return Merge(records), cut, nil
 }
 
-// drop is one parsed log line: the record it becomes, and the two things that say whose it is.
+// drop is one parsed log line: the record it becomes, the two things that say whose it is, and the sum of the rule that wrote it.
 type drop struct {
 	Record
 	source string
 	iface  string
+	sum    string
 }
 
 func hostDrop(message string) (drop, bool) {
@@ -65,6 +66,7 @@ func hostDrop(message string) (drop, bool) {
 		},
 		source: fields["SRC"],
 		iface:  fields["IN"],
+		sum:    fields["sum"],
 	}, true
 }
 

@@ -1,18 +1,16 @@
 package cli
 
-import (
-	"context"
-	"fmt"
-)
+import "context"
 
-// resume asks the daemon to run a paused sandbox again from its checkpoint.
+// resume asks the daemon to run each paused sandbox again from its checkpoint.
 func (a App) resume(ctx context.Context, args []string) error {
 	rest, err := parseArgs("resume", args)
 	if err != nil {
 		return err
 	}
-	if len(rest) != 1 {
-		return fmt.Errorf("resume takes one sandbox id or name, got %s", gotArgs(rest))
+	ids, err := sandboxRefs("resume", rest)
+	if err != nil {
+		return err
 	}
 
 	c, err := a.client()
@@ -20,10 +18,12 @@ func (a App) resume(ctx context.Context, args []string) error {
 		return err
 	}
 
-	sb, err := c.ResumeSandbox(ctx, rest[0])
-	if err != nil {
-		return err
-	}
+	return a.each(ctx, ids, func(ref string) error {
+		sb, err := c.ResumeSandbox(ctx, ref)
+		if err != nil {
+			return err
+		}
 
-	return a.print(sb.ID)
+		return a.print(sb.ID)
+	})
 }

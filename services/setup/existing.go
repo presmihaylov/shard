@@ -13,6 +13,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/presmihaylov/shard/pkg/hostfw"
 	"github.com/presmihaylov/shard/pkg/mountinfo"
 	"github.com/presmihaylov/shard/pkg/proxy"
 	"github.com/presmihaylov/shard/pkg/term"
@@ -24,8 +25,11 @@ import (
 
 const serviceName = "shard"
 
-// manualPaths are where an install without setup puts the binaries and the release's service files.
-var manualPaths = []string{shardBinary, initBinary, systemdUnit, "/etc/systemd/system/shard-serve.service", launchdPlist, newsyslog}
+// manualPaths are where an install without setup puts the binaries and the daemon's service files.
+var manualPaths = []string{shardBinary, initBinary, systemdUnit, launchdPlist, newsyslog}
+
+// serveUnit is the unit guides/remote installs by hand beside any daemon, so it alone is no install, and uninstall keeps it (SHARD-774).
+const serveUnit = "/etc/systemd/system/shard-serve.service"
 
 // ServiceState is the Service line of the summary.
 type ServiceState string
@@ -352,7 +356,7 @@ func (s *Setup) upgrade(ctx context.Context, m Manifest, service ServiceState, r
 			if fetched[t.asset] {
 				continue
 			}
-			if err := rel.Fetch(ctx, h, t.asset, t.tmp, 0o755); err != nil {
+			if err := FetchAsset(ctx, h, rel.Tag, t.asset, t.tmp, 0o755); err != nil {
 				return err
 			}
 			fetched[t.asset] = true
@@ -710,6 +714,10 @@ const (
 	hostBridge = "shard0"
 	hostTable  = "shard"
 	ipForward  = "/proc/sys/net/ipv4/ip_forward"
+	// hostZone, hostPolicy and hostMarker are network.FirewallName, network.FirewallPolicy and network.FirewallMarker.
+	hostZone   = "shard"
+	hostPolicy = "shard-forwarding"
+	hostMarker = "managed-by-shard"
 )
 
 var hostTableFamilies = []string{"inet", "bridge"}
@@ -748,6 +756,10 @@ func removeNetwork(ctx context.Context, h Host) (held bool, err error) {
 		}
 	}
 
+	if err := closeHostFirewall(ctx, h); err != nil {
+		return false, err
+	}
+
 	_, err = os.Lstat(filepath.Join(h.Root, "/sys/class/net", hostBridge))
 	if errors.Is(err, fs.ErrNotExist) {
 		return false, nil
@@ -760,6 +772,24 @@ func removeNetwork(ctx context.Context, h Host) (held bool, err error) {
 	}
 
 	return false, nil
+}
+
+// closeHostFirewall drops the rules and the firewalld zone the daemon made, since the daemon never removes them itself.
+func closeHostFirewall(ctx context.Context, h Host) error {
+	tool := func(name string) string {
+		if _, ok := lookPath(h, name); ok {
+			return name
+		}
+		return ""
+	}
+	fw := hostfw.New(func(ctx context.Context, name string, args ...string) ([]byte, error) {
+		return privileged(ctx, h, name, args...)
+	}, tool("iptables"), tool("firewall-cmd"))
+	if err := fw.Close(ctx, hostfw.Hole{Name: hostZone, Marker: hostMarker, Interface: hostBridge, Policy: hostPolicy}); err != nil {
+		return fmt.Errorf("close the host firewall: %w", err)
+	}
+
+	return nil
 }
 
 // uninstalled names what stays and how to remove it, since uninstall removes no shared tool and no data.
@@ -804,6 +834,11 @@ func uninstalled(h Host, m Manifest, netHeld bool) ([]string, error) {
 		}
 		lines = append(lines, network...)
 	}
+	serve, err := serveLeft(h)
+	if err != nil {
+		return nil, err
+	}
+	lines = append(lines, serve...)
 
 	commands, err := leftCommands(h)
 	if err != nil {
@@ -821,6 +856,31 @@ func uninstalled(h Host, m Manifest, netHeld bool) ([]string, error) {
 	}
 
 	return lines, nil
+}
+
+// serveLeft names the serve unit a setup leaves alone: it stops with the daemon, and the next daemon does not start it.
+func serveLeft(h Host) ([]string, error) {
+	if h.OS != "linux" {
+		return nil, nil
+	}
+	_, err := os.Lstat(rooted(h, serveUnit))
+	if errors.Is(err, fs.ErrNotExist) {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, fmt.Errorf("check %s: %w", serveUnit, err)
+	}
+
+	sudo := sudoFor(h)
+	return []string{"",
+		"The shard serve unit remains at " + serveUnit + ", because setup did not install it.",
+		"It stops with the daemon, and a new setup does not start it.",
+		"After you set up shard again, start it with: " + sudo + "systemctl start shard-serve",
+		"To remove it, run:",
+		"  " + sudo + "systemctl disable --now shard-serve",
+		"  " + sudo + "rm " + serveUnit,
+		"  " + sudo + "systemctl daemon-reload",
+	}, nil
 }
 
 // networkLeft names the shared bridge and tables a daemon still uses, or else IP forwarding, which other software may need on.
@@ -986,7 +1046,7 @@ func leftCommands(h Host) ([]string, error) {
 	return left, nil
 }
 
-// manual reports an install setup did not make, changes nothing in it, and names the route that moves it to setup.
+// manual reports an install setup did not make, changes nothing in it, names the route that moves it to setup, and stops, so a script reads it as a refusal.
 func (s *Setup) manual(ctx context.Context, inst Installation) error {
 	h := s.Host
 	versions, err := manualVersions(ctx, h, inst.Manual)
@@ -995,6 +1055,11 @@ func (s *Setup) manual(ctx context.Context, inst Installation) error {
 	}
 	sudo := socketSudo(h)
 	sandboxes, err := manualSandboxes(h, inst.Manual, sudo)
+	if err != nil {
+		return err
+	}
+
+	serve, err := serveLeft(h)
 	if err != nil {
 		return err
 	}
@@ -1011,11 +1076,15 @@ func (s *Setup) manual(ctx context.Context, inst Installation) error {
 		manualMove(h, inst.Manual),
 		[]string{
 			"", "To remove it instead, remove every sandbox first (" + sudo + "shard list --all), then run the lines above without the last.",
-			"", "Your saved data in " + DataDir + " is not part of this.",
 		},
+		serve,
+		[]string{"", "Your saved data in " + DataDir + " is not part of this."},
 	)
+	if err := s.UI.Print(lines...); err != nil {
+		return err
+	}
 
-	return s.UI.Print(lines...)
+	return &StoppedError{Step: "Existing shard installation", Err: &Problem{Lines: lines}}
 }
 
 // manualVersions names the version the found binary reports beside the one setup installs.

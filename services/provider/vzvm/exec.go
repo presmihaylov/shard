@@ -179,7 +179,7 @@ func (p *Provider) running(ctx context.Context, id string) (*machine, record, er
 func headerOf(r record, spec models.ExecSpec) (supervisor.ExecHeader, error) {
 	header := supervisor.ExecHeader{
 		Argv:    spec.Argv,
-		Env:     runspec.MergeEnv(r.Run.Env, spec.Env),
+		Env:     runspec.ExecEnv(r.Run.Env, spec.Env, spec.TTY),
 		WorkDir: firstNonEmpty(spec.WorkDir, r.Run.WorkDir, "/"),
 		User:    r.Run.User,
 		Groups:  r.Run.Groups,

@@ -428,7 +428,7 @@ func TestGetWithWaitAnswersTheWaitFailure(t *testing.T) {
 // A public error joined with a raw cause answers its own words alone, and the raw cause goes to the log.
 func TestAPublicErrorJoinedWithARawCauseAnswersOnlyItsWords(t *testing.T) {
 	s := seed(t)
-	refusal := &sandbox.StateError{ID: "sb1", State: models.StateUnresponsive, Fix: "stop it with shard stop sb1", Code: models.CodeSandboxLive, Detail: "pid 4242 missed its probe"}
+	refusal := &sandbox.StateError{Sandbox: "sb1", State: models.StateUnresponsive, Fix: "stop it with shard stop sb1", Code: models.CodeSandboxLive, Detail: "pid 4242 missed its probe"}
 	s.verbs.err = errors.Join(errors.New(failedCause), fmt.Errorf("probe under /var/lib/shard: %w", refusal))
 
 	status, body := get(t, s.server, "/v0/sandboxes/"+s.running.ID+"?wait=true")

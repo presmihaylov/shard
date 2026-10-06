@@ -86,7 +86,7 @@ func TestCreateSnapshotRefusesASandboxThatIsNotStopped(t *testing.T) {
 		_, err := svc.CreateSnapshot(t.Context(), sandbox.SnapshotRequest{Sandbox: "web"})
 
 		var refused *sandbox.StateError
-		if !errors.As(err, &refused) || refused.Code != models.CodeSandboxNotStopped || !strings.Contains(err.Error(), "shard stop sandbox1") {
+		if !errors.As(err, &refused) || refused.Code != models.CodeSandboxNotStopped || !strings.Contains(err.Error(), "shard stop web") {
 			t.Errorf("a snapshot of a %s sandbox returned %v, want sandbox_not_stopped and the stop that fixes it", state, err)
 		}
 		if slices.Contains(r.calls, "provider.Snapshot") {

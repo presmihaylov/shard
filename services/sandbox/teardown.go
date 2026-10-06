@@ -54,10 +54,26 @@ func resolvedThrough(spec models.NetworkSpec, policy string) models.NetworkSpec 
 func AllocateNetwork(ctx context.Context, net Network, id string) (models.NetworkSpec, error) {
 	spec, err := net.Allocate(ctx, id)
 	if errors.Is(err, network.ErrNoFreeAddress) {
-		return models.NetworkSpec{}, fmt.Errorf("%w: every sandbox holds one until it is removed, run shard list --all and remove the ones you no longer need", err)
+		return models.NetworkSpec{}, &noAddressError{err: err}
+	}
+	if err != nil {
+		return models.NetworkSpec{}, &CauseError{Text: "set up the sandbox network on the host", Err: err}
 	}
 
-	return spec, err
+	return spec, nil
+}
+
+const noAddressFix = "every sandbox holds one until it is removed, run shard list --all and remove the ones you no longer need"
+
+// noAddressError is a full subnet; its public text leaves out the subnet, which is host configuration.
+type noAddressError struct{ err error }
+
+func (e *noAddressError) Error() string { return e.err.Error() + ": " + noAddressFix }
+
+func (e *noAddressError) Unwrap() error { return e.err }
+
+func (e *noAddressError) Public() string {
+	return network.ErrNoFreeAddress.Error() + ": " + noAddressFix
 }
 
 // Reconcile is for a failed start or resume: the substrate may hold a live sandbox anyway, and only stop ends one.
@@ -91,7 +107,11 @@ func RecordRunning(ctx context.Context, repo Repository, provider models.Provide
 		sb.UnresponsiveReason = ""
 		// A mark an unfinished pause left would vouch for its checkpoint across this new run.
 		sb.Pausing = false
-		sb.StartedAt = time.Now().UTC()
+		sb.RunStartedAt = time.Now().UTC()
+		// A resume is no start, so the first start stays; a fork has none yet.
+		if !keepExit || sb.StartedAt.IsZero() {
+			sb.StartedAt = sb.RunStartedAt
+		}
 		if !keepExit {
 			// The old exit is what the previous run did, and this run has not ended.
 			sb.ExitStatus = nil

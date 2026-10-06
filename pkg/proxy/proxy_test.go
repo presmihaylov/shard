@@ -93,9 +93,12 @@ type fakeDirector struct {
 	deciding chan context.Context
 	// grow is what each rewrite reserves, as a value longer than its placeholder does.
 	grow int
+	// unlogged is what each Untrusted returns, as a full disk would.
+	unlogged error
 
-	mu   sync.Mutex
-	seen []Request
+	mu        sync.Mutex
+	seen      []Request
+	untrusted []string
 }
 
 func (d *fakeDirector) Decide(ctx context.Context, req Request) (Decision, error) {
@@ -137,6 +140,22 @@ func (d *fakeDirector) Rewrite(_ context.Context, _ Request, out *http.Request, 
 	}
 
 	return bytes.ReplaceAll(body, []byte("mock-TOKEN"), []byte("real-TOKEN")), nil
+}
+
+func (d *fakeDirector) Untrusted(_ context.Context, req Request, upstream netip.AddrPort, reason string) error {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+
+	d.untrusted = append(d.untrusted, fmt.Sprintf("%s %s %s", req.Host, upstream, reason))
+
+	return d.unlogged
+}
+
+func (d *fakeDirector) untrustedSeen() []string {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+
+	return slices.Clone(d.untrusted)
 }
 
 type harness struct {
@@ -599,6 +618,97 @@ func TestProxyNeverEchoesTheRewrittenRequestInA502(t *testing.T) {
 				t.Errorf("the log holds the value:\n%s", log)
 			}
 		})
+	}
+}
+
+// A certificate the host refuses names its fault in the 502, the proxy log and the director's record, never the error itself (SHARD-772).
+func TestProxyNamesTheCertificateAnUpstreamFailedOn(t *testing.T) {
+	upstream := httptest.NewUnstartedServer(http.HandlerFunc(echoHandler))
+	// Each refused handshake is the case under test, so the upstream's own line for it is noise.
+	upstream.Config.ErrorLog = log.New(io.Discard, "", 0)
+	upstream.StartTLS()
+	t.Cleanup(upstream.Close)
+	trusted := x509.NewCertPool()
+	trusted.AddCert(upstream.Certificate())
+
+	for name, tc := range map[string]struct {
+		host     string
+		roots    *x509.CertPool
+		later    time.Duration
+		unlogged error
+		reason   string
+	}{
+		"a trusted certificate":                    {host: "example.com", roots: trusted},
+		"an authority the host does not trust":     {host: "example.com", roots: x509.NewCertPool(), reason: "the upstream's certificate is signed by an authority the host does not trust"},
+		"a certificate for another name":           {host: "api.test", roots: trusted, reason: "the upstream's certificate does not name the host"},
+		"an expired certificate":                   {host: "example.com", roots: trusted, later: 100 * 365 * 24 * time.Hour, reason: "the upstream's certificate has expired or is not valid yet"},
+		"a refusal the director cannot write down": {host: "example.com", roots: x509.NewCertPool(), unlogged: errors.New("the disk is full"), reason: "the upstream's certificate is signed by an authority the host does not trust"},
+	} {
+		t.Run(name, func(t *testing.T) {
+			h := newHarness(t, http.HandlerFunc(echoHandler), func(s *Server) {
+				s.transport.TLSClientConfig.RootCAs = tc.roots
+				s.transport.TLSClientConfig.Time = func() time.Time { return time.Now().Add(tc.later) }
+			})
+			h.director.upstream = netip.MustParseAddrPort(upstream.Listener.Addr().String())
+			h.director.unlogged = tc.unlogged
+
+			req, err := http.NewRequestWithContext(t.Context(), http.MethodGet, "https://"+tc.host+"/", nil)
+			if err != nil {
+				t.Fatal(err)
+			}
+			req.Header.Set("Authorization", "Bearer mock-TOKEN")
+			resp, err := h.client().Do(req)
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer resp.Body.Close()
+			body, err := io.ReadAll(resp.Body)
+			if err != nil {
+				t.Fatal(err)
+			}
+
+			if tc.reason == "" {
+				if resp.StatusCode != http.StatusOK || len(h.director.untrustedSeen()) != 0 {
+					t.Fatalf("a trusted upstream got %d %s, and the director saw %q", resp.StatusCode, body, h.director.untrustedSeen())
+				}
+
+				return
+			}
+			want, err := json.Marshal(map[string]string{"error": "the request to the upstream failed", "host": tc.host, "reason": tc.reason})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if resp.StatusCode != http.StatusBadGateway || string(body) != string(want)+"\n" {
+				t.Errorf("the guest got %d %s, want 502 %s", resp.StatusCode, body, want)
+			}
+			if seen, want := h.director.untrustedSeen(), []string{tc.host + " " + upstream.Listener.Addr().String() + " " + tc.reason}; !slices.Equal(seen, want) {
+				t.Errorf("the director saw %q, want %q", seen, want)
+			}
+			logged := awaitLine(t, h, fmt.Sprintf("GET %s:443 502: %s", tc.host, tc.reason))
+			if strings.Contains(logged, "real-TOKEN") || strings.Contains(logged, "x509") {
+				t.Errorf("the log holds the value or the error:\n%s", logged)
+			}
+			if tc.unlogged != nil && !strings.Contains(logged, "the disk is full") {
+				t.Errorf("the log does not say the record failed:\n%s", logged)
+			}
+		})
+	}
+}
+
+// awaitLine waits for the line the proxy writes once a request is answered, which can land after the guest reads its response.
+func awaitLine(t *testing.T, h *harness, want string) string {
+	t.Helper()
+
+	deadline := time.Now().Add(5 * time.Second)
+	for {
+		log := h.log.String()
+		if strings.Contains(log, want) {
+			return log
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("the log has no %q:\n%s", want, log)
+		}
+		time.Sleep(10 * time.Millisecond)
 	}
 }
 

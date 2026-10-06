@@ -85,6 +85,18 @@ func AcquireDir(dir string, timeout time.Duration) (*Lock, error) {
 	}
 }
 
+// Note writes data over the lock file in place, for whoever is refused to read; a rename would move the name off the locked file.
+func (l *Lock) Note(data []byte) error {
+	if err := l.f.Truncate(0); err != nil {
+		return fmt.Errorf("truncate %s: %w", l.f.Name(), err)
+	}
+	if _, err := l.f.WriteAt(data, 0); err != nil {
+		return fmt.Errorf("write %s: %w", l.f.Name(), err)
+	}
+
+	return nil
+}
+
 // Release drops the lock. Call it once; a second call reports the closed file.
 func (l *Lock) Release() error {
 	// Closing the file drops the flock too, so the unlock only makes the order explicit.

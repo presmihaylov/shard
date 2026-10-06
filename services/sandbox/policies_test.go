@@ -297,7 +297,7 @@ func TestPolicyHoldersFollowsAnAttach(t *testing.T) {
 	if err != nil {
 		t.Fatalf("PolicyHolders: %v", err)
 	}
-	if !slices.Equal(holders, []string{"sandbox1"}) {
-		t.Errorf("PolicyHolders = %v", holders)
+	if !slices.Equal(holders, []string{"web"}) {
+		t.Errorf("PolicyHolders = %v, want the holder by its name", holders)
 	}
 }

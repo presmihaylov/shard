@@ -285,6 +285,16 @@ func reseed(seed []byte) error {
 	return nil
 }
 
+// setClock puts the wall clock at the host's time; a restore wakes it at the time of the save, and a guest on tsc never moves it on.
+func setClock(ns int64) error {
+	ts := unix.NsecToTimespec(ns)
+	if err := unix.ClockSettime(unix.CLOCK_REALTIME, &ts); err != nil {
+		return fmt.Errorf("set the wall clock: %w", err)
+	}
+
+	return nil
+}
+
 // setFlags writes the interface flags, which brings the link up and, with none, takes it down.
 func setFlags(fd int, name string, flags uint16) error {
 	ifr, err := unix.NewIfreq(name)
