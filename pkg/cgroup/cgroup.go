@@ -197,10 +197,16 @@ func Procs(dir string) ([]int, error) {
 	return pids, nil
 }
 
-// Ensure makes a cgroup exist, and one that already does is fine.
+// Ensure makes a cgroup exist at 0755, the mode runc and systemd give one, and sets it on one that already does.
 func Ensure(dir string) error {
-	if err := os.MkdirAll(dir, 0o750); err != nil {
+	//nolint:gosec // G301: a sysbox guest's own runc mounts cgroup2 as an unprivileged host uid, which must walk this directory.
+	if err := os.MkdirAll(dir, 0o755); err != nil {
 		return fmt.Errorf("make the cgroup %s: %w", dir, err)
+	}
+	// MkdirAll keeps the mode of a directory an older daemon or a strict umask made, and 0750 or 0700 breaks docker in sysbox.
+	//nolint:gosec // G302: the same walk as above.
+	if err := os.Chmod(dir, 0o755); err != nil {
+		return fmt.Errorf("open the cgroup %s to the sandboxes under it: %w", dir, err)
 	}
 
 	return nil

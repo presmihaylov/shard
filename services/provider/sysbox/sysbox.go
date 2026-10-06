@@ -153,6 +153,11 @@ func (p *Provider) create(ctx context.Context, spec models.SandboxSpec, b bundle
 		return err
 	}
 
+	// runc makes the shard parent at 0755 only when it is missing, so one a gVisor or Firecracker daemon made earlier is opened here.
+	if err := cgroup.Ensure(filepath.Join(p.cgroupRoot, bundle.CgroupParent)); err != nil {
+		return errors.Join(err, exit.Close())
+	}
+
 	if err := p.runner.Create(ctx, spec.ID, runc.CreateOptions{Bundle: b.Dir, Stdout: out, Stderr: out, Stdin: exit}); err != nil {
 		return errors.Join(err, exit.Close())
 	}
