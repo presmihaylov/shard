@@ -159,20 +159,20 @@ def sync(root: Path) -> list[str]:
     return [f"typescript {ts}: {TS_LOCK}, {TS_CONST}", f"python {py}: {PY_CONST}, {UV_LOCK}"]
 
 
-def changeset_packages(text: str, path: str) -> set[str]:
+def changeset_packages(text: str, path: str) -> dict[str, str]:
     lines = text.splitlines()
     if not lines or lines[0].strip() != "---":
         raise ReleaseError(f"{path} does not open with a --- front matter line")
-    names: set[str] = set()
+    names: dict[str, str] = {}
     for line in lines[1:]:
         if line.strip() == "---":
             return names
         if not line.strip():
             continue
-        name, sep, _ = line.partition(":")
+        name, sep, bump = line.partition(":")
         if not sep:
             raise ReleaseError(f"{path}: {line!r} is not 'package: bump'")
-        names.add(name.strip().strip("\"'"))
+        names[name.strip().strip("\"'")] = bump.strip().strip("\"'")
     raise ReleaseError(f"{path} never closes its front matter")
 
 
@@ -202,8 +202,13 @@ def check(root: Path, base: str, branch: str) -> list[str]:
         if text is None:
             continue
         packages = changeset_packages(text, path)
-        named |= packages
+        named |= packages.keys()
         empty = empty or not packages
+        problems += [
+            f"{path} bumps {name} {bump}; before 1.0 an SDK bumps patch only, even for a breaking change"
+            for name, bump in packages.items()
+            if bump != "patch"
+        ]
 
     for sdk in SDKS:
         touched = [
