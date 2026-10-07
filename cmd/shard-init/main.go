@@ -22,6 +22,7 @@ import (
 	"github.com/presmihaylov/shard/models"
 	"github.com/presmihaylov/shard/pkg/launch"
 	"github.com/presmihaylov/shard/pkg/memfd"
+	"github.com/presmihaylov/shard/pkg/pgroup"
 	"github.com/presmihaylov/shard/pkg/store"
 	"github.com/presmihaylov/shard/pkg/termrelay"
 	"github.com/presmihaylov/shard/services/supervisor"
@@ -461,7 +462,7 @@ func (g *guest) kill(pid int) {
 
 // PID 1 in a namespace has no default disposition, so a stop is passed on, to the group the process leads with what it forked.
 func signalGroup(leader int, sig syscall.Signal) error {
-	err := syscall.Kill(-leader, sig)
+	err := pgroup.Kill(leader, sig)
 	if err == nil || errors.Is(err, syscall.ESRCH) {
 		return nil
 	}
