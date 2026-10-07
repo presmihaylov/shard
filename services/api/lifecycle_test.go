@@ -83,10 +83,13 @@ type fakeLifecycle struct {
 	// pulled is what a create reports to the progress on its context.
 	pulled []image.Event
 
-	// appExit is how an attach or a wait says the app ended, appErr how it failed after the 101, and stoppedApp what an app/stop asked.
-	appExit    models.AppExit
-	appErr     error
-	stoppedApp bool
+	// ran is what a run asked, named the process a verb named, process what it answers, processes a list's page.
+	ran       sandbox.RunRequest
+	named     string
+	process   models.Process
+	processes []models.Process
+	// attachErr is how an attach failed after the 101.
+	attachErr error
 
 	// file is what a put named and landed, and stat and content what a stat or a get answers.
 	file      sandbox.FileWrite
@@ -480,8 +483,48 @@ func (f *fakeLifecycle) ResizeExec(_ context.Context, ref, execID string, size s
 	return f.err
 }
 
-func (f *fakeLifecycle) Logs(_ context.Context, ref string, w io.Writer) error {
+func (f *fakeLifecycle) Run(_ context.Context, ref string, req sandbox.RunRequest) (models.Process, error) {
+	f.ref, f.ran = ref, req
+
+	if f.err != nil {
+		return models.Process{}, f.err
+	}
+
+	return f.process, nil
+}
+
+func (f *fakeLifecycle) Processes(_ context.Context, ref string) ([]models.Process, error) {
 	f.ref = ref
+
+	if f.err != nil {
+		return nil, f.err
+	}
+
+	return f.processes, nil
+}
+
+func (f *fakeLifecycle) Process(_ context.Context, ref, name string) (models.Process, error) {
+	f.ref, f.named = ref, name
+
+	if f.err != nil {
+		return models.Process{}, f.err
+	}
+
+	return f.process, nil
+}
+
+func (f *fakeLifecycle) Kill(_ context.Context, ref, name string, force bool) (models.Process, error) {
+	f.ref, f.named, f.force = ref, name, force
+
+	if f.err != nil {
+		return models.Process{}, f.err
+	}
+
+	return f.process, nil
+}
+
+func (f *fakeLifecycle) Logs(_ context.Context, ref, name string, w io.Writer) error {
+	f.ref, f.named = ref, name
 
 	if f.err != nil {
 		return f.err
@@ -490,9 +533,9 @@ func (f *fakeLifecycle) Logs(_ context.Context, ref string, w io.Writer) error {
 	return f.write(w)
 }
 
-// FollowLogs ends when the sandbox stops; this one ends when the test says the sandbox has, or the client left.
-func (f *fakeLifecycle) FollowLogs(ctx context.Context, ref string, w io.Writer) (string, error) {
-	f.ref, f.followed = ref, true
+// FollowLogs ends when the process ends or the sandbox stops; this one ends when the test says so, or the client left.
+func (f *fakeLifecycle) FollowLogs(ctx context.Context, ref, name string, w io.Writer) (string, error) {
+	f.ref, f.named, f.followed = ref, name, true
 
 	if f.err != nil {
 		return "", f.err
@@ -514,19 +557,19 @@ func (f *fakeLifecycle) FollowLogs(ctx context.Context, ref string, w io.Writer)
 	return f.reason, nil
 }
 
-// AttachApp refuses before the 101 on err; otherwise it writes the lines and ends like the app did, or on the client.
-func (f *fakeLifecycle) AttachApp(ctx context.Context, ref string, open func() (io.Writer, error)) (models.AppExit, error) {
-	f.ref = ref
+// AttachProcess refuses before the 101 on err; otherwise it writes the lines and ends like the process did, or on the client.
+func (f *fakeLifecycle) AttachProcess(ctx context.Context, ref, name string, open func() (io.Writer, error)) (models.Process, error) {
+	f.ref, f.named = ref, name
 
 	if f.err != nil {
-		return models.AppExit{}, f.err
+		return models.Process{}, f.err
 	}
 	w, err := open()
 	if err != nil {
-		return models.AppExit{}, err
+		return models.Process{}, err
 	}
 	if err := f.write(w); err != nil {
-		return models.AppExit{}, err
+		return models.Process{}, err
 	}
 
 	if f.stops != nil {
@@ -535,27 +578,11 @@ func (f *fakeLifecycle) AttachApp(ctx context.Context, ref string, open func() (
 		select {
 		case <-f.stops:
 		case <-ctx.Done():
-			return models.AppExit{}, ctx.Err()
+			return models.Process{}, ctx.Err()
 		}
 	}
 
-	return f.appExit, f.appErr
-}
-
-func (f *fakeLifecycle) WaitApp(_ context.Context, ref string) (models.AppExit, error) {
-	f.ref, f.waited = ref, ref
-
-	if f.err != nil {
-		return models.AppExit{}, f.err
-	}
-
-	return f.appExit, f.appErr
-}
-
-func (f *fakeLifecycle) StopApp(_ context.Context, ref string, force bool) error {
-	f.ref, f.stoppedApp, f.force = ref, true, force
-
-	return f.err
+	return f.process, f.attachErr
 }
 
 func (f *fakeLifecycle) write(w io.Writer) error {
@@ -633,7 +660,7 @@ func mustJSON(t *testing.T, v any) []byte {
 func TestCreateAnswers201WithTheRecord(t *testing.T) {
 	s := seed(t)
 
-	body := `{"image":"alpine:3.20","name":"web","command":["sh","-c","sleep 600"],"env":["A=1"],"secrets":["TOKEN"],"policy":"locked","resources":{"memory_mib":512,"vcpus":2}}`
+	body := `{"image":"alpine:3.20","name":"web","env":["A=1"],"secrets":["TOKEN"],"policy":"locked","resources":{"memory_mib":512,"vcpus":2}}`
 	status, got := send(t, s.server, http.MethodPost, "/v0/sandboxes", body)
 	if status != http.StatusCreated || got["id"] != "sandbox1" || got["state"] != "pending" {
 		t.Fatalf("POST /v0/sandboxes answered %d %v, want 201 with the pending record", status, got)

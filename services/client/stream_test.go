@@ -322,7 +322,7 @@ func TestEveryKindOfCallRidesAnHTTPOrHTTPSRemote(t *testing.T) {
 			if _, err := c.Exec(t.Context(), "sandbox1", sandbox.ExecRequest{Command: []string{"true"}}, client.ExecStreams{Stdout: &ran}); err != nil || ran.String() != "ran\n" {
 				t.Errorf("Exec wrote %q, %v, want ran", ran.String(), err)
 			}
-			if err := c.Logs(t.Context(), "sandbox1", true, &followed); err != nil || followed.String() != "followed\n" {
+			if err := c.Logs(t.Context(), "sandbox1", "web", true, &followed); err != nil || followed.String() != "followed\n" {
 				t.Errorf("Logs -f wrote %q, %v, want followed", followed.String(), err)
 			}
 			if err := c.PutFile(t.Context(), "sandbox1", sandbox.FileWrite{Path: "/srv/app.conf", Size: 5}, strings.NewReader("hello")); err != nil {
@@ -369,7 +369,7 @@ func TestAnUntrustedRemoteNamesOnlyItsHTTPSURL(t *testing.T) {
 		"a plain call": func() error { _, err := c.Version(t.Context()); return err },
 		"a file call":  func() error { _, err := c.StatFile(t.Context(), "sandbox1", "/etc/hostname"); return err },
 		"a create":     func() error { _, err := c.CreateSandboxAndWait(t.Context(), sandbox.CreateRequest{}, nil); return err },
-		"the logs":     func() error { return c.Logs(t.Context(), "sandbox1", false, io.Discard) },
+		"the logs":     func() error { return c.Logs(t.Context(), "sandbox1", "web", false, io.Discard) },
 		"an attach": func() error {
 			_, err := c.AttachExec(t.Context(), "sandbox1", "1a2b3c4d5e6f7a8b", client.ExecStreams{})
 			return err
@@ -606,14 +606,14 @@ func TestLogsWritesWhatTheDaemonAnswers(t *testing.T) {
 	})
 
 	var out bytes.Buffer
-	if err := c.Logs(t.Context(), "sandbox1", false, &out); err != nil {
+	if err := c.Logs(t.Context(), "sandbox1", "web", false, &out); err != nil {
 		t.Fatalf("Logs: %v", err)
 	}
 
 	if out.String() != "hello\nworld\n" {
 		t.Errorf("Logs wrote %q", out.String())
 	}
-	if asked != "/v0/sandboxes/sandbox1/logs" {
+	if asked != "/v0/sandboxes/sandbox1/processes/web/logs" {
 		t.Errorf("the client asked %q", asked)
 	}
 }
@@ -624,7 +624,7 @@ func TestLogsReportsAnIDTheDaemonDoesNotHold(t *testing.T) {
 	var out bytes.Buffer
 
 	for _, follow := range []bool{false, true} {
-		err := c.Logs(t.Context(), "ghost", follow, &out)
+		err := c.Logs(t.Context(), "ghost", "web", follow, &out)
 
 		var missing *client.NotFoundError
 		if !errors.As(err, &missing) || missing.Ref != "ghost" {
@@ -695,14 +695,14 @@ func TestLogsFollowWritesEveryMessageUntilTheEnd(t *testing.T) {
 	c := serve(t, shortRoot(t), daemon.ServeHTTP)
 
 	var out bytes.Buffer
-	if err := c.Logs(t.Context(), "sandbox1", true, &out); err != nil {
+	if err := c.Logs(t.Context(), "sandbox1", "web", true, &out); err != nil {
 		t.Fatalf("Logs: %v", err)
 	}
 
 	if out.String() != "hello\nworld\n" {
 		t.Errorf("the follow wrote %q", out.String())
 	}
-	if daemon.asked != "/v0/sandboxes/sandbox1/logs?follow=true" {
+	if daemon.asked != "/v0/sandboxes/sandbox1/processes/web/logs?follow=true" {
 		t.Errorf("the client asked %q", daemon.asked)
 	}
 }
@@ -715,7 +715,7 @@ func TestLogsFollowReportsAFailureOfTheFollow(t *testing.T) {
 
 	var out bytes.Buffer
 
-	err := c.Logs(t.Context(), "sandbox1", true, &out)
+	err := c.Logs(t.Context(), "sandbox1", "web", true, &out)
 
 	var failure *client.APIError
 	if !errors.As(err, &failure) || !strings.Contains(err.Error(), "permission denied") {
@@ -729,9 +729,9 @@ func TestLogsFollowSaysOneLineWhenTheDaemonDrops(t *testing.T) {
 
 	var out bytes.Buffer
 
-	err := c.Logs(t.Context(), "sandbox1", true, &out)
+	err := c.Logs(t.Context(), "sandbox1", "web", true, &out)
 
-	want := "follow the output of sandbox sandbox1: the stream to the daemon dropped"
+	want := "follow the output of process web of sandbox sandbox1: the stream to the daemon dropped"
 	if err == nil || err.Error() != want {
 		t.Fatalf("Logs returned %q, want %q", err, want)
 	}
@@ -747,7 +747,7 @@ func TestLogsFollowKeepsAMessageThatNamesNoStreamApartFromADrop(t *testing.T) {
 
 	var out bytes.Buffer
 
-	err := c.Logs(t.Context(), "sandbox1", true, &out)
+	err := c.Logs(t.Context(), "sandbox1", "web", true, &out)
 	if err == nil || !strings.Contains(err.Error(), "names no stream") || strings.Contains(err.Error(), "dropped") {
 		t.Fatalf("Logs returned %v, want the message that names no stream", err)
 	}

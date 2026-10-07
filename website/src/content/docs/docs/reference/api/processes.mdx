@@ -1,0 +1,180 @@
+---
+title: Processes
+description: The routes that run named processes in a running sandbox, list and kill them, read their output and attach to them.
+sidebar:
+  order: 9
+---
+
+A process runs under shard-init in a running sandbox, by a name unique in that sandbox, and its restart policy says when it starts again. This runs a web server named `web` in the sandbox `site`:
+
+```sh
+curl --unix-socket /var/lib/shard/shard.sock -X POST -H 'Content-Type: application/json' -d '{"name":"web","command":["python3","-m","http.server","8080"]}' http://localhost/v0/sandboxes/site/processes
+```
+
+This ends it, cancels its restarts and leaves the sandbox running:
+
+```sh
+curl --unix-socket /var/lib/shard/shard.sock -X POST -H 'Content-Type: application/json' -d '{"force":true}' http://localhost/v0/sandboxes/site/processes/web/kill
+```
+
+{/* make openapi writes this part from the routes. Edit the routes, not this part. */}
+
+Each route answers an error with the [Error](/docs/reference/api/#error) body, unless its responses say otherwise.
+
+## Run a named process under supervision in a running sandbox
+
+`POST /v0/sandboxes/{id}/processes` · scope `exec`
+
+**Parameters**
+
+| Name | In | Type | Required | Description |
+| --- | --- | --- | --- | --- |
+| `id` | path | string | yes | The sandbox id or name. |
+
+**Request body**
+
+[RunRequest](#runrequest) as `application/json`, required.
+
+**Responses**
+
+| Status | Body |
+| --- | --- |
+| 201 | [Process](/docs/reference/api/sandboxes/#process) as `application/json` |
+
+## List the processes of a sandbox
+
+`GET /v0/sandboxes/{id}/processes` · scope `sandbox:read`
+
+**Parameters**
+
+| Name | In | Type | Required | Description |
+| --- | --- | --- | --- | --- |
+| `id` | path | string | yes | The sandbox id or name. |
+
+**Responses**
+
+| Status | Body |
+| --- | --- |
+| 200 | [ProcessesResponse](#processesresponse) as `application/json` |
+
+## Read a process
+
+`GET /v0/sandboxes/{id}/processes/{name}` · scope `sandbox:read`
+
+**Parameters**
+
+| Name | In | Type | Required | Description |
+| --- | --- | --- | --- | --- |
+| `id` | path | string | yes | The sandbox id or name. |
+| `name` | path | string | yes | The process name. |
+
+**Responses**
+
+| Status | Body |
+| --- | --- |
+| 200 | [Process](/docs/reference/api/sandboxes/#process) as `application/json` |
+
+## End a process and cancel its restarts
+
+`POST /v0/sandboxes/{id}/processes/{name}/kill` · scope `exec`
+
+**Parameters**
+
+| Name | In | Type | Required | Description |
+| --- | --- | --- | --- | --- |
+| `id` | path | string | yes | The sandbox id or name. |
+| `name` | path | string | yes | The process name. |
+
+**Request body**
+
+[ProcessKillRequest](#processkillrequest) as `application/json`, optional.
+
+**Responses**
+
+| Status | Body |
+| --- | --- |
+| 200 | [Process](/docs/reference/api/sandboxes/#process) as `application/json` |
+
+## Read or follow the output of a process
+
+`GET /v0/sandboxes/{id}/processes/{name}/logs` · scope `sandbox:read`
+
+**Parameters**
+
+| Name | In | Type | Required | Description |
+| --- | --- | --- | --- | --- |
+| `id` | path | string | yes | The sandbox id or name. |
+| `name` | path | string | yes | The process name. |
+| `follow` | query | boolean | no | Keep the stream open until the process ends or the sandbox stops or is removed; a WebSocket upgrade requires follow=true. |
+
+**Responses**
+
+| Status | Body | Description |
+| --- | --- | --- |
+| 101 | WebSocket | A WebSocket follow with follow=true. Each binary message leads with its stream byte: 1 the output, 3 an EndMessage naming why the follow ended, 5 a FailureMessage. |
+| 200 | string as `text/plain` | The process's output as it was written, every run the host keeps; with follow the body streams until the process ends or the sandbox stops or is removed. |
+
+**WebSocket messages**
+
+| Stream byte | Payload |
+| --- | --- |
+| 3 | [EndMessage](#endmessage) |
+| 5 | [FailureMessage](/docs/reference/api/exec/#failuremessage) |
+
+## Wait for or attach to a process until its restart policy ends it
+
+`GET /v0/sandboxes/{id}/processes/{name}/attach` · scope `sandbox:read`
+
+**Parameters**
+
+| Name | In | Type | Required | Description |
+| --- | --- | --- | --- | --- |
+| `id` | path | string | yes | The sandbox id or name. |
+| `name` | path | string | yes | The process name. |
+
+**Responses**
+
+| Status | Body | Description |
+| --- | --- | --- |
+| 101 | WebSocket | A WebSocket attach. Each binary message leads with its stream byte: 1 the output from the start of the current run, 3 the ended Process, 5 a FailureMessage. |
+| 200 | [Process](/docs/reference/api/sandboxes/#process) as `application/json` | The process once its restart policy ended it. |
+
+**WebSocket messages**
+
+| Stream byte | Payload |
+| --- | --- |
+| 3 | [Process](/docs/reference/api/sandboxes/#process) |
+| 5 | [FailureMessage](/docs/reference/api/exec/#failuremessage) |
+
+## Objects
+
+### EndMessage
+
+| Field | Type | Required | Description |
+| --- | --- | --- | --- |
+| `reason` | string | yes | One of `ended`, `stopped`, `removed`. |
+
+### ProcessKillRequest
+
+| Field | Type | Required |
+| --- | --- | --- |
+| `force` | boolean | no |
+
+### ProcessesResponse
+
+| Field | Type | Required |
+| --- | --- | --- |
+| `processes` | array of [Process](/docs/reference/api/sandboxes/#process) | yes |
+
+### RunRequest
+
+| Field | Type | Required | Description |
+| --- | --- | --- | --- |
+| `command` | array of string | yes | At least 1 item. |
+| `env` | array of string | no |  |
+| `name` | string | no | The process name: lowercase letters, digits, '.', '\_' and '-', at most 32, starting with a letter or a digit. Absent is the base name of command\[0\]. |
+| `restart` | [RestartSpec](/docs/reference/api/sandboxes/#restartspec) | no |  |
+| `user` | string | no |  |
+| `workdir` | string | no |  |
+
+{/* make openapi writes everything above this line. Write by hand below it. */}

@@ -63,7 +63,7 @@ func openGuardStream(t *testing.T, env tokenEnv, ttl time.Duration, mode guardSt
 	if mode.upgrade {
 		upgrade = "Connection: Upgrade\r\nUpgrade: websocket\r\nSec-WebSocket-Version: 13\r\nSec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==\r\n"
 	}
-	if _, err := fmt.Fprintf(client, "GET /v0/sandboxes/test/logs?follow=true HTTP/1.1\r\nHost: test\r\nAuthorization: Bearer %s\r\n%s\r\n", minted.Token, upgrade); err != nil {
+	if _, err := fmt.Fprintf(client, "GET /v0/sandboxes/test/processes/web/logs?follow=true HTTP/1.1\r\nHost: test\r\nAuthorization: Bearer %s\r\n%s\r\n", minted.Token, upgrade); err != nil {
 		t.Fatal(err)
 	}
 	reader := bufio.NewReader(client)

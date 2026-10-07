@@ -181,31 +181,6 @@ A create that names secrets also needs the secret:\* scope, and one that names a
 | --- | --- |
 | 201 | [Sandbox](#sandbox) as `application/json` |
 
-## Read or follow the output of a sandbox
-
-`GET /v0/sandboxes/{id}/logs` · scope `sandbox:read`
-
-**Parameters**
-
-| Name | In | Type | Required | Description |
-| --- | --- | --- | --- | --- |
-| `id` | path | string | yes | The sandbox id or name. |
-| `follow` | query | boolean | no | Keep the stream open until the sandbox stops or is removed; a WebSocket upgrade requires follow=true. |
-
-**Responses**
-
-| Status | Body | Description |
-| --- | --- | --- |
-| 101 | WebSocket | A WebSocket follow with follow=true. Each binary message leads with its stream byte: 1 the output, 3 an EndMessage naming why the follow ended, 5 a FailureMessage. |
-| 200 | string as `text/plain` | The entrypoint's output as it was written; with follow the body streams until the sandbox stops or is removed. |
-
-**WebSocket messages**
-
-| Stream byte | Payload |
-| --- | --- |
-| 3 | [EndMessage](#endmessage) |
-| 5 | [FailureMessage](#failuremessage) |
-
 ## Read or follow the egress decisions of a sandbox
 
 `GET /v0/sandboxes/{id}/egress-log` · scope `sandbox:read`
@@ -320,15 +295,13 @@ A create that names secrets also needs the secret:\* scope, and one that names a
 
 | Field | Type | Required | Description |
 | --- | --- | --- | --- |
-| `command` | array of string | no |  |
 | `env` | array of string | no |  |
 | `image` | string | no | The image to create from. A create names exactly one of image and snapshot. |
 | `name` | string | no |  |
 | `policy` | string | no |  |
 | `resources` | [ResourceRequest](#resourcerequest) | no |  |
-| `restart` | [RestartSpec](#restartspec) | no |  |
 | `secrets` | array of string | no |  |
-| `snapshot` | string | no | The snapshot id or name to create from; it takes no command and no restart. A create names exactly one of image and snapshot. |
+| `snapshot` | string | no | The snapshot id or name to create from. A create names exactly one of image and snapshot. |
 | `user` | string | no |  |
 | `workdir` | string | no |  |
 
@@ -371,12 +344,6 @@ A create that names secrets also needs the secret:\* scope, and one that names a
 | `time` | string (date-time) | yes |  |
 | `verdict` | string | yes | One of `allow`, `deny`. |
 
-### EndMessage
-
-| Field | Type | Required | Description |
-| --- | --- | --- | --- |
-| `reason` | string | yes | One of `stopped`, `removed`. |
-
 ### Event
 
 | Field | Type | Required | Description |
@@ -396,28 +363,13 @@ A create that names secrets also needs the secret:\* scope, and one that names a
 | `code` | integer (int64) | yes |
 | `signal` | integer (int64) | yes |
 
-### FailureError
-
-| Field | Type | Required | Description |
-| --- | --- | --- | --- |
-| `code` | string | yes | One of the codes of ErrorObject.code. |
-| `message` | string | yes |  |
-
-### FailureMessage
-
-| Field | Type | Required |
-| --- | --- | --- |
-| `error` | [FailureError](#failureerror) | yes |
-
 ### Inspection
 
 | Field | Type | Required | Description |
 | --- | --- | --- | --- |
-| `command` | array of string | no |  |
 | `created_at` | string (date-time) | yes |  |
 | `digest` | string | no |  |
 | `egress` | [Effective](#effective) | no |  |
-| `exit_status` | [ExitStatus](#exitstatus) | no |  |
 | `failed_reason` | string | no |  |
 | `forked_from` | string | no |  |
 | `id` | string | yes |  |
@@ -425,9 +377,9 @@ A create that names secrets also needs the secret:\* scope, and one that names a
 | `kernel` | string | no |  |
 | `name` | string | no |  |
 | `policy` | string | no |  |
+| `processes` | array of [Process](#process) | no |  |
 | `provider` | string | yes |  |
 | `resources` | [Resources](#resources) | yes |  |
-| `restart` | [Restart](#restart) | no |  |
 | `secrets` | array of string | no |  |
 | `snapshot` | string | no |  |
 | `started_at` | string (date-time) | no |  |
@@ -439,6 +391,28 @@ A create that names secrets also needs the secret:\* scope, and one that names a
 | Field | Type | Required | Description |
 | --- | --- | --- | --- |
 | `policy` | string | yes | At least 1 character. |
+
+### Process
+
+| Field | Type | Required |
+| --- | --- | --- |
+| `command` | array of string | yes |
+| `env` | array of string | no |
+| `killed` | boolean | no |
+| `name` | string | yes |
+| `restart` | [RestartSpec](#restartspec) | yes |
+| `status` | [ProcessStatus](#processstatus) | yes |
+| `user` | string | no |
+| `workdir` | string | no |
+
+### ProcessStatus
+
+| Field | Type | Required |
+| --- | --- | --- |
+| `exit` | [ExitStatus](#exitstatus) | no |
+| `restarts` | integer (int64) | yes |
+| `started_at` | string (date-time) | no |
+| `state` | string | yes |
 
 ### ResourceRequest
 
@@ -456,34 +430,20 @@ A create that names secrets also needs the secret:\* scope, and one that names a
 | `memory_mib` | integer (int64) | yes |
 | `vcpus` | integer (int64) | yes |
 
-### Restart
-
-| Field | Type | Required | Description |
-| --- | --- | --- | --- |
-| `backoff` | integer (int64) | yes | The first wait before a restart, in seconds; 0 or absent is 1. It doubles after each restart, up to 60. Only on-failure and always take it. From 0 to 60. |
-| `count` | integer (int64) | yes |  |
-| `ended` | boolean | yes |  |
-| `gave_up` | boolean | yes |  |
-| `last_at` | string (date-time) | no |  |
-| `policy` | string | yes | One of `no`, `on-failure`, `always`. |
-| `retries` | integer (int64) | no | The restarts in a row before the policy gives up; 0 or absent is unlimited. Only on-failure takes it. At least 0. |
-
 ### RestartSpec
 
 | Field | Type | Required | Description |
 | --- | --- | --- | --- |
-| `backoff` | integer (int64) | no | The first wait before a restart, in seconds; 0 or absent is 1. It doubles after each restart, up to 60. Only on-failure and always take it. From 0 to 60. |
-| `policy` | string | yes | One of `no`, `on-failure`, `always`. |
+| `backoff` | integer (int64) | no | The first wait before a restart, in seconds; 0 or absent is 1. It doubles after each restart, up to 60. Only on-failure, always and unless-stopped take it. From 0 to 60. |
+| `policy` | string | yes | One of `no`, `on-failure`, `always`, `unless-stopped`. |
 | `retries` | integer (int64) | no | The restarts in a row before the policy gives up; 0 or absent is unlimited. Only on-failure takes it. At least 0. |
 
 ### Sandbox
 
 | Field | Type | Required | Description |
 | --- | --- | --- | --- |
-| `command` | array of string | no |  |
 | `created_at` | string (date-time) | yes |  |
 | `digest` | string | no |  |
-| `exit_status` | [ExitStatus](#exitstatus) | no |  |
 | `failed_reason` | string | no |  |
 | `forked_from` | string | no |  |
 | `id` | string | yes |  |
@@ -491,9 +451,9 @@ A create that names secrets also needs the secret:\* scope, and one that names a
 | `kernel` | string | no |  |
 | `name` | string | no |  |
 | `policy` | string | no |  |
+| `processes` | array of [Process](#process) | no |  |
 | `provider` | string | yes |  |
 | `resources` | [Resources](#resources) | yes |  |
-| `restart` | [Restart](#restart) | no |  |
 | `secrets` | array of string | no |  |
 | `snapshot` | string | no |  |
 | `started_at` | string (date-time) | no |  |

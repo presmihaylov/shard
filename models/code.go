@@ -19,8 +19,6 @@ const (
 	CodeExecExited        Code = "exec_exited"
 	CodeExecRunning       Code = "exec_running"
 	CodeExecLimit         Code = "exec_limit"
-	CodeNoApp             Code = "no_app"
-	CodeAppEnded          Code = "app_ended"
 	CodeNoProcess         Code = "no_process"
 	CodeProcessEnded      Code = "process_ended"
 	CodeProcessLimit      Code = "process_limit"

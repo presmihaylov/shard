@@ -83,7 +83,7 @@ Each route answers an error with the [Error](/docs/reference/api/#error) body, u
 | Stream byte | Payload |
 | --- | --- |
 | 3 | [ExitMessage](#exitmessage) |
-| 5 | [FailureMessage](/docs/reference/api/sandboxes/#failuremessage) |
+| 5 | [FailureMessage](#failuremessage) |
 
 ## Send a signal to a running exec
 
@@ -188,6 +188,19 @@ Each route answers an error with the [Error](/docs/reference/api/#error) body, u
 | `error` | string | no | Why the command never started; absent when it started. |
 | `lost_bytes` | integer (int64) | no | The output bytes the buffer dropped before this client read them; absent when it dropped none. |
 | `signal` | integer (int64) | yes | The signal that ended the command, or 0. |
+
+### FailureError
+
+| Field | Type | Required | Description |
+| --- | --- | --- | --- |
+| `code` | string | yes | One of the codes of ErrorObject.code. |
+| `message` | string | yes |  |
+
+### FailureMessage
+
+| Field | Type | Required |
+| --- | --- | --- |
+| `error` | [FailureError](#failureerror) | yes |
 
 ### KillRequest
 

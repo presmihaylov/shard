@@ -40,7 +40,7 @@ var pages = []page{
 	{"policies.mdx", "Policies", "The routes that store the network policies a sandbox can attach.", "policies"},
 	{"secrets.mdx", "Secrets", "The routes that store secrets and their destinations, and never answer a value.", "secrets"},
 	{"meta.mdx", "Meta", "The routes that read the daemon version, the verbs its provider supports and the scopes a token can carry.", "meta"},
-	{"app.mdx", "App", "The routes that attach to and stop the app of a sandbox created with a command.", "app"},
+	{"processes.mdx", "Processes", "The routes that run named processes in a running sandbox, list and kill them, read their output and attach to them.", "processes"},
 }
 
 // Files names every page make openapi writes, in sidebar order.

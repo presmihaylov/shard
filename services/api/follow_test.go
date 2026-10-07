@@ -49,7 +49,7 @@ func TestLogsFollowWithoutTheHandshakeStreamsAsPlainText(t *testing.T) {
 	s.verbs.stops = make(chan struct{})
 	s.verbs.reason = sandbox.LogsStopped
 
-	st := follow(t, s, "/v0/sandboxes/"+s.running.ID+"/logs?follow=true")
+	st := follow(t, s, "/v0/sandboxes/"+s.running.ID+"/processes/web/logs?follow=true")
 	if st.status != http.StatusOK || st.contentType != "text/plain; charset=utf-8" {
 		t.Fatalf("the follow answered %d %s, want 200 text/plain", st.status, st.contentType)
 	}
@@ -72,7 +72,7 @@ func TestLogsFollowWithoutTheHandshakeStreamsAsPlainText(t *testing.T) {
 func TestLogsFollowWithoutTheHandshakeRefusesAnIDTheDaemonDoesNotHold(t *testing.T) {
 	s := seed(t)
 
-	status, body := send(t, s.server, http.MethodGet, "/v0/sandboxes/nosuch/logs?follow=true", "")
+	status, body := send(t, s.server, http.MethodGet, "/v0/sandboxes/nosuch/processes/web/logs?follow=true", "")
 	if status != http.StatusNotFound || errorOf(t, body).code != "not_found" {
 		t.Errorf("the daemon answered %d %v, want 404 not_found", status, body)
 	}

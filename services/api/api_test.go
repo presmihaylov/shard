@@ -478,7 +478,7 @@ func TestAFailedRecordAnswersOnlyItsPublicReason(t *testing.T) {
 		}
 
 		// The logs route repeats the guard every lifecycle verb runs, so its 409 stands for theirs.
-		status, body := get(t, s.server, "/v0/sandboxes/"+c.ref+"/logs?follow=true")
+		status, body := get(t, s.server, "/v0/sandboxes/"+c.ref+"/processes/web/logs?follow=true")
 		if refusal := errorOf(t, body); status != http.StatusConflict || refusal.code != string(models.CodeSandboxFailed) || !strings.Contains(refusal.message, c.want) {
 			t.Errorf("logs of %s answered %d %v, want 409 sandbox_failed with %q", c.ref, status, body, c.want)
 		}

@@ -475,7 +475,7 @@ func TestLogsAnswerAsPlainText(t *testing.T) {
 	s := seed(t)
 	s.verbs.lines = []string{"hello\n", "world\n"}
 
-	req, err := http.NewRequestWithContext(t.Context(), http.MethodGet, s.server.URL+"/v0/sandboxes/"+s.running.ID+"/logs", nil)
+	req, err := http.NewRequestWithContext(t.Context(), http.MethodGet, s.server.URL+"/v0/sandboxes/"+s.running.ID+"/processes/web/logs", nil)
 	if err != nil {
 		t.Fatalf("build the request: %v", err)
 	}
@@ -509,7 +509,7 @@ func TestLogsFollowStreamsAndSaysWhyItEnded(t *testing.T) {
 	s.verbs.stops = make(chan struct{})
 	s.verbs.reason = sandbox.LogsStopped
 
-	conn := open(t, s, "/v0/sandboxes/"+s.running.ID+"/logs?follow=true")
+	conn := open(t, s, "/v0/sandboxes/"+s.running.ID+"/processes/web/logs?follow=true")
 
 	// The first line is on the wire before the sandbox stops, which is what a message per write buys.
 	stream, payload, err := api.Receive(t.Context(), conn)
@@ -539,7 +539,7 @@ func TestLogsFollowReportsAFailureAfterThe101(t *testing.T) {
 	s := seed(t)
 	s.verbs.err = errors.New("open /var/lib/shard/sandboxes/sb1/output.log: boom")
 
-	conn := open(t, s, "/v0/sandboxes/"+s.running.ID+"/logs?follow=true")
+	conn := open(t, s, "/v0/sandboxes/"+s.running.ID+"/processes/web/logs?follow=true")
 
 	got := read(t, conn)
 	if got.ended != api.StreamFailure || got.failure != (api.FailureMessage{Error: api.FailureError{Code: models.CodeInternal, Message: internalText}}) {
@@ -557,7 +557,7 @@ func TestLogsFollowReportsAFailureAfterThe101(t *testing.T) {
 func TestLogsFollowRefusesAnIDTheDaemonDoesNotHold(t *testing.T) {
 	s := seed(t)
 
-	conn, resp, err := dial(t, s, "/v0/sandboxes/nosuch/logs?follow=true")
+	conn, resp, err := dial(t, s, "/v0/sandboxes/nosuch/processes/web/logs?follow=true")
 	if err == nil || conn != nil {
 		t.Fatal("a sandbox the daemon does not hold got the 101")
 	}
@@ -576,7 +576,7 @@ func TestLogsFollowEndsWhenTheClientCloses(t *testing.T) {
 	s.verbs.lines = []string{"first\n"}
 	s.verbs.stops = make(chan struct{})
 
-	conn := open(t, s, "/v0/sandboxes/"+s.running.ID+"/logs?follow=true")
+	conn := open(t, s, "/v0/sandboxes/"+s.running.ID+"/processes/web/logs?follow=true")
 
 	if err := conn.Close(websocket.StatusNormalClosure, ""); err != nil {
 		t.Fatalf("close: %v", err)

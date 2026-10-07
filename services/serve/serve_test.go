@@ -246,7 +246,7 @@ func TestTheFrontSplicesAWebSocket(t *testing.T) {
 	token := mint(t, env, "ci")
 
 	header := http.Header{"Authorization": {"Bearer " + token}}
-	conn, _, err := websocket.Dial(t.Context(), "ws://"+address+"/v0/sandboxes/sandbox1/logs?follow=true", &websocket.DialOptions{HTTPHeader: header}) //nolint:bodyclose // a 101 has no body to close
+	conn, _, err := websocket.Dial(t.Context(), "ws://"+address+"/v0/sandboxes/sandbox1/processes/web/logs?follow=true", &websocket.DialOptions{HTTPHeader: header}) //nolint:bodyclose // a 101 has no body to close
 	if err != nil {
 		t.Fatalf("dial through the front: %v", err)
 	}
@@ -269,7 +269,7 @@ func TestTheFrontSplicesAWebSocket(t *testing.T) {
 		t.Errorf("the session ended with %v, want the daemon's close 1000 with its reason", err)
 	}
 
-	_, _, err = websocket.Dial(t.Context(), "ws://"+address+"/v0/sandboxes/sandbox1/logs?follow=true", nil) //nolint:bodyclose // a refused dial has no body to close
+	_, _, err = websocket.Dial(t.Context(), "ws://"+address+"/v0/sandboxes/sandbox1/processes/web/logs?follow=true", nil) //nolint:bodyclose // a refused dial has no body to close
 	if err == nil || !strings.Contains(err.Error(), "401") {
 		t.Errorf("a dial with no token got %v, want the 401 of the front", err)
 	}
@@ -283,7 +283,7 @@ func TestTheFrontSplicesBodyBytesThatCarryLineFeeds(t *testing.T) {
 	token := mint(t, env, "ci")
 
 	header := http.Header{"Authorization": {"Bearer " + token}}
-	conn, _, err := websocket.Dial(t.Context(), "ws://"+address+"/v0/sandboxes/sandbox1/logs?follow=true", &websocket.DialOptions{HTTPHeader: header}) //nolint:bodyclose // a 101 has no body to close
+	conn, _, err := websocket.Dial(t.Context(), "ws://"+address+"/v0/sandboxes/sandbox1/processes/web/logs?follow=true", &websocket.DialOptions{HTTPHeader: header}) //nolint:bodyclose // a 101 has no body to close
 	if err != nil {
 		t.Fatalf("dial through the front: %v", err)
 	}
@@ -510,17 +510,17 @@ func TestStampScopesReplacesAForgedClientHeader(t *testing.T) {
 
 // A lone Upgrade header is not a handshake: without all four headers the front must force Connection: close.
 func TestIsHandshakeNeedsAllFourHeaders(t *testing.T) {
-	full := "GET /v0/sandboxes/s1/logs HTTP/1.1\r\nHost: box\r\nConnection: Upgrade\r\nUpgrade: websocket\r\nSec-WebSocket-Version: 13\r\nSec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==\r\n\r\n"
+	full := "GET /v0/sandboxes/s1/processes/web/logs HTTP/1.1\r\nHost: box\r\nConnection: Upgrade\r\nUpgrade: websocket\r\nSec-WebSocket-Version: 13\r\nSec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==\r\n\r\n"
 	if !isHandshake([]byte(full)) {
 		t.Error("a full four-header handshake was not recognized")
 	}
 
 	for name, head := range map[string]string{
-		"no key":        "GET /v0/sandboxes/s1/logs HTTP/1.1\r\nConnection: Upgrade\r\nUpgrade: websocket\r\nSec-WebSocket-Version: 13\r\n\r\n",
-		"no version":    "GET /v0/sandboxes/s1/logs HTTP/1.1\r\nConnection: Upgrade\r\nUpgrade: websocket\r\nSec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==\r\n\r\n",
-		"no upgrade":    "GET /v0/sandboxes/s1/logs HTTP/1.1\r\nConnection: Upgrade\r\nSec-WebSocket-Version: 13\r\nSec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==\r\n\r\n",
-		"no connection": "GET /v0/sandboxes/s1/logs HTTP/1.1\r\nUpgrade: websocket\r\nSec-WebSocket-Version: 13\r\nSec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==\r\n\r\n",
-		"wrong version": "GET /v0/sandboxes/s1/logs HTTP/1.1\r\nConnection: Upgrade\r\nUpgrade: websocket\r\nSec-WebSocket-Version: 8\r\nSec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==\r\n\r\n",
+		"no key":        "GET /v0/sandboxes/s1/processes/web/logs HTTP/1.1\r\nConnection: Upgrade\r\nUpgrade: websocket\r\nSec-WebSocket-Version: 13\r\n\r\n",
+		"no version":    "GET /v0/sandboxes/s1/processes/web/logs HTTP/1.1\r\nConnection: Upgrade\r\nUpgrade: websocket\r\nSec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==\r\n\r\n",
+		"no upgrade":    "GET /v0/sandboxes/s1/processes/web/logs HTTP/1.1\r\nConnection: Upgrade\r\nSec-WebSocket-Version: 13\r\nSec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==\r\n\r\n",
+		"no connection": "GET /v0/sandboxes/s1/processes/web/logs HTTP/1.1\r\nUpgrade: websocket\r\nSec-WebSocket-Version: 13\r\nSec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==\r\n\r\n",
+		"wrong version": "GET /v0/sandboxes/s1/processes/web/logs HTTP/1.1\r\nConnection: Upgrade\r\nUpgrade: websocket\r\nSec-WebSocket-Version: 8\r\nSec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==\r\n\r\n",
 		"plain request": "GET /v0/sandboxes HTTP/1.1\r\nHost: box\r\n\r\n",
 	} {
 		if isHandshake([]byte(head)) {
@@ -617,6 +617,29 @@ func TestASandboxReadTokenListsSnapshotsAndNeitherMakesNorRemovesOne(t *testing.
 	for _, d := range []struct{ method, path string }{{http.MethodPost, "/v0/snapshots"}, {http.MethodDelete, "/v0/snapshots/base"}} {
 		if resp := askRoute(t, address, token, d.method, d.path); resp.StatusCode != http.StatusForbidden { //nolint:bodyclose // askRoute closes the body in a cleanup
 			t.Errorf("a sandbox:read token got %d on %s %s, want 403", resp.StatusCode, d.method, d.path)
+		}
+	}
+}
+
+// A sandbox:read token reads a process, its output and its end, and only an exec token runs or kills one.
+func TestOnlyAnExecTokenRunsOrKillsAProcess(t *testing.T) {
+	up := fakeDaemon(t)
+	env := newTokenEnv(t)
+	address := front(t, up.root, env.secret)
+	reader := mintScoped(t, env, "reader", models.ScopeSandboxRead)
+	runner := mintScoped(t, env, "runner", models.ScopeExec)
+
+	for _, path := range []string{"/v0/sandboxes/s1/processes", "/v0/sandboxes/s1/processes/web", "/v0/sandboxes/s1/processes/web/logs", "/v0/sandboxes/s1/processes/web/attach"} {
+		if resp := askRoute(t, address, reader, http.MethodGet, path); resp.StatusCode != http.StatusOK { //nolint:bodyclose // askRoute closes the body in a cleanup
+			t.Errorf("a sandbox:read token got %d on GET %s, want 200", resp.StatusCode, path)
+		}
+	}
+	for _, path := range []string{"/v0/sandboxes/s1/processes", "/v0/sandboxes/s1/processes/web/kill"} {
+		if resp := askRoute(t, address, reader, http.MethodPost, path); resp.StatusCode != http.StatusForbidden { //nolint:bodyclose // askRoute closes the body in a cleanup
+			t.Errorf("a sandbox:read token got %d on POST %s, want 403", resp.StatusCode, path)
+		}
+		if resp := askRoute(t, address, runner, http.MethodPost, path); resp.StatusCode != http.StatusOK { //nolint:bodyclose // askRoute closes the body in a cleanup
+			t.Errorf("an exec token got %d on POST %s, want 200", resp.StatusCode, path)
 		}
 	}
 }
@@ -927,7 +950,7 @@ func TestANonUpgradeAnswerDoesNotForwardAPipelinedRequest(t *testing.T) {
 	}
 	defer conn.Close()
 
-	handshake := "GET /v0/sandboxes/s1/logs HTTP/1.1\r\nHost: box\r\nAuthorization: Bearer " + token +
+	handshake := "GET /v0/sandboxes/s1/processes/web/logs HTTP/1.1\r\nHost: box\r\nAuthorization: Bearer " + token +
 		"\r\nConnection: Upgrade\r\nUpgrade: websocket\r\nSec-WebSocket-Version: 13\r\nSec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==\r\n\r\n"
 	pipelined := "GET /v0/sandboxes HTTP/1.1\r\nHost: box\r\nAuthorization: Bearer " + token + "\r\n\r\n"
 	if _, err := io.WriteString(conn, handshake+pipelined); err != nil {

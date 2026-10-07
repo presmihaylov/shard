@@ -93,7 +93,7 @@ func TestAnAuthorizedConnectionLeavesTheCap(t *testing.T) {
 
 	var streams []*websocket.Conn
 	for i := range 4 {
-		conn, _, err := websocket.Dial(t.Context(), "ws://"+address+"/v0/sandboxes/sandbox1/logs?follow=true", &websocket.DialOptions{HTTPHeader: header}) //nolint:bodyclose // a 101 has no body to close
+		conn, _, err := websocket.Dial(t.Context(), "ws://"+address+"/v0/sandboxes/sandbox1/processes/web/logs?follow=true", &websocket.DialOptions{HTTPHeader: header}) //nolint:bodyclose // a 101 has no body to close
 		if err != nil {
 			t.Fatalf("authorized stream %d of 4 through a front whose cap is 2: %v", i+1, err)
 		}

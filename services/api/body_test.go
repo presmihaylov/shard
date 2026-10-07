@@ -138,7 +138,7 @@ func TestAFollowOutlivesTheReadTimeout(t *testing.T) {
 	s.verbs.stops = make(chan struct{})
 	s.verbs.reason = sandbox.LogsStopped
 
-	st := follow(t, s, "/v0/sandboxes/"+s.running.ID+"/logs?follow=true")
+	st := follow(t, s, "/v0/sandboxes/"+s.running.ID+"/processes/web/logs?follow=true")
 	line, err := st.body.ReadString('\n')
 	if err != nil || line != "first\n" {
 		t.Fatalf("the follow began with %q, %v", line, err)

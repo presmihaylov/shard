@@ -18,9 +18,10 @@ var getAndRm = map[string]bool{
 
 // bodies are the least each body route takes past Huma's own checks, so the failed guard is what answers.
 var bodies = map[string]string{
-	"POST /v0/sandboxes/{id}/exec":  `{"command":["true"]}`,
-	"POST /v0/sandboxes/{id}/mkdir": `{"path":"/x"}`,
-	"PUT /v0/sandboxes/{id}/policy": `{"policy":"p"}`,
+	"POST /v0/sandboxes/{id}/exec":      `{"command":["true"]}`,
+	"POST /v0/sandboxes/{id}/processes": `{"command":["true"]}`,
+	"POST /v0/sandboxes/{id}/mkdir":     `{"path":"/x"}`,
+	"PUT /v0/sandboxes/{id}/policy":     `{"policy":"p"}`,
 }
 
 // The walk reads api.Routes, so a route added to the daemon is covered here without an edit to this test.
@@ -92,7 +93,7 @@ func TestEgressLogOnAFailedSandboxIs409(t *testing.T) {
 func TestLogsFollowOnAFailedSandboxIs409(t *testing.T) {
 	s := seed(t)
 	failed := create(t, s.repo, "broken", models.StateFailed)
-	path := "/v0/sandboxes/" + failed.ID + "/logs?follow=true"
+	path := "/v0/sandboxes/" + failed.ID + "/processes/web/logs?follow=true"
 
 	// The plain follow (no WebSocket handshake) is refused before the 200.
 	status, body := get(t, s.server, path)

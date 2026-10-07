@@ -75,7 +75,6 @@ The routes that follow a stream, such as an exec attach or a `logs` follow, upgr
 | `POST` | `/v0/sandboxes/{id}/pause` | `sandbox:write` | [Save a sandbox's state and suspend it](/docs/reference/api/sandboxes/#save-a-sandboxs-state-and-suspend-it) |
 | `POST` | `/v0/sandboxes/{id}/resume` | `sandbox:write` | [Resume a paused sandbox from its saved state](/docs/reference/api/sandboxes/#resume-a-paused-sandbox-from-its-saved-state) |
 | `POST` | `/v0/sandboxes/{id}/fork` | `sandbox:write` | [Create a sandbox from a running sandbox's memory and files](/docs/reference/api/sandboxes/#create-a-sandbox-from-a-running-sandboxs-memory-and-files) |
-| `GET` | `/v0/sandboxes/{id}/logs` | `sandbox:read` | [Read or follow the output of a sandbox](/docs/reference/api/sandboxes/#read-or-follow-the-output-of-a-sandbox) |
 | `GET` | `/v0/sandboxes/{id}/egress-log` | `sandbox:read` | [Read or follow the egress decisions of a sandbox](/docs/reference/api/sandboxes/#read-or-follow-the-egress-decisions-of-a-sandbox) |
 | `POST` | `/v0/sandboxes/{id}/secrets/{name}` | `secret:*` | [Grant a secret to a sandbox](/docs/reference/api/sandboxes/#grant-a-secret-to-a-sandbox) |
 | `DELETE` | `/v0/sandboxes/{id}/secrets/{name}` | `secret:*` | [Ungrant a secret from a sandbox](/docs/reference/api/sandboxes/#ungrant-a-secret-from-a-sandbox) |
@@ -140,12 +139,16 @@ The routes that follow a stream, such as an exec attach or a `logs` follow, upgr
 | `GET` | `/v0/capabilities` | any token | [List the lifecycle verbs and whether this server supports each](/docs/reference/api/meta/#list-the-lifecycle-verbs-and-whether-this-server-supports-each) |
 | `GET` | `/v0/scopes` | any token | [List the scopes a token can carry](/docs/reference/api/meta/#list-the-scopes-a-token-can-carry) |
 
-**App**
+**Processes**
 
 | Method | Path | Scope | Description |
 | --- | --- | --- | --- |
-| `GET` | `/v0/sandboxes/{id}/attach` | `sandbox:read` | [Wait for or attach to the app of a run](/docs/reference/api/app/#wait-for-or-attach-to-the-app-of-a-run) |
-| `POST` | `/v0/sandboxes/{id}/app/stop` | `sandbox:write` | [Stop the app of a run](/docs/reference/api/app/#stop-the-app-of-a-run) |
+| `POST` | `/v0/sandboxes/{id}/processes` | `exec` | [Run a named process under supervision in a running sandbox](/docs/reference/api/processes/#run-a-named-process-under-supervision-in-a-running-sandbox) |
+| `GET` | `/v0/sandboxes/{id}/processes` | `sandbox:read` | [List the processes of a sandbox](/docs/reference/api/processes/#list-the-processes-of-a-sandbox) |
+| `GET` | `/v0/sandboxes/{id}/processes/{name}` | `sandbox:read` | [Read a process](/docs/reference/api/processes/#read-a-process) |
+| `POST` | `/v0/sandboxes/{id}/processes/{name}/kill` | `exec` | [End a process and cancel its restarts](/docs/reference/api/processes/#end-a-process-and-cancel-its-restarts) |
+| `GET` | `/v0/sandboxes/{id}/processes/{name}/logs` | `sandbox:read` | [Read or follow the output of a process](/docs/reference/api/processes/#read-or-follow-the-output-of-a-process) |
+| `GET` | `/v0/sandboxes/{id}/processes/{name}/attach` | `sandbox:read` | [Wait for or attach to a process until its restart policy ends it](/docs/reference/api/processes/#wait-for-or-attach-to-a-process-until-its-restart-policy-ends-it) |
 
 ## Objects
 
@@ -159,7 +162,7 @@ The routes that follow a stream, such as an exec attach or a `logs` follow, upgr
 
 | Field | Type | Required | Description |
 | --- | --- | --- | --- |
-| `code` | string | yes | What a program matches on: invalid\_request, body\_too\_large, not\_found, sandbox\_not\_running, sandbox\_not\_stopped, sandbox\_not\_paused, sandbox\_live, sandbox\_failed, no\_checkpoint, unsupported, in\_use, name\_taken, exec\_exited, exec\_running, exec\_limit, no\_app, app\_ended, unauthorized, forbidden, timeout, command\_not\_started or internal. A later daemon may add a code, so a client must take one it does not know. |
+| `code` | string | yes | What a program matches on: invalid\_request, body\_too\_large, not\_found, sandbox\_not\_running, sandbox\_not\_stopped, sandbox\_not\_paused, sandbox\_live, sandbox\_failed, no\_checkpoint, unsupported, in\_use, name\_taken, exec\_exited, exec\_running, exec\_limit, no\_process, process\_ended, process\_limit, unauthorized, forbidden, timeout, command\_not\_started or internal. A later daemon may add a code, so a client must take one it does not know. |
 | `exit_code` | integer (int64) | no | The exit code of the command that never started, with command\_not\_started. |
 | `holders` | array of string | no | The sandboxes or snapshots that hold the resource, with in\_use. |
 | `message` | string | yes | A line for a human; match on code, never on this text. |
