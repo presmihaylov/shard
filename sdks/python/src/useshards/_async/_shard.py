@@ -1,4 +1,4 @@
-"""The client: sandboxes made and found, and the policies, secrets and snapshots they draw on."""
+"""The client: sandboxes made and found, their forwards, and the policies, secrets and snapshots they draw on."""
 
 from __future__ import annotations
 
@@ -13,6 +13,7 @@ from .._config import PLAIN_WARNING, StrPath, resolve
 from .._generated import models
 from .._generated.api.meta import get_capabilities, get_version
 from .._generated.api.policies import get_policy, list_policies, put_policy, remove_policy
+from .._generated.api.ports import list_ports
 from .._generated.api.sandboxes import (
     attach_policy,
     create_sandbox,
@@ -29,6 +30,8 @@ from .._types import (
     Capabilities,
     Policy,
     PolicyRule,
+    Port,
+    PortForward,
     Restart,
     SandboxInfo,
     SandboxList,
@@ -88,6 +91,7 @@ class AsyncShard:
         memory_mib: int | None = None,
         vcpus: int | None = None,
         disk_mib: int | None = None,
+        ports: Sequence[PortForward] | None = None,
     ) -> AsyncSandbox:
         """create a sandbox"""
         body = create_body(
@@ -103,6 +107,7 @@ class AsyncShard:
             memory_mib=memory_mib,
             vcpus=vcpus,
             disk_mib=disk_mib,
+            ports=ports,
             restart=None,
         )
         return AsyncSandbox(self._transport, await self._create(body))
@@ -121,6 +126,7 @@ class AsyncShard:
         memory_mib: int | None = None,
         vcpus: int | None = None,
         disk_mib: int | None = None,
+        ports: Sequence[PortForward] | None = None,
         restart: Restart | None = None,
     ) -> AsyncApp:
         """create a sandbox and start its command"""
@@ -137,6 +143,7 @@ class AsyncShard:
             memory_mib=memory_mib,
             vcpus=vcpus,
             disk_mib=disk_mib,
+            ports=ports,
             restart=restart,
         )
         return AsyncApp(self._transport, AsyncSandbox(self._transport, await self._create(body)))
@@ -169,8 +176,17 @@ class AsyncShard:
             )
         )
 
+    async def ports(self) -> builtins.list[Port]:
+        """Return the forwards of every sandbox, in host port order."""
+        records = await self._transport.listed(
+            models.PortsResponse,
+            lambda cursor: list_ports.asyncio_detailed(client=self._transport.api, cursor=cursor),
+            lambda page: page.ports,
+        )
+        return [_types.port(record) for record in records]
+
     async def capabilities(self) -> Capabilities:
-        """Return which of the eight lifecycle verbs the daemon's provider supports."""
+        """Return which of the nine lifecycle verbs the daemon's provider supports."""
         return _types.capabilities(
             await self._transport.answer(
                 models.Capabilities, lambda: get_capabilities.asyncio_detailed(client=self._transport.api)

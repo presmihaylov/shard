@@ -59,6 +59,7 @@ pause        false
 resume       false
 fork         false
 snapshot     true
+port         true
 ```
 
 This page lists what shard does not do. Read it before you put untrusted code on a server.
@@ -125,7 +126,7 @@ A sandbox can have four bounds: memory, CPU, processes and disk.
 
 ## Network
 
-- **No inbound connections.** Nothing outside can open a connection into a sandbox, and shard has no command that publishes a port.
+- **Inbound only through a forwarded port.** Nothing outside can open a connection into a sandbox unless `shard port add` forwards a host port to it. A forward carries TCP only, and reaches the program only where it listens on the sandbox's `127.0.0.1` or on every interface.
 - **No IPv6.** A sandbox gets one IPv4 address, and the host drops every IPv6 packet it sends.
 - **A name rule covers only TCP ports 80 and 443.** For any other port, write an address rule.
 - **Names resolve when the rules are applied.** The host resolves each name rule to its addresses when it writes the rules. If a host's addresses change, store the policy again.

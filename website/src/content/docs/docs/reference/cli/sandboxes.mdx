@@ -22,6 +22,7 @@ shard create [OPTIONS] --snapshot SNAPSHOT
 shard create --name web --memory 512MiB python:3.12
 shard create --name web-copy --snapshot web-files
 shard create --name worker --memory 512MiB --secret API_TOKEN python:3.12
+shard create --name web --port 8000 python:3.12
 ```
 
 **Arguments**
@@ -44,6 +45,7 @@ shard create --name worker --memory 512MiB --secret API_TOKEN python:3.12
 | `--vcpus <n>` | CPU count; 0 uses all available host CPUs, up to 32 on Firecracker |
 | `--disk <size>` | disk limit; 0 uses the default |
 | `--snapshot <id\|name>` | create from a filesystem snapshot instead of an image |
+| `--port [HOST:]GUEST` | forward a port on the host's 127.0.0.1 to the sandbox; repeatable |
 
 The sandbox starts without a main command. Use `shard exec` to execute commands or `shard run` to create one with a main command. The sandbox stays active until stopped.
 
@@ -495,5 +497,110 @@ shard cp web:/tmp/results.json ./results.json
 | `--user <user>` | user for copies into the sandbox; defaults to its user |
 
 When the destination is a directory, the source is copied inside it. Prefix local paths that contain a colon with `./` or `/`. Successful copies produce no output.
+
+## shard port
+
+Forward host ports to ports inside sandboxes.
+
+```text
+shard port COMMAND [OPTIONS] [ARGS...]
+```
+
+**Commands**
+
+| Command | Description |
+| --- | --- |
+| [`shard port add`](#shard-port-add) | forward a host port to a port inside a sandbox |
+| [`shard port list`](#shard-port-list) | list forwarded host ports |
+| [`shard port remove`](#shard-port-remove) | stop forwarding a host port |
+
+A forward carries TCP from a host port to a port on the sandbox's 127.0.0.1. It belongs to the sandbox, and listens whenever the sandbox runs.
+
+### shard port add
+
+Forward a host port to a port inside a sandbox, or change the forward it has.
+
+```text
+shard port add [OPTIONS] SANDBOX [HOST:]GUEST
+```
+
+**Examples**
+
+```sh
+shard port add web 8000
+shard port add web 9000:8000
+shard port add web 9000:8000 --public
+```
+
+**Arguments**
+
+| Argument | Description |
+| --- | --- |
+| `SANDBOX` | sandbox ID or name |
+| `HOST` | port on the host; the guest port when omitted |
+| `GUEST` | port the program in the sandbox listens on, on 127.0.0.1 |
+
+**Options**
+
+| Option | Description |
+| --- | --- |
+| `--public` | listen on 0.0.0.0, every interface of the host, not 127.0.0.1 |
+
+Prints each address of the host the port is reachable on. A running sandbox takes the forward at once; any other from its next start. The forward survives a stop, a start and a host reboot. A fork does not copy it.
+
+Add the same host port again to change its guest port or its visibility. `--public` is the only way to listen beyond this host; it opens the port to every network the host is on.
+
+### shard port list
+
+List the host ports forwarded into one sandbox, or into every sandbox.
+
+```text
+shard port list [OPTIONS] [SANDBOX]
+```
+
+**Examples**
+
+```sh
+shard port list
+shard port list web
+shard port list --format json
+```
+
+**Arguments**
+
+| Argument | Description |
+| --- | --- |
+| `SANDBOX` | sandbox ID or name; every sandbox when omitted |
+
+**Options**
+
+| Option | Description | Default |
+| --- | --- | --- |
+| `--format <format>` | output format: json or table | `table` |
+
+Table columns: SANDBOX, HOST, GUEST, VISIBILITY and REACHABLE-ON. REACHABLE-ON shows a dash while the sandbox is not running.
+
+### shard port remove
+
+Stop forwarding a host port.
+
+```text
+shard port remove SANDBOX HOST
+```
+
+**Example**
+
+```sh
+shard port remove web 9000
+```
+
+**Arguments**
+
+| Argument | Description |
+| --- | --- |
+| `SANDBOX` | sandbox ID or name |
+| `HOST` | host port the forward listens on |
+
+Closes the listener and the connections it carries.
 
 {/* make cli-docs writes everything above this line. Write by hand below it. */}

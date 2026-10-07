@@ -147,6 +147,15 @@ The routes that follow a stream, such as an exec attach or a `logs` follow, upgr
 | `GET` | `/v0/sandboxes/{id}/attach` | `sandbox:read` | [Wait for or attach to the app of a run](/docs/reference/api/app/#wait-for-or-attach-to-the-app-of-a-run) |
 | `POST` | `/v0/sandboxes/{id}/app/stop` | `sandbox:write` | [Stop the app of a run](/docs/reference/api/app/#stop-the-app-of-a-run) |
 
+**Ports**
+
+| Method | Path | Scope | Description |
+| --- | --- | --- | --- |
+| `GET` | `/v0/ports` | `port:read` | [List the host ports forwarded into every sandbox](/docs/reference/api/ports/#list-the-host-ports-forwarded-into-every-sandbox) |
+| `GET` | `/v0/sandboxes/{id}/ports` | `port:read` | [List the host ports forwarded into a sandbox](/docs/reference/api/ports/#list-the-host-ports-forwarded-into-a-sandbox) |
+| `PUT` | `/v0/sandboxes/{id}/ports/{host_port}` | `port:write` | [Forward a host port into a sandbox, or change that forward](/docs/reference/api/ports/#forward-a-host-port-into-a-sandbox-or-change-that-forward) |
+| `DELETE` | `/v0/sandboxes/{id}/ports/{host_port}` | `port:write` | [Remove the forward on a host port](/docs/reference/api/ports/#remove-the-forward-on-a-host-port) |
+
 ## Objects
 
 ### Error

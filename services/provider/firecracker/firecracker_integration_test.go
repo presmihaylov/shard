@@ -670,3 +670,14 @@ func TestConformanceOnMicroVMs(t *testing.T) {
 		ReseedWindow: 50 * time.Second,
 	})
 }
+
+// TestPorts proves a forward on a microVM reaches a listener on the sandbox's own loopback (SHARD-789).
+func TestPorts(t *testing.T) {
+	h := newVMHarness(t)
+
+	conformance.RunPorts(t, conformance.Subject{
+		Provider: h.provider,
+		NewSpec:  func(t *testing.T) models.SandboxSpec { return h.newSpec(t, "/bin/true") },
+		Shell:    func(script string) []string { return []string{"/bin/sh", "-c", script} },
+	})
+}

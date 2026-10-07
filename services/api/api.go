@@ -66,6 +66,10 @@ type Lifecycle interface {
 	UngrantSecret(ctx context.Context, ref, name string) (models.Sandbox, error)
 	AttachPolicy(ctx context.Context, ref, name string) (models.Sandbox, error)
 	DetachPolicy(ctx context.Context, ref string) (models.Sandbox, error)
+	AddPort(ctx context.Context, ref string, hostPort uint16, req sandbox.PortRequest) (models.Port, error)
+	RemovePort(ctx context.Context, ref string, hostPort uint16) error
+	// ListPorts answers the forwards of one sandbox, or of every sandbox when ref is empty, in host port order.
+	ListPorts(ctx context.Context, ref string) ([]models.Port, error)
 }
 
 // EgressLog is what shard policy logs prints: the newest decisions made for one sandbox, oldest first.
@@ -164,6 +168,8 @@ const (
 	Exec          Scope = models.ScopeExec
 	Secret        Scope = models.ScopeSecret
 	Policy        Scope = models.ScopePolicy
+	PortRead      Scope = models.ScopePortRead
+	PortWrite     Scope = models.ScopePortWrite
 )
 
 // Route is one method and pattern the daemon serves, and the scope a public one needs; a local one needs none.
@@ -243,6 +249,10 @@ func (h *Handler) routeTable() []routeEntry {
 		public("DELETE", "/v0/sandboxes/{id}/secrets/{name}", Secret, operation("sandboxes", "ungrant-secret", "Ungrant a secret from a sandbox", 0), typed(h.ungrantSecret)),
 		public("PUT", "/v0/sandboxes/{id}/policy", Policy, operation("sandboxes", "attach-policy", "Attach a policy to a sandbox", 0), typed(h.attachPolicy)),
 		public("DELETE", "/v0/sandboxes/{id}/policy", Policy, operation("sandboxes", "detach-policy", "Detach the policy of a sandbox", 0), typed(h.detachPolicy)),
+		public("GET", "/v0/ports", PortRead, operation("ports", "list-ports", "List the host ports forwarded into every sandbox", 0), typed(h.listPorts)),
+		public("GET", "/v0/sandboxes/{id}/ports", PortRead, operation("ports", "list-sandbox-ports", "List the host ports forwarded into a sandbox", 0), typed(h.listSandboxPorts)),
+		public("PUT", "/v0/sandboxes/{id}/ports/{host_port}", PortWrite, operation("ports", "put-port", "Forward a host port into a sandbox, or change that forward", 0), documented(describePutPort, typed(h.putPort))),
+		public("DELETE", "/v0/sandboxes/{id}/ports/{host_port}", PortWrite, operation("ports", "remove-port", "Remove the forward on a host port", 0), typed(h.removePort)),
 		public("POST", "/v0/snapshots", SandboxWrite, operation("snapshots", "create-snapshot", "Snapshot a sandbox", http.StatusCreated), typed(h.createSnapshot)),
 		public("GET", "/v0/snapshots", SandboxRead, operation("snapshots", "list-snapshots", "List snapshots", 0), typed(h.listSnapshots)),
 		public("GET", "/v0/snapshots/{ref}", SandboxRead, operation("snapshots", "get-snapshot", "Read a snapshot", 0), typed(h.getSnapshot)),
@@ -283,7 +293,7 @@ type versionResponse struct {
 	APIVersion string `json:"api_version"`
 }
 
-// Capabilities is every lifecycle verb and whether this server supports it, the same eight keys for every provider.
+// Capabilities is every lifecycle verb and whether this server supports it, the same nine keys for every provider.
 type Capabilities struct {
 	Create bool `json:"create"`
 	Start  bool `json:"start"`
@@ -294,6 +304,7 @@ type Capabilities struct {
 	Fork   bool `json:"fork"`
 	// Snapshot is the copy of a stopped sandbox's files, which every provider makes.
 	Snapshot bool `json:"snapshot"`
+	Port     bool `json:"port"`
 }
 
 // ScopesResponse lists every scope a token can carry, never the caller's own.
@@ -336,7 +347,7 @@ func (h *Handler) getScopes(context.Context, *struct{}) (*reply[ScopesResponse],
 
 // capabilitiesOf answers true for the verbs every provider runs, and the provider's own answer for the optional ones.
 func capabilitiesOf(c models.Capabilities) Capabilities {
-	return Capabilities{Create: true, Start: true, Stop: true, Remove: true, Pause: c.Pause, Resume: c.Resume, Fork: c.Fork, Snapshot: true}
+	return Capabilities{Create: true, Start: true, Stop: true, Remove: true, Pause: c.Pause, Resume: c.Resume, Fork: c.Fork, Snapshot: true, Port: c.Port}
 }
 
 func (h *Handler) getDaemon(w http.ResponseWriter, r *http.Request) {
@@ -543,7 +554,7 @@ func (h *Handler) create(w http.ResponseWriter, r *http.Request, wait bool, req 
 
 // describeCreate names both shapes of the 201: the record, or the pull's events and then the record, one JSON line each.
 func describeCreate(registry huma.Registry, op *huma.Operation) {
-	op.Description = "A create that names secrets also needs the secret:* scope, and one that names a policy needs policy:*; without it the answer is 403 forbidden."
+	op.Description = "A create that names secrets also needs the secret:* scope, one that names a policy needs policy:*, and one that forwards ports needs port:write; without it the answer is 403 forbidden."
 	op.Responses["201"] = &huma.Response{Description: "The sandbox, or with wait and Accept: application/x-ndjson one CreateLine per pull event and then the sandbox. An error after the first line ends the stream with a CreateLine whose error is set, and no sandbox.", Content: map[string]*huma.MediaType{
 		"application/json":     {Schema: schemaOf[Sandbox](registry)},
 		"application/x-ndjson": {Schema: schemaOf[CreateLine](registry)},
@@ -566,9 +577,18 @@ func (e *scopeError) Error() string {
 
 func (e *scopeError) Public() string { return e.Error() }
 
-// checkCreateScopes refuses a create that names a secret or a policy the stamped scopes do not reach. No header means the request reached the daemon socket directly, which keeps every right.
+// checkCreateScopes refuses a create that names a secret or a policy, or forwards a port, the stamped scopes do not reach. No header means the request reached the daemon socket directly, which keeps every right.
 func checkCreateScopes(ctx context.Context, req sandbox.CreateRequest) error {
-	return checkGrantScopes(ctx, "create that names", req.Secrets, req.Policy)
+	if err := checkGrantScopes(ctx, "create that names", req.Secrets, req.Policy); err != nil {
+		return err
+	}
+
+	scopes, stamped := ctx.Value(scopesKey{}).([]string)
+	if stamped && len(req.Ports) > 0 && !scopesCover(scopes, PortWrite) {
+		return &scopeError{scope: PortWrite, named: "host port", action: "create that forwards"}
+	}
+
+	return nil
 }
 
 func checkGrantScopes(ctx context.Context, action string, secrets []string, policy string) error {
@@ -682,6 +702,8 @@ func classify(err error) (int, models.Code) {
 	var fileInvalid *sandbox.FileInvalidError
 	var imageGone *sandbox.ImageGoneError
 	var noCABundle *sandbox.NoCABundleError
+	var portNotFound *sandbox.PortNotFoundError
+	var portInUse *sandbox.PortInUseError
 
 	switch {
 	case errors.As(err, &scope):
@@ -691,7 +713,7 @@ func classify(err error) (int, models.Code) {
 	case errors.As(err, &invalid), errors.As(err, &request), errors.As(err, &fileInvalid), errors.As(err, &noCABundle), errors.Is(err, image.ErrBadReference):
 		return http.StatusBadRequest, models.CodeInvalidRequest
 	case errors.Is(err, sandboxstate.ErrNotFound), errors.Is(err, sandboxstate.ErrSnapshotNotFound), errors.Is(err, egress.ErrNotFound),
-		errors.Is(err, secret.ErrNotFound), errors.Is(err, image.ErrNotFound), errors.As(err, &fileNotFound), errors.As(err, &imageGone):
+		errors.Is(err, secret.ErrNotFound), errors.Is(err, image.ErrNotFound), errors.As(err, &fileNotFound), errors.As(err, &imageGone), errors.As(err, &portNotFound):
 		return http.StatusNotFound, models.CodeNotFound
 	case errors.As(err, &nameTaken):
 		return http.StatusConflict, models.CodeNameTaken
@@ -705,7 +727,7 @@ func classify(err error) (int, models.Code) {
 		return http.StatusConflict, models.CodeExecRunning
 	case errors.As(err, &execLimit):
 		return http.StatusTooManyRequests, models.CodeExecLimit
-	case errors.As(err, &held), errors.As(err, &attached):
+	case errors.As(err, &held), errors.As(err, &attached), errors.As(err, &portInUse):
 		return http.StatusConflict, models.CodeInUse
 	case errors.Is(err, models.ErrUnsupported):
 		return http.StatusConflict, models.CodeUnsupported

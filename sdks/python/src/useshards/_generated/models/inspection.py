@@ -14,6 +14,7 @@ if TYPE_CHECKING:
     from ..models.effective import Effective
     from ..models.exit_status import ExitStatus
     from ..models.oom import OOM
+    from ..models.port_forward import PortForward
     from ..models.resources import Resources
     from ..models.restart import Restart
 
@@ -39,6 +40,7 @@ class Inspection:
     name: str | Unset = UNSET
     oom: OOM | Unset = UNSET
     policy: str | Unset = UNSET
+    ports: list[PortForward] | Unset = UNSET
     restart: Restart | Unset = UNSET
     secrets: list[str] | Unset = UNSET
     snapshot: str | Unset = UNSET
@@ -49,6 +51,7 @@ class Inspection:
         from ..models.effective import Effective  # noqa: PLC0415
         from ..models.exit_status import ExitStatus  # noqa: PLC0415
         from ..models.oom import OOM  # noqa: PLC0415
+        from ..models.port_forward import PortForward  # noqa: PLC0415
         from ..models.resources import Resources  # noqa: PLC0415
         from ..models.restart import Restart  # noqa: PLC0415
 
@@ -91,6 +94,13 @@ class Inspection:
             oom = self.oom.to_dict()
 
         policy = self.policy
+
+        ports: list[dict[str, Any]] | Unset = UNSET
+        if not isinstance(self.ports, Unset):
+            ports = []
+            for ports_item_data in self.ports:
+                ports_item = ports_item_data.to_dict()
+                ports.append(ports_item)
 
         restart: dict[str, Any] | Unset = UNSET
         if not isinstance(self.restart, Unset):
@@ -140,6 +150,8 @@ class Inspection:
             field_dict["oom"] = oom
         if policy is not UNSET:
             field_dict["policy"] = policy
+        if ports is not UNSET:
+            field_dict["ports"] = ports
         if restart is not UNSET:
             field_dict["restart"] = restart
         if secrets is not UNSET:
@@ -158,6 +170,7 @@ class Inspection:
         from ..models.effective import Effective  # noqa: PLC0415
         from ..models.exit_status import ExitStatus  # noqa: PLC0415
         from ..models.oom import OOM  # noqa: PLC0415
+        from ..models.port_forward import PortForward  # noqa: PLC0415
         from ..models.resources import Resources  # noqa: PLC0415
         from ..models.restart import Restart  # noqa: PLC0415
 
@@ -209,6 +222,15 @@ class Inspection:
 
         policy = d.pop("policy", UNSET)
 
+        _ports = d.pop("ports", UNSET)
+        ports: list[PortForward] | Unset = UNSET
+        if _ports is not UNSET:
+            ports = []
+            for ports_item_data in _ports:
+                ports_item = PortForward.from_dict(ports_item_data)
+
+                ports.append(ports_item)
+
         _restart = d.pop("restart", UNSET)
         restart: Restart | Unset
         if isinstance(_restart, Unset):
@@ -246,6 +268,7 @@ class Inspection:
             name=name,
             oom=oom,
             policy=policy,
+            ports=ports,
             restart=restart,
             secrets=secrets,
             snapshot=snapshot,

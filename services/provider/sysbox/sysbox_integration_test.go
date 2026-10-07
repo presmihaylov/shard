@@ -67,6 +67,17 @@ func TestLaunch(t *testing.T) {
 	})
 }
 
+// TestPorts proves a forward on sysbox reaches a listener on the sandbox's own loopback (SHARD-789).
+func TestPorts(t *testing.T) {
+	h := newHarness(t)
+
+	conformance.RunPorts(t, conformance.Subject{
+		Provider: h.provider,
+		NewSpec:  func(t *testing.T) models.SandboxSpec { return h.newSpec(t, "/bin/true") },
+		Shell:    func(script string) []string { return []string{"/bin/sh", "-c", script} },
+	})
+}
+
 type harness struct {
 	provider *sysbox.Provider
 	image    image.Image

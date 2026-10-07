@@ -106,6 +106,11 @@ type fakeLifecycle struct {
 	recursive bool
 	// archive is what a put of an archive named.
 	archive sandbox.ArchiveWrite
+
+	// hostPort and port are what a port put or rm named, and ports what a port list answers.
+	hostPort uint16
+	port     sandbox.PortRequest
+	ports    []models.Port
 }
 
 func (f *fakeLifecycle) StatFile(_ context.Context, ref, path string) (models.FileStat, error) {
@@ -298,6 +303,24 @@ func (f *fakeLifecycle) DetachPolicy(_ context.Context, ref string) (models.Sand
 	f.ref, f.attached = ref, ""
 
 	return models.Sandbox{ID: ref}, f.err
+}
+
+func (f *fakeLifecycle) AddPort(_ context.Context, ref string, hostPort uint16, req sandbox.PortRequest) (models.Port, error) {
+	f.ref, f.hostPort, f.port = ref, hostPort, req
+
+	return models.Port{Sandbox: ref, HostPort: hostPort, GuestPort: req.GuestPort, Public: req.Public, ReachableOn: []models.HostAddress{}}, f.err
+}
+
+func (f *fakeLifecycle) RemovePort(_ context.Context, ref string, hostPort uint16) error {
+	f.ref, f.hostPort = ref, hostPort
+
+	return f.err
+}
+
+func (f *fakeLifecycle) ListPorts(_ context.Context, ref string) ([]models.Port, error) {
+	f.ref = ref
+
+	return f.ports, f.err
 }
 
 func (f *fakeLifecycle) Stop(_ context.Context, ref string) (models.Sandbox, error) {

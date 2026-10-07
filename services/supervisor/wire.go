@@ -19,6 +19,7 @@ const (
 	ControlPort uint32 = 5000
 	ExecPort    uint32 = 5001
 	LogsPort    uint32 = 5002
+	ForwardPort uint32 = 5003
 )
 
 // LogsVersion is the logs port protocol a guest names in its state; no raw output can forge a field of the control stream.
@@ -83,6 +84,8 @@ type Message struct {
 	Logs int `json:"logs,omitempty"`
 	// FreezesOverlay on a state replay says the guest freezes an overlay root by its upper; a guest from before it fails every freeze on one.
 	FreezesOverlay bool `json:"freezes_overlay,omitempty"`
+	// Ports on a state replay says the guest serves the forward port; a guest from before it refuses every port forward.
+	Ports bool `json:"ports,omitempty"`
 	// Error is why the guest could not do what the host asked, on the failure that answers the request, or why the supervisor gave up.
 	Error string `json:"error,omitempty"`
 }
@@ -276,20 +279,20 @@ func readMessage(r *bufio.Reader, value any) (int, error) {
 	}
 }
 
-// ReadHeader takes the exec header a byte at a time, so the frames behind it stay in the connection.
+// ReadHeader takes one header line a byte at a time, so the frames behind it stay in the connection.
 func ReadHeader(r io.Reader, value any) error {
 	var line []byte
 	for {
 		var b [1]byte
 		if _, err := io.ReadFull(r, b[:]); err != nil {
-			return fmt.Errorf("read the exec header: %w", err)
+			return fmt.Errorf("read a header: %w", err)
 		}
 		line = append(line, b[0])
 		if b[0] == '\n' {
 			return DecodeFrame(line, value)
 		}
 		if len(line) > MaxPayload {
-			return fmt.Errorf("the exec header runs past %d bytes", MaxPayload)
+			return fmt.Errorf("a header runs past %d bytes", MaxPayload)
 		}
 	}
 }

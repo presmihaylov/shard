@@ -50,6 +50,7 @@ Run `shard COMMAND --help` for options and examples.
 | [`shard resume`](/docs/reference/cli/sandboxes/#shard-resume) | resume paused sandboxes from their saved state |
 | [`shard fork`](/docs/reference/cli/sandboxes/#shard-fork) | create a sandbox from a running sandbox's memory and files |
 | [`shard cp`](/docs/reference/cli/sandboxes/#shard-cp) | copy files or directories between your machine and a running sandbox |
+| [`shard port`](/docs/reference/cli/sandboxes/#shard-port) | forward host ports to ports inside sandboxes |
 
 **Images, snapshots, secrets and network policies**
 
@@ -369,16 +370,16 @@ A `--format json` call writes one value or nothing:
   "started_at": "2026-10-01T09:30:00Z",
   "socket": "/var/lib/shard/shard.sock",
   "provider": "gvisor",
-  "capabilities": {"pause": true, "resume": true, "fork": true},
+  "capabilities": {"pause": true, "resume": true, "fork": true, "port": true},
   "proxy": {"plain_port": 30080, "tls_port": 30443},
   "tasks": [{"name": "proxy", "state": "running", "restarts": 0}]
 }
 ```
 
-`capabilities` is the body of `GET /v0/capabilities`, with the same eight keys for every provider:
+`capabilities` is the body of `GET /v0/capabilities`, with the same nine keys for every provider:
 
 ```json
-{"create": true, "start": true, "stop": true, "remove": true, "pause": true, "resume": true, "fork": false, "snapshot": true}
+{"create": true, "start": true, "stop": true, "remove": true, "pause": true, "resume": true, "fork": false, "snapshot": true, "port": true}
 ```
 
 `version` prints the client and daemon versions. On a Mac, it adds `shim`, which is `embedded` or `absent`:

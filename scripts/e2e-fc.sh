@@ -352,6 +352,8 @@ shard remove --force "${OOM_ID}" >/dev/null
 OOM_ID=""
 say "one OOM, one stop, and the boot the daemon started again skipped the fill"
 
+port_steps --memory "${MEMORY}MiB"
+
 step "reach the network from the microVM"
 expect_network "after the create"
 expect_exec "resolved" "the guest resolves a name through the daemon's resolver" \

@@ -25,6 +25,15 @@ const cpuFeatures = "fpu,vme,de,pse,tsc,msr,pae,mce,cx8,apic,sep,mtrr,pge,mca,cm
 	"sse,sse2,ht,syscall,nx,rdtscp,lm,pni,pclmulqdq,ssse3,fma,cx16,sse4_1,sse4_2,movbe,popcnt,aes," +
 	"xsave,osxsave,avx,f16c,rdrand,lahf_lm,abm,fsgsbase,bmi1,avx2,bmi2,rdseed,adx,xsaveopt,xsavec,xgetbv1,xsaves"
 
+// cpuFeaturesFor names x86 flags only, and runsc on arm64 refuses to create a sandbox whose annotation holds one (SHARD-791).
+func cpuFeaturesFor(goarch string) (string, bool) {
+	if goarch != "amd64" {
+		return "", false
+	}
+
+	return cpuFeatures, true
+}
+
 // CgroupParent is the one cgroup every sandbox sits under, so nothing of shard's lands at the root.
 const CgroupParent = "shard"
 

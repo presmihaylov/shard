@@ -2,6 +2,7 @@ package models
 
 import (
 	"context"
+	"net"
 	"net/netip"
 	"os"
 	"time"
@@ -70,6 +71,9 @@ type Provider interface {
 	Fork(ctx context.Context, sourceID string, spec SandboxSpec) error
 	// AdoptStaging settles the checkpoint staging a cut pause left beside dir at daemon start: a provider that never reads a staged checkpoint drops it, and vz keeps the one it finishes on the next resume (SHARD-404).
 	AdoptStaging(dir string) error
+
+	// DialPort opens one TCP connection to port on the guest's own loopback, which a host port forward splices to its client. Optional.
+	DialPort(ctx context.Context, id string, port uint16) (net.Conn, error)
 }
 
 // Capabilities is one boolean per optional verb. Never pretend providers are equal.
@@ -77,6 +81,7 @@ type Capabilities struct {
 	Pause  bool `json:"pause"`
 	Resume bool `json:"resume"`
 	Fork   bool `json:"fork"`
+	Port   bool `json:"port"`
 }
 
 // Status is what the substrate says now, never what the record says.

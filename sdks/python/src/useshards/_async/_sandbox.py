@@ -1,4 +1,4 @@
-"""One sandbox and what runs in it: its commands, the app a run started, its logs and its files."""
+"""One sandbox and what runs in it: its commands, the app a run started, its logs, its files and its ports."""
 
 from __future__ import annotations
 
@@ -12,6 +12,7 @@ from .._capture import DEFAULT_OUTPUT_LIMIT
 from .._generated import models
 from .._generated.api.app import attach_app, stop_app
 from .._generated.api.exec_ import get_exec, list_execs
+from .._generated.api.ports import list_sandbox_ports, put_port, remove_port
 from .._generated.api.sandboxes import (
     fork_sandbox,
     get_sandbox,
@@ -31,11 +32,13 @@ from .._types import (
     CommandResult,
     EgressDecision,
     OutputCallback,
+    Port,
     SandboxInfo,
     TerminalSize,
     app_exit,
     command_info,
     egress_decision,
+    port,
     sandbox_info,
 )
 from .._wire import AsyncCall, path
@@ -54,6 +57,7 @@ class AsyncSandbox:
         self.info = info
         self.commands = AsyncCommands(transport, info.id)
         self.files = AsyncFiles(transport, info.id)
+        self.ports = AsyncPorts(transport, info.id)
 
     def __repr__(self) -> str:
         return f"{type(self).__name__}(id={self.id!r}, name={self.name!r}, state={self.info.state!r})"
@@ -255,6 +259,40 @@ class AsyncCommands:
             output_limit_bytes=output_limit_bytes,
             on_stdout=on_stdout,
             on_stderr=on_stderr,
+        )
+
+
+class AsyncPorts:
+    """The host ports one sandbox forwards; a running sandbox listens at once, any other from its next start."""
+
+    def __init__(self, transport: AsyncTransport, sandbox: str) -> None:
+        self._transport = transport
+        self._sandbox = sandbox
+
+    async def add(self, host_port: int, guest_port: int, *, public: bool = False) -> Port:
+        """Upsert host_port to guest_port; public binds every host interface instead of 127.0.0.1."""
+        body = models.PortRequest(guest_port=guest_port, public=public or UNSET)
+        record = await self._transport.answer(
+            models.Port,
+            lambda: put_port.asyncio_detailed(self._sandbox, host_port, client=self._transport.api, body=body),
+        )
+        return port(record)
+
+    async def list(self) -> builtins.list[Port]:
+        """Return the sandbox's forwards in host port order, each as the host serves it now."""
+        records = await self._transport.listed(
+            models.PortsResponse,
+            lambda cursor: list_sandbox_ports.asyncio_detailed(
+                self._sandbox, client=self._transport.api, cursor=cursor
+            ),
+            lambda page: page.ports,
+        )
+        return [port(record) for record in records]
+
+    async def remove(self, host_port: int) -> None:
+        """End the forward on host_port, and the connections it carries."""
+        await self._transport.send(
+            lambda: remove_port.asyncio_detailed(self._sandbox, host_port, client=self._transport.api)
         )
 
 

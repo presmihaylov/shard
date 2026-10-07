@@ -18,6 +18,7 @@ import (
 	"github.com/presmihaylov/shard/services/bundle"
 	"github.com/presmihaylov/shard/services/egress"
 	"github.com/presmihaylov/shard/services/image"
+	"github.com/presmihaylov/shard/services/portforward"
 	"github.com/presmihaylov/shard/services/sandbox"
 	"github.com/presmihaylov/shard/services/sandboxstate"
 	"github.com/presmihaylov/shard/services/secret"
@@ -364,10 +365,11 @@ type fakeProvider struct {
 	stopped bool
 	removed bool
 
-	// noPause, noResume and noFork withhold one optional verb each, which the fake otherwise claims.
+	// noPause, noResume, noFork and noPort withhold one optional verb each, which the fake otherwise claims.
 	noPause  bool
 	noResume bool
 	noFork   bool
+	noPort   bool
 	// pauseErr is what Pause refuses with, the way vz refuses a pause into a silent shim.
 	pauseErr error
 	// createErr and forkErr are what Create and Fork refuse with, the way a VM substrate refuses a disk.
@@ -523,7 +525,7 @@ func (f *fakeProvider) Name() string { return "fake" }
 func (f *fakeProvider) CheckResources(models.Resources) error { return f.refuse }
 
 func (f *fakeProvider) Capabilities() models.Capabilities {
-	return models.Capabilities{Pause: !f.noPause, Resume: !f.noResume, Fork: !f.noFork}
+	return models.Capabilities{Pause: !f.noPause, Resume: !f.noResume, Fork: !f.noFork, Port: !f.noPort}
 }
 
 func (f *fakeProvider) Pause(ctx context.Context, id string, dir string) error {
@@ -814,12 +816,174 @@ func (f *fakeSubstrate) ReleaseRoot() error {
 	return nil
 }
 
+// fakePorts stands in for the host listeners: a test says which address the host refuses, and reads which forwards are up.
+type fakePorts struct {
+	mu    sync.Mutex
+	calls []string
+	// up is the sandbox each listening host port carries to, and specs what it carries.
+	up    map[uint16]string
+	specs map[uint16]models.PortForward
+	// refuse is why the host will not listen on an address, as 127.0.0.1:8080.
+	refuse map[string]error
+	// down is what Status says of a host port the host refused.
+	down map[uint16]portforward.Status
+}
+
+func newFakePorts() *fakePorts {
+	return &fakePorts{up: map[uint16]string{}, specs: map[uint16]models.PortForward{}, refuse: map[string]error{}, down: map[uint16]portforward.Status{}}
+}
+
+func (f *fakePorts) record(format string, args ...any) {
+	f.calls = append(f.calls, fmt.Sprintf(format, args...))
+}
+
+func (f *fakePorts) bind(id string, spec models.PortForward) error {
+	delete(f.up, spec.HostPort)
+	if err := f.refused(spec); err != nil {
+		f.down[spec.HostPort] = portforward.Status{Sandbox: id, Error: err.Public()}
+
+		return err
+	}
+	f.up[spec.HostPort], f.specs[spec.HostPort] = id, spec
+	delete(f.down, spec.HostPort)
+
+	return nil
+}
+
+func (f *fakePorts) refused(spec models.PortForward) *portforward.BindError {
+	err, ok := f.refuse[fmt.Sprintf("%s:%d", portforward.Address(spec.Public), spec.HostPort)]
+	if !ok {
+		return nil
+	}
+
+	return &portforward.BindError{Port: spec.HostPort, Err: err}
+}
+
+func (f *fakePorts) Open(id string, spec models.PortForward) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.record("Open %s %d", id, spec.HostPort)
+
+	return f.bind(id, spec)
+}
+
+// Set leaves a refused port down and errs on none, the way the forwarder keeps the refusal for ls.
+func (f *fakePorts) Set(id string, want []models.PortForward) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.record("Set %s %d", id, len(want))
+
+	for port, owner := range f.up {
+		if owner == id && !slices.ContainsFunc(want, func(p models.PortForward) bool { return p.HostPort == port }) {
+			delete(f.up, port)
+		}
+	}
+	for _, spec := range want {
+		if err := f.bind(id, spec); err != nil {
+			f.record("refused %d", spec.HostPort)
+		}
+	}
+
+	return nil
+}
+
+func (f *fakePorts) Close(id string, hostPort uint16) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.record("Close %s %d", id, hostPort)
+
+	if f.up[hostPort] == id {
+		delete(f.up, hostPort)
+	}
+
+	return nil
+}
+
+func (f *fakePorts) CloseSandbox(id string) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.record("CloseSandbox %s", id)
+
+	for port, owner := range f.up {
+		if owner == id {
+			delete(f.up, port)
+		}
+	}
+
+	return nil
+}
+
+func (f *fakePorts) Sandboxes() []string {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+
+	var ids []string
+	for _, owner := range f.up {
+		if !slices.Contains(ids, owner) {
+			ids = append(ids, owner)
+		}
+	}
+	slices.Sort(ids)
+
+	return ids
+}
+
+func (f *fakePorts) Probe(spec models.PortForward) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.record("Probe %d", spec.HostPort)
+
+	if err := f.refused(spec); err != nil {
+		return err
+	}
+
+	return nil
+}
+
+func (f *fakePorts) Status(hostPort uint16) portforward.Status {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+
+	if status, ok := f.down[hostPort]; ok {
+		return status
+	}
+	id, ok := f.up[hostPort]
+
+	return portforward.Status{Sandbox: id, Listening: ok}
+}
+
+func (f *fakePorts) Reachable(public bool) ([]models.HostAddress, error) {
+	on := []models.HostAddress{{Interface: "lo", Address: "127.0.0.1"}}
+	if public {
+		on = append(on, models.HostAddress{Interface: "eth0", Address: "192.0.2.10"})
+	}
+
+	return on, nil
+}
+
+// listening is the host ports up for sandbox id, in order.
+func (f *fakePorts) listening(id string) []uint16 {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+
+	var ports []uint16
+	for port, owner := range f.up {
+		if owner == id {
+			ports = append(ports, port)
+		}
+	}
+	slices.Sort(ports)
+
+	return ports
+}
+
 // layers is every fake the service was built over, for a test to set up and read back.
 type layers struct {
 	repo      *fakeRepo
 	net       *fakeNet
 	provider  *fakeProvider
 	substrate *fakeSubstrate
+	ports     *fakePorts
 	secrets   *secret.Store
 	policies  *egress.Store
 	snapshots *sandboxstate.Snapshots
@@ -858,6 +1022,7 @@ func newService(t *testing.T, r *recorder, sb models.Sandbox, tune ...func(*sand
 		net:       &fakeNet{r: r},
 		provider:  &fakeProvider{r: r, status: status},
 		substrate: &fakeSubstrate{r: r},
+		ports:     newFakePorts(),
 		secrets:   secrets,
 		policies:  policies,
 		snapshots: snapshots,
@@ -872,6 +1037,7 @@ func newService(t *testing.T, r *recorder, sb models.Sandbox, tune ...func(*sand
 		Secrets:   secrets,
 		Policies:  policies,
 		Substrate: l.substrate,
+		Ports:     l.ports,
 		// The fakes build a real bundle where a grant is under test, so the environment is the bundle's.
 		Environments: bundle.Opener(l.repo.Dir),
 		ProxyCA: func() ([]byte, error) {

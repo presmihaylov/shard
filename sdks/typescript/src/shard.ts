@@ -4,7 +4,7 @@ import { plainWarning, resolve, type ShardOptions } from "./config.js";
 import type { components } from "./generated/schema.js";
 import { listed } from "./pages.js";
 import * as records from "./records.js";
-import type { Capabilities, Policy, PolicyRule, Restart, SandboxInfo, SecretInfo, Snapshot, Version } from "./records.js";
+import type { Capabilities, Policy, PolicyRule, Port, Restart, SandboxInfo, SecretInfo, Snapshot, Version } from "./records.js";
 import { Sandbox, refresh } from "./sandbox.js";
 import { Transport } from "./transport.js";
 
@@ -42,6 +42,15 @@ export interface CreateOptions {
   /** Left out, the daemon's default. */
   vcpus?: number;
   diskMiB?: number;
+  /** The host ports to forward from the sandbox's first start; public is false when left out. */
+  ports?: PortOptions[];
+}
+
+/** PortOptions are one forward a create asks for: hostPort carries to guestPort on the sandbox's 127.0.0.1, and public listens on every interface of the host. */
+export interface PortOptions {
+  hostPort: number;
+  guestPort: number;
+  public?: boolean;
 }
 
 /** RunOptions make the sandbox of a run, which only an image does. */
@@ -109,7 +118,14 @@ export class Shard {
     return records.version((await this.transport.api.GET("/v0/version")).data);
   }
 
-  /** capabilities returns which of the eight lifecycle verbs the daemon's provider supports. */
+  /** ports lists the forwards of every sandbox, in host port order. */
+  async ports(): Promise<Port[]> {
+    const { rows } = await listed("/v0/ports", "ports", (cursor) => this.transport.api.GET("/v0/ports", { params: { query: { cursor } } }));
+
+    return rows.map(records.port);
+  }
+
+  /** capabilities returns which of the nine lifecycle verbs the daemon's provider supports. */
   async capabilities(): Promise<Capabilities> {
     return records.capabilities((await this.transport.api.GET("/v0/capabilities")).data);
   }
@@ -231,7 +247,7 @@ export class Snapshots {
 }
 
 function createBody(options: CreateOptions, command: string | string[] | undefined, restart: Restart | undefined): CreateRequest {
-  const { image, snapshot, name, env, workdir, user, secrets, policy, memoryMiB, vcpus, diskMiB } = options;
+  const { image, snapshot, name, env, workdir, user, secrets, policy, memoryMiB, vcpus, diskMiB, ports } = options;
   if ((image === undefined) === (snapshot === undefined)) {
     throw new TypeError("a sandbox is made from an image or a snapshot, exactly one of them");
   }
@@ -250,6 +266,9 @@ function createBody(options: CreateOptions, command: string | string[] | undefin
   }
   if (env && Object.keys(env).length > 0) {
     body.env = Object.entries(env).map(([key, value]) => `${key}=${value}`);
+  }
+  if (ports?.length) {
+    body.ports = ports.map((each) => ({ host_port: each.hostPort, guest_port: each.guestPort, public: each.public || undefined }));
   }
   if (restart) {
     body.restart = { policy: restart.policy, retries: restart.retries || undefined, backoff: restart.backoff ?? 0 };

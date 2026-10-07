@@ -77,9 +77,13 @@ npx tsx examples/quickstart.ts
 - **Files stream.** `files.download()` writes to a temporary file and renames it at the end, so a
   large file never sits in memory. `files.upload()` sends a local file with its length.
   `uploadDir()` and `downloadDir()` move a whole tree as a tar.
+- **A forward carries a host port to the sandbox's own 127.0.0.1.** `sandbox.ports.add(9000, 8000)`
+  listens on the host's 127.0.0.1:9000, or on every interface with `{ public: true }`. A running sandbox
+  listens at once, any other from its next start. `ports.list()`, `ports.remove(9000)` and
+  `shard.ports()` read and end them, and `create({ ports })` forwards from the first start.
 - **A verb the provider lacks throws `UnsupportedError`.** `shard.capabilities()` says which of the
-  eight lifecycle verbs the daemon's provider supports (create, start, stop, remove, pause, resume,
-  fork and snapshot), before you call them.
+  nine lifecycle verbs the daemon's provider supports (create, start, stop, remove, pause, resume,
+  fork, snapshot and port) before you call them.
 
 ## Lists
 

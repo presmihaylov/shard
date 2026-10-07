@@ -141,6 +141,7 @@ The SDKs warn that `http` does not encrypt the connection. On `127.0.0.1` the tr
 | `--memory` | Optional. `0`, the default, means 512 MiB, and the smallest is 128 MiB | Optional. `0`, the default, means no bound |
 | `--vcpus 0` | One virtual CPU for each host CPU, up to the limit of the framework | Every host CPU |
 | Host access | None: no shared folders, no host mounts, no route to the LAN | None |
+| `shard port add` | Over the VM's virtual socket, to its `127.0.0.1` | Into the sandbox's network namespace, to its `127.0.0.1` |
 | Docker inside a sandbox | Yes, IPv4 only | No |
 
 A sandbox that goes over its `--memory` stops, as on Linux, and its record says why.
@@ -148,6 +149,8 @@ A sandbox that goes over its `--memory` stops, as on Linux, and its record says 
 shard pulls an image and turns it into a disk only once. Each sandbox from that image boots from an APFS clone of the disk, so a second sandbox from the same image costs only a boot.
 
 A sandbox has no route to the Mac or to the LAN. Its traffic reaches the network through the daemon, and an egress policy works the same as on Linux.
+
+`shard port add` still reaches a program inside a sandbox. The daemon listens on the Mac and carries each connection to the VM over its virtual socket, so a forward needs no route into the VM. See [Reach a port inside a sandbox](/docs/guides/network/#reach-a-port-inside-a-sandbox).
 
 ## When something fails
 

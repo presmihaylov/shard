@@ -77,28 +77,7 @@ type fakeUpstream struct {
 func newUpstream(t *testing.T) *fakeUpstream {
 	t.Helper()
 
-	// udp and tcp ports are separate spaces, so the tcp bind on the udp port is expected to work.
-	var udp net.PacketConn
-	var tcp net.Listener
-	for attempt := 0; attempt < 10 && tcp == nil; attempt++ {
-		var err error
-
-		udp, err = net.ListenPacket("udp", "127.0.0.1:0")
-		if err != nil {
-			t.Fatal(err)
-		}
-
-		tcp, err = net.Listen("tcp", udp.LocalAddr().String())
-		if err != nil {
-			if err := udp.Close(); err != nil {
-				t.Fatal(err)
-			}
-		}
-	}
-	if tcp == nil {
-		t.Fatal("no loopback port was free on both udp and tcp")
-	}
-
+	udp, tcp := listenPair(t)
 	u := &fakeUpstream{addr: netip.MustParseAddrPort(udp.LocalAddr().String())}
 
 	go func() {
@@ -134,13 +113,79 @@ func newUpstream(t *testing.T) *fakeUpstream {
 		}
 	}()
 
-	t.Cleanup(func() {
-		if err := errors.Join(udp.Close(), tcp.Close()); err != nil {
-			t.Error(err)
+	return u
+}
+
+// newDroppingUpstream reads every question over udp and tcp on one loopback port and answers none, the way a lost packet looks.
+func newDroppingUpstream(t *testing.T) *fakeUpstream {
+	t.Helper()
+
+	udp, tcp := listenPair(t)
+	u := &fakeUpstream{addr: netip.MustParseAddrPort(udp.LocalAddr().String())}
+
+	go func() {
+		buf := make([]byte, maxMessage)
+		for {
+			if _, _, err := udp.ReadFrom(buf); err != nil {
+				return
+			}
+			u.asked.Add(1)
 		}
-	})
+	}()
+
+	go func() {
+		for {
+			conn, err := tcp.Accept()
+			if err != nil {
+				return
+			}
+			go func() {
+				defer conn.Close()
+
+				for {
+					if _, err := readFramed(conn); err != nil {
+						return
+					}
+					u.asked.Add(1)
+				}
+			}()
+		}
+	}()
 
 	return u
+}
+
+// listenPair binds udp and tcp on one loopback port, the way an upstream serves both on 53, until the test ends.
+func listenPair(t *testing.T) (net.PacketConn, net.Listener) {
+	t.Helper()
+
+	// udp and tcp ports are separate spaces, so the tcp bind on the udp port is expected to work.
+	for range 10 {
+		udp, err := net.ListenPacket("udp", "127.0.0.1:0")
+		if err != nil {
+			t.Fatal(err)
+		}
+
+		tcp, err := net.Listen("tcp", udp.LocalAddr().String())
+		if err != nil {
+			if err := udp.Close(); err != nil {
+				t.Fatal(err)
+			}
+
+			continue
+		}
+
+		t.Cleanup(func() {
+			if err := errors.Join(udp.Close(), tcp.Close()); err != nil {
+				t.Error(err)
+			}
+		})
+
+		return udp, tcp
+	}
+	t.Fatal("no loopback port was free on both udp and tcp")
+
+	return nil, nil
 }
 
 func (u *fakeUpstream) answer(t *testing.T, msg []byte) []byte {
@@ -215,7 +260,7 @@ func serveOn(t *testing.T, director Director, tcp net.Listener, upstreams ...net
 	if err != nil {
 		t.Fatal(err)
 	}
-	// A dead upstream must fail within the test, not within the five seconds a guest is given.
+	// A dead upstream must fail within the test, not within the two seconds each upstream is given.
 	server.timeout = 200 * time.Millisecond
 
 	ctx, cancel := context.WithCancel(t.Context())
@@ -525,6 +570,37 @@ func TestADeadUpstreamIsAServerFailure(t *testing.T) {
 	}
 	if logged := r.log.String(); !strings.Contains(logged, "no upstream answered") {
 		t.Errorf("the log says %q", logged)
+	}
+}
+
+// A question the first upstream drops spends its budget alone, so the next upstream still has the whole of its own (SHARD-785).
+func TestADroppedQuestionLeavesTheNextUpstreamItsOwnTime(t *testing.T) {
+	dropping, upstream := newDroppingUpstream(t), newUpstream(t)
+	r := serve(t, &fakeDirector{allowed: []string{"api.example.com"}}, dropping.addr, upstream.addr)
+
+	conn, err := net.Dial("tcp", r.tcp.String())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer conn.Close()
+
+	answers := map[string][]byte{
+		"udp": askUDP(t, r.udp, question(t, 11, "api.example.com."), 3*time.Second),
+		"tcp": ask(t, conn, question(t, 12, "api.example.com."), 3*time.Second),
+	}
+	for proto, answer := range answers {
+		if answer == nil {
+			t.Errorf("%s: no answer", proto)
+
+			continue
+		}
+		got := parse(t, answer)
+		if got.header.RCode != dnsmessage.RCodeSuccess || !slices.Equal(got.answers, []netip.Addr{netip.AddrFrom4(answerAddr)}) {
+			t.Errorf("%s: header = %+v, answers = %v, want the next upstream's answer", proto, got.header, got.answers)
+		}
+	}
+	if dropped, answered := dropping.asked.Load(), upstream.asked.Load(); dropped != 2 || answered != 2 {
+		t.Errorf("the dropping upstream was asked %d times and the next one %d, want each twice", dropped, answered)
 	}
 }
 

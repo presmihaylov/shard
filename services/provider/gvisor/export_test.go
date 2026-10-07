@@ -2,6 +2,7 @@ package gvisor
 
 import (
 	"context"
+	"net"
 	"os"
 
 	"github.com/presmihaylov/shard/models"
@@ -151,6 +152,9 @@ func (RunscStub) State(ctx context.Context, id string) (runsc.State, error) {
 func (RunscStub) Forget(id string) error { return nil }
 func (RunscStub) Executable() string     { return "" }
 func (RunscStub) DropNullNetns() error   { return nil }
+func (RunscStub) PortForward(ctx context.Context, id string, port uint16) (net.Conn, error) {
+	return nil, nil
+}
 
 // ExecOptions is the process an exec hands runsc, reachable without a running sandbox.
 func ExecOptions(b bundle.Bundle, spec models.ExecSpec) (runsc.ExecOptions, error) {

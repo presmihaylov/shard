@@ -11,6 +11,7 @@ import os
 import re
 import secrets
 import shutil
+import socket
 import ssl
 import subprocess
 import sys
@@ -59,7 +60,7 @@ HOST_PATHS = (
     "serve.tokens",
 )
 # A host field may appear only in an object every key of which one of these schemas declares.
-PUBLIC_USES = {"address": ("EgressDecision",), "path": ("MkdirRequest",)}
+PUBLIC_USES = {"address": ("EgressDecision", "Port", "HostAddress"), "path": ("MkdirRequest",)}
 NDJSON = "application/x-ndjson"
 # A provider may refuse these verbs, so their suite lines may skip; every other check must pass.
 MAY_SKIP = {"lifecycle.pause_resume", "lifecycle.fork", "lifecycle.unsupported_named"}
@@ -94,6 +95,7 @@ CLAIMS: dict[str, list[str]] = {
     "a * token reaches no local route": ["suite:auth.local_routes_refused", "leak.local_routes"],
     "the spec and responses hold no local detail": ["leak.spec", "leak.responses"],
     "secrets and policies": ["suite:secrets.*", "suite:policies.*"],
+    "port forwards": ["suite:ports.*"],
 }
 
 
@@ -547,6 +549,7 @@ class Gate:
         self.sweep_execs(box, sid)
         self.sweep_files(box)
         self.sweep_grants(box, sid)
+        self.sweep_ports(box)
         self.sweep_app()
         self.sweep_errors(box)
         if self.sweep("DELETE", f"{box}?force=true").status < 300:
@@ -619,6 +622,14 @@ class Gate:
         self.sweep("DELETE", f"/v0/policies/{policy}")
         self.sweep("POST", f"{box}/start")
 
+    def sweep_ports(self, box: str) -> None:
+        """A private forward of the running sandbox, so its answer names the addresses the host listens on."""
+        forward = f"{box}/ports/{free_port()}"
+        self.sweep("PUT", forward, {"guest_port": 8000})
+        for path in (f"{box}/ports", "/v0/ports"):
+            self.sweep("GET", path)
+        self.sweep("DELETE", forward)
+
     def sweep_app(self) -> None:
         made = {"image": self.image, "name": f"gate-app-{self.tag}", "command": ["sleep", "300"]}
         app = self.sweep("POST", "/v0/sandboxes?wait=true", made)
@@ -660,6 +671,7 @@ class Gate:
         self.sweep("GET", f"{box}/files?path=/gate/no/such/file")
         self.sweep("GET", f"{box}/files?path=relative")
         self.sweep("DELETE", f"/v0/snapshots/gate-no-such-{self.tag}")
+        self.sweep("DELETE", f"{box}/ports/1")
 
     def cleanup(self) -> None:
         left = []
@@ -772,6 +784,14 @@ def tar_of(name: str, data: bytes) -> bytes:
         info.size = len(data)
         tar.addfile(info, io.BytesIO(data))
     return out.getvalue()
+
+
+def free_port() -> int:
+    """A port nothing on this host listens on now, which a daemon on this same host may then bind."""
+    with socket.socket() as probe:
+        probe.bind(("127.0.0.1", 0))
+        port: int = probe.getsockname()[1]
+        return port
 
 
 def host_fields() -> list[str]:

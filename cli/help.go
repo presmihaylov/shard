@@ -97,7 +97,7 @@ var verbGroups = []struct {
 	title string
 	verbs []string
 }{
-	{"Sandboxes", []string{"create", "run", "exec", "shell", "list", "logs", "inspect", "stop", "start", "remove", "prune", "pause", "resume", "fork", "cp"}},
+	{"Sandboxes", []string{"create", "run", "exec", "shell", "list", "logs", "inspect", "stop", "start", "remove", "prune", "pause", "resume", "fork", "cp", "port"}},
 	{"Images, snapshots, secrets and network policies", []string{"pull", "image", "snapshot", "secret", "policy"}},
 	{"Host and access", []string{"capabilities", "daemon", "info", "serve", "setup", "tokens", "version"}},
 }
@@ -171,6 +171,7 @@ var helps = map[string]verbHelp{
 		args:    []row{imageArg},
 		flags: append(slices.Clone(sandboxFlagHelps),
 			flagHelp{"--snapshot <id|name>", "create from a filesystem snapshot instead of an image", ""},
+			flagHelp{"--port [HOST:]GUEST", "forward a port on the host's 127.0.0.1 to the sandbox; repeatable", ""},
 		),
 		notes: []note{
 			para(
@@ -184,6 +185,7 @@ var helps = map[string]verbHelp{
 			"shard create --name web --memory 512MiB python:3.12",
 			"shard create --name web-copy --snapshot web-files",
 			"shard create --name worker --memory 512MiB --secret API_TOKEN python:3.12",
+			"shard create --name web --port 8000 python:3.12",
 		},
 	},
 	"run": {
@@ -378,6 +380,57 @@ var helps = map[string]verbHelp{
 			"Successful copies produce no output.",
 		)},
 		examples: []string{"shard cp ./app web:/srv/", "shard cp web:/tmp/results.json ./results.json"},
+	},
+	"port": {
+		usage:   []string{"port COMMAND [OPTIONS] [ARGS...]"},
+		summary: "forward host ports to ports inside sandboxes",
+		notes: []note{para(
+			"A forward carries TCP from a host port to a port on the sandbox's 127.0.0.1.",
+			"It belongs to the sandbox, and listens whenever the sandbox runs.",
+		)},
+	},
+	"port add": {
+		usage:   []string{"port add [OPTIONS] SANDBOX [HOST:]GUEST"},
+		summary: "forward a host port to a port inside a sandbox",
+		about:   "Forward a host port to a port inside a sandbox, or change the forward it has.",
+		args: []row{
+			sandboxArg,
+			{"HOST", "port on the host; the guest port when omitted"},
+			{"GUEST", "port the program in the sandbox listens on, on 127.0.0.1"},
+		},
+		flags: []flagHelp{{"--public", "listen on 0.0.0.0, every interface of the host, not 127.0.0.1", ""}},
+		notes: []note{
+			para(
+				"Prints each address of the host the port is reachable on.",
+				"A running sandbox takes the forward at once; any other from its next start.",
+				"The forward survives a stop, a start and a host reboot. A fork does not copy it.",
+			),
+			para(
+				"Add the same host port again to change its guest port or its visibility.",
+				"--public is the only way to listen beyond this host; it opens the port to",
+				"every network the host is on.",
+			),
+		},
+		examples: []string{"shard port add web 8000", "shard port add web 9000:8000", "shard port add web 9000:8000 --public"},
+	},
+	"port list": {
+		usage:   []string{"port list [OPTIONS] [SANDBOX]"},
+		summary: "list forwarded host ports",
+		about:   "List the host ports forwarded into one sandbox, or into every sandbox.",
+		args:    []row{{"SANDBOX", "sandbox ID or name; every sandbox when omitted"}},
+		flags:   []flagHelp{formatTableHelp},
+		notes: []note{para(
+			"Table columns: SANDBOX, HOST, GUEST, VISIBILITY and REACHABLE-ON.",
+			"REACHABLE-ON shows a dash while the sandbox is not running.",
+		)},
+		examples: []string{"shard port list", "shard port list web", "shard port list --format json"},
+	},
+	"port remove": {
+		usage:    []string{"port remove SANDBOX HOST"},
+		summary:  "stop forwarding a host port",
+		args:     []row{sandboxArg, {"HOST", "host port the forward listens on"}},
+		notes:    []note{para("Closes the listener and the connections it carries.")},
+		examples: []string{"shard port remove web 9000"},
 	},
 	"pull": {
 		usage:    []string{"pull IMAGE"},
@@ -685,7 +738,7 @@ var helps = map[string]verbHelp{
 		about:   "Show sandbox lifecycle capabilities supported by the connected shard server.",
 		flags:   []flagHelp{formatTableHelp},
 		notes: []note{para(
-			"Lists all eight verbs, each true or false for the server's provider.",
+			"Lists all nine verbs, each true or false for the server's provider.",
 			"Token scopes and sandbox states never change the answer.",
 		)},
 		examples: []string{"shard capabilities", "shard capabilities --format json"},

@@ -75,8 +75,8 @@ func serveTransport(name string, boot guestBoot) error {
 		}
 	}
 
-	listeners := make([]net.Listener, 0, 3)
-	for _, port := range []uint32{supervisor.ControlPort, supervisor.ExecPort, supervisor.LogsPort} {
+	listeners := make([]net.Listener, 0, 4)
+	for _, port := range []uint32{supervisor.ControlPort, supervisor.ExecPort, supervisor.LogsPort, supervisor.ForwardPort} {
 		l, err := listen(port)
 		if err != nil {
 			return fmt.Errorf("%w: %w", errSupervisor, err)
@@ -103,6 +103,7 @@ func serveTransport(name string, boot guestBoot) error {
 	go t.acceptControl(listeners[0])
 	go t.acceptExec(listeners[1])
 	go logs.accept(listeners[2])
+	go acceptForward(listeners[3])
 
 	if err := t.g.supervise(); err != nil {
 		return t.fail(fmt.Errorf("%w: %w", errSupervisor, err))
@@ -264,7 +265,7 @@ func (t *transport) attach(conn net.Conn) error {
 		}
 		count := t.g.count
 		count.Ended = count.Ended && t.endSent
-		state := supervisor.Message{Kind: supervisor.KindState, Ready: t.g.started, Exit: t.g.lastExit, Restarts: &count, OOM: t.g.oom, Frozen: t.g.frozen.Load() != nil, Logs: supervisor.LogsVersion, FreezesOverlay: true}
+		state := supervisor.Message{Kind: supervisor.KindState, Ready: t.g.started, Exit: t.g.lastExit, Restarts: &count, OOM: t.g.oom, Frozen: t.g.frozen.Load() != nil, Logs: supervisor.LogsVersion, FreezesOverlay: true, Ports: true}
 		err = supervisor.WriteMessage(conn, state)
 		if err != nil {
 			t.control = nil

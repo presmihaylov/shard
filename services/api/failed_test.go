@@ -18,9 +18,10 @@ var getAndRm = map[string]bool{
 
 // bodies are the least each body route takes past Huma's own checks, so the failed guard is what answers.
 var bodies = map[string]string{
-	"POST /v0/sandboxes/{id}/exec":  `{"command":["true"]}`,
-	"POST /v0/sandboxes/{id}/mkdir": `{"path":"/x"}`,
-	"PUT /v0/sandboxes/{id}/policy": `{"policy":"p"}`,
+	"POST /v0/sandboxes/{id}/exec":             `{"command":["true"]}`,
+	"POST /v0/sandboxes/{id}/mkdir":            `{"path":"/x"}`,
+	"PUT /v0/sandboxes/{id}/policy":            `{"policy":"p"}`,
+	"PUT /v0/sandboxes/{id}/ports/{host_port}": `{"guest_port":80}`,
 }
 
 // The walk reads api.Routes, so a route added to the daemon is covered here without an edit to this test.
@@ -29,7 +30,7 @@ func TestEveryVerbButGetAndRmIs409OnAFailedSandbox(t *testing.T) {
 	failed := create(t, s.repo, "broken", models.StateFailed)
 	s.verbs.err = &sandbox.StateError{Sandbox: failed.ID, State: models.StateFailed, Fix: "remove it", Code: models.CodeSandboxFailed}
 
-	subst := strings.NewReplacer("{id}", failed.ID, "{exec}", "e1", "{name}", "n1")
+	subst := strings.NewReplacer("{id}", failed.ID, "{exec}", "e1", "{name}", "n1", "{host_port}", "8080")
 	walked := 0
 	for _, route := range api.Routes() {
 		if !strings.Contains(route.Pattern, "{id}") || getAndRm[route.Method+" "+route.Pattern] {

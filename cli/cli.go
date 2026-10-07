@@ -234,6 +234,11 @@ func commands() []command {
 		{name: "prune", run: App.prune},
 		{name: "fork", run: App.fork},
 		{name: "cp", run: App.cp},
+		{name: "port", subs: []command{
+			{name: "add", run: App.portAdd},
+			{name: "list", aliases: []string{"ls"}, run: App.portList},
+			{name: "remove", aliases: []string{"rm"}, run: App.portRemove},
+		}},
 		{name: "snapshot", subs: []command{
 			{name: "create", run: App.snapshotCreate},
 			{name: "list", aliases: []string{"ls"}, run: App.snapshotList},

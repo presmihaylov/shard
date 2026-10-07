@@ -7,7 +7,7 @@ import { after, afterEach, before, beforeEach, test } from "node:test";
 import { APIError, CommandNotStartedError, ProtocolError } from "../src/errors.js";
 import { Shard } from "../src/shard.js";
 import { FakeDaemon, type Answer, type Request } from "./helpers/daemon.js";
-import { sandboxRecord } from "./helpers/records.js";
+import { portRecord, sandboxRecord } from "./helpers/records.js";
 import { certificate } from "./helpers/tls.js";
 
 let dir: string;
@@ -56,6 +56,35 @@ test("create waits for the sandbox to settle and runs no command", async () => {
     env: ["A=1"],
     resources: { memory_mib: 256, vcpus: 0, disk_mib: 0 },
   });
+});
+
+test("a create forwards its ports, private unless it says public", async () => {
+  await shard.create({ image: "alpine", ports: [{ hostPort: 9000, guestPort: 8000 }, { hostPort: 9443, guestPort: 443, public: true }] });
+  assert.deepEqual(JSON.parse(sent("POST", "/v0/sandboxes").body).ports, [
+    { host_port: 9000, guest_port: 8000 },
+    { host_port: 9443, guest_port: 443, public: true },
+  ]);
+  await shard.create({ image: "alpine", ports: [] });
+  assert.equal(JSON.parse(sent("POST", "/v0/sandboxes", 1).body).ports, undefined);
+});
+
+test("ports reads every page of every sandbox's forwards", async () => {
+  routes.set("GET /v0/ports", (request) => {
+    if (request.url.searchParams.get("cursor") === "9000") {
+      return { status: 200, json: { ports: [portRecord({ sandbox: "sb_2", sandbox_name: undefined, host_port: 9100 })], next: null } };
+    }
+
+    return { status: 200, json: { ports: [portRecord()], next: "9000" } };
+  });
+  const listed = await shard.ports();
+  assert.deepEqual(
+    listed.map((each) => [each.sandbox, each.sandboxName, each.hostPort]),
+    [
+      ["sb_1", "web", 9000],
+      ["sb_2", null, 9100],
+    ],
+  );
+  assert.equal(sent("GET", "/v0/ports", 1).url.searchParams.get("cursor"), "9000");
 });
 
 test("a create from a snapshot leaves the memory to the snapshot", async () => {
@@ -220,7 +249,7 @@ test("printing a client, a sandbox or an attached command never shows the API ke
 
 test("version and capabilities read the daemon's records", async () => {
   routes.set("GET /v0/version", () => ({ status: 200, json: { version: "0.9.0", api_version: "v0" } }));
-  const verbs = { create: true, start: true, stop: true, remove: true, pause: false, resume: false, fork: false, snapshot: true };
+  const verbs = { create: true, start: true, stop: true, remove: true, pause: false, resume: false, fork: false, snapshot: true, port: true };
   routes.set("GET /v0/capabilities", () => ({ status: 200, json: verbs }));
   assert.deepEqual(await shard.version(), { version: "0.9.0", apiVersion: "v0" });
   assert.deepEqual(await shard.capabilities(), verbs);

@@ -9,6 +9,7 @@ from attrs import field as _attrs_field
 from ..types import UNSET, Unset
 
 if TYPE_CHECKING:
+    from ..models.port_forward import PortForward
     from ..models.resource_request import ResourceRequest
     from ..models.restart_spec import RestartSpec
 
@@ -23,6 +24,7 @@ class CreateRequest:
     image: str | Unset = UNSET
     name: str | Unset = UNSET
     policy: str | Unset = UNSET
+    ports: list[PortForward] | Unset = UNSET
     resources: ResourceRequest | Unset = UNSET
     restart: RestartSpec | Unset = UNSET
     secrets: list[str] | Unset = UNSET
@@ -31,6 +33,7 @@ class CreateRequest:
     workdir: str | Unset = UNSET
 
     def to_dict(self) -> dict[str, Any]:
+        from ..models.port_forward import PortForward  # noqa: PLC0415
         from ..models.resource_request import ResourceRequest  # noqa: PLC0415
         from ..models.restart_spec import RestartSpec  # noqa: PLC0415
 
@@ -47,6 +50,13 @@ class CreateRequest:
         name = self.name
 
         policy = self.policy
+
+        ports: list[dict[str, Any]] | Unset = UNSET
+        if not isinstance(self.ports, Unset):
+            ports = []
+            for ports_item_data in self.ports:
+                ports_item = ports_item_data.to_dict()
+                ports.append(ports_item)
 
         resources: dict[str, Any] | Unset = UNSET
         if not isinstance(self.resources, Unset):
@@ -79,6 +89,8 @@ class CreateRequest:
             field_dict["name"] = name
         if policy is not UNSET:
             field_dict["policy"] = policy
+        if ports is not UNSET:
+            field_dict["ports"] = ports
         if resources is not UNSET:
             field_dict["resources"] = resources
         if restart is not UNSET:
@@ -96,6 +108,7 @@ class CreateRequest:
 
     @classmethod
     def from_dict(cls: type[T], src_dict: Mapping[str, Any]) -> T:
+        from ..models.port_forward import PortForward  # noqa: PLC0415
         from ..models.resource_request import ResourceRequest  # noqa: PLC0415
         from ..models.restart_spec import RestartSpec  # noqa: PLC0415
 
@@ -109,6 +122,15 @@ class CreateRequest:
         name = d.pop("name", UNSET)
 
         policy = d.pop("policy", UNSET)
+
+        _ports = d.pop("ports", UNSET)
+        ports: list[PortForward] | Unset = UNSET
+        if _ports is not UNSET:
+            ports = []
+            for ports_item_data in _ports:
+                ports_item = PortForward.from_dict(ports_item_data)
+
+                ports.append(ports_item)
 
         _resources = d.pop("resources", UNSET)
         resources: ResourceRequest | Unset
@@ -138,6 +160,7 @@ class CreateRequest:
             image=image,
             name=name,
             policy=policy,
+            ports=ports,
             resources=resources,
             restart=restart,
             secrets=secrets,

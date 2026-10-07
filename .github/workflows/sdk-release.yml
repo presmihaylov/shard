@@ -81,7 +81,7 @@ jobs:
           sudo mount -o loop "$RUNNER_TEMP/reflink.img" /mnt/reflink
 
           # One token with every public scope, and a "*" one the gate proves still reaches no local route.
-          api=$(sudo bin/shard --root "$root" tokens mint --name gate --scopes 'sandbox:read,sandbox:write,sandbox:delete,exec,secret:*,policy:*' | jq -r .token)
+          api=$(sudo bin/shard --root "$root" tokens mint --name gate --scopes 'sandbox:read,sandbox:write,sandbox:delete,exec,secret:*,policy:*,port:read,port:write' | jq -r .token)
           echo "::add-mask::$api"
           wildcard=$(sudo bin/shard --root "$root" tokens mint --name gate-wildcard --scopes '*' | jq -r .token)
           echo "::add-mask::$wildcard"

@@ -54,7 +54,7 @@ This token can list sandboxes, read their logs and run commands in them. It cann
 
 ## How a request is checked
 
-On the host, the daemon listens on a unix socket and takes no token. A request on the socket can do anything. `shard serve` is the only way in from the network, and it checks each request in two steps before it passes the request to the socket.
+On the host, the daemon listens on a unix socket and takes no token. A request on the socket can do anything. `shard serve` is the only way to the API from the network, and it checks each request in two steps before it passes the request to the socket.
 
 1. The token must be an HS256 JWT signed with the host's signing key. It must carry a subject, an id and an issued-at time. The ledger on the host must hold its id, and the id must not be revoked. A token with an `exp` must not have expired. Any other token gets `401` with the code `unauthorized`.
 2. `shard serve` maps the method and the path to one scope, and the token must carry that scope. Otherwise it gets `403` with the code `forbidden`. A route that only the host can use, such as `POST /v0/images/pull`, gets the same `403` for every token.
@@ -71,11 +71,13 @@ Both refusals come from `shard serve` before it opens the socket, so a refused r
 | `exec` | Run commands and access sandbox files | Every exec route, and every files, ls, mkdir and archive route |
 | `secret:*` | Manage secrets and secret grants | Every secrets route, and grant and ungrant on a sandbox |
 | `policy:*` | Manage policies and attach them to sandboxes | Every policies route, and attach and detach on a sandbox |
+| `port:read` | View the host ports forwarded into sandboxes | List the forwards of every sandbox or of one |
+| `port:write` | Forward host ports into sandboxes, publicly too, and remove the forwards | Add, change and remove a forward |
 | `*` | All available permissions | Every route above |
 
 A token with no scopes, or with `*`, reaches every route. `GET /v0/version`, `GET /v0/capabilities` and `GET /v0/scopes` answer any valid token, so a client can check which server it talks to before it acts.
 
-A create that names a secret also needs `secret:*`, and a create that names a policy also needs `policy:*`. A fork of a sandbox with secret grants or a policy needs the same scopes, because the fork copies them. The daemon refuses the request with `403` before it builds anything:
+A create that names a secret also needs `secret:*`, a create that names a policy also needs `policy:*`, and a create that forwards a port also needs `port:write`. A fork of a sandbox with secret grants or a policy needs the same scopes, because the fork copies them. The daemon refuses the request with `403` before it builds anything:
 
 ```text
 the token does not carry the "secret:*" scope, which a create that names a secret needs; use a token that carries it
@@ -91,6 +93,8 @@ sandbox:delete   Remove sandboxes and snapshots
 exec             Run commands and access sandbox files
 secret:*         Manage secrets and secret grants
 policy:*         Manage policies and attach them to sandboxes
+port:read        View the host ports forwarded into sandboxes
+port:write       Forward host ports into sandboxes, publicly too, and remove the forwards
 *                All available permissions
 ```
 
