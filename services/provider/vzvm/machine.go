@@ -36,9 +36,10 @@ type machine struct {
 	// closed says this process let the shim go, so a stream that ends after it is not dialed again.
 	closed atomic.Bool
 	// swap orders a replacement against close, so no stream is put in after the shim was let go.
-	swap   sync.Mutex
-	link   io.Closer
-	cancel context.CancelFunc
+	swap sync.Mutex
+	link io.Closer
+	// host keeps the guest's process table and lands each process's output, for this attach.
+	host *supervisor.Host
 	// following ends once a stop found the shim gone, so a redial in flight never holds settle past its grace (SHARD-638).
 	following context.Context
 	unfollow  context.CancelFunc
@@ -52,15 +53,13 @@ type machine struct {
 	holder atomic.Pointer[string]
 	// admit orders an exec's dial against a freeze, so no exec stream opens once a verb holds the VM.
 	admit sync.RWMutex
-	// logsRound ends the logs stream in use, so a stream the reset killed is dialed again.
-	logsRound atomic.Pointer[context.CancelFunc]
 	// execs holds each open exec stream, with the verb that cut it, or "" while it runs.
 	execs   map[net.Conn]string
 	execsMu sync.Mutex
 	// events closes when the control connection ended, which is the guest gone.
 	events chan struct{}
 
-	// started is what the guest last said: the entrypoint forked, so the sandbox runs.
+	// started is what the guest last said: it took this boot's setup, so the sandbox runs.
 	started bool
 	// gone is set once the VM is proven stopped, by the event loop or by a probe that found the shim dead, so a status needs no socket round trip.
 	gone bool
@@ -70,7 +69,7 @@ type machine struct {
 	asking chan struct{}
 	// ending is set once that request found the shim's pid gone, so a probe waits out the follower's handoff to gone rather than read running (SHARD-618).
 	ending bool
-	// lost is the first exit or restart event the loop could not persist; the files say nothing true after it.
+	// lost is the first process event or log the loop could not persist; the files say nothing true after it.
 	lost error
 	// refusals logs the control lines the guest sent past the bound, which the reconnect otherwise hides.
 	refusals *supervisor.Refusals
@@ -498,15 +497,15 @@ func (p *Provider) settle(ctx context.Context, m *machine) error {
 
 // boot starts a shim for the sandbox over its own disk, and attaches to the guest once it answers.
 func (p *Provider) boot(ctx context.Context, id, dir string, r record, restore string) (*machine, error) {
-	// The next run must not answer a wait, or a restart count, with what the last one left.
-	stales := []string{exitFile, restartsFile, oomFile, supervisorFailedFile}
-	// A restored guest still holds the output its cursor places; a fresh one starts its output again.
-	if restore == "" {
-		stales = append(stales, cursorFile)
-	}
-	for _, stale := range stales {
+	for _, stale := range []string{oomFile, supervisorFailedFile} {
 		if err := os.Remove(filepath.Join(dir, stale)); err != nil && !errors.Is(err, fs.ErrNotExist) {
 			return nil, fmt.Errorf("clear %s: %w", stale, err)
+		}
+	}
+	// A restored guest still holds the table and the output its cursors place; a fresh one numbers both from zero.
+	if restore == "" {
+		if err := supervisor.ForgetBoot(dir); err != nil {
+			return nil, fmt.Errorf("sandbox %s: %w", id, err)
 		}
 	}
 
@@ -564,6 +563,7 @@ func (p *Provider) attach(ctx context.Context, id, dir string, r record, client 
 	}
 	m := &machine{id: id, dir: dir, client: client, shim: shim, machineID: info.MachineID, events: make(chan struct{}), refusals: supervisor.NewRefusals(p.cfg.Log, id)}
 	m.following, m.unfollow = context.WithCancel(context.Background())
+	m.host = p.hostOf(m)
 
 	if r.Address != "" && p.cfg.Stack == nil {
 		return nil, fmt.Errorf("sandbox %s has an address and the provider no stack to carry it", id)
@@ -620,20 +620,7 @@ func (p *Provider) attach(ctx context.Context, id, dir string, r record, client 
 		}
 	}
 
-	// The guest holds the entrypoint's output until a logs connection is open, so it is open before any run.
-	logs, err := m.dial(ctx, supervisor.LogsPort)
-	if err != nil {
-		return nil, errors.Join(fmt.Errorf("sandbox %s: %w: open the logs connection: %w", id, errNoGuest, err), m.close())
-	}
-	out, err := os.OpenFile(filepath.Join(dir, logFile), os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o600)
-	if err != nil {
-		return nil, errors.Join(fmt.Errorf("sandbox %s: open the log: %w", id, err), logs.Close(), m.close())
-	}
-
-	pumpCtx, cancelPump := context.WithCancel(context.Background())
-	m.cancel = cancelPump
 	go p.follow(m)
-	go p.followLogs(pumpCtx, m, logs, &supervisor.FileLog{File: out, Cursor: filepath.Join(dir, cursorFile), Max: supervisor.MaxLog}, state.Logs)
 
 	p.mu.Lock()
 	p.machines[id] = m
@@ -730,20 +717,10 @@ func (p *Provider) keep(m *machine, err error) {
 
 func (p *Provider) record(m *machine, event supervisor.Message) error {
 	switch event.Kind {
-	case supervisor.KindReady, supervisor.KindState:
+	case supervisor.KindState:
 		return p.reconcile(m, event)
-	case supervisor.KindExit:
-		if event.Exit == nil {
-			return errors.New("an exit event carries no status")
-		}
-
-		return supervisor.WriteExit(filepath.Join(m.dir, exitFile), *event.Exit)
-	case supervisor.KindRestarts:
-		if event.Restarts == nil {
-			return errors.New("a restarts event carries no count")
-		}
-
-		return supervisor.WriteRestarts(filepath.Join(m.dir, restartsFile), *event.Restarts)
+	case supervisor.KindProcess:
+		return m.host.Report(event.Process)
 	case supervisor.KindOOM:
 		return m.markOOM()
 	case supervisor.KindSupervisorFailed:
@@ -765,22 +742,22 @@ func (m *machine) markOOM() error {
 	return nil
 }
 
-// markSupervisorFailed lands shard-init's own death as the sandbox exit, with the reason it gave.
+// markSupervisorFailed puts shard-init's own death on file, with the reason it gave.
 func (m *machine) markSupervisorFailed(event supervisor.Message) error {
-	if event.Exit == nil {
-		return errors.New("a supervisor-failed event carries no status")
-	}
 	if err := os.WriteFile(filepath.Join(m.dir, supervisorFailedFile), []byte(supervisor.OneLine(event.Error)), 0o600); err != nil {
 		return fmt.Errorf("record why the supervisor of sandbox %s failed: %w", m.id, err)
 	}
 
-	return supervisor.WriteExit(filepath.Join(m.dir, exitFile), *event.Exit)
+	return nil
 }
 
-// failedAtBoot lands a death from before the guest listened as the sandbox exit, and makes its reason the answer to the start (SHARD-418).
+// failedAtBoot puts a death from before the guest listened on file, and makes its reason the answer to the start (SHARD-418).
 func (m *machine) failedAtBoot(event supervisor.Message) error {
 	if err := m.markSupervisorFailed(event); err != nil {
 		return fmt.Errorf("sandbox %s: %w", m.id, err)
+	}
+	if event.Exit == nil {
+		return fmt.Errorf("sandbox %s: %w: %s", m.id, errBootFailed, supervisor.OneLine(event.Error))
 	}
 
 	return fmt.Errorf("sandbox %s: %w with exit %d: %s", m.id, errBootFailed, event.Exit.Code, supervisor.OneLine(event.Error))
@@ -936,23 +913,8 @@ func (p *Provider) reconcile(m *machine, state supervisor.Message) error {
 			return err
 		}
 	}
-	if state.Exit != nil {
-		path := filepath.Join(m.dir, exitFile)
-		last, found, err := bundle.ReadExitStatus(path)
-		if err != nil {
-			return err
-		}
-		if !found || last != *state.Exit {
-			if err := supervisor.WriteExit(path, *state.Exit); err != nil {
-				return err
-			}
-		}
-	}
-	if state.Restarts != nil {
-		return supervisor.WriteRestarts(filepath.Join(m.dir, restartsFile), *state.Restarts)
-	}
 
-	return nil
+	return m.host.Replay(state)
 }
 
 // alive says the shim still answers with a running VM and this process has not let it go.
@@ -980,62 +942,37 @@ func (m *machine) vmState() (vz.State, error) {
 	return info.State, nil
 }
 
-// followLogs appends what the logs connection carries to the log file, in the protocol the guest's state named, and opens it again after a drop while the VM runs.
-func (p *Provider) followLogs(ctx context.Context, m *machine, logs net.Conn, out *supervisor.FileLog, version int) {
-	defer out.Close()
-	opened := func(context.Context, uint32) (net.Conn, error) { return logs, nil }
-	for {
-		round, end := context.WithCancel(ctx)
-		m.logsRound.Store(&end)
-		err := supervisor.Logs(round, opened, out, version)
-		end()
-		if ctx.Err() != nil {
-			return
-		}
-		// A file that refuses the log blocks the guest on its output pipe, so every read of the sandbox says so; a redial would not help.
-		if out.Err != nil {
-			p.keep(m, fmt.Errorf("the log stopped: %w", out.Err))
-
-			return
-		}
-		if errors.Is(err, supervisor.ErrLogsVersion) {
-			p.keep(m, fmt.Errorf("the log stopped: %w", err))
-
-			return
-		}
-		if err != nil && !errors.Is(err, io.EOF) {
-			// The guest ends the connection when it powers off, which is the normal end of a log.
-			fmt.Fprintf(os.Stderr, "vz: sandbox %s: %v\n", m.id, err)
-		}
-		// A save the fork holds paused can drop the stream, and the VM runs again once it ends.
-		for m.holder.Load() != nil {
-			select {
-			case <-ctx.Done():
-				return
-			case <-time.After(pollInterval):
+// hostOf is the host side of the guest's processes for one attach: it dials each log again while the VM runs, once a verb that holds it lets go.
+func (p *Provider) hostOf(m *machine) *supervisor.Host {
+	return supervisor.NewHost(supervisor.HostConfig{
+		Dir:  m.dir,
+		Dial: m.dial,
+		Again: func(ctx context.Context) bool {
+			// A save the fork holds paused can drop the stream, and the VM runs again once it ends.
+			for m.holder.Load() != nil {
+				select {
+				case <-ctx.Done():
+					return false
+				case <-time.After(pollInterval):
+				}
 			}
-		}
-		if !m.alive() {
-			return
-		}
-		opened = m.dial
-		time.Sleep(pollInterval)
-	}
-}
+			info, err := m.client.State(ctx)
 
-// kickLogs ends the logs stream in use, which a host that only reads would wait on for good once a reset killed it.
-func (m *machine) kickLogs() {
-	if end := m.logsRound.Load(); end != nil {
-		(*end)()
-	}
+			return err == nil && info.State == vz.StateRunning && !m.closed.Load()
+		},
+		Lost: func(err error) { p.keep(m, err) },
+		// Log and continue, ruled by @shard (SHARD-561): the host dials the log again after Pace.
+		Warn: func(err error) { fmt.Fprintf(os.Stderr, "vz: sandbox %s: %v\n", m.id, err) },
+		Pace: pollInterval,
+	})
 }
 
 // close ends what this process holds of the shim; the shim itself, and its VM, are the stop's business.
 func (m *machine) close() error {
 	m.swap.Lock()
 	m.closed.Store(true)
-	if m.cancel != nil {
-		m.cancel()
+	if m.host != nil {
+		m.host.Close()
 	}
 	if m.unfollow != nil {
 		m.unfollow()
@@ -1160,7 +1097,7 @@ func (m *machine) awaitGone(ctx context.Context, grace time.Duration) (bool, err
 	}
 }
 
-// status is what the shim and the guest say now: created until the entrypoint forked, running after.
+// status is what the shim and the guest say now: created until the guest took its setup, running after.
 func (m *machine) status(p *Provider) models.Status {
 	p.mu.Lock()
 	defer p.mu.Unlock()

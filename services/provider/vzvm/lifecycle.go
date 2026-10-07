@@ -44,7 +44,7 @@ func (p *Provider) Create(ctx context.Context, spec models.SandboxSpec) error {
 		return err
 	}
 
-	return p.launch(ctx, spec, r, false)
+	return p.launch(ctx, spec, r)
 }
 
 // writeDisk clones the image's root disk, or the seed's disk, grown to the bound.
@@ -68,8 +68,8 @@ func writeDisk(spec models.SandboxSpec) error {
 	})
 }
 
-// launch records the sandbox, boots its VM, addresses the guest, reads a seed's own files, and runs the entrypoint when asked.
-func (p *Provider) launch(ctx context.Context, spec models.SandboxSpec, r record, run bool) error {
+// launch records the sandbox, boots its VM, addresses the guest and reads a seed's own files.
+func (p *Provider) launch(ctx context.Context, spec models.SandboxSpec, r record) error {
 	id, dir := spec.ID, spec.StateDir
 	if err := writeRecord(dir, r); err != nil {
 		return err
@@ -97,11 +97,8 @@ func (p *Provider) launch(ctx context.Context, spec models.SandboxSpec, r record
 			return errors.Join(err, p.end(ctx, m))
 		}
 	}
-	if !run {
-		return nil
-	}
 
-	return p.run(ctx, m, r)
+	return nil
 }
 
 // guestRun runs one command as root in the VM a launch holds, before any exec can reach the sandbox.
@@ -137,10 +134,13 @@ func (r *record) seed(tree string, spec models.SandboxSpec) error {
 
 // clear drops what an earlier run of this state directory left, so nothing of it answers for the new one.
 func clear(dir string) error {
-	for _, stale := range []string{exitFile, restartsFile, oomFile, supervisorFailedFile, logFile, cursorFile, recordFile, diskFile, shimFile} {
+	for _, stale := range []string{oomFile, supervisorFailedFile, supervisor.ProcessTable, recordFile, diskFile, shimFile} {
 		if err := os.Remove(filepath.Join(dir, stale)); err != nil && !errors.Is(err, fs.ErrNotExist) {
 			return fmt.Errorf("clear %s: %w", stale, err)
 		}
+	}
+	if err := os.RemoveAll(filepath.Join(dir, supervisor.ProcessLogs)); err != nil {
+		return fmt.Errorf("clear the process logs: %w", err)
 	}
 
 	return nil
@@ -171,7 +171,7 @@ func checkResources(res models.Resources) error {
 
 // recordOf resolves the spec into what the guest is told: the ids on the host, the policy in the guest's units.
 func recordOf(spec models.SandboxSpec) (record, error) {
-	r := record{RootFS: spec.RootFS, Resources: spec.Resources, Run: runOf(spec.Entrypoint, spec.Env, spec.WorkDir, spec.Restart)}
+	r := record{RootFS: spec.RootFS, Resources: spec.Resources, Run: supervisor.Base{Env: bundle.Environment(spec.Env), WorkDir: spec.WorkDir}}
 	r.network(spec)
 	// A seed's passwd and CA bundle are on its disk, not in the image, so launch resolves them once the guest is up.
 	if spec.Seed != "" {
@@ -241,18 +241,7 @@ func (r *record) roots(proxyCA []byte) (bundle.Store, error) {
 	return bundle.Trust(r.RootFS, r.Run.Env, proxyCA)
 }
 
-func runOf(argv, env []string, workDir string, restart models.RestartSpec) supervisor.RunSpec {
-	return supervisor.RunSpec{
-		Argv:    argv,
-		Env:     bundle.Environment(env),
-		WorkDir: workDir,
-		Restart: restart.Policy,
-		Retries: restart.Retries,
-		Backoff: time.Duration(restart.Backoff) * time.Second,
-	}
-}
-
-// Start runs the entrypoint, over a VM booted again on the disk the stop kept when the last one is gone.
+// Start sets the guest up for its processes, over a VM booted again on the disk the stop kept when the last one is gone.
 func (p *Provider) Start(ctx context.Context, id string) error {
 	dir, r, err := p.open(id)
 	if err != nil {
@@ -272,7 +261,7 @@ func (p *Provider) Start(ctx context.Context, id string) error {
 			return fmt.Errorf("sandbox %s is %s on %s%s", id, status.State, Name, because(status))
 		}
 		if status.Alive() {
-			return p.run(ctx, m, r)
+			return p.setUp(ctx, m, r)
 		}
 	}
 	if err := p.release(ctx, m); err != nil {
@@ -287,19 +276,19 @@ func (p *Provider) Start(ctx context.Context, id string) error {
 		return errors.Join(err, p.end(ctx, m))
 	}
 
-	return p.run(ctx, m, r)
+	return p.setUp(ctx, m, r)
 }
 
-// run asks the guest to fork the entrypoint; the guest answers once it has, or with why it could not.
-func (p *Provider) run(ctx context.Context, m *machine, r record) error {
+// setUp gives this boot's guest its work directory and trust, once, before any process.
+func (p *Provider) setUp(ctx context.Context, m *machine, r record) error {
 	p.mu.Lock()
 	started := m.started
 	p.mu.Unlock()
 	if started {
-		return fmt.Errorf("the entrypoint of sandbox %s already runs", m.id)
+		return fmt.Errorf("sandbox %s already runs", m.id)
 	}
-	if err := m.control.Load().Run(ctx, r.Run); err != nil {
-		return fmt.Errorf("sandbox %s: %w", m.id, err)
+	if err := m.control.Load().Setup(ctx, r.Run.Setup()); err != nil {
+		return fmt.Errorf("sandbox %s: set up the guest: %w", m.id, err)
 	}
 	p.mu.Lock()
 	m.started = true
@@ -361,7 +350,7 @@ func (p *Provider) Stop(ctx context.Context, id string, grace time.Duration) err
 	if err != nil && ctx.Err() != nil {
 		return fmt.Errorf("stop sandbox %s: %w", id, ctx.Err())
 	}
-	// The guest forwards TERM to the entrypoint and powers off once it is reaped; a refused request is the guest already gone.
+	// The guest forwards TERM to every process and powers off once they are reaped; a refused request is the guest already gone.
 	if err != nil && !m.status(p).Alive() {
 		return p.release(ctx, m)
 	}
@@ -376,7 +365,7 @@ func (p *Provider) Stop(ctx context.Context, id string, grace time.Duration) err
 	return p.endLive(ctx, m)
 }
 
-// endLive cuts a VM whose guest may still run: it gives the guest a bounded window to flush first, so a forced stop loses nothing the entrypoint wrote (SHARD-344).
+// endLive cuts a VM whose guest may still run: it gives the guest a bounded window to flush first, so a forced stop loses nothing a process wrote (SHARD-344).
 func (p *Provider) endLive(ctx context.Context, m *machine) error {
 	// The guest's flush rides the shim, so a shim too frozen to answer is cut at once and the stop keeps its bound.
 	probe, cancelProbe := context.WithTimeout(ctx, probeFloor)
@@ -500,90 +489,6 @@ func cloneDisk(src, dst string) error {
 
 		return err
 	})
-}
-
-// Wait blocks until the entrypoint exits, by the file the event loop lands each exit in.
-func (p *Provider) Wait(ctx context.Context, id string) (models.ExitStatus, error) {
-	dir, _, err := p.open(id)
-	if err != nil {
-		return models.ExitStatus{}, err
-	}
-	path := filepath.Join(dir, exitFile)
-
-	for {
-		if err := p.lost(id); err != nil {
-			return models.ExitStatus{}, err
-		}
-		exit, found, err := bundle.ReadExitStatus(path)
-		if err != nil {
-			return models.ExitStatus{}, err
-		}
-		if found {
-			return exit, nil
-		}
-
-		status, err := p.Status(ctx, id)
-		if err != nil {
-			return models.ExitStatus{}, err
-		}
-		if !status.Alive() {
-			// The event loop may have landed the exit between the read above and this check.
-			return lastExitStatus(path, id)
-		}
-
-		select {
-		case <-ctx.Done():
-			return models.ExitStatus{}, fmt.Errorf("wait for the entrypoint of %s: %w", id, ctx.Err())
-		case <-time.After(pollInterval):
-		}
-	}
-}
-
-// lastExitStatus answers a wait on a sandbox that has already ended, which only Stop can have done.
-func lastExitStatus(path, id string) (models.ExitStatus, error) {
-	exit, found, err := bundle.ReadExitStatus(path)
-	if err != nil {
-		return models.ExitStatus{}, err
-	}
-	if !found {
-		return models.ExitStatus{}, fmt.Errorf("sandbox %s: %w", id, models.ErrNoExitStatus)
-	}
-
-	return exit, nil
-}
-
-// ExitStatus reads how the entrypoint ended so far, nil while it still runs.
-func (p *Provider) ExitStatus(_ context.Context, id string) (*models.ExitStatus, error) {
-	dir, _, err := p.open(id)
-	if err != nil {
-		return nil, err
-	}
-	if err := p.lost(id); err != nil {
-		return nil, err
-	}
-
-	exit, found, err := bundle.ReadExitStatus(filepath.Join(dir, exitFile))
-	if err != nil {
-		return nil, err
-	}
-	if !found {
-		return nil, nil
-	}
-
-	return &exit, nil
-}
-
-// Restarts is a file read, not a shim call, so a task may poll it every second.
-func (p *Provider) Restarts(_ context.Context, id string) (models.RestartCount, error) {
-	dir, _, err := p.open(id)
-	if err != nil {
-		return models.RestartCount{}, err
-	}
-	if err := p.lost(id); err != nil {
-		return models.RestartCount{}, err
-	}
-
-	return bundle.ReadRestartCount(filepath.Join(dir, restartsFile))
 }
 
 // lost is the first event the loop could not land, which the files would otherwise answer for as if it never came.

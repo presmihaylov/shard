@@ -36,7 +36,6 @@ import (
 	"github.com/presmihaylov/shard/pkg/netstack"
 	"github.com/presmihaylov/shard/pkg/vz"
 	"github.com/presmihaylov/shard/pkg/vzshim"
-	"github.com/presmihaylov/shard/services/bundle"
 	"github.com/presmihaylov/shard/services/image"
 	"github.com/presmihaylov/shard/services/provider/conformance"
 	"github.com/presmihaylov/shard/services/provider/vzvm"
@@ -49,7 +48,7 @@ const defaultKernel = "../../../bin/kernel/arm64/Image-arm64"
 // The digest is alpine:3.20 as of 2026-09-20; a tag moves, and a rebuilt image changes the inode count the disk is sized to.
 const testImage = "alpine@sha256:d9e853e87e55526f6b2917df91a2115c36dd7c696a35be12163d44e6e2a4b6bc"
 
-// dindImage ships dockerd and its runtime; the Docker-inside test boots it as the entrypoint.
+// dindImage ships dockerd and its runtime; the Docker-inside test runs it as a process.
 const dindImage = "docker:28-dind"
 
 var gateway = netip.MustParseAddr("10.200.0.1")
@@ -229,7 +228,7 @@ func (h *vmHarness) stateDir(id string) (string, error) {
 }
 
 // newSpec gives every sandbox its own id, directory and address on the stack, and ends it when the test does.
-func (h *vmHarness) newSpec(t *testing.T, entrypoint ...string) models.SandboxSpec {
+func (h *vmHarness) newSpec(t *testing.T) models.SandboxSpec {
 	t.Helper()
 
 	n := h.next.Add(1)
@@ -250,14 +249,13 @@ func (h *vmHarness) newSpec(t *testing.T, entrypoint ...string) models.SandboxSp
 	})
 
 	return models.SandboxSpec{
-		ID:         id,
-		StateDir:   dir,
-		RootFS:     h.image.RootFS,
-		RootDisk:   h.image.Disk,
-		Entrypoint: entrypoint,
-		Env:        []string{"PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"},
-		Network:    models.NetworkSpec{Address: netip.PrefixFrom(netip.AddrFrom4([4]byte{10, 200, 0, byte(n + 1)}), 24), Gateway: gateway},
-		Resources:  models.Resources{MemoryMiB: 256, DiskMiB: 64},
+		ID:        id,
+		StateDir:  dir,
+		RootFS:    h.image.RootFS,
+		RootDisk:  h.image.Disk,
+		Env:       []string{"PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"},
+		Network:   models.NetworkSpec{Address: netip.PrefixFrom(netip.AddrFrom4([4]byte{10, 200, 0, byte(n + 1)}), 24), Gateway: gateway},
+		Resources: models.Resources{MemoryMiB: 256, DiskMiB: 64},
 	}
 }
 
@@ -265,23 +263,20 @@ func (h *vmHarness) newSpec(t *testing.T, entrypoint ...string) models.SandboxSp
 func TestASmallDiskHoldsThousandsOfFiles(t *testing.T) {
 	h := newVMHarness(t)
 
-	spec := h.newSpec(t, "/bin/sh", "-c", "mkdir /many && i=0; while [ $i -lt 2000 ]; do : > /many/f$i; i=$((i+1)); done && ls /many | wc -l")
+	spec := h.newSpec(t)
 	if err := h.provider.Create(t.Context(), spec); err != nil {
 		t.Fatal(err)
 	}
 	if err := h.provider.Start(t.Context(), spec.ID); err != nil {
 		t.Fatal(err)
 	}
-	exit, err := h.provider.Wait(t.Context(), spec.ID)
-	if err != nil || exit.Code != 0 {
-		log, _ := os.ReadFile(filepath.Join(spec.StateDir, "output.log"))
-		t.Fatalf("Wait = %+v, %v\nsandbox log:\n%s", exit, err, log)
+	runProcess(t, h.provider, spec.ID, "main", models.RestartSpec{}, "/bin/sh", "-c", "mkdir /many && i=0; while [ $i -lt 2000 ]; do : > /many/f$i; i=$((i+1)); done && ls /many | wc -l")
+	ended := awaitProcess(t, h.provider, spec.ID, "main", time.Minute, func(r models.ProcessReport) bool { return r.State.Ended() })
+	log := processLog(t, h.provider, spec.ID, "main")
+	if ended.Exit == nil || ended.Exit.Code != 0 {
+		t.Fatalf("the process ended %+v\nits log:\n%s", ended, log)
 	}
-	log, err := os.ReadFile(filepath.Join(spec.StateDir, "output.log"))
-	if err != nil {
-		t.Fatal(err)
-	}
-	if !strings.Contains(string(log), "2000") {
+	if !strings.Contains(log, "2000") {
 		t.Fatalf("the guest did not count 2000 files:\n%s", log)
 	}
 }
@@ -290,7 +285,7 @@ func TestASmallDiskHoldsThousandsOfFiles(t *testing.T) {
 func TestANonRootFilesExecMeetsItsUsersPermissions(t *testing.T) {
 	h := newVMHarness(t)
 
-	spec := h.newSpec(t, "/bin/true")
+	spec := h.newSpec(t)
 	if err := h.provider.Create(t.Context(), spec); err != nil {
 		t.Fatal(err)
 	}
@@ -322,7 +317,7 @@ func TestANonRootFilesExecMeetsItsUsersPermissions(t *testing.T) {
 func TestAVMExecKilledBeforeItsCommandStartsIsNoLaunch(t *testing.T) {
 	h := newVMHarness(t)
 
-	spec := h.newSpec(t, "/bin/true")
+	spec := h.newSpec(t)
 	if err := h.provider.Create(t.Context(), spec); err != nil {
 		t.Fatal(err)
 	}
@@ -338,18 +333,172 @@ func TestConformanceOnVMs(t *testing.T) {
 
 	conformance.Run(t, conformance.Subject{
 		Provider: h.provider,
-		NewSpec:  func(t *testing.T) models.SandboxSpec { return h.newSpec(t, "/bin/true") },
-		NewIgnoresTermSpec: func(t *testing.T) models.SandboxSpec {
-			script := fmt.Sprintf("trap '' TERM; echo %s; while true; do sleep 1; done", conformance.ReadyMarker)
-
-			return h.newSpec(t, "/bin/sh", "-c", script)
-		},
+		NewSpec:  h.newSpec,
 		EmptyDir: func(t *testing.T) string { return t.TempDir() },
 		Shell:    func(script string) []string { return []string{"/bin/sh", "-c", script} },
 		Reopen:   h.reopen,
 		// The window Firecracker measured for the same guest kernel (SHARD-414); VZ has no measure of its own yet.
 		ReseedWindow: 50 * time.Second,
 	})
+}
+
+// guestPatience is what a real guest gets to start, restart or end a process, against the fake shim's stopGrace.
+const guestPatience = 30 * time.Second
+
+// Two named processes run in one guest at once: the second starts while the first runs, and the first runs on after it.
+func TestTwoNamedProcessesRunSideBySideInAVM(t *testing.T) {
+	h := newVMHarness(t)
+	id := h.running(t)
+
+	runProcess(t, h.provider, id, "left", models.RestartSpec{}, "/bin/sh", "-c", tick)
+	seen := awaitPrinted(t, h.provider, id, "left", "tick")
+	runProcess(t, h.provider, id, "right", models.RestartSpec{}, "/bin/sh", "-c", tick)
+	awaitPrinted(t, h.provider, id, "right", "tick")
+
+	awaitLogPast(t, h.provider, id, "left", len(seen))
+	for _, name := range []string{"left", "right"} {
+		if report := awaitProcess(t, h.provider, id, name, guestPatience, isRunning); report.Restarts != 0 {
+			t.Errorf("process %s reads %+v, want running since its first start", name, report.ProcessStatus)
+		}
+	}
+}
+
+// An unless-stopped process that crashes is started again after its backoff, each start writing to the one log, and the sandbox stays up.
+func TestACrashingUnlessStoppedProcessIsStartedAgainInAVM(t *testing.T) {
+	h := newVMHarness(t)
+	id := h.running(t)
+
+	runProcess(t, h.provider, id, "crash", models.RestartSpec{Policy: models.RestartUnlessStopped, Backoff: 1}, "/bin/sh", "-c", "echo crashed; exit 3")
+	again := awaitProcess(t, h.provider, id, "crash", guestPatience, func(r models.ProcessReport) bool { return r.Restarts >= 2 })
+	if again.State.Ended() || again.Exit == nil || again.Exit.Code != 3 {
+		t.Errorf("the crashing process reads %+v, want it started again after code 3", again.ProcessStatus)
+	}
+	deadline := time.Now().Add(guestPatience)
+	for strings.Count(processLog(t, h.provider, id, "crash"), "crashed\n") < 2 {
+		if time.Now().After(deadline) {
+			t.Fatalf("the log holds %q, want a line from each of the starts", processLog(t, h.provider, id, "crash"))
+		}
+		time.Sleep(100 * time.Millisecond)
+	}
+	requireUp(t, h, id)
+}
+
+// StopProcess ends the one process it names, which the policy never starts again, and the other process writes on.
+func TestStopProcessEndsOneProcessAndLeavesTheOtherInAVM(t *testing.T) {
+	h := newVMHarness(t)
+	id := h.running(t)
+
+	always := models.RestartSpec{Policy: models.RestartAlways}
+	runProcess(t, h.provider, id, "steady", always, "/bin/sh", "-c", tick)
+	runProcess(t, h.provider, id, "victim", always, "/bin/sh", "-c", tick)
+	awaitPrinted(t, h.provider, id, "victim", "tick")
+	seen := awaitPrinted(t, h.provider, id, "steady", "tick")
+
+	if err := h.provider.StopProcess(t.Context(), id, "victim", stopGrace); err != nil {
+		t.Fatalf("StopProcess: %v", err)
+	}
+	if victim := awaitProcess(t, h.provider, id, "victim", guestPatience, func(r models.ProcessReport) bool { return r.State.Ended() }); victim.State != models.ProcessKilled {
+		t.Errorf("the stopped process reads %+v, want killed", victim.ProcessStatus)
+	}
+	awaitLogPast(t, h.provider, id, "steady", len(seen))
+	if steady := awaitProcess(t, h.provider, id, "steady", guestPatience, isRunning); steady.Restarts != 0 {
+		t.Errorf("the other process reads %+v, want running since its first start", steady.ProcessStatus)
+	}
+	requireUp(t, h, id)
+}
+
+// Each process's stdout and stderr land in a log of its own on the host, and in no other's.
+func TestEveryProcessWritesALogOfItsOwnInAVM(t *testing.T) {
+	h := newVMHarness(t)
+	id := h.running(t)
+
+	for _, name := range []string{"left", "right"} {
+		runProcess(t, h.provider, id, name, models.RestartSpec{}, "/bin/sh", "-c", "echo out-"+name+"; echo err-"+name+" >&2")
+	}
+	for name, other := range map[string]string{"left": "right", "right": "left"} {
+		awaitProcess(t, h.provider, id, name, guestPatience, func(r models.ProcessReport) bool { return r.State.Ended() })
+		awaitPrinted(t, h.provider, id, name, "out-"+name)
+		log := awaitPrinted(t, h.provider, id, name, "err-"+name)
+		if strings.Contains(log, other) {
+			t.Errorf("the log of %s holds what %s wrote:\n%s", name, other, log)
+		}
+	}
+}
+
+// A restart-no process ends once: the table holds its code, and its log holds what it printed (an attach follows this log in the service layer).
+func TestARestartNoProcessEndsWithItsCodeAndItsOutputInAVM(t *testing.T) {
+	h := newVMHarness(t)
+	id := h.running(t)
+
+	runProcess(t, h.provider, id, "once", models.RestartSpec{Policy: models.RestartNo}, "/bin/sh", "-c", "echo done-once; exit 7")
+	ended := awaitProcess(t, h.provider, id, "once", guestPatience, func(r models.ProcessReport) bool { return r.State.Ended() })
+	if ended.State != models.ProcessExited || ended.Restarts != 0 || ended.Exit == nil || ended.Exit.Code != 7 {
+		t.Errorf("the process ended as %+v, want exited once with code 7", ended.ProcessStatus)
+	}
+	if log := awaitPrinted(t, h.provider, id, "once", "done-once"); strings.Count(log, "done-once") != 1 {
+		t.Errorf("the log holds %q, want one line from one run", log)
+	}
+	requireUp(t, h, id)
+}
+
+// running creates and starts a sandbox that runs no process yet.
+func (h *vmHarness) running(t *testing.T) string {
+	t.Helper()
+
+	spec := h.newSpec(t)
+	if err := h.provider.Create(t.Context(), spec); err != nil {
+		t.Fatal(err)
+	}
+	if err := h.provider.Start(t.Context(), spec.ID); err != nil {
+		t.Fatal(err)
+	}
+
+	return spec.ID
+}
+
+func isRunning(r models.ProcessReport) bool { return r.State == models.ProcessRunning }
+
+// awaitPrinted blocks until the named process's log holds marker, and answers the log.
+func awaitPrinted(t *testing.T, p *vzvm.Provider, id, name, marker string) string {
+	t.Helper()
+
+	deadline := time.Now().Add(guestPatience)
+	for {
+		log := processLog(t, p, id, name)
+		if strings.Contains(log, marker) {
+			return log
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("process %s of %s never printed %q; its log reads %q", name, id, marker, log)
+		}
+		time.Sleep(100 * time.Millisecond)
+	}
+}
+
+// awaitLogPast blocks until the named process's log grows past seen bytes, which only a process still running does.
+func awaitLogPast(t *testing.T, p *vzvm.Provider, id, name string, seen int) {
+	t.Helper()
+
+	deadline := time.Now().Add(guestPatience)
+	for len(processLog(t, p, id, name)) <= seen {
+		if time.Now().After(deadline) {
+			t.Fatalf("the log of %s in %s stayed at %d bytes, so it stopped running", name, id, seen)
+		}
+		time.Sleep(100 * time.Millisecond)
+	}
+}
+
+// requireUp fails a test whose sandbox ended with one of its processes, which only a stop may do.
+func requireUp(t *testing.T, h *vmHarness, id string) {
+	t.Helper()
+
+	status, err := h.provider.Status(t.Context(), id)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if status.State != models.StateRunning {
+		t.Fatalf("the sandbox is %s after its process ended, want running", status.State)
+	}
 }
 
 // A guest's request to an outside address on 80 lands on the redirected port, Host header intact, and the stack drops the rest and says so.
@@ -373,7 +522,7 @@ func TestAGuestReachesTheRedirectedPortAndNothingElse(t *testing.T) {
 		fmt.Fprint(conn, "HTTP/1.0 200 OK\r\nContent-Length: 8\r\n\r\nproxied\n")
 	}()
 
-	spec := h.newSpec(t, "/bin/sh", "-c", "sleep 300")
+	spec := h.newSpec(t)
 	if err := h.provider.Create(t.Context(), spec); err != nil {
 		t.Fatal(err)
 	}
@@ -434,7 +583,7 @@ func TestAFrontedGuestTrustsTheProxyCA(t *testing.T) {
 		fmt.Fprint(conn, "HTTP/1.0 200 OK\r\nContent-Length: 8\r\n\r\ntrusted\n")
 	}()
 
-	spec := h.newSpec(t, "/bin/sh", "-c", "sleep 300")
+	spec := h.newSpec(t)
 	spec.ProxyCA = caPEM
 	if err := h.provider.Create(t.Context(), spec); err != nil {
 		t.Fatal(err)
@@ -495,7 +644,7 @@ func testCA(t *testing.T, ip net.IP) ([]byte, tls.Certificate) {
 // The unbounded default is the host count held inside the framework's range, the same count HostCPUs reports.
 func TestAnUnboundedCPUCountIsEveryHostCPUTheFrameworkAllows(t *testing.T) {
 	h := newVMHarness(t)
-	spec := h.newSpec(t, "/bin/sh", "-c", "sleep 300")
+	spec := h.newSpec(t)
 	if err := h.provider.Create(t.Context(), spec); err != nil {
 		t.Fatal(err)
 	}
@@ -517,7 +666,7 @@ func TestAnUnboundedCPUCountIsEveryHostCPUTheFrameworkAllows(t *testing.T) {
 	}
 }
 
-// Docker runs inside a VM: dockerd is the entrypoint, a container runs, and a container's request crosses the stack as the guest's own does.
+// Docker runs inside a VM: dockerd is a process, a container runs, and a container's request crosses the stack as the guest's own does.
 func TestDockerRunsInsideAVM(t *testing.T) {
 	h := newVMHarnessFor(t, dindImage)
 
@@ -544,7 +693,7 @@ func TestDockerRunsInsideAVM(t *testing.T) {
 		}
 	}()
 
-	spec := h.newSpec(t, "dockerd", "--host=unix:///var/run/docker.sock")
+	spec := h.newSpec(t)
 	spec.ProxyCA = caPEM
 	spec.Resources.MemoryMiB = 512
 	spec.Resources.DiskMiB = 1024
@@ -554,6 +703,7 @@ func TestDockerRunsInsideAVM(t *testing.T) {
 	if err := h.provider.Start(t.Context(), spec.ID); err != nil {
 		t.Fatal(err)
 	}
+	runProcess(t, h.provider, spec.ID, "dockerd", models.RestartSpec{}, "dockerd", "--host=unix:///var/run/docker.sock")
 
 	// The image the container runs is the guest's own userland, since a pull would need a registry behind the redirect.
 	script := `for i in $(seq 1 90); do docker info >/dev/null 2>&1 && break; sleep 1; done
@@ -568,14 +718,12 @@ docker run --rm local/base wget -qO- -T 3 http://93.184.216.34:8080/ 2>&1`
 	}
 	defer out.Close()
 	if _, err := h.provider.Exec(t.Context(), spec.ID, models.ExecSpec{Argv: []string{"/bin/sh", "-c", script}, Stdout: out, Stderr: out}); err != nil {
-		log, _ := os.ReadFile(filepath.Join(spec.StateDir, "output.log"))
 		read, _ := os.ReadFile(out.Name())
-		t.Fatalf("Exec: %v\nexec output:\n%s\nsandbox log:\n%s", err, read, log)
+		t.Fatalf("Exec: %v\nexec output:\n%s\ndockerd log:\n%s", err, read, processLog(t, h.provider, spec.ID, "dockerd"))
 	}
 	read, _ := os.ReadFile(out.Name())
 	if !strings.Contains(string(read), "ran-true\ntrusted\n") {
-		log, _ := os.ReadFile(filepath.Join(spec.StateDir, "output.log"))
-		t.Fatalf("the containers wrote %q, want a true exit and the listener's body over TLS\nsandbox log:\n%s", read, log)
+		t.Fatalf("the containers wrote %q, want a true exit and the listener's body over TLS\ndockerd log:\n%s", read, processLog(t, h.provider, spec.ID, "dockerd"))
 	}
 
 	deadline := time.After(10 * time.Second)
@@ -591,19 +739,20 @@ docker run --rm local/base wget -qO- -T 3 http://93.184.216.34:8080/ 2>&1`
 	}
 }
 
-// A guest that outgrows its bound dies as a whole and the status blames the bound, as a Linux sandbox does; nothing records an exit.
+// A guest that outgrows its bound dies as a whole and the status blames the bound, as a Linux sandbox does.
 func TestAGuestThatOutgrowsItsBoundIsOOMKilled(t *testing.T) {
 	h := newVMHarness(t)
 
 	// The tmpfs is charged to the writer, and its default size sits under the bound, so the remount lifts it first.
 	script := "while [ ! -e /tmp/go ]; do sleep 0.2; done; mount -o remount,size=1G /dev/shm && dd if=/dev/zero of=/dev/shm/fill bs=1M; while true; do sleep 1; done"
-	spec := h.newSpec(t, "/bin/sh", "-c", script)
+	spec := h.newSpec(t)
 	if err := h.provider.Create(t.Context(), spec); err != nil {
 		t.Fatal(err)
 	}
 	if err := h.provider.Start(t.Context(), spec.ID); err != nil {
 		t.Fatal(err)
 	}
+	runProcess(t, h.provider, spec.ID, "fill", models.RestartSpec{}, "/bin/sh", "-c", script)
 
 	// The kernel alone spares PID 1, so no guest process, nor what it forks, as any user, inherits an exemption.
 	out, err := os.CreateTemp(t.TempDir(), "adj")
@@ -627,34 +776,33 @@ func TestAGuestThatOutgrowsItsBoundIsOOMKilled(t *testing.T) {
 		}
 		if status.State == models.StateStopped {
 			if !status.OOMKilled {
-				log, _ := os.ReadFile(filepath.Join(spec.StateDir, "output.log"))
-				t.Fatalf("the guest stopped without the bound blamed\nsandbox log:\n%s", log)
+				t.Fatalf("the guest stopped without the bound blamed\nfill log:\n%s", processLog(t, h.provider, spec.ID, "fill"))
 			}
 			break
 		}
 		if time.Now().After(deadline) {
-			t.Fatalf("the guest is still %s two minutes into the fill", status.State)
+			table, tableErr := h.provider.Processes(t.Context(), spec.ID)
+			console, consoleErr := os.ReadFile(filepath.Join(spec.StateDir, "console.log"))
+			t.Fatalf("the guest is still %s two minutes into the fill\nprocesses: %+v %v\nconsole: %v\n%s", status.State, table, tableErr, consoleErr, console)
 		}
 		time.Sleep(time.Second)
 	}
-	if _, found, err := bundle.ReadExitStatus(filepath.Join(spec.StateDir, "exit.json")); err != nil || found {
-		t.Fatalf("exit record after the kill: found=%v err=%v; want none", found, err)
-	}
 }
 
-// A resumed VM carries its memory: the counter the entrypoint kept goes on from where the pause froze it.
+// A resumed VM carries its memory: the counter a process kept goes on from where the pause froze it.
 func TestAResumeAndAForkCarryTheGuestMemory(t *testing.T) {
 	h := newVMHarness(t)
 	if !h.provider.Capabilities().Pause {
 		t.Skip("this Mac does not save a VM")
 	}
-	spec := h.newSpec(t, "/bin/sh", "-c", "i=0; while true; do i=$((i+1)); echo $i > /count; sleep 0.2; done")
+	spec := h.newSpec(t)
 	if err := h.provider.Create(t.Context(), spec); err != nil {
 		t.Fatal(err)
 	}
 	if err := h.provider.Start(t.Context(), spec.ID); err != nil {
 		t.Fatal(err)
 	}
+	runProcess(t, h.provider, spec.ID, "count", models.RestartSpec{}, "/bin/sh", "-c", "i=0; while true; do i=$((i+1)); echo $i > /count; sleep 0.2; done")
 	time.Sleep(2 * time.Second)
 
 	snap := t.TempDir()
@@ -708,7 +856,7 @@ func TestTheRestoresOfOneSaveReadDifferentRandomBytes(t *testing.T) {
 	if !h.provider.Capabilities().Pause {
 		t.Skip("this Mac does not save a VM")
 	}
-	spec := h.newSpec(t, "/bin/sh", "-c", "sleep 3600")
+	spec := h.newSpec(t)
 	// One vcpu means one per-cpu crng, so no copy reads other bytes only because its exec ran on another cpu.
 	spec.Resources.VCPUs = 1
 	if err := h.provider.Create(t.Context(), spec); err != nil {
@@ -767,7 +915,7 @@ func TestTheForksOfOneSaveShareNoDrawPastTheFirstTheyDifferOn(t *testing.T) {
 	if !h.provider.Capabilities().Pause {
 		t.Skip("this Mac does not save a VM")
 	}
-	spec := h.newSpec(t, "/bin/sh", "-c", `while :; do echo "$(head -c 16 /dev/urandom | od -An -tx1 | tr -d ' \n')"; done`)
+	spec := h.newSpec(t)
 	// One vcpu means one per-cpu crng, so no fork reads other bytes only because a draw ran on another cpu.
 	spec.Resources.VCPUs = 1
 	if err := h.provider.Create(t.Context(), spec); err != nil {
@@ -776,6 +924,7 @@ func TestTheForksOfOneSaveShareNoDrawPastTheFirstTheyDifferOn(t *testing.T) {
 	if err := h.provider.Start(t.Context(), spec.ID); err != nil {
 		t.Fatal(err)
 	}
+	runProcess(t, h.provider, spec.ID, "draw", models.RestartSpec{}, "/bin/sh", "-c", `while :; do echo "$(head -c 16 /dev/urandom | od -An -tx1 | tr -d ' \n')"; done`)
 	time.Sleep(2 * time.Second)
 
 	snap := t.TempDir()
@@ -793,11 +942,7 @@ func TestTheForksOfOneSaveShareNoDrawPastTheFirstTheyDifferOn(t *testing.T) {
 	time.Sleep(time.Second)
 	var draws [2][]string
 	for i, fork := range forks {
-		data, err := os.ReadFile(filepath.Join(fork.StateDir, "output.log"))
-		if err != nil {
-			t.Fatal(err)
-		}
-		draws[i] = strings.Fields(string(data))
+		draws[i] = strings.Fields(processLog(t, h.provider, fork.ID, "draw"))
 	}
 
 	// Both forks print the lines the save held in one order, so the first line they differ on, and every line after it, came after the restore.
@@ -830,25 +975,22 @@ func TestAPauseFreezesTheRootUnderALoopingWriter(t *testing.T) {
 	if !h.provider.Capabilities().Pause {
 		t.Skip("this Mac does not save a VM")
 	}
-	// Each count reaches the disk before the log, and a cold boot of the disk finds the file and only sleeps.
-	spec := h.newSpec(t, "/bin/sh", "-c", `[ -e /root/log ] && exec sleep 1000000; i=0; while :; do i=$((i+1)); echo $i >> /root/log || exit 1; echo $i; done`)
+	spec := h.newSpec(t)
 	if err := h.provider.Create(t.Context(), spec); err != nil {
 		t.Fatal(err)
 	}
 	if err := h.provider.Start(t.Context(), spec.ID); err != nil {
 		t.Fatal(err)
 	}
+	// Each count reaches the disk before the log.
+	runProcess(t, h.provider, spec.ID, "writer", models.RestartSpec{}, "/bin/sh", "-c", `i=0; while :; do i=$((i+1)); echo $i >> /root/log || exit 1; echo $i; done`)
 	time.Sleep(2 * time.Second)
 
 	snap := t.TempDir()
 	if err := h.provider.Pause(t.Context(), spec.ID, snap); err != nil {
 		t.Fatal(err)
 	}
-	log, err := os.ReadFile(filepath.Join(spec.StateDir, "output.log"))
-	if err != nil {
-		t.Fatal(err)
-	}
-	lines := strings.Split(string(log), "\n")
+	lines := strings.Split(processLog(t, h.provider, spec.ID, "writer"), "\n")
 	printed, err := strconv.Atoi(lines[max(len(lines)-2, 0)])
 	if err != nil {
 		t.Fatalf("the writer printed no count before the pause: %v", err)
@@ -917,6 +1059,22 @@ func execIn(t *testing.T, h *vmHarness, id, line string) string {
 	return strings.TrimSpace(string(written))
 }
 
+// processLog is everything the named process wrote so far; a log not there yet reads empty.
+func processLog(t *testing.T, p *vzvm.Provider, id, name string) string {
+	t.Helper()
+
+	path, err := p.ProcessLogPath(id, name)
+	if err != nil {
+		t.Fatal(err)
+	}
+	blob, err := os.ReadFile(path)
+	if err != nil && !errors.Is(err, os.ErrNotExist) {
+		t.Fatal(err)
+	}
+
+	return string(blob)
+}
+
 // A guest that panics before anything listens on vsock fails the create within its grace and leaves no shim behind (SHARD-255).
 func TestACreateWhoseGuestNeverAnswersLeavesNoShim(t *testing.T) {
 	h := newVMHarness(t)
@@ -929,7 +1087,7 @@ func TestACreateWhoseGuestNeverAnswersLeavesNoShim(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	spec := h.newSpec(t, "sleep", "3600")
+	spec := h.newSpec(t)
 
 	started := time.Now()
 	err = p.Create(t.Context(), spec)
@@ -948,7 +1106,7 @@ func TestACreateWhoseGuestNeverAnswersLeavesNoShim(t *testing.T) {
 // SIGTERM is what an operator sends first, so a shim ends its VM and exits on it (SHARD-255).
 func TestAShimEndsItsVMOnSIGTERM(t *testing.T) {
 	h := newVMHarness(t)
-	spec := h.newSpec(t, "sleep", "3600")
+	spec := h.newSpec(t)
 	if err := h.provider.Create(t.Context(), spec); err != nil {
 		t.Fatal(err)
 	}
@@ -981,7 +1139,7 @@ func TestAShimEndsItsVMOnSIGTERM(t *testing.T) {
 // A guest kernel panic ends the sandbox as stopped: VZ reports no state change for the in-process reboot, so the shim stops the VM on the console banner (SHARD-641).
 func TestAGuestKernelPanicStopsTheSandbox(t *testing.T) {
 	h := newVMHarness(t)
-	spec := h.newSpec(t, "sleep", "3600")
+	spec := h.newSpec(t)
 	if err := h.provider.Create(t.Context(), spec); err != nil {
 		t.Fatal(err)
 	}

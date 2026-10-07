@@ -175,7 +175,7 @@ func (p *Provider) running(ctx context.Context, id string) (*machine, record, er
 	return m, r, nil
 }
 
-// headerOf puts the exec where the entrypoint runs: its env under the overrides, its workdir and its user unless the spec names one.
+// headerOf puts the exec where a process runs: the sandbox's env under the overrides, its workdir and its user unless the spec names one.
 func headerOf(r record, spec models.ExecSpec) (supervisor.ExecHeader, error) {
 	header := supervisor.ExecHeader{
 		Argv:    spec.Argv,
@@ -221,22 +221,6 @@ func (p *Provider) Signal(ctx context.Context, id string, pid int, signal string
 	}
 	if err := m.control.Load().Signal(ctx, pid, signal); err != nil {
 		return fmt.Errorf("sandbox %s: %w", id, err)
-	}
-
-	return nil
-}
-
-// StopApp asks the guest supervisor to cancel every start again and term the app, or kill it with force.
-func (p *Provider) StopApp(ctx context.Context, id string, force bool) error {
-	m, _, err := p.running(ctx, id)
-	if err != nil {
-		return err
-	}
-	if err := refuseHeld(m, "the app stop"); err != nil {
-		return err
-	}
-	if err := m.control.Load().StopApp(ctx, force); err != nil {
-		return fmt.Errorf("sandbox %s: stop the app: %w", id, err)
 	}
 
 	return nil

@@ -207,7 +207,7 @@ func (p *Provider) runAgain(m *machine) error {
 		return fmt.Errorf("sandbox %s: thaw the guest's root: %w", m.id, thawed)
 	}
 	// A save that reset the stream fails the thaw at once, so the run dials control again and thaws over that.
-	m.kickLogs()
+	m.host.Kick()
 
 	return errors.Join(m.cutExecs(verb), p.redial(m, verb))
 }

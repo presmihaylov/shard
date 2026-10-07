@@ -21,13 +21,14 @@ func TestAGuestThatOutgrowsItsBoundIsOOMKilled(t *testing.T) {
 
 	// The tmpfs is charged to the writer, and its default size sits under the bound, so the remount lifts it first.
 	script := "mount -o remount,size=1G /dev/shm && dd if=/dev/zero of=/dev/shm/fill bs=1M; while true; do sleep 1; done"
-	spec := h.newSpec(t, "/bin/sh", "-c", script)
+	spec := h.newSpec(t)
 	if err := h.provider.Create(t.Context(), spec); err != nil {
 		t.Fatal(err)
 	}
 	if err := h.provider.Start(t.Context(), spec.ID); err != nil {
 		t.Fatal(err)
 	}
+	runProcess(t, h.provider, spec.ID, "fill", models.RestartSpec{}, "/bin/sh", "-c", script)
 
 	deadline := time.Now().Add(2 * time.Minute)
 	for {
@@ -37,8 +38,7 @@ func TestAGuestThatOutgrowsItsBoundIsOOMKilled(t *testing.T) {
 		}
 		if status.State == models.StateStopped {
 			if !status.OOMKilled {
-				log, _ := os.ReadFile(filepath.Join(spec.StateDir, "output.log"))
-				t.Fatalf("the guest stopped without the bound blamed\nsandbox log:\n%s", log)
+				t.Fatalf("the guest stopped without the bound blamed\nprocess log:\n%s", processLog(t, h.provider, spec.ID, "fill"))
 			}
 			break
 		}
@@ -54,7 +54,7 @@ func TestAGuestThatOutgrowsItsBoundIsOOMKilled(t *testing.T) {
 func TestTheVMMRunsUnderAHostBound(t *testing.T) {
 	h := newVMHarness(t)
 
-	spec := h.newSpec(t, "/bin/sh", "-c", "while true; do sleep 1; done")
+	spec := h.newSpec(t)
 	if err := h.provider.Create(t.Context(), spec); err != nil {
 		t.Fatal(err)
 	}

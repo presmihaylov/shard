@@ -19,11 +19,11 @@ import (
 
 // checkpoint is checkpoint.json: what the frozen memory ran as, which a fork's record takes over from the source's.
 type checkpoint struct {
-	BaseDisk  string             `json:"base_disk"`
-	RootFS    string             `json:"rootfs,omitempty"`
-	Roots     *bundle.Roots      `json:"roots,omitempty"`
-	Resources models.Resources   `json:"resources"`
-	Run       supervisor.RunSpec `json:"run"`
+	BaseDisk  string           `json:"base_disk"`
+	RootFS    string           `json:"rootfs,omitempty"`
+	Roots     *bundle.Roots    `json:"roots,omitempty"`
+	Resources models.Resources `json:"resources"`
+	Run       supervisor.Base  `json:"run"`
 	// Jailed says the vmstate names each drive by its path in the jail, which every jailed restore has; one from before the jail names host paths (SHARD-306).
 	Jailed bool `json:"jailed"`
 }
@@ -265,7 +265,7 @@ func (p *Provider) runAgain(m *machine) error {
 
 		return nil
 	}
-	m.kickLogs()
+	m.host.Kick()
 
 	return p.redial(m, verb)
 }

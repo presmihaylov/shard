@@ -4,7 +4,6 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"io"
 	"io/fs"
 	"net"
 	"net/netip"
@@ -18,7 +17,6 @@ import (
 	"github.com/presmihaylov/shard/models"
 	fcapi "github.com/presmihaylov/shard/pkg/firecracker"
 	"github.com/presmihaylov/shard/pkg/pidpin"
-	"github.com/presmihaylov/shard/services/bundle"
 	"github.com/presmihaylov/shard/services/supervisor"
 )
 
@@ -46,8 +44,6 @@ type machine struct {
 	resetBy string
 	// holder is the verb that froze the guest, until its runAgain ends; the vmm holds its API while it writes the snapshot, so silence then is that verb at work.
 	holder atomic.Pointer[string]
-	// logsRound ends the logs stream in use, so a stream the reset killed is dialed again.
-	logsRound atomic.Pointer[context.CancelFunc]
 	// execs holds each open exec stream, with the verb that cut it, or "" while it runs.
 	execs   map[net.Conn]string
 	execsMu sync.Mutex
@@ -55,11 +51,12 @@ type machine struct {
 	freezesOverlay bool
 	// wholeLog says the vmm's dirty-page log holds every page the guest wrote since this process booted or loaded it, so a Diff is whole (SHARD-458).
 	wholeLog bool
-	cancel   context.CancelFunc
+	// host keeps the guest's process table and lands each process's output, for this attach.
+	host *supervisor.Host
 	// followed is closed once follow has landed the guest's last event, so a stop that saw the vmm go reads all of them (SHARD-290).
 	followed chan struct{}
 
-	// started is what the guest last said: the entrypoint forked, so the sandbox runs.
+	// started is what the guest last said: it took this boot's setup, so the sandbox runs.
 	started bool
 	// gone is set by the event loop once the vmm no longer runs the VM, so a status needs no socket round trip.
 	gone bool
@@ -67,7 +64,7 @@ type machine struct {
 	silent bool
 	// asking closes once the one state request out to a silent vmm ends; nil when none is out.
 	asking chan struct{}
-	// lost is the first exit or restart event the loop could not persist; the files say nothing true after it.
+	// lost is the first process event or log the loop could not persist; the files say nothing true after it.
 	lost error
 	// refusals logs the control lines the guest sent past the bound, which the reconnect otherwise hides.
 	refusals *supervisor.Refusals
@@ -529,11 +526,14 @@ func (p *Provider) boot(ctx context.Context, id, dir string, r *record) (*machin
 		return nil, err
 	}
 	defer release()
-	// The next run must not answer a wait, or a restart count, with what the last one left.
-	for _, stale := range []string{exitFile, restartsFile, oomFile, supervisorFailedFile, cursorFile} {
+	for _, stale := range []string{oomFile, supervisorFailedFile} {
 		if err := os.Remove(filepath.Join(dir, stale)); err != nil && !errors.Is(err, fs.ErrNotExist) {
 			return nil, fmt.Errorf("clear %s: %w", stale, err)
 		}
+	}
+	// A fresh guest numbers its reports and its output from zero; a restore never boots, so it keeps both.
+	if err := supervisor.ForgetBoot(dir); err != nil {
+		return nil, fmt.Errorf("sandbox %s: %w", id, err)
 	}
 
 	device, err := r.device()
@@ -661,6 +661,7 @@ func (p *Provider) attach(ctx context.Context, id, dir, jail string, client *fca
 		return nil, fmt.Errorf("sandbox %s: pin its vmm: %w", id, err)
 	}
 	m := &machine{id: id, dir: dir, jail: jail, client: client, pid: info.PID, pinned: pin, refusals: supervisor.NewRefusals(p.cfg.Log, id)}
+	m.host = p.hostOf(m)
 	if answered.PID != info.PID {
 		return nil, errors.Join(fmt.Errorf("sandbox %s: its socket answers for pid %d, not its vmm %d", id, answered.PID, info.PID), m.close())
 	}
@@ -703,21 +704,8 @@ func (p *Provider) attach(ctx context.Context, id, dir, jail string, client *fca
 		}
 	}
 
-	// The guest holds the entrypoint's output until a logs connection is open, so it is open before any run.
-	logs, err := m.dial(ctx, supervisor.LogsPort)
-	if err != nil {
-		return m.unattached(fmt.Errorf("sandbox %s: %w: open the logs connection: %w", id, errNoGuest, err))
-	}
-	out, err := os.OpenFile(filepath.Join(dir, logFile), os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o600)
-	if err != nil {
-		return nil, errors.Join(fmt.Errorf("sandbox %s: open the log: %w", id, err), logs.Close(), m.close())
-	}
-
-	pumpCtx, cancelPump := context.WithCancel(context.Background())
-	m.cancel = cancelPump
 	m.followed = make(chan struct{})
 	go p.follow(m)
-	go p.followLogs(pumpCtx, m, logs, &supervisor.FileLog{File: out, Cursor: filepath.Join(dir, cursorFile), Max: supervisor.MaxLog}, state.Logs)
 
 	p.mu.Lock()
 	p.machines[id] = m
@@ -764,20 +752,10 @@ func (p *Provider) keep(m *machine, err error) {
 
 func (p *Provider) record(m *machine, event supervisor.Message) error {
 	switch event.Kind {
-	case supervisor.KindReady, supervisor.KindState:
+	case supervisor.KindState:
 		return p.reconcile(m, event)
-	case supervisor.KindExit:
-		if event.Exit == nil {
-			return errors.New("an exit event carries no status")
-		}
-
-		return supervisor.WriteExit(filepath.Join(m.dir, exitFile), *event.Exit)
-	case supervisor.KindRestarts:
-		if event.Restarts == nil {
-			return errors.New("a restarts event carries no count")
-		}
-
-		return supervisor.WriteRestarts(filepath.Join(m.dir, restartsFile), *event.Restarts)
+	case supervisor.KindProcess:
+		return m.host.Report(event.Process)
 	case supervisor.KindOOM:
 		return m.markOOM()
 	case supervisor.KindSupervisorFailed:
@@ -799,22 +777,22 @@ func (m *machine) markOOM() error {
 	return nil
 }
 
-// markSupervisorFailed lands shard-init's own death as the sandbox exit, with its reason, before the halt takes the guest.
+// markSupervisorFailed puts shard-init's own death on file, with its reason, before the halt takes the guest.
 func (m *machine) markSupervisorFailed(event supervisor.Message) error {
-	if event.Exit == nil {
-		return errors.New("a supervisor-failed event carries no status")
-	}
 	if err := os.WriteFile(filepath.Join(m.dir, supervisorFailedFile), []byte(supervisor.OneLine(event.Error)), 0o600); err != nil {
 		return fmt.Errorf("record why the supervisor of sandbox %s failed: %w", m.id, err)
 	}
 
-	return supervisor.WriteExit(filepath.Join(m.dir, exitFile), *event.Exit)
+	return nil
 }
 
-// failedAtBoot lands a death from before the guest listened, and makes its reason the answer to the start (SHARD-416).
+// failedAtBoot puts a death from before the guest listened on file, and makes its reason the answer to the start (SHARD-416).
 func (m *machine) failedAtBoot(event supervisor.Message) error {
 	if err := m.markSupervisorFailed(event); err != nil {
 		return fmt.Errorf("sandbox %s: %w", m.id, err)
+	}
+	if event.Exit == nil {
+		return fmt.Errorf("sandbox %s: %w: %s", m.id, errBootFailed, supervisor.OneLine(event.Error))
 	}
 
 	return fmt.Errorf("sandbox %s: %w with exit %d: %s", m.id, errBootFailed, event.Exit.Code, supervisor.OneLine(event.Error))
@@ -925,23 +903,8 @@ func (p *Provider) reconcile(m *machine, state supervisor.Message) error {
 			return err
 		}
 	}
-	if state.Exit != nil {
-		path := filepath.Join(m.dir, exitFile)
-		last, found, err := bundle.ReadExitStatus(path)
-		if err != nil {
-			return err
-		}
-		if !found || last != *state.Exit {
-			if err := supervisor.WriteExit(path, *state.Exit); err != nil {
-				return err
-			}
-		}
-	}
-	if state.Restarts != nil {
-		return supervisor.WriteRestarts(filepath.Join(m.dir, restartsFile), *state.Restarts)
-	}
 
-	return nil
+	return m.host.Replay(state)
 }
 
 // alive says the vmm still answers with a running VM and this process has not let it go.
@@ -962,46 +925,29 @@ func (m *machine) vmState() fcapi.State {
 	return info.State
 }
 
-// followLogs appends what the logs connection carries to the log file, in the protocol the guest's state named, and opens it again after a drop while the VM runs.
-func (p *Provider) followLogs(ctx context.Context, m *machine, logs net.Conn, out *supervisor.FileLog, version int) {
-	defer out.Close()
-	opened := func(context.Context, uint32) (net.Conn, error) { return logs, nil }
-	for {
-		round, end := context.WithCancel(ctx)
-		m.logsRound.Store(&end)
-		err := supervisor.Logs(round, opened, out, version)
-		end()
-		if ctx.Err() != nil {
-			return
-		}
-		// A file that refuses the log blocks the guest on its output pipe, so every read of the sandbox says so; a redial would not help.
-		if out.Err != nil {
-			p.keep(m, fmt.Errorf("the log stopped: %w", out.Err))
+// hostOf is the host side of the guest's processes for one attach: it dials each log again while the VM runs, once a verb that holds it lets go.
+func (p *Provider) hostOf(m *machine) *supervisor.Host {
+	return supervisor.NewHost(supervisor.HostConfig{
+		Dir:  m.dir,
+		Dial: m.dial,
+		Again: func(ctx context.Context) bool {
+			// A snapshot the verb holds paused drops the stream, and the VM runs again once it ends.
+			for m.holder.Load() != nil {
+				select {
+				case <-ctx.Done():
+					return false
+				case <-time.After(pollInterval):
+				}
+			}
+			info, err := m.client.State(ctx)
 
-			return
-		}
-		if errors.Is(err, supervisor.ErrLogsVersion) {
-			p.keep(m, fmt.Errorf("the log stopped: %w", err))
-
-			return
-		}
-		// Log and continue, ruled by @shard (SHARD-561): the loop redials after pollInterval, and EOF is the guest powering off.
-		if err != nil && !errors.Is(err, io.EOF) {
-			fmt.Fprintf(os.Stderr, "firecracker: sandbox %s: %v\n", m.id, err)
-		}
-		if !m.alive() {
-			return
-		}
-		opened = m.dial
-		time.Sleep(pollInterval)
-	}
-}
-
-// kickLogs ends the logs stream in use, which a host that only reads would wait on for good once a reset killed it.
-func (m *machine) kickLogs() {
-	if end := m.logsRound.Load(); end != nil {
-		(*end)()
-	}
+			return err == nil && info.State == fcapi.StateRunning && !m.closed.Load()
+		},
+		Lost: func(err error) { p.keep(m, err) },
+		// Log and continue, ruled by @shard (SHARD-561): the host dials the log again after Pace.
+		Warn: func(err error) { fmt.Fprintf(os.Stderr, "firecracker: sandbox %s: %v\n", m.id, err) },
+		Pace: pollInterval,
+	})
 }
 
 // close ends what this process holds of the vmm; the vmm itself, and its VM, are the stop's business.
@@ -1009,8 +955,8 @@ func (m *machine) close() error {
 	m.swap.Lock()
 	defer m.swap.Unlock()
 	m.closed.Store(true)
-	if m.cancel != nil {
-		m.cancel()
+	if m.host != nil {
+		m.host.Close()
 	}
 	var errs []error
 	if m.pinned != nil {
@@ -1070,7 +1016,7 @@ func (m *machine) awaitGone(ctx context.Context, grace time.Duration) (bool, err
 	}
 }
 
-// status is what the vmm and the guest say now: created until the entrypoint forked, running after.
+// status is what the vmm and the guest say now: created until the guest took its setup, running after.
 func (m *machine) status(p *Provider) models.Status {
 	p.mu.Lock()
 	defer p.mu.Unlock()

@@ -254,7 +254,7 @@ func fakeJailer() error {
 	return pidFile.Close()
 }
 
-// endSessions SIGKILLs what is left in every vmm session the file names: a VM's death ends its guest, but a kill of the vmm alone, or of its group, misses the guest here, whose entrypoint leads a group of its own.
+// endSessions SIGKILLs what is left in every vmm session the file names: a VM's death ends its guest, but a kill of the vmm alone, or of its group, misses the guest here, whose processes each lead a group of their own.
 func endSessions(t *testing.T, path string) {
 	t.Helper()
 
@@ -757,7 +757,7 @@ func (f *fake) start() error {
 	}
 	f.cmd = cmd
 	go func() {
-		// The exit is the guest powering off, which ends firecracker; the group kill takes an entrypoint that ignored TERM along.
+		// The exit is the guest powering off, which ends firecracker; the group kill takes a process that ignored TERM along.
 		_ = cmd.Wait()
 		f.drain()
 		_ = syscall.Kill(-os.Getpid(), syscall.SIGKILL)
@@ -863,8 +863,8 @@ const floodEveryFile = "flood-every-control"
 // floodEventsFile in the state directory floods every control stream past its state line with valid events, faster than the host lands them.
 const floodEventsFile = "flood-events-control"
 
-// floodEvent is what a floodEventsFile stream repeats: a restarts count, which the host lands on disk one at a time.
-var floodEvent = []byte(`{"kind":"restarts","restarts":{"count":1}}` + "\n")
+// floodEvent is what a floodEventsFile stream repeats: a process report, which the host lands in its table one at a time.
+var floodEvent = []byte(`{"kind":"process","process":{"name":"flood","state":"running","restarts":0,"seq":1}}` + "\n")
 
 // dialsFile in the state directory, once a test creates it, takes one line per control stream the host dials.
 const dialsFile = "control-dials"

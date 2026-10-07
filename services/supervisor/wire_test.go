@@ -14,7 +14,6 @@ import (
 	"time"
 
 	"github.com/presmihaylov/shard/models"
-	"github.com/presmihaylov/shard/services/bundle"
 	"github.com/presmihaylov/shard/services/supervisor"
 )
 
@@ -142,7 +141,7 @@ func TestAGuestThatFloodsEventsEndsTheControlStream(t *testing.T) {
 		event supervisor.Message
 		most  int
 	}{
-		"by count": {supervisor.Message{Kind: supervisor.KindRestarts}, 4096},
+		"by count": {supervisor.Message{Kind: supervisor.KindProcess}, 4096},
 		"by bytes": {supervisor.Message{Kind: supervisor.KindSupervisorFailed, Error: strings.Repeat("x", 256<<10)}, 64},
 	}
 	for name, tc := range cases {
@@ -185,7 +184,7 @@ func TestAFloodEndsTheRequestInFlight(t *testing.T) {
 	if err := supervisor.ReadMessage(bufio.NewReader(guest), &request); err != nil || request.Kind != supervisor.KindStop {
 		t.Fatalf("the guest read %+v, %v, want the stop", request, err)
 	}
-	floodEvents(t, guest, supervisor.Message{Kind: supervisor.KindRestarts}, 4096)
+	floodEvents(t, guest, supervisor.Message{Kind: supervisor.KindProcess}, 4096)
 
 	select {
 	case err := <-stopped:
@@ -243,92 +242,73 @@ func TestReadHeaderLeavesTheFramesBehindIt(t *testing.T) {
 	}
 }
 
-func TestRunReportsAFailureAsNotStarted(t *testing.T) {
+// refusingGuest answers the one request it reads with answer, under that request's id.
+func refusingGuest(t *testing.T, answer supervisor.Message) *supervisor.Control {
+	t.Helper()
 	host, guest := net.Pipe()
-	defer host.Close()
-	go func() {
-		defer guest.Close()
-		r := bufio.NewReader(guest)
-		var m supervisor.Message
-		if err := supervisor.ReadMessage(r, &m); err != nil || m.Kind != supervisor.KindRun {
-			return
-		}
-		_ = supervisor.WriteMessage(guest, supervisor.Message{Kind: supervisor.KindFailure, ID: m.ID, Error: "no such file"})
-	}()
-
-	c := supervisor.ControlOver(host)
-	err := c.Run(t.Context(), supervisor.RunSpec{Argv: []string{"/missing"}})
-	if !errors.Is(err, supervisor.ErrEntrypointNotStarted) || !strings.Contains(err.Error(), "no such file") {
-		t.Fatalf("err = %v, want ErrEntrypointNotStarted with the guest's reason", err)
-	}
-}
-
-func TestWriteExitKeepsOnlyTheLastRecord(t *testing.T) {
-	path := filepath.Join(t.TempDir(), "exit.json")
-	for i := range 200 {
-		if err := supervisor.WriteExit(path, models.ExitStatus{Code: i % 7, Signal: 9}); err != nil {
-			t.Fatal(err)
-		}
-	}
-
-	got, ok, err := bundle.ReadExitStatus(path)
-	if err != nil || !ok {
-		t.Fatalf("read = %v %v", ok, err)
-	}
-	if got != (models.ExitStatus{Code: 199 % 7, Signal: 9}) {
-		t.Fatalf("got %+v, want the last record", got)
-	}
-	info, err := os.Stat(path)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if info.Size() > 64 {
-		t.Fatalf("the exit file is %d bytes after 200 exits, want one record", info.Size())
-	}
-}
-
-func TestWriteRestartsReadsBackThroughBundle(t *testing.T) {
-	path := filepath.Join(t.TempDir(), "restarts.json")
-	if err := supervisor.WriteRestarts(path, models.RestartCount{Count: 2, GaveUp: true}); err != nil {
-		t.Fatal(err)
-	}
-
-	got, err := bundle.ReadRestartCount(path)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if got.Count != 2 || !got.GaveUp {
-		t.Fatalf("got %+v", got)
-	}
-}
-
-// A replay that brings the count already on disk writes nothing, so a full root fails no attach (SHARD-341).
-func TestWriteRestartsLeavesTheSameCountAlone(t *testing.T) {
-	if os.Geteuid() == 0 {
-		t.Skip("root writes into a read-only directory")
-	}
-	dir := t.TempDir()
-	path := filepath.Join(dir, "restarts.json")
-	count := models.RestartCount{Count: 2, LastAt: time.Date(2026, 10, 2, 19, 0, 0, 0, time.UTC)}
-	if err := supervisor.WriteRestarts(path, count); err != nil {
-		t.Fatal(err)
-	}
-
-	// A directory that refuses a new file fails the write the way a full disk does.
-	if err := os.Chmod(dir, 0o500); err != nil {
-		t.Fatal(err)
-	}
 	t.Cleanup(func() {
-		if err := os.Chmod(dir, 0o700); err != nil {
+		if err := host.Close(); err != nil {
 			t.Error(err)
 		}
 	})
-	if err := supervisor.WriteRestarts(path, count); err != nil {
-		t.Fatalf("WriteRestarts of the same count = %v, want no write at all", err)
+	go func() {
+		defer guest.Close()
+		var m supervisor.Message
+		if err := supervisor.ReadMessage(bufio.NewReader(guest), &m); err != nil {
+			return
+		}
+		answer.ID = m.ID
+		if err := supervisor.WriteMessage(guest, answer); err != nil {
+			t.Error(err)
+		}
+	}()
+
+	return supervisor.ControlOver(host)
+}
+
+// A refused run reads as what the service acts on: a name taken, a command that could not start, or a guest too old for the verb.
+func TestARefusedRunReadsAsTheServicesError(t *testing.T) {
+	cases := map[string]struct {
+		answer supervisor.Message
+		want   func(error) bool
+	}{
+		"taken": {
+			supervisor.Message{Kind: supervisor.KindFailure, Error: `"web": a process of that name still runs`, Taken: true},
+			func(err error) bool { return errors.Is(err, models.ErrProcessRunning) },
+		},
+		"not started": {
+			supervisor.Message{Kind: supervisor.KindFailure, Error: "no such file", Code: 127},
+			func(err error) bool {
+				refused, ok := errors.AsType[*models.CommandNotStartedError](err)
+
+				return ok && refused.Code == 127 && refused.Reason == "no such file" && refused.Sandbox == "sb"
+			},
+		},
+		"outdated": {
+			supervisor.Message{Kind: supervisor.KindFailure, Error: "unknown kind", Outdated: true},
+			func(err error) bool {
+				_, ok := errors.AsType[*models.SupervisorTooOldError](err)
+
+				return ok && errors.Is(err, models.ErrUnsupported)
+			},
+		},
+		"anything else": {
+			supervisor.Message{Kind: supervisor.KindFailure, Error: "the sandbox is stopping"},
+			func(err error) bool {
+				_, refused := errors.AsType[*supervisor.Refusal](err)
+
+				return refused && !errors.Is(err, models.ErrProcessRunning) && strings.Contains(err.Error(), "the sandbox is stopping")
+			},
+		},
 	}
-	count.Count++
-	if err := supervisor.WriteRestarts(path, count); err == nil {
-		t.Fatal("WriteRestarts of a new count wrote into a directory that refuses a new file")
+	for name, tc := range cases {
+		t.Run(name, func(t *testing.T) {
+			c := refusingGuest(t, tc.answer)
+			err := supervisor.ProcessError("sb", c.Run(t.Context(), supervisor.RunSpec{Name: "web", Argv: []string{"/missing"}}))
+			if !tc.want(err) {
+				t.Fatalf("run = %v", err)
+			}
+		})
 	}
 }
 

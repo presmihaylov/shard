@@ -78,14 +78,15 @@ func TestAForkOfARunningSandboxLeavesTheSourceRunning(t *testing.T) {
 // A save that resets every stream fails the thaw on the old one, so the source dials control again within the bound and thaws over it (SHARD-463).
 func TestAForkWhoseSaveResetsTheStreamsThawsOnANewOne(t *testing.T) {
 	h := newHarness(t)
-	spec := h.newSpec(t, "/bin/sh", "-c", "while true; do echo tick; sleep 0.2; done")
+	spec := h.newSpec(t)
 	if err := h.provider.Create(t.Context(), spec); err != nil {
 		t.Fatal(err)
 	}
 	if err := h.provider.Start(t.Context(), spec.ID); err != nil {
 		t.Fatal(err)
 	}
-	awaitLog(t, h.provider, spec.ID, 0)
+	runProcess(t, h.provider, spec.ID, "tick", models.RestartSpec{}, "/bin/sh", "-c", tick)
+	awaitLog(t, h.provider, spec.ID, "tick", 0)
 	status, err := h.provider.Status(t.Context(), spec.ID)
 	if err != nil {
 		t.Fatal(err)
@@ -104,11 +105,15 @@ func TestAForkWhoseSaveResetsTheStreamsThawsOnANewOne(t *testing.T) {
 		t.Errorf("the source took %d control streams over the fork, want the one the redial put in", len(got))
 	}
 	execOK(t, h.provider, spec.ID, "the fork")
-	logged, err := os.ReadFile(filepath.Join(spec.StateDir, "output.log"))
+	path, err := h.provider.ProcessLogPath(spec.ID, "tick")
 	if err != nil {
 		t.Fatal(err)
 	}
-	awaitLog(t, h.provider, spec.ID, len(logged))
+	logged, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	awaitLog(t, h.provider, spec.ID, "tick", len(logged))
 }
 
 // While a fork holds the source, through the save and the redial after it, the source reads running and refuses an exec by the fork's name (SHARD-463).
@@ -460,7 +465,7 @@ func requireHeld(t *testing.T, h *harness, id string, pid int, window string) {
 	requireSendsRefused(t, h.provider, id, "fork", window)
 }
 
-// requireSendsRefused proves a signal and an app stop are refused at once by the name of the verb that holds the sandbox (SHARD-580).
+// requireSendsRefused proves a signal, a run and a process stop are refused at once by the name of the verb that holds the sandbox (SHARD-580).
 func requireSendsRefused(t *testing.T, p models.Provider, id, verb, window string) {
 	t.Helper()
 	ctx, cancel := context.WithTimeout(t.Context(), time.Second)
@@ -470,10 +475,15 @@ func requireSendsRefused(t *testing.T, p models.Provider, id, verb, window strin
 	if err == nil || err.Error() != want {
 		t.Fatalf("Signal in %s = %v, want %q", window, err, want)
 	}
-	err = p.StopApp(ctx, id, false)
-	want = fmt.Sprintf("sandbox %s: a %s holds the sandbox frozen, so the app stop was not sent: send it again once that ends", id, verb)
+	err = p.StartProcess(ctx, id, models.ProcessSpec{Name: "late", Argv: []string{"/bin/true"}})
+	want = fmt.Sprintf("sandbox %s: a %s holds the sandbox frozen, so the run was not sent: send it again once that ends", id, verb)
 	if err == nil || err.Error() != want {
-		t.Fatalf("StopApp in %s = %v, want %q", window, err, want)
+		t.Fatalf("StartProcess in %s = %v, want %q", window, err, want)
+	}
+	err = p.StopProcess(ctx, id, "late", time.Second)
+	want = fmt.Sprintf("sandbox %s: a %s holds the sandbox frozen, so the process stop was not sent: send it again once that ends", id, verb)
+	if err == nil || err.Error() != want {
+		t.Fatalf("StopProcess in %s = %v, want %q", window, err, want)
 	}
 }
 

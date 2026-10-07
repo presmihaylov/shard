@@ -137,11 +137,11 @@ func (h *vmHarness) reopen(t *testing.T) models.Provider {
 	return h.open(t)
 }
 
-// newSpec is the unit harness's over the pulled image: the tree names users for exec, and the entrypoint needs a PATH.
-func (h *vmHarness) newSpec(t *testing.T, entrypoint ...string) models.SandboxSpec {
+// newSpec is the unit harness's over the pulled image: the tree names users for exec, and a process needs a PATH.
+func (h *vmHarness) newSpec(t *testing.T) models.SandboxSpec {
 	t.Helper()
 
-	spec := h.harness.newSpec(t, entrypoint...)
+	spec := h.harness.newSpec(t)
 	spec.RootFS = h.image.RootFS
 	spec.Env = []string{"PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"}
 	spec.Resources = models.Resources{MemoryMiB: 256, DiskMiB: 64}
@@ -166,33 +166,50 @@ func guestInit(t *testing.T) string {
 	return path
 }
 
-// The boot AC: the guest kernel mounts the EROFS image under the overlay, and the entrypoint runs and writes to the log.
-func TestAMicroVMBootsAndRunsTheEntrypoint(t *testing.T) {
+// The boot AC: the guest kernel mounts the EROFS image under the overlay, and a process runs and writes to its log.
+func TestAMicroVMBootsAndRunsAProcess(t *testing.T) {
 	h := newVMHarness(t)
 
-	spec := h.newSpec(t, "/bin/sh", "-c", "echo booted on $(uname -r); touch /written && cat /etc/alpine-release")
+	spec := h.newSpec(t)
 	if err := h.provider.Create(t.Context(), spec); err != nil {
 		t.Fatal(err)
 	}
 	if err := h.provider.Start(t.Context(), spec.ID); err != nil {
 		t.Fatal(err)
 	}
-	exit, err := h.provider.Wait(t.Context(), spec.ID)
-	log, _ := os.ReadFile(filepath.Join(spec.StateDir, "output.log"))
-	if err != nil || exit.Code != 0 {
+	runProcess(t, h.provider, spec.ID, "main", models.RestartSpec{}, "/bin/sh", "-c", "echo booted on $(uname -r); touch /written && cat /etc/alpine-release")
+	ended := awaitEnded(t, h.provider, spec.ID, "main")
+	log := processLog(t, h.provider, spec.ID, "main")
+	if ended.Exit == nil || ended.Exit.Code != 0 {
 		console, _ := os.ReadFile(filepath.Join(spec.StateDir, "console.log"))
-		t.Fatalf("Wait = %+v, %v\nsandbox log:\n%s\nconsole:\n%s", exit, err, log, console)
+		t.Fatalf("main ended as %+v\nprocess log:\n%s\nconsole:\n%s", ended, log, console)
 	}
-	if !strings.Contains(string(log), "booted on") || !strings.Contains(string(log), "3.20") {
-		t.Fatalf("the entrypoint did not run over the image:\n%s", log)
+	if !strings.Contains(log, "booted on") || !strings.Contains(log, "3.20") {
+		t.Fatalf("the process did not run over the image:\n%s", log)
 	}
+}
+
+// processLog is everything the named process wrote so far; a log not there yet reads empty.
+func processLog(t *testing.T, p *firecracker.Provider, id, name string) string {
+	t.Helper()
+
+	path, err := p.ProcessLogPath(id, name)
+	if err != nil {
+		t.Fatal(err)
+	}
+	blob, err := os.ReadFile(path)
+	if err != nil && !errors.Is(err, os.ErrNotExist) {
+		t.Fatal(err)
+	}
+
+	return string(blob)
 }
 
 // A kill while the exec's execve still opens the command is no launch, so the exec says the command never started (SHARD-505).
 func TestAMicroVMExecKilledBeforeItsCommandStartsIsNoLaunch(t *testing.T) {
 	h := newVMHarness(t)
 
-	spec := h.newSpec(t, "/bin/true")
+	spec := h.newSpec(t)
 	if err := h.provider.Create(t.Context(), spec); err != nil {
 		t.Fatal(err)
 	}
@@ -248,8 +265,7 @@ func TestAMicroVMIsAddressedOverItsTap(t *testing.T) {
 	tapNet := newTapNetwork(t)
 
 	// The host's input chain drops the ping, but the ARP under it lands the guest's MAC on the bridge.
-	spec := h.newSpec(t, "/bin/sh", "-c",
-		"ip -4 -o addr show eth0; ip route show default; ping -c 1 -W 1 10.213.0.1; ip neigh show; hostname")
+	spec := h.newSpec(t)
 	spec.Name = "web"
 	lease, err := tapNet.Allocate(t.Context(), spec.ID)
 	if err != nil {
@@ -282,14 +298,16 @@ func TestAMicroVMIsAddressedOverItsTap(t *testing.T) {
 		if err := h.provider.Start(t.Context(), spec.ID); err != nil {
 			t.Fatalf("%s: %v", phase, err)
 		}
-		exit, err := h.provider.Wait(t.Context(), spec.ID)
-		log, _ := os.ReadFile(filepath.Join(spec.StateDir, "output.log"))
-		if err != nil || exit.Code != 0 {
+		runProcess(t, h.provider, spec.ID, "main", models.RestartSpec{}, "/bin/sh", "-c",
+			"ip -4 -o addr show eth0; ip route show default; ping -c 1 -W 1 10.213.0.1; ip neigh show; hostname")
+		ended := awaitEnded(t, h.provider, spec.ID, "main")
+		log := processLog(t, h.provider, spec.ID, "main")
+		if ended.Exit == nil || ended.Exit.Code != 0 {
 			console, _ := os.ReadFile(filepath.Join(spec.StateDir, "console.log"))
-			t.Fatalf("%s: Wait = %+v, %v\nsandbox log:\n%s\nconsole:\n%s", phase, exit, err, log, console)
+			t.Fatalf("%s: main ended as %+v\nprocess log:\n%s\nconsole:\n%s", phase, ended, log, console)
 		}
 		for _, want := range []string{"inet 10.213.0.2/24", "default via 10.213.0.1", "10.213.0.1 dev eth0 lladdr", "\nweb\n"} {
-			if got := strings.Count(string(log), want); got != boots+1 {
+			if got := strings.Count(log, want); got != boots+1 {
 				t.Errorf("%s: the guest showed %q %d times, want %d:\n%s", phase, want, got, boots+1, log)
 			}
 		}
@@ -308,7 +326,7 @@ func TestAMicroVMIsAddressedOverItsTap(t *testing.T) {
 // tickScript counts in the shell's own memory, so a guest that restored carries on and one that booted again starts over at one.
 const tickScript = "n=0; while true; do n=$((n+1)); echo tick $n; sleep 0.1; done"
 
-// ticks is every count the entrypoint has printed into the log so far.
+// ticks is every count the process has printed into the log so far.
 func ticks(t *testing.T, log string) []int {
 	t.Helper()
 
@@ -333,6 +351,25 @@ func ticks(t *testing.T, log string) []int {
 	return counted
 }
 
+// runTicks creates and starts spec with tickScript running as process tick, and answers the path of its log.
+func (h *vmHarness) runTicks(t *testing.T, spec models.SandboxSpec) string {
+	t.Helper()
+
+	if err := h.provider.Create(t.Context(), spec); err != nil {
+		t.Fatal(err)
+	}
+	if err := h.provider.Start(t.Context(), spec.ID); err != nil {
+		t.Fatal(err)
+	}
+	runProcess(t, h.provider, spec.ID, "tick", models.RestartSpec{}, "/bin/sh", "-c", tickScript)
+	log, err := h.provider.ProcessLogPath(spec.ID, "tick")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	return log
+}
+
 // awaitTicks waits for the log to hold want counts.
 func awaitTicks(t *testing.T, log string, want int) []int {
 	t.Helper()
@@ -350,7 +387,7 @@ func awaitTicks(t *testing.T, log string, want int) []int {
 	}
 }
 
-// fresh is how many times the entrypoint started counting; a guest that restored its memory never starts again.
+// fresh is how many times the process started counting; a guest that restored its memory never starts again.
 func fresh(counted []int) int {
 	starts := 0
 	for _, count := range counted {
@@ -409,14 +446,8 @@ func allocate(t *testing.T, svc *network.Service, id string) models.NetworkSpec 
 func TestAMicroVMResumesFromItsCheckpointWithItsMemory(t *testing.T) {
 	h := newVMHarness(t)
 
-	spec := h.newSpec(t, "/bin/sh", "-c", tickScript)
-	if err := h.provider.Create(t.Context(), spec); err != nil {
-		t.Fatal(err)
-	}
-	if err := h.provider.Start(t.Context(), spec.ID); err != nil {
-		t.Fatal(err)
-	}
-	log := filepath.Join(spec.StateDir, "output.log")
+	spec := h.newSpec(t)
+	log := h.runTicks(t, spec)
 	awaitTicks(t, log, 3)
 
 	dir := t.TempDir()
@@ -445,7 +476,7 @@ func TestAMicroVMResumesFromItsCheckpointWithItsMemory(t *testing.T) {
 	}
 	counted := awaitTicks(t, log, len(paused)+2)
 	if fresh(counted) != 1 {
-		t.Errorf("the entrypoint started counting %d times, want once: %v", fresh(counted), counted)
+		t.Errorf("the process started counting %d times, want once: %v", fresh(counted), counted)
 	}
 	if last := counted[len(counted)-1]; last <= paused[len(paused)-1] {
 		t.Errorf("the guest is at %d after the resume, want it past the %d it paused at", last, paused[len(paused)-1])
@@ -456,7 +487,7 @@ func TestAMicroVMResumesFromItsCheckpointWithItsMemory(t *testing.T) {
 func TestARestoredMicroVMTakesTheHostClock(t *testing.T) {
 	h := newVMHarness(t)
 
-	spec := h.newSpec(t, "/bin/sleep", "3600")
+	spec := h.newSpec(t)
 	if err := h.provider.Create(t.Context(), spec); err != nil {
 		t.Fatal(err)
 	}
@@ -506,14 +537,8 @@ func assertHostClock(t *testing.T, p models.Provider, id string) {
 func TestManyMicroVMsForkFromOneCheckpoint(t *testing.T) {
 	h := newVMHarness(t)
 
-	spec := h.newSpec(t, "/bin/sh", "-c", tickScript)
-	if err := h.provider.Create(t.Context(), spec); err != nil {
-		t.Fatal(err)
-	}
-	if err := h.provider.Start(t.Context(), spec.ID); err != nil {
-		t.Fatal(err)
-	}
-	log := filepath.Join(spec.StateDir, "output.log")
+	spec := h.newSpec(t)
+	log := h.runTicks(t, spec)
 	awaitTicks(t, log, 3)
 
 	dir := t.TempDir()
@@ -537,8 +562,12 @@ func TestManyMicroVMsForkFromOneCheckpoint(t *testing.T) {
 		if err != nil || status.State != models.StateRunning {
 			t.Fatalf("Status of %s = %+v, %v, want %s", fork.ID, status, err, models.StateRunning)
 		}
-		// Nothing started this entrypoint: it is the source's, carrying on out of the memory the fork restored.
-		counted := awaitTicks(t, filepath.Join(fork.StateDir, "output.log"), 2)
+		// Nothing started this process: it is the source's, carrying on out of the memory the fork restored.
+		forked, err := h.provider.ProcessLogPath(fork.ID, "tick")
+		if err != nil {
+			t.Fatal(err)
+		}
+		counted := awaitTicks(t, forked, 2)
 		if fresh(counted) != 0 {
 			t.Errorf("%s started counting from one, so it booted instead of restoring: %v", fork.ID, counted)
 		}
@@ -570,16 +599,10 @@ func TestAForkTakesItsOwnAddress(t *testing.T) {
 	h := newVMHarness(t)
 	tapNet := newTapNetwork(t)
 
-	spec := h.newSpec(t, "/bin/sh", "-c", tickScript)
+	spec := h.newSpec(t)
 	spec.Name = "source"
 	spec.Network = allocate(t, tapNet, spec.ID)
-	if err := h.provider.Create(t.Context(), spec); err != nil {
-		t.Fatal(err)
-	}
-	if err := h.provider.Start(t.Context(), spec.ID); err != nil {
-		t.Fatal(err)
-	}
-	awaitTicks(t, filepath.Join(spec.StateDir, "output.log"), 2)
+	awaitTicks(t, h.runTicks(t, spec), 2)
 
 	dir := t.TempDir()
 	if err := h.provider.Pause(t.Context(), spec.ID, dir); err != nil {
@@ -657,12 +680,7 @@ func TestConformanceOnMicroVMs(t *testing.T) {
 
 	conformance.Run(t, conformance.Subject{
 		Provider: h.provider,
-		NewSpec:  func(t *testing.T) models.SandboxSpec { return h.newSpec(t, "/bin/true") },
-		NewIgnoresTermSpec: func(t *testing.T) models.SandboxSpec {
-			script := fmt.Sprintf("trap '' TERM; echo %s; while true; do sleep 1; done", conformance.ReadyMarker)
-
-			return h.newSpec(t, "/bin/sh", "-c", script)
-		},
+		NewSpec:  h.newSpec,
 		EmptyDir: func(t *testing.T) string { return t.TempDir() },
 		Shell:    func(script string) []string { return []string{"/bin/sh", "-c", script} },
 		Reopen:   h.reopen,

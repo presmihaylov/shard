@@ -306,11 +306,11 @@ func TestADaemonRefusesAFirecrackerOlderThan113(t *testing.T) {
 	}
 }
 
-// runSnapshotted runs a long entrypoint with the fake vmm noting each snapshot it writes.
+// runSnapshotted runs a sandbox with the fake vmm noting each snapshot it writes.
 func (h *harness) runSnapshotted(t *testing.T) models.SandboxSpec {
 	t.Helper()
 
-	spec := h.newSpec(t, "/bin/sh", "-c", "while true; do sleep 1; done")
+	spec := h.newSpec(t)
 	watchSnapshots(t, spec)
 	if err := h.provider.Create(t.Context(), spec); err != nil {
 		t.Fatal(err)

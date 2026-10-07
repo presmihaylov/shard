@@ -184,14 +184,42 @@ func followGuest(t *testing.T, sink *pipeLog, version int, guest func(net.Conn) 
 	done := make(chan error, 1)
 	go func() {
 		defer g.Close()
-		done <- guest(g)
+		done <- openedBy(g, version, guest)
 	}()
-	err := supervisor.Logs(context.Background(), func(context.Context, uint32) (net.Conn, error) { return host, nil }, sink, version)
+	err := supervisor.Logs(context.Background(), func(context.Context, uint32) (net.Conn, error) { return host, nil }, "web", sink, version)
 	if gerr := <-done; gerr != nil {
 		t.Errorf("guest: %v", gerr)
 	}
 
 	return err
+}
+
+// openedBy reads the line a host that speaks version names its process with, then hands the connection to guest.
+func openedBy(g net.Conn, version int, guest func(net.Conn) error) error {
+	if version != supervisor.LogsVersion {
+		return guest(g)
+	}
+	var open supervisor.LogsOpen
+	if err := supervisor.ReadHeader(g, &open); err != nil {
+		return err
+	}
+	if open.Name != "web" {
+		return fmt.Errorf("the host opened the logs of %q, want web", open.Name)
+	}
+
+	return guest(g)
+}
+
+// A guest that holds no process of the name hangs up before its header, which the host reads as no process rather than a broken stream.
+func TestAGuestWithNoProcessOfTheNameHangsUp(t *testing.T) {
+	sink := &pipeLog{}
+	err := followGuest(t, sink, supervisor.LogsVersion, func(net.Conn) error { return nil })
+	if !errors.Is(err, supervisor.ErrNoProcess) {
+		t.Fatalf("Logs = %v, want ErrNoProcess", err)
+	}
+	if sink.got.Len() != 0 || len(sink.resumes) != 0 {
+		t.Fatalf("landed %q after resumes %v, want nothing", sink.got.String(), sink.resumes)
+	}
 }
 
 // A guest whose state names the logs version gets the host's resume byte, and an ack after each write with the output offset after it.

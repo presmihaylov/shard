@@ -145,7 +145,7 @@ func (h *harness) stateDir(id string) (string, error) {
 	return filepath.Join(h.root, "s", id), nil
 }
 
-func (h *harness) newSpec(t *testing.T, entrypoint ...string) models.SandboxSpec {
+func (h *harness) newSpec(t *testing.T) models.SandboxSpec {
 	t.Helper()
 
 	id := fmt.Sprintf("sb-%d", h.next.Add(1))
@@ -165,7 +165,7 @@ func (h *harness) newSpec(t *testing.T, entrypoint ...string) models.SandboxSpec
 		}
 	})
 
-	return models.SandboxSpec{ID: id, StateDir: dir, RootDisk: h.disk, Entrypoint: entrypoint, Resources: models.Resources{MemoryMiB: 256, DiskMiB: 16}}
+	return models.SandboxSpec{ID: id, StateDir: dir, RootDisk: h.disk, Resources: models.Resources{MemoryMiB: 256, DiskMiB: 16}}
 }
 
 // baseDisk is the smallest ext4 image the clone accepts; the fake guest never mounts it.
@@ -198,12 +198,7 @@ func TestConformance(t *testing.T) {
 
 	conformance.Run(t, conformance.Subject{
 		Provider: h.provider,
-		NewSpec:  func(t *testing.T) models.SandboxSpec { return h.newSpec(t, "/bin/sh", "-c", "exit 0") },
-		NewIgnoresTermSpec: func(t *testing.T) models.SandboxSpec {
-			script := fmt.Sprintf("trap '' TERM; echo %s; while true; do sleep 1; done", conformance.ReadyMarker)
-
-			return h.newSpec(t, "/bin/sh", "-c", script)
-		},
+		NewSpec:  h.newSpec,
 		EmptyDir: func(t *testing.T) string { return t.TempDir() },
 		Shell:    func(script string) []string { return []string{"/bin/sh", "-c", script} },
 		// The fake guest is a host process, so the suite writes under the root; a checkpoint here proves the verbs and not the disk.
@@ -215,7 +210,7 @@ func TestConformance(t *testing.T) {
 
 func TestCreateRefusesAnImageWithoutARootDisk(t *testing.T) {
 	h := newHarness(t)
-	spec := h.newSpec(t, "/bin/sh", "-c", "exit 0")
+	spec := h.newSpec(t)
 	spec.RootDisk = ""
 
 	err := h.provider.Create(t.Context(), spec)
@@ -227,7 +222,7 @@ func TestCreateRefusesAnImageWithoutARootDisk(t *testing.T) {
 // A pruned image disk is refused by the sentinel the API answers with 404 and the pull hint, not a bare stat error.
 func TestCreateOverAGoneImageDiskNamesTheImage(t *testing.T) {
 	h := newHarness(t)
-	spec := h.newSpec(t, "/bin/sh", "-c", "exit 0")
+	spec := h.newSpec(t)
 	if err := os.Remove(spec.RootDisk); err != nil {
 		t.Fatal(err)
 	}
@@ -241,7 +236,7 @@ func TestCreateOverAGoneImageDiskNamesTheImage(t *testing.T) {
 // The bound needs room under the 32 MiB headroom, so a VM too small for one is refused by name.
 func TestCreateRefusesAMemoryBoundBelowTheMinimum(t *testing.T) {
 	h := newHarness(t)
-	spec := h.newSpec(t, "/bin/sh", "-c", "exit 0")
+	spec := h.newSpec(t)
 	spec.Resources.MemoryMiB = 64
 
 	err := h.provider.Create(t.Context(), spec)
@@ -291,10 +286,10 @@ func TestTheDefaultMemoryIsABoundTheProviderTakes(t *testing.T) {
 	}
 }
 
-// An image with no PATH gets the OCI default, as the bundle gives it on Linux, so a named entrypoint resolves in the guest.
+// An image with no PATH gets the OCI default, as the bundle gives it on Linux, so a named command resolves in the guest.
 func TestCreateGivesAnImageWithoutAPathTheDefault(t *testing.T) {
 	h := newHarness(t)
-	spec := h.newSpec(t, "sh", "-c", "exit 0")
+	spec := h.newSpec(t)
 	spec.Env = []string{"HOME=/root"}
 
 	if err := h.provider.Create(t.Context(), spec); err != nil {
@@ -321,7 +316,7 @@ func TestCreateGivesAnImageWithoutAPathTheDefault(t *testing.T) {
 // The disk is copied apart from the memory, so a pause freezes the guest's root before it stops the VM, and every path that runs the guest again thaws it (SHARD-296).
 func TestAPauseFreezesTheGuestAndEveryPathThatRunsItAgainThawsIt(t *testing.T) {
 	h := newHarness(t)
-	spec := h.newSpec(t, "/bin/sh", "-c", "while true; do sleep 1; done")
+	spec := h.newSpec(t)
 	if err := h.provider.Create(t.Context(), spec); err != nil {
 		t.Fatal(err)
 	}
@@ -373,7 +368,7 @@ func TestAPauseFreezesTheGuestAndEveryPathThatRunsItAgainThawsIt(t *testing.T) {
 // A freeze that lands while its answer is lost fails the pause, and the guest's root is thawed over the stream the provider dials again.
 func TestAFreezeWhoseAnswerIsLostIsThawed(t *testing.T) {
 	h := newHarness(t)
-	spec := h.newSpec(t, "/bin/sh", "-c", "while true; do sleep 1; done")
+	spec := h.newSpec(t)
 	if err := h.provider.Create(t.Context(), spec); err != nil {
 		t.Fatal(err)
 	}
@@ -414,7 +409,7 @@ func TestAFreezeWhoseAnswerIsLostIsThawed(t *testing.T) {
 // A reset while a pause that froze the root is in flight leaves the root frozen: the stream dialed again must not thaw it under the VM pause.
 func TestAResetUnderAPauseLeavesTheRootFrozen(t *testing.T) {
 	h := newHarness(t)
-	spec := h.newSpec(t, "/bin/sh", "-c", "while true; do sleep 1; done")
+	spec := h.newSpec(t)
 	if err := h.provider.Create(t.Context(), spec); err != nil {
 		t.Fatal(err)
 	}
@@ -445,7 +440,7 @@ func TestAPauseRetriedDuringARecoveryThawFreezesAfterIt(t *testing.T) {
 		close(reached)
 		<-release
 	}))
-	spec := h.newSpec(t, "/bin/sh", "-c", "while true; do sleep 1; done")
+	spec := h.newSpec(t)
 	free := sync.OnceFunc(func() { close(release) })
 	// A failure before the release would leave the reconnect held, and the stop of the sandbox behind it.
 	t.Cleanup(free)
@@ -503,7 +498,7 @@ func TestAPauseRetriedDuringARecoveryThawFreezesAfterIt(t *testing.T) {
 // An exec while a pause holds the VM is refused by the pause's name, never dialed into a VM that cannot answer it (SHARD-478).
 func TestAnExecInsideAPauseIsRefusedByName(t *testing.T) {
 	h := newHarness(t)
-	spec := h.newSpec(t, "/bin/sh", "-c", "while true; do sleep 1; done")
+	spec := h.newSpec(t)
 	if err := h.provider.Create(t.Context(), spec); err != nil {
 		t.Fatal(err)
 	}
@@ -585,7 +580,7 @@ func waitsInFreeze() bool {
 // A pause keeps the save, the disk and the identifier together; a stop of a paused sandbox leaves it stopped and the checkpoint whole.
 func TestPauseKeepsWhatAResumeAndAForkNeed(t *testing.T) {
 	h := newHarness(t)
-	spec := h.newSpec(t, "/bin/sh", "-c", "while true; do sleep 1; done")
+	spec := h.newSpec(t)
 	if err := h.provider.Create(t.Context(), spec); err != nil {
 		t.Fatal(err)
 	}
@@ -658,7 +653,7 @@ func TestPauseKeepsWhatAResumeAndAForkNeed(t *testing.T) {
 // A restored guest is reseeded while its processes are still frozen, so no fork of one save draws from the key the save holds.
 func TestAResumeReseedsTheGuestBeforeItThaws(t *testing.T) {
 	h := newHarness(t)
-	spec := h.newSpec(t, "/bin/sh", "-c", "while true; do sleep 1; done")
+	spec := h.newSpec(t)
 	if err := h.provider.Create(t.Context(), spec); err != nil {
 		t.Fatal(err)
 	}
@@ -692,7 +687,7 @@ func TestAResumeReseedsTheGuestBeforeItThaws(t *testing.T) {
 // A save made by an older guest restores with its processes unfrozen, and the restore still reseeds it.
 func TestAResumeOfAnUnfrozenSaveStillReseeds(t *testing.T) {
 	h := newHarness(t)
-	spec := h.newSpec(t, "/bin/sh", "-c", "while true; do sleep 1; done")
+	spec := h.newSpec(t)
 	if err := h.provider.Create(t.Context(), spec); err != nil {
 		t.Fatal(err)
 	}
@@ -736,19 +731,19 @@ func TestAResumeOfAnUnfrozenSaveStillReseeds(t *testing.T) {
 	}
 }
 
-// A stopped sandbox starts again over the disk the stop kept, and a wait then answers the new run.
+// A stopped sandbox starts again over the disk the stop kept, with a table of its own that a run then fills.
 func TestStartBootsAgainAfterAStop(t *testing.T) {
 	h := newHarness(t)
-	spec := h.newSpec(t, "/bin/sh", "-c", "exit 4")
+	spec := h.newSpec(t)
 	if err := h.provider.Create(t.Context(), spec); err != nil {
 		t.Fatal(err)
 	}
 	if err := h.provider.Start(t.Context(), spec.ID); err != nil {
 		t.Fatal(err)
 	}
-	exit, err := h.provider.Wait(t.Context(), spec.ID)
-	if err != nil || exit.Code != 4 {
-		t.Fatalf("Wait = %+v, %v", exit, err)
+	runProcess(t, h.provider, spec.ID, "main", models.RestartSpec{}, "/bin/sh", "-c", "exit 4")
+	if p := awaitEnded(t, h.provider, spec.ID, "main"); p.Exit == nil || p.Exit.Code != 4 {
+		t.Fatalf("main ended as %+v, want exit 4", p)
 	}
 	if err := h.provider.Stop(t.Context(), spec.ID, stopGrace); err != nil {
 		t.Fatal(err)
@@ -757,24 +752,27 @@ func TestStartBootsAgainAfterAStop(t *testing.T) {
 	if err := h.provider.Start(t.Context(), spec.ID); err != nil {
 		t.Fatal(err)
 	}
-	exit, err = h.provider.Wait(t.Context(), spec.ID)
-	if err != nil || exit.Code != 4 {
-		t.Fatalf("Wait after the second Start = %+v, %v", exit, err)
+	if table, err := h.provider.Processes(t.Context(), spec.ID); err != nil || len(table) != 0 {
+		t.Fatalf("Processes after the second Start = %+v, %v, want none: the last boot's run is not this one's", table, err)
+	}
+	runProcess(t, h.provider, spec.ID, "main", models.RestartSpec{}, "/bin/sh", "-c", "exit 4")
+	if p := awaitEnded(t, h.provider, spec.ID, "main"); p.Exit == nil || p.Exit.Code != 4 || p.Restarts != 0 {
+		t.Fatalf("main after the second Start ended as %+v, want exit 4 on its first run", p)
 	}
 	if err := h.provider.Start(t.Context(), spec.ID); err == nil || !strings.Contains(err.Error(), "already runs") {
-		t.Fatalf("Start with the entrypoint already run = %v, want a refusal", err)
+		t.Fatalf("Start of a running sandbox = %v, want a refusal", err)
 	}
 }
 
-// With no command the host sends an empty run: the guest is ready with nothing forked, an exec works, and the stop records no exit (SHARD-453).
-func TestStartWithNoEntrypointRunsTheGuestAlone(t *testing.T) {
+// A start runs no process: the guest is ready with nothing forked, an exec works, and the stop leaves an empty table (SHARD-453).
+func TestStartRunsTheGuestAlone(t *testing.T) {
 	h := newHarness(t)
 	spec := h.newSpec(t)
 	if err := h.provider.Create(t.Context(), spec); err != nil {
 		t.Fatal(err)
 	}
 	if err := h.provider.Start(t.Context(), spec.ID); err != nil {
-		t.Fatalf("Start with no entrypoint: %v", err)
+		t.Fatalf("Start: %v", err)
 	}
 	status, err := h.provider.Status(t.Context(), spec.ID)
 	if err != nil || status.State != models.StateRunning {
@@ -782,17 +780,14 @@ func TestStartWithNoEntrypointRunsTheGuestAlone(t *testing.T) {
 	}
 	exit, err := h.provider.Exec(t.Context(), spec.ID, models.ExecSpec{Argv: []string{"/bin/sh", "-c", "exit 0"}})
 	if err != nil || exit.Code != 0 {
-		t.Fatalf("Exec with no entrypoint = %+v, %v", exit, err)
+		t.Fatalf("Exec with no process = %+v, %v", exit, err)
 	}
 
 	if err := h.provider.Stop(t.Context(), spec.ID, stopGrace); err != nil {
 		t.Fatal(err)
 	}
-	if exit, err := h.provider.ExitStatus(t.Context(), spec.ID); err != nil || exit != nil {
-		t.Fatalf("ExitStatus after the stop = %+v, %v, want none: nothing ran to exit", exit, err)
-	}
-	if exit, err := h.provider.Wait(t.Context(), spec.ID); !errors.Is(err, models.ErrNoExitStatus) {
-		t.Fatalf("Wait after the stop = %+v, %v, want ErrNoExitStatus", exit, err)
+	if table, err := h.provider.Processes(t.Context(), spec.ID); err != nil || len(table) != 0 {
+		t.Fatalf("Processes after the stop = %+v, %v, want none: nothing ran", table, err)
 	}
 }
 
@@ -803,7 +798,7 @@ func TestALinkCloseFaultAfterTheVMIsDownNeverFailsTheStop(t *testing.T) {
 	for name, end := range map[string]func(*harness, string) error{"stop": stop, "remove": remove} {
 		t.Run(name, func(t *testing.T) {
 			h := newHarness(t)
-			spec := h.newSpec(t, "/bin/sh", "-c", "while true; do sleep 1; done")
+			spec := h.newSpec(t)
 			if err := h.provider.Create(t.Context(), spec); err != nil {
 				t.Fatal(err)
 			}
@@ -830,7 +825,7 @@ func TestALinkCloseFaultAfterTheVMIsDownNeverFailsTheStop(t *testing.T) {
 // A snapshot copies the disk a stop kept, and a create seeded from it boots that disk under a machine id of its own.
 func TestASnapshotSeedsTheDiskOfANewSandbox(t *testing.T) {
 	h := newHarness(t)
-	source := h.newSpec(t, "/bin/sh", "-c", "exit 0")
+	source := h.newSpec(t)
 	if err := h.provider.Create(t.Context(), source); err != nil {
 		t.Fatal(err)
 	}
@@ -857,7 +852,7 @@ func TestASnapshotSeedsTheDiskOfANewSandbox(t *testing.T) {
 		t.Fatalf("Snapshot of a stopped source: %v", err)
 	}
 
-	seeded := h.newSpec(t, "/bin/sh", "-c", "exit 0")
+	seeded := h.newSpec(t)
 	seeded.Seed = files
 	if err := h.provider.Create(t.Context(), seeded); err != nil {
 		t.Fatalf("Create from the snapshot: %v", err)
@@ -902,7 +897,7 @@ func TestAHostWithoutSaveRefusesTheOptionalVerbs(t *testing.T) {
 	if caps := h.provider.Capabilities(); caps.Pause || caps.Resume || caps.Fork {
 		t.Fatalf("Capabilities = %+v, want none", caps)
 	}
-	spec := h.newSpec(t, "/bin/sh", "-c", "while true; do sleep 1; done")
+	spec := h.newSpec(t)
 	if err := h.provider.Create(t.Context(), spec); err != nil {
 		t.Fatal(err)
 	}
@@ -928,13 +923,13 @@ func TestAHostWithoutSaveRefusesTheOptionalVerbs(t *testing.T) {
 	}
 }
 
-// An exit the loop could not land is an error on every read, not a wait that never ends.
-func TestALostExitSurfacesInsteadOfAnEndlessWait(t *testing.T) {
+// A process report the host could not land is an error on every read, not a table that never moves.
+func TestALostProcessReportSurfacesOnEveryRead(t *testing.T) {
 	if os.Geteuid() == 0 {
-		t.Skip("root writes into a directory whatever its mode says, so no exit is lost")
+		t.Skip("root writes into a directory whatever its mode says, so no report is lost")
 	}
 	h := newHarness(t)
-	spec := h.newSpec(t, "/bin/sh", "-c", "exit 3")
+	spec := h.newSpec(t)
 	if err := h.provider.Create(t.Context(), spec); err != nil {
 		t.Fatal(err)
 	}
@@ -945,43 +940,55 @@ func TestALostExitSurfacesInsteadOfAnEndlessWait(t *testing.T) {
 	if err := h.provider.Start(t.Context(), spec.ID); err != nil {
 		t.Fatal(err)
 	}
+	runProcess(t, h.provider, spec.ID, "main", models.RestartSpec{}, "/bin/sh", "-c", "exit 3")
 
-	ctx, cancel := context.WithTimeout(t.Context(), 10*time.Second)
-	defer cancel()
-	if _, err := h.provider.Wait(ctx, spec.ID); err == nil || !strings.Contains(err.Error(), "lost its lifecycle state") {
-		t.Fatalf("Wait = %v, want the lost exit", err)
-	}
-	if _, err := h.provider.ExitStatus(t.Context(), spec.ID); err == nil || !strings.Contains(err.Error(), "lost its lifecycle state") {
-		t.Fatalf("ExitStatus = %v, want the lost exit", err)
-	}
-	if _, err := h.provider.Restarts(t.Context(), spec.ID); err == nil || !strings.Contains(err.Error(), "lost its lifecycle state") {
-		t.Fatalf("Restarts = %v, want the lost exit", err)
+	if err := awaitLost(t, h.provider, spec.ID); !strings.Contains(err.Error(), "lost its lifecycle state") {
+		t.Fatalf("Processes = %v, want the lost report", err)
 	}
 	if err := h.provider.Stop(t.Context(), spec.ID, stopGrace); err == nil || !strings.Contains(err.Error(), "lost its lifecycle state") {
-		t.Fatalf("Stop = %v, want the lost exit", err)
+		t.Fatalf("Stop = %v, want the lost report", err)
 	}
 }
 
-// A log that cannot open fails the attach, so no verb reports a sandbox whose output has nowhere to go.
-func TestAnAdoptFailsWhenTheLogCannotOpen(t *testing.T) {
+// awaitLost blocks until a read of the sandbox's table fails, and answers how.
+func awaitLost(t *testing.T, p models.Provider, id string) error {
+	t.Helper()
+	deadline := time.Now().Add(10 * time.Second)
+	for time.Now().Before(deadline) {
+		if _, err := p.Processes(t.Context(), id); err != nil {
+			return err
+		}
+		time.Sleep(50 * time.Millisecond)
+	}
+	t.Fatalf("every read of %s's table answered within 10s", id)
+
+	return nil
+}
+
+// A process log that cannot open marks the sandbox lost, so no verb reports a sandbox whose output has nowhere to go.
+func TestAProcessLogThatCannotOpenMarksTheSandboxLost(t *testing.T) {
 	h := newHarness(t)
-	spec := h.newSpec(t, "/bin/sh", "-c", "while true; do sleep 1; done")
+	spec := h.newSpec(t)
 	if err := h.provider.Create(t.Context(), spec); err != nil {
 		t.Fatal(err)
 	}
-	log := filepath.Join(spec.StateDir, "output.log")
-	if err := os.Remove(log); err != nil {
+	if err := h.provider.Start(t.Context(), spec.ID); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.Mkdir(log, 0o700); err != nil {
+	log, err := h.provider.ProcessLogPath(spec.ID, "main")
+	if err != nil {
 		t.Fatal(err)
 	}
+	if err := os.MkdirAll(log, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	runProcess(t, h.provider, spec.ID, "main", models.RestartSpec{}, "/bin/sh", "-c", "while true; do sleep 1; done")
 
-	if _, err := h.open(t).Status(t.Context(), spec.ID); err == nil || !strings.Contains(err.Error(), "open the log") {
-		t.Fatalf("Status over a fresh provider = %v, want the log open failure", err)
+	if err := awaitLost(t, h.provider, spec.ID); !strings.Contains(err.Error(), "open the log of process main") {
+		t.Fatalf("Processes = %v, want the log open failure", err)
 	}
 
-	// The failed adopt took the guest's one control connection, so the stop goes through a provider that adopts it again.
+	// The stop goes through a provider that adopts the sandbox again, over a log that opens.
 	if err := os.Remove(log); err != nil {
 		t.Fatal(err)
 	}
@@ -1042,7 +1049,7 @@ func TestRemoveEndsAnAdoptedShimWhoseGuestDoesNotAttach(t *testing.T) {
 // A pause that cannot complete its checkpoint resumes the VM, keeps the last checkpoint and leaves no staging directory.
 func TestAFailedPauseResumesTheSandboxAndKeepsTheLastCheckpoint(t *testing.T) {
 	h := newHarness(t)
-	spec := h.newSpec(t, "/bin/sh", "-c", "while true; do sleep 1; done")
+	spec := h.newSpec(t)
 	if err := h.provider.Create(t.Context(), spec); err != nil {
 		t.Fatal(err)
 	}
@@ -1091,7 +1098,7 @@ func TestAFailedPauseResumesTheSandboxAndKeepsTheLastCheckpoint(t *testing.T) {
 // A pause that crashed after its record leaves the staged checkpoint beside the old one and a shim over a suspended guest; the daemon comes back, the service retries, and that pause is finished.
 func TestARetriedPauseAfterARestartFinishesTheOneACrashLeft(t *testing.T) {
 	h := newHarness(t)
-	spec := h.newSpec(t, "/bin/sh", "-c", "while true; do sleep 1; done")
+	spec := h.newSpec(t)
 	if err := h.provider.Create(t.Context(), spec); err != nil {
 		t.Fatal(err)
 	}
@@ -1201,7 +1208,7 @@ func setJSON(t *testing.T, path, key string, value any) {
 // A fronted VM gets the same trust store the bundle plants on Linux, handed to the guest to write, and the variables that point at it.
 func TestCreateHandsAFrontedGuestTheMergedTrustStore(t *testing.T) {
 	h := newHarness(t)
-	spec := h.newSpec(t, "/bin/true")
+	spec := h.newSpec(t)
 	spec.RootFS = t.TempDir()
 	if err := os.MkdirAll(filepath.Join(spec.RootFS, "etc/ssl/certs"), 0o755); err != nil {
 		t.Fatal(err)
@@ -1243,7 +1250,7 @@ func TestCreateHandsAFrontedGuestTheMergedTrustStore(t *testing.T) {
 // A grant after the create edits the record the next start sends: the placeholder, the trust store, and the ungrant that takes the placeholder back.
 func TestTheEnvironmentIsTheRecordTheNextStartSends(t *testing.T) {
 	h := newHarness(t)
-	spec := h.newSpec(t, "/bin/true")
+	spec := h.newSpec(t)
 	spec.RootFS = t.TempDir()
 	if err := os.MkdirAll(filepath.Join(spec.RootFS, "etc/ssl/certs"), 0o755); err != nil {
 		t.Fatal(err)
@@ -1320,14 +1327,15 @@ func TestTheEnvironmentIsTheRecordTheNextStartSends(t *testing.T) {
 // A reset of the transport, as a sleep of the host can cause, ends every stream; the provider dials again and the sandbox goes on.
 func TestADroppedStreamIsDialedAgainWhileTheVMRuns(t *testing.T) {
 	h := newHarness(t)
-	spec := h.newSpec(t, "/bin/sh", "-c", "while true; do echo tick; sleep 0.2; done")
+	spec := h.newSpec(t)
 	if err := h.provider.Create(t.Context(), spec); err != nil {
 		t.Fatal(err)
 	}
 	if err := h.provider.Start(t.Context(), spec.ID); err != nil {
 		t.Fatal(err)
 	}
-	logged := awaitLog(t, h.provider, spec.ID, 0)
+	runProcess(t, h.provider, spec.ID, "tick", models.RestartSpec{}, "/bin/sh", "-c", tick)
+	logged := awaitLog(t, h.provider, spec.ID, "tick", 0)
 
 	status, err := h.provider.Status(t.Context(), spec.ID)
 	if err != nil {
@@ -1338,7 +1346,7 @@ func TestADroppedStreamIsDialedAgainWhileTheVMRuns(t *testing.T) {
 	}
 
 	// The log must keep flowing on the stream the provider opened again, and the control stream must answer an exec.
-	awaitLog(t, h.provider, spec.ID, logged)
+	awaitLog(t, h.provider, spec.ID, "tick", logged)
 	out, err := os.CreateTemp(t.TempDir(), "out")
 	if err != nil {
 		t.Fatal(err)
@@ -1361,14 +1369,15 @@ func TestADroppedStreamIsDialedAgainWhileTheVMRuns(t *testing.T) {
 // A guest that floods its control stream past the bound is cut off with one log line, and the sandbox goes on (SHARD-390).
 func TestAFloodedControlStreamIsLoggedOnceAndTheSandboxGoesOn(t *testing.T) {
 	h := newHarness(t)
-	spec := h.newSpec(t, "/bin/sh", "-c", "while true; do echo tick; sleep 0.2; done")
+	spec := h.newSpec(t)
 	if err := h.provider.Create(t.Context(), spec); err != nil {
 		t.Fatal(err)
 	}
 	if err := h.provider.Start(t.Context(), spec.ID); err != nil {
 		t.Fatal(err)
 	}
-	logged := awaitLog(t, h.provider, spec.ID, 0)
+	runProcess(t, h.provider, spec.ID, "tick", models.RestartSpec{}, "/bin/sh", "-c", tick)
+	logged := awaitLog(t, h.provider, spec.ID, "tick", 0)
 
 	// The marker floods the stream the provider dials after the reset, past the state line that stream opens with.
 	dir, err := h.stateDir(spec.ID)
@@ -1397,7 +1406,7 @@ func TestAFloodedControlStreamIsLoggedOnceAndTheSandboxGoesOn(t *testing.T) {
 	if !strings.Contains(h.log.String(), "1 MiB") {
 		t.Errorf("the refusal does not name the bound: %q", h.log.String())
 	}
-	awaitLog(t, h.provider, spec.ID, logged)
+	awaitLog(t, h.provider, spec.ID, "tick", logged)
 
 	out, err := os.CreateTemp(t.TempDir(), "out")
 	if err != nil {
@@ -1435,7 +1444,7 @@ func TestAGuestThatFloodsEveryControlStreamIsDialedAFewTimesASecondAtMost(t *tes
 
 func floodEveryControlStream(t *testing.T, flooding string) {
 	h := newHarness(t)
-	spec := h.newSpec(t, "/bin/sh", "-c", "while true; do echo tick; sleep 0.2; done")
+	spec := h.newSpec(t)
 	if err := h.provider.Create(t.Context(), spec); err != nil {
 		t.Fatal(err)
 	}
@@ -1493,17 +1502,18 @@ func floodEveryControlStream(t *testing.T, flooding string) {
 	}
 }
 
-// A reset that takes a while to settle answers each dial with a stream that ends at once; the provider keeps dialing, and an exit that landed meanwhile reaches Wait through the replayed state.
-func TestAnExitDuringADroppedStreamReachesWait(t *testing.T) {
+// A reset that takes a while to settle answers each dial with a stream that ends at once; the provider keeps dialing, and an exit that landed meanwhile reaches the table through the replayed state.
+func TestAnExitDuringADroppedStreamReachesTheTable(t *testing.T) {
 	h := newHarness(t)
-	spec := h.newSpec(t, "/bin/sh", "-c", "echo up; sleep 0.5; exit 7")
+	spec := h.newSpec(t)
 	if err := h.provider.Create(t.Context(), spec); err != nil {
 		t.Fatal(err)
 	}
 	if err := h.provider.Start(t.Context(), spec.ID); err != nil {
 		t.Fatal(err)
 	}
-	awaitLog(t, h.provider, spec.ID, 0)
+	runProcess(t, h.provider, spec.ID, "main", models.RestartSpec{}, "/bin/sh", "-c", "echo up; sleep 0.5; exit 7")
+	awaitLog(t, h.provider, spec.ID, "main", 0)
 
 	status, err := h.provider.Status(t.Context(), spec.ID)
 	if err != nil {
@@ -1513,11 +1523,8 @@ func TestAnExitDuringADroppedStreamReachesWait(t *testing.T) {
 		t.Fatalf("reset the fake shim's streams: %v", err)
 	}
 
-	ctx, cancel := context.WithTimeout(t.Context(), stopGrace)
-	defer cancel()
-	exit, err := h.provider.Wait(ctx, spec.ID)
-	if err != nil || exit.Code != 7 {
-		t.Fatalf("Wait across the reset = %+v, %v; want code 7", exit, err)
+	if p := awaitEnded(t, h.provider, spec.ID, "main"); p.Exit == nil || p.Exit.Code != 7 {
+		t.Fatalf("main across the reset ended as %+v, want exit 7", p)
 	}
 	status, err = h.provider.Status(t.Context(), spec.ID)
 	if err != nil || status.State != models.StateRunning {
@@ -1529,28 +1536,29 @@ func TestAnExitDuringADroppedStreamReachesWait(t *testing.T) {
 }
 
 // An exit that lands while no daemon holds the shim reaches the next daemon through the state the guest opens with.
-func TestAnExitWhileNoProviderHeldTheShimReachesWait(t *testing.T) {
+func TestAnExitWhileNoProviderHeldTheShimReachesTheTable(t *testing.T) {
 	h := newHarness(t)
-	spec := h.newSpec(t, "/bin/sh", "-c", "echo up; sleep 0.5; exit 7")
+	spec := h.newSpec(t)
 	if err := h.provider.Create(t.Context(), spec); err != nil {
 		t.Fatal(err)
 	}
 	if err := h.provider.Start(t.Context(), spec.ID); err != nil {
 		t.Fatal(err)
 	}
-	awaitLog(t, h.provider, spec.ID, 0)
+	runProcess(t, h.provider, spec.ID, "main", models.RestartSpec{}, "/bin/sh", "-c", "echo up; sleep 0.5; exit 7")
+	awaitLog(t, h.provider, spec.ID, "main", 0)
 	if err := h.provider.Close(); err != nil {
 		t.Fatal(err)
 	}
-	// Longer than the entrypoint, so the exit lands while no stream is open.
+	// Longer than the process, so the exit lands while no stream is open.
 	time.Sleep(1500 * time.Millisecond)
 
 	adopter := h.open(t)
-	ctx, cancel := context.WithTimeout(t.Context(), stopGrace)
-	defer cancel()
-	exit, err := adopter.Wait(ctx, spec.ID)
-	if err != nil || exit.Code != 7 {
-		t.Fatalf("Wait through the adopting provider = %+v, %v; want code 7", exit, err)
+	if _, err := adopter.Status(t.Context(), spec.ID); err != nil {
+		t.Fatal(err)
+	}
+	if p := awaitEnded(t, adopter, spec.ID, "main"); p.Exit == nil || p.Exit.Code != 7 {
+		t.Fatalf("main through the adopting provider ended as %+v, want exit 7", p)
 	}
 	if err := adopter.Stop(t.Context(), spec.ID, stopGrace); err != nil {
 		t.Fatal(err)
@@ -1560,7 +1568,7 @@ func TestAnExitWhileNoProviderHeldTheShimReachesWait(t *testing.T) {
 // A daemon that starts over a root whose shim is gone finds the sandbox stopped, which the reconcile then records.
 func TestANewProviderFindsASandboxWhoseShimIsGoneStopped(t *testing.T) {
 	h := newHarness(t)
-	spec := h.newSpec(t, "/bin/sh", "-c", "while true; do sleep 1; done")
+	spec := h.newSpec(t)
 	if err := h.provider.Create(t.Context(), spec); err != nil {
 		t.Fatal(err)
 	}
@@ -1879,16 +1887,17 @@ func runningShim(t *testing.T) (*harness, models.SandboxSpec, int) {
 
 func runningShimOn(t *testing.T, h *harness) (models.SandboxSpec, int) {
 	t.Helper()
-	spec := h.newSpec(t, "/bin/sh", "-c", `echo "pids $$ $PPID"; while true; do sleep 1; done`)
+	spec := h.newSpec(t)
 	if err := h.provider.Create(t.Context(), spec); err != nil {
 		t.Fatal(err)
 	}
 	if err := h.provider.Start(t.Context(), spec.ID); err != nil {
 		t.Fatal(err)
 	}
-	awaitLog(t, h.provider, spec.ID, 0)
+	runProcess(t, h.provider, spec.ID, "main", models.RestartSpec{}, "/bin/sh", "-c", `echo "pids $$ $PPID"; while true; do sleep 1; done`)
+	awaitLog(t, h.provider, spec.ID, "main", 0)
 	// The fake's guest is a host process the shim's kill leaves behind, which a VM's guest is not.
-	path, err := h.provider.LogPath(spec.ID)
+	path, err := h.provider.ProcessLogPath(spec.ID, "main")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1896,16 +1905,16 @@ func runningShimOn(t *testing.T, h *harness) (models.SandboxSpec, int) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	var entrypoint, guest int
-	if _, err := fmt.Sscanf(string(out), "pids %d %d", &entrypoint, &guest); err != nil {
+	var process, guest int
+	if _, err := fmt.Sscanf(string(out), "pids %d %d", &process, &guest); err != nil {
 		t.Fatalf("read the guest pids from %q: %v", out, err)
 	}
 	// A pid of 1 or less would signal every process this user owns, or this test's own group.
-	if entrypoint <= 1 || guest <= 1 {
-		t.Fatalf("the guest pids are %d and %d, want two real processes", entrypoint, guest)
+	if process <= 1 || guest <= 1 {
+		t.Fatalf("the guest pids are %d and %d, want two real processes", process, guest)
 	}
 	t.Cleanup(func() {
-		for _, group := range []int{entrypoint, guest} {
+		for _, group := range []int{process, guest} {
 			if err := pgroup.Kill(group, syscall.SIGKILL); err != nil && !errors.Is(err, syscall.ESRCH) {
 				t.Errorf("end the fake guest's group %d: %v", group, err)
 			}
@@ -2067,17 +2076,18 @@ func within(t *testing.T, d time.Duration, what string, verb func() error) {
 	}
 }
 
-// Daemon restarts and a dropped stream under an entrypoint that never stops writing lose no line of the log and repeat none.
+// Daemon restarts and a dropped stream under a process that never stops writing lose no line of the log and repeat none.
 func TestTheLogKeepsEveryLineAcrossDaemonRestarts(t *testing.T) {
 	h := newHarness(t)
-	spec := h.newSpec(t, "/bin/sh", "-c", "i=0; while true; do echo $i; i=$((i+1)); done")
+	spec := h.newSpec(t)
 	if err := h.provider.Create(t.Context(), spec); err != nil {
 		t.Fatal(err)
 	}
 	if err := h.provider.Start(t.Context(), spec.ID); err != nil {
 		t.Fatal(err)
 	}
-	logged := awaitLog(t, h.provider, spec.ID, 0)
+	runProcess(t, h.provider, spec.ID, "count", models.RestartSpec{}, "/bin/sh", "-c", "i=0; while true; do echo $i; i=$((i+1)); done")
+	logged := awaitLog(t, h.provider, spec.ID, "count", 0)
 	for range 5 {
 		if err := h.provider.Close(); err != nil {
 			t.Fatal(err)
@@ -2085,7 +2095,7 @@ func TestTheLogKeepsEveryLineAcrossDaemonRestarts(t *testing.T) {
 		if _, err := h.open(t).Status(t.Context(), spec.ID); err != nil {
 			t.Fatal(err)
 		}
-		logged = awaitLog(t, h.provider, spec.ID, logged)
+		logged = awaitLog(t, h.provider, spec.ID, "count", logged)
 	}
 	status, err := h.provider.Status(t.Context(), spec.ID)
 	if err != nil {
@@ -2094,10 +2104,10 @@ func TestTheLogKeepsEveryLineAcrossDaemonRestarts(t *testing.T) {
 	if err := syscall.Kill(status.PID, syscall.SIGUSR1); err != nil {
 		t.Fatalf("reset the fake shim's streams: %v", err)
 	}
-	logged = awaitLog(t, h.provider, spec.ID, logged)
-	awaitLog(t, h.provider, spec.ID, logged)
+	logged = awaitLog(t, h.provider, spec.ID, "count", logged)
+	awaitLog(t, h.provider, spec.ID, "count", logged)
 
-	path, err := h.provider.LogPath(spec.ID)
+	path, err := h.provider.ProcessLogPath(spec.ID, "count")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -2115,11 +2125,11 @@ func TestTheLogKeepsEveryLineAcrossDaemonRestarts(t *testing.T) {
 	}
 }
 
-// awaitLog blocks until the sandbox log holds more than seen bytes, and answers how many it holds.
-func awaitLog(t *testing.T, p *vzvm.Provider, id string, seen int) int {
+// awaitLog blocks until the named process's log holds more than seen bytes, and answers how many it holds.
+func awaitLog(t *testing.T, p *vzvm.Provider, id, name string, seen int) int {
 	t.Helper()
 
-	path, err := p.LogPath(id)
+	path, err := p.ProcessLogPath(id, name)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -2131,9 +2141,50 @@ func awaitLog(t *testing.T, p *vzvm.Provider, id string, seen int) int {
 		}
 		time.Sleep(50 * time.Millisecond)
 	}
-	t.Fatalf("the log of %s did not grow past %d bytes", id, seen)
+	t.Fatalf("the log of %s in %s did not grow past %d bytes", name, id, seen)
 
 	return seen
+}
+
+// tick is a process that writes a line five times a second for as long as it runs.
+const tick = "while true; do echo tick; sleep 0.2; done"
+
+// runProcess starts one named process in a running sandbox, as the service does.
+func runProcess(t *testing.T, p models.Provider, id, name string, restart models.RestartSpec, argv ...string) {
+	t.Helper()
+	if err := p.StartProcess(t.Context(), id, models.ProcessSpec{Name: name, Argv: argv, Restart: restart}); err != nil {
+		t.Fatalf("run %s in %s: %v", name, id, err)
+	}
+}
+
+// awaitProcess blocks until the named process's last report satisfies want, and answers it.
+func awaitProcess(t *testing.T, p models.Provider, id, name string, within time.Duration, want func(models.ProcessReport) bool) models.ProcessReport {
+	t.Helper()
+	deadline := time.Now().Add(within)
+	var last []models.ProcessReport
+	for time.Now().Before(deadline) {
+		table, err := p.Processes(t.Context(), id)
+		if err != nil {
+			t.Fatalf("Processes of %s: %v", id, err)
+		}
+		last = table
+		for _, report := range table {
+			if report.Name == name && want(report) {
+				return report
+			}
+		}
+		time.Sleep(50 * time.Millisecond)
+	}
+	t.Fatalf("process %s in %s never reached the state the test waits for; the table reads %+v", name, id, last)
+
+	return models.ProcessReport{}
+}
+
+// awaitEnded blocks until the named process ended, and answers its last report.
+func awaitEnded(t *testing.T, p models.Provider, id, name string) models.ProcessReport {
+	t.Helper()
+
+	return awaitProcess(t, p, id, name, stopGrace, func(r models.ProcessReport) bool { return r.State.Ended() })
 }
 
 // awaitExit blocks until the process is gone, which for the fake shim is its socket gone too.
@@ -2457,17 +2508,16 @@ func fillQueue(t *testing.T, socket string) {
 	t.Fatalf("%s still takes dials after 512", socket)
 }
 
-// An output log a daemon before the bound left past it is bounded at the next daemon start, with no later output (SHARD-352).
+// A process log a daemon before the bound left past it is bounded at the next daemon start, with no later output (SHARD-352).
 func TestBoundOutputLogBoundsALegacyLogWithNoLaterOutput(t *testing.T) {
 	h := newHarness(t)
-	dir, err := h.stateDir("sb-legacy")
+	path, err := h.provider.ProcessLogPath("sb-legacy", "main")
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := os.MkdirAll(dir, 0o700); err != nil {
+	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
 		t.Fatal(err)
 	}
-	path := filepath.Join(dir, "output.log")
 	if err := os.WriteFile(path, []byte(strings.Repeat("a", 11)), 0o600); err != nil {
 		t.Fatal(err)
 	}

@@ -1,15 +1,9 @@
 package firecracker
 
 import (
-	"context"
-	"errors"
-	"net"
 	"net/netip"
-	"os"
-	"path/filepath"
 	"reflect"
 	"testing"
-	"time"
 
 	"github.com/presmihaylov/shard/models"
 	fcapi "github.com/presmihaylov/shard/pkg/firecracker"
@@ -19,7 +13,7 @@ import (
 // The record is tested on its own: a spec with a network through the fake would readdress the real shard-init it runs, which on a root test host is the host's eth0.
 func TestARecordCarriesTheTapAndTheLeaseTheGuestIsAddressedWith(t *testing.T) {
 	spec := models.SandboxSpec{
-		ID: "sb-1", Name: "web", RootFS: t.TempDir(), Entrypoint: []string{"/bin/true"},
+		ID: "sb-1", Name: "web", RootFS: t.TempDir(),
 		Network: models.NetworkSpec{
 			Address:       netip.MustParsePrefix("10.87.0.2/16"),
 			Gateway:       netip.MustParseAddr("10.87.0.1"),
@@ -80,37 +74,9 @@ func TestTheDeviceIsTheTapWithAMACDerivedFromTheLease(t *testing.T) {
 	}
 }
 
-// A guest that speaks a logs version this host cannot read marks the sandbox lost and ends the follow: a redial meets the same guest.
-func TestAnUnknownLogsVersionMarksTheSandboxLostInsteadOfRedialing(t *testing.T) {
-	p := &Provider{}
-	m := &machine{id: "sb-1"}
-	guest, host := net.Pipe()
-	defer guest.Close()
-	dir := t.TempDir()
-	f, err := os.Create(filepath.Join(dir, logFile))
-	if err != nil {
-		t.Fatal(err)
-	}
-
-	done := make(chan struct{})
-	go func() {
-		p.followLogs(context.Background(), m, host, &supervisor.FileLog{File: f, Cursor: filepath.Join(dir, cursorFile), Max: supervisor.MaxLog}, supervisor.LogsVersion+1)
-		close(done)
-	}()
-
-	select {
-	case <-done:
-	case <-time.After(5 * time.Second):
-		t.Fatal("the follow went on after an unknown logs version")
-	}
-	if !errors.Is(m.lost, supervisor.ErrLogsVersion) {
-		t.Fatalf("lost = %v, want the unknown logs version", m.lost)
-	}
-}
-
 // A named user goes to the guest as named, because the image on the host misses a user the sandbox added (SHARD-356).
 func TestAnExecNamesItsUserForTheGuestToResolve(t *testing.T) {
-	r := record{RootFS: t.TempDir(), Run: supervisor.RunSpec{User: "1000:1000", Groups: []uint32{1000, 10}}}
+	r := record{RootFS: t.TempDir(), Run: supervisor.Base{User: "1000:1000", Groups: []uint32{1000, 10}}}
 
 	header, err := headerOf(r, models.ExecSpec{Argv: []string{"id"}, User: "bob"})
 	if err != nil {
@@ -125,6 +91,6 @@ func TestAnExecNamesItsUserForTheGuestToResolve(t *testing.T) {
 		t.Fatal(err)
 	}
 	if header.User != "1000:1000" || !reflect.DeepEqual(header.Groups, []uint32{1000, 10}) || header.Lookup {
-		t.Errorf("unnamed exec header: user %q, groups %v, lookup %v; want the entrypoint's resolved ids", header.User, header.Groups, header.Lookup)
+		t.Errorf("unnamed exec header: user %q, groups %v, lookup %v; want the sandbox's resolved ids", header.User, header.Groups, header.Lookup)
 	}
 }

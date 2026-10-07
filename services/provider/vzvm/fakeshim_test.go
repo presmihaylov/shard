@@ -337,8 +337,8 @@ const floodEveryFile = "flood-every-control"
 // floodEventsFile in the state directory floods every control stream past its state line with valid events, faster than the host lands them.
 const floodEventsFile = "flood-events-control"
 
-// floodEvent is what a floodEventsFile stream repeats: a restarts count, which the host lands on disk one at a time.
-var floodEvent = []byte(`{"kind":"restarts","restarts":{"count":1}}` + "\n")
+// floodEvent is what a floodEventsFile stream repeats: a process report, which the host lands in its table one at a time.
+var floodEvent = []byte(`{"kind":"process","process":{"name":"flood","state":"running","restarts":0,"seq":1}}` + "\n")
 
 // dialsFile in the state directory, once a test creates it, takes one line per control stream the host dials.
 const dialsFile = "control-dials"
@@ -358,7 +358,7 @@ const refuseSaveFile = "refuse-save"
 // savesFile in the state directory, once a test creates it, takes one line per save the VM completed.
 const savesFile = "saves"
 
-// resetHold is longer than the entrypoint the hold test runs, so its exit lands while no stream is open.
+// resetHold is longer than the process the hold test runs, so its exit lands while no stream is open.
 const resetHold = 1500 * time.Millisecond
 
 func bootFake(cfg vz.Config, marks string) (*fakeMachine, error) {
@@ -400,7 +400,7 @@ func bootFake(cfg vz.Config, marks string) (*fakeMachine, error) {
 	cmd := exec.Command(os.Getenv(fakeInitEnv), "-transport", "unix:"+dir)
 	cmd.Stdout = console
 	cmd.Stderr = console
-	// shard-init gives the entrypoint a group of its own, so only the session holds the whole guest.
+	// shard-init gives each process a group of its own, so only the session holds the whole guest.
 	cmd.SysProcAttr = &syscall.SysProcAttr{Setsid: true}
 	if err := cmd.Start(); err != nil {
 		return nil, fmt.Errorf("start shard-init: %w", err)
@@ -416,7 +416,7 @@ func bootFake(cfg vz.Config, marks string) (*fakeMachine, error) {
 	m := &fakeMachine{id: id, dir: dir, cmd: cmd, guest: guest, exited: make(chan struct{}), state: vz.StateRunning, streams: map[net.Conn]struct{}{}}
 	go func() {
 		defer close(m.exited)
-		// The exit is the guest powering off; the session may still hold an entrypoint that ignored TERM.
+		// The exit is the guest powering off; the session may still hold a process that ignored TERM.
 		_ = cmd.Wait()
 		m.ended = endGuest(guest)
 		m.mu.Lock()
@@ -678,7 +678,7 @@ func (m *fakeMachine) Stop() error {
 	return endGuest(m.guest)
 }
 
-// endGuest SIGKILLs the guest's session, which holds its entrypoint's group too.
+// endGuest SIGKILLs the guest's session, which holds every process's group too.
 func endGuest(guest reaper.Marks) error {
 	return reaper.End(func() (reaper.Marks, error) { return guest, nil })
 }

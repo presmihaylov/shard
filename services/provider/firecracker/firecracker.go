@@ -50,20 +50,15 @@ const MaxVCPUs = 32
 const (
 	recordFile = "vm.json"
 	// socketFile and vsockFile are where a vmm a daemon before the jail spawned still answers (SHARD-306).
-	socketFile   = "firecracker.sock"
-	vsockFile    = "vsock.sock"
-	consoleFile  = "console.log"
-	exitFile     = "exit.json"
-	restartsFile = "restarts.json"
+	socketFile  = "firecracker.sock"
+	vsockFile   = "vsock.sock"
+	consoleFile = "console.log"
 	// oomFile marks a guest the memory bound ended; the cgroup a Linux provider reads instead is gone with the VM.
 	oomFile = "oom"
 	// supervisorFailedFile holds the reason shard-init gave for its own death, which the halt would otherwise take with the guest.
 	supervisorFailedFile = "supervisor-failed"
-	logFile              = "output.log"
 	// memoryFile is the guest memory in a checkpoint, and a link to it in a state directory from before the jail.
 	memoryFile = "memory"
-	// cursorFile places the guest's output in the log, so an attach after a daemon restart resumes it; a fresh boot drops it.
-	cursorFile = "output.cursor"
 	// restoringFile marks a fork's restore in flight, whose guest holds the source's address until the readdress (SHARD-321).
 	restoringFile = "restoring"
 	// reseedFile marks a restored guest still on the checkpoint's crng key, so a daemon that adopts it reseeds it first (SHARD-266).
@@ -330,9 +325,9 @@ type record struct {
 	// RootFS is the image tree a start reads the CA roots from; an exec resolves a named user in the guest (SHARD-356).
 	RootFS string `json:"rootfs,omitempty"`
 	// Roots are the CA roots a seed's overlay held at create, which a later trust reads in place of the image's (SHARD-784).
-	Roots     *bundle.Roots      `json:"roots,omitempty"`
-	Resources models.Resources   `json:"resources"`
-	Run       supervisor.RunSpec `json:"run"`
+	Roots     *bundle.Roots    `json:"roots,omitempty"`
+	Resources models.Resources `json:"resources"`
+	Run       supervisor.Base  `json:"run"`
 	// UID is the uid and gid the vmm runs as, which a start and a resume keep; zero is a record from before the jail (SHARD-306).
 	UID int `json:"uid,omitempty"`
 	// Jail is the chroot the vmm runs in; empty is a vmm a daemon before the jail spawned, which answers in the state directory.
@@ -435,17 +430,7 @@ func vcpus(requested int) int64 {
 	return int64(min(max(runtime.NumCPU(), 1), MaxVCPUs))
 }
 
-// LogPath names the file the entrypoint's output lands in, pumped off the guest's logs port.
-func (p *Provider) LogPath(id string) (string, error) {
-	dir, err := p.dir(id)
-	if err != nil {
-		return "", err
-	}
-
-	return filepath.Join(dir, logFile), nil
-}
-
-// HeldLogs is the console log: the vmm holds it, while the daemon itself writes the output log and rotates it as it writes.
+// HeldLogs is the console log: the vmm holds it, while the daemon itself writes each process log and rotates it as it writes.
 func (p *Provider) HeldLogs(id string) ([]string, error) {
 	dir, err := p.dir(id)
 	if err != nil {
@@ -455,12 +440,12 @@ func (p *Provider) HeldLogs(id string) ([]string, error) {
 	return []string{filepath.Join(dir, consoleFile)}, nil
 }
 
-// BoundOutputLog bounds an output log a daemon before the bound left past max; the caller runs it before any attach, while no FileLog writes the log.
+// BoundOutputLog bounds each process log a daemon before the bound left past max; the caller runs it before any attach, while no FileLog writes them.
 func (p *Provider) BoundOutputLog(id string, max int64) error {
 	dir, err := p.dir(id)
 	if err != nil {
 		return err
 	}
 
-	return supervisor.BoundLog(filepath.Join(dir, logFile), filepath.Join(dir, cursorFile), max)
+	return supervisor.BoundProcessLogs(dir, max)
 }

@@ -22,8 +22,8 @@ type LogSink interface {
 	Resume(from, to uint64) (uint64, error)
 }
 
-// Logs lands the entrypoint's output in sink until the guest, or ctx, ends the connection; version is the one the guest's state named.
-func Logs(ctx context.Context, dial Dialer, sink LogSink, version int) error {
+// Logs lands the named process's output in sink until the guest, or ctx, ends the connection; version is the one the guest's state named.
+func Logs(ctx context.Context, dial Dialer, name string, sink LogSink, version int) error {
 	conn, err := dial(ctx, LogsPort)
 	if err != nil {
 		return fmt.Errorf("open the logs connection: %w", err)
@@ -33,7 +33,7 @@ func Logs(ctx context.Context, dial Dialer, sink LogSink, version int) error {
 	stop := context.AfterFunc(ctx, func() { _ = conn.Close() })
 	defer stop()
 
-	if err := followLogs(conn, sink, version); err != nil && ctx.Err() == nil {
+	if err := followLogs(conn, name, sink, version); err != nil && ctx.Err() == nil {
 		return err
 	}
 
@@ -43,8 +43,11 @@ func Logs(ctx context.Context, dial Dialer, sink LogSink, version int) error {
 // ErrLogsVersion is a guest whose logs protocol this host cannot read; a redial meets the same guest again.
 var ErrLogsVersion = errors.New("unknown guest logs version")
 
-// followLogs reads the output offsets the guest holds, answers where to resume, then acks each write so the guest lets it go.
-func followLogs(conn net.Conn, sink LogSink, version int) error {
+// ErrNoProcess is a guest that hung up a logs connection before its header: it holds no process of the name the host opened it for.
+var ErrNoProcess = errors.New("the guest holds no process of that name")
+
+// followLogs names the process, reads the output offsets the guest holds, answers where to resume, then acks each write so the guest lets it go.
+func followLogs(conn net.Conn, name string, sink LogSink, version int) error {
 	if version == 0 {
 		// An older guest sends raw output with no header and reads no acks.
 		return pump(conn, sink, nil, 0)
@@ -52,9 +55,17 @@ func followLogs(conn net.Conn, sink LogSink, version int) error {
 	if version != LogsVersion {
 		return fmt.Errorf("%w %d: this host reads %d", ErrLogsVersion, version, LogsVersion)
 	}
+	if err := WriteMessage(conn, LogsOpen{Name: name}); err != nil {
+		return fmt.Errorf("name the process whose logs to follow: %w", err)
+	}
 
 	var held [2]uint64
-	if err := binary.Read(conn, binary.BigEndian, &held); err != nil {
+	err := binary.Read(conn, binary.BigEndian, &held)
+	// Only a hang-up before any byte is the guest's word; one mid-header is a broken stream.
+	if errors.Is(err, io.EOF) {
+		return ErrNoProcess
+	}
+	if err != nil {
 		return fmt.Errorf("read the output the guest holds: %w", err)
 	}
 	at, err := sink.Resume(held[0], held[1])

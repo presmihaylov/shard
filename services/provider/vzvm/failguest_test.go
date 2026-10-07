@@ -101,10 +101,10 @@ func failingGuest(dir string) error {
 	}
 }
 
-// A shard-init that dies after it answered the stop leaves its 125 and its reason, where the stop dropped the report with the guest (SHARD-476).
-func TestAShardInitThatDiesOnTheStopLeavesItsExitAndItsReason(t *testing.T) {
+// A shard-init that dies after it answered the stop leaves its reason, where the stop dropped the report with the guest (SHARD-476).
+func TestAShardInitThatDiesOnTheStopLeavesItsReason(t *testing.T) {
 	h := newHarness(t)
-	spec := h.newSpec(t, "/bin/sh", "-c", "while true; do sleep 1; done")
+	spec := h.newSpec(t)
 	self, err := os.Executable()
 	if err != nil {
 		t.Fatal(err)
@@ -126,16 +126,12 @@ func TestAShardInitThatDiesOnTheStopLeavesItsExitAndItsReason(t *testing.T) {
 	if err != nil || status.State != models.StateStopped || status.SupervisorFailed != want {
 		t.Fatalf("Status after the death = %+v, %v, want stopped with the reason %q on one line", status, err, want)
 	}
-	exit, err := h.provider.Wait(t.Context(), spec.ID)
-	if err != nil || exit.Code != models.SupervisorFailedExitCode {
-		t.Fatalf("Wait = %+v, %v, want the supervisor's %d", exit, err, models.SupervisorFailedExitCode)
-	}
 }
 
 // A stop returns only once the guest's last report has landed, however soon the VM halts after it (SHARD-476).
 func TestAStopWaitsForTheSupervisorsReportToLand(t *testing.T) {
 	h := newHarness(t)
-	spec := h.newSpec(t, "/bin/sh", "-c", "while true; do sleep 1; done")
+	spec := h.newSpec(t)
 	self, err := os.Executable()
 	if err != nil {
 		t.Fatal(err)
@@ -184,7 +180,7 @@ func TestAStopWaitsForTheSupervisorsReportToLand(t *testing.T) {
 // A boot that fails answers the start with its reason and its 125, where the start named only the unexpected opener and recorded nothing (SHARD-418).
 func TestABootFailureAnswersTheStartWithItsReason(t *testing.T) {
 	h := newHarness(t)
-	spec := h.newSpec(t, "/bin/sh", "-c", "while true; do sleep 1; done")
+	spec := h.newSpec(t)
 	if err := h.provider.Create(t.Context(), spec); err != nil {
 		t.Fatal(err)
 	}
@@ -213,10 +209,6 @@ func TestABootFailureAnswersTheStartWithItsReason(t *testing.T) {
 	status, err := h.provider.Status(t.Context(), spec.ID)
 	if err != nil || status.Alive() || status.SupervisorFailed != bootFailure {
 		t.Fatalf("Status after the failed boot = %+v, %v, want a dead sandbox with the reason %q", status, err, bootFailure)
-	}
-	exit, err := h.provider.Wait(t.Context(), spec.ID)
-	if err != nil || exit.Code != models.SupervisorFailedExitCode {
-		t.Fatalf("Wait = %+v, %v, want the supervisor's %d", exit, err, models.SupervisorFailedExitCode)
 	}
 
 	// The next boot is shard-init again, and the reason the last one left must not answer for it.

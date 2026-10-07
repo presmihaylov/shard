@@ -3,7 +3,6 @@ package vzvm
 import (
 	"bufio"
 	"context"
-	"encoding/binary"
 	"errors"
 	"io"
 	"log"
@@ -13,24 +12,22 @@ import (
 	"os/exec"
 	"path/filepath"
 	"reflect"
-	"strings"
 	"sync/atomic"
-	"syscall"
 	"testing"
 	"time"
 
 	"github.com/presmihaylov/shard/models"
 	"github.com/presmihaylov/shard/pkg/vz"
-	"github.com/presmihaylov/shard/services/bundle"
 	"github.com/presmihaylov/shard/services/supervisor"
 )
 
-// A replayed state lands the exit and the restart count, and a later replay with a newer exit replaces what a read sees.
-func TestARepliedStateLandsTheLastExitAndTheRestarts(t *testing.T) {
+// A replayed state lands the guest's table, and a later replay keeps each name's later report.
+func TestAReplayedStateLandsTheProcessTable(t *testing.T) {
 	p := &Provider{}
 	m := &machine{dir: t.TempDir()}
-	first := supervisor.Message{Kind: supervisor.KindState, Ready: true, Exit: &models.ExitStatus{Code: 3}, Restarts: &models.RestartCount{Count: 1}}
-	second := supervisor.Message{Kind: supervisor.KindState, Ready: true, Exit: &models.ExitStatus{Code: 5}, Restarts: &models.RestartCount{Count: 2}}
+	m.host = quietHost(t, m)
+	web := models.ProcessReport{Name: "web", Seq: 3, ProcessStatus: models.ProcessStatus{State: models.ProcessExited, Exit: &models.ExitStatus{Code: 3}}}
+	first := supervisor.Message{Kind: supervisor.KindState, Ready: true, Version: supervisor.ProcessVersion, Processes: []models.ProcessReport{web}}
 
 	if err := p.record(m, first); err != nil {
 		t.Fatal(err)
@@ -38,28 +35,41 @@ func TestARepliedStateLandsTheLastExitAndTheRestarts(t *testing.T) {
 	if !m.started {
 		t.Error("the state did not mark the machine started")
 	}
-	exit, found, err := bundle.ReadExitStatus(filepath.Join(m.dir, exitFile))
-	if err != nil || !found || exit.Code != 3 {
-		t.Fatalf("exit = %+v, %v, %v; want code 3", exit, found, err)
-	}
-	// The guest died again while no daemon held the shim, so the next adoption must show that exit, not the first.
+	// The guest started the process again while no daemon held the shim, so the next adoption must show that run, not the first.
+	web.Seq, web.State, web.Restarts = 5, models.ProcessRunning, 1
+	second := first
+	second.Processes = []models.ProcessReport{web}
 	if err := p.record(m, second); err != nil {
 		t.Fatal(err)
 	}
-	exit, found, err = bundle.ReadExitStatus(filepath.Join(m.dir, exitFile))
-	if err != nil || !found || exit.Code != 5 {
-		t.Fatalf("exit after the second replay = %+v, %v, %v; want code 5", exit, found, err)
+	table, err := supervisor.ReadProcesses(m.dir)
+	if err != nil || len(table) != 1 || table[0].Seq != 5 || table[0].State != models.ProcessRunning {
+		t.Fatalf("table after the second replay = %+v, %v; want web running at seq 5", table, err)
 	}
-	count, err := bundle.ReadRestartCount(filepath.Join(m.dir, restartsFile))
-	if err != nil || count.Count != 2 {
-		t.Fatalf("restarts = %+v, %v; want 2", count, err)
+	if err := m.host.Outdated("sb-1"); err != nil {
+		t.Fatalf("a guest that replayed version %d reads outdated: %v", supervisor.ProcessVersion, err)
 	}
+}
+
+// quietHost is a host whose logs port never answers, for a test of what lands in the table.
+func quietHost(t *testing.T, m *machine) *supervisor.Host {
+	t.Helper()
+	h := supervisor.NewHost(supervisor.HostConfig{
+		Dir:   m.dir,
+		Dial:  func(context.Context, uint32) (net.Conn, error) { return nil, errors.New("no logs port") },
+		Again: func(context.Context) bool { return false },
+		Lost:  func(err error) { t.Errorf("the host lost the sandbox: %v", err) },
+		Warn:  func(error) {},
+	})
+	t.Cleanup(h.Close)
+
+	return h
 }
 
 // The guest writes its own resolver files, so the record carries what the network leased and the name the sandbox answers to.
 func TestARecordCarriesTheResolverFilesTheGuestWrites(t *testing.T) {
 	spec := models.SandboxSpec{
-		ID: "sb-1", Name: "web", RootFS: t.TempDir(), Entrypoint: []string{"/bin/true"},
+		ID: "sb-1", Name: "web", RootFS: t.TempDir(),
 		Network: models.NetworkSpec{
 			Address:     netip.MustParsePrefix("10.87.0.2/16"),
 			Gateway:     netip.MustParseAddr("10.87.0.1"),
@@ -91,85 +101,6 @@ func TestARecordCarriesTheResolverFilesTheGuestWrites(t *testing.T) {
 	}
 	if r.Hostname != "" || r.Nameservers != nil {
 		t.Errorf("a sandbox without a network recorded %+v, want no resolver files", r)
-	}
-}
-
-// A log file that refuses a write marks the sandbox lost and ends the follow: a redial would carry the same broken file.
-func TestALogWriteThatFailsMarksTheSandboxLostInsteadOfRedialing(t *testing.T) {
-	p := &Provider{}
-	m := &machine{id: "sb-1"}
-	guest, host := net.Pipe()
-	defer guest.Close()
-
-	dir := t.TempDir()
-	path := filepath.Join(dir, logFile)
-	if err := os.WriteFile(path, nil, 0o600); err != nil {
-		t.Fatal(err)
-	}
-	// A file open only for reading refuses every write, as a full disk would.
-	readOnly, err := os.Open(path)
-	if err != nil {
-		t.Fatal(err)
-	}
-
-	done := make(chan struct{})
-	go func() {
-		p.followLogs(context.Background(), m, host, &supervisor.FileLog{File: readOnly, Cursor: filepath.Join(dir, cursorFile), Max: supervisor.MaxLog}, supervisor.LogsVersion)
-		close(done)
-	}()
-	if _, err := guest.Write(supervisor.LogsHeader(0, 6)); err != nil {
-		t.Fatal(err)
-	}
-	var at uint64
-	if err := binary.Read(guest, binary.BigEndian, &at); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := guest.Write([]byte("hello\n")); err != nil {
-		t.Fatal(err)
-	}
-	var word uint64
-	if err := binary.Read(guest, binary.BigEndian, &word); err != nil || word != supervisor.LogsStopped {
-		t.Fatalf("the guest read %d and %v, want the word that the log stopped", word, err)
-	}
-	if err := guest.Close(); err != nil {
-		t.Fatal(err)
-	}
-
-	select {
-	case <-done:
-	case <-time.After(5 * time.Second):
-		t.Fatal("the follow went on after the log refused a write")
-	}
-	if m.lost == nil || !strings.Contains(m.lost.Error(), "the log stopped") || !errors.Is(m.lost, syscall.EBADF) {
-		t.Fatalf("lost = %v, want the log write failure", m.lost)
-	}
-}
-
-// A guest that speaks a logs version this host cannot read marks the sandbox lost and ends the follow: a redial meets the same guest.
-func TestAnUnknownLogsVersionMarksTheSandboxLostInsteadOfRedialing(t *testing.T) {
-	p := &Provider{}
-	m := &machine{id: "sb-1"}
-	guest, host := net.Pipe()
-	defer guest.Close()
-	dir := t.TempDir()
-	f, err := os.Create(filepath.Join(dir, logFile))
-	if err != nil {
-		t.Fatal(err)
-	}
-
-	done := make(chan struct{})
-	go func() {
-		p.followLogs(context.Background(), m, host, &supervisor.FileLog{File: f, Cursor: filepath.Join(dir, cursorFile), Max: supervisor.MaxLog}, supervisor.LogsVersion+1)
-		close(done)
-	}()
-
-	select {
-	case <-done:
-	case <-time.After(5 * time.Second):
-		t.Fatal("the follow went on after an unknown logs version")
-	}
-	if !errors.Is(m.lost, supervisor.ErrLogsVersion) {
-		t.Fatalf("lost = %v, want the unknown logs version", m.lost)
 	}
 }
 
@@ -230,6 +161,7 @@ func TestAnOOMMessageMarksTheMachineKilledUnderTheBoundThenStopsIt(t *testing.T)
 func TestAStateReplayThatCarriesAnOOMMarksTheMachine(t *testing.T) {
 	p := &Provider{}
 	m := &machine{id: "sb-1", dir: t.TempDir()}
+	m.host = quietHost(t, m)
 	control, stops := stoppableGuest(t)
 	m.control.Store(control)
 
@@ -266,6 +198,7 @@ func TestAMarkerThatCannotLandSendsNoStop(t *testing.T) {
 func TestAnAdoptedStreamCarriesTheStopOfItsReplay(t *testing.T) {
 	p := &Provider{}
 	m := &machine{id: "sb-1", dir: t.TempDir()}
+	m.host = quietHost(t, m)
 	old, oldStops := stoppableGuest(t)
 	m.control.Store(old)
 	fresh, freshStops := stoppableGuest(t)
@@ -284,7 +217,7 @@ func TestAnAdoptedStreamCarriesTheStopOfItsReplay(t *testing.T) {
 
 // A named user goes to the guest as named, because the image on the host misses a user the sandbox added (SHARD-356).
 func TestAnExecNamesItsUserForTheGuestToResolve(t *testing.T) {
-	r := record{RootFS: t.TempDir(), Run: supervisor.RunSpec{User: "1000:1000", Groups: []uint32{1000, 10}}}
+	r := record{RootFS: t.TempDir(), Run: supervisor.Base{User: "1000:1000", Groups: []uint32{1000, 10}}}
 
 	header, err := headerOf(r, models.ExecSpec{Argv: []string{"id"}, User: "bob"})
 	if err != nil {
@@ -299,7 +232,7 @@ func TestAnExecNamesItsUserForTheGuestToResolve(t *testing.T) {
 		t.Fatal(err)
 	}
 	if header.User != "1000:1000" || !reflect.DeepEqual(header.Groups, []uint32{1000, 10}) || header.Lookup {
-		t.Errorf("unnamed exec header: user %q, groups %v, lookup %v; want the entrypoint's resolved ids", header.User, header.Groups, header.Lookup)
+		t.Errorf("unnamed exec header: user %q, groups %v, lookup %v; want the sandbox's resolved ids", header.User, header.Groups, header.Lookup)
 	}
 }
 

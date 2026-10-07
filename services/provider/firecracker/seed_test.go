@@ -31,7 +31,7 @@ func seedFiles(files map[string]string) bundle.ReadGuest {
 // seededSpec is a create from a snapshot over an image that holds neither the user nor any roots.
 func seededSpec(t *testing.T) models.SandboxSpec {
 	return models.SandboxSpec{
-		ID: "sb-1", RootFS: t.TempDir(), Seed: t.TempDir(), Entrypoint: []string{"/bin/true"},
+		ID: "sb-1", RootFS: t.TempDir(), Seed: t.TempDir(),
 		User: "reviewer", ProxyCA: []byte(proxyCA),
 	}
 }

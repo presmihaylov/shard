@@ -35,18 +35,13 @@ const DefaultMemoryMiB = 512
 
 // The files under a sandbox's state directory, all the provider's own.
 const (
-	recordFile   = "vm.json"
-	diskFile     = "disk.img"
-	socketFile   = "shim.sock"
-	consoleFile  = "console.log"
-	exitFile     = "exit.json"
-	restartsFile = "restarts.json"
+	recordFile  = "vm.json"
+	diskFile    = "disk.img"
+	socketFile  = "shim.sock"
+	consoleFile = "console.log"
 	// oomFile marks a guest the memory bound ended; the cgroup a Linux provider reads instead is gone with the VM.
 	oomFile    = "oom"
-	logFile    = "output.log"
 	initrdFile = "initrd.cpio"
-	// cursorFile places the guest's output in the log, so an attach after a daemon restart resumes it; a fresh boot drops it.
-	cursorFile = "output.cursor"
 	// shimFile names the shim the last attach verified, which a refused dial cannot (SHARD-423).
 	shimFile = "shim.json"
 	// supervisorFailedFile holds the reason shard-init gave for a death at boot, which the end of the shim would otherwise take with the guest.
@@ -200,9 +195,9 @@ type record struct {
 	// RootFS is the image tree a start reads the CA roots from; an exec resolves a named user in the guest (SHARD-356).
 	RootFS string `json:"rootfs,omitempty"`
 	// Roots are the CA roots a seed's disk held at create, which a later trust reads in place of the image's (SHARD-784).
-	Roots     *bundle.Roots      `json:"roots,omitempty"`
-	Resources models.Resources   `json:"resources"`
-	Run       supervisor.RunSpec `json:"run"`
+	Roots     *bundle.Roots    `json:"roots,omitempty"`
+	Resources models.Resources `json:"resources"`
+	Run       supervisor.Base  `json:"run"`
 	// Paused says the last verb was a pause: the VM is saved into the checkpoint and its shim is gone.
 	Paused bool `json:"paused,omitempty"`
 	// Pauses counts them, so a checkpoint a crashed pause staged is told from the one it meant to replace.
@@ -211,12 +206,12 @@ type record struct {
 
 // checkpoint is checkpoint.json: what a restore of the saved state beside it must reuse.
 type checkpoint struct {
-	MachineID string             `json:"machine_id"`
-	Pause     int                `json:"pause"`
-	RootFS    string             `json:"rootfs,omitempty"`
-	Roots     *bundle.Roots      `json:"roots,omitempty"`
-	Resources models.Resources   `json:"resources"`
-	Run       supervisor.RunSpec `json:"run"`
+	MachineID string           `json:"machine_id"`
+	Pause     int              `json:"pause"`
+	RootFS    string           `json:"rootfs,omitempty"`
+	Roots     *bundle.Roots    `json:"roots,omitempty"`
+	Resources models.Resources `json:"resources"`
+	Run       supervisor.Base  `json:"run"`
 }
 
 func (p *Provider) dir(id string) (string, error) {
@@ -279,17 +274,7 @@ func writeJSON(path string, value any) error {
 	return nil
 }
 
-// LogPath names the file the entrypoint's output lands in, pumped off the guest's logs port.
-func (p *Provider) LogPath(id string) (string, error) {
-	dir, err := p.dir(id)
-	if err != nil {
-		return "", err
-	}
-
-	return filepath.Join(dir, logFile), nil
-}
-
-// HeldLogs is the console log: the vmm holds it, while the daemon itself writes the output log and rotates it as it writes.
+// HeldLogs is the console log: the vmm holds it, while the daemon itself writes each process log and rotates it as it writes.
 func (p *Provider) HeldLogs(id string) ([]string, error) {
 	dir, err := p.dir(id)
 	if err != nil {
@@ -299,12 +284,12 @@ func (p *Provider) HeldLogs(id string) ([]string, error) {
 	return []string{filepath.Join(dir, consoleFile)}, nil
 }
 
-// BoundOutputLog bounds an output log a daemon before the bound left past max; the caller runs it before any attach, while no FileLog writes the log.
+// BoundOutputLog bounds each process log a daemon before the bound left past max; the caller runs it before any attach, while no FileLog writes them.
 func (p *Provider) BoundOutputLog(id string, max int64) error {
 	dir, err := p.dir(id)
 	if err != nil {
 		return err
 	}
 
-	return supervisor.BoundLog(filepath.Join(dir, logFile), filepath.Join(dir, cursorFile), max)
+	return supervisor.BoundProcessLogs(dir, max)
 }
