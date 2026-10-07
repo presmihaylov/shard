@@ -74,10 +74,3 @@ type Sandbox struct {
 	RunStartedAt time.Time `json:"run_started_at,omitzero"`
 	CreatedAt    time.Time `json:"created_at"`
 }
-
-// PortForward carries TCP from one host port to one port inside the sandbox, on 127.0.0.1 or, when Public, on 0.0.0.0.
-type PortForward struct {
-	HostPort  uint16 `json:"host_port"`
-	GuestPort uint16 `json:"guest_port"`
-	Public    bool   `json:"public,omitempty"`
-}

@@ -19,6 +19,8 @@ type ForwardHeader struct {
 // ForwardReply is the guest's one line before the bytes; an empty Error means the dial took and the bytes follow.
 type ForwardReply struct {
 	Error string `json:"error,omitempty"`
+	// Refused says nothing listens on the port, which the host names apart from a guest that broke.
+	Refused bool `json:"refused,omitempty"`
 }
 
 // OpenForward asks the guest behind conn, a fresh forward port connection, for port, and answers the connection that carries its bytes.
@@ -34,6 +36,9 @@ func OpenForward(ctx context.Context, conn net.Conn, port uint16) (*Forward, err
 	var reply ForwardReply
 	if err := ReadHeader(conn, &reply); err != nil {
 		return nil, fmt.Errorf("forward port %d: %w", port, err)
+	}
+	if reply.Refused {
+		return nil, fmt.Errorf("forward port %d: the guest cannot reach it: %s: %w", port, reply.Error, syscall.ECONNREFUSED)
 	}
 	if reply.Error != "" {
 		return nil, fmt.Errorf("forward port %d: the guest cannot reach it: %s", port, reply.Error)

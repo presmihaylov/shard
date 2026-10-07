@@ -1,9 +1,11 @@
 package main
 
 import (
+	"errors"
 	"io"
 	"net"
 	"strings"
+	"syscall"
 	"testing"
 
 	"github.com/presmihaylov/shard/services/supervisor"
@@ -92,7 +94,7 @@ func TestTransportForwardRefusesAPortNothingListensOn(t *testing.T) {
 		t.Fatalf("close the listener: %v", err)
 	}
 
-	if _, err := supervisor.OpenForward(ctx, forwardConn(t), port); err == nil || !strings.Contains(err.Error(), "refused") {
+	if _, err := supervisor.OpenForward(ctx, forwardConn(t), port); !errors.Is(err, syscall.ECONNREFUSED) || !strings.Contains(err.Error(), "refused") {
 		t.Fatalf("open gave %v, want the guest's connection refused", err)
 	}
 }

@@ -1,10 +1,12 @@
 package main
 
 import (
+	"errors"
 	"fmt"
 	"net"
 	"os"
 	"strconv"
+	"syscall"
 	"time"
 
 	"github.com/presmihaylov/shard/pkg/splice"
@@ -39,7 +41,7 @@ func serveForward(conn net.Conn) {
 
 	local, err := net.DialTimeout("tcp4", net.JoinHostPort("127.0.0.1", strconv.Itoa(int(header.Port))), forwardDialTimeout)
 	if err != nil {
-		if err := supervisor.WriteMessage(conn, supervisor.ForwardReply{Error: err.Error()}); err != nil {
+		if err := supervisor.WriteMessage(conn, supervisor.ForwardReply{Error: err.Error(), Refused: errors.Is(err, syscall.ECONNREFUSED)}); err != nil {
 			fmt.Fprintln(os.Stderr, "shard-init: refuse a forward:", err)
 		}
 		closeForward(conn)
