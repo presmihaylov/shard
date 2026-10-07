@@ -139,7 +139,7 @@ class Version:
 @attrs.frozen
 class Capabilities:
     """Which of the eight lifecycle verbs the daemon's provider supports; snapshot is the creation of a filesystem
-    snapshot."""
+    snapshot, and port the forward of a host port."""
 
     create: bool
     start: bool
@@ -149,6 +149,7 @@ class Capabilities:
     resume: bool
     fork: bool
     snapshot: bool
+    port: bool
 
 
 @attrs.frozen
@@ -206,6 +207,40 @@ class AppExit:
 
 
 @attrs.frozen
+class PortForward:
+    """A host port carried to a port on the sandbox's 127.0.0.1; public listens on 0.0.0.0, not the host's 127.0.0.1."""
+
+    host_port: int
+    guest_port: int
+    public: bool = False
+
+
+@attrs.frozen
+class HostAddress:
+    """One IPv4 address of the host, and the interface that holds it."""
+
+    interface: str
+    address: str
+
+
+@attrs.frozen
+class Port:
+    """One forward as the host serves it now. address is what the listener binds, 127.0.0.1 or 0.0.0.0; listening is
+    False while the sandbox is not running or the host refuses the port, and error says why; reachable_on are the
+    host's addresses a client connects to while it listens."""
+
+    sandbox: str
+    sandbox_name: str | None
+    host_port: int
+    guest_port: int
+    public: bool
+    address: str
+    listening: bool
+    error: str | None
+    reachable_on: tuple[HostAddress, ...]
+
+
+@attrs.frozen
 class SandboxInfo:
     """One sandbox as the daemon holds it. app is None with no command, and kernel is None on a container substrate."""
 
@@ -224,6 +259,7 @@ class SandboxInfo:
     app: AppInfo | None
     secrets: tuple[str, ...]
     policy: str | None
+    ports: tuple[PortForward, ...]
     started_at: datetime.datetime | None
     created_at: datetime.datetime
 
@@ -328,6 +364,7 @@ def capabilities(record: models.Capabilities) -> Capabilities:
         resume=record.resume,
         fork=record.fork,
         snapshot=record.snapshot,
+        port=record.port,
     )
 
 
@@ -357,6 +394,10 @@ def sandbox_info(record: models.Sandbox | models.Inspection) -> SandboxInfo:
         app=app,
         secrets=tuple(record.secrets or ()),
         policy=record.policy or None,
+        ports=tuple(
+            PortForward(host_port=each.host_port, guest_port=each.guest_port, public=each.public or False)
+            for each in record.ports or ()
+        ),
         started_at=_time_or_none(record.started_at),
         created_at=record.created_at,
     )
@@ -398,6 +439,20 @@ def snapshot(record: models.Snapshot) -> Snapshot:
         memory_mib=record.memory_mib,
         size=record.size,
         created_at=record.created_at,
+    )
+
+
+def port(record: models.Port) -> Port:
+    return Port(
+        sandbox=record.sandbox,
+        sandbox_name=record.sandbox_name or None,
+        host_port=record.host_port,
+        guest_port=record.guest_port,
+        public=record.public,
+        address=record.address,
+        listening=record.listening,
+        error=record.error or None,
+        reachable_on=tuple(HostAddress(interface=on.interface, address=on.address) for on in record.reachable_on),
     )
 
 

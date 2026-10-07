@@ -51,3 +51,5 @@ secrets.set_list_remove
 secrets.grant_ungrant
 policies.set_get_list_remove
 policies.attach_detach
+ports.add_connect_remove
+ports.held_by_one_sandbox

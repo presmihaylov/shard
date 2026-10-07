@@ -16,3 +16,17 @@ export function sandboxRecord(fields: Record<string, unknown> = {}): Record<stri
     ...fields,
   };
 }
+
+export function portRecord(fields: Record<string, unknown> = {}): Record<string, unknown> {
+  return {
+    sandbox: "sb_1",
+    sandbox_name: "web",
+    host_port: 9000,
+    guest_port: 8000,
+    public: false,
+    address: "127.0.0.1",
+    listening: true,
+    reachable_on: [{ interface: "lo", address: "127.0.0.1" }],
+    ...fields,
+  };
+}

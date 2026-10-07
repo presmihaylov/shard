@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import socket
 import threading
 import time
 from collections.abc import Callable, Iterator
@@ -113,6 +114,12 @@ class Printed:
     def seen(self) -> None:
         if not self._seen.wait(SEEN_WITHIN):
             raise AssertionError(f"the command did not print {self._want!r} within {SEEN_WITHIN:g} s")
+
+
+def greeting(host_port: int) -> bytes:
+    """The first line the guest sends through a host port of this host, or what it sent before it closed."""
+    with socket.create_connection(("127.0.0.1", host_port), timeout=5) as conn, conn.makefile("rb") as stream:
+        return stream.readline()
 
 
 def catch_strays(strays: list[str]) -> None:

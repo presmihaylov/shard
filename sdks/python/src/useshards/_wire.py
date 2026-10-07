@@ -12,7 +12,7 @@ import httpx
 
 from ._generated import models
 from ._generated.types import UNSET, Response, Unset
-from ._types import Restart, TerminalSize
+from ._types import PortForward, Restart, TerminalSize
 from .errors import APIError, CommandNotStartedError, ProtocolError, ShardConnectionError, failure_error
 
 # A generated call bound to its arguments, which a transport runs; a fetch is one page of a list by its cursor.
@@ -76,6 +76,7 @@ def create_body(
     memory_mib: int | None,
     vcpus: int | None,
     disk_mib: int | None,
+    ports: Sequence[PortForward] | None,
     restart: Restart | None,
 ) -> models.CreateRequest:
     """The body of a create. A None memory takes the snapshot's or provider's bound, None vcpus or disk the default."""
@@ -94,6 +95,7 @@ def create_body(
         command=UNSET if command is None else argv(command),
         secrets=list(secrets) if secrets else UNSET,
         policy=policy or UNSET,
+        ports=[_port_forward(each) for each in ports] if ports else UNSET,
         restart=UNSET if restart is None else _restart_spec(restart),
     )
 
@@ -108,6 +110,12 @@ def argv(command: str | Sequence[str]) -> list[str]:
 
 def _env(env: Mapping[str, str] | None) -> list[str] | Unset:
     return [f"{key}={value}" for key, value in env.items()] if env else UNSET
+
+
+def _port_forward(forward: PortForward) -> models.PortForward:
+    return models.PortForward(
+        host_port=forward.host_port, guest_port=forward.guest_port, public=forward.public or UNSET
+    )
 
 
 def _restart_spec(restart: Restart) -> models.RestartSpec:

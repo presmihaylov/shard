@@ -3,13 +3,13 @@
 from ._async._command import AsyncCommand
 from ._async._files import AsyncFiles
 from ._async._follow import AsyncFollow
-from ._async._sandbox import AsyncApp, AsyncCommands, AsyncSandbox
+from ._async._sandbox import AsyncApp, AsyncCommands, AsyncPorts, AsyncSandbox
 from ._async._shard import AsyncPolicies, AsyncSecrets, AsyncShard, AsyncSnapshots
 from ._capture import DEFAULT_OUTPUT_LIMIT
 from ._sync._command import Command
 from ._sync._files import Files
 from ._sync._follow import Follow
-from ._sync._sandbox import App, Commands, Sandbox
+from ._sync._sandbox import App, Commands, Ports, Sandbox
 from ._sync._shard import Policies, Secrets, Shard, Snapshots
 from ._types import (
     AppExit,
@@ -22,9 +22,12 @@ from ._types import (
     FileEntry,
     FileInfo,
     FileType,
+    HostAddress,
     OutputCallback,
     Policy,
     PolicyRule,
+    Port,
+    PortForward,
     Resources,
     Restart,
     RestartInfo,
@@ -69,6 +72,7 @@ __all__ = [
     "AsyncFiles",
     "AsyncFollow",
     "AsyncPolicies",
+    "AsyncPorts",
     "AsyncSandbox",
     "AsyncSecrets",
     "AsyncShard",
@@ -89,6 +93,7 @@ __all__ = [
     "FileType",
     "Files",
     "Follow",
+    "HostAddress",
     "InvalidRequestError",
     "NotFoundError",
     "OutputCallback",
@@ -96,6 +101,9 @@ __all__ = [
     "Policies",
     "Policy",
     "PolicyRule",
+    "Port",
+    "PortForward",
+    "Ports",
     "ProtocolError",
     "Resources",
     "Restart",

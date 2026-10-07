@@ -15,9 +15,13 @@ from useshards import (
     AsyncShard,
     Capabilities,
     ConflictError,
+    HostAddress,
     NotFoundError,
+    PermissionDeniedError,
     Policy,
     PolicyRule,
+    Port,
+    PortForward,
     ProtocolError,
     Restart,
     SandboxList,
@@ -25,6 +29,7 @@ from useshards import (
     ServerError,
     Shard,
     ShardConnectionError,
+    UnsupportedError,
 )
 from useshards._wire import EXIT, STDOUT
 
@@ -42,6 +47,16 @@ RULE = {
     "destination": {"kind": "domain-suffix", "value": "example.com"},
     "protocol": "tcp",
     "ports": [443],
+}
+PORT_RECORD: dict[str, Any] = {
+    "sandbox": "sb",
+    "sandbox_name": "web",
+    "host_port": 9000,
+    "guest_port": 8000,
+    "public": False,
+    "address": "127.0.0.1",
+    "listening": True,
+    "reachable_on": [{"interface": "lo", "address": "127.0.0.1"}],
 }
 EGRESS_RECORD = {
     "time": "2026-10-04T10:00:01Z",
@@ -177,6 +192,7 @@ def test_capabilities(daemon: FakeDaemon, shard: Shard) -> None:
         "resume": False,
         "fork": False,
         "snapshot": True,
+        "port": True,
     }
     daemon.routes[("GET", "/v0/capabilities")] = (200, verbs)
     assert shard.capabilities() == Capabilities(**verbs)
@@ -206,6 +222,94 @@ def test_create_and_run_bodies(daemon: FakeDaemon, shard: Shard) -> None:
     with pytest.raises(ValueError, match="exactly one"):
         shard.create()
     assert len(daemon.requests) == 2
+
+
+def test_a_create_forwards_its_ports_private_unless_it_says_public(daemon: FakeDaemon, shard: Shard) -> None:
+    daemon.routes[("POST", "/v0/sandboxes")] = (201, {**SANDBOX, "ports": [{"host_port": 9000, "guest_port": 8000}]})
+    sandbox = shard.create("alpine:3", ports=[PortForward(9000, 8000), PortForward(9443, 443, public=True)])
+    assert sent(daemon, "POST", "/v0/sandboxes")["ports"] == [
+        {"host_port": 9000, "guest_port": 8000},
+        {"host_port": 9443, "guest_port": 443, "public": True},
+    ]
+    assert sandbox.info.ports == (PortForward(host_port=9000, guest_port=8000, public=False),)
+    assert shard.get("sb").info.ports == ()
+
+
+@pytest.mark.parametrize("asynchronous", [False, True])
+def test_port_add_list_and_remove(daemon: FakeDaemon, shard: Shard, asynchronous: bool) -> None:
+    daemon.routes[("PUT", "/v0/sandboxes/sb/ports/9000")] = (200, {**PORT_RECORD, "public": True, "address": "0.0.0.0"})
+    daemon.routes[("GET", "/v0/sandboxes/sb/ports")] = (200, {"ports": [PORT_RECORD], "next": "9000"})
+    daemon.routes[("GET", "/v0/sandboxes/sb/ports?cursor=9000")] = (
+        200,
+        {
+            "ports": [{**PORT_RECORD, "host_port": 9001, "listening": False, "error": "refused", "reachable_on": []}],
+            "next": None,
+        },
+    )
+    daemon.routes[("GET", "/v0/ports")] = (200, {"ports": [{**PORT_RECORD, "sandbox_name": ""}], "next": None})
+    daemon.routes[("DELETE", "/v0/sandboxes/sb/ports/9000")] = (204, None)
+
+    async def drive() -> tuple[Port, list[Port], list[Port]]:
+        async with async_shard(daemon) as client:
+            sandbox = await client.get("sb")
+            added = await sandbox.ports.add(9000, 8000, public=True)
+            listed = await sandbox.ports.list()
+            every = await client.ports()
+            await sandbox.ports.remove(9000)
+            return added, listed, every
+
+    if asynchronous:
+        added, listed, every = asyncio.run(drive())
+    if not asynchronous:
+        sandbox = shard.get("sb")
+        added, listed, every = sandbox.ports.add(9000, 8000, public=True), sandbox.ports.list(), shard.ports()
+        sandbox.ports.remove(9000)
+    assert added == Port(
+        sandbox="sb",
+        sandbox_name="web",
+        host_port=9000,
+        guest_port=8000,
+        public=True,
+        address="0.0.0.0",
+        listening=True,
+        error=None,
+        reachable_on=(HostAddress(interface="lo", address="127.0.0.1"),),
+    )
+    assert sent(daemon, "PUT", "/v0/sandboxes/sb/ports/9000") == {"guest_port": 8000, "public": True}
+    assert [(each.host_port, each.listening, each.error) for each in listed] == [
+        (9000, True, None),
+        (9001, False, "refused"),
+    ]
+    assert [(each.sandbox, each.sandbox_name) for each in every] == [("sb", None)]
+    assert ("DELETE", "/v0/sandboxes/sb/ports/9000") in [(m, p) for m, p, _ in daemon.requests]
+
+
+def test_a_private_port_add_sends_no_public(daemon: FakeDaemon, shard: Shard) -> None:
+    daemon.routes[("PUT", "/v0/sandboxes/sb/ports/9000")] = (200, PORT_RECORD)
+    shard.get("sb").ports.add(9000, 8000)
+    assert sent(daemon, "PUT", "/v0/sandboxes/sb/ports/9000") == {"guest_port": 8000}
+
+
+@pytest.mark.parametrize(
+    ("status", "code", "kind"),
+    [
+        (404, "not_found", NotFoundError),
+        (409, "in_use", ConflictError),
+        (409, "unsupported", UnsupportedError),
+        (403, "forbidden", PermissionDeniedError),
+    ],
+)
+def test_a_port_refusal_raises_the_error_of_its_code(
+    daemon: FakeDaemon, shard: Shard, status: int, code: str, kind: type[Exception]
+) -> None:
+    refusal = {"error": {"code": code, "message": f"refused as {code}"}}
+    daemon.routes[("PUT", "/v0/sandboxes/sb/ports/9000")] = (status, refusal)
+    daemon.routes[("DELETE", "/v0/sandboxes/sb/ports/9000")] = (status, refusal)
+    sandbox = shard.get("sb")
+    with pytest.raises(kind, match=f"refused as {code}"):
+        sandbox.ports.add(9000, 8000)
+    with pytest.raises(kind, match=f"refused as {code}"):
+        sandbox.ports.remove(9000)
 
 
 def test_exec_refuses_stdin_of_the_other_mode(daemon: FakeDaemon, shard: Shard) -> None:

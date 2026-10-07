@@ -53,6 +53,23 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/v0/ports": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** List the host ports forwarded into every sandbox */
+        get: operations["list-ports"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/v0/sandboxes": {
         parameters: {
             query?: never;
@@ -63,7 +80,7 @@ export interface paths {
         /** List active sandboxes */
         get: operations["list-sandboxes"];
         put?: never;
-        /** Create a sandbox @description A create that names secrets also needs the secret:* scope, and one that names a policy needs policy:*; without it the answer is 403 forbidden. */
+        /** Create a sandbox @description A create that names secrets also needs the secret:* scope, one that names a policy needs policy:*, and one that forwards ports needs port:write; without it the answer is 403 forbidden. */
         post: operations["create-sandbox"];
         delete?: never;
         options?: never;
@@ -351,6 +368,41 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/v0/sandboxes/{id}/ports": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** List the host ports forwarded into a sandbox */
+        get: operations["list-sandbox-ports"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/v0/sandboxes/{id}/ports/{host_port}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        /** Forward a host port into a sandbox, or change that forward @description A PUT of the forward the host port already has changes nothing. A running sandbox listens at once; any other keeps the forward for its next start. The answer is 409 in_use when another sandbox forwards the host port or another process on the host listens on it. */
+        put: operations["put-port"];
+        post?: never;
+        /** Remove the forward on a host port */
+        delete: operations["remove-port"];
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/v0/sandboxes/{id}/resume": {
         parameters: {
             query?: never;
@@ -544,6 +596,7 @@ export interface components {
             create: boolean;
             fork: boolean;
             pause: boolean;
+            port: boolean;
             remove: boolean;
             resume: boolean;
             snapshot: boolean;
@@ -565,6 +618,7 @@ export interface components {
             image?: string;
             name?: string;
             policy?: string;
+            ports?: components["schemas"]["PortForward"][];
             resources?: components["schemas"]["ResourceRequest"];
             restart?: components["schemas"]["RestartSpec"];
             secrets?: string[];
@@ -709,6 +763,10 @@ export interface components {
             /** Format: int32 */
             uid: number;
         };
+        HostAddress: {
+            address: string;
+            interface: string;
+        };
         Inspection: {
             command?: string[];
             /** Format: date-time */
@@ -723,6 +781,7 @@ export interface components {
             kernel?: string;
             name?: string;
             policy?: string;
+            ports?: components["schemas"]["PortForward"][];
             provider: string;
             resources: components["schemas"]["Resources"];
             restart?: components["schemas"]["Restart"];
@@ -765,6 +824,42 @@ export interface components {
             holders?: string[];
             name: string;
             rules: components["schemas"]["Rule"][];
+        };
+        Port: {
+            /** @description What the listener binds: 127.0.0.1, or 0.0.0.0 for a public forward. */
+            address: string;
+            /** @description Why a running sandbox's port does not listen, or else what the last connection hit. */
+            error?: string;
+            /** Format: int32 */
+            guest_port: number;
+            /** Format: int32 */
+            host_port: number;
+            /** @description False while the sandbox is not running, or while the host refuses the port. */
+            listening: boolean;
+            public: boolean;
+            /** @description The IPv4 addresses of the host a client reaches the port on while it listens. */
+            reachable_on: components["schemas"]["HostAddress"][];
+            /** @description The sandbox id. */
+            sandbox: string;
+            sandbox_name?: string;
+        };
+        PortForward: {
+            /** @description The port on the sandbox's 127.0.0.1 a connection goes to (int32). */
+            guest_port: number;
+            /** @description The port on the host the forward listens on (int32). */
+            host_port: number;
+            /** @description Listen on 0.0.0.0, every interface of the host, instead of 127.0.0.1. */
+            public?: boolean;
+        };
+        PortRequest: {
+            /** Format: int32 */
+            guest_port: number;
+            /** @description Listen on 0.0.0.0, every interface of the host, instead of 127.0.0.1. */
+            public?: boolean;
+        };
+        PortsResponse: {
+            next: string | null;
+            ports: components["schemas"]["Port"][];
         };
         ResourceRequest: {
             /** Format: int64 */
@@ -830,6 +925,7 @@ export interface components {
             kernel?: string;
             name?: string;
             policy?: string;
+            ports?: components["schemas"]["PortForward"][];
             provider: string;
             resources: components["schemas"]["Resources"];
             restart?: components["schemas"]["Restart"];
@@ -1062,6 +1158,40 @@ export interface operations {
                     [name: string]: unknown;
                 };
                 content?: never;
+            };
+            /** @description Error */
+            default: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+        };
+    };
+    "list-ports": {
+        parameters: {
+            query?: {
+                /** @description The most items on a page; absent returns the whole list. */
+                limit?: number;
+                /** @description The next value of the previous page; this page starts after it. */
+                cursor?: string;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description OK */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["PortsResponse"];
+                };
             };
             /** @description Error */
             default: {
@@ -2011,6 +2141,113 @@ export interface operations {
                 content: {
                     "application/json": components["schemas"]["Sandbox"];
                 };
+            };
+            /** @description Error */
+            default: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+        };
+    };
+    "list-sandbox-ports": {
+        parameters: {
+            query?: {
+                /** @description The most items on a page; absent returns the whole list. */
+                limit?: number;
+                /** @description The next value of the previous page; this page starts after it. */
+                cursor?: string;
+            };
+            header?: never;
+            path: {
+                /** @description The sandbox id or name. */
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description OK */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["PortsResponse"];
+                };
+            };
+            /** @description Error */
+            default: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+        };
+    };
+    "put-port": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description The sandbox id or name. */
+                id: string;
+                /** @description The port on the host the forward listens on. */
+                host_port: number;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["PortRequest"];
+            };
+        };
+        responses: {
+            /** @description OK */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Port"];
+                };
+            };
+            /** @description Error */
+            default: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+        };
+    };
+    "remove-port": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description The sandbox id or name. */
+                id: string;
+                /** @description The port on the host the forward listens on. */
+                host_port: number;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description No Content */
+            204: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
             };
             /** @description Error */
             default: {
