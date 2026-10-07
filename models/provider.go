@@ -7,7 +7,7 @@ import (
 	"time"
 )
 
-// StopGrace is how long a stop or an rm --force gives the entrypoint after SIGTERM before the kill; it is fixed, never a setting (SHARD-460).
+// StopGrace is how long a stop, an rm --force or a kill gives a process after SIGTERM before the kill; it is fixed, never a setting (SHARD-460).
 const StopGrace = 30 * time.Second
 
 // Provider runs sandboxes on one substrate. Every verb below means the same thing on every substrate,
@@ -23,11 +23,10 @@ type Provider interface {
 	CheckResources(res Resources) error
 	// Create prepares a sandbox in StateCreated. Nothing in the guest runs yet.
 	Create(ctx context.Context, spec SandboxSpec) error
-	// Start runs the entrypoint. Create prepared the sandbox and nothing in the guest ran before this.
-	// After a stop it runs the entrypoint again over the writable layer the stop kept, with the
+	// Start boots shard-init with no process. After a stop it boots again over the writable layer the stop kept, with the
 	// address and the netns the orchestrator rebuilt first (SHARD-96).
 	Start(ctx context.Context, id string) error
-	// Stop ends the sandbox, and nothing else does. It signals, returns once the entrypoint exits, and kills it when grace runs out.
+	// Stop ends the sandbox, and nothing else does. It signals, returns once every process exits, and kills them when grace runs out.
 	Stop(ctx context.Context, id string, grace time.Duration) error
 	// Remove deletes the substrate's own state, not the shard record and not a checkpoint.
 	Remove(ctx context.Context, id string) error
@@ -35,7 +34,7 @@ type Provider interface {
 	Snapshot(ctx context.Context, sourceID, dir string) error
 
 	// Exec runs a command in a sandbox that already runs and returns how that command ended. It is
-	// never the entrypoint: it has no supervisor, and its exit ends nothing. ExitStatus.Signal is
+	// never a named process: it has no restart policy, and its exit ends nothing. ExitStatus.Signal is
 	// always 0, because a substrate reports an exec's exit code and nothing else.
 	Exec(ctx context.Context, id string, spec ExecSpec) (ExitStatus, error)
 
@@ -51,23 +50,8 @@ type Provider interface {
 	Processes(ctx context.Context, id string) ([]ProcessReport, error)
 	// ProcessLogPath names the file one process's output lands in; it outlives the process and the run.
 	ProcessLogPath(id, name string) (string, error)
-	// StopApp cancels the restarts and terms the entrypoint, or kills it with force; the sandbox stays running (SHARD-454).
-	StopApp(ctx context.Context, id string, force bool) error
-
-	// Wait blocks until the entrypoint exits. The sandbox stays up, so the caller may exec again.
-	// Under a restart policy it returns the first exit of the run; once the sandbox is stopped, the last.
-	// It reports ErrNoExitStatus for a sandbox a stop had to kill, which recorded no exit.
-	Wait(ctx context.Context, id string) (ExitStatus, error)
-	// ExitStatus reads how the entrypoint ended so far, nil while it still runs. It is a file read, not
-	// a substrate call, like Restarts, so the liveness task polls it every tick; Wait would block.
-	ExitStatus(ctx context.Context, id string) (*ExitStatus, error)
 	// Status asks the substrate, because a record saying running can outlive a shard restart.
 	Status(ctx context.Context, id string) (Status, error)
-	// Restarts reads what the supervisor keeps beside the exit file: how often it started the
-	// entrypoint again on this run, and whether it gave up. It is zero for a run that never did.
-	Restarts(ctx context.Context, id string) (RestartCount, error)
-	// LogPath names the file the guest's output lands in. SHARD-23 turns it into shard logs.
-	LogPath(id string) (string, error)
 	// HeldLogs names the log files a process outside the daemon appends to, which the daemon bounds by copy and truncate.
 	HeldLogs(id string) ([]string, error)
 
@@ -93,7 +77,7 @@ type Status struct {
 	// Exists is false for an id the substrate never held, and for one it has already forgotten.
 	Exists bool
 	State  State
-	// PID is the sandbox process on the host, never the entrypoint, which has no host pid.
+	// PID is the sandbox process on the host, never a named process, which has no host pid.
 	PID int
 	// OOMKilled says the host ended this sandbox for holding too much memory. It is only ever set on
 	// a sandbox that is not alive, because the provider reads it from what the dead one left behind.
@@ -135,8 +119,6 @@ type SandboxSpec struct {
 	// StateDir is the per-sandbox directory whose whole layout belongs to the provider.
 	StateDir string
 
-	// Entrypoint is the supervisor's argv: it runs it as its child, so its exit does not end the sandbox; empty runs nothing.
-	Entrypoint []string
 	// Env is KEY=VALUE, resolved against the image by Resolve. It never carries a secret value.
 	Env     []string
 	WorkDir string
@@ -144,8 +126,6 @@ type SandboxSpec struct {
 
 	Network   NetworkSpec
 	Resources Resources
-	// Restart is what the supervisor is told about starting the entrypoint again; the zero value is never.
-	Restart RestartSpec
 
 	// Seed is the files dir of the snapshot the writable layer starts from, empty for a fresh one.
 	Seed string
@@ -154,14 +134,14 @@ type SandboxSpec struct {
 	ProxyCA []byte
 }
 
-// ExecSpec is one process in a sandbox that already runs. It is never the entrypoint.
+// ExecSpec is one unsupervised command in a sandbox that already runs.
 type ExecSpec struct {
 	Argv []string
-	// Env overrides what the entrypoint runs with, which the provider reads back from the sandbox.
+	// Env overrides the sandbox's own, which the provider reads back from the sandbox.
 	Env     []string
 	WorkDir string
 	// User is an image-style name or id, resolved by the provider against the sandbox's own rootfs.
-	// Empty is the user the entrypoint runs as, which the provider reads back from the sandbox.
+	// Empty is the sandbox's own user, which the provider reads back from the sandbox.
 	User string
 	// TTY says the three files below are one pty replica the caller allocated on the host. A terminal
 	// carries one stream, so Stderr is then the same file as Stdout.
@@ -214,22 +194,11 @@ type Resources struct {
 	DiskMiB int64 `json:"disk_mib"`
 }
 
-// ExitStatus is how the entrypoint ended. A sandbox outlives it and has no exit status of its own.
+// ExitStatus is how a process or an exec ended. A sandbox outlives it and has no exit status of its own.
 type ExitStatus struct {
 	Code int `json:"code"`
 	// Signal is a guest signal number, so it is an int: this package must not import syscall.
 	Signal int `json:"signal"`
-}
-
-// ExitReport is shard-init's newline-framed exit record; Kind lets a reader reject a torn or foreign line.
-type ExitReport struct {
-	Kind   string `json:"kind"`
-	Code   int    `json:"code"`
-	Signal int    `json:"signal"`
-	// Errno is the guest errno of an entrypoint whose exec failed, on a NotStartedReportKind record only.
-	Errno int `json:"errno,omitempty"`
-	// Restarts rides the exit record, since fd 0 is the one channel shard-init has that the guest cannot write (SHARD-634).
-	Restarts RestartCount `json:"restarts,omitzero"`
 }
 
 // ProcessTable is shard-init's newline-framed record on its status channel: every process, rewritten whole on each change.
@@ -241,20 +210,11 @@ type ProcessTable struct {
 // ProcessTableKind marks the process table, so a reader rejects every other line.
 const ProcessTableKind = "processes"
 
-// ExitReportKind marks the entrypoint's exit, so an exit reader rejects every other line.
-const ExitReportKind = "exit"
-
-// NotStartedReportKind is the record shard-init leaves on its exit channel when the entrypoint's exec failed.
-const NotStartedReportKind = "not-started"
-
 // ExitChannelSize is the sealed memfd a sysbox PID 1 reports on: shard-init fills it from offset 0, the record then NULs.
 const ExitChannelSize = 4096
 
-// SupervisorFailedExitCode is shard-init's own exit code when it cannot record the entrypoint exit.
+// SupervisorFailedExitCode is shard-init's own exit code when it cannot supervise.
 const SupervisorFailedExitCode = 125
-
-// EntrypointNotStartedExitCode is what a shell reports for a command it cannot run, and so is a broken image.
-const EntrypointNotStartedExitCode = 127
 
 // The two codes a shell answers for a command that never ran. A substrate's own code is never one
 // of these: runsc says 128 for both, which no shell means anything by.

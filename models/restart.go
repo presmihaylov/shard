@@ -1,7 +1,5 @@
 package models
 
-import "time"
-
 // RestartPolicy says when shard-init starts a process again inside the sandbox that is still up, and whether the daemon starts it with the sandbox.
 type RestartPolicy string
 
@@ -26,14 +24,3 @@ type RestartSpec struct {
 
 // Set reports a policy that starts a process again at all.
 func (r RestartSpec) Set() bool { return r.Policy != "" && r.Policy != RestartNo }
-
-// RestartCount is what shard-init keeps beside the exit file: the starts again so far.
-type RestartCount struct {
-	Count int `json:"count"`
-	// LastAt is the last start again, zero before the first one.
-	LastAt time.Time `json:"last_at,omitzero"`
-	// GaveUp says an exit asked for a start again after the retries were spent.
-	GaveUp bool `json:"gave_up"`
-	// Ended says no start again follows the last exit: the policy is over, and that exit is the app's last.
-	Ended bool `json:"ended"`
-}

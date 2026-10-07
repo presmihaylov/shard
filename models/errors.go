@@ -9,10 +9,6 @@ import (
 // ErrUnsupported is the sentinel behind every refused verb. Match it with errors.Is.
 var ErrUnsupported = errors.New("verb not supported")
 
-// ErrNoExitStatus is what a sandbox that was killed leaves behind: the supervisor died before it
-// could record how the entrypoint ended. It is a normal outcome of a stop, not a failure.
-var ErrNoExitStatus = errors.New("the sandbox ended before its entrypoint exited")
-
 // ErrExitFileTooLarge is an exit file past any record shard-init writes, which only a guest that reached the file can make.
 var ErrExitFileTooLarge = errors.New("the exit file is larger than any exit record")
 
@@ -131,22 +127,6 @@ func (e *LostError) Unwrap() error { return e.Err }
 
 func (e *LostError) Public() string {
 	return fmt.Sprintf("sandbox %s is lost; remove it and create another sandbox", e.Sandbox)
-}
-
-// EntrypointNotStartedError is a sandbox whose entrypoint never ran; Err quotes the sandbox log, which can name a host path.
-type EntrypointNotStartedError struct {
-	Sandbox string
-	Err     error
-}
-
-func (e *EntrypointNotStartedError) Error() string {
-	return fmt.Sprintf("the entrypoint of sandbox %s did not start: %v", e.Sandbox, e.Err)
-}
-
-func (e *EntrypointNotStartedError) Unwrap() error { return e.Err }
-
-func (e *EntrypointNotStartedError) Public() string {
-	return fmt.Sprintf("the entrypoint of sandbox %s did not start; the daemon log has the cause", e.Sandbox)
 }
 
 // ErrProcessRunning is a StartProcess of a name the guest still runs or restarts.
