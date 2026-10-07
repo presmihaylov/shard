@@ -138,8 +138,7 @@ class Version:
 
 @attrs.frozen
 class Capabilities:
-    """Which of the nine lifecycle verbs the daemon's provider supports; snapshot is the creation of a filesystem
-    snapshot, and port the forward of a host port."""
+    """Provider support for lifecycle verbs, filesystem snapshots, and host port forwards."""
 
     create: bool
     start: bool
@@ -225,9 +224,7 @@ class HostAddress:
 
 @attrs.frozen
 class Port:
-    """One forward as the host serves it now. address is what the listener binds, 127.0.0.1 or 0.0.0.0; listening is
-    False while the sandbox is not running or the host refuses the port, and error says why; reachable_on are the
-    host's addresses a client connects to while it listens."""
+    """A forward's bind address, listening state, error, and reachable host addresses."""
 
     sandbox: str
     sandbox_name: str | None

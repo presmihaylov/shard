@@ -270,8 +270,7 @@ class AsyncPorts:
         self._sandbox = sandbox
 
     async def add(self, host_port: int, guest_port: int, *, public: bool = False) -> Port:
-        """Forward host_port to guest_port, or change the forward host_port already has; public listens on every
-        interface of the host, not only 127.0.0.1."""
+        """Upsert host_port to guest_port; public binds every host interface instead of 127.0.0.1."""
         body = models.PortRequest(guest_port=guest_port, public=public or UNSET)
         record = await self._transport.answer(
             models.Port,

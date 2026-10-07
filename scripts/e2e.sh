@@ -902,8 +902,7 @@ port_answer() {
 # public_address prints the first address that port add --public named beyond loopback.
 public_address() { awk '{ split($2, at, ":"); if (at[1] !~ /^127\./) { print at[1]; exit } }'; }
 
-# port_steps forwards a host port to a listener in a sandbox, and proves it carries bytes through a stop, a start and a daemon restart (SHARD-789).
-# The arguments go to run, so a microVM gets its memory.
+# Arguments go to run so a microVM gets its memory bound.
 # shellcheck disable=SC2120 # only e2e-fc.sh passes run flags
 port_steps() {
 	local id out address
