@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"io"
 	"net"
+	"net/netip"
 	"slices"
 	"strconv"
 	"strings"
@@ -238,6 +239,87 @@ func TestCloseSandboxEndsTheListenerAndEveryLiveConnection(t *testing.T) {
 	if got, err := roundTrip(t, other, "pong"); err != nil || got != "PONG" {
 		t.Errorf("the other sandbox's forward answered %q, %v; want PONG", got, err)
 	}
+}
+
+// A half closed client leaves the copy from the guest waiting on a guest that says nothing; the removal must still close the guest end.
+func TestCloseFreesTheGuestEndOfAHalfClosedConnection(t *testing.T) {
+	guest, err := net.Listen("tcp4", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer guest.Close()
+	accepted := make(chan net.Conn, 1)
+	go func() {
+		conn, err := guest.Accept()
+		if err == nil {
+			accepted <- conn
+		}
+	}()
+	closes := make(chan struct{}, 2)
+	addr := net.TCPAddrFromAddrPort(netip.MustParseAddrPort(guest.Addr().String()))
+	dial := func(context.Context, string, uint16) (net.Conn, error) {
+		conn, err := net.DialTCP("tcp4", nil, addr)
+		if err != nil {
+			return nil, err
+		}
+
+		return closeWatch{TCPConn: conn, closes: closes}, nil
+	}
+	f := portforward.New(dial, func(line string) { t.Log(line) }, "shard0")
+	host := freePort(t)
+	if err := f.Open("sb-1", models.PortForward{HostPort: host, GuestPort: 8100}); err != nil {
+		t.Fatal(err)
+	}
+
+	client, err := net.DialTCP("tcp4", nil, net.TCPAddrFromAddrPort(netip.AddrPortFrom(netip.MustParseAddr("127.0.0.1"), host)))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer client.Close()
+	if err := client.CloseWrite(); err != nil {
+		t.Fatal(err)
+	}
+	var idle net.Conn
+	select {
+	case idle = <-accepted:
+	case <-time.After(5 * time.Second):
+		t.Fatal("the connection never reached the guest")
+	}
+	defer idle.Close()
+	if err := idle.SetReadDeadline(time.Now().Add(5 * time.Second)); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := io.ReadAll(idle); err != nil {
+		t.Fatalf("the client's half close never reached the guest: %v", err)
+	}
+
+	if err := f.Close("sb-1", host); err != nil {
+		t.Fatalf("close the forward: %v", err)
+	}
+
+	// The first close is the removal's, and the second is the splice letting go as serve returns.
+	for _, what := range []string{"the removal to close the guest end", "serve to let go of the guest end"} {
+		select {
+		case <-closes:
+		case <-time.After(5 * time.Second):
+			t.Fatalf("timed out waiting for %s", what)
+		}
+	}
+}
+
+// closeWatch tells each close of the forwarder's guest end; the embedded TCPConn keeps CloseWrite, so the half close still crosses.
+type closeWatch struct {
+	*net.TCPConn
+	closes chan<- struct{}
+}
+
+func (c closeWatch) Close() error {
+	select {
+	case c.closes <- struct{}{}:
+	default:
+	}
+
+	return c.TCPConn.Close()
 }
 
 // The ports task retries every tick, so a host port another process holds logs once, not once a tick.

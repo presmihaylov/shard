@@ -63,7 +63,8 @@ type forward struct {
 	// ctx ends every dial still in flight when the forward goes.
 	ctx    context.Context
 	cancel context.CancelFunc
-	conns  map[net.Conn]struct{}
+	// conns holds both ends of every connection, so a drop frees a guest read that a half close left waiting.
+	conns map[net.Conn]struct{}
 }
 
 // New answers a forwarder with no listener; report takes what a connection broke mid-stream.
@@ -141,21 +142,25 @@ func (f *Forwarder) Set(id string, want []models.PortForward) error {
 		}
 	}
 	for _, spec := range want {
-		was := f.reason(spec.HostPort)
-		err := f.open(id, spec)
-		if _, refused := errors.AsType[*BindError](err); refused {
-			if f.reason(spec.HostPort) != was {
-				f.report(fmt.Sprintf("sandbox %s: %v", id, err))
-			}
-
-			continue
-		}
-		if err != nil {
-			errs = append(errs, fmt.Errorf("sandbox %s: %w", id, err))
-		}
+		errs = append(errs, f.openOrNote(id, spec))
 	}
 
 	return errors.Join(errs...)
+}
+
+// openOrNote opens one forward for Set; a port the host refuses is no error, and its reason reports only when it changes.
+func (f *Forwarder) openOrNote(id string, spec models.PortForward) error {
+	was := f.reason(spec.HostPort)
+	err := f.open(id, spec)
+	_, refused := errors.AsType[*BindError](err)
+	if refused && f.reason(spec.HostPort) != was {
+		f.report(fmt.Sprintf("sandbox %s: %v", id, err))
+	}
+	if refused || err == nil {
+		return nil
+	}
+
+	return fmt.Errorf("sandbox %s: %w", id, err)
 }
 
 func (f *Forwarder) reason(hostPort uint16) string {
@@ -264,9 +269,7 @@ func (f *Forwarder) accept(fw *forward, l net.Listener) {
 			return
 		}
 		if err != nil {
-			if f.note(fw, fmt.Sprintf("the host refused a connection to port %d; the daemon log has why", fw.spec.HostPort)) {
-				f.report(fmt.Sprintf("sandbox %s: accept on a forwarded host port: %v", fw.id, err))
-			}
+			f.acceptFailed(fw, err)
 			time.Sleep(acceptBackoff)
 
 			continue
@@ -274,13 +277,24 @@ func (f *Forwarder) accept(fw *forward, l net.Listener) {
 
 		guest, ok := f.track(fw, l, conn)
 		if !ok {
-			if err := quiet(conn.Close()); err != nil {
-				f.report(fmt.Sprintf("sandbox %s: close a connection to a forward that ended: %v", fw.id, err))
-			}
+			f.reject(fw, conn)
 
 			return
 		}
 		go f.serve(fw, conn, guest)
+	}
+}
+
+func (f *Forwarder) acceptFailed(fw *forward, err error) {
+	if f.note(fw, fmt.Sprintf("the host refused a connection to port %d; the daemon log has why", fw.spec.HostPort)) {
+		f.report(fmt.Sprintf("sandbox %s: accept on a forwarded host port: %v", fw.id, err))
+	}
+}
+
+// reject closes a connection that reached a forward after it ended.
+func (f *Forwarder) reject(fw *forward, conn net.Conn) {
+	if err := quiet(conn.Close()); err != nil {
+		f.report(fmt.Sprintf("sandbox %s: close a connection to a forward that ended: %v", fw.id, err))
 	}
 }
 
@@ -295,6 +309,19 @@ func (f *Forwarder) track(fw *forward, l net.Listener, conn net.Conn) (uint16, b
 	fw.conns[conn] = struct{}{}
 
 	return fw.spec.GuestPort, true
+}
+
+// hold tracks the guest end of a connection, unless the forward went while its dial was in flight; drop cancels ctx under f.mu.
+func (f *Forwarder) hold(fw *forward, upstream net.Conn) bool {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+
+	if fw.ctx.Err() != nil {
+		return false
+	}
+	fw.conns[upstream] = struct{}{}
+
+	return true
 }
 
 func (f *Forwarder) untrack(fw *forward, conn net.Conn) {
@@ -333,6 +360,13 @@ func (f *Forwarder) serve(fw *forward, client net.Conn, guest uint16) {
 
 		return
 	}
+	// The drop that ended the forward closed the client already.
+	if !f.hold(fw, upstream) {
+		f.reject(fw, upstream)
+
+		return
+	}
+	defer f.untrack(fw, upstream)
 	f.note(fw, "")
 
 	if err := splice.Conns(client, upstream); err != nil {
