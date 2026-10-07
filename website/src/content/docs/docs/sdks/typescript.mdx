@@ -160,6 +160,24 @@ console.log(await sandbox.files.read("/root/notes.txt", { encoding: "utf8" }));
 | `upload(local, remote)`, `download(remote, local)` | Copy one file in or out without holding it in memory. A download writes a temporary file and renames it at the end. |
 | `uploadDir(local, remote)`, `downloadDir(remote, local)` | Copy a whole directory in or out as a tar archive. |
 
+## Ports
+
+`sandbox.ports` forwards a host port to a port on the sandbox's `127.0.0.1`:
+
+```ts
+const forward = await sandbox.ports.add(9000, 8000);
+console.log(forward.listening, forward.reachableOn);
+await sandbox.ports.remove(9000);
+```
+
+| Method | What it does |
+| --- | --- |
+| `add(hostPort, guestPort, { public })` | Forwards the host port, or changes the forward it already has. The host listens on `127.0.0.1`, or on `0.0.0.0` with `public: true`. |
+| `list()` | Returns the sandbox's forwards in host port order. |
+| `remove(hostPort)` | Ends the forward and the connections it carries. |
+
+`shard.ports()` returns the forwards of every sandbox, and `create()` takes `ports: [{ hostPort, guestPort, public }]`. A `Port` has `listening`, `false` while the sandbox is not running or the host refuses the port, `error`, which says why, and `reachableOn`, the addresses of the host a client connects to. A forward survives a stop and a start. See [Reach a port inside a sandbox](/docs/guides/network/#reach-a-port-inside-a-sandbox).
+
 ## Apps
 
 `shard.run(image, command, options)` makes a sandbox and starts `command` in it as its app. It takes the same options as `create()`, except `image` and `snapshot`, plus a `restart` option:
@@ -212,7 +230,7 @@ A policy rule is `{ action, rule }`, where `action` is `"allow"` or `"deny"`. `s
 
 ## Capabilities
 
-Not every provider supports every verb. `shard.capabilities()` reports which of the eight lifecycle verbs the server supports, as `true` or `false` for each: `create`, `start`, `stop`, `remove`, `pause`, `resume`, `fork` and `snapshot`.
+Not every provider supports every verb. `shard.capabilities()` reports which of the nine lifecycle verbs the server supports, as `true` or `false` for each: `create`, `start`, `stop`, `remove`, `pause`, `resume`, `fork`, `snapshot` and `port`.
 
 ```ts
 const { fork } = await shard.capabilities();

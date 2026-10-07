@@ -90,8 +90,8 @@ asyncio.run(main())
   `shard.ports()` read and end them, and `create(..., ports=[PortForward(9000, 8000)])` forwards from
   the first start.
 - **A verb the provider lacks raises `UnsupportedError`.** `shard.capabilities()` says which of the
-  eight lifecycle verbs the daemon's provider supports (create, start, stop, remove, pause, resume,
-  fork and snapshot), and whether it forwards ports, before you call them.
+  nine lifecycle verbs the daemon's provider supports (create, start, stop, remove, pause, resume,
+  fork, snapshot and port) before you call them.
 
 ## Lists
 

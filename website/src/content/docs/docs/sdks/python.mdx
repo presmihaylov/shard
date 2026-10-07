@@ -162,6 +162,24 @@ print(sandbox.files.read_text("/root/notes.txt"), end="")
 | `upload(local, remote)`, `download(remote, local)` | Copy one file in or out without holding it in memory. A download writes a temporary file and renames it at the end. |
 | `upload_dir(local, remote)`, `download_dir(remote, local)` | Copy a whole directory in or out as a tar. |
 
+## Ports
+
+`sandbox.ports` forwards a host port to a port on the sandbox's `127.0.0.1`:
+
+```python
+forward = sandbox.ports.add(9000, 8000)
+print(forward.listening, forward.reachable_on)
+sandbox.ports.remove(9000)
+```
+
+| Method | What it does |
+| --- | --- |
+| `add(host_port, guest_port, public=False)` | Forwards the host port, or changes the forward it already has. The host listens on `127.0.0.1`, or on `0.0.0.0` with `public=True`. |
+| `list()` | Returns the sandbox's forwards in host port order. |
+| `remove(host_port)` | Ends the forward and the connections it carries. |
+
+`shard.ports()` returns the forwards of every sandbox, and `create()` takes `ports=[PortForward(host_port, guest_port, public=False)]`. A `Port` has `listening`, `False` while the sandbox is not running or the host refuses the port, `error`, which says why, and `reachable_on`, the addresses of the host a client connects to. A forward survives a stop and a start. See [Reach a port inside a sandbox](/docs/guides/network/#reach-a-port-inside-a-sandbox).
+
 ## Apps
 
 `shard.run(image, command)` makes a sandbox and starts `command` in it as the sandbox's app. It takes the same arguments as `create()` except `snapshot`, plus a `restart` argument:
@@ -239,7 +257,7 @@ Use `async with`, or call `await shard.aclose()` when you are done. Iterate `fol
 
 ## Capabilities
 
-Not every provider supports every verb. `shard.capabilities()` reports which of the eight lifecycle verbs the server supports, with `True` or `False` for each: `create`, `start`, `stop`, `remove`, `pause`, `resume`, `fork` and `snapshot`.
+Not every provider supports every verb. `shard.capabilities()` reports which of the nine lifecycle verbs the server supports, with `True` or `False` for each: `create`, `start`, `stop`, `remove`, `pause`, `resume`, `fork`, `snapshot` and `port`.
 
 ```python
 if shard.capabilities().fork:

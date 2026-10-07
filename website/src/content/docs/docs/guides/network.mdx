@@ -168,9 +168,82 @@ sandbox.start()
 
 A secret grant does not open a host, so the policy must also allow the host that a secret is granted to. Under `deny any` with no allow rule for that host, the request is denied and the key is never sent. See [secrets](/docs/security/secrets/).
 
+## Reach a port inside a sandbox
+
+A policy decides what a sandbox reaches. To reach a program inside a sandbox from the host, forward a host port to it:
+
+<Tabs syncKey="lang">
+	<TabItem label="CLI">
+
+```sh
+shard run -d --name web python:3.12 python -m http.server 8000
+shard port add web 9000:8000
+curl -sS http://127.0.0.1:9000/
+shard port list
+shard port remove web 9000
+```
+
+	</TabItem>
+	<TabItem label="TypeScript">
+
+```ts
+import { Shard } from "useshards";
+
+const shard = new Shard();
+try {
+  const sandbox = await shard.get("web");
+  const forward = await sandbox.ports.add(9000, 8000);
+  console.log(forward.listening, forward.reachableOn);
+  console.log(await shard.ports());
+  await sandbox.ports.remove(9000);
+} finally {
+  shard.close();
+}
+```
+
+	</TabItem>
+	<TabItem label="Python">
+
+```python
+from useshards import Shard
+
+with Shard() as shard:
+    sandbox = shard.get("web")
+    forward = sandbox.ports.add(9000, 8000)
+    print(forward.listening, forward.reachable_on)
+    print(shard.ports())
+    sandbox.ports.remove(9000)
+```
+
+	</TabItem>
+</Tabs>
+
+`shard port add web 8000` forwards host port 8000 to port 8000 in the sandbox, and `9000:8000` forwards host port 9000 to it. The host listens on `127.0.0.1` only, so nothing beyond the host reaches the port. Each connection goes to the sandbox's own `127.0.0.1`, so the program must listen there or on every interface.
+
+`--public` makes the host listen on `0.0.0.0` instead, and the command prints each address of the host that the port is now reachable on:
+
+```sh
+shard port add web 9000:8000 --public
+```
+
+```text
+lo     127.0.0.1:9000
+eth0   192.0.2.20:9000
+```
+
+**Caution: a public port is open to every network the host is on.** Anyone who reaches the host can connect to the program in the sandbox, and shard checks nothing on the way. `--public` is the only way to listen beyond `127.0.0.1`, and an address in the port is refused.
+
+To change a forward, add the same host port again, with another guest port or with `--public` on or off.
+
+A forward belongs to the sandbox. It survives a stop, a start, a daemon restart and a reboot of the host. The host listens only while the sandbox runs, and a pause or a stop closes the connections that are open. `shard create --port 9000:8000` forwards a port from the first start. A fork does not copy the forwards.
+
+A host port belongs to one sandbox at a time, and a second sandbox that asks for it gets `409` with the code `in_use`. If another program on the host holds the port while the sandbox starts, `shard port list` shows why the port does not listen, and the daemon tries it again every second.
+
+Through `shard serve`, listing the forwards needs the scope `port:read`, and adding or removing one needs `port:write`.
+
 ## Limits
 
-- **IPv4 only.** A sandbox gets an IPv4 address. The host drops every IPv6 packet and logs it with the rule `ipv6`.
+- **IPv4 only.** A sandbox gets an IPv4 address. The host drops every IPv6 packet and logs it with the rule `ipv6`. A forwarded port carries TCP over IPv4 only.
 - **A name resolves on the host when the policy is applied.** If a host's addresses change later, a rule that names it can go stale. Store the policy again to resolve the names again.
 - **Another firewall on the host is not in the log.** shard lets the bridge through `ufw` and `firewalld` itself, as [the egress reference](/docs/security/egress/#other-firewalls-on-the-host) says, but a drop by a rule of your own leaves no record, so the sandbox just sees a timeout.
 

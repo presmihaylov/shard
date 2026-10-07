@@ -138,7 +138,7 @@ class Version:
 
 @attrs.frozen
 class Capabilities:
-    """Which of the eight lifecycle verbs the daemon's provider supports; snapshot is the creation of a filesystem
+    """Which of the nine lifecycle verbs the daemon's provider supports; snapshot is the creation of a filesystem
     snapshot, and port the forward of a host port."""
 
     create: bool

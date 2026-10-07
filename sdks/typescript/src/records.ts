@@ -187,7 +187,7 @@ export interface Version {
   apiVersion: string;
 }
 
-/** Capabilities say which of the eight lifecycle verbs the daemon's provider supports; snapshot is the creation of a filesystem snapshot, and port the forward of a host port. */
+/** Capabilities say which of the nine lifecycle verbs the daemon's provider supports; snapshot is the creation of a filesystem snapshot, and port the forward of a host port. */
 export interface Capabilities {
   create: boolean;
   start: boolean;

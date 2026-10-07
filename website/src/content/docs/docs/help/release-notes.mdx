@@ -17,6 +17,14 @@ To upgrade the CLI, run the installer again. To upgrade a host that setup prepar
 
 shard is pre-alpha, so a release can change the API, the CLI and the SDKs without any compatibility guarantees.
 
+## Unreleased
+
+**New**
+
+- `shard port add SANDBOX [HOST:]GUEST` forwards a host port to a port inside a sandbox, on `127.0.0.1`, or on `0.0.0.0` with `--public`. `shard port list` and `shard port remove` list and end the forwards, and `shard create --port` forwards from the first start. A forward survives a stop, a start and a daemon restart. It works on every provider, and the SDKs have `sandbox.ports`. See [Reach a port inside a sandbox](/docs/guides/network/#reach-a-port-inside-a-sandbox).
+- Two new token scopes: `port:read` lists the forwards, and `port:write` adds and removes them.
+- `shard capabilities` and `GET /v0/capabilities` list a ninth verb, `port`.
+
 ## v0.1.5
 
 7 October 2026. [Full notes](https://github.com/presmihaylov/shard/releases/tag/v0.1.5).

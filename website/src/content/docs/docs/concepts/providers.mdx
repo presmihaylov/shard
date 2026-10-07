@@ -59,9 +59,10 @@ pause        false
 resume       false
 fork         false
 snapshot     true
+port         true
 ```
 
-The answer depends only on the server's provider. Your API key's scopes and the state of your sandboxes do not affect it. `shard capabilities --format json` prints the same eight keys as JSON.
+The answer depends only on the server's provider. Your API key's scopes and the state of your sandboxes do not affect it. `shard capabilities --format json` prints the same nine keys as JSON.
 
 ## What a provider is
 
@@ -105,13 +106,13 @@ reason     /dev/kvm opens
 
 `shard daemon status` shows the provider of the daemon that is already running. The two differ when that daemon was started with `--provider`. Both commands run only on the server.
 
-## The eight capabilities
+## The nine capabilities
 
-Every provider supports `create`, `start`, `stop`, `remove` and `snapshot`, as well as `exec`, `logs` and `inspect`. Three commands, `pause`, `resume` and `fork`, are optional, because the provider has to save a running sandbox's memory to support them.
+Every provider supports `create`, `start`, `stop`, `remove`, `snapshot` and `port`, as well as `exec`, `logs` and `inspect`. Three commands, `pause`, `resume` and `fork`, are optional, because the provider has to save a running sandbox's memory to support them.
 
 | Command | gVisor | Firecracker | vz | Sysbox | runc |
 | --- | --- | --- | --- | --- | --- |
-| `create`, `start`, `stop`, `remove`, `snapshot` | yes | yes | yes | yes | yes |
+| `create`, `start`, `stop`, `remove`, `snapshot`, `port` | yes | yes | yes | yes | yes |
 | `pause`, `resume`, `fork` | yes | yes | yes | no | no |
 
 Sysbox supports none of the three, because `sysbox-runc` has no checkpoint support. shard does not drive a checkpoint on runc either. On `vz`, all three need macOS 14 or later on Apple silicon, and a daemon on an older Mac refuses them.

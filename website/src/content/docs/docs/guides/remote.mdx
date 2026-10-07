@@ -67,7 +67,7 @@ Set up the host to run sandboxes, as in [Quickstart: server](/docs/quickstart/se
 shard setup --local --provider gvisor --start-at-boot=true -y
 ```
 
-The daemon listens on a unix socket on the host, never on TCP. This step does not expose it to the network.
+The daemon serves its API on a unix socket on the host, never on TCP. This step does not expose it to the network.
 
 ## 2. Set up the HTTP API
 

@@ -369,16 +369,16 @@ A `--format json` call writes one value or nothing:
   "started_at": "2026-10-01T09:30:00Z",
   "socket": "/var/lib/shard/shard.sock",
   "provider": "gvisor",
-  "capabilities": {"pause": true, "resume": true, "fork": true},
+  "capabilities": {"pause": true, "resume": true, "fork": true, "port": true},
   "proxy": {"plain_port": 30080, "tls_port": 30443},
   "tasks": [{"name": "proxy", "state": "running", "restarts": 0}]
 }
 ```
 
-`capabilities` is the body of `GET /v0/capabilities`, with the same eight keys for every provider:
+`capabilities` is the body of `GET /v0/capabilities`, with the same nine keys for every provider:
 
 ```json
-{"create": true, "start": true, "stop": true, "remove": true, "pause": true, "resume": true, "fork": false, "snapshot": true}
+{"create": true, "start": true, "stop": true, "remove": true, "pause": true, "resume": true, "fork": false, "snapshot": true, "port": true}
 ```
 
 `version` prints the client and daemon versions. On a Mac, it adds `shim`, which is `embedded` or `absent`:
