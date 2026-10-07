@@ -83,8 +83,10 @@ type harness struct {
 
 	mu   sync.Mutex
 	dirs map[string]string
-	next atomic.Int64
 }
+
+// nextID is per binary, not per harness: sysbox-mgr frees an id only once its 50 ms poll sees the old rootfs gone, and an id created again before then stays held until sysbox-mgr restarts.
+var nextID atomic.Int64
 
 func (h *harness) reopen(t *testing.T) models.Provider {
 	t.Helper()
@@ -150,7 +152,7 @@ func (h *harness) stateDir(id string) (string, error) {
 func (h *harness) newSpec(t *testing.T) models.SandboxSpec {
 	t.Helper()
 
-	id := fmt.Sprintf("shard-93-%d", h.next.Add(1))
+	id := fmt.Sprintf("shard-93-%d", nextID.Add(1))
 	dir := t.TempDir()
 
 	h.mu.Lock()
