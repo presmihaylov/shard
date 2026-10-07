@@ -93,7 +93,7 @@ func TestAddPortRefusesAHostPortAnotherSandboxForwards(t *testing.T) {
 	if !errors.As(err, &held) || !slices.Equal(held.Users, []string{"api"}) {
 		t.Fatalf("add port returned %v, want a held error naming sandbox api", err)
 	}
-	if !strings.Contains(err.Error(), "shard port rm api 8080") {
+	if !strings.Contains(err.Error(), "shard port remove api 8080") {
 		t.Errorf("the refusal reads %q, want the fix in it", err)
 	}
 	if len(l.repo.sb.Ports) != 0 || len(l.ports.calls) != 0 {

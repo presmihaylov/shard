@@ -38,7 +38,7 @@ type PortNotFoundError struct {
 }
 
 func (e *PortNotFoundError) Error() string {
-	return fmt.Sprintf("sandbox %s forwards no host port %d: shard port ls %s lists its forwards", e.Sandbox, e.HostPort, e.Sandbox)
+	return fmt.Sprintf("sandbox %s forwards no host port %d: shard port list %s lists its forwards", e.Sandbox, e.HostPort, e.Sandbox)
 }
 
 func (e *PortNotFoundError) Public() string { return e.Error() }
@@ -225,7 +225,7 @@ func (s *Service) syncPorts(id string) error {
 	return s.cfg.Ports.Set(id, sb.Ports)
 }
 
-// openPorts puts up the forwards of a sandbox that just reached running; a host port the host refuses keeps why for port ls, and the ports task retries it.
+// openPorts puts up the forwards of a sandbox that just reached running; a host port the host refuses keeps why for port list, and the ports task retries it.
 func (s *Service) openPorts(id string) error {
 	sb, err := s.cfg.Repo.Get(id)
 	if err != nil {
@@ -274,7 +274,7 @@ func (s *Service) portUnclaimed(id string, hostPort uint16) error {
 		owner := nameOf(sb.ID, sb)
 
 		return &HeldError{Subject: fmt.Sprintf("host port %d", hostPort), Verb: "forwarded to", Noun: "sandbox", Users: []string{owner},
-			Fix: fmt.Sprintf("remove that forward first with shard port rm %s %d", owner, hostPort)}
+			Fix: fmt.Sprintf("remove that forward first with shard port remove %s %d", owner, hostPort)}
 	}
 
 	return nil

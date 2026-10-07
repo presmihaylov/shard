@@ -90,7 +90,7 @@ func TestPortRefusalsAnswerTheirCodes(t *testing.T) {
 		status                   int
 		code, message            string
 	}{
-		{"an unknown host port", http.MethodDelete, "/v0/sandboxes/web/ports/8080", "", &sandbox.PortNotFoundError{Sandbox: "web", HostPort: 8080}, http.StatusNotFound, "not_found", "sandbox web forwards no host port 8080: shard port ls web lists its forwards"},
+		{"an unknown host port", http.MethodDelete, "/v0/sandboxes/web/ports/8080", "", &sandbox.PortNotFoundError{Sandbox: "web", HostPort: 8080}, http.StatusNotFound, "not_found", "sandbox web forwards no host port 8080: shard port list web lists its forwards"},
 		{"a host port another process holds", http.MethodPut, "/v0/sandboxes/web/ports/8080", `{"guest_port":80}`, &sandbox.PortInUseError{Err: &portforward.BindError{Port: 8080, Err: syscall.EADDRINUSE}}, http.StatusConflict, "in_use", "host port 8080 is in use on the host: pick another host port"},
 		{"a provider without forwards", http.MethodPut, "/v0/sandboxes/web/ports/8080", `{"guest_port":80}`, models.Unsupported("sysbox", models.VerbPort), http.StatusConflict, "unsupported", ""},
 	} {
@@ -112,7 +112,7 @@ func TestPortRefusalsAnswerTheirCodes(t *testing.T) {
 
 func TestPortPutOfAHostPortAnotherSandboxForwardsNamesThatSandbox(t *testing.T) {
 	s := seed(t)
-	s.verbs.err = &sandbox.HeldError{Subject: "host port 8080", Verb: "forwarded to", Noun: "sandbox", Users: []string{"api"}, Fix: "remove that forward first with shard port rm api 8080"}
+	s.verbs.err = &sandbox.HeldError{Subject: "host port 8080", Verb: "forwarded to", Noun: "sandbox", Users: []string{"api"}, Fix: "remove that forward first with shard port remove api 8080"}
 
 	status, got := send(t, s.server, http.MethodPut, "/v0/sandboxes/web/ports/8080", `{"guest_port":80}`)
 	refusal := errorOf(t, got)
