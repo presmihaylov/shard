@@ -75,7 +75,7 @@ func TestCreateOutlivesAProcessThatExits(t *testing.T) {
 func TestRunStartsAProcessAsANonRootUser(t *testing.T) {
 	app, out := newCreateApp(t)
 
-	id := runDetachedWith(t, app, out, nil, []string{"-u", "nobody"}, "/bin/sh", "-c", "id -u")
+	id := runDetachedWith(t, app, out, nil, []string{"--restart", "no", "-u", "nobody"}, "/bin/sh", "-c", "id -u")
 	t.Cleanup(func() { cleanUp(t, app, id) })
 
 	// The exit status is the assertion: a supervisor that dropped too could never report it.
@@ -92,7 +92,7 @@ func TestRunStartsAProcessAsANonRootUser(t *testing.T) {
 func TestRunKeepsTheCapabilitiesOfANonRootProcess(t *testing.T) {
 	app, out := newCreateApp(t)
 
-	id := runDetachedWith(t, app, out, nil, []string{"-u", "nobody"}, "/bin/sh", "-c", "grep CapEff /proc/self/status")
+	id := runDetachedWith(t, app, out, nil, []string{"--restart", "no", "-u", "nobody"}, "/bin/sh", "-c", "grep CapEff /proc/self/status")
 	t.Cleanup(func() { cleanUp(t, app, id) })
 
 	if status := awaitProcess(t, app, id); status.Code != 0 {

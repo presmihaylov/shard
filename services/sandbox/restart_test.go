@@ -4,6 +4,7 @@ import (
 	"errors"
 	"fmt"
 	"reflect"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -12,324 +13,296 @@ import (
 	"github.com/presmihaylov/shard/services/sandbox"
 )
 
-// policied is a running sandbox under an on-failure policy that has not started again yet.
-func policied() models.Sandbox {
+func TestRunFillsTheRestartPolicy(t *testing.T) {
+	cases := []struct {
+		name string
+		req  *models.RestartSpec
+		want models.RestartSpec
+	}{
+		{"none named", nil, models.RestartSpec{Policy: models.RestartUnlessStopped, Backoff: sandbox.DefaultRestartBackoff}},
+		{"no", &models.RestartSpec{Policy: models.RestartNo}, models.RestartSpec{Policy: models.RestartNo}},
+		{"always", &models.RestartSpec{Policy: models.RestartAlways}, models.RestartSpec{Policy: models.RestartAlways, Backoff: sandbox.DefaultRestartBackoff}},
+		{"on-failure as named", &models.RestartSpec{Policy: models.RestartOnFailure, Retries: 3, Backoff: 4}, models.RestartSpec{Policy: models.RestartOnFailure, Retries: 3, Backoff: 4}},
+	}
+	for _, c := range cases {
+		svc, l := newService(t, &recorder{}, running())
+
+		p, err := svc.Run(t.Context(), "sandbox1", sandbox.RunRequest{Name: "web", Command: []string{"web"}, Restart: c.req})
+		if err != nil {
+			t.Fatalf("%s: run: %v", c.name, err)
+		}
+
+		if p.Restart != c.want || l.repo.sb.Processes[0].Restart != c.want || l.provider.specs[0].Restart != c.want {
+			t.Errorf("%s: the process holds %+v and the guest got %+v, want %+v", c.name, p.Restart, l.provider.specs[0].Restart, c.want)
+		}
+	}
+}
+
+func TestRunRefusesARestartPolicyNoSupervisorTakes(t *testing.T) {
+	cases := map[string]models.RestartSpec{
+		"an unknown policy":         {Policy: "sometimes"},
+		"retries under always":      {Policy: models.RestartAlways, Retries: 3},
+		"retries under unless":      {Policy: models.RestartUnlessStopped, Retries: 3},
+		"negative retries":          {Policy: models.RestartOnFailure, Retries: -1},
+		"negative backoff":          {Policy: models.RestartOnFailure, Backoff: -1},
+		"a backoff past the cap":    {Policy: models.RestartAlways, Backoff: models.RestartBackoffCap + 1},
+		"a backoff that never runs": {Policy: models.RestartNo, Backoff: 2},
+	}
+	for name, spec := range cases {
+		r := &recorder{}
+		svc, _ := newService(t, r, running())
+
+		_, err := svc.Run(t.Context(), "sandbox1", sandbox.RunRequest{Name: "web", Command: []string{"web"}, Restart: &spec})
+
+		if !errors.As(err, new(*sandbox.RequestError)) {
+			t.Errorf("%s: run returned %v, want a request error", name, err)
+		}
+		if len(keep(r.calls, "repo.Update", "provider.StartProcess")) != 0 {
+			t.Errorf("%s: a refused run reached the record or the guest: %v", name, r.calls)
+		}
+	}
+}
+
+// tickLab drives the process tick over one record, and keeps what it reported.
+type tickLab struct {
+	svc     *sandbox.Service
+	l       layers
+	r       *recorder
+	reports []string
+}
+
+func newTickLab(t *testing.T, sb models.Sandbox) *tickLab {
+	t.Helper()
+
+	lab := &tickLab{r: &recorder{}}
+	lab.svc, lab.l = newService(t, lab.r, sb)
+
+	return lab
+}
+
+func (lab *tickLab) tick(t *testing.T) {
+	t.Helper()
+
+	err := lab.svc.RecordProcesses(t.Context(), []models.Sandbox{lab.l.repo.sb}, func(line string) { lab.reports = append(lab.reports, line) })
+	if err != nil {
+		t.Fatalf("RecordProcesses: %v", err)
+	}
+}
+
+// guest says what shard-init's table holds for one process from now on.
+func (lab *tickLab) guest(name string, status models.ProcessStatus) {
+	lab.l.provider.report(models.ProcessReport{Name: name, ProcessStatus: status})
+}
+
+func onFailure(name string, retries int) models.Sandbox {
 	sb := running()
-	sb.Restart = &models.Restart{RestartSpec: models.RestartSpec{Policy: models.RestartOnFailure, Retries: 5, Backoff: 1}}
+	p := proc(name, models.RestartOnFailure)
+	p.Restart.Retries, p.Restart.Backoff = retries, 1
+	sb.Processes = []models.Process{p}
 
 	return sb
 }
 
-func TestCreateHandsTheRestartPolicyToTheProviderWithTheDefaultsFilled(t *testing.T) {
-	svc, l := newService(t, &recorder{}, models.Sandbox{})
-	req := alpine()
-	req.Restart = &models.RestartSpec{Policy: models.RestartAlways}
+func TestRecordProcessesCopiesTheTableAndReportsEachMove(t *testing.T) {
+	lab := newTickLab(t, onFailure("web", 2))
+	at := time.Date(2026, 10, 7, 12, 0, 0, 0, time.UTC)
 
-	sb, err := svc.Create(t.Context(), req)
-	if err != nil {
-		t.Fatalf("create: %v", err)
+	lab.guest("web", models.ProcessStatus{State: models.ProcessRunning, Restarts: 1, Exit: &models.ExitStatus{Code: 1}, StartedAt: at})
+	lab.tick(t)
+	if got := lab.l.repo.sb.Processes[0].Status; got.Restarts != 1 || !got.StartedAt.Equal(at) {
+		t.Errorf("the record reads %+v, want 1 start again at %s", got, at)
 	}
-
-	want := &models.Restart{RestartSpec: models.RestartSpec{Policy: models.RestartAlways, Backoff: 1}}
-	if !reflect.DeepEqual(sb.Restart, want) || !reflect.DeepEqual(l.repo.sb.Restart, want) {
-		t.Errorf("the record holds the policy %+v, want %+v with the defaults filled and nothing counted", sb.Restart, want)
-	}
-	if l.provider.spec.Restart != want.RestartSpec {
-		t.Errorf("the provider was handed the policy %+v, want %+v", l.provider.spec.Restart, want.RestartSpec)
-	}
-}
-
-func TestCreateRecordsNoPolicyThatNeverStartsAgain(t *testing.T) {
-	svc, l := newService(t, &recorder{}, models.Sandbox{})
-	req := alpine()
-	req.Restart = &models.RestartSpec{Policy: models.RestartNo}
-
-	sb, err := svc.Create(t.Context(), req)
-	if err != nil {
-		t.Fatalf("create: %v", err)
+	if want := []string{"sandbox sandbox1: process web was started again, 1 of 2"}; !slices.Equal(lab.reports, want) {
+		t.Errorf("the tick reported %v, want %v", lab.reports, want)
 	}
 
-	if sb.Restart != nil || l.provider.spec.Restart.Set() {
-		t.Errorf("the record holds %+v and the provider was handed %+v, want no policy on either", sb.Restart, l.provider.spec.Restart)
-	}
-}
-
-func TestCreateRefusesARestartPolicyNoSupervisorTakes(t *testing.T) {
-	cases := map[string]models.RestartSpec{
-		"an unknown policy":      {Policy: "unless-stopped"},
-		"no policy but settings": {Retries: 3},
-		"never but settings":     {Policy: models.RestartNo, Backoff: 2},
-		"always with retries":    {Policy: models.RestartAlways, Retries: 3},
-		"negative retries":       {Policy: models.RestartOnFailure, Retries: -1},
-		"negative backoff":       {Policy: models.RestartAlways, Backoff: -1},
-		"a backoff past the cap": {Policy: models.RestartAlways, Backoff: models.RestartBackoffCap + 1},
+	// The same table again is no news, and the record is not written for it.
+	lab.reports = nil
+	updates := len(keep(lab.r.calls, "repo.Update"))
+	lab.tick(t)
+	if len(lab.reports) != 0 || len(keep(lab.r.calls, "repo.Update")) != updates {
+		t.Errorf("a tick with nothing new reported %v and wrote the record", lab.reports)
 	}
 
-	for name, restart := range cases {
-		r := &recorder{}
-		svc, _ := newService(t, r, models.Sandbox{})
-		req := alpine()
-		req.Restart = &restart
-
-		_, err := svc.Create(t.Context(), req)
-		if err == nil {
-			t.Errorf("create(%s) returned no error", name)
-		}
-		if len(r.calls) > 0 {
-			t.Errorf("create(%s) reached a layer before the refusal: %v", name, r.calls)
-		}
-	}
-}
-
-// The image's own command never runs, so a policy that starts the command again needs one from the request.
-func TestCreateRefusesARestartPolicyWithNoCommand(t *testing.T) {
-	for _, policy := range []models.RestartPolicy{models.RestartOnFailure, models.RestartAlways} {
-		r := &recorder{}
-		svc, _ := newService(t, r, models.Sandbox{})
-		req := sandbox.CreateRequest{Image: "alpine:3.20", Restart: &models.RestartSpec{Policy: policy}}
-
-		_, err := svc.Create(t.Context(), req)
-		var refused *sandbox.RequestError
-		if !errors.As(err, &refused) || !strings.Contains(err.Error(), "restart.policy needs a command") {
-			t.Errorf("create with restart.policy %s and no command gave %v, want a request error naming restart.policy", policy, err)
-		}
-		if len(r.calls) > 0 {
-			t.Errorf("create with restart.policy %s reached a layer before the refusal: %v", policy, r.calls)
-		}
-	}
-}
-
-// A sandbox with no command runs shard-init alone, so a restart policy has nothing to restart.
-func TestCreateWithNoCommandTakesNoPolicy(t *testing.T) {
-	svc, l := newService(t, &recorder{}, models.Sandbox{})
-	req := sandbox.CreateRequest{
-		Image: "alpine:3.20", Restart: &models.RestartSpec{Policy: models.RestartNo},
-		Resources: sandbox.ResourceRequest{MemoryMiB: new(int64(64))},
-	}
-
-	sb, err := svc.Create(t.Context(), req)
-	if err != nil {
-		t.Fatalf("create: %v", err)
-	}
-	if sb.Restart != nil {
-		t.Errorf("the record holds the policy %+v, want none", sb.Restart)
-	}
-	if len(l.provider.spec.Entrypoint) != 0 {
-		t.Errorf("the provider was handed the command %v, want none: the image's own never runs", l.provider.spec.Entrypoint)
-	}
-}
-
-func TestRecordRestartsCopiesWhatTheSupervisorCounted(t *testing.T) {
-	r := &recorder{}
-	svc, l := newService(t, r, policied())
-	at := time.Date(2026, 9, 16, 12, 0, 0, 0, time.UTC)
-	l.provider.restarts = models.RestartCount{Count: 2, LastAt: at}
-
-	var reports []string
-	report := func(line string) { reports = append(reports, line) }
-	if err := svc.RecordRestarts(t.Context(), []models.Sandbox{policied()}, report); err != nil {
-		t.Fatalf("RecordRestarts: %v", err)
-	}
-
-	if got := l.repo.sb.Restart.RestartCount; got.Count != 2 || !got.LastAt.Equal(at) || got.GaveUp {
-		t.Errorf("the record counts %+v, want 2 starts again at %v", got, at)
-	}
-	if len(reports) != 1 || reports[0] != "sandbox sandbox1: the entrypoint was started again, 2 of 5" {
-		t.Errorf("the tick reported %v, want one line for the starts again", reports)
-	}
-
-	// The same count again is not news, and the record is not written for it.
-	reports = nil
-	updates := len(keep(r.calls, "repo.Update"))
-	if err := svc.RecordRestarts(t.Context(), []models.Sandbox{l.repo.sb}, report); err != nil {
-		t.Fatalf("RecordRestarts again: %v", err)
-	}
-	if len(reports) != 0 || len(keep(r.calls, "repo.Update")) != updates {
-		t.Errorf("a tick with nothing new reported %v and wrote the record", reports)
-	}
-
-	l.provider.restarts = models.RestartCount{Count: 5, LastAt: at.Add(time.Minute), GaveUp: true}
-	if err := svc.RecordRestarts(t.Context(), []models.Sandbox{l.repo.sb}, report); err != nil {
-		t.Fatalf("RecordRestarts at the give-up: %v", err)
-	}
+	lab.guest("web", models.ProcessStatus{State: models.ProcessGaveUp, Restarts: 2, Exit: &models.ExitStatus{Code: 1}, StartedAt: at.Add(time.Minute)})
+	lab.tick(t)
 	want := []string{
-		"sandbox sandbox1: the entrypoint was started again, 5 of 5",
-		"sandbox sandbox1: the entrypoint exited again and the 5 starts again the policy allows are spent",
+		"sandbox sandbox1: process web was started again, 2 of 2",
+		"sandbox sandbox1: process web exited again and the 2 restarts its policy allows are spent",
 	}
-	if !reflect.DeepEqual(reports, want) || !l.repo.sb.Restart.GaveUp {
-		t.Errorf("the give-up reported %v and recorded %+v, want %v and the give-up", reports, l.repo.sb.Restart, want)
+	if !slices.Equal(lab.reports, want) || lab.l.repo.sb.Processes[0].Status.State != models.ProcessGaveUp {
+		t.Errorf("the give-up reported %v and recorded %+v, want %v and the give-up", lab.reports, lab.l.repo.sb.Processes[0].Status, want)
 	}
 }
 
-func TestRecordRestartsWritesAFreshStartTheCountDoesNotShow(t *testing.T) {
-	t1 := time.Date(2026, 9, 17, 8, 0, 0, 0, time.UTC)
-	sb := policied()
-	sb.Restart.RestartCount = models.RestartCount{Count: 1, LastAt: t1}
-	svc, l := newService(t, &recorder{}, sb)
+// The reset window can zero the count, so a start that lands on the same number is told by its fresh start time.
+func TestRecordProcessesReportsAFreshStartTheCountDoesNotShow(t *testing.T) {
+	t1 := time.Date(2026, 10, 7, 8, 0, 0, 0, time.UTC)
+	sb := running()
+	p := proc("web", models.RestartAlways)
+	p.Status.Restarts, p.Status.StartedAt = 1, t1
+	sb.Processes = []models.Process{p}
+	lab := newTickLab(t, sb)
 
 	t2 := t1.Add(time.Minute)
-	l.provider.restarts = models.RestartCount{Count: 1, LastAt: t2}
+	lab.guest("web", models.ProcessStatus{State: models.ProcessRunning, Restarts: 1, StartedAt: t2})
+	lab.tick(t)
 
-	var reports []string
-	report := func(line string) { reports = append(reports, line) }
-	if err := svc.RecordRestarts(t.Context(), []models.Sandbox{sb}, report); err != nil {
-		t.Fatalf("RecordRestarts: %v", err)
+	if got := lab.l.repo.sb.Processes[0].Status; !got.StartedAt.Equal(t2) {
+		t.Errorf("the record reads %+v, want the start stamped at the fresh %s", got, t2)
 	}
-
-	if got := l.repo.sb.Restart.RestartCount; got.Count != 1 || !got.LastAt.Equal(t2) {
-		t.Errorf("the record counts %+v, want the same 1 start again stamped at the fresh %v", got, t2)
-	}
-	if len(reports) != 1 || reports[0] != "sandbox sandbox1: the entrypoint was started again, 1 of 5" {
-		t.Errorf("a fresh start the count did not move reported %v, want one line for it", reports)
+	// always has no limit, so the line names none.
+	if want := []string{"sandbox sandbox1: process web was started again, 1"}; !slices.Equal(lab.reports, want) {
+		t.Errorf("a fresh start the count did not move reported %v, want %v", lab.reports, want)
 	}
 }
 
-func TestRecordRestartsLeavesARecordWithNoPolicyOrNotRunning(t *testing.T) {
-	stopped := policied()
-	stopped.State = models.StateStopped
-	for name, sb := range map[string]models.Sandbox{"no policy": running(), "stopped": stopped} {
-		r := &recorder{}
-		svc, _ := newService(t, r, sb)
+func TestRecordProcessesReportsAnEndOnce(t *testing.T) {
+	sb := running()
+	sb.Processes = []models.Process{proc("web", models.RestartNo)}
+	lab := newTickLab(t, sb)
 
-		if err := svc.RecordRestarts(t.Context(), []models.Sandbox{sb}, func(string) {}); err != nil {
-			t.Fatalf("RecordRestarts(%s): %v", name, err)
-		}
-		if len(keep(r.calls, "provider.Restarts")) != 0 {
-			t.Errorf("RecordRestarts(%s) asked the provider for a count nothing keeps", name)
-		}
+	lab.guest("web", models.ProcessStatus{State: models.ProcessExited, Exit: &models.ExitStatus{Code: 7}})
+	lab.tick(t)
+	lab.tick(t)
+
+	if got := lab.l.repo.sb; got.State != models.StateRunning || got.Processes[0].Status.State != models.ProcessExited {
+		t.Errorf("the record says %s with %+v, want running with web exited", got.State, got.Processes[0].Status)
+	}
+	if want := []string{"sandbox sandbox1: process web is exited (code 7, signal 0)"}; !slices.Equal(lab.reports, want) {
+		t.Errorf("two ticks reported %v, want %v", lab.reports, want)
 	}
 }
 
-func TestRecordRestartsReportsACountItCannotRead(t *testing.T) {
-	svc, l := newService(t, &recorder{fail: []string{"provider.Restarts"}}, policied())
+// Guest root can write any name into the table, and only a name the record ran may land on it.
+func TestRecordProcessesDropsANameTheRecordNeverRan(t *testing.T) {
+	sb := running()
+	sb.Processes = []models.Process{proc("web", models.RestartNo)}
+	lab := newTickLab(t, sb)
 
-	err := svc.RecordRestarts(t.Context(), []models.Sandbox{policied()}, func(string) {})
-	if err == nil {
-		t.Fatal("a count that cannot be read returned no error")
-	}
-	if l.repo.sb.Restart.Count != 0 {
-		t.Errorf("the record counts %+v after a failed read", l.repo.sb.Restart)
-	}
-}
+	lab.guest("forged", models.ProcessStatus{State: models.ProcessRunning})
+	lab.tick(t)
 
-func TestStopRecordsTheLastRestartCount(t *testing.T) {
-	svc, l := newService(t, &recorder{}, policied())
-	l.provider.restarts = models.RestartCount{Count: 3, GaveUp: true}
-
-	if _, err := svc.Stop(t.Context(), "sandbox1"); err != nil {
-		t.Fatalf("stop: %v", err)
-	}
-
-	if got := l.repo.sb.Restart; got.Count != 3 || !got.GaveUp || got.Policy != models.RestartOnFailure {
-		t.Errorf("the stopped record holds %+v, want the policy with the 3 starts again and the give-up", got)
+	if got := lab.l.repo.sb.Processes; len(got) != 1 || got[0].Name != "web" {
+		t.Errorf("the record holds %+v, want web alone", got)
 	}
 }
 
-func TestStopKeepsTheRecordedCountOverAnOversizeExitFile(t *testing.T) {
-	sb := policied()
-	sb.Restart.RestartCount = models.RestartCount{Count: 2}
-	var reports []string
-	svc, l := newService(t, &recorder{}, sb, func(cfg *sandbox.Config) {
-		cfg.Report = func(line string) { reports = append(reports, line) }
-	})
-	l.provider.restartsErr = fmt.Errorf("the exit file was emptied: %w", models.ErrExitFileTooLarge)
+func TestRecordProcessesLeavesARecordThatRunsNothingOrIsNotRunning(t *testing.T) {
+	for name, sb := range map[string]models.Sandbox{"no process": running(), "stopped": stopped()} {
+		lab := newTickLab(t, sb)
+		reads := 0
+		lab.l.provider.onTable = func() { reads++ }
 
-	stopped, err := svc.Stop(t.Context(), "sandbox1")
-	if err != nil {
-		t.Fatalf("an oversize exit file kept the sandbox from stopping: %v", err)
-	}
+		lab.tick(t)
 
-	if stopped.State != models.StateStopped || stopped.Restart.Count != 2 {
-		t.Errorf("the record is %s with %+v, want stopped with the 2 starts again it recorded", stopped.State, stopped.Restart)
-	}
-	var logged []string
-	for _, line := range reports {
-		if strings.Contains(line, "restart count") {
-			logged = append(logged, line)
+		if reads != 0 || len(keep(lab.r.calls, "repo.Update")) != 0 {
+			t.Errorf("%s: the tick read the table %d times and wrote %v", name, reads, lab.r.calls)
 		}
 	}
-	if len(logged) != 1 || !strings.Contains(logged[0], "sandbox1") {
-		t.Errorf("the daemon logged %q about the count, want one line naming the sandbox", logged)
+}
+
+func TestRecordProcessesReportsATableItCannotRead(t *testing.T) {
+	sb := onFailure("web", 2)
+	svc, l := newService(t, &recorder{}, sb)
+	l.provider.tableErr = errors.New("read the process table: input/output error")
+
+	if err := svc.RecordProcesses(t.Context(), []models.Sandbox{sb}, func(string) {}); err == nil {
+		t.Fatal("a table that cannot be read returned no error")
+	}
+	if !reflect.DeepEqual(l.repo.sb.Processes, sb.Processes) {
+		t.Errorf("the record holds %+v after a failed read", l.repo.sb.Processes)
 	}
 }
 
-// shard-init empties fd 0 before it writes the record again, so a tick can read no count at all (SHARD-634).
-func TestRecordRestartsKeepsTheRecordOverAZeroRead(t *testing.T) {
-	sb := policied()
-	sb.Restart.RestartCount = models.RestartCount{Count: 2, LastAt: time.Date(2026, 9, 17, 8, 0, 0, 0, time.UTC), Ended: true}
-	r := &recorder{}
-	svc, l := newService(t, r, sb)
+// Guest root can put its own file on PID 1's fd 0; inspect names it once, and a later good read clears it (SHARD-419).
+func TestRecordProcessesNamesAReplacedExitChannelOnceAndClearsIt(t *testing.T) {
+	lab := newTickLab(t, onFailure("web", 2))
+	lab.l.provider.tableErr = fmt.Errorf("fd 0 of PID 1 is not a regular file: %w", models.ErrExitChannelReplaced)
 
-	var reports []string
-	if err := svc.RecordRestarts(t.Context(), []models.Sandbox{sb}, func(line string) { reports = append(reports, line) }); err != nil {
-		t.Fatalf("RecordRestarts: %v", err)
+	lab.tick(t)
+	lab.tick(t)
+	if got := lab.l.repo.sb; got.State != models.StateRunning || !strings.Contains(got.ExitChannel, "exit channel replaced") {
+		t.Errorf("the record says %s with exit channel %q, want running and the channel named replaced", got.State, got.ExitChannel)
+	}
+	if len(lab.reports) != 1 {
+		t.Errorf("two ticks reported %v, want one line", lab.reports)
 	}
 
-	if got := l.repo.sb.Restart.RestartCount; got != sb.Restart.RestartCount || len(keep(r.calls, "repo.Update")) != 0 || len(reports) != 0 {
-		t.Errorf("a zero read left %+v and reported %v, want the record untouched", got, reports)
-	}
-}
-
-func TestStopStillFailsOnACountItCannotRead(t *testing.T) {
-	svc, l := newService(t, &recorder{}, policied())
-	l.provider.restartsErr = errors.New("read the restart count: input/output error")
-
-	if _, err := svc.Stop(t.Context(), "sandbox1"); err == nil {
-		t.Fatal("a count that cannot be read stopped the sandbox, and only an oversize exit file may")
+	lab.l.provider.tableErr = nil
+	lab.tick(t)
+	if got := lab.l.repo.sb.ExitChannel; got != "" {
+		t.Errorf("a good read left exit channel %q on the record", got)
 	}
 }
 
-func TestStartDropsTheCountOfTheLastRun(t *testing.T) {
-	sb := policied()
-	sb.State = models.StateStopped
-	sb.Restart.RestartCount = models.RestartCount{Count: 5, GaveUp: true}
-	svc, _ := newService(t, &recorder{}, sb)
+// everyPolicy is a stopped sandbox an operator stopped, with one process under each policy and a kill on two.
+func everyPolicy() models.Sandbox {
+	sb := stopped()
+	sb.StoppedByOperator = true
+	killedAlways := proc("always-killed", models.RestartAlways)
+	killedAlways.Killed = true
+	killedUnless := proc("unless-killed", models.RestartUnlessStopped)
+	killedUnless.Killed = true
+	sb.Processes = []models.Process{
+		proc("always", models.RestartAlways), killedAlways,
+		proc("unless", models.RestartUnlessStopped), killedUnless,
+		proc("on-failure", models.RestartOnFailure), proc("no", models.RestartNo),
+	}
+	for i := range sb.Processes {
+		sb.Processes[i].Status.State = models.ProcessStopped
+	}
 
-	started, err := svc.Start(t.Context(), "sandbox1")
+	return sb
+}
+
+// An operator's start brings back always and unless-stopped, by Docker's rules, and a kill keeps unless-stopped down.
+func TestStartBringsBackWhatThePoliciesSay(t *testing.T) {
+	svc, l := newService(t, &recorder{}, everyPolicy())
+
+	sb, err := svc.Start(t.Context(), "web")
 	if err != nil {
 		t.Fatalf("start: %v", err)
 	}
 
-	want := &models.Restart{RestartSpec: sb.Restart.RestartSpec}
-	if !reflect.DeepEqual(started.Restart, want) {
-		t.Errorf("the new run holds %+v, want the policy with nothing counted", started.Restart)
+	started := specNames(l.provider.specs)
+	if want := []string{"always", "always-killed", "unless"}; !slices.Equal(started, want) {
+		t.Errorf("the start ran %v, want %v", started, want)
+	}
+	if sb.StoppedByOperator {
+		t.Error("an operator's start kept the mark of the operator's stop")
+	}
+	for _, p := range sb.Processes {
+		want := models.ProcessStopped
+		if slices.Contains(started, p.Name) {
+			want = models.ProcessRunning
+		}
+		if p.Status.State != want {
+			t.Errorf("%s reads %s after the start, want %s", p.Name, p.Status.State, want)
+		}
 	}
 }
 
-func TestResumeKeepsTheCountOfTheRunItFroze(t *testing.T) {
-	sb := pausedSandbox()
-	sb.Restart = &models.Restart{
-		RestartSpec:  models.RestartSpec{Policy: models.RestartAlways, Retries: 5, Backoff: 1},
-		RestartCount: models.RestartCount{Count: 2},
-	}
-	svc, l := newService(t, &recorder{}, sb)
-	l.provider.status = models.Status{}
+// The sandbox runs whatever its processes do, so one that did not start is recorded and reported, and the rest still start.
+func TestStartRecordsAProcessThatDidNotStartAndRunsOn(t *testing.T) {
+	sb := stopped()
+	sb.Processes = []models.Process{proc("api", models.RestartAlways), proc("web", models.RestartAlways)}
+	var reports []string
+	svc, l := newService(t, &recorder{}, sb, func(cfg *sandbox.Config) {
+		cfg.Report = func(line string) { reports = append(reports, line) }
+	})
+	l.provider.startProcessErr = map[string]error{"api": &models.CommandNotStartedError{Reason: "no such file or directory", Code: models.CommandNotFoundExitCode}}
 
-	resumed, err := svc.Resume(t.Context(), "web")
+	got, err := svc.Start(t.Context(), "web")
 	if err != nil {
-		t.Fatalf("resume: %v", err)
+		t.Fatalf("start: %v", err)
 	}
 
-	if !reflect.DeepEqual(resumed.Restart, sb.Restart) {
-		t.Errorf("the resumed record holds %+v, want the count the pause froze %+v", resumed.Restart, sb.Restart)
+	api, web := got.Processes[0].Status, got.Processes[1].Status
+	if got.State != models.StateRunning || api.State != models.ProcessExited || api.Exit == nil || api.Exit.Code != models.CommandNotFoundExitCode || web.State != models.ProcessRunning {
+		t.Errorf("the record says %s with api %+v and web %+v, want running, api exited 127 and web running", got.State, api, web)
 	}
-}
-
-func TestForkKeepsTheCount(t *testing.T) {
-	restart := &models.Restart{
-		RestartSpec:  models.RestartSpec{Policy: models.RestartOnFailure, Retries: 5, Backoff: 1},
-		RestartCount: models.RestartCount{Count: 2},
+	if len(reports) != 1 || !strings.Contains(reports[0], "process api did not start again") {
+		t.Errorf("the start reported %v, want one line on api", reports)
 	}
-
-	source := forkSource()
-	source.Restart = restart
-	svc, _ := newService(t, &recorder{}, source)
-	forked, err := svc.Fork(t.Context(), "web", sandbox.CopyRequest{Name: "web-2"})
-	if err != nil {
-		t.Fatalf("fork: %v", err)
-	}
-	if !reflect.DeepEqual(forked.Restart, restart) {
-		t.Errorf("the fork holds %+v, want the source's policy and count %+v", forked.Restart, restart)
-	}
-
 }

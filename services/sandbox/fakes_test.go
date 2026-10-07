@@ -1,6 +1,7 @@
 package sandbox_test
 
 import (
+	"cmp"
 	"context"
 	"errors"
 	"fmt"
@@ -315,23 +316,24 @@ type fakeProvider struct {
 	// mu guards the fields Exec and Signal write, so two concurrent execs never race on them.
 	mu     sync.Mutex
 	status models.Status
-	exit   models.ExitStatus
-	// entrypointExit is what the non-blocking ExitStatus reads: nil while the entrypoint still runs.
-	entrypointExit *models.ExitStatus
-	// entrypointErr is what ExitStatus answers instead, as a guest that replaced the exit channel makes it.
-	entrypointErr error
-	// waitErr is what a sandbox the stop had to kill answers with: it recorded no exit status.
-	waitErr error
 	// failsOnStop is the reason a shard-init that dies on the way down gives, which the stopped status carries.
 	failsOnStop string
-	// restarts is what the supervisor counted on this run, and restartsErr a count file that cannot be read.
-	restarts    models.RestartCount
-	restartsErr error
-	// appEnds runs on the second Restarts, the way shard-init ends the app while a run waits on it.
-	appEnds       func()
-	restartsCalls int
-	// stopApps is the force of every StopApp, in order.
-	stopApps []bool
+	// table is shard-init's process table, which StartProcess and StopProcess write the way the guest does.
+	table []models.ProcessReport
+	seq   uint64
+	// specs is every spec StartProcess was handed, and killed every StopProcess as name and grace.
+	specs  []models.ProcessSpec
+	killed []string
+	// startProcessErr is what StartProcess refuses with, keyed by name; "" refuses every name.
+	startProcessErr map[string]error
+	// tableErr is what Processes answers instead, as a guest that broke its channel makes it.
+	tableErr error
+	// onTable runs inside every Processes, so a test moves the guest between two reads.
+	onTable func()
+	// logDir holds one log per process, which a test writes into.
+	logDir string
+	// stopKills is a stop whose grace ran out, which ends the guest before shard-init reports an exit.
+	stopKills bool
 	// onRemove runs inside Remove, so a test can say what the host looks like during a teardown.
 	onRemove func()
 	// onFork runs inside Fork, so a test can say what a fork that fails left on the host.
@@ -355,7 +357,7 @@ type fakeProvider struct {
 
 	// refuse is what CheckResources answers, the way vz refuses a --memory it cannot boot under.
 	refuse error
-	// startErr is what Start answers once it recorded the call, as a substrate whose app never started does.
+	// startErr is what Start answers once it recorded the call, as a substrate whose guest never booted does.
 	startErr error
 	// spec is what Create was handed, so a test says what reached the substrate.
 	spec    models.SandboxSpec
@@ -394,8 +396,6 @@ type fakeProvider struct {
 	// mounted is a merged view runsc no longer holds: Stop refuses it the way the gVisor orphan guard does, and only Release frees it.
 	mounted bool
 
-	// logPath is the file the output is read from, which a test writes into.
-	logPath string
 	// aliveAfterStop is the substrate reporting a stopped sandbox alive that many more times, which is
 	// the race stop waits out. A negative count never settles.
 	aliveAfterStop int
@@ -430,12 +430,71 @@ type fakeProvider struct {
 	execCtx context.Context
 }
 
-func (f *fakeProvider) LogPath(string) (string, error) {
-	if err := f.r.record("provider.LogPath"); err != nil {
-		return "", err
+// StartProcess adds a running report, as shard-init does once the process execs.
+func (f *fakeProvider) StartProcess(_ context.Context, _ string, spec models.ProcessSpec) error {
+	if err := f.r.record("provider.StartProcess"); err != nil {
+		return err
+	}
+	f.specs = append(f.specs, spec)
+	if err := cmp.Or(f.startProcessErr[spec.Name], f.startProcessErr[""]); err != nil {
+		return err
+	}
+	if i := slices.IndexFunc(f.table, func(r models.ProcessReport) bool { return r.Name == spec.Name }); i >= 0 && !f.table[i].State.Ended() {
+		return fmt.Errorf("process %s: %w", spec.Name, models.ErrProcessRunning)
+	}
+	f.report(models.ProcessReport{Name: spec.Name, ProcessStatus: models.ProcessStatus{State: models.ProcessRunning, StartedAt: time.Now().UTC()}})
+
+	return nil
+}
+
+// StopProcess reaps a running process as killed, and answers nil for one that ended or never ran, as shard-init does.
+func (f *fakeProvider) StopProcess(_ context.Context, _, name string, grace time.Duration) error {
+	if err := f.r.record("provider.StopProcess"); err != nil {
+		return err
+	}
+	f.killed = append(f.killed, fmt.Sprintf("%s:%s", name, grace))
+	i := slices.IndexFunc(f.table, func(r models.ProcessReport) bool { return r.Name == name })
+	if i < 0 || f.table[i].State.Ended() {
+		return nil
+	}
+	end := f.table[i]
+	end.State, end.Exit = models.ProcessKilled, &models.ExitStatus{Signal: 15}
+	f.report(end)
+
+	return nil
+}
+
+func (f *fakeProvider) Processes(context.Context, string) ([]models.ProcessReport, error) {
+	if f.onTable != nil {
+		f.onTable()
+	}
+	if f.tableErr != nil {
+		return nil, f.tableErr
 	}
 
-	return f.logPath, nil
+	return slices.Clone(f.table), nil
+}
+
+func (f *fakeProvider) ProcessLogPath(_, name string) (string, error) {
+	return filepath.Join(f.logDir, name+".log"), nil
+}
+
+// endTable ends every process still running with the SIGTERM, as shard-init's own stop reports it.
+func (f *fakeProvider) endTable() {
+	for _, r := range slices.Clone(f.table) {
+		if !r.State.Ended() {
+			r.State, r.Exit = models.ProcessStopped, &models.ExitStatus{Code: 143, Signal: 15}
+			f.report(r)
+		}
+	}
+}
+
+// report replaces the table's line of r's name with r under the next sequence number, the way shard-init rewrites it.
+func (f *fakeProvider) report(r models.ProcessReport) {
+	f.seq++
+	r.Seq = f.seq
+	f.table = slices.DeleteFunc(f.table, func(old models.ProcessReport) bool { return old.Name == r.Name })
+	f.table = append(f.table, r)
 }
 
 func (f *fakeProvider) HeldLogs(string) ([]string, error) {
@@ -638,6 +697,8 @@ func (f *fakeProvider) Start(ctx context.Context, id string) error {
 	}
 	f.started = true
 	f.status = models.Status{Exists: true, State: models.StateRunning, PID: 7}
+	// A guest boots with an empty table.
+	f.table = nil
 
 	return nil
 }
@@ -660,6 +721,9 @@ func (f *fakeProvider) Stop(ctx context.Context, _ string, grace time.Duration) 
 		return errors.New("runsc does not hold sandbox sandbox1 but its rootfs is still mounted")
 	}
 	f.stopped, f.grace = true, grace
+	if !f.stopKills {
+		f.endTable()
+	}
 	if f.aliveAfterStop == 0 {
 		f.status = models.Status{Exists: true, State: models.StateStopped, SupervisorFailed: f.failsOnStop}
 	}
@@ -753,52 +817,6 @@ func (f *fakeProvider) Status(ctx context.Context, _ string) (models.Status, err
 	return f.status, nil
 }
 
-func (f *fakeProvider) Restarts(context.Context, string) (models.RestartCount, error) {
-	if err := f.r.record("provider.Restarts"); err != nil {
-		return models.RestartCount{}, err
-	}
-	if f.restartsErr != nil {
-		return models.RestartCount{}, f.restartsErr
-	}
-	f.restartsCalls++
-	if f.appEnds != nil && f.restartsCalls == 2 {
-		f.appEnds()
-	}
-
-	return f.restarts, nil
-}
-
-func (f *fakeProvider) StopApp(_ context.Context, _ string, force bool) error {
-	if err := f.r.record("provider.StopApp"); err != nil {
-		return err
-	}
-	f.stopApps = append(f.stopApps, force)
-
-	return nil
-}
-
-func (f *fakeProvider) Wait(context.Context, string) (models.ExitStatus, error) {
-	if err := f.r.record("provider.Wait"); err != nil {
-		return models.ExitStatus{}, err
-	}
-	if f.waitErr != nil {
-		return models.ExitStatus{}, f.waitErr
-	}
-
-	return f.exit, nil
-}
-
-func (f *fakeProvider) ExitStatus(context.Context, string) (*models.ExitStatus, error) {
-	if err := f.r.record("provider.ExitStatus"); err != nil {
-		return nil, err
-	}
-	if f.entrypointErr != nil {
-		return nil, f.entrypointErr
-	}
-
-	return f.entrypointExit, nil
-}
-
 // fakeSubstrate stands in for the runtime root, which off Linux has no mount to give back.
 type fakeSubstrate struct {
 	r       *recorder
@@ -856,7 +874,7 @@ func newService(t *testing.T, r *recorder, sb models.Sandbox, tune ...func(*sand
 	l := layers{
 		repo:      &fakeRepo{r: r, sb: sb},
 		net:       &fakeNet{r: r},
-		provider:  &fakeProvider{r: r, status: status},
+		provider:  &fakeProvider{r: r, status: status, logDir: t.TempDir()},
 		substrate: &fakeSubstrate{r: r},
 		secrets:   secrets,
 		policies:  policies,
@@ -899,19 +917,31 @@ func running() models.Sandbox {
 	return models.Sandbox{ID: "sandbox1", State: models.StateRunning, PID: 42, Address: leased}
 }
 
-// forkSource is a running sandbox whose entrypoint already exited, which a fork captures as it is.
+// forkSource is a running sandbox with a process that already exited, which a fork captures as it is.
 func forkSource() models.Sandbox {
-	return models.Sandbox{ID: "sandbox1", Name: "web", State: models.StateRunning, PID: 42, ExitStatus: &models.ExitStatus{Code: 3}}
+	return models.Sandbox{ID: "sandbox1", Name: "web", State: models.StateRunning, PID: 42, Processes: []models.Process{exitedProcess()}}
 }
 
 // pausedSandbox is a sandbox that holds a checkpoint, which is what resume and fork are given.
 func pausedSandbox() models.Sandbox {
 	return models.Sandbox{ID: "sandbox1", Name: "web", State: models.StatePaused, Checkpoint: "/checkpoints/sandbox1",
-		ExitStatus: &models.ExitStatus{Code: 3}}
+		Processes: []models.Process{exitedProcess()}}
 }
 
 func stopped() models.Sandbox {
-	return models.Sandbox{ID: "sandbox1", Name: "web", State: models.StateStopped, ExitStatus: &models.ExitStatus{Code: 3}}
+	return models.Sandbox{ID: "sandbox1", Name: "web", State: models.StateStopped, Processes: []models.Process{exitedProcess()}}
+}
+
+// exitedProcess is a process whose policy ended it with code 3.
+func exitedProcess() models.Process {
+	return models.Process{Name: "job", Command: []string{"job"}, Restart: models.RestartSpec{Policy: models.RestartNo},
+		Status: models.ProcessStatus{State: models.ProcessExited, Exit: &models.ExitStatus{Code: 3}}}
+}
+
+// proc is an entry the record holds under policy, as running.
+func proc(name string, policy models.RestartPolicy) models.Process {
+	return models.Process{Name: name, Command: []string{name}, Restart: models.RestartSpec{Policy: policy},
+		Status: models.ProcessStatus{State: models.ProcessRunning}}
 }
 
 // keep filters the calls down to the named ones, in the order they happened.

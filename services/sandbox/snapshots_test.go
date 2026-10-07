@@ -176,8 +176,6 @@ func TestCreateRefusesARequestThatNamesAnImageAndASnapshot(t *testing.T) {
 	cases := map[string]sandbox.CreateRequest{
 		"both":    {Image: "alpine:3.20", Snapshot: "base"},
 		"neither": {},
-		"command": {Snapshot: "base", Command: []string{"echo", "1"}},
-		"restart": {Snapshot: "base", Restart: &models.RestartSpec{Policy: models.RestartOnFailure}},
 	}
 	for name, req := range cases {
 		r := &recorder{}

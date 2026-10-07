@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"io"
 	"io/fs"
+	"maps"
 	"os"
 	"path"
 	"slices"
@@ -492,9 +493,7 @@ func withProcess(procs []models.Process, p models.Process) []models.Process {
 // withLogStart is a copy, since the map may be the one a record read before shares.
 func withLogStart(starts map[string]int64, name string, at int64) map[string]int64 {
 	out := make(map[string]int64, len(starts)+1)
-	for k, v := range starts {
-		out[k] = v
-	}
+	maps.Copy(out, starts)
 	out[name] = at
 
 	return out

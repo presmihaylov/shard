@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"reflect"
 	"slices"
 	"strings"
 	"testing"
@@ -249,7 +250,7 @@ func TestReconcileMakesAnUnresponsiveRecordRunningAndKeepsItsRun(t *testing.T) {
 	started := time.Date(2026, 10, 3, 0, 0, 0, 0, time.UTC)
 	sb := unresponsive()
 	sb.StartedAt = started
-	sb.ExitStatus = &models.ExitStatus{Code: 3}
+	sb.Processes = []models.Process{exitedProcess()}
 	lab := newReconcileLab(t, &recProvider{status: map[string]models.Status{"sandbox1": alive(42)}}, sb)
 
 	if err := lab.run(t); err != nil {
@@ -257,8 +258,8 @@ func TestReconcileMakesAnUnresponsiveRecordRunningAndKeepsItsRun(t *testing.T) {
 	}
 
 	got := lab.repo.records["sandbox1"]
-	if got.State != models.StateRunning || got.UnresponsiveReason != "" || !got.StartedAt.Equal(started) || got.ExitStatus == nil {
-		t.Errorf("the record says %s with the reason %q, the start %s and the exit %+v; want running with its run kept", got.State, got.UnresponsiveReason, got.StartedAt, got.ExitStatus)
+	if got.State != models.StateRunning || got.UnresponsiveReason != "" || !got.StartedAt.Equal(started) || !reflect.DeepEqual(got.Processes, sb.Processes) {
+		t.Errorf("the record says %s with the reason %q, the start %s and the processes %+v; want running with its run kept", got.State, got.UnresponsiveReason, got.StartedAt, got.Processes)
 	}
 	if lab.net.applied != 1 {
 		t.Errorf("the host rules were re-applied %d times, want once for the live sandbox", lab.net.applied)
@@ -413,8 +414,7 @@ func TestReconcileAdoptsTheStagingOfEveryRecord(t *testing.T) {
 }
 
 func TestReconcileCorrectsAStoppedRecordWithALiveProcess(t *testing.T) {
-	sb := models.Sandbox{ID: "sandbox1", State: models.StateStopped, StoppedReason: sandbox.LostReason,
-		ExitStatus: &models.ExitStatus{Code: 3}}
+	sb := models.Sandbox{ID: "sandbox1", State: models.StateStopped, StoppedReason: sandbox.LostReason}
 	lab := newReconcileLab(t, &recProvider{status: map[string]models.Status{"sandbox1": alive(99)}}, sb)
 
 	if err := lab.run(t); err != nil {
@@ -425,8 +425,8 @@ func TestReconcileCorrectsAStoppedRecordWithALiveProcess(t *testing.T) {
 	if got.State != models.StateRunning || got.PID != 99 {
 		t.Errorf("the record says %s with pid %d, want running with pid 99", got.State, got.PID)
 	}
-	if got.StoppedReason != "" || got.ExitStatus != nil {
-		t.Errorf("the record kept the reason %q and the exit %v of a run that ended", got.StoppedReason, got.ExitStatus)
+	if got.StoppedReason != "" {
+		t.Errorf("the record kept the reason %q of a run that ended", got.StoppedReason)
 	}
 	if lab.net.applied != 1 {
 		t.Errorf("the host rules were re-applied %d times, want once", lab.net.applied)

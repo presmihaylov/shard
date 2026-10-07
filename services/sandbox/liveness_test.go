@@ -1,7 +1,6 @@
 package sandbox_test
 
 import (
-	"fmt"
 	"os"
 	"path/filepath"
 	"slices"
@@ -42,27 +41,25 @@ func (l *livenessLab) tick(t *testing.T, listed models.Sandbox) error {
 	return l.svc.Liveness(t.Context(), []models.Sandbox{listed}, func(line string) { l.reports = append(l.reports, line) })
 }
 
-func TestLivenessRecordsAnEntrypointExitAndLeavesTheSandboxRunning(t *testing.T) {
-	lab := newLivenessLab(t, running(), alive(42))
-	lab.l.provider.entrypointExit = &models.ExitStatus{Code: 7}
+// The process tick owns the processes, so a pass over a live sandbox whose process ended writes nothing.
+func TestLivenessLeavesARunningSandboxAndItsProcessesAlone(t *testing.T) {
+	sb := running()
+	sb.Processes = []models.Process{proc("web", models.RestartNo)}
+	lab := newLivenessLab(t, sb, alive(42))
+	lab.l.provider.table = []models.ProcessReport{{Name: "web", ProcessStatus: models.ProcessStatus{State: models.ProcessExited, Exit: &models.ExitStatus{Code: 7}}}}
 
-	if err := lab.tick(t, running()); err != nil {
+	if err := lab.tick(t, sb); err != nil {
 		t.Fatalf("Liveness: %v", err)
 	}
 
-	got := lab.l.repo.sb
-	if got.State != models.StateRunning || got.ExitStatus == nil || *got.ExitStatus != (models.ExitStatus{Code: 7}) {
-		t.Errorf("the record says %s with exit %+v, want running with {code:7}", got.State, got.ExitStatus)
-	}
-	if len(lab.reports) != 1 || !strings.Contains(lab.reports[0], "entrypoint exited") {
-		t.Errorf("the pass reported %v, want one line on the exit", lab.reports)
+	if got := lab.l.repo.sb; got.State != models.StateRunning || len(keep(lab.r.calls, "repo.Update")) != 0 || len(lab.reports) != 0 {
+		t.Errorf("a running sandbox was touched: %+v, reports %v", got, lab.reports)
 	}
 }
 
 // A stop on a guest that never answers holds its sandbox, and the pass must go on to the rest (SHARD-339).
 func TestLivenessSkipsASandboxAVerbHolds(t *testing.T) {
 	lab := newLivenessLab(t, running(), alive(42))
-	lab.l.provider.entrypointExit = &models.ExitStatus{Code: 7}
 	gate := make(chan struct{})
 	lab.l.provider.stopGate = gate
 	lab.l.provider.stopEntered = make(chan struct{})
@@ -75,6 +72,8 @@ func TestLivenessSkipsASandboxAVerbHolds(t *testing.T) {
 	}()
 	<-entered
 
+	// The sandbox reads gone, which the pass would record as died were the stop not holding it.
+	lab.l.provider.status = gone()
 	ticked := make(chan error, 1)
 	go func() { ticked <- lab.tick(t, running()) }()
 	select {
@@ -85,8 +84,8 @@ func TestLivenessSkipsASandboxAVerbHolds(t *testing.T) {
 	case <-time.After(5 * time.Second):
 		t.Fatal("the liveness pass waited on the sandbox the stop holds")
 	}
-	if lab.l.repo.sb.ExitStatus != nil {
-		t.Errorf("the pass wrote exit %+v to the record the stop holds", lab.l.repo.sb.ExitStatus)
+	if got := lab.l.repo.sb.StoppedReason; got != "" {
+		t.Errorf("the pass wrote the reason %q to the record the stop holds", got)
 	}
 
 	close(gate)
@@ -95,59 +94,6 @@ func TestLivenessSkipsASandboxAVerbHolds(t *testing.T) {
 	}
 	if n := lab.svc.Locks(); n != 0 {
 		t.Errorf("%d sandbox locks outlived the stop and the pass that skipped it", n)
-	}
-}
-
-func TestLivenessLeavesARunningEntrypointAlone(t *testing.T) {
-	lab := newLivenessLab(t, running(), alive(42))
-
-	if err := lab.tick(t, running()); err != nil {
-		t.Fatalf("Liveness: %v", err)
-	}
-
-	if got := lab.l.repo.sb; got.State != models.StateRunning || got.ExitStatus != nil || len(lab.reports) != 0 {
-		t.Errorf("a running entrypoint was touched: %+v, reports %v", got, lab.reports)
-	}
-}
-
-func TestLivenessNeverRewritesARecordedExit(t *testing.T) {
-	sb := running()
-	sb.ExitStatus = &models.ExitStatus{Code: 7}
-	lab := newLivenessLab(t, sb, alive(42))
-	lab.l.provider.entrypointExit = &models.ExitStatus{Code: 7}
-
-	if err := lab.tick(t, sb); err != nil {
-		t.Fatalf("Liveness: %v", err)
-	}
-
-	if len(lab.reports) != 0 {
-		t.Errorf("the pass reported %v over an exit it already knew", lab.reports)
-	}
-}
-
-// Guest root can put its own file on PID 1's fd 0; inspect names it once, and a later good read clears it (SHARD-419).
-func TestLivenessNamesAReplacedExitChannelOnceAndClearsIt(t *testing.T) {
-	lab := newLivenessLab(t, running(), alive(42))
-	lab.l.provider.entrypointErr = fmt.Errorf("fd 0 of PID 1 is not a regular file: %w", models.ErrExitChannelReplaced)
-
-	for range 2 {
-		if err := lab.tick(t, lab.l.repo.sb); err != nil {
-			t.Fatalf("Liveness: %v", err)
-		}
-	}
-	if got := lab.l.repo.sb; got.State != models.StateRunning || !strings.Contains(got.ExitChannel, "exit channel replaced") {
-		t.Errorf("the record says %s with exit channel %q, want running and the channel named replaced", got.State, got.ExitChannel)
-	}
-	if len(lab.reports) != 1 {
-		t.Errorf("two passes reported %v, want one line", lab.reports)
-	}
-
-	lab.l.provider.entrypointErr = nil
-	if err := lab.tick(t, lab.l.repo.sb); err != nil {
-		t.Fatalf("Liveness: %v", err)
-	}
-	if got := lab.l.repo.sb.ExitChannel; got != "" {
-		t.Errorf("a good read left exit channel %q on the record", got)
 	}
 }
 
@@ -513,9 +459,11 @@ func TestLivenessKeepsThePauseThatCommittedAfterItsProbe(t *testing.T) {
 // shard-init's own death is the sandbox exit, and its reason is what inspect shows (SHARD-290).
 func TestLivenessRecordsTheExitAndTheReasonOfAShardInitThatDied(t *testing.T) {
 	why := "supervisor: forward the stop to the entrypoint: operation not permitted"
-	lab := newLivenessLab(t, running(), models.Status{Exists: true, State: models.StateStopped, SupervisorFailed: why})
+	sb := running()
+	sb.Processes = []models.Process{proc("web", models.RestartAlways)}
+	lab := newLivenessLab(t, sb, models.Status{Exists: true, State: models.StateStopped, SupervisorFailed: why})
 
-	if err := lab.tick(t, running()); err != nil {
+	if err := lab.tick(t, sb); err != nil {
 		t.Fatalf("Liveness: %v", err)
 	}
 
@@ -524,8 +472,8 @@ func TestLivenessRecordsTheExitAndTheReasonOfAShardInitThatDied(t *testing.T) {
 	if got.State != models.StateStopped || got.PID != 0 || got.StoppedReason != want {
 		t.Errorf("the record says %s with pid %d and the reason %q, want stopped with %q", got.State, got.PID, got.StoppedReason, want)
 	}
-	if got.ExitStatus == nil || *got.ExitStatus != (models.ExitStatus{Code: models.SupervisorFailedExitCode}) {
-		t.Errorf("the record holds the exit %+v, want the supervisor's %d", got.ExitStatus, models.SupervisorFailedExitCode)
+	if p := got.Processes[0]; p.Status.State != models.ProcessStopped {
+		t.Errorf("the process reads %s, want stopped with the shard-init that ran it", p.Status.State)
 	}
 	if len(lab.reports) != 1 || !strings.Contains(lab.reports[0], why) {
 		t.Errorf("the pass reported %v, want one line with the reason", lab.reports)

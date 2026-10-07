@@ -10,7 +10,7 @@ import (
 	"github.com/presmihaylov/shard/models"
 )
 
-// run --attach prints the output of the run and leaves with the process's own code, and the sandbox stays up.
+// run --attach of a process that never starts again prints its output and leaves with its code, and the sandbox stays up.
 func TestRunAttachExitsWithTheCodeOfTheProcess(t *testing.T) {
 	app, out := newCreateApp(t)
 
@@ -18,7 +18,7 @@ func TestRunAttachExitsWithTheCodeOfTheProcess(t *testing.T) {
 	t.Cleanup(func() { cleanUp(t, app, id) })
 
 	attached, _ := ownStderr(app)
-	err := attached.Run(t.Context(), []string{"run", id, "--name", processName, "--attach", "--", "/bin/sh", "-c", "echo hello; exit 3"})
+	err := attached.Run(t.Context(), []string{"run", id, "--name", processName, "--restart", "no", "--attach", "--", "/bin/sh", "-c", "echo hello; exit 3"})
 	exit, ok := errors.AsType[*ExitError](err)
 	if !ok || exit.Code != 3 {
 		t.Fatalf("run --attach failed with %v, want the exit code 3 of the process", err)

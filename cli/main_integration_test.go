@@ -397,11 +397,11 @@ func daemonClient(app App) *client.Client {
 // processName is what every helper names the one process it runs, so a test reads it back by that name.
 const processName = "app"
 
-// runDetached creates a sandbox, runs argv in it as the process app, and answers with the sandbox id.
+// runDetached creates a sandbox, runs argv in it once as the process app, and answers with the sandbox id.
 func runDetached(t *testing.T, app App, out *bytes.Buffer, argv ...string) string {
 	t.Helper()
 
-	return runDetachedWith(t, app, out, nil, nil, argv...)
+	return runDetachedWith(t, app, out, nil, []string{"--restart", "no"}, argv...)
 }
 
 // runDetachedWith is runDetached with create flags for the sandbox and run flags for the process.

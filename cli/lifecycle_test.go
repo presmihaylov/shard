@@ -329,14 +329,6 @@ func (f *fakeLifecycleProvider) Processes(context.Context, string) ([]models.Pro
 	return slices.Clone(f.reports), nil
 }
 
-// endProcess is shard-init writing a process's last exit and ending its restart policy.
-func (f *fakeLifecycleProvider) endProcess(name string, exit models.ExitStatus) {
-	f.procMu.Lock()
-	defer f.procMu.Unlock()
-
-	f.report(name, models.ProcessStatus{State: models.ProcessExited, Exit: &exit})
-}
-
 func appendLog(path, output string) error {
 	if output == "" {
 		return nil

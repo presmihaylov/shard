@@ -23,7 +23,7 @@ func TestPauseWritesTheCheckpointAndRecordsIt(t *testing.T) {
 	r := &recorder{}
 	source := running()
 	source.Name = "web"
-	source.ExitStatus = &models.ExitStatus{Code: 3}
+	source.Processes = []models.Process{exitedProcess()}
 	svc, l := newService(t, r, source)
 
 	sb, err := svc.Pause(t.Context(), "web")
@@ -37,9 +37,9 @@ func TestPauseWritesTheCheckpointAndRecordsIt(t *testing.T) {
 	if l.provider.checkpointDir != "/checkpoints/sandbox1" {
 		t.Errorf("the provider was told to write %q, want the repository's checkpoint directory", l.provider.checkpointDir)
 	}
-	// The entrypoint's exit is part of the run the checkpoint froze.
-	if sb.ExitStatus == nil || sb.ExitStatus.Code != 3 {
-		t.Errorf("the record lost its exit: %+v", sb.ExitStatus)
+	// The processes are part of the run the checkpoint froze.
+	if !reflect.DeepEqual(sb.Processes, source.Processes) {
+		t.Errorf("the record holds the processes %+v, want %+v", sb.Processes, source.Processes)
 	}
 
 	// The mark goes on before the provider writes, and comes off with the paused state after it.
@@ -423,9 +423,9 @@ func TestResumeRunsAPausedSandboxAgain(t *testing.T) {
 		t.Errorf("the host rules were not applied again after the resume: %v", r.calls)
 	}
 
-	// The resumed run is the one the pause froze, so an exit its entrypoint already had still stands.
-	if sb.ExitStatus == nil || sb.ExitStatus.Code != 3 {
-		t.Errorf("the record lost its exit: %+v", sb.ExitStatus)
+	// The resumed run is the one the pause froze, so a process that had already exited still has.
+	if !reflect.DeepEqual(sb.Processes, pausedSandbox().Processes) {
+		t.Errorf("the record holds the processes %+v, want the ones the pause froze", sb.Processes)
 	}
 	// A resume does not consume the checkpoint: the next one reads it again.
 	if sb.Checkpoint != "/checkpoints/sandbox1" {
@@ -511,8 +511,8 @@ func TestResumeRecordsTheSandboxWhenTheRulesFail(t *testing.T) {
 	if sb.State != models.StateRunning || sb.PID != 7 {
 		t.Errorf("the record is %s with pid %d, want running with pid 7", sb.State, sb.PID)
 	}
-	if sb.ExitStatus == nil || sb.Checkpoint == "" {
-		t.Errorf("the record lost its exit or its checkpoint: %+v", sb)
+	if len(sb.Processes) != 1 || sb.Checkpoint == "" {
+		t.Errorf("the record lost its processes or its checkpoint: %+v", sb)
 	}
 }
 
@@ -526,8 +526,8 @@ func TestResumeRecordsASandboxThatCameUpUnderAFailedResume(t *testing.T) {
 		t.Fatalf("resume returned %v, want the failure and the warning that the sandbox stays", err)
 	}
 
-	if sb := l.repo.sb; sb.State != models.StateRunning || sb.PID != 9 || sb.ExitStatus == nil {
-		t.Errorf("the record is %s with pid %d and exit %v, want running with pid 9 and its exit kept", sb.State, sb.PID, sb.ExitStatus)
+	if sb := l.repo.sb; sb.State != models.StateRunning || sb.PID != 9 || len(sb.Processes) != 1 {
+		t.Errorf("the record is %s with pid %d and processes %+v, want running with pid 9 and its processes kept", sb.State, sb.PID, sb.Processes)
 	}
 }
 
@@ -571,9 +571,9 @@ func TestForkStartsANewSandboxFromACaptureOfTheRunningSource(t *testing.T) {
 	if sb.NetnsPath != "/run/netns/sandbox2" || sb.HostInterface != "shardv2" {
 		t.Errorf("the fork's record holds the network %+v, want its own netns and interface", sb)
 	}
-	// The capture carries the source's run, so the exit its entrypoint already had is the fork's too.
-	if sb.ExitStatus == nil || sb.ExitStatus.Code != 3 {
-		t.Errorf("the fork's record holds the exit %+v, want the source's", sb.ExitStatus)
+	// The capture carries the source's run, so a process that had already exited has in the fork too.
+	if !reflect.DeepEqual(sb.Processes, source.Processes) {
+		t.Errorf("the fork's record holds the processes %+v, want the source's", sb.Processes)
 	}
 
 	// The source runs on: its record is as it was.
@@ -842,19 +842,18 @@ func TestForkCarriesThePolicyAndTellsTheHostBeforeTheRestore(t *testing.T) {
 }
 
 // copyRunState is every record field a copy does not take from its source: its own identity, its run, and what the substrate reports.
-var copyRunState = []string{"ID", "Name", "Provider", "State", "ExitStatus", "StoppedReason", "FailedReason", "FailedPublic", "UnresponsiveReason", "Checkpoint", "Pausing", "Snapshot",
+var copyRunState = []string{"ID", "Name", "Provider", "State", "StoppedReason", "FailedReason", "FailedPublic", "UnresponsiveReason", "Checkpoint", "Pausing", "Snapshot",
 	"PID", "NetnsPath", "Address", "HostInterface", "ExitChannel",
-	"Restart", "StartedAt", "RunStartedAt", "CreatedAt", "ForkedFrom"}
+	"StoppedByOperator", "LogStarts", "StartedAt", "RunStartedAt", "CreatedAt", "ForkedFrom"}
 
-// withEveryPolicy sets every field a create asks for, so a field a copy drops shows up as a difference.
+// withEveryPolicy sets every field a copy carries, so a field it drops shows up as a difference.
 func withEveryPolicy(sb models.Sandbox) models.Sandbox {
 	sb.Image = "docker.io/library/alpine:3.20"
 	sb.Digest = fakeDigest
 	sb.Resources = models.Resources{MemoryMiB: 256, VCPUs: 2, DiskMiB: 1024}
 	sb.Secrets = []string{"api-token"}
 	sb.Policy = "locked"
-	sb.Command = []string{"python", "-m", "http.server"}
-	sb.Restart = &models.Restart{RestartSpec: models.RestartSpec{Policy: models.RestartOnFailure, Retries: 5, Backoff: 1}}
+	sb.Processes = []models.Process{proc("web", models.RestartOnFailure), exitedProcess()}
 	// No create asks for it, but a fork runs the source's memory image and so its kernel (SHARD-745).
 	sb.Kernel = "kernel-6.12.110-3"
 
@@ -901,9 +900,6 @@ func TestForkCarriesEveryPolicyField(t *testing.T) {
 		if want, got := src.FieldByIndex(field.Index).Interface(), copied.FieldByIndex(field.Index).Interface(); !reflect.DeepEqual(got, want) {
 			t.Errorf("the fork holds %s %v, want the source's %v", field.Name, got, want)
 		}
-	}
-	if sb.Restart == nil || sb.Restart.RestartSpec != source.Restart.RestartSpec {
-		t.Errorf("the fork holds the restart %+v, want the source's policy %+v", sb.Restart, source.Restart.RestartSpec)
 	}
 }
 

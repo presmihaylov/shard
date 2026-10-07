@@ -81,7 +81,7 @@ func TestSandboxErrorsKeepsQuietOnTheWayDown(t *testing.T) {
 	}
 }
 
-// One sandbox whose exit never decodes failed the whole tick, so the task backed off up to a minute and every other sandbox waited (SHARD-376).
+// One sandbox whose status never decodes failed the whole tick, so the task backed off up to a minute and every other sandbox waited (SHARD-376).
 func TestLivenessGoesOnPastASandboxThatFailsEveryTick(t *testing.T) {
 	var out bytes.Buffer
 	d := &deps{cfg: Config{Root: t.TempDir(), Out: &out, Provider: "gvisor"}}
@@ -93,12 +93,12 @@ func TestLivenessGoesOnPastASandboxThatFailsEveryTick(t *testing.T) {
 	if err != nil {
 		t.Fatalf("create the broken record: %v", err)
 	}
-	exits, err := repo.Create(models.Sandbox{Image: "alpine", State: models.StateRunning, PID: 43})
+	dies, err := repo.Create(models.Sandbox{Image: "alpine", State: models.StateRunning, PID: 43})
 	if err != nil {
-		t.Fatalf("create the record that exits: %v", err)
+		t.Fatalf("create the record that dies: %v", err)
 	}
 
-	p := &exitProvider{broken: broken.ID, exits: exits.ID}
+	p := &dyingProvider{broken: broken.ID, dies: dies.ID}
 	task := liveness{deps: d, lifecycle: &lifecycle{deps: d, svc: sandbox.New(sandbox.Config{Repo: repo, Provider: p})}, interval: time.Millisecond}
 
 	ctx, cancel := context.WithCancel(t.Context())
@@ -108,18 +108,18 @@ func TestLivenessGoesOnPastASandboxThatFailsEveryTick(t *testing.T) {
 
 	deadline := time.After(5 * time.Second)
 	for {
-		sb, err := repo.Get(exits.ID)
+		sb, err := repo.Get(dies.ID)
 		if err != nil {
-			t.Fatalf("read the record that exits: %v", err)
+			t.Fatalf("read the record that dies: %v", err)
 		}
-		if sb.ExitStatus != nil {
+		if sb.State == models.StateStopped {
 			break
 		}
 		select {
 		case err := <-done:
-			t.Fatalf("Run = %v before the exit of %s was recorded, want the task to go on past %s", err, exits.ID, broken.ID)
+			t.Fatalf("Run = %v before the death of %s was recorded, want the task to go on past %s", err, dies.ID, broken.ID)
 		case <-deadline:
-			t.Fatalf("the exit of %s was not recorded within 5s", exits.ID)
+			t.Fatalf("the death of %s was not recorded within 5s", dies.ID)
 		case <-time.After(time.Millisecond):
 		}
 	}
@@ -128,7 +128,7 @@ func TestLivenessGoesOnPastASandboxThatFailsEveryTick(t *testing.T) {
 		t.Fatalf("Run = %v, want a quiet end", err)
 	}
 
-	if got := strings.Count(out.String(), "exit report does not decode"); got != 1 {
+	if got := strings.Count(out.String(), "status report does not decode"); got != 1 {
 		t.Fatalf("the error of %s was logged %d times over %d ticks, want once:\n%s", broken.ID, got, p.reads.Load(), out.String())
 	}
 	if !strings.Contains(out.String(), broken.ID) {
@@ -136,29 +136,25 @@ func TestLivenessGoesOnPastASandboxThatFailsEveryTick(t *testing.T) {
 	}
 }
 
-// exitProvider runs every sandbox: one fails its exit read every tick, and the other exits once that failure has repeated.
-type exitProvider struct {
+// dyingProvider fails every status read of broken, and reports dies gone once that failure has repeated.
+type dyingProvider struct {
 	models.Provider
-	broken, exits string
-	reads         atomic.Int32
+	broken, dies string
+	reads        atomic.Int32
 }
 
-func (*exitProvider) Name() string { return "fake" }
+func (*dyingProvider) Name() string { return "fake" }
 
-func (*exitProvider) Status(context.Context, string) (models.Status, error) {
-	return models.Status{Exists: true, State: models.StateRunning, PID: 42}, nil
-}
-
-func (p *exitProvider) ExitStatus(_ context.Context, id string) (*models.ExitStatus, error) {
+func (p *dyingProvider) Status(_ context.Context, id string) (models.Status, error) {
 	if id == p.broken {
 		p.reads.Add(1)
 
-		return nil, errors.New("the exit report does not decode")
+		return models.Status{}, errors.New("the status report does not decode")
 	}
-	// On main the first failed tick ended the task, so an exit that lands after the second one went unseen for up to a minute.
-	if id == p.exits && p.reads.Load() >= 2 {
-		return &models.ExitStatus{Code: 3}, nil
+	// On main the first failed tick ended the task, so a death that lands after the second one went unseen for up to a minute.
+	if id == p.dies && p.reads.Load() >= 2 {
+		return models.Status{}, nil
 	}
 
-	return nil, nil
+	return models.Status{Exists: true, State: models.StateRunning, PID: 42}, nil
 }

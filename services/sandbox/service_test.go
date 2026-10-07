@@ -7,6 +7,7 @@ import (
 	"io/fs"
 	"net/netip"
 	"os"
+	"reflect"
 	"slices"
 	"strings"
 	"testing"
@@ -20,7 +21,7 @@ import (
 )
 
 func alpine() sandbox.CreateRequest {
-	return sandbox.CreateRequest{Image: "alpine:3.20", Command: []string{"echo", "1"}}
+	return sandbox.CreateRequest{Image: "alpine:3.20"}
 }
 
 func TestCreateAnswersTheRecordAndTearsNothingDown(t *testing.T) {
@@ -111,66 +112,6 @@ func TestCreateTearsDownWhatItBuilt(t *testing.T) {
 				t.Errorf("the record is %s reason %q, want failed with a reason", l.repo.sb.State, l.repo.sb.FailedReason)
 			}
 		})
-	}
-}
-
-func appNeverStarted() *models.CommandNotStartedError {
-	return &models.CommandNotStartedError{Sandbox: "sandbox1", Reason: "no such file or directory", Code: models.CommandNotFoundExitCode}
-}
-
-// A create that waits on its app gets the refusal named after the program, and no sandbox is left behind it.
-func TestCreateRemovesASandboxWhoseAppNeverStarted(t *testing.T) {
-	r := &recorder{}
-	svc, l := newService(t, r, models.Sandbox{})
-	l.provider.startErr = appNeverStarted()
-
-	_, err := svc.Create(t.Context(), alpine())
-
-	var refused *models.CommandNotStartedError
-	if !errors.As(err, &refused) || refused.Command != "echo" || refused.Code != models.CommandNotFoundExitCode {
-		t.Fatalf("create = %v, want the refusal of echo with code 127", err)
-	}
-	if !l.repo.deleted || !slices.Contains(r.calls, "provider.Remove") {
-		t.Errorf("a refused create left its sandbox: %v", r.calls)
-	}
-}
-
-// A create no one waits on keeps the failed record, so a get still reads why.
-func TestCompleteKeepsTheRecordOfAnAppThatNeverStarted(t *testing.T) {
-	r := &recorder{}
-	svc, l := newService(t, r, models.Sandbox{})
-	l.provider.startErr = appNeverStarted()
-
-	sb, err := svc.Prepare(t.Context(), alpine())
-	if err != nil {
-		t.Fatalf("prepare: %v", err)
-	}
-	err = svc.Complete(t.Context(), sb.ID, alpine())
-
-	var refused *models.CommandNotStartedError
-	if !errors.As(err, &refused) {
-		t.Fatalf("complete = %v, want the refusal", err)
-	}
-	if l.repo.deleted {
-		t.Errorf("a create no one waits on removed its record: %v", r.calls)
-	}
-	if l.repo.sb.State != models.StateFailed || !strings.Contains(l.repo.sb.FailedReason, `could not run "echo"`) {
-		t.Errorf("the record is %s reason %q, want failed with the refusal", l.repo.sb.State, l.repo.sb.FailedReason)
-	}
-}
-
-// The refusal promises no sandbox is left, so one the removal could not free is a plain failure.
-func TestCreateIsNoRefusalWhenTheSandboxStays(t *testing.T) {
-	r := &recorder{fail: []string{"repo.Delete"}}
-	svc, l := newService(t, r, models.Sandbox{})
-	l.provider.startErr = appNeverStarted()
-
-	_, err := svc.Create(t.Context(), alpine())
-
-	var refused *models.CommandNotStartedError
-	var notRemoved *sandbox.NotRemovedError
-	if !errors.As(err, &notRemoved) || errors.As(err, &refused) || !strings.Contains(err.Error(), "was not removed") {
-		t.Errorf("create = %v, want a NotRemovedError that says the sandbox was not removed", err)
 	}
 }
 
@@ -893,8 +834,9 @@ func TestStartRunsAStoppedSandboxAgain(t *testing.T) {
 	if sb.State != models.StateRunning || sb.PID != 7 {
 		t.Errorf("the record is %s with pid %d, want running with pid 7", sb.State, sb.PID)
 	}
-	if sb.ExitStatus != nil {
-		t.Errorf("the record still holds the old exit %+v", *sb.ExitStatus)
+	// A process its policy ended stays ended across a start.
+	if len(l.provider.specs) != 0 || !reflect.DeepEqual(sb.Processes, stopped().Processes) {
+		t.Errorf("the start ran %v and left the processes %+v, want the ended one left as it was", l.provider.specs, sb.Processes)
 	}
 
 	// The record says running only once the sandbox is, so a failed start leaves it stopped.
@@ -957,8 +899,8 @@ func TestStartKeepsTheRecordStoppedWhenTheProviderFails(t *testing.T) {
 		t.Fatal("start returned no error")
 	}
 
-	if sb := l.repo.sb; sb.State != models.StateStopped || sb.ExitStatus == nil {
-		t.Errorf("the record is %s with exit %v after a failed start, want stopped with its exit kept", sb.State, sb.ExitStatus)
+	if sb := l.repo.sb; sb.State != models.StateStopped || !reflect.DeepEqual(sb.Processes, stopped().Processes) {
+		t.Errorf("the record is %s with processes %+v after a failed start, want stopped with its processes kept", sb.State, sb.Processes)
 	}
 }
 
@@ -977,8 +919,8 @@ func TestStartRecordsASandboxThatCameUpUnderAFailedStart(t *testing.T) {
 	}
 }
 
-// A shard-init that died at boot leaves a stopped sandbox, so the start lands its exit and its reason (SHARD-416).
-func TestStartRecordsTheExitAndTheReasonOfAShardInitThatDiedAtBoot(t *testing.T) {
+// A shard-init that died at boot leaves a stopped sandbox, so the start lands its reason (SHARD-416).
+func TestStartRecordsTheReasonOfAShardInitThatDiedAtBoot(t *testing.T) {
 	svc, l := newService(t, &recorder{fail: []string{"provider.Start"}}, stopped())
 	why := "mount /dev/vdb on /overlay: read-only file system"
 	l.provider.status = models.Status{Exists: true, State: models.StateStopped, SupervisorFailed: why}
@@ -991,9 +933,6 @@ func TestStartRecordsTheExitAndTheReasonOfAShardInitThatDiedAtBoot(t *testing.T)
 	want := sandbox.SupervisorFailedReason + ": " + why
 	if got.State != models.StateStopped || got.StoppedReason != want {
 		t.Errorf("the record says %s with the reason %q, want stopped with %q", got.State, got.StoppedReason, want)
-	}
-	if got.ExitStatus == nil || *got.ExitStatus != (models.ExitStatus{Code: models.SupervisorFailedExitCode}) {
-		t.Errorf("the record holds the exit %+v, want the supervisor's %d", got.ExitStatus, models.SupervisorFailedExitCode)
 	}
 }
 
@@ -1294,31 +1233,46 @@ func TestStopKeepsWhatOnlyRmFrees(t *testing.T) {
 	}
 }
 
-func TestStopRecordsTheExitStatus(t *testing.T) {
-	svc, l := newService(t, &recorder{}, running())
-	l.provider.exit = models.ExitStatus{Code: 143, Signal: 15}
+// supervised is a running sandbox whose process web runs and whose job ended before the stop.
+func supervised() models.Sandbox {
+	sb := running()
+	sb.Processes = []models.Process{proc("web", models.RestartUnlessStopped), exitedProcess()}
+
+	return sb
+}
+
+// guestOf seeds shard-init's table with what the record holds, as a guest that runs those processes reports it.
+func guestOf(l layers, sb models.Sandbox) {
+	for _, p := range sb.Processes {
+		l.provider.report(models.ProcessReport{Name: p.Name, ProcessStatus: p.Status})
+	}
+}
+
+func TestStopRecordsEachProcessThatRanAsStoppedWithItsExit(t *testing.T) {
+	svc, l := newService(t, &recorder{}, supervised())
+	guestOf(l, supervised())
 
 	if _, err := svc.Stop(t.Context(), "sandbox1"); err != nil {
 		t.Fatalf("stop: %v", err)
 	}
 
 	sb := l.repo.sb
-	if sb.State != models.StateStopped {
-		t.Errorf("the record says %q, want stopped", sb.State)
+	if sb.State != models.StateStopped || sb.PID != 0 || !sb.StoppedByOperator {
+		t.Errorf("the record says %s with pid %d and operator mark %v, want stopped with no pid and the mark", sb.State, sb.PID, sb.StoppedByOperator)
 	}
-	if sb.PID != 0 {
-		t.Errorf("the record still names the host pid %d of a sandbox that is gone", sb.PID)
+	web, job := sb.Processes[0].Status, sb.Processes[1].Status
+	if web.State != models.ProcessStopped || web.Exit == nil || web.Exit.Signal != 15 {
+		t.Errorf("web reads %+v, want stopped with the SIGTERM the stop sent", web)
 	}
-	if sb.ExitStatus == nil || sb.ExitStatus.Signal != 15 {
-		t.Errorf("the record holds the exit status %+v, want the SIGTERM the stop sent", sb.ExitStatus)
+	// job had ended before the stop, so the stop is not how it went.
+	if job.State != models.ProcessExited || job.Exit == nil || job.Exit.Code != 3 {
+		t.Errorf("job reads %+v, want exited with code 3 as before the stop", job)
 	}
 }
 
-// A shard-init that dies on the way down outranks the entrypoint exit the record took: its 125 and its reason are what inspect shows (SHARD-290).
-func TestStopRecordsTheExitAndTheReasonOfAShardInitThatDied(t *testing.T) {
-	sb := running()
-	sb.ExitStatus = &models.ExitStatus{Code: 3}
-	svc, l := newService(t, &recorder{}, sb)
+// A shard-init that dies on the way down names the reason the sandbox stopped (SHARD-290).
+func TestStopRecordsTheReasonOfAShardInitThatDied(t *testing.T) {
+	svc, l := newService(t, &recorder{}, supervised())
 	why := "supervisor: forward the stop to the entrypoint: operation not permitted"
 	l.provider.failsOnStop = why
 
@@ -1328,37 +1282,29 @@ func TestStopRecordsTheExitAndTheReasonOfAShardInitThatDied(t *testing.T) {
 
 	got := l.repo.sb
 	want := sandbox.SupervisorFailedReason + ": " + why
-	if got.State != models.StateStopped || got.StoppedReason != want {
-		t.Errorf("the record says %s with the reason %q, want stopped with %q", got.State, got.StoppedReason, want)
-	}
-	if got.ExitStatus == nil || *got.ExitStatus != (models.ExitStatus{Code: models.SupervisorFailedExitCode}) {
-		t.Errorf("the record holds the exit %+v, want the supervisor's %d", got.ExitStatus, models.SupervisorFailedExitCode)
+	if got.State != models.StateStopped || got.StoppedReason != want || got.Processes[0].Status.State != models.ProcessStopped {
+		t.Errorf("the record says %s with the reason %q and processes %+v, want stopped with %q and web stopped", got.State, got.StoppedReason, got.Processes, want)
 	}
 }
 
-// A stop that had to kill leaves no exit status: the supervisor died before it could record one.
-func TestStopRecordsNoExitStatusWhenTheSandboxWasKilled(t *testing.T) {
-	svc, l := newService(t, &recorder{}, running())
-	l.provider.waitErr = models.ErrNoExitStatus
+// A stop that had to kill leaves no new exit: the guest went before shard-init could report one.
+func TestStopRecordsNoExitWhenTheSandboxWasKilled(t *testing.T) {
+	svc, l := newService(t, &recorder{}, supervised())
+	guestOf(l, supervised())
+	l.provider.stopKills = true
 
 	if _, err := svc.Stop(t.Context(), "sandbox1"); err != nil {
 		t.Fatalf("stop: %v", err)
 	}
 
-	sb := l.repo.sb
-	if sb.State != models.StateStopped {
-		t.Errorf("the record says %q, want stopped", sb.State)
-	}
-	if sb.ExitStatus != nil {
-		t.Errorf("the record holds the exit status %+v of an entrypoint that never reported one", sb.ExitStatus)
+	if web := l.repo.sb.Processes[0].Status; web.State != models.ProcessStopped || web.Exit != nil {
+		t.Errorf("web reads %+v, want stopped with no exit", web)
 	}
 }
 
-// A second stop must not overwrite the exit status the first one recorded.
+// A second stop must not overwrite how the first one left the processes, and only marks the operator's stop.
 func TestStopIsIdempotent(t *testing.T) {
-	sb := running()
-	sb.State = models.StateStopped
-	sb.ExitStatus = &models.ExitStatus{Code: 143, Signal: 15}
+	sb := stopped()
 
 	r := &recorder{}
 	svc, l := newService(t, r, sb)
@@ -1367,11 +1313,11 @@ func TestStopIsIdempotent(t *testing.T) {
 		t.Fatalf("the second stop: %v", err)
 	}
 
-	if slices.Contains(r.calls, "provider.Stop") || slices.Contains(r.calls, "repo.Update") {
-		t.Errorf("the second stop changed something: %v", r.calls)
+	if slices.Contains(r.calls, "provider.Stop") {
+		t.Errorf("the second stop reached the substrate: %v", r.calls)
 	}
-	if got := l.repo.sb.ExitStatus; got == nil || got.Signal != 15 {
-		t.Errorf("the record holds %+v, want the exit status the first stop recorded", got)
+	if got := l.repo.sb; !reflect.DeepEqual(got.Processes, sb.Processes) || !got.StoppedByOperator {
+		t.Errorf("the record holds %+v with operator mark %v, want the processes the first stop recorded and the mark", got.Processes, got.StoppedByOperator)
 	}
 }
 
@@ -1411,12 +1357,12 @@ func TestStopReportsARecordWriteThatFailed(t *testing.T) {
 	}
 }
 
-func TestStopReportsAWaitThatFailedForAnotherReason(t *testing.T) {
-	svc, l := newService(t, &recorder{}, running())
-	l.provider.waitErr = errors.New("the exit status was unreadable")
+func TestStopReportsATableItCannotRead(t *testing.T) {
+	svc, l := newService(t, &recorder{}, supervised())
+	l.provider.tableErr = errors.New("read the process table: input/output error")
 
 	if _, err := svc.Stop(t.Context(), "sandbox1"); err == nil {
-		t.Fatal("an unreadable exit status returned no error")
+		t.Fatal("an unreadable process table returned no error")
 	}
 }
 
