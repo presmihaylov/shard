@@ -315,8 +315,9 @@ func readFramedReport(t *testing.T, path string) (models.ExitReport, bool) {
 	}
 
 	var report models.ExitReport
+	// A read across shard-init's clear and rewrite of a longer record ends on the new record's tail, so poll again.
 	if err := json.Unmarshal(line, &report); err != nil {
-		t.Fatalf("the exit record is not valid JSON: %v", err)
+		return models.ExitReport{}, false
 	}
 	if report.Kind != models.ExitReportKind {
 		return models.ExitReport{}, false
