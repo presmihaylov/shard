@@ -35,7 +35,8 @@ func (a App) capabilities(ctx context.Context, args []string) error {
 		supported bool
 	}{
 		{"create", caps.Create}, {"start", caps.Start}, {"stop", caps.Stop}, {"remove", caps.Remove},
-		{"pause", caps.Pause}, {"resume", caps.Resume}, {"fork", caps.Fork}, {"snapshot", caps.Snapshot}, {"swap", caps.Swap},
+		{"pause", caps.Pause}, {"resume", caps.Resume}, {"fork", caps.Fork}, {"snapshot", caps.Snapshot},
+		{"port", caps.Port}, {"swap", caps.Swap},
 	} {
 		fmt.Fprintf(w, "%s\t%t\n", verb.name, verb.supported)
 	}

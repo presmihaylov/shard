@@ -29,18 +29,22 @@ func ChownTapIn(namespace, name string, uid, gid int) error {
 
 // inNamespace runs do on this locked thread inside the namespace, and reports whether the thread got back to its own.
 func inNamespace(namespace string, do func() error) (bool, error) {
+	return inNamespaceAt(NamespacePath(namespace), do)
+}
+
+// inNamespaceAt is inNamespace for the namespace file at path.
+func inNamespaceAt(path string, do func() error) (bool, error) {
 	self, err := unix.Open("/proc/thread-self/ns/net", unix.O_RDONLY|unix.O_CLOEXEC, 0)
 	if err != nil {
 		return true, fmt.Errorf("open this thread's network namespace: %w", err)
 	}
-	home, err := visit(self, namespace, do)
+	home, err := visit(self, path, do)
 
 	return home, errors.Join(err, closeFD(self, "this thread's network namespace"))
 }
 
-// visit enters the namespace, runs do there and goes back to self.
-func visit(self int, namespace string, do func() error) (bool, error) {
-	path := NamespacePath(namespace)
+// visit enters the namespace at path, runs do there and goes back to self.
+func visit(self int, path string, do func() error) (bool, error) {
 	target, err := unix.Open(path, unix.O_RDONLY|unix.O_CLOEXEC, 0)
 	if err != nil {
 		return true, fmt.Errorf("open %s: %w", path, err)

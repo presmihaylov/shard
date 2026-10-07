@@ -7,12 +7,8 @@ import (
 	"github.com/presmihaylov/shard/models"
 )
 
-func TestNoCheckpointsRefusesEveryOptionalVerbByName(t *testing.T) {
+func TestNoCheckpointsRefusesEveryCheckpointVerbByName(t *testing.T) {
 	n := models.NoCheckpoints{Provider: "sysbox"}
-
-	if n.Capabilities() != (models.Capabilities{}) {
-		t.Errorf("got capabilities %+v, want none", n.Capabilities())
-	}
 
 	cases := map[string]error{
 		models.VerbPause:  n.Pause(t.Context(), "amber-otter-1a2b", "/snap"),

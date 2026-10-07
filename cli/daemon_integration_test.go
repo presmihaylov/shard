@@ -96,6 +96,7 @@ func TestDaemonStatusNamesTheDaemonAndItsProvider(t *testing.T) {
 		"pause":      checkpoints,
 		"resume":     checkpoints,
 		"fork":       strconv.FormatBool(itestProvider == gvisor.Name || itestProvider == firecracker.Name),
+		"port":       "true",
 		"plain_port": "30080",
 		"tls_port":   "30443",
 	}

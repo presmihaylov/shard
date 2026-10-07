@@ -184,9 +184,9 @@ func (p *Provider) Close() error {
 	return errors.Join(errs...)
 }
 
-// Capabilities: pause, resume and fork are each a VZ save or a restore, so a host without them has none; swap is the guest kernel's own.
+// Capabilities: pause, resume and fork are each a VZ save or a restore, so a host without them has none; a port rides vsock on every host, and swap is the guest kernel's own.
 func (p *Provider) Capabilities() models.Capabilities {
-	return models.Capabilities{Pause: p.cfg.SaveRestore, Resume: p.cfg.SaveRestore, Fork: p.cfg.SaveRestore, Swap: true}
+	return models.Capabilities{Pause: p.cfg.SaveRestore, Resume: p.cfg.SaveRestore, Fork: p.cfg.SaveRestore, Port: true, Swap: true}
 }
 
 // ReleaseRoot has nothing to give back: a VM pins nothing under the root between sandboxes.

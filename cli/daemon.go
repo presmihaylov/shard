@@ -89,6 +89,7 @@ func (a App) daemonStatus(ctx context.Context, args []string) error {
 	fmt.Fprintf(w, "pause\t%s\n", strconv.FormatBool(d.Capabilities.Pause))
 	fmt.Fprintf(w, "resume\t%s\n", strconv.FormatBool(d.Capabilities.Resume))
 	fmt.Fprintf(w, "fork\t%s\n", strconv.FormatBool(d.Capabilities.Fork))
+	fmt.Fprintf(w, "port\t%s\n", strconv.FormatBool(d.Capabilities.Port))
 	fmt.Fprintf(w, "plain_port\t%d\n", d.Proxy.PlainPort)
 	fmt.Fprintf(w, "tls_port\t%d\n", d.Proxy.TLSPort)
 

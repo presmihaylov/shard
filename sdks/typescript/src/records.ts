@@ -1,4 +1,4 @@
-// The records the daemon answers about sandboxes, apps, policies, secrets and snapshots, read into camelCase.
+// The records the daemon answers about sandboxes, apps, ports, policies, secrets and snapshots, read into camelCase.
 import { Fields } from "./decode.js";
 import { ProtocolError } from "./errors.js";
 
@@ -85,8 +85,41 @@ export interface SandboxInfo {
   /** The names of the secrets granted to the sandbox. */
   secrets: string[];
   policy: string | null;
+  /** The host ports the sandbox forwards, whether or not they listen now. */
+  ports: PortForward[];
   startedAt: Date | null;
   createdAt: Date;
+}
+
+/** PortForward carries a port on the host to a port on the sandbox's 127.0.0.1; public listens on 0.0.0.0 instead of the host's 127.0.0.1. */
+export interface PortForward {
+  hostPort: number;
+  guestPort: number;
+  public: boolean;
+}
+
+/** Port is one forward as the host serves it now. */
+export interface Port {
+  /** The sandbox id. */
+  sandbox: string;
+  sandboxName: string | null;
+  hostPort: number;
+  guestPort: number;
+  public: boolean;
+  /** What the listener binds: 127.0.0.1, or 0.0.0.0 for a public forward. */
+  address: string;
+  /** False while the sandbox is not running, or while the host refuses the port. */
+  listening: boolean;
+  /** Why a running sandbox's port does not listen, or else what the last connection hit. */
+  error: string | null;
+  /** The IPv4 addresses of the host a client reaches the port on while it listens. */
+  reachableOn: HostAddress[];
+}
+
+/** HostAddress is one IPv4 address of the host, and the interface that holds it. */
+export interface HostAddress {
+  interface: string;
+  address: string;
 }
 
 /** PolicyRule is one rule as `shard policy create` takes it: an action, allow or deny, and a rule, as `suffix:example.com tcp:443`. */
@@ -156,7 +189,7 @@ export interface Version {
   apiVersion: string;
 }
 
-/** Capabilities say which of the eight lifecycle verbs the daemon's provider supports, and whether it gives a sandbox swap; snapshot is the creation of a filesystem snapshot. */
+/** Capabilities say which of the nine lifecycle verbs the daemon's provider supports, and whether it gives a sandbox swap; snapshot is the creation of a filesystem snapshot, and port the forward of a host port. */
 export interface Capabilities {
   create: boolean;
   start: boolean;
@@ -166,6 +199,7 @@ export interface Capabilities {
   resume: boolean;
   fork: boolean;
   snapshot: boolean;
+  port: boolean;
   swap: boolean;
 }
 
@@ -190,6 +224,7 @@ export function sandboxInfo(value: unknown): SandboxInfo {
     app: command.length === 0 ? null : { command, exitStatus: exitStatus(fields.optionalObject("exit_status")), restart: restart(fields) },
     secrets: fields.strings("secrets"),
     policy: fields.optionalString("policy"),
+    ports: fields.list("ports").map(portForward),
     startedAt: fields.optionalDate("started_at"),
     createdAt: fields.date("created_at"),
   };
@@ -242,6 +277,22 @@ export function snapshot(value: unknown): Snapshot {
   };
 }
 
+export function port(value: unknown): Port {
+  const fields = Fields.of(value, "a port");
+
+  return {
+    sandbox: fields.string("sandbox"),
+    sandboxName: fields.optionalString("sandbox_name"),
+    hostPort: fields.int("host_port"),
+    guestPort: fields.int("guest_port"),
+    public: fields.bool("public"),
+    address: fields.string("address"),
+    listening: fields.bool("listening"),
+    error: fields.optionalString("error"),
+    reachableOn: fields.list("reachable_on").map((on) => ({ interface: on.string("interface"), address: on.string("address") })),
+  };
+}
+
 export function egressDecision(value: unknown): EgressDecision {
   const fields = Fields.of(value, "an egress decision");
 
@@ -276,6 +327,7 @@ export function capabilities(value: unknown): Capabilities {
     resume: fields.bool("resume"),
     fork: fields.bool("fork"),
     snapshot: fields.bool("snapshot"),
+    port: fields.bool("port"),
     swap: fields.bool("swap"),
   };
 }
@@ -290,6 +342,10 @@ export function records<T>(value: unknown, what: string, read: (record: unknown)
   }
 
   return value.map(read);
+}
+
+function portForward(fields: Fields): PortForward {
+  return { hostPort: fields.int("host_port"), guestPort: fields.int("guest_port"), public: fields.bool("public") };
 }
 
 function exitStatus(fields: Fields | null): ExitStatus | null {

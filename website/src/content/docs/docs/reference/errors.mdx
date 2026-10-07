@@ -136,7 +136,7 @@ If the daemon fails after the WebSocket of a command stream such as `shard exec`
 | `no_app` | 409 | App attach or app stop on a sandbox that `shard create` made, which has no app. |
 | `app_ended` | 409 | App stop after the app ended and its restart policy will not start it again. |
 | `unauthorized` | 401 | `shard serve`, when the request has no valid API token. |
-| `forbidden` | 403 | `shard serve`, when the token is valid but its scopes do not cover the route, or when no scope reaches the route, such as an unknown path or a host-only route. Also a create that names, or a fork that copies, a secret without the `secret:*` scope or a policy without the `policy:*` scope. |
+| `forbidden` | 403 | `shard serve`, when the token is valid but its scopes do not cover the route, or when no scope reaches the route, such as an unknown path or a host-only route. Also a create that names, or a fork that copies, a secret without the `secret:*` scope or a policy without the `policy:*` scope, and a create that forwards a port without the `port:write` scope. |
 | `timeout` | 504 | A start that the provider did not finish in 60 s, a stop, remove or restart whose provider status call did not answer in time, or an exec that the provider did not start in 20 s. Try again once the runtime is free. |
 | `command_not_started` | 422 | An exec, or the app of a create, whose command never started: it does not exist, it cannot run, or its interpreter does not exist. The message names the command and the reason. `exit_code` is 127 or 126. |
 | `internal` | 500 | Any other failure. The daemon log has the cause. Also `shard serve`, with status 502, when the daemon does not answer on its socket. |

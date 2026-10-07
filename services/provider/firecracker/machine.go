@@ -53,6 +53,8 @@ type machine struct {
 	execsMu sync.Mutex
 	// freezesOverlay is what the guest said when attached: an older shard-init fails every freeze on the overlay root.
 	freezesOverlay bool
+	// ports is the same for the forward port: an older shard-init refuses every port forward.
+	ports bool
 	// wholeLog says the vmm's dirty-page log holds every page the guest wrote since this process booted or loaded it, so a Diff is whole (SHARD-458).
 	wholeLog bool
 	cancel   context.CancelFunc
@@ -684,6 +686,7 @@ func (p *Provider) attach(ctx context.Context, id, dir, jail string, client *fca
 		return m.unattached(fmt.Errorf("sandbox %s: %w: the supervisor opened with a %q message, not its state", id, errNoGuest, state.Kind))
 	}
 	m.freezesOverlay = state.FreezesOverlay
+	m.ports = state.Ports
 	// The guest answered, so a fork's restore resumed; clear its marker, or a later pause would read as a cut fork (SHARD-321).
 	if err := os.Remove(filepath.Join(dir, restoringFile)); err != nil && !errors.Is(err, fs.ErrNotExist) {
 		return nil, errors.Join(fmt.Errorf("sandbox %s: clear the restore marker: %w", id, err), m.close())

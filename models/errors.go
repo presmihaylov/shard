@@ -56,6 +56,7 @@ const (
 	VerbPause  = "pause"
 	VerbResume = "resume"
 	VerbFork   = "fork"
+	VerbPort   = "port"
 	VerbSwap   = "swap"
 )
 

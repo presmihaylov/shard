@@ -158,9 +158,17 @@ A sandbox with a policy or a secret sends its traffic on TCP ports 80 and 443 th
 
 For rules, wildcards and the egress log, see [egress](/docs/security/egress/).
 
+## Forwarded ports
+
+`shard port add` forwards a host port to one port of one sandbox. By default the host listens on `127.0.0.1`, so only programs on the host can connect. With `--public` the host listens on `0.0.0.0`.
+
+**Caution: a public port is open to every network the host is on.** shard does not check who connects. Anyone who reaches the host on that port talks to the program in the sandbox, so forward a port publicly only to a program that checks its own clients. shard leaves the host's firewall as it is, and a firewall that drops the port keeps the forward closed to other machines.
+
+A forward changes nothing about the sandbox's own traffic. The egress floor and the policy still decide what the sandbox can reach.
+
 ## Who can reach the API
 
-The daemon listens only on a unix socket at `<root>/shard.sock`, which defaults to `/var/lib/shard/shard.sock`. It never listens on TCP.
+The daemon listens only on a unix socket at `<root>/shard.sock`, which defaults to `/var/lib/shard/shard.sock`. It never serves its API on TCP. The only TCP ports it opens are the egress proxy and resolver on the sandbox gateway, and the host ports that an operator forwards with `shard port add`. A forwarded port carries bytes to one port of one sandbox, and never reaches the API.
 
 The socket has mode `0600`, so only the user the daemon runs as can use it. On Linux that user is root. If the host has a group named `shard`, the daemon hands the socket to that group with mode `0660` when it starts, and members of the group can then use the socket without `sudo`.
 
@@ -196,8 +204,10 @@ A token's scopes limit which routes it can reach:
 | `exec` | exec, and every file route |
 | `secret:*` | every secret route, and grants on a sandbox |
 | `policy:*` | every policy route, and the policy of a sandbox |
+| `port:read` | listing the forwarded ports |
+| `port:write` | adding, changing and removing a forwarded port, a public one too |
 
-A token with no scopes, or with `*`, has every scope. A request to a route outside the token's scopes gets `403` with the code `forbidden`. A create that names a secret also needs `secret:*`, and a create that names a policy also needs `policy:*`. Through `shard serve`, server-only commands such as the image commands get `403` for every token.
+A token with no scopes, or with `*`, has every scope. A request to a route outside the token's scopes gets `403` with the code `forbidden`. A create that names a secret also needs `secret:*`, a create that names a policy also needs `policy:*`, and a create that forwards a port also needs `port:write`. Through `shard serve`, server-only commands such as the image commands get `403` for every token.
 
 Revoke a token by its id, or every token of one name:
 

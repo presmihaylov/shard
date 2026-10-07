@@ -1,8 +1,8 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import { ProtocolError } from "../src/errors.js";
-import { appExit, egressDecision, policy, records, sandboxInfo } from "../src/records.js";
-import { sandboxRecord } from "./helpers/records.js";
+import { appExit, egressDecision, policy, port, records, sandboxInfo } from "../src/records.js";
+import { portRecord, sandboxRecord } from "./helpers/records.js";
 
 test("a sandbox create made runs no app", () => {
   const info = sandboxInfo(sandboxRecord());
@@ -80,6 +80,23 @@ test("an egress decision with no port names none", () => {
   assert.equal(read.port, null);
   assert.equal(read.address, null);
   assert.equal(read.time.toISOString(), "2026-10-04T10:00:00.000Z");
+});
+
+test("a sandbox record names its forwards, and none when it has none", () => {
+  const ports = [{ host_port: 9000, guest_port: 8000, public: true }, { host_port: 9001, guest_port: 8001 }];
+  assert.deepEqual(sandboxInfo(sandboxRecord({ ports })).ports, [
+    { hostPort: 9000, guestPort: 8000, public: true },
+    { hostPort: 9001, guestPort: 8001, public: false },
+  ]);
+  assert.deepEqual(sandboxInfo(sandboxRecord()).ports, []);
+});
+
+test("a port that does not listen says why, and one with no reachable address answers none", () => {
+  const read = port(portRecord({ listening: false, error: "sandbox web is not running", reachable_on: undefined }));
+  assert.equal(read.listening, false);
+  assert.equal(read.error, "sandbox web is not running");
+  assert.deepEqual(read.reachableOn, []);
+  assert.throws(() => port(portRecord({ host_port: "9000" })), ProtocolError);
 });
 
 test("an empty list may come as null, and anything else but an array is refused", () => {

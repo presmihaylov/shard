@@ -8,6 +8,7 @@ import (
 	"os"
 	"path"
 	"path/filepath"
+	"runtime"
 	"slices"
 	"strconv"
 	"strings"
@@ -158,6 +159,8 @@ type Runtime struct {
 	User string
 	// Groups is the supplementary set that goes with User, so an exec adopts the same identity.
 	Groups []uint32
+	// NetnsPath is the network namespace the sandbox joined, empty for one the runtime made; a port forward dials in it.
+	NetnsPath string
 }
 
 // Runtime reads config.json back, so a second process in the sandbox starts where the entrypoint did.
@@ -185,7 +188,21 @@ func (b Bundle) Runtime() (Runtime, error) {
 		WorkDir:   supervisorFlag(spec.Process.Args, "-workdir"),
 		User:      supervisorFlag(spec.Process.Args, "-user"),
 		Groups:    groups,
+		NetnsPath: netnsOf(spec.Linux),
 	}, nil
+}
+
+func netnsOf(linux *specs.Linux) string {
+	if linux == nil {
+		return ""
+	}
+	for _, ns := range linux.Namespaces {
+		if ns.Type == specs.NetworkNamespace {
+			return ns.Path
+		}
+	}
+
+	return ""
 }
 
 // CheckImage refuses an image file or tree that left the host, by the sentinel a public route names.
@@ -348,8 +365,7 @@ func (s *Service) runtimeSpec(spec models.SandboxSpec, b Bundle, guest string) (
 		Mounts: mounts(b.ShardDir, b.Tmp, s.initPath, spec.Resources),
 		Annotations: map[string]string{
 			// Nothing else records which image tree the overlay stacks over, and a start after a stop needs it.
-			rootfsAnnotation:      spec.RootFS,
-			cpuFeaturesAnnotation: cpuFeatures,
+			rootfsAnnotation: spec.RootFS,
 			// The disk is no cgroup resource, so the bound rides here for inspect and fork to read back.
 			diskAnnotation: strconv.FormatInt(DiskBound(spec.Resources), 10),
 		},
@@ -363,6 +379,9 @@ func (s *Service) runtimeSpec(spec models.SandboxSpec, b Bundle, guest string) (
 			ReadonlyPaths:     readonlyPaths,
 			RootfsPropagation: "rprivate",
 		},
+	}
+	if features, ok := cpuFeaturesFor(runtime.GOARCH); ok {
+		rs.Annotations[cpuFeaturesAnnotation] = features
 	}
 	rs.Process.ApparmorProfile = s.apparmor
 	if s.seccomp == nil {

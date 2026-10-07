@@ -1,13 +1,13 @@
 import assert from "node:assert/strict";
 import { afterEach, beforeEach, test } from "node:test";
 import { App } from "../src/app.js";
-import { NotFoundError, ProtocolError, ServerError, ShardConnectionError } from "../src/errors.js";
+import { ConflictError, NotFoundError, PermissionDeniedError, ProtocolError, ServerError, ShardConnectionError, UnsupportedError } from "../src/errors.js";
 import { opClose } from "../src/frames.js";
 import { sandboxInfo } from "../src/records.js";
 import { Sandbox } from "../src/sandbox.js";
 import { Transport } from "../src/transport.js";
 import { FakeDaemon, type Answer, type Request } from "./helpers/daemon.js";
-import { sandboxRecord } from "./helpers/records.js";
+import { portRecord, sandboxRecord } from "./helpers/records.js";
 
 let daemon: FakeDaemon;
 let transport: Transport;
@@ -71,6 +71,62 @@ test("a forced remove says so", async () => {
   routes.set("DELETE /v0/sandboxes/sb_1", () => ({ status: 204 }));
   await sandbox.remove({ force: true });
   assert.equal(sent("DELETE", "/v0/sandboxes/sb_1").url.searchParams.get("force"), "true");
+});
+
+test("a port add puts the guest port on the host port's route and answers the forward", async () => {
+  routes.set("PUT /v0/sandboxes/sb_1/ports/9000", () => ({ status: 200, json: portRecord({ public: true, address: "0.0.0.0" }) }));
+  const added = await sandbox.ports.add(9000, 8000, { public: true });
+  assert.deepEqual(JSON.parse(sent("PUT", "/v0/sandboxes/sb_1/ports/9000").body), { guest_port: 8000, public: true });
+  assert.deepEqual(added, {
+    sandbox: "sb_1",
+    sandboxName: "web",
+    hostPort: 9000,
+    guestPort: 8000,
+    public: true,
+    address: "0.0.0.0",
+    listening: true,
+    error: null,
+    reachableOn: [{ interface: "lo", address: "127.0.0.1" }],
+  });
+  routes.set("PUT /v0/sandboxes/sb_1/ports/9001", () => ({ status: 200, json: portRecord({ host_port: 9001 }) }));
+  await sandbox.ports.add(9001, 8000);
+  assert.deepEqual(JSON.parse(sent("PUT", "/v0/sandboxes/sb_1/ports/9001").body), { guest_port: 8000 });
+});
+
+test("a port list reads every page of the sandbox's forwards, and a remove names the host port", async () => {
+  routes.set("GET /v0/sandboxes/sb_1/ports", (request) => {
+    if (request.url.searchParams.get("cursor") === "9000") {
+      return { status: 200, json: { ports: [portRecord({ host_port: 9001, listening: false, reachable_on: [], error: "connection refused" })], next: null } };
+    }
+
+    return { status: 200, json: { ports: [portRecord()], next: "9000" } };
+  });
+  routes.set("DELETE /v0/sandboxes/sb_1/ports/9000", () => ({ status: 204 }));
+  const listed = await sandbox.ports.list();
+  assert.deepEqual(
+    listed.map((each) => [each.hostPort, each.listening, each.error]),
+    [
+      [9000, true, null],
+      [9001, false, "connection refused"],
+    ],
+  );
+  await sandbox.ports.remove(9000);
+  sent("DELETE", "/v0/sandboxes/sb_1/ports/9000");
+});
+
+test("a port refusal throws the error of its code", async () => {
+  const refusals: [number, string, new (...args: never[]) => Error][] = [
+    [404, "not_found", NotFoundError],
+    [409, "in_use", ConflictError],
+    [409, "unsupported", UnsupportedError],
+    [403, "forbidden", PermissionDeniedError],
+  ];
+  for (const [status, code, kind] of refusals) {
+    routes.set("PUT /v0/sandboxes/sb_1/ports/9000", () => ({ status, json: { error: { code, message: `refused as ${code}`, holders: ["sb_2"] } } }));
+    await assert.rejects(sandbox.ports.add(9000, 8000), (err: unknown) => err instanceof kind && err.message.includes(`refused as ${code}`));
+  }
+  routes.set("DELETE /v0/sandboxes/sb_1/ports/9000", () => ({ status: 404, json: { error: { code: "not_found", message: "sandbox web forwards no host port 9000" } } }));
+  await assert.rejects(sandbox.ports.remove(9000), NotFoundError);
 });
 
 test("logs answer the app's output as text", async () => {

@@ -841,10 +841,10 @@ func TestForkCarriesThePolicyAndTellsTheHostBeforeTheRestore(t *testing.T) {
 	}
 }
 
-// copyRunState is every record field a copy does not take from its source: its own identity, its run, and what the substrate reports.
+// copyRunState is every record field a copy does not take from its source: its own identity, its run, what the substrate reports, and the host ports, which stay the source's.
 var copyRunState = []string{"ID", "Name", "Provider", "State", "ExitStatus", "StoppedReason", "FailedReason", "FailedPublic", "UnresponsiveReason", "Checkpoint", "Pausing", "Snapshot",
 	"PID", "NetnsPath", "Address", "HostInterface", "ExitChannel",
-	"Restart", "StartedAt", "RunStartedAt", "CreatedAt", "ForkedFrom"}
+	"Restart", "StartedAt", "RunStartedAt", "CreatedAt", "ForkedFrom", "Ports"}
 
 // withEveryPolicy sets every field a create asks for, so a field a copy drops shows up as a difference.
 func withEveryPolicy(sb models.Sandbox) models.Sandbox {
@@ -904,6 +904,25 @@ func TestForkCarriesEveryPolicyField(t *testing.T) {
 	}
 	if sb.Restart == nil || sb.Restart.RestartSpec != source.Restart.RestartSpec {
 		t.Errorf("the fork holds the restart %+v, want the source's policy %+v", sb.Restart, source.Restart.RestartSpec)
+	}
+}
+
+// A host port carries to one sandbox, so the fork starts with none and the source keeps its own.
+func TestForkStartsWithNoForwardsAndTheSourceKeepsItsOwn(t *testing.T) {
+	source := forkSource()
+	source.Ports = []models.PortForward{{HostPort: 9000, GuestPort: 8100}}
+	svc, l := newService(t, &recorder{}, source)
+
+	sb, err := svc.Fork(t.Context(), "web", sandbox.CopyRequest{Name: "web-2"})
+	if err != nil {
+		t.Fatalf("fork: %v", err)
+	}
+
+	if len(sb.Ports) != 0 || len(l.repo.created.Ports) != 0 {
+		t.Errorf("the fork forwards %v, want none", sb.Ports)
+	}
+	if !slices.Equal(l.repo.sb.Ports, source.Ports) {
+		t.Errorf("the source forwards %v after the fork, want %v", l.repo.sb.Ports, source.Ports)
 	}
 }
 

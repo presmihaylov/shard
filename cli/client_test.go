@@ -59,6 +59,7 @@ func TestDaemonStatusPrintsOneFieldPerLine(t *testing.T) {
 		"pause        true",
 		"resume       true",
 		"fork         false",
+		"port         true",
 		"plain_port   30080",
 		"tls_port     30443",
 	}, "\n")
@@ -67,7 +68,7 @@ func TestDaemonStatusPrintsOneFieldPerLine(t *testing.T) {
 	}
 }
 
-// The table lists all eight verbs in the order of the spec, then swap, the optional ones as the provider claims them.
+// The table lists all nine verbs in the order of the spec, then swap, the optional ones as the provider claims them.
 func TestCapabilitiesPrintsEveryVerbAndWhetherTheProviderRunsIt(t *testing.T) {
 	var out bytes.Buffer
 
@@ -88,6 +89,7 @@ func TestCapabilitiesPrintsEveryVerbAndWhetherTheProviderRunsIt(t *testing.T) {
 		"resume       true",
 		"fork         false",
 		"snapshot     true",
+		"port         true",
 		"swap         false",
 	}, "\n")
 	if got := strings.TrimSpace(out.String()); got != want {

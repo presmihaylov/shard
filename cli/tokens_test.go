@@ -370,6 +370,8 @@ func TestTokensScopesPrintsTheServerTable(t *testing.T) {
 		"exec             Run commands and access sandbox files",
 		"secret:*         Manage secrets and secret grants",
 		"policy:*         Manage policies and attach them to sandboxes",
+		"port:read        View the host ports forwarded into sandboxes",
+		"port:write       Forward host ports into sandboxes, publicly too, and remove the forwards",
 		"*                All available permissions",
 		"",
 	}, "\n")

@@ -18,6 +18,8 @@ func requireVerb(provider models.Provider, verb string) error {
 		claimed = caps.Resume
 	case models.VerbFork:
 		claimed = caps.Fork
+	case models.VerbPort:
+		claimed = caps.Port
 	case models.VerbSwap:
 		claimed = caps.Swap
 	default:

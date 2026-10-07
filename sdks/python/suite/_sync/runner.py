@@ -7,7 +7,7 @@ import sys
 from collections.abc import Collection
 
 from .._shared import Skip, Tally, drain, failure_text, first_line
-from . import apps, auth, capture, commands, files, lifecycle, logs, policies, secrets, snapshots
+from . import apps, auth, capture, commands, files, lifecycle, logs, policies, ports, secrets, snapshots
 from .harness import Check, Context
 from .mode import catch_strays, within
 
@@ -22,6 +22,7 @@ CHECKS: list[Check] = [
     *logs.CHECKS,
     *secrets.CHECKS,
     *policies.CHECKS,
+    *ports.CHECKS,
 ]
 
 CHECK_TIMEOUT = 300.0

@@ -32,7 +32,8 @@ const (
 	// maxPerSource bounds one sandbox's share of them, so no single guest can fill the pool for its siblings.
 	maxPerSource = 16
 
-	upstreamTimeout = 5 * time.Second
+	// upstreamTimeout is each upstream's budget alone, so the two the daemon names both fit in the 5 s a guest's stub waits.
+	upstreamTimeout = 2 * time.Second
 	idleTimeout     = 5 * time.Second
 )
 
@@ -351,12 +352,9 @@ func servfail(header dnsmessage.Header, q *dnsmessage.Question, fault error) ([]
 
 // forward sends the question to the first upstream that answers, over the protocol it came in on.
 func (s *Server) forward(ctx context.Context, proto string, msg []byte, id uint16) ([]byte, error) {
-	ctx, cancel := context.WithTimeout(ctx, s.timeout)
-	defer cancel()
-
 	var errs []error
 	for _, upstream := range s.cfg.Upstreams {
-		answer, err := exchange(ctx, proto, upstream, msg)
+		answer, err := exchange(ctx, proto, upstream, msg, s.timeout)
 		if err != nil {
 			errs = append(errs, fmt.Errorf("%s: %w", upstream, err))
 
@@ -383,7 +381,11 @@ func (s *Server) forward(ctx context.Context, proto string, msg []byte, id uint1
 }
 
 // exchange sends one message and reads one answer over a connection of its own, so answers never cross.
-func exchange(ctx context.Context, proto string, upstream netip.AddrPort, msg []byte) (answer []byte, err error) {
+func exchange(ctx context.Context, proto string, upstream netip.AddrPort, msg []byte, timeout time.Duration) (answer []byte, err error) {
+	// A packet this upstream drops spends its own budget, never the next upstream's (SHARD-785).
+	ctx, cancel := context.WithTimeout(ctx, timeout)
+	defer cancel()
+
 	var dialer net.Dialer
 
 	conn, err := dialer.DialContext(ctx, proto, upstream.String())

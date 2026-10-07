@@ -651,6 +651,12 @@ check "the scan passes the here-string" "$(quiet_grep_hazards "${HERE_FIXTURE}")
 check "the scan finds none in e2e.sh or e2e-fc.sh" "$(quiet_grep_hazards "${HERE}/e2e.sh" "${HERE}/e2e-fc.sh")" ""
 rm -rf "${STUB_GREP_DIR}"
 
+echo "== public_address reads the first address port add --public named beyond loopback"
+check "loopback, then two interfaces" "$(printf 'lo     127.0.0.1:12379\neth0   192.0.2.20:12379\neth1   198.51.100.7:12379\n' | public_address)" "192.0.2.20"
+check "loopback only" "$(printf 'lo     127.0.0.1:12379\n' | public_address)" ""
+check "no output" "$(public_address </dev/null)" ""
+
+echo
 echo "== both scripts parse"
 bash -n "${HERE}/e2e.sh"
 check "bash -n e2e.sh" "$?" "0"
@@ -664,4 +670,4 @@ if [ "${FAILURES}" -ne 0 ]; then
 	exit 1
 fi
 
-echo "e2e self-test PASSED: the root guard, the provider guard, the host guard, the unmount, the teardown, the daemon wait, the timer, the failure report, the exec status, the echo digests, the entrypoint clock, the env check, the host net sweep, the line match and the grep -q scan"
+echo "e2e self-test PASSED: the root guard, the provider guard, the host guard, the unmount, the teardown, the daemon wait, the timer, the failure report, the exec status, the echo digests, the entrypoint clock, the env check, the host net sweep, the line match, the grep -q scan and the public address"

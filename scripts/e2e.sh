@@ -42,6 +42,9 @@ SERVE_PORT=${SERVE_PORT:-12376}
 LONE_PORT=${LONE_PORT:-12377}
 # The loopback port where socat terminates TLS in front of the first, as the proxy of a real setup does.
 FRONT_TLS_PORT=${FRONT_TLS_PORT:-12378}
+# The host port the port steps forward, and the guest port of the listener behind it (SHARD-789).
+FORWARD_PORT=${FORWARD_PORT:-12379}
+GUEST_PORT=8000
 
 # The root the run must never delete, and the name every sandbox veth on the host starts with.
 PRODUCTION_ROOT="/var/lib/shard"
@@ -866,6 +869,88 @@ fork_steps() {
 	expect_exec "before-the-fork" "the source runs on after the fork is gone" /bin/cat /root/at-fork
 }
 
+# track_sandbox and untrack_sandbox keep FEATURE_IDS current, so teardown sweeps a sandbox a failed step left.
+track_sandbox() { FEATURE_IDS="${FEATURE_IDS} $1"; }
+untrack_sandbox() {
+	local kept="" held
+	for held in ${FEATURE_IDS}; do [ "${held}" = "$1" ] || kept="${kept} ${held}"; done
+	FEATURE_IDS="${kept}"
+}
+
+# drop_sandbox removes a sandbox a step made and stops tracking it, so the next step starts from a clean host.
+drop_sandbox() {
+	shard remove --force "$1" >/dev/null 2>&1 || fail "remove did not free the feature sandbox $1"
+	untrack_sandbox "$1"
+}
+
+# port_reply sends one line to a port and prints the line that comes back; it fails when nothing answers in 5 s.
+port_reply() {
+	# shellcheck disable=SC2016 # the inner bash expands its own arguments
+	timeout 5 bash -c 'exec 3<>"/dev/tcp/$1/$2" && printf "%s\n" "$3" >&3 && IFS= read -r line <&3 && printf "%s\n" "${line}"' _ "$1" "$2" "$3"
+}
+
+# port_answer retries port_reply for 10 s, since the listener in the guest comes up in its own time.
+port_answer() {
+	local reply=""
+	for _ in $(seq 1 50); do
+		reply=$(port_reply "$1" "${FORWARD_PORT}" "$2") && [ -n "${reply}" ] && break
+		sleep 0.2
+	done
+	printf '%s\n' "${reply}"
+}
+
+# public_address prints the first address that port add --public named beyond loopback.
+public_address() { awk '{ split($2, at, ":"); if (at[1] !~ /^127\./) { print at[1]; exit } }'; }
+
+# Arguments go to run so a microVM gets its memory bound.
+# shellcheck disable=SC2120 # only e2e-fc.sh passes run flags
+port_steps() {
+	local id out address
+
+	step "forward a host port to a listener on the sandbox's 127.0.0.1"
+	id=$(shard run -d "$@" --name e2e-port "${IMAGE}" /bin/sh -c "exec nc -lk -p ${GUEST_PORT} -s 127.0.0.1 -e /bin/sh -c 'read line; echo guest:\$line'")
+	track_sandbox "${id}"
+	shard port add e2e-port "${FORWARD_PORT}:${GUEST_PORT}" >/dev/null
+	expect "$(port_answer 127.0.0.1 ping)" "guest:ping" "127.0.0.1:${FORWARD_PORT} carried a line in and the guest's answer out"
+	has_line "^e2e-port +${FORWARD_PORT} +${GUEST_PORT} +private +127.0.0.1:${FORWARD_PORT}" <<<"$(shard port list)" || fail "port list does not show the forward: $(shard port list)"
+	say "port list shows the private forward"
+
+	step "a forward outlives a stop and a start"
+	shard stop e2e-port >/dev/null
+	port_reply 127.0.0.1 "${FORWARD_PORT}" stopped >/dev/null 2>&1 && fail "host port ${FORWARD_PORT} answered while the sandbox was stopped"
+	has_line "^e2e-port +${FORWARD_PORT} +${GUEST_PORT} +private +-$" <<<"$(shard port list e2e-port)" || fail "the stopped sandbox lost its forward: $(shard port list e2e-port)"
+	say "the stopped sandbox keeps its forward, and the host port is shut"
+	shard start e2e-port >/dev/null
+	expect "$(port_answer 127.0.0.1 again)" "guest:again" "the start opened host port ${FORWARD_PORT} again"
+
+	step "a daemon restart opens the forward again"
+	stop_daemon || fail "the socket ${SOCKET} outlived the daemon"
+	port_reply 127.0.0.1 "${FORWARD_PORT}" down >/dev/null 2>&1 && fail "host port ${FORWARD_PORT} answered with no daemon"
+	start_daemon || fail "the daemon did not come up"
+	expect "$(port_answer 127.0.0.1 back)" "guest:back" "the restarted daemon opened host port ${FORWARD_PORT} again"
+
+	step "--public listens on every interface, and adding the port without it narrows it again"
+	out=$(shard port add e2e-port "${FORWARD_PORT}:${GUEST_PORT}" --public 2>/dev/null)
+	address=$(public_address <<<"${out}")
+	[ -n "${address}" ] || fail "port add --public named no address beyond loopback: ${out}"
+	expect "$(port_answer "${address}" wide)" "guest:wide" "${address}:${FORWARD_PORT} reaches the guest"
+	shard port add e2e-port "${FORWARD_PORT}:${GUEST_PORT}" >/dev/null
+	port_reply "${address}" "${FORWARD_PORT}" narrow >/dev/null 2>&1 && fail "${address}:${FORWARD_PORT} still answered once the forward was private again"
+	expect "$(port_answer 127.0.0.1 narrow)" "guest:narrow" "127.0.0.1:${FORWARD_PORT} still reaches the guest"
+
+	step "remove the forward and the host port shuts"
+	expect "$(shard port remove e2e-port "${FORWARD_PORT}")" "${FORWARD_PORT}" "port remove printed the host port"
+	port_reply 127.0.0.1 "${FORWARD_PORT}" gone >/dev/null 2>&1 && fail "host port ${FORWARD_PORT} answered after its forward was removed"
+	expect "$(shard port list --format json e2e-port)" "[]" "port list shows no forward left"
+
+	step "remove the sandbox and its forwards go with it"
+	shard port add e2e-port "${FORWARD_PORT}:${GUEST_PORT}" >/dev/null
+	expect "$(port_answer 127.0.0.1 last)" "guest:last" "the forward added again reaches the guest"
+	drop_sandbox "${id}"
+	port_reply 127.0.0.1 "${FORWARD_PORT}" removed >/dev/null 2>&1 && fail "host port ${FORWARD_PORT} answered after its sandbox was removed"
+	say "the remove shut host port ${FORWARD_PORT}"
+}
+
 # E2E_LIB_ONLY lets the self-test source the helpers above without driving a sandbox.
 if [ -n "${E2E_LIB_ONLY:-}" ]; then
 	return 0
@@ -1578,20 +1663,6 @@ expect "${GOT}" "from-stdin" "what this shell piped in came back out of the sand
 # These steps reach the create verbs the CLI blocks past: pending, failed, the exec cap, OOM, the policy and a live follow.
 # Each is one function that makes its own sandboxes over the socket, asserts, and removes them.
 
-# track_sandbox and untrack_sandbox keep FEATURE_IDS current, so teardown sweeps a sandbox a failed step left.
-track_sandbox() { FEATURE_IDS="${FEATURE_IDS} $1"; }
-untrack_sandbox() {
-	local kept="" held
-	for held in ${FEATURE_IDS}; do [ "${held}" = "$1" ] || kept="${kept} ${held}"; done
-	FEATURE_IDS="${kept}"
-}
-
-# drop_sandbox removes a sandbox a step made and stops tracking it, so the next step starts from a clean host.
-drop_sandbox() {
-	shard remove --force "$1" >/dev/null 2>&1 || fail "remove did not free the feature sandbox $1"
-	untrack_sandbox "$1"
-}
-
 # api_create posts a create body and prints the new record; the query is empty for at once, or ?wait=true.
 api_create() {
 	curl -sS --unix-socket "${SOCKET}" -X POST -H 'Content-Type: application/json' -d "$2" "http://shard/v0/sandboxes$1"
@@ -2147,6 +2218,7 @@ http_follow_steps
 oom_stop_steps
 disk_bound_steps
 stop_grace_steps
+port_steps
 
 # checkpoint_refusals prove a provider without checkpoints refuses each verb by name and leaves the sandbox running.
 checkpoint_refusals() {

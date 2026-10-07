@@ -7,9 +7,11 @@ import gc
 import os
 import re
 import shutil
+import socket
 import ssl
 import tempfile
 import traceback
+import urllib.parse
 from collections.abc import Iterator
 from pathlib import Path
 from typing import Literal
@@ -67,6 +69,19 @@ def named(name: str | None, what: str) -> str:
 def matches(text: str, pattern: str, what: str = "") -> None:
     if re.search(pattern, text) is None:
         raise AssertionError(f"{what + ': ' if what else ''}{_shown(text)} does not match {pattern!r}")
+
+
+def on_this_host() -> bool:
+    """Whether SHARD_REMOTE names this host, where a forward's 127.0.0.1 is the suite's own."""
+    return urllib.parse.urlsplit(os.environ.get("SHARD_REMOTE", "")).hostname in ("127.0.0.1", "localhost", "::1")
+
+
+def free_port() -> int:
+    """A port nothing on this host listens on now, so the daemon may bind it next."""
+    with socket.socket() as probe:
+        probe.bind(("127.0.0.1", 0))
+        port: int = probe.getsockname()[1]
+        return port
 
 
 @attrs.frozen

@@ -53,6 +53,11 @@ func (s *Service) Pause(ctx context.Context, ref string) (models.Sandbox, error)
 		return models.Sandbox{}, wrongState(id, sb, "pause takes a running sandbox", models.CodeSandboxNotRunning)
 	}
 
+	// A save resets every stream into the guest; a pause that fails leaves it running, and the ports task puts the forwards back.
+	if err := s.closePorts(id); err != nil {
+		return models.Sandbox{}, err
+	}
+
 	dir, err := s.cfg.Repo.CheckpointDir(id)
 	if err != nil {
 		return models.Sandbox{}, err
@@ -275,6 +280,9 @@ func (s *Service) Resume(ctx context.Context, ref string) (models.Sandbox, error
 	if err := RecordRunning(ctx, s.cfg.Repo, s.cfg.Provider, id, true); err != nil {
 		return models.Sandbox{}, err
 	}
+	if err := s.openPorts(id); err != nil {
+		return models.Sandbox{}, err
+	}
 
 	return s.record(id)
 }
@@ -301,7 +309,7 @@ func (s *Service) Fork(ctx context.Context, ref string, req CopyRequest) (sb mod
 
 	var td Teardown
 
-	// The capture holds the source's run, so an entrypoint that had exited before it has in the fork too.
+	// The capture holds the source's run, so an entrypoint that had exited before it has in the fork too; its host ports stay the source's.
 	claim, err := s.claimCopy(ctx, &td, req, models.Sandbox{
 		ForkedFrom: source,
 		Image:      src.Image,
