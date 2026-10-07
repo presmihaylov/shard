@@ -936,7 +936,7 @@ port_steps() {
 	step "remove the forward and the host port shuts"
 	expect "$(shard port remove e2e-port "${FORWARD_PORT}")" "${FORWARD_PORT}" "port remove printed the host port"
 	port_reply 127.0.0.1 "${FORWARD_PORT}" gone >/dev/null 2>&1 && fail "host port ${FORWARD_PORT} answered after its forward was removed"
-	expect "$(shard port list e2e-port --format json)" "[]" "port list shows no forward left"
+	expect "$(shard port list --format json e2e-port)" "[]" "port list shows no forward left"
 	drop_sandbox "${id}"
 }
 
