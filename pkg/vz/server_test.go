@@ -5,6 +5,7 @@ import (
 	"io"
 	"net"
 	"os"
+	"strings"
 	"syscall"
 	"testing"
 	"time"
@@ -108,6 +109,50 @@ func TestGuestEOFEndsABlockedWrite(t *testing.T) {
 		}
 	case <-time.After(time.Second):
 		t.Fatal("the guest EOF left a write blocked")
+	}
+}
+
+// leftGuest sent its answer and closed, so a write to it fails while the answer is still on its way.
+type leftGuest struct {
+	net.Conn
+	failed chan struct{}
+	answer io.Reader
+}
+
+func (c leftGuest) Read(p []byte) (int, error) {
+	<-c.failed
+	// A loaded host reads the answer only after the write to the guest has failed.
+	time.Sleep(50 * time.Millisecond)
+
+	return c.answer.Read(p)
+}
+
+func (c leftGuest) Write([]byte) (int, error) {
+	close(c.failed)
+
+	return 0, syscall.EPIPE
+}
+
+func TestAGuestThatLeftStillDeliversWhatItSent(t *testing.T) {
+	server, client := net.Pipe()
+	host, guest := net.Pipe()
+	closePeersOnCleanup(t, server, client, host, guest)
+	done := make(chan error, 1)
+	go func() {
+		done <- splice(server, leftGuest{Conn: host, failed: make(chan struct{}), answer: strings.NewReader("exit")})
+	}()
+	if _, err := client.Write([]byte("stdin close")); err != nil {
+		t.Fatal(err)
+	}
+	got, err := io.ReadAll(client)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(got) != "exit" {
+		t.Fatalf("the client read %q, want the exit the guest sent before it left", got)
+	}
+	if err := <-done; err != nil {
+		t.Fatal(err)
 	}
 }
 
