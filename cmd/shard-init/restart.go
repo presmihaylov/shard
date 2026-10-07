@@ -14,12 +14,12 @@ const (
 	backoffCap   = models.RestartBackoffCap * time.Second
 )
 
-// restartPolicy is what the flags fixed at create: when to start the entrypoint again, and how often.
+// restartPolicy is what a run fixed: when to start the process again, and how often.
 type restartPolicy struct {
 	policy  models.RestartPolicy
 	retries int
 	backoff time.Duration
-	// reset is how long the entrypoint must run since its last start before an exit clears the count.
+	// reset is how long the process must run since its last start before an exit clears the count.
 	reset time.Duration
 }
 
@@ -28,15 +28,15 @@ func parseRestart(policy string, retries int, backoff, reset time.Duration) (res
 	switch parsed.policy {
 	case models.RestartNo:
 		return parsed, nil
-	case models.RestartOnFailure, models.RestartAlways:
+	case models.RestartOnFailure, models.RestartAlways, models.RestartUnlessStopped:
 	default:
-		return restartPolicy{}, fmt.Errorf("-restart must be no, on-failure or always, got %q", policy)
+		return restartPolicy{}, fmt.Errorf("the restart policy must be no, on-failure, always or unless-stopped, got %q", policy)
 	}
 	if retries < 0 {
-		return restartPolicy{}, fmt.Errorf("-retries cannot be negative, got %d", retries)
+		return restartPolicy{}, fmt.Errorf("the retries cannot be negative, got %d", retries)
 	}
 	if backoff <= 0 {
-		return restartPolicy{}, fmt.Errorf("-backoff must be positive, got %s", backoff)
+		return restartPolicy{}, fmt.Errorf("the backoff must be positive, got %s", backoff)
 	}
 
 	return parsed, nil
@@ -50,7 +50,7 @@ func (r restartPolicy) limited() bool {
 // applies says whether this exit asks for a start again under the policy.
 func (r restartPolicy) applies(exit models.ExitStatus) bool {
 	switch r.policy {
-	case models.RestartAlways:
+	case models.RestartAlways, models.RestartUnlessStopped:
 		return true
 	case models.RestartOnFailure:
 		return exit.Code != 0 || exit.Signal != 0
@@ -59,18 +59,16 @@ func (r restartPolicy) applies(exit models.ExitStatus) bool {
 	}
 }
 
-// schedule arms the next start again, or records the give-up once the retries are spent.
-func (r restartPolicy) schedule(exit models.ExitStatus, count *models.RestartCount) <-chan time.Time {
+// next says what follows an exit after started starts again: one more after the wait, or the state the process ends in.
+func (r restartPolicy) next(exit models.ExitStatus, started int) (time.Duration, models.ProcessState) {
 	if !r.applies(exit) {
-		return nil
+		return 0, models.ProcessExited
 	}
-	if r.limited() && count.Count >= r.retries {
-		count.GaveUp = true
-
-		return nil
+	if r.limited() && started >= r.retries {
+		return 0, models.ProcessGaveUp
 	}
 
-	return time.After(r.wait(count.Count))
+	return r.wait(started), models.ProcessRestarting
 }
 
 // wait doubles per start again so a crash loop never spins the host, and stops growing at the cap.

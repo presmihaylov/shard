@@ -21,29 +21,38 @@ const (
 	LogsPort    uint32 = 5002
 )
 
-// LogsVersion is the logs port protocol a guest names in its state; no raw output can forge a field of the control stream.
-const LogsVersion = 1
+// LogsVersion is the logs port protocol a guest names in its state: from 2, one connection per process, opened by a LogsOpen line.
+const LogsVersion = 2
+
+// ProcessVersion is the process protocol a guest names in its state; zero is a guest from before named processes, which runs none until a stop and start.
+const ProcessVersion = 1
+
+// LogsOpen is the line a host sends first on a logs connection: the process whose output it takes.
+type LogsOpen struct {
+	Name string `json:"name"`
+}
 
 // LogsStopped is what a host sends in place of a resume or an ack once its log refuses the output, so the guest waits for no ack of it.
 const LogsStopped uint64 = math.MaxUint64
 
-// The kinds a control message carries. The host sends the first nine; the guest answers each with done or failure, and sends the rest on its own.
+// The kinds a control message carries. The host sends the first ten; the guest answers each with done or failure, and sends the rest on its own.
 const (
-	KindRun       = "run"
-	KindSignal    = "signal"
-	KindStop      = "stop"
-	KindStopApp   = "stop-app"
-	KindReaddress = "readdress"
-	KindReseed    = "reseed"
-	KindFreeze    = "freeze"
-	KindThaw      = "thaw"
-	KindKill      = "kill"
-	KindDone      = "done"
-	KindFailure   = "failure"
-	KindState     = "state"
-	KindReady     = "ready"
-	KindExit      = "exit"
-	KindRestarts  = "restarts"
+	// KindSetup is once per boot, before any process: the work directory and the trust bundle.
+	KindSetup       = "setup"
+	KindRun         = "run"
+	KindStopProcess = "stop-process"
+	KindSignal      = "signal"
+	KindStop        = "stop"
+	KindReaddress   = "readdress"
+	KindReseed      = "reseed"
+	KindFreeze      = "freeze"
+	KindThaw        = "thaw"
+	KindKill        = "kill"
+	KindDone        = "done"
+	KindFailure     = "failure"
+	KindState       = "state"
+	// KindProcess is one process's new status.
+	KindProcess = "process"
 	// KindOOM says the guest hit its memory bound, every guest process is gone, and the VM powers off.
 	KindOOM = "oom"
 	// KindSupervisorFailed is shard-init's own death: a VM halts when PID 1 exits, so the 125 goes over the wire first.
@@ -54,14 +63,15 @@ const (
 type Message struct {
 	Kind string `json:"kind"`
 	// ID numbers a host request, and the guest's done or failure carries it back; an event has none.
-	ID int `json:"id,omitempty"`
-	// Run is what the entrypoint runs as, sent once on the first control connection.
-	Run *RunSpec `json:"run,omitempty"`
+	ID    int      `json:"id,omitempty"`
+	Setup *Setup   `json:"setup,omitempty"`
+	Run   *RunSpec `json:"run,omitempty"`
+	// Name and Grace on a stop-process: TERM the process, then KILL it once Grace passes; zero kills at once.
+	Name  string        `json:"name,omitempty"`
+	Grace time.Duration `json:"grace,omitempty"`
 	// PID and Signal name one signal to a process shard-init started, TERM or KILL.
 	PID    int    `json:"pid,omitempty"`
 	Signal string `json:"signal,omitempty"`
-	// Force on a stop-app kills the app where it would term it.
-	Force bool `json:"force,omitempty"`
 	// Address is the new guest address after a fork restored a copy of the source.
 	Address *Address `json:"address,omitempty"`
 	// Seed is host entropy for a restored guest's crng, which woke with the key of every other restore of the same save.
@@ -70,11 +80,15 @@ type Message struct {
 	Now int64 `json:"now,omitempty"`
 	// Verb on a freeze names what holds the guest frozen, which a command the guest refuses meanwhile is told.
 	Verb string `json:"verb,omitempty"`
-	// Ready says the entrypoint forked; a state replay on a new connection carries it too.
+	// Ready on a state replay says the guest took its setup.
 	Ready bool `json:"ready,omitempty"`
-	// Exit is how the entrypoint last ended, and Restarts what the restart policy kept.
-	Exit     *models.ExitStatus   `json:"exit,omitempty"`
-	Restarts *models.RestartCount `json:"restarts,omitempty"`
+	// Version on a state replay is the guest's ProcessVersion.
+	Version int `json:"version,omitempty"`
+	// Process is one process's report, and Processes on a state replay every one the guest holds.
+	Process   *models.ProcessReport  `json:"process,omitempty"`
+	Processes []models.ProcessReport `json:"processes,omitempty"`
+	// Exit on a supervisor-failed is the code the guest dies with.
+	Exit *models.ExitStatus `json:"exit,omitempty"`
 	// OOM on a state replay says the bound took every guest process while no host was attached to hear it.
 	OOM bool `json:"oom,omitempty"`
 	// Frozen on a state replay says the guest's root still holds its writes, as a pause left it.
@@ -85,23 +99,36 @@ type Message struct {
 	FreezesOverlay bool `json:"freezes_overlay,omitempty"`
 	// Error is why the guest could not do what the host asked, on the failure that answers the request, or why the supervisor gave up.
 	Error string `json:"error,omitempty"`
+	// Code on a failed run is the shell's code for a command that could not start, 126 or 127; zero is a failure of anything else.
+	Code int `json:"code,omitempty"`
+	// Taken on a failed run says a process of that name still runs or waits to start again.
+	Taken bool `json:"taken,omitempty"`
+	// Outdated on a failure says the guest's PID 1 predates the request, which it takes only after a stop and start.
+	Outdated bool `json:"outdated,omitempty"`
 }
 
-// RunSpec is what the host resolved for the entrypoint; the guest checks nothing against an image.
+// Setup is what the guest does once per boot before any process: make the sandbox's work directory and write the trust bundle.
+type Setup struct {
+	WorkDir string `json:"workdir,omitempty"`
+	// Trust is the merged CA bundle a fronted guest writes; a VM has no upper layer a host could plant it in.
+	Trust *Trust `json:"trust,omitempty"`
+}
+
+// RunSpec is one named process as the host resolved it; the guest checks nothing against an image.
 type RunSpec struct {
+	Name    string   `json:"name"`
 	Argv    []string `json:"argv"`
 	Env     []string `json:"env,omitempty"`
 	WorkDir string   `json:"workdir,omitempty"`
-	// User is uid:gid, and Groups the supplementary set, both resolved on the host; empty keeps root.
+	// User is uid:gid with Groups the supplementary set, both resolved on the host, or with Lookup what the caller named, for the guest to resolve against its live passwd; empty keeps root.
 	User   string   `json:"user,omitempty"`
 	Groups []uint32 `json:"groups,omitempty"`
-	// The restart policy, in the shape shard-init takes on its flags on Linux.
+	Lookup bool     `json:"lookup,omitempty"`
+	// Restart is the policy; Backoff and Reset of zero take the guest's defaults.
 	Restart models.RestartPolicy `json:"restart,omitempty"`
 	Retries int                  `json:"retries,omitempty"`
 	Backoff time.Duration        `json:"backoff,omitempty"`
 	Reset   time.Duration        `json:"reset,omitempty"`
-	// Trust is the merged CA bundle a fronted guest writes before the entrypoint; a VM has no upper layer a host could plant it in.
-	Trust *Trust `json:"trust,omitempty"`
 }
 
 // Trust is the image roots plus the proxy CA, at the path the image already reads its roots from.

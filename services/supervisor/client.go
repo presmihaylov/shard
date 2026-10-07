@@ -17,9 +17,6 @@ import (
 	"github.com/presmihaylov/shard/pkg/pty"
 )
 
-// ErrEntrypointNotStarted is a run the guest refused, with the guest's own words for why behind it.
-var ErrEntrypointNotStarted = errors.New("the entrypoint did not start")
-
 // The events a guest can queue ahead of Next, by count and by line bytes: the queue is daemon memory, outside the sandbox's bound (SHARD-550).
 const (
 	maxQueuedEvents = 1024
@@ -188,27 +185,28 @@ type queuedEvent struct {
 	size    int
 }
 
-// Run sends the entrypoint and waits until the guest says it forked, or says why it could not.
-func (c *Control) Run(ctx context.Context, spec RunSpec) error {
-	if err := c.request(ctx, Message{Kind: KindRun, Run: &spec}); err != nil {
-		return fmt.Errorf("%w: %w", ErrEntrypointNotStarted, err)
-	}
-
-	return nil
+// Setup hands the guest its work directory and trust bundle, once per boot before any Run.
+func (c *Control) Setup(ctx context.Context, setup Setup) error {
+	return c.request(ctx, Message{Kind: KindSetup, Setup: &setup})
 }
 
-// Signal sends one signal to a process shard-init started, the entrypoint or an exec, by its guest pid.
+// Run starts one named process and returns once it forked; a Refusal says why not.
+func (c *Control) Run(ctx context.Context, spec RunSpec) error {
+	return c.request(ctx, Message{Kind: KindRun, Run: &spec})
+}
+
+// StopProcess terms one named process and kills it once grace passes, zero at once, and returns once the guest reaped it.
+func (c *Control) StopProcess(ctx context.Context, name string, grace time.Duration) error {
+	return c.requestWithin(ctx, Message{Kind: KindStopProcess, Name: name, Grace: grace}, grace+requestTimeout)
+}
+
+// Signal sends one signal to a process shard-init started, a named one or an exec, by its guest pid.
 func (c *Control) Signal(ctx context.Context, pid int, signal string) error {
 	return c.request(ctx, Message{Kind: KindSignal, PID: pid, Signal: signal})
 }
 
-// Stop asks shard-init to forward the stop to the entrypoint; the caller waits out the grace and kills the VM.
+// Stop asks shard-init to forward the stop to every process; the caller waits out the grace and kills the VM.
 func (c *Control) Stop(ctx context.Context) error { return c.request(ctx, Message{Kind: KindStop}) }
-
-// StopApp cancels every start again of the entrypoint and terms it, or kills it with force; the guest stays up.
-func (c *Control) StopApp(ctx context.Context, force bool) error {
-	return c.request(ctx, Message{Kind: KindStopApp, Force: force})
-}
 
 // Readdress moves a restored guest onto its own address, and returns once it answers there and nowhere else.
 func (c *Control) Readdress(ctx context.Context, a Address) error {
@@ -236,14 +234,18 @@ func (c *Control) Freeze(ctx context.Context, verb string) error {
 // Thaw lets the guest's root take writes again; a root that is not frozen is already thawed.
 func (c *Control) Thaw(ctx context.Context) error { return c.request(ctx, Message{Kind: KindThaw}) }
 
-// Kill ends a stop the grace outran: the guest kills the entrypoint and flushes the disk, so the VM the host then cuts loses nothing it wrote.
+// Kill ends a stop the grace outran: the guest kills every process and flushes the disk, so the VM the host then cuts loses nothing it wrote.
 func (c *Control) Kill(ctx context.Context) error { return c.request(ctx, Message{Kind: KindKill}) }
 
 func (c *Control) Close() error { return c.conn.Close() }
 
-// request sends one message and waits for the guest's done, its failure as an error, or the end of ctx.
 func (c *Control) request(ctx context.Context, m Message) error {
-	ctx, cancel := context.WithTimeout(ctx, requestTimeout)
+	return c.requestWithin(ctx, m, requestTimeout)
+}
+
+// requestWithin sends one message and waits for the guest's done, its failure as a Refusal, or the end of ctx or the bound.
+func (c *Control) requestWithin(ctx context.Context, m Message, bound time.Duration) error {
+	ctx, cancel := context.WithTimeout(ctx, bound)
 	defer cancel()
 
 	reply := make(chan Message, 1)
@@ -297,7 +299,7 @@ func (c *Control) request(ctx context.Context, m Message) error {
 		return fmt.Errorf("%s: %w before it answered", m.Kind, ErrGone)
 	}
 	if answer.Kind == KindFailure {
-		return fmt.Errorf("%s: %s", m.Kind, answer.Error)
+		return &Refusal{Kind: m.Kind, Answer: answer}
 	}
 	if answer.Kind != KindDone {
 		return fmt.Errorf("%s: the guest answered with %q, not done", m.Kind, answer.Kind)
@@ -305,6 +307,14 @@ func (c *Control) request(ctx context.Context, m Message) error {
 
 	return nil
 }
+
+// Refusal is the guest's failure answer to one request, whose fields say a name taken, a command that could not start, or an outdated guest.
+type Refusal struct {
+	Kind   string
+	Answer Message
+}
+
+func (r *Refusal) Error() string { return fmt.Sprintf("%s: %s", r.Kind, r.Answer.Error) }
 
 // send writes m by ctx's deadline: a guest that stops reading would otherwise hold the write, and c.mu with it, for good.
 // The deadline stays set after the write, since every write sets its own and a clear can fail on a peer that already closed.

@@ -2,13 +2,16 @@ package main
 
 import (
 	"bufio"
+	"cmp"
 	"encoding/binary"
 	"errors"
 	"fmt"
 	"io"
+	"maps"
 	"net"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -22,15 +25,23 @@ import (
 	"github.com/presmihaylov/shard/services/supervisor"
 )
 
-// transport is the vsock mode: the entrypoint comes over control, each exec is a connection, the output goes down logs.
+// transport is the vsock mode: every request comes over control, each exec is a connection, and each process's output goes down one logs connection.
 type transport struct {
 	g *guest
 	// control is the host's live control connection; nil between two, and the state replays on the next.
 	control   net.Conn
 	controlMu sync.Mutex
+	// shown is each process's last status a host was told or a replay tells, under controlMu; an end shows only once its output landed.
+	shown map[string]models.ProcessReport
+	// live are the names the guest holds, under controlMu, so a late end of a name let go of shows nothing.
+	live []string
 	// attached wakes a death report waiting for its first host; one token, since a report reads the connection itself.
 	attached chan struct{}
-	logs     *logSink
+	// sinks hold each process's output for its logs connection, under sinksMu.
+	sinks   map[string]*logSink
+	sinksMu sync.Mutex
+	// ends are where the sink of a name let go of stopped, so a later process of that name goes on from there and a host's cursor never skips its output.
+	ends map[string]uint64
 	// rekey reseeds the guest crng; nil in a test on a Linux host, whose crng is the host's own.
 	rekey func([]byte) error
 	// setClock sets the guest wall clock; nil in a test on a Linux host, whose clock is the host's own.
@@ -41,8 +52,6 @@ type transport struct {
 	bound *os.File
 	// root is the disk a freeze holds; nil off a VM.
 	root *os.File
-	// endSent says the host heard the policy end, which waits for its ack of the app's last output; under controlMu.
-	endSent bool
 	// forced marks a stop the grace outran, whose disk is left as the kill left it.
 	forced atomic.Bool
 }
@@ -86,13 +95,8 @@ func serveTransport(name string, boot guestBoot) error {
 		listeners = append(listeners, r)
 	}
 
-	logs, err := newLogSink()
-	if err != nil {
-		return fmt.Errorf("%w: %w", errSupervisor, err)
-	}
-
-	t := &transport{logs: logs, attached: make(chan struct{}, 1), bound: bound, root: root}
-	t.g = newGuest(t, restartPolicy{})
+	t := &transport{shown: map[string]models.ProcessReport{}, attached: make(chan struct{}, 1), sinks: map[string]*logSink{}, ends: map[string]uint64{}, bound: bound, root: root}
+	t.g = newGuest(t)
 	t.g.bound = bound
 	// Only a VM has the bound and a crng of its own; a test on a Linux host runs unconfined and would read its own cgroup.
 	if boot.set() {
@@ -102,7 +106,7 @@ func serveTransport(name string, boot guestBoot) error {
 	}
 	go t.acceptControl(listeners[0])
 	go t.acceptExec(listeners[1])
-	go logs.accept(listeners[2])
+	go t.acceptLogs(listeners[2])
 
 	if err := t.g.supervise(); err != nil {
 		return t.fail(fmt.Errorf("%w: %w", errSupervisor, err))
@@ -262,9 +266,10 @@ func (t *transport) attach(conn net.Conn) error {
 		if t.control != nil {
 			_ = t.control.Close()
 		}
-		count := t.g.count
-		count.Ended = count.Ended && t.endSent
-		state := supervisor.Message{Kind: supervisor.KindState, Ready: t.g.started, Exit: t.g.lastExit, Restarts: &count, OOM: t.g.oom, Frozen: t.g.frozen.Load() != nil, Logs: supervisor.LogsVersion, FreezesOverlay: true}
+		state := supervisor.Message{
+			Kind: supervisor.KindState, Ready: t.g.ready, Version: supervisor.ProcessVersion, Processes: t.replay(),
+			OOM: t.g.oom, Frozen: t.g.frozen.Load() != nil, Logs: supervisor.LogsVersion, FreezesOverlay: true,
+		}
 		err = supervisor.WriteMessage(conn, state)
 		if err != nil {
 			t.control = nil
@@ -305,10 +310,12 @@ func (t *transport) tell(m supervisor.Message) (bool, error) {
 	return true, err
 }
 
-func (t *transport) ready() error { return t.send(supervisor.Message{Kind: supervisor.KindReady}) }
+// replay is what a new host hears of every process, in the order the guest numbered them; under controlMu.
+func (t *transport) replay() []models.ProcessReport {
+	shown := slices.Collect(maps.Values(t.shown))
+	slices.SortFunc(shown, func(a, b models.ProcessReport) int { return cmp.Compare(a.Seq, b.Seq) })
 
-func (t *transport) exited(exit models.ExitStatus) error {
-	return t.send(supervisor.Message{Kind: supervisor.KindExit, Exit: &exit})
+	return shown
 }
 
 // oomKilled is the one report that must land, so it says when nobody is attached instead of dropping the message.
@@ -326,32 +333,82 @@ func (t *transport) oomKilled() error {
 	return nil
 }
 
-// restarted holds the end back until the host acks the app's last output, so a run that reads the end has read every byte.
-func (t *transport) restarted(count models.RestartCount) error {
-	m := supervisor.Message{Kind: supervisor.KindRestarts, Restarts: &count}
-	if !count.Ended {
-		return t.send(m)
+// changed tells the host one process's status; an end waits until the host acks the process's last output, so an attach that reads the end has read every byte.
+func (t *transport) changed(p models.ProcessReport, _ []models.ProcessReport) error {
+	t.sinksMu.Lock()
+	sink := t.sinks[p.Name]
+	t.sinksMu.Unlock()
+	if !p.State.Ended() || sink == nil {
+		return t.show(p)
 	}
-	mark, err := t.logs.end()
+	mark, err := sink.end()
 	if err != nil {
-		return err
+		return errors.Join(err, t.show(p))
 	}
 	go func() {
-		t.logs.landed(mark)
-		t.controlMu.Lock()
-		defer t.controlMu.Unlock()
-		t.endSent = true
-		if t.control == nil {
-			return
-		}
+		sink.landed(mark)
 		// A host that missed the end reads it in the replay, so a failed write is reported and never fatal (AGENTS.md).
-		if err := supervisor.WriteMessage(t.control, m); err != nil {
-			t.control = nil
-			fmt.Fprintln(os.Stderr, "shard-init: report the end of the app:", err)
+		if err := t.show(p); err != nil {
+			fmt.Fprintf(os.Stderr, "shard-init: report the end of %q: %v\n", p.Name, err)
 		}
 	}()
 
 	return nil
+}
+
+// show keeps p for the replay, unless the name is gone or a later status of it is there already, and sends it to the attached host.
+func (t *transport) show(p models.ProcessReport) error {
+	t.controlMu.Lock()
+	defer t.controlMu.Unlock()
+
+	if last, ok := t.shown[p.Name]; slices.Contains(t.live, p.Name) && (!ok || last.Seq < p.Seq) {
+		t.shown[p.Name] = p
+	}
+	if t.control == nil {
+		return nil
+	}
+	if err := supervisor.WriteMessage(t.control, supervisor.Message{Kind: supervisor.KindProcess, Process: &p}); err != nil {
+		t.control = nil
+
+		return err
+	}
+
+	return nil
+}
+
+// output is the pipe the named process writes into; its sink holds what no host has acked yet.
+func (t *transport) output(name string) (*os.File, error) {
+	t.sinksMu.Lock()
+	defer t.sinksMu.Unlock()
+
+	if sink, ok := t.sinks[name]; ok {
+		return sink.pipe, nil
+	}
+	sink, err := newLogSink(t.ends[name])
+	if err != nil {
+		return nil, err
+	}
+	delete(t.ends, name)
+	t.sinks[name] = sink
+
+	return sink.pipe, nil
+}
+
+func (t *transport) keep(names []string) {
+	t.sinksMu.Lock()
+	for name, sink := range t.sinks {
+		if slices.Contains(names, name) {
+			continue
+		}
+		delete(t.sinks, name)
+		t.ends[name] = sink.close()
+	}
+	t.sinksMu.Unlock()
+
+	t.controlMu.Lock()
+	defer t.controlMu.Unlock()
+	t.live = slices.Clone(names)
+	maps.DeleteFunc(t.shown, func(name string, _ models.ProcessReport) bool { return !slices.Contains(names, name) })
 }
 
 // serveControl takes the host's messages until it hangs up, and answers each with done or failure.
@@ -369,32 +426,31 @@ func (t *transport) serveControl(conn net.Conn) {
 
 			return
 		}
-		if m.Kind == supervisor.KindFreeze {
+		switch m.Kind {
+		case supervisor.KindFreeze:
 			t.freeze(conn, m.ID, m.Verb)
-
-			continue
-		}
-		if m.Kind == supervisor.KindKill {
+		case supervisor.KindKill:
 			t.forceStop(conn, m.ID)
-
-			continue
-		}
-		if m.Kind == supervisor.KindStop {
+		case supervisor.KindStop:
 			t.stop(conn, m.ID)
-
-			continue
+		case supervisor.KindRun:
+			t.reply(conn, t.g.request(m))
+		case supervisor.KindStopProcess:
+			// The answer waits for the reap, so the next request is not held behind the grace.
+			go t.reply(conn, t.g.request(m))
+		default:
+			t.answer(conn, m.ID, t.handle(m))
 		}
-		t.answer(conn, m.ID, t.handle(m))
 	}
 }
 
-// answer carries the request's id back on the connection that asked, and says whether it went; a host replaced meanwhile never sees another's reply.
+// answer carries the request's id back on the connection that asked, and says whether it went.
 func (t *transport) answer(conn net.Conn, id int, err error) bool {
-	reply := supervisor.Message{Kind: supervisor.KindDone, ID: id}
-	if err != nil {
-		reply = supervisor.Message{Kind: supervisor.KindFailure, ID: id, Error: err.Error()}
-	}
+	return t.reply(conn, answerOf(id, err))
+}
 
+// reply writes one answer on the connection that asked; a host replaced meanwhile never sees another's reply.
+func (t *transport) reply(conn net.Conn, reply supervisor.Message) bool {
 	t.controlMu.Lock()
 	defer t.controlMu.Unlock()
 	if t.control != conn {
@@ -426,12 +482,12 @@ func (t *transport) freeze(conn net.Conn, id int, verb string) {
 // handle does what one control message asks, on the guest's goroutine where it touches its state.
 func (t *transport) handle(m supervisor.Message) error {
 	switch m.Kind {
-	case supervisor.KindRun:
-		if m.Run == nil {
-			return errors.New("a run message names no entrypoint")
+	case supervisor.KindSetup:
+		if m.Setup == nil {
+			return errors.New("a setup message carries no setup")
 		}
 
-		return t.launch(*m.Run)
+		return t.setUp(*m.Setup)
 	case supervisor.KindSignal:
 		sig, err := signalOf(m.Signal)
 		if err != nil {
@@ -439,11 +495,6 @@ func (t *transport) handle(m supervisor.Message) error {
 		}
 
 		return t.g.signal(m.PID, sig)
-	case supervisor.KindStopApp:
-		var err error
-		t.g.run(func() { err = t.g.stopApp(m.Force) })
-
-		return err
 	case supervisor.KindReaddress:
 		if m.Address == nil {
 			return errors.New("a readdress message names no address")
@@ -482,7 +533,7 @@ func (t *transport) handle(m supervisor.Message) error {
 func (t *transport) stop(conn net.Conn, id int) {
 	// A kill an earlier stop's lost cut left behind is not this stop's, so only a kill within this one skips the seal.
 	t.forced.Store(false)
-	// A frozen root would hold the entrypoint's last writes.
+	// A frozen root would hold the processes' last writes.
 	t.answer(conn, id, t.thaw())
 	// The stop takes the same path a Linux host's SIGTERM does, so one loop owns the grace.
 	t.g.stopSignals <- syscall.SIGTERM
@@ -500,7 +551,7 @@ func freezeGuest(bound, root *os.File) error {
 	return nil
 }
 
-// forceStop ends a stop the grace outran: it kills the entrypoint, freezes the rest and flushes, so the host's cut loses nothing.
+// forceStop ends a stop the grace outran: it kills every process, freezes the rest and flushes, so the host's cut loses nothing.
 // A host replaced before the answer may have read the guest unfrozen off its replay, so the freeze is undone, as a pause's is.
 func (t *transport) forceStop(conn net.Conn, id int) {
 	t.forced.Store(true)
@@ -516,10 +567,10 @@ func (t *transport) forceStop(conn net.Conn, id int) {
 	}
 }
 
-// killAndFreeze kills the entrypoint, holds every exec and child so none dirties the disk, then flushes it before the cut.
+// killAndFreeze kills every process, holds every exec and child so none dirties the disk, then flushes it before the cut.
 func (t *transport) killAndFreeze() error {
 	err := t.hold("stop", func() error {
-		// A gone entrypoint ends nothing here: the published freeze, not a power off, is what a lost cut recovers from.
+		// No process left ends nothing here: the published freeze, not a power off, is what a lost cut recovers from.
 		if _, err := t.g.stop(syscall.SIGKILL); err != nil {
 			return err
 		}
@@ -556,63 +607,17 @@ func (t *transport) thaw() error {
 	return nil
 }
 
-// launch starts the entrypoint the host resolved, once; its output is the log pipe from the first byte.
-func (t *transport) launch(spec supervisor.RunSpec) error {
-	credential, err := credentialOf(spec.User, spec.Groups)
-	if err != nil {
-		return err
-	}
-	env, err := withHome("/", spec.Env, credential)
-	if err != nil {
-		return err
-	}
-
-	restart, err := parseRestart(string(nonEmpty(spec.Restart, models.RestartNo)), spec.Retries, nonEmpty(spec.Backoff, defaultBackoff), nonEmpty(spec.Reset, defaultReset))
-	if err != nil {
-		return err
-	}
-
-	if spec.Trust != nil {
-		if err := writeTrustIn("/", *spec.Trust); err != nil {
+// setUp writes the trust bundle and makes the work directory; a host that attaches again finds it done in the replay, and a second one does it again.
+func (t *transport) setUp(setup supervisor.Setup) error {
+	if setup.Trust != nil {
+		if err := writeTrustIn("/", *setup.Trust); err != nil {
 			return err
 		}
 	}
-	ep := entrypoint{argv: spec.Argv, env: env, dir: spec.WorkDir, credential: credential, out: t.logs.pipe}
-	t.g.run(func() {
-		if t.g.started {
-			err = errors.New("the entrypoint already runs")
-
-			return
-		}
-		t.g.restart = restart
-		err = t.g.launch(ep)
-	})
+	var err error
+	t.g.run(func() { err = t.g.setUp(setup.WorkDir) })
 
 	return err
-}
-
-func nonEmpty[T comparable](value, fallback T) T {
-	var zero T
-	if value == zero {
-		return fallback
-	}
-
-	return value
-}
-
-// credentialOf takes the ids the host resolved; an empty user keeps the supervisor's own, root.
-func credentialOf(user string, groups []uint32) (*syscall.Credential, error) {
-	if user == "" {
-		return nil, nil
-	}
-
-	credential, err := parseCredential(user, "")
-	if err != nil {
-		return nil, err
-	}
-	credential.Groups = groups
-
-	return credential, nil
 }
 
 // signalOf takes the two names the API allows, so a guest pid gets nothing the host would not send.
@@ -627,25 +632,29 @@ func signalOf(name string) (syscall.Signal, error) {
 	}
 }
 
-// logHold is the most output the guest keeps for a host that has not acked it; a full hold blocks the entrypoint on its pipe.
+// logHold is the most output the guest keeps of one process for a host that has not acked it; a full hold blocks the process on its pipe.
 const logHold = 1 << 20
 
-// logSink keeps the entrypoint's output until a host acks it, so a host that comes back resumes where its log file ends.
+// logSink keeps one process's output until a host acks it, so a host that comes back resumes where its log file ends.
 type logSink struct {
 	pipe *os.File
 	// read is the pipe's read end, which only copy reads, under mu, so every byte is in the pipe or in held.
-	read syscall.RawConn
-	mu   sync.Mutex
-	cond *sync.Cond
+	read    syscall.RawConn
+	readEnd *os.File
+	mu      sync.Mutex
+	cond    *sync.Cond
 	// held is the output no host has acked yet, and its first byte is output byte from.
 	held []byte
 	from uint64
 	conn net.Conn
 	// stopped is a host whose log refused the output, so until the next host nothing waits for an ack.
 	stopped bool
+	// closed is a sink whose process the guest let go of, which holds and serves nothing more.
+	closed bool
 }
 
-func newLogSink() (*logSink, error) {
+// newLogSink numbers the output from start, where an earlier sink of the name stopped.
+func newLogSink(start uint64) (*logSink, error) {
 	r, w, err := os.Pipe()
 	if err != nil {
 		return nil, fmt.Errorf("open the log pipe: %w", err)
@@ -655,14 +664,15 @@ func newLogSink() (*logSink, error) {
 	if err != nil {
 		return nil, fmt.Errorf("open the log pipe: %w", err)
 	}
-	s := &logSink{pipe: w, read: read, held: make([]byte, 0, logHold)}
+	s := &logSink{pipe: w, read: read, readEnd: r, from: start, held: make([]byte, 0, logHold)}
 	s.cond = sync.NewCond(&s.mu)
 	go s.copy()
 
 	return s, nil
 }
 
-func (s *logSink) accept(l net.Listener) {
+// acceptLogs hands each logs connection to the sink of the process its first line names; a host that names none is hung up on.
+func (t *transport) acceptLogs(l net.Listener) {
 	for {
 		conn, err := l.Accept()
 		if err != nil {
@@ -670,29 +680,95 @@ func (s *logSink) accept(l net.Listener) {
 
 			return
 		}
-
-		// An ack still in flight on the old connection is dropped with it, so what the new host is offered holds until it answers.
-		s.mu.Lock()
-		if s.conn != nil {
-			_ = s.conn.Close()
-		}
-		s.conn = conn
-		s.stopped = false
-		from, to := s.from, s.from+uint64(len(s.held))
-		s.cond.Broadcast()
-		s.mu.Unlock()
-		go s.serve(conn, from, to)
+		go t.openLogs(conn)
 	}
+}
+
+// openLogs reads which process the host follows; PID 1 must survive a bad host, so a failure is reported and never fatal (AGENTS.md).
+func (t *transport) openLogs(conn net.Conn) {
+	var open supervisor.LogsOpen
+	err := conn.SetReadDeadline(time.Now().Add(requestGrace))
+	if err == nil {
+		err = supervisor.ReadHeader(conn, &open)
+	}
+	if err == nil {
+		err = conn.SetReadDeadline(time.Time{})
+	}
+	if err != nil {
+		fmt.Fprintln(os.Stderr, "shard-init: open a logs connection:", errors.Join(err, conn.Close()))
+
+		return
+	}
+	t.sinksMu.Lock()
+	sink := t.sinks[open.Name]
+	t.sinksMu.Unlock()
+	if sink == nil {
+		if err := conn.Close(); err != nil {
+			fmt.Fprintln(os.Stderr, "shard-init: hang up the logs of an unknown process:", err)
+		}
+
+		return
+	}
+	sink.take(conn)
+}
+
+// take makes conn the host the sink serves; an ack still in flight on the old connection is dropped with it, so what the new host is offered holds until it answers.
+func (s *logSink) take(conn net.Conn) {
+	s.mu.Lock()
+	if s.closed {
+		s.mu.Unlock()
+		if err := conn.Close(); err != nil {
+			fmt.Fprintln(os.Stderr, "shard-init: hang up the logs of a process let go of:", err)
+		}
+
+		return
+	}
+	// The old host is replaced either way, so a failed hang-up is only reported.
+	if s.conn != nil {
+		if err := s.conn.Close(); err != nil {
+			fmt.Fprintln(os.Stderr, "shard-init: hang up the old logs connection:", err)
+		}
+	}
+	s.conn = conn
+	s.stopped = false
+	from, to := s.from, s.from+uint64(len(s.held))
+	s.cond.Broadcast()
+	s.mu.Unlock()
+	go s.serve(conn, from, to)
+}
+
+// close lets go of a sink whose process the guest no longer holds, and says the output byte the next sink of the name starts at.
+func (s *logSink) close() uint64 {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	s.closed, s.stopped = true, true
+	err := errors.Join(s.pipe.Close(), s.readEnd.Close())
+	if s.conn != nil {
+		err = errors.Join(err, s.conn.Close())
+		s.conn = nil
+	}
+	// The process is gone and so is anyone who reads this output, so a failed close loses nothing and is only reported.
+	if err != nil {
+		fmt.Fprintln(os.Stderr, "shard-init: close a log sink:", err)
+	}
+	s.cond.Broadcast()
+
+	return s.from + uint64(len(s.held))
 }
 
 // copy holds each chunk of the pipe for the host, and waits for its acks while the hold is full.
 func (s *logSink) copy() {
 	for {
 		s.mu.Lock()
-		for len(s.held) == cap(s.held) {
+		for len(s.held) == cap(s.held) && !s.closed {
 			s.cond.Wait()
 		}
+		closed := s.closed
 		s.mu.Unlock()
+		if closed {
+			return
+		}
 
 		var n int
 		var readErr error
@@ -710,9 +786,14 @@ func (s *logSink) copy() {
 
 			return true
 		})
-		// shard-init holds the write end, so the pipe never ends and a failed read is the last thing it reports.
+		// shard-init holds the write end until close, so a failed read of a live sink is the last thing it reports.
 		if err := errors.Join(err, readErr); err != nil {
-			fmt.Fprintln(os.Stderr, "shard-init: read the log pipe:", err)
+			s.mu.Lock()
+			closed := s.closed
+			s.mu.Unlock()
+			if !closed {
+				fmt.Fprintln(os.Stderr, "shard-init: read the log pipe:", err)
+			}
 
 			return
 		}
