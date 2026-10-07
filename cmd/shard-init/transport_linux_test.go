@@ -14,18 +14,10 @@ import (
 
 // The S2 of SHARD-354 in one process: drop the supervisor's descriptor limit under what it holds, exec, and give the limit back.
 func TestTransportExecAnswersAfterAFailedAccept(t *testing.T) {
-	cmd, dial := startTransport(t)
+	proc, dial := startTransport(t)
 	ctx := testContext(t)
-	c, err := supervisor.Connect(ctx, dial)
-	if err != nil {
-		t.Fatalf("connect: %v", err)
-	}
-	defer c.Close()
-	if err := c.Run(t.Context(), supervisor.RunSpec{Argv: childArgv("sleep:60000")}); err != nil {
-		t.Fatalf("run: %v", err)
-	}
 
-	pid := cmd.Process.Pid
+	pid := proc.Process.Pid
 	var held unix.Rlimit
 	if err := unix.Prlimit(pid, unix.RLIMIT_NOFILE, nil, &held); err != nil {
 		t.Fatalf("read the supervisor's limit: %v", err)

@@ -1,7 +1,6 @@
 package main
 
 import (
-	"errors"
 	"os"
 	"syscall"
 	"testing"
@@ -10,124 +9,109 @@ import (
 	"github.com/presmihaylov/shard/models"
 )
 
-// A reporter that keeps what the guest said, so a test reads the decision without a file or a socket.
-type memoryReporter struct {
-	exits chan models.ExitStatus
-	ooms  chan struct{}
-	// deaf is a reporter with no host attached, which the OOM report must say rather than drop.
-	deaf bool
-}
-
-func (r memoryReporter) ready() error                        { return nil }
-func (r memoryReporter) exited(exit models.ExitStatus) error { r.exits <- exit; return nil }
-func (memoryReporter) restarted(models.RestartCount) error   { return nil }
-func (r memoryReporter) oomKilled() error {
-	r.ooms <- struct{}{}
-	if r.deaf {
-		return errNoHost
-	}
-
-	return nil
-}
-
-func superviseBounded(t *testing.T, oom, deaf bool) (*guest, memoryReporter, chan error) {
+// superviseBounded runs one process that SIGKILLs itself, under a guest whose memory bound the probe says was or was not hit.
+func superviseBounded(t *testing.T, oom, deaf bool) (*testGuest, *recordReporter) {
 	t.Helper()
 
-	report := memoryReporter{exits: make(chan models.ExitStatus, 1), ooms: make(chan struct{}, 1), deaf: deaf}
-	g := newGuest(report, restartPolicy{policy: models.RestartNo})
-	g.oomProbe = func() (bool, error) { return oom, nil }
-	if err := g.launch(entrypoint{argv: []string{os.Args[0], childPrefix + "sigkill:0"}, env: os.Environ()}); err != nil {
-		t.Fatal(err)
-	}
-	done := make(chan error, 1)
-	go func() { done <- g.supervise() }()
+	report := newRecordReporter(t)
+	report.deaf = deaf
+	g := startGuestOver(t, report)
+	g.run(func() { g.oomProbe = func() (bool, error) { return oom, nil } })
+	spec := named("victim", "sigkill:0")
+	spec.Restart = models.RestartAlways
+	mustRun(t, g, spec)
 
-	return g, report, done
+	return g, report
 }
 
-// A SIGKILL the memory bound made is reported with no exit record, and the host's stop, once it holds the reason, ends the guest.
+func (r *recordReporter) oomCount() int {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+
+	return r.ooms
+}
+
+// A SIGKILL the memory bound made is reported with no exit and no start again, and the host's stop, once it holds the reason, ends the guest.
 func TestAKillUnderTheMemoryBoundEndsTheGuestOnTheHostsStop(t *testing.T) {
-	g, report, done := superviseBounded(t, true, false)
+	g, report := superviseBounded(t, true, false)
 
-	select {
-	case <-report.ooms:
-	case <-time.After(5 * time.Second):
-		t.Fatal("no OOM report within 5s")
-	}
-	select {
-	case err := <-done:
+	waitFor(t, 5*time.Second, "the OOM report", func() bool { return report.oomCount() == 1 })
+	if ended, err := g.awaitEnd(200 * time.Millisecond); ended {
 		t.Fatalf("the guest ended before the host acknowledged the kill: %v", err)
-	case <-time.After(200 * time.Millisecond):
+	}
+	for _, p := range report.of("victim") {
+		if p.State != models.ProcessRunning {
+			t.Fatalf("a kill the bound made was reported as %+v", p)
+		}
+	}
+	if err := g.runSpec(named("after", "say:hi")); err == nil {
+		t.Fatal("a run started after the bound took every process")
 	}
 	g.stopSignals <- syscall.SIGTERM
-	select {
-	case err := <-done:
-		if err != nil {
-			t.Fatalf("supervise: %v", err)
-		}
-	case <-time.After(5 * time.Second):
-		t.Fatal("the guest kept running after the host's stop")
-	}
-	if len(report.exits) != 0 {
-		t.Fatal("an exit was recorded for a kill the bound made")
+	if ended, err := g.awaitEnd(5 * time.Second); !ended || err != nil {
+		t.Fatalf("the guest did not end on the host's stop: ended %t, %v", ended, err)
 	}
 }
 
-// A SIGKILL from anywhere else is an exit like any other: the record lands and the sandbox outlives it.
+// A SIGKILL from anywhere else is an exit like any other: the status lands, the policy applies, and the sandbox outlives it.
 func TestAKillOutsideTheMemoryBoundIsAnExit(t *testing.T) {
-	g, report, done := superviseBounded(t, false, false)
+	g, report := superviseBounded(t, false, false)
 
-	select {
-	case exit := <-report.exits:
-		if exit.Signal != 9 {
-			t.Fatalf("exit = %+v, want signal 9", exit)
-		}
-	case <-time.After(5 * time.Second):
-		t.Fatal("no exit within 5s")
+	restarting := report.await(t, "victim", models.ProcessRestarting)
+	if restarting.Exit == nil || restarting.Exit.Signal != int(syscall.SIGKILL) {
+		t.Fatalf("victim = %+v, want an exit on signal 9", restarting)
 	}
-	select {
-	case err := <-done:
-		t.Fatalf("the guest ended on a plain kill: %v", errors.Join(err))
-	case <-time.After(200 * time.Millisecond):
+	if ended, err := g.awaitEnd(200 * time.Millisecond); ended {
+		t.Fatalf("the guest ended on a plain kill: %v", err)
 	}
-	if len(report.ooms) != 0 {
-		t.Fatal("a plain kill was reported as an OOM")
-	}
-	// Every guest in this process hears SIGCHLD, so one left running would reap the next test's child.
-	g.stopSignals <- syscall.SIGTERM
-	select {
-	case <-done:
-	case <-time.After(5 * time.Second):
-		t.Fatal("the guest did not end on a stop with nothing to forward to")
+	if n := report.oomCount(); n != 0 {
+		t.Fatalf("a plain kill was reported as %d OOMs", n)
 	}
 }
 
 // A kill nobody heard keeps the guest up, so the reason survives until a host connects and reads it in the replay.
 func TestAKillWithNoHostAttachedWaitsForTheReplay(t *testing.T) {
-	g, report, done := superviseBounded(t, true, true)
+	g, report := superviseBounded(t, true, true)
 
-	select {
-	case <-report.ooms:
-	case <-time.After(5 * time.Second):
-		t.Fatal("no OOM report within 5s")
-	}
-	select {
-	case err := <-done:
+	waitFor(t, 5*time.Second, "the OOM report", func() bool { return report.oomCount() == 1 })
+	if ended, err := g.awaitEnd(200 * time.Millisecond); ended {
 		t.Fatalf("the guest ended with no host to tell: %v", err)
-	case <-time.After(200 * time.Millisecond):
 	}
 	var oom bool
 	g.run(func() { oom = g.oom })
 	if !oom {
 		t.Fatal("the guest forgot the kill")
 	}
-	g.stopSignals <- syscall.SIGTERM
+}
+
+// An exec's SIGKILL under the bound still reaches its session, so the host reads 137 and not a hang.
+func TestAKillUnderTheMemoryBoundStillAnswersAnExec(t *testing.T) {
+	report := newRecordReporter(t)
+	g := startGuestOver(t, report)
+	g.run(func() { g.oomProbe = func() (bool, error) { return true, nil } })
+
+	devNull, err := os.Open(os.DevNull)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		if err := devNull.Close(); err != nil {
+			t.Error(err)
+		}
+	})
+	_, exit, err := g.spawn(spawnSpec{argv: childArgv("sigkill:0"), env: os.Environ()}, []*os.File{devNull, os.Stdout, os.Stderr}, false)
+	if err != nil {
+		t.Fatal(err)
+	}
 	select {
-	case err := <-done:
-		if err != nil {
-			t.Fatalf("supervise: %v", err)
+	case status := <-exit:
+		if status.Signal != int(syscall.SIGKILL) {
+			t.Fatalf("the exec ended with %+v, want signal 9", status)
 		}
 	case <-time.After(5 * time.Second):
-		t.Fatal("the guest kept running after the host's stop")
+		t.Fatal("the exec never heard its own exit")
+	}
+	if ended, err := g.awaitEnd(200 * time.Millisecond); ended {
+		t.Fatalf("the guest ended on an exec's kill: %v", err)
 	}
 }

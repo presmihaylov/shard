@@ -22,20 +22,12 @@ import (
 	"github.com/presmihaylov/shard/services/supervisor"
 )
 
-// startFiles brings the guest up with an entrypoint running, as a host does, and answers a way to open one files exec.
+// startFiles brings the guest up as a host does, with no process, since the cleanup kills the supervisor and a process would outlive it (SHARD-481).
 func startFiles(t *testing.T) func() supervisor.FilesConn {
 	t.Helper()
 	_, dial := startTransport(t)
 	ctx := testContext(t)
-	c, err := supervisor.Connect(ctx, dial)
-	if err != nil {
-		t.Fatalf("connect: %v", err)
-	}
-	t.Cleanup(func() { _ = c.Close() })
-	// No app: the cleanup kills the supervisor, and an app would outlive it as an orphan (SHARD-481).
-	if err := c.Run(ctx, supervisor.RunSpec{}); err != nil {
-		t.Fatalf("run: %v", err)
-	}
+	connectReady(ctx, t, dial)
 
 	// The path through the guest exec a VM takes: no /.shard/init exists here, so the guest must answer it with itself.
 	run := func(ctx context.Context, spec models.ExecSpec) (models.ExitStatus, error) {
@@ -672,7 +664,7 @@ func TestFilesArchiveRefusesWhatItCannotTake(t *testing.T) {
 }
 
 func TestLookPathAnswersTheInitPathWithItself(t *testing.T) {
-	got, err := lookPath(entrypoint{argv: []string{supervisor.InitPath, supervisor.FilesMode}})
+	got, err := lookPath(spawnSpec{argv: []string{supervisor.InitPath, supervisor.FilesMode}})
 	if err != nil || got != selfBinary {
 		t.Fatalf("lookPath = %q, %v, want this binary %q", got, err, selfBinary)
 	}
@@ -699,7 +691,7 @@ func TestFailTellsTheAttachedHostBeforeTheExit(t *testing.T) {
 	host, guest := net.Pipe()
 	defer host.Close()
 	tr := &transport{control: guest, attached: make(chan struct{}, 1)}
-	tr.g = newGuest(tr, restartPolicy{})
+	tr.g = newGuest(tr)
 
 	cause := errors.New("power off: no such device")
 	failed := make(chan error, 1)
@@ -737,7 +729,7 @@ func deadTransport(t *testing.T) (*transport, supervisor.Dialer) {
 	}
 	t.Cleanup(func() { _ = l.Close() })
 	tr := &transport{attached: make(chan struct{}, 1)}
-	tr.g = newGuest(tr, restartPolicy{})
+	tr.g = newGuest(tr)
 	go tr.acceptControl(l)
 
 	return tr, func(ctx context.Context, port uint32) (net.Conn, error) {
@@ -824,7 +816,7 @@ func TestFailGivesUpWhenNoHostComes(t *testing.T) {
 	failureGrace = 100 * time.Millisecond
 	t.Cleanup(func() { failureGrace = old })
 	tr := &transport{attached: make(chan struct{}, 1)}
-	tr.g = newGuest(tr, restartPolicy{})
+	tr.g = newGuest(tr)
 
 	err := tr.fail(errSupervisor)
 	if !errors.Is(err, errSupervisor) || !strings.Contains(err.Error(), "no host attached") {
@@ -843,7 +835,7 @@ func (deadConn) Write([]byte) (int, error) { return 0, syscall.EPIPE }
 // A write that fails forgets that host and no other, so a replacement that attached meanwhile keeps its seat.
 func TestATellThatFailsForgetsOnlyThatHost(t *testing.T) {
 	tr := &transport{attached: make(chan struct{}, 1)}
-	tr.g = newGuest(tr, restartPolicy{})
+	tr.g = newGuest(tr)
 	gone, other := net.Pipe()
 	defer other.Close()
 	tr.control = deadConn{gone}

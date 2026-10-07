@@ -326,7 +326,7 @@ func (g *guest) supervise() error {
 // collect reaps what died and routes each exit: a named process's to its policy, an exec's to its session.
 // A kill the memory bound made ends the guest, as it ends a whole Linux sandbox, after every exec has its exit.
 func (g *guest) collect() bool {
-	oom := false
+	oom, reaped := false, false
 	for _, d := range collectDeadChildren() {
 		if d.exit.Signal == int(syscall.SIGKILL) && g.oomProbe != nil && !oom {
 			hit, err := g.oomProbe()
@@ -345,7 +345,7 @@ func (g *guest) collect() bool {
 		if p == nil {
 			continue
 		}
-		p.pid = 0
+		p.pid, reaped = 0, true
 		if oom {
 			killGroup(d.pid)
 			p.release()
@@ -355,7 +355,8 @@ func (g *guest) collect() bool {
 		g.exited(p, d.pid, d.exit)
 	}
 	if !oom {
-		return g.stopping && !g.running()
+		// Only a process's reap ends a stop, so a kill that found nothing to forward to leaves the guest up for the cut.
+		return reaped && g.stopping && !g.running()
 	}
 	// No process starts again after the bound took them all.
 	for _, p := range g.procs {

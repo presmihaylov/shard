@@ -175,7 +175,12 @@ func (g *guest) wake(due timerDue) {
 		return
 	}
 	p.runStartedAt = time.Now()
-	pid, err := g.start(p.spec, nil, false)
+	// A start again is a start like the first, so a work directory the last run removed is made again, as docker makes it at every start.
+	err := makeWorkDir(p.spec.dir)
+	pid := 0
+	if err == nil {
+		pid, err = g.start(p.spec, nil, false)
+	}
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "shard-init: start %q again: %v\n", p.name, err)
 		p.status.State = models.ProcessGaveUp

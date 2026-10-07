@@ -286,13 +286,6 @@ func (t *transport) attach(conn net.Conn) error {
 	return err
 }
 
-// send writes one message to the host, or drops it when no host is attached: the state replays on the next.
-func (t *transport) send(m supervisor.Message) error {
-	_, err := t.tell(m)
-
-	return err
-}
-
 // tell writes one message to the attached host, and says whether there was one to write to.
 func (t *transport) tell(m supervisor.Message) (bool, error) {
 	t.controlMu.Lock()
@@ -437,7 +430,7 @@ func (t *transport) serveControl(conn net.Conn) {
 			t.reply(conn, t.g.request(m))
 		case supervisor.KindStopProcess:
 			// The answer waits for the reap, so the next request is not held behind the grace.
-			go t.reply(conn, t.g.request(m))
+			go func() { t.reply(conn, t.g.request(m)) }()
 		default:
 			t.answer(conn, m.ID, t.handle(m))
 		}
@@ -740,21 +733,24 @@ func (s *logSink) take(conn net.Conn) {
 // close lets go of a sink whose process the guest no longer holds, and says the output byte the next sink of the name starts at.
 func (s *logSink) close() uint64 {
 	s.mu.Lock()
-	defer s.mu.Unlock()
-
 	s.closed, s.stopped = true, true
+	conn := s.conn
+	s.conn = nil
+	end := s.from + uint64(len(s.held))
+	s.cond.Broadcast()
+	s.mu.Unlock()
+
+	// Outside mu, since the read end's close waits out a read of copy's, which takes mu.
 	err := errors.Join(s.pipe.Close(), s.readEnd.Close())
-	if s.conn != nil {
-		err = errors.Join(err, s.conn.Close())
-		s.conn = nil
+	if conn != nil {
+		err = errors.Join(err, conn.Close())
 	}
 	// The process is gone and so is anyone who reads this output, so a failed close loses nothing and is only reported.
 	if err != nil {
 		fmt.Fprintln(os.Stderr, "shard-init: close a log sink:", err)
 	}
-	s.cond.Broadcast()
 
-	return s.from + uint64(len(s.held))
+	return end
 }
 
 // copy holds each chunk of the pipe for the host, and waits for its acks while the hold is full.
@@ -775,6 +771,10 @@ func (s *logSink) copy() {
 		err := s.read.Read(func(fd uintptr) bool {
 			s.mu.Lock()
 			defer s.mu.Unlock()
+			// A closed sink's end is fixed, so what the pipe still holds is dropped.
+			if s.closed {
+				return true
+			}
 			n, readErr = syscall.Read(int(fd), s.held[len(s.held):cap(s.held)])
 			if errors.Is(readErr, syscall.EAGAIN) || errors.Is(readErr, syscall.EINTR) {
 				return false

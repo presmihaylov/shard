@@ -1,15 +1,14 @@
 package main
 
 import (
-	"os"
+	"fmt"
 	"testing"
 
 	"github.com/presmihaylov/shard/models"
 	"github.com/presmihaylov/shard/pkg/memfd"
-	"github.com/presmihaylov/shard/services/bundle"
 )
 
-// On sysbox fd 0 is a sealed page, so each exit overwrites it in place and the page never changes size (SHARD-419).
+// On sysbox fd 0 is a sealed page, so each table overwrites it in place and the page never changes size (SHARD-419).
 func TestFileReporterOverwritesTheSealedPage(t *testing.T) {
 	f, err := memfd.Create("shard-exit", models.ExitChannelSize)
 	if err != nil {
@@ -20,12 +19,17 @@ func TestFileReporterOverwritesTheSealedPage(t *testing.T) {
 			t.Error(err)
 		}
 	})
-	stdin := os.Stdin
-	os.Stdin = f
-	t.Cleanup(func() { os.Stdin = stdin })
+	asStdin(t, f)
 
-	for _, code := range []int{255, 5, 7} {
-		if err := (&fileReporter{}).exited(models.ExitStatus{Code: code}); err != nil {
+	// The worst table first, so a shorter one after it must clear the tail.
+	if err := (&fileReporter{}).changed(models.ProcessReport{}, worstTable().Processes); err != nil {
+		t.Fatalf("write the worst table to the page: %v", err)
+	}
+	var table []models.ProcessReport
+	for i := range 3 {
+		p := models.ProcessReport{Name: fmt.Sprintf("p%d", i), ProcessStatus: models.ProcessStatus{State: models.ProcessExited, Exit: &models.ExitStatus{Code: i}}, Seq: uint64(i + 1)}
+		table = append(table, p)
+		if err := (&fileReporter{}).changed(p, table); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -41,7 +45,8 @@ func TestFileReporterOverwritesTheSealedPage(t *testing.T) {
 	if _, err := f.ReadAt(page, 0); err != nil {
 		t.Fatal(err)
 	}
-	if report, found := bundle.DecodeExitPage(page); !found || report != (models.ExitReport{Kind: models.ExitReportKind, Code: 7}) {
-		t.Errorf("the page reads %+v (found %v), want only the last exit {code:7}", report, found)
+	got := lastTable(t, page)
+	if len(got.Processes) != 3 || got.Processes[2].Name != "p2" || got.Processes[2].Exit.Code != 2 {
+		t.Errorf("the page reads %+v, want only the last table", got)
 	}
 }

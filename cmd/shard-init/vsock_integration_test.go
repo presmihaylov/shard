@@ -28,39 +28,21 @@ func TestTransportServesOverLiveVsock(t *testing.T) {
 	}
 	loop, err := vsock.Dial(vsock.LocalCID, supervisor.ControlPort)
 	if err == nil {
-		_ = loop.Close()
-		t.Fatalf("something already listens on vsock port %d; the guest ports must be free", supervisor.ControlPort)
+		t.Fatalf("something already listens on vsock port %d; the guest ports must be free (close: %v)", supervisor.ControlPort, loop.Close())
 	}
 	if !errors.Is(err, syscall.ECONNREFUSED) && !errors.Is(err, syscall.ECONNRESET) {
 		t.Skipf("no vsock loopback to dial through: %v", err)
 	}
 
-	exe, err := os.Executable()
-	if err != nil {
-		t.Fatalf("locate the test binary: %v", err)
-	}
-	cmd := exec.Command(exe, "-transport", "vsock")
+	cmd := exec.Command(selfBinary, "-transport", "vsock")
 	cmd.Env = append(os.Environ(), roleEnv+"="+roleSupervisor)
 	cmd.Stderr = os.Stderr
-	if err := cmd.Start(); err != nil {
-		t.Fatalf("start the supervisor: %v", err)
-	}
-	t.Cleanup(func() {
-		if err := cmd.Process.Kill(); err != nil && !errors.Is(err, os.ErrProcessDone) {
-			t.Errorf("kill the supervisor: %v", err)
-		}
-		_ = cmd.Wait()
-	})
+	proc := startSupervisor(t, cmd)
 	dial := func(_ context.Context, port uint32) (net.Conn, error) { return vsock.Dial(vsock.LocalCID, port) }
 
 	ctx := testContext(t)
-	c, err := supervisor.Connect(ctx, dial)
-	if err != nil {
-		t.Fatalf("connect over vsock: %v", err)
-	}
-	defer c.Close()
-
-	if err := c.Run(ctx, supervisor.RunSpec{Argv: childArgv("sleep:60000")}); err != nil {
+	c := connectReady(ctx, t, dial)
+	if err := c.Run(ctx, named("web", "sleep:60000")); err != nil {
 		t.Fatalf("run: %v", err)
 	}
 
@@ -85,10 +67,8 @@ func TestTransportServesOverLiveVsock(t *testing.T) {
 	if stat.Size != 5 {
 		t.Fatalf("stat = %+v, want 5 bytes", stat)
 	}
-	if err := c.Stop(t.Context()); err != nil {
+	if err := c.Stop(ctx); err != nil {
 		t.Fatalf("stop: %v", err)
 	}
-	if err := cmd.Wait(); err != nil {
-		t.Fatalf("the supervisor ended with %v, want a clean exit", err)
-	}
+	awaitCleanExit(ctx, t, proc, "the stop")
 }
