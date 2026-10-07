@@ -133,6 +133,8 @@ Only `stop` ends a sandbox. An exit does not, and no idle timer or setting does 
 - `ran out of memory and the host ended it`
 - `shard-init failed: <cause>` on a local connection, or `the init process of the sandbox failed; remove it and create another sandbox` on a remote connection
 
+After `ran out of memory and the host ended it`, the daemon starts the sandbox again on its own. The first start runs within 5 seconds. A sandbox that runs out of memory again within 10 minutes of a start waits 10 seconds for the next one, and the wait doubles up to 5 minutes. `shard list` shows such a sandbox without `--all`, for example `stopped (ran out of memory 2 times, starts again in 10s)`. A `stop` or a `remove` calls off the start.
+
 ## failed is terminal
 
 A `failed` sandbox refuses every command except `inspect` and `remove`. It answers `409 sandbox_failed` with the reason. Read the reason, then remove the sandbox.

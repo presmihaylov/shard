@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import datetime
 import json
 import threading
 import time
@@ -16,6 +17,7 @@ from useshards import (
     Capabilities,
     ConflictError,
     NotFoundError,
+    OOMInfo,
     Policy,
     PolicyRule,
     ProtocolError,
@@ -221,6 +223,18 @@ def test_a_fork_names_the_sandbox_it_was_forked_from(daemon: FakeDaemon, shard: 
     daemon.routes[("GET", "/v0/sandboxes/sb2")] = (200, {**SANDBOX, "id": "sb2", "forked_from": "sb"})
     assert shard.get("sb2").info.forked_from == "sb"
     assert shard.get("sb").info.forked_from is None
+
+
+def test_info_carries_the_memory_kills_and_the_start_again_owed(daemon: FakeDaemon, shard: Shard) -> None:
+    oom = {"kills": 2, "killed_at": "2026-10-07T12:00:00Z", "restart_at": "2026-10-07T12:00:10Z"}
+    daemon.routes[("GET", "/v0/sandboxes/sb2")] = (200, {**SANDBOX, "id": "sb2", "state": "stopped", "oom": oom})
+    got = shard.get("sb2").info.oom
+    assert got == OOMInfo(
+        kills=2,
+        killed_at=datetime.datetime(2026, 10, 7, 12, 0, 0, tzinfo=datetime.UTC),
+        restart_at=datetime.datetime(2026, 10, 7, 12, 0, 10, tzinfo=datetime.UTC),
+    )
+    assert shard.get("sb").info.oom is None
 
 
 def test_changes_keep_the_handle_current(daemon: FakeDaemon, shard: Shard) -> None:

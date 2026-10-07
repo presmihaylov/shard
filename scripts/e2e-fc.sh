@@ -325,35 +325,32 @@ shard remove "${EXIT_ID}" >/dev/null
 EXIT_ID=""
 say "only stop ended it"
 
-step "a microVM that outgrows its memory stops with its reason, and nothing starts it again"
+step "a microVM that outgrows its memory stops with its reason, and the daemon starts it again"
 # Only the first boot fills: the marker is on the overlay disk, and the sync keeps it through the stop that follows the OOM.
 OOM_ID=$(shard run -d --memory "${OOM_MEMORY}MiB" --name e2e-oom "${IMAGE}" /bin/sh -c \
 	'if [ ! -e /root/ran ]; then touch /root/ran && sync && mount -o remount,size=1G /dev/shm && dd if=/dev/zero of=/dev/shm/fill bs=1M; fi; echo e2e-oom-settled; while true; do sleep 1; done')
 OOM_RECORD="${SHARD_ROOT}/sandboxes/${OOM_ID}/sandbox.json"
 for _ in $(seq 1 120); do
-	grep -q '"state": *"stopped"' "${OOM_RECORD}" && break
+	grep -q "sandbox ${OOM_ID}: ran out of memory and the host ended it, the record now says stopped and the daemon starts it again now (kill 1, 1 in a row)$" "${DAEMON_LOG}" && break
 	sleep 1
 done
-grep -q '"state": *"stopped"' "${OOM_RECORD}" || fail "${OOM_ID} never stopped after its OOM: $(cat "${OOM_RECORD}")"
-grep -q '"stopped_reason": *"ran out of memory and the host ended it"' "${OOM_RECORD}" || fail "the stop of ${OOM_ID} names no OOM: $(cat "${OOM_RECORD}")"
-grep -q '"pid": *0' "${OOM_RECORD}" || fail "the stopped ${OOM_ID} still names a pid: $(cat "${OOM_RECORD}")"
-grep -q "sandbox ${OOM_ID}: ran out of memory and the host ended it, the record now says stopped$" "${DAEMON_LOG}" || fail "the daemon log holds no OOM stop of ${OOM_ID}"
-# Two liveness ticks pass, and the record still says stopped.
-sleep 11
-grep -q '"state": *"stopped"' "${OOM_RECORD}" || fail "something started ${OOM_ID} again after its OOM: $(cat "${OOM_RECORD}")"
-say "the daemon read the end as an OOM, not a crash, and left the microVM stopped"
-
-step "start brings the microVM back over its kept files"
-shard start "${OOM_ID}" >/dev/null
+grep -q "sandbox ${OOM_ID}: ran out of memory and the host ended it, the record now says stopped and the daemon starts it again now (kill 1, 1 in a row)$" "${DAEMON_LOG}" || fail "the daemon log holds no OOM stop of ${OOM_ID}: $(cat "${OOM_RECORD}")"
+# The first start again waits for the next liveness tick, 5 s on.
+for _ in $(seq 1 60); do
+	grep -q "sandbox ${OOM_ID}: started again after it ran out of memory (kill 1, 1 in a row)$" "${DAEMON_LOG}" && break
+	sleep 1
+done
+grep -q "sandbox ${OOM_ID}: started again after it ran out of memory (kill 1, 1 in a row)$" "${DAEMON_LOG}" || fail "the daemon never started ${OOM_ID} again after its OOM: $(cat "${OOM_RECORD}")"
+grep -q '"kills": *1' "${OOM_RECORD}" || fail "the record of ${OOM_ID} keeps no OOM kill: $(cat "${OOM_RECORD}")"
 for _ in $(seq 1 50); do
 	holds "e2e-oom-settled" shard logs "${OOM_ID}" && break
 	sleep 0.2
 done
 holds "e2e-oom-settled" shard logs "${OOM_ID}" || fail "the second boot of ${OOM_ID} did not get past the fill: $(shard logs "${OOM_ID}")"
-expect_exec_in "${OOM_ID}" "alive" "an exec answers in the microVM a start brought back" /bin/echo alive
+expect_exec_in "${OOM_ID}" "alive" "an exec answers in the microVM the daemon started again" /bin/echo alive
 shard remove --force "${OOM_ID}" >/dev/null
 OOM_ID=""
-say "one OOM, one stop, and the boot a start brought back skipped the fill"
+say "one OOM, one stop, and the boot the daemon started again skipped the fill"
 
 step "reach the network from the microVM"
 expect_network "after the create"
@@ -601,4 +598,4 @@ say "the root, the image, the fstab line, every cgroup of the run and the parent
 
 trap - EXIT
 echo
-echo "e2e PASSED on firecracker: install, xfs bootstrap, daemon up, create, the vmm's host cgroup, logs, exec, an entrypoint exit, an OOM stop and start, network, policy, proxy, daemon restart, reconcile, a live fork, pause, resume, stop, snapshot, create twice from it, start, remove, prune, daemon down, and a host with no cgroup, no bridge and no policy table left"
+echo "e2e PASSED on firecracker: install, xfs bootstrap, daemon up, create, the vmm's host cgroup, logs, exec, an entrypoint exit, an OOM stop and the start again, network, policy, proxy, daemon restart, reconcile, a live fork, pause, resume, stop, snapshot, create twice from it, start, remove, prune, daemon down, and a host with no cgroup, no bridge and no policy table left"

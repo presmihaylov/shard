@@ -9,6 +9,7 @@ export type {
   DNSMode,
   EgressDecision,
   ExitStatus,
+  OOMInfo,
   Policy,
   PolicyRule,
   Resources,

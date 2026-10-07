@@ -132,7 +132,7 @@ An ordinary daemon restart leaves already running sandboxes alive, and the next 
 
 **`provider sysbox does not support fork on this host; use a server that supports fork`.** shard refuses a verb that the provider cannot do, and it never falls back to a weaker one. `shard capabilities` lists what the server supports. The verb and the provider in the message vary.
 
-**`stopped (ran out of memory and the host ended it)`.** The sandbox reached its memory ceiling and triggered an OOM kill. gVisor allows headroom for the sentry and throttles before that ceiling. It does not start again on its own, but `shard start <name>` brings it back with its files. The bound is fixed when the sandbox is created, so to get more memory, create a new sandbox with a larger `--memory`.
+**`ran out of memory` in `shard list`.** The sandbox reached its memory ceiling and triggered an OOM kill. gVisor allows headroom for the sentry and throttles before that ceiling. The daemon starts it again on its own with its files: within 5 seconds the first time, then after a wait that starts at 10 seconds and doubles up to 5 minutes while the kills come within 10 minutes of a start. `shard list` counts the kills and shows a start still due, for example `stopped (ran out of memory 3 times, starts again in 20s)`. `shard stop <name>` calls that start off. The bound is fixed when the sandbox is created, so to get more memory, create a new sandbox with a larger `--memory`.
 
 **`stopped (the sandbox process died)`.** The host or a crash ended the sandbox. `shard start <name>` brings it back.
 

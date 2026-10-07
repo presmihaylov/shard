@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"time"
 
 	"github.com/presmihaylov/shard/models"
 )
@@ -17,14 +18,18 @@ const DiedReason = "the sandbox process died"
 // SupervisorFailedReason is what a record says once shard-init itself died, followed by the reason it gave.
 const SupervisorFailedReason = "shard-init failed"
 
-// Liveness records each entrypoint exit, and stops a sandbox whose process is gone, with the OOM as its reason if there was one.
-func (s *Service) Liveness(ctx context.Context, sandboxes []models.Sandbox, report func(string)) error {
+// Liveness records each entrypoint exit, stops a sandbox whose process is gone, and starts one an OOM kill stopped again once due.
+func (s *Service) Liveness(ctx context.Context, sandboxes []models.Sandbox, now time.Time, report func(string)) error {
 	var errs []error
 	for _, sb := range sandboxes {
-		if !sb.State.Live() {
-			continue
+		var err error
+		switch {
+		case sb.State.Live():
+			err = s.reconcileLive(ctx, sb, now, report)
+		case sb.State == models.StateStopped && sb.OOM.RestartDue():
+			err = s.startAgainWhenDue(ctx, sb, now, report)
 		}
-		if err := s.reconcileLive(ctx, sb, report); err != nil {
+		if err != nil {
 			errs = append(errs, err)
 		}
 	}
@@ -34,7 +39,7 @@ func (s *Service) Liveness(ctx context.Context, sandboxes []models.Sandbox, repo
 
 // reconcileLive probes the substrate without the lock, because Status can wedge and a stop on this or any
 // other sandbox must not wait on it. It locks to write and to probe a marked run again, and bails if the run changed.
-func (s *Service) reconcileLive(ctx context.Context, sb models.Sandbox, report func(string)) error {
+func (s *Service) reconcileLive(ctx context.Context, sb models.Sandbox, now time.Time, report func(string)) error {
 	// The list may be a tick old: a stop that landed since means this sandbox never needs the substrate.
 	if before, err := s.cfg.Repo.Get(sb.ID); err != nil || !before.State.Live() || before.PID != sb.PID || !before.RunStartedAt.Equal(sb.RunStartedAt) {
 		return err
@@ -100,7 +105,7 @@ func (s *Service) reconcileLive(ctx context.Context, sb models.Sandbox, report f
 		return s.recordEntrypointExit(ctx, sb.ID, current, report)
 	}
 	if status.OOMKilled {
-		return s.recordDied(sb.ID, OOMKilledReason, report)
+		return s.recordOOMKilled(sb.ID, current, now, report)
 	}
 	if status.SupervisorFailed != "" {
 		return s.recordSupervisorFailed(sb.ID, status.SupervisorFailed, report)

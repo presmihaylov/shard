@@ -107,6 +107,8 @@ func RecordRunning(ctx context.Context, repo Repository, provider models.Provide
 		sb.UnresponsiveReason = ""
 		// A mark an unfinished pause left would vouch for its checkpoint across this new run.
 		sb.Pausing = false
+		// The run an OOM kill owed has begun, whoever started it.
+		callOffOOMRestart(sb)
 		sb.RunStartedAt = time.Now().UTC()
 		// A resume is no start, so the first start stays; a fork has none yet.
 		if !keepExit || sb.StartedAt.IsZero() {

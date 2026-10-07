@@ -2016,31 +2016,32 @@ OOM_BOMB='i=0; while [ $i -lt 32 ]; do awk '\''BEGIN { s = "x"; while (1) s = s 
 # OOM_POLLS bounds the wait for one kill at one 5 s tick, like the integration test's budget.
 OOM_POLLS="${OOM_POLLS:-360}"
 
-# oom_stop_steps prove SHARD-461: an OOM stops the sandbox with its reason, nothing starts it again, and start brings it back. It runs on every provider (SHARD-191).
-oom_stop_steps() {
+# oom_restart_steps prove SHARD-786: an OOM stops the sandbox with its reason, and the daemon starts it again on its own. It runs on every provider (SHARD-191).
+oom_restart_steps() {
 	local id rec
 
-	step "an OOM stops the sandbox with its reason, and nothing starts it again"
-	# The bomb overruns the bound on the first run only, so the run a start brings back sleeps and can be used.
+	step "an OOM stops the sandbox with its reason, and the daemon starts it again over its kept files"
+	# The bomb overruns the bound on the first run only, so the run the daemon starts again sleeps and can be used.
 	id=$(shard run -d --memory 64MiB "${IMAGE}" /bin/sh -c "if [ ! -e /ran ]; then touch /ran; ${OOM_BOMB}; fi; while true; do sleep 1; done")
 	track_sandbox "${id}"
 	rec=$(rec_of "${id}")
 	for _ in $(seq 1 "${OOM_POLLS}"); do
-		grep -q '"state": *"stopped"' "${rec}" && break
+		grep -q "sandbox ${id}: ran out of memory and the host ended it, the record now says stopped and the daemon starts it again now (kill 1, 1 in a row)" "${DAEMON_LOG}" && break
 		sleep 1
 	done
-	grep -q '"state": *"stopped"' "${rec}" || fail "the OOM sandbox never stopped on ${PROVIDER}: $(cat "${rec}")"
-	grep -q '"stopped_reason": *"ran out of memory and the host ended it"' "${rec}" || fail "the stop names no OOM on ${PROVIDER}: $(cat "${rec}")"
-	grep -q '"pid": *0' "${rec}" || fail "the stopped OOM sandbox still names a pid: $(cat "${rec}")"
-	grep -q "sandbox ${id}: ran out of memory and the host ended it, the record now says stopped" "${DAEMON_LOG}" || fail "the daemon never reported the OOM stop of ${id}"
-	# Two liveness ticks pass, and the record still says stopped.
-	sleep 11
-	grep -q '"state": *"stopped"' "${rec}" || fail "something started the OOM sandbox again on ${PROVIDER}: $(cat "${rec}")"
-	say "on ${PROVIDER} an OOM stops the sandbox with its reason, and nothing starts it again"
-
-	step "start brings the OOM sandbox back over its kept files"
-	shard start "${id}" >/dev/null
-	expect_exec_in "${id}" "/ran" "the sandbox a start brought back kept the file of its first run" /bin/ls /ran
+	grep -q "sandbox ${id}: ran out of memory and the host ended it, the record now says stopped and the daemon starts it again now (kill 1, 1 in a row)" "${DAEMON_LOG}" || fail "the daemon never reported the OOM stop of ${id} on ${PROVIDER}: $(cat "${rec}")"
+	# The first start again waits for the next liveness tick, 5 s on.
+	for _ in $(seq 1 60); do
+		grep -q "sandbox ${id}: started again after it ran out of memory (kill 1, 1 in a row)" "${DAEMON_LOG}" && break
+		sleep 1
+	done
+	grep -q "sandbox ${id}: started again after it ran out of memory (kill 1, 1 in a row)" "${DAEMON_LOG}" || fail "the daemon never started the OOM sandbox again on ${PROVIDER}: $(cat "${rec}")"
+	grep -q '"kills": *1' "${rec}" || fail "the record of ${id} keeps no OOM kill: $(cat "${rec}")"
+	grep -q '"restart_at"' "${rec}" && fail "the record of ${id} still owes a start after the one that ran: $(cat "${rec}")"
+	[ "$(listed_state "${id}")" = "running" ] || fail "shard list does not list ${id} running after the start again: $(shard list --all)"
+	holds "^${id}.*ran out of memory once" shard list || fail "shard list does not count the OOM kill of ${id}: $(shard list)"
+	expect_exec_in "${id}" "/ran" "the sandbox the daemon started again kept the file of its first run" /bin/ls /ran
+	say "on ${PROVIDER} an OOM stops the sandbox with its reason, and the daemon starts it again over its kept files"
 	drop_sandbox "${id}"
 }
 
@@ -2144,7 +2145,7 @@ run_steps
 exec_cap_steps
 restart_policy_steps
 http_follow_steps
-oom_stop_steps
+oom_restart_steps
 disk_bound_steps
 stop_grace_steps
 

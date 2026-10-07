@@ -39,7 +39,14 @@ func newLivenessLab(t *testing.T, sb models.Sandbox, status models.Status) *live
 func (l *livenessLab) tick(t *testing.T, listed models.Sandbox) error {
 	t.Helper()
 
-	return l.svc.Liveness(t.Context(), []models.Sandbox{listed}, func(line string) { l.reports = append(l.reports, line) })
+	return l.tickAt(t, listed, time.Now().UTC())
+}
+
+// tickAt is a pass at the given clock, for what the OOM backoff waits on.
+func (l *livenessLab) tickAt(t *testing.T, listed models.Sandbox, now time.Time) error {
+	t.Helper()
+
+	return l.svc.Liveness(t.Context(), []models.Sandbox{listed}, now, func(line string) { l.reports = append(l.reports, line) })
 }
 
 func TestLivenessRecordsAnEntrypointExitAndLeavesTheSandboxRunning(t *testing.T) {
@@ -532,14 +539,16 @@ func TestLivenessRecordsTheExitAndTheReasonOfAShardInitThatDied(t *testing.T) {
 	}
 }
 
-// The host ended it for its memory, so the record stops with the reason and nothing starts it again (SHARD-461).
-func TestLivenessStopsTheRecordAfterAnOOMAndNeverStartsIt(t *testing.T) {
+// The host ended it for its memory, so the record stops with the reason and the daemon owes it a start again (SHARD-786).
+func TestLivenessStopsTheRecordAfterAnOOMAndOwesItAStart(t *testing.T) {
+	now := time.Date(2026, 10, 7, 12, 0, 0, 0, time.UTC)
 	sb := running()
 	sb.Resources = models.Resources{MemoryMiB: 64}
+	sb.RunStartedAt = now.Add(-time.Minute)
 	// oomKilled is also what firecracker and vz report once shard-init's oom frame landed.
 	lab := newLivenessLab(t, sb, oomKilled())
 
-	if err := lab.tick(t, sb); err != nil {
+	if err := lab.tickAt(t, sb, now); err != nil {
 		t.Fatalf("Liveness: %v", err)
 	}
 
@@ -547,11 +556,16 @@ func TestLivenessStopsTheRecordAfterAnOOMAndNeverStartsIt(t *testing.T) {
 	if got.State != models.StateStopped || got.PID != 0 || got.StoppedReason != sandbox.OOMKilledReason {
 		t.Errorf("the record says %s with pid %d and the reason %q, want stopped with %q", got.State, got.PID, got.StoppedReason, sandbox.OOMKilledReason)
 	}
-	if lab.l.provider.started || slices.Contains(lab.r.calls, "net.Allocate") {
-		t.Errorf("a sandbox the host ended for its memory was started again: %v", lab.r.calls)
+	want := models.OOM{Kills: 1, InARow: 1, KilledAt: now, RestartAt: now}
+	if got.OOM == nil || *got.OOM != want {
+		t.Errorf("the record holds the OOM %+v, want %+v", got.OOM, want)
 	}
-	if len(lab.reports) != 1 || !strings.Contains(lab.reports[0], "the record now says stopped") {
-		t.Errorf("the pass reported %v, want one line on the stop", lab.reports)
+	// The start runs on the next tick, so this one never spends the start budget on top of its probes.
+	if lab.l.provider.started || slices.Contains(lab.r.calls, "net.Allocate") {
+		t.Errorf("the tick that saw the kill started the sandbox too: %v", lab.r.calls)
+	}
+	if len(lab.reports) != 1 || !strings.Contains(lab.reports[0], "the daemon starts it again now") {
+		t.Errorf("the pass reported %v, want one line on the stop and the start again", lab.reports)
 	}
 }
 
@@ -564,8 +578,8 @@ func (l *livenessLab) reconcile(t *testing.T) {
 	}
 }
 
-// The boot stops the record, so no verb reads a running sandbox with no process, and the first tick finds nothing to do (SHARD-311).
-func TestReconcileStopsTheRecordOfAnOOMTheDaemonWasDownFor(t *testing.T) {
+// The boot stops the record, so no verb reads a running sandbox with no process, and the first tick starts it again (SHARD-311).
+func TestReconcileStopsTheRecordOfAnOOMTheDaemonWasDownForAndTheFirstTickStartsIt(t *testing.T) {
 	sb := running()
 	sb.Resources = models.Resources{MemoryMiB: 64}
 	lab := newLivenessLab(t, sb, oomKilled())
@@ -576,8 +590,8 @@ func TestReconcileStopsTheRecordOfAnOOMTheDaemonWasDownFor(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Inspect: %v", err)
 	}
-	if got.State != models.StateStopped || got.PID != 0 || got.StoppedReason != sandbox.OOMKilledReason {
-		t.Errorf("inspect says %s with pid %d and the reason %q, want stopped with %q", got.State, got.PID, got.StoppedReason, sandbox.OOMKilledReason)
+	if got.State != models.StateStopped || got.PID != 0 || got.StoppedReason != sandbox.OOMKilledReason || !got.OOM.RestartDue() {
+		t.Errorf("inspect says %s with pid %d, the reason %q and the OOM %+v, want stopped with %q and a start owed", got.State, got.PID, got.StoppedReason, got.OOM, sandbox.OOMKilledReason)
 	}
 	if last := lab.reports[len(lab.reports)-1]; !strings.Contains(last, "the record now says stopped") {
 		t.Errorf("the reconcile reported %v, want a last line on the stop", lab.reports)
@@ -586,8 +600,8 @@ func TestReconcileStopsTheRecordOfAnOOMTheDaemonWasDownFor(t *testing.T) {
 	if err := lab.tick(t, lab.l.repo.sb); err != nil {
 		t.Fatalf("Liveness: %v", err)
 	}
-	if lab.l.provider.started || lab.l.repo.sb.State != models.StateStopped {
-		t.Errorf("after the first tick the record says %s, want stopped and never started: %v", lab.l.repo.sb.State, lab.r.calls)
+	if !lab.l.provider.started || lab.l.repo.sb.State != models.StateRunning {
+		t.Errorf("after the first tick the record says %s, want running again: %v", lab.l.repo.sb.State, lab.r.calls)
 	}
 }
 

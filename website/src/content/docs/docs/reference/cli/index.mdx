@@ -243,6 +243,7 @@ A `--format json` call writes one value or nothing:
 | `forked_from` | `fork` made it; the id of the source sandbox |
 | `exit_status` | the main command exited since the last start: `{"code": 0, "signal": 0}` |
 | `stopped_reason` | shard stopped it with no operator, or `shard-init` died on a stop |
+| `oom` | the host ended it for its memory: `{"kills": 1, "killed_at": "2026-10-01T09:40:00Z", "restart_at": "2026-10-01T09:40:05Z"}`, where `restart_at` is a start the daemon still owes |
 | `failed_reason` | `state` is `failed` |
 | `command` | `run` made it; the app's argv |
 | `restart` | it has a restart policy |

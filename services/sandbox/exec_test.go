@@ -604,9 +604,9 @@ func TestExecNamesTheMemoryTheSandboxRanOutOf(t *testing.T) {
 	if err == nil || !strings.Contains(err.Error(), "ran out of memory") {
 		t.Fatalf("Exec returned %v, want the memory named", err)
 	}
-	// The sandbox keeps its files after an OOM, so the way back is a start, never an rm (SHARD-461).
-	if !strings.Contains(err.Error(), "shard start sandbox1") || strings.Contains(err.Error(), "shard remove") {
-		t.Errorf("the refusal is %q, want the start hint and no rm", err)
+	// The sandbox keeps its files after an OOM and the daemon starts it again, so the refusal names no rm (SHARD-786).
+	if !strings.Contains(err.Error(), "the daemon starts it again") || strings.Contains(err.Error(), "shard remove") {
+		t.Errorf("the refusal is %q, want the start again named and no rm", err)
 	}
 }
 

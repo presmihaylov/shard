@@ -1481,7 +1481,7 @@ func (s *Service) readyForExec(ctx context.Context, ref string) (string, models.
 	// The exit file records a 137 for this, which is what a plain kill -9 records too, so the reason
 	// is named here or an operator never learns it.
 	if status.OOMKilled {
-		return "", models.Sandbox{}, &UnavailableError{Sandbox: nameOf(id, sb), Why: OOMKilledReason, Fix: fmt.Sprintf("start it again with shard start %s, over the files it kept; more memory needs a new sandbox with a larger resources.memory_mib", nameOf(id, sb))}
+		return "", models.Sandbox{}, &UnavailableError{Sandbox: nameOf(id, sb), Why: OOMKilledReason, Fix: "the daemon starts it again on its own, over the files it kept; more memory needs a new sandbox with a larger resources.memory_mib"}
 	}
 
 	if !status.Exists {

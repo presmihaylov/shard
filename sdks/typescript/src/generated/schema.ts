@@ -722,6 +722,7 @@ export interface components {
             image: string;
             kernel?: string;
             name?: string;
+            oom?: components["schemas"]["OOM"];
             policy?: string;
             provider: string;
             resources: components["schemas"]["Resources"];
@@ -744,6 +745,14 @@ export interface components {
             parents?: boolean;
             path: string;
             user?: string;
+        };
+        OOM: {
+            /** @description When the host last ended the sandbox for its memory (date-time). */
+            killed_at: string;
+            /** @description Every time the host ended the sandbox for its memory (int64). */
+            kills: number;
+            /** @description When the daemon starts the sandbox again; absent once a start ran or a stop called it off (date-time). */
+            restart_at?: string;
         };
         PoliciesResponse: {
             next: string | null;
@@ -829,6 +838,7 @@ export interface components {
             image: string;
             kernel?: string;
             name?: string;
+            oom?: components["schemas"]["OOM"];
             policy?: string;
             provider: string;
             resources: components["schemas"]["Resources"];

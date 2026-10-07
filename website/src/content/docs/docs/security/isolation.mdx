@@ -118,7 +118,7 @@ shard never picks runc for you. Only `shard daemon --provider runc`, or the reco
 - shard's own supervisor, shard-init, is PID 1 in every sandbox, and the main command runs as its child.
 - The host decides the network. Each sandbox has its own address and can send traffic only from it. The host drops traffic to private networks and to other sandboxes, and the rules live on the host, never in the sandbox. See [egress](/docs/security/egress/).
 - On gVisor, Sysbox and runc, each host cgroup has a limit of 4096 processes and threads. This is not a limit of 4096 guest processes on gVisor: see [gVisor's resource model](https://gvisor.dev/docs/architecture_guide/resources/). Guest processes on Firecracker and vz stay inside the virtual machine.
-- When the memory ceiling triggers an OOM kill, shard ends the sandbox as a whole. gVisor allows extra memory for the sentry and throttles the sandbox before that ceiling. Set bounds that leave room for the host and other sandboxes.
+- When the memory ceiling triggers an OOM kill, shard ends the sandbox as a whole, then starts it again after a wait that grows while the kills repeat. gVisor allows extra memory for the sentry and throttles the sandbox before that ceiling. Set bounds that leave room for the host and other sandboxes.
 
 ## Which provider for which code
 

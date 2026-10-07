@@ -51,7 +51,7 @@ A failed task restarts after a backoff of up to one minute.
 
 ## A sandbox outlives the daemon
 
-Sandboxes that already run normally survive a daemon restart. On startup, the daemon checks their records against the provider before it serves any request. A create, fork or restore that the restart interrupted can instead end as `failed` or `stopped`. A record that says `running` with no process behind it usually becomes `stopped`, with the reason `daemon restarted and found no process`. When the provider reports an OOM kill or a supervisor failure, the record keeps that specific reason.
+Sandboxes that already run normally survive a daemon restart. On startup, the daemon checks their records against the provider before it serves any request. A create, fork or restore that the restart interrupted can instead end as `failed` or `stopped`. A record that says `running` with no process behind it usually becomes `stopped`, with the reason `daemon restarted and found no process`. When the provider reports an OOM kill or a supervisor failure, the record keeps that specific reason. The daemon then starts a sandbox that ran out of memory again, as it does while it is up.
 
 An `exec` session does not outlive the daemon. A restart disconnects every client and discards the daemon's output buffer and command handle. A command that already started can continue inside the sandbox, but the client cannot reconnect to that handle.
 

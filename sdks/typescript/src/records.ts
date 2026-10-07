@@ -45,6 +45,15 @@ export interface RestartInfo {
   ended: boolean;
 }
 
+/** OOMInfo is what the host's memory kills did to a sandbox, which the daemon starts again after each one. */
+export interface OOMInfo {
+  /** Every time the host ended the sandbox for its memory. */
+  kills: number;
+  killedAt: Date;
+  /** When the daemon starts the sandbox again; null once a start ran or a stop called it off. */
+  restartAt: Date | null;
+}
+
 /** AppInfo is the one app a run started in its sandbox. */
 export interface AppInfo {
   command: string[];
@@ -76,6 +85,8 @@ export interface SandboxInfo {
   kernel: string | null;
   state: SandboxState;
   stoppedReason: string | null;
+  /** null for a sandbox the host never ended for its memory. */
+  oom: OOMInfo | null;
   failedReason: string | null;
   resources: Resources;
   /** null for a sandbox that create made, which runs no app. */
@@ -182,6 +193,7 @@ export function sandboxInfo(value: unknown): SandboxInfo {
     kernel: fields.optionalString("kernel"),
     state: fields.oneOf("state", states),
     stoppedReason: fields.optionalString("stopped_reason"),
+    oom: oom(fields.optionalObject("oom")),
     failedReason: fields.optionalString("failed_reason"),
     resources: { memoryMiB: resources.int("memory_mib"), vcpus: resources.int("vcpus"), diskMiB: resources.int("disk_mib") },
     app: command.length === 0 ? null : { command, exitStatus: exitStatus(fields.optionalObject("exit_status")), restart: restart(fields) },
@@ -294,6 +306,14 @@ function exitStatus(fields: Fields | null): ExitStatus | null {
   }
 
   return { exitCode: fields.int("code"), signal: fields.int("signal") || null };
+}
+
+function oom(fields: Fields | null): OOMInfo | null {
+  if (fields === null) {
+    return null;
+  }
+
+  return { kills: fields.int("kills"), killedAt: fields.date("killed_at"), restartAt: fields.optionalDate("restart_at") };
 }
 
 function restart(sandbox: Fields): RestartInfo | null {

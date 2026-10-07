@@ -15,37 +15,53 @@ import (
 // oomBomb doubles strings in anonymous memory in 32 tasks, because memory.high throttles each one to ~128 KiB/s past the bound.
 const oomBomb = `i=0; while [ $i -lt 32 ]; do awk 'BEGIN { s = "x"; while (1) s = s s }' & i=$((i+1)); done; wait`
 
-// oomBudget covers one kill of ~30 s, at one tick every 5 s, with room for a slow host.
+// oomBudget covers two kills of ~30 s, at one tick every 5 s, with room for a slow host.
 const oomBudget = 3 * time.Minute
 
-// The host ends the sandbox for its memory, and only a start brings it back, over the files it kept (SHARD-461).
-func TestTheDaemonStopsAnOOMKilledSandboxAndAStartBringsItBack(t *testing.T) {
+// The host ends the sandbox for its memory, and the daemon starts it again on its own, over the files it kept (SHARD-786).
+func TestTheDaemonStartsAnOOMKilledSandboxAgain(t *testing.T) {
 	app, out := newCreateApp(t)
 
-	// The guest overruns its bound on the first run only, so the run a start brings back can be used.
+	// The guest overruns its bound on the first run only, so the run the daemon brings back can be used.
 	script := "if [ ! -e /ran ]; then touch /ran; " + oomBomb + "; fi; while true; do sleep 1; done"
 	id := runDetachedWith(t, app, out, "--memory", oomBound(), testImage, "--", "/bin/sh", "-c", script)
 	t.Cleanup(func() { cleanUp(t, app, id) })
 
-	sb := awaitRecord(t, app, id, func(sb models.Sandbox) bool { return sb.State == models.StateStopped })
-	if sb.StoppedReason != sandbox.OOMKilledReason || sb.PID != 0 {
-		t.Errorf("the record says %q with pid %d, want the kill named and no pid", sb.StoppedReason, sb.PID)
+	sb := awaitRecord(t, app, id, func(sb models.Sandbox) bool { return sb.State == models.StateRunning && sb.OOM != nil })
+	if sb.OOM.Kills != 1 || sb.OOM.RestartDue() || sb.StoppedReason != "" {
+		t.Errorf("the record holds the OOM %+v and the reason %q, want one kill, no start owed and no reason", sb.OOM, sb.StoppedReason)
 	}
-	if !strings.Contains(daemonUnderTest.logged(), "sandbox "+id+": "+sandbox.OOMKilledReason+", the record now says stopped") {
-		t.Error("the daemon logged no line for the stop")
-	}
-
-	// Two ticks pass, and nothing starts it again.
-	time.Sleep(11 * time.Second)
-	if got := record(t, app, id); got.State != models.StateStopped {
-		t.Fatalf("the record says %s two ticks after the kill, want it still stopped", got.State)
+	logged := daemonUnderTest.logged()
+	for _, line := range []string{"sandbox " + id + ": " + sandbox.OOMKilledReason + ", the record now says stopped and the daemon starts it again now (kill 1, 1 in a row)", "sandbox " + id + ": started again after it ran out of memory (kill 1, 1 in a row)"} {
+		if !strings.Contains(logged, line) {
+			t.Errorf("the daemon logged no line %q", line)
+		}
 	}
 
-	if err := app.Run(t.Context(), []string{"start", id}); err != nil {
-		t.Fatalf("start after the kill: %v", err)
-	}
 	if got, err := runExec(t, app, "exec", id, "--", "/bin/ls", "/ran"); err != nil || !strings.Contains(got, "/ran") {
-		t.Errorf("the run a start brought back lost the file its first run wrote: %q, %v", got, err)
+		t.Errorf("the run the daemon brought back lost the file its first run wrote: %q, %v", got, err)
+	}
+}
+
+// A sandbox that runs out of memory at boot waits a growing backoff, and a stop calls the start again off.
+func TestAStopCallsOffTheStartAgainOfASandboxThatKeepsRunningOutOfMemory(t *testing.T) {
+	app, out := newCreateApp(t)
+
+	id := runDetachedWith(t, app, out, "--memory", oomBound(), testImage, "--", "/bin/sh", "-c", oomBomb)
+	t.Cleanup(func() { cleanUp(t, app, id) })
+
+	sb := awaitRecord(t, app, id, func(sb models.Sandbox) bool { return sb.OOM != nil && sb.OOM.Kills == 2 })
+	if sb.OOM.InARow != 2 || sb.OOM.RestartAt.Sub(sb.OOM.KilledAt) != sandbox.OOMRestartBackoff {
+		t.Errorf("the record holds the OOM %+v, want the second kill in a row to wait %s", sb.OOM, sandbox.OOMRestartBackoff)
+	}
+
+	if err := app.Run(t.Context(), []string{"stop", id}); err != nil {
+		t.Fatalf("stop: %v", err)
+	}
+	// Past the backoff and two ticks, nothing starts it again.
+	time.Sleep(sandbox.OOMRestartBackoff + 11*time.Second)
+	if got := record(t, app, id); got.State != models.StateStopped || got.OOM.RestartDue() || got.OOM.Kills != 2 {
+		t.Errorf("after the stop the record says %s with the OOM %+v, want stopped with two kills and no start owed", got.State, got.OOM)
 	}
 }
 

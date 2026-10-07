@@ -58,6 +58,6 @@ func (t liveness) Run(ctx context.Context) error {
 			return err
 		}
 		// SHARD-376 (shard's ruling): a sandbox's error is logged and the task goes on, so one sandbox cannot hold back the rest.
-		failures.tick(ctx, svc.Liveness(ctx, sandboxes, func(line string) { logger.Print(line) }))
+		failures.tick(ctx, svc.Liveness(ctx, sandboxes, time.Now().UTC(), func(line string) { logger.Print(line) }))
 	}
 }

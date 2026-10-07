@@ -36,6 +36,8 @@ type Sandbox struct {
 	FailedPublic string `json:"failed_public,omitempty"`
 	// UnresponsiveReason says what missed its probe bound, set only in state unresponsive.
 	UnresponsiveReason string `json:"unresponsive_reason,omitempty"`
+	// OOM is what the host's memory kills did to the sandbox, nil until the first one.
+	OOM *OOM `json:"oom,omitempty"`
 
 	// A resume keeps the checkpoint until the next pause or removal.
 	Checkpoint string `json:"checkpoint,omitempty"`

@@ -32,7 +32,7 @@ func TestLivenessLeavesTheRecordWhenTheSubstrateDoesNotAnswer(t *testing.T) {
 
 	var reports []string
 	start := time.Now()
-	err := svc.Liveness(t.Context(), []models.Sandbox{running()}, func(line string) { reports = append(reports, line) })
+	err := svc.Liveness(t.Context(), []models.Sandbox{running()}, time.Now().UTC(), func(line string) { reports = append(reports, line) })
 	if err != nil {
 		t.Fatalf("Liveness returned %v, want nil so the daemon task lives", err)
 	}
@@ -191,7 +191,7 @@ func TestLivenessBailsWhenAReusedPidHidesANewRun(t *testing.T) {
 			svc, l := newService(t, r, old, fastBudget)
 			land(&l.repo.sb)
 
-			if err := svc.Liveness(t.Context(), []models.Sandbox{old}, func(string) {}); err != nil {
+			if err := svc.Liveness(t.Context(), []models.Sandbox{old}, time.Now().UTC(), func(string) {}); err != nil {
 				t.Fatalf("Liveness returned %v, want nil", err)
 			}
 			if slices.Contains(r.calls, "provider.Status") {

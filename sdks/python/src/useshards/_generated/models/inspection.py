@@ -13,6 +13,7 @@ from ..types import UNSET, Unset
 if TYPE_CHECKING:
     from ..models.effective import Effective
     from ..models.exit_status import ExitStatus
+    from ..models.oom import OOM
     from ..models.resources import Resources
     from ..models.restart import Restart
 
@@ -36,6 +37,7 @@ class Inspection:
     forked_from: str | Unset = UNSET
     kernel: str | Unset = UNSET
     name: str | Unset = UNSET
+    oom: OOM | Unset = UNSET
     policy: str | Unset = UNSET
     restart: Restart | Unset = UNSET
     secrets: list[str] | Unset = UNSET
@@ -46,6 +48,7 @@ class Inspection:
     def to_dict(self) -> dict[str, Any]:
         from ..models.effective import Effective  # noqa: PLC0415
         from ..models.exit_status import ExitStatus  # noqa: PLC0415
+        from ..models.oom import OOM  # noqa: PLC0415
         from ..models.resources import Resources  # noqa: PLC0415
         from ..models.restart import Restart  # noqa: PLC0415
 
@@ -82,6 +85,10 @@ class Inspection:
         kernel = self.kernel
 
         name = self.name
+
+        oom: dict[str, Any] | Unset = UNSET
+        if not isinstance(self.oom, Unset):
+            oom = self.oom.to_dict()
 
         policy = self.policy
 
@@ -129,6 +136,8 @@ class Inspection:
             field_dict["kernel"] = kernel
         if name is not UNSET:
             field_dict["name"] = name
+        if oom is not UNSET:
+            field_dict["oom"] = oom
         if policy is not UNSET:
             field_dict["policy"] = policy
         if restart is not UNSET:
@@ -148,6 +157,7 @@ class Inspection:
     def from_dict(cls: type[T], src_dict: Mapping[str, Any]) -> T:
         from ..models.effective import Effective  # noqa: PLC0415
         from ..models.exit_status import ExitStatus  # noqa: PLC0415
+        from ..models.oom import OOM  # noqa: PLC0415
         from ..models.resources import Resources  # noqa: PLC0415
         from ..models.restart import Restart  # noqa: PLC0415
 
@@ -190,6 +200,13 @@ class Inspection:
 
         name = d.pop("name", UNSET)
 
+        _oom = d.pop("oom", UNSET)
+        oom: OOM | Unset
+        if isinstance(_oom, Unset):
+            oom = UNSET
+        else:
+            oom = OOM.from_dict(_oom)
+
         policy = d.pop("policy", UNSET)
 
         _restart = d.pop("restart", UNSET)
@@ -227,6 +244,7 @@ class Inspection:
             forked_from=forked_from,
             kernel=kernel,
             name=name,
+            oom=oom,
             policy=policy,
             restart=restart,
             secrets=secrets,

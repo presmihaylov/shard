@@ -425,7 +425,10 @@ needed a context and an error would be a fourth thing to get wrong.
 
 `--memory` bounds a sandbox on every substrate. Past the bound the whole sandbox dies, and not just
 one process inside it. On gVisor that point is a ceiling above the bound, as the next paragraph
-says. The record then says `stopped` with its reason, and nothing starts the sandbox again.
+says. The record then says `stopped` with its reason, and the daemon starts the sandbox again on
+its own over the files it kept. The first start runs on the next liveness tick. A kill within
+10 minutes of a start waits 10 s for the next one, doubling up to 5 minutes, so a sandbox that runs
+out of memory at boot never loops hot. A stop or a remove calls off a start still owed (SHARD-786).
 `create` refuses by name a bound above the host's total memory (`MemTotal`
 on Linux, `hw.memsize` on a Mac). Such a bound never binds, because the host OOM killer acts first.
 A bound of the host's whole memory is still accepted, so leaving room for the host is the operator's
@@ -450,8 +453,8 @@ inherit. When the killer takes the group, `shard-init` reads
 that state and does not power off on its own. The host writes the `oom` marker first, and only then
 sends the stop. So a daemon that dies between the report and the marker finds the kill again in the
 state that the next connection replays, and marks it then. Once the marker is down, `Status` says
-`OOMKilled`, no exit record lands, and the daemon stops the record with its reason exactly as it
-does on Linux. A kill that finds no host attached, during a reconnect after a sleep, waits
+`OOMKilled`, no exit record lands, and the daemon stops the record with its reason and starts it
+again exactly as it does on Linux. A kill that finds no host attached, during a reconnect after a sleep, waits
 the same way for that replay. The bound needs room under the headroom, so `vz` refuses a
 `--memory` below 128 MiB by name.
 On `firecracker` the guest half is the same, down to the marker and the replay, because the guest

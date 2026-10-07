@@ -59,6 +59,15 @@ test("each lifecycle verb keeps the handle's info current", async () => {
   assert.equal(sandbox.info.state, "paused");
 });
 
+test("info carries the memory kills and the start again the daemon owes", async () => {
+  const oom = { kills: 2, killed_at: "2026-10-07T12:00:00Z", restart_at: "2026-10-07T12:00:10Z" };
+  routes.set("GET /v0/sandboxes/sb_1", () => ({ status: 200, json: sandboxRecord({ state: "stopped", stopped_reason: "ran out of memory and the host ended it", oom }) }));
+  const info = await sandbox.inspect();
+  assert.deepEqual(info.oom, { kills: 2, killedAt: new Date(oom.killed_at), restartAt: new Date(oom.restart_at) });
+  routes.set("GET /v0/sandboxes/sb_1", () => ({ status: 200, json: sandboxRecord() }));
+  assert.equal((await sandbox.inspect()).oom, null);
+});
+
 test("a fork answers a new handle, and the source runs on", async () => {
   routes.set("POST /v0/sandboxes/sb_1/fork", () => ({ status: 201, json: sandboxRecord({ id: "sb_2", name: "copy" }) }));
   const forked = await sandbox.fork({ name: "copy" });
