@@ -110,7 +110,7 @@ func Run(ctx context.Context, cfg Config) error {
 	life := &lifecycle{deps: d, base: ctx}
 	self := process{deps: d, startedAt: time.Now().UTC().Truncate(time.Second)}
 
-	tasks := []Task{apiTask{deps: d, lifecycle: life, process: self}, proxyTask{deps: d}, dnsTask{deps: d}, egressLogTailer{deps: d}, heldLogRotation{deps: d}, liveness{deps: d, lifecycle: life, interval: livenessInterval}, hostFirewall{deps: d, interval: firewallInterval}, restartPolicy{deps: d, lifecycle: life, interval: restartInterval}}
+	tasks := []Task{apiTask{deps: d, lifecycle: life, process: self}, proxyTask{deps: d}, dnsTask{deps: d}, egressLogTailer{deps: d}, heldLogRotation{deps: d}, liveness{deps: d, lifecycle: life, interval: livenessInterval}, hostFirewall{deps: d, interval: firewallInterval}, restartPolicy{deps: d, lifecycle: life, interval: restartInterval}, hostPorts{deps: d, lifecycle: life, interval: portsInterval}}
 	dmn := New(cfg.Root, cfg.Out, append(tasks, extra...)...)
 	// vz has no bridge, and a daemon that is not root cannot write the host's netfilter, so neither has the table to share.
 	if cfg.Provider != vzvm.Name && os.Geteuid() == 0 {

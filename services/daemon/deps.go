@@ -31,6 +31,7 @@ import (
 	"github.com/presmihaylov/shard/services/image"
 	"github.com/presmihaylov/shard/services/kernel"
 	"github.com/presmihaylov/shard/services/network"
+	"github.com/presmihaylov/shard/services/portforward"
 	"github.com/presmihaylov/shard/services/provider/firecracker"
 	"github.com/presmihaylov/shard/services/provider/gvisor"
 	"github.com/presmihaylov/shard/services/provider/runc"
@@ -63,6 +64,8 @@ type deps struct {
 	// logSvc is one for every writer and reader, so its lock orders each rotation against them all.
 	logSvc    *egress.Log
 	runnerSvc *runsc.Runner
+	// forwardSvc holds the host port listeners, one set for the daemon's life.
+	forwardSvc *portforward.Forwarder
 
 	unreadableLogSvc *sandboxstate.UnreadableLog
 	// states is the supervisor's live task registry, set once before the tasks run, so GET /v0/daemon reports it.
@@ -762,6 +765,9 @@ func (d *deps) lifecycle() (*sandbox.Service, error) {
 	}
 
 	logger := d.logger()
+	if d.forwardSvc == nil {
+		d.forwardSvc = portforward.New(provider.DialPort, func(line string) { logger.Print(line) }, network.DefaultBridge)
+	}
 
 	return sandbox.New(sandbox.Config{
 		Repo:          repo,
@@ -779,6 +785,7 @@ func (d *deps) lifecycle() (*sandbox.Service, error) {
 		HostCPUs:      runtime.NumCPU(),
 		Report:        func(line string) { logger.Print(line) },
 		Redact:        redactor(secrets, logger),
+		Ports:         d.forwardSvc,
 	}), nil
 }
 

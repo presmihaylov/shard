@@ -904,25 +904,28 @@ func (f *fakePorts) CloseSandbox(id string) error {
 	defer f.mu.Unlock()
 	f.record("CloseSandbox %s", id)
 
-	return f.retain(func(owner string) bool { return owner != id })
-}
-
-func (f *fakePorts) Retain(keep map[string]bool) error {
-	f.mu.Lock()
-	defer f.mu.Unlock()
-	f.record("Retain %d", len(keep))
-
-	return f.retain(func(owner string) bool { return keep[owner] })
-}
-
-func (f *fakePorts) retain(keep func(owner string) bool) error {
 	for port, owner := range f.up {
-		if !keep(owner) {
+		if owner == id {
 			delete(f.up, port)
 		}
 	}
 
 	return nil
+}
+
+func (f *fakePorts) Sandboxes() []string {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+
+	var ids []string
+	for _, owner := range f.up {
+		if !slices.Contains(ids, owner) {
+			ids = append(ids, owner)
+		}
+	}
+	slices.Sort(ids)
+
+	return ids
 }
 
 func (f *fakePorts) Probe(spec models.PortForward) error {

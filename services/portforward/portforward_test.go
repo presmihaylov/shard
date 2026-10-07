@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"io"
 	"net"
+	"slices"
 	"strconv"
 	"strings"
 	"sync"
@@ -74,8 +75,10 @@ func newForwarder(t *testing.T, g *guests) *portforward.Forwarder {
 	t.Helper()
 	f := portforward.New(g.dial, func(line string) { t.Log(line) }, "shard0")
 	t.Cleanup(func() {
-		if err := f.Retain(nil); err != nil {
-			t.Errorf("close every forward: %v", err)
+		for _, id := range f.Sandboxes() {
+			if err := f.CloseSandbox(id); err != nil {
+				t.Errorf("close the forwards of %s: %v", id, err)
+			}
 		}
 	})
 
@@ -242,8 +245,10 @@ func TestSetKeepsARefusedPortInItsStatusAndReportsItOnce(t *testing.T) {
 	var reports []string
 	f := portforward.New(newGuests(t).dial, func(line string) { reports = append(reports, line) }, "shard0")
 	t.Cleanup(func() {
-		if err := f.Retain(nil); err != nil {
-			t.Errorf("close every forward: %v", err)
+		for _, id := range f.Sandboxes() {
+			if err := f.CloseSandbox(id); err != nil {
+				t.Errorf("close the forwards of %s: %v", id, err)
+			}
 		}
 	})
 	taken, err := net.Listen("tcp4", "127.0.0.1:0")
@@ -323,23 +328,22 @@ func TestCloseLeavesAnotherSandboxsForwardAlone(t *testing.T) {
 	}
 }
 
-func TestRetainEndsTheForwardsOfASandboxWhoseRecordIsGone(t *testing.T) {
-	g := newGuests(t, 8100)
-	f := newForwarder(t, g)
-	kept, gone := freePort(t), freePort(t)
-	if err := f.Open("sb-1", models.PortForward{HostPort: kept, GuestPort: 8100}); err != nil {
+func TestSandboxesNamesEveryOneWithAForwardRefusedOrNot(t *testing.T) {
+	f := newForwarder(t, newGuests(t, 8100))
+	taken, err := net.Listen("tcp4", "127.0.0.1:0")
+	if err != nil {
 		t.Fatal(err)
 	}
-	if err := f.Open("sb-2", models.PortForward{HostPort: gone, GuestPort: 8100}); err != nil {
+	defer taken.Close()
+	if err := f.Open("sb-2", models.PortForward{HostPort: freePort(t), GuestPort: 8100}); err != nil {
+		t.Fatal(err)
+	}
+	if err := f.Set("sb-1", []models.PortForward{{HostPort: uint16(taken.Addr().(*net.TCPAddr).Port), GuestPort: 8100}}); err != nil {
 		t.Fatal(err)
 	}
 
-	if err := f.Retain(map[string]bool{"sb-1": true}); err != nil {
-		t.Fatal(err)
-	}
-
-	if !f.Status(kept).Listening || f.Status(gone).Listening {
-		t.Errorf("kept %+v gone %+v, want only sb-1 listening", f.Status(kept), f.Status(gone))
+	if got := f.Sandboxes(); !slices.Equal(got, []string{"sb-1", "sb-2"}) {
+		t.Errorf("Sandboxes answered %v, want sb-1 and sb-2", got)
 	}
 }
 

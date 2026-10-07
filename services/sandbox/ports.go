@@ -19,7 +19,7 @@ type Ports interface {
 	Set(id string, want []models.PortForward) error
 	Close(id string, hostPort uint16) error
 	CloseSandbox(id string) error
-	Retain(keep map[string]bool) error
+	Sandboxes() []string
 	Probe(spec models.PortForward) error
 	Status(hostPort uint16) portforward.Status
 	Reachable(public bool) ([]models.HostAddress, error)
@@ -183,19 +183,22 @@ func (s *Service) portSandboxes(ref string) ([]models.Sandbox, error) {
 
 // SyncPorts makes the host's listeners match the records: each running sandbox's forwards, and nothing for one that is not running or is gone.
 func (s *Service) SyncPorts(sandboxes []models.Sandbox) error {
-	recorded := map[string]bool{}
-	var errs []error
+	ids := s.cfg.Ports.Sandboxes()
 	for _, sb := range sandboxes {
-		recorded[sb.ID] = true
-		if len(sb.Ports) != 0 {
-			errs = append(errs, s.syncPorts(sb.ID))
+		if len(sb.Ports) != 0 && !slices.Contains(ids, sb.ID) {
+			ids = append(ids, sb.ID)
 		}
 	}
 
-	return errors.Join(append(errs, s.cfg.Ports.Retain(recorded))...)
+	var errs []error
+	for _, id := range ids {
+		errs = append(errs, s.syncPorts(id))
+	}
+
+	return errors.Join(errs...)
 }
 
-// syncPorts skips a sandbox a verb holds, since that verb opens or closes the forwards itself.
+// syncPorts reads the record under the sandbox's lock, so a create or an rm in flight is never undone; one a verb holds is that verb's to open or close.
 func (s *Service) syncPorts(id string) error {
 	unlock, ok := s.tryLock(id)
 	if !ok {
@@ -205,13 +208,13 @@ func (s *Service) syncPorts(id string) error {
 
 	sb, err := s.cfg.Repo.Get(id)
 	if errors.Is(err, sandboxstate.ErrNotFound) {
-		return nil
+		return s.closePorts(id)
 	}
 	if err != nil {
 		return err
 	}
 	if sb.State != models.StateRunning {
-		return s.cfg.Ports.CloseSandbox(id)
+		return s.closePorts(id)
 	}
 
 	return s.cfg.Ports.Set(id, sb.Ports)
@@ -374,7 +377,7 @@ func (noPorts) Open(string, models.PortForward) error        { return nil }
 func (noPorts) Set(string, []models.PortForward) error       { return nil }
 func (noPorts) Close(string, uint16) error                   { return nil }
 func (noPorts) CloseSandbox(string) error                    { return nil }
-func (noPorts) Retain(map[string]bool) error                 { return nil }
+func (noPorts) Sandboxes() []string                          { return nil }
 func (noPorts) Probe(models.PortForward) error               { return nil }
 func (noPorts) Status(uint16) portforward.Status             { return portforward.Status{} }
 func (noPorts) Reachable(bool) ([]models.HostAddress, error) { return []models.HostAddress{}, nil }

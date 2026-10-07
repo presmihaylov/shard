@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"net"
+	"slices"
 	"strconv"
 	"sync"
 	"syscall"
@@ -208,19 +209,20 @@ func (f *Forwarder) CloseSandbox(id string) error {
 	return errors.Join(errs...)
 }
 
-// Retain ends the forwards of every sandbox keep does not name, as of one whose record is gone.
-func (f *Forwarder) Retain(keep map[string]bool) error {
+// Sandboxes names every sandbox with a forward, a refused one included, so a sync reaches one whose record is gone.
+func (f *Forwarder) Sandboxes() []string {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 
-	var errs []error
-	for port, fw := range f.ports {
-		if !keep[fw.id] {
-			errs = append(errs, f.drop(port))
+	var ids []string
+	for _, fw := range f.ports {
+		if !slices.Contains(ids, fw.id) {
+			ids = append(ids, fw.id)
 		}
 	}
+	slices.Sort(ids)
 
-	return errors.Join(errs...)
+	return ids
 }
 
 // Status says whether hostPort listens and for which sandbox, and why not or what the last connection hit.
