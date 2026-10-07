@@ -98,6 +98,27 @@ func TestListAllShowsTheStoppedOnesToo(t *testing.T) {
 	}
 }
 
+// The daemon starts this one again on its own, so it is up as far as an operator is concerned.
+func TestListShowsAStoppedSandboxTheDaemonStartsAgain(t *testing.T) {
+	var out, stderr bytes.Buffer
+
+	owed := models.Sandbox{ID: "oom-3", Image: "alpine:3.20", State: models.StateStopped, StoppedReason: sandbox.OOMKilledReason, CreatedAt: time.Now(),
+		OOM: &models.OOM{Kills: 1, InARow: 1, KilledAt: time.Now(), RestartAt: time.Now().Add(time.Minute)}}
+	app := newListApp(t, &out, append(listed(), owed), nil)
+	app.Err = &stderr
+
+	if err := app.Run(t.Context(), []string{"list"}); err != nil {
+		t.Fatalf("list: %v", err)
+	}
+
+	if !strings.Contains(out.String(), "oom-3") || strings.Contains(out.String(), "down-2") {
+		t.Errorf("list printed\n%s\nwant oom-3 and not down-2", out.String())
+	}
+	if want := "1 stopped sandbox; shard list --all\n"; stderr.String() != want {
+		t.Errorf("list said %q on stderr, want %q", stderr.String(), want)
+	}
+}
+
 // ls is an alias, so it runs list itself and prints the same table.
 func TestLsPrintsWhatListPrints(t *testing.T) {
 	var list, ls bytes.Buffer

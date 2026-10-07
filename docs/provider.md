@@ -428,7 +428,7 @@ one process inside it. On gVisor that point is a ceiling above the bound, as the
 says. The record then says `stopped` with its reason, and the daemon starts the sandbox again on
 its own over the files it kept. The first start runs on the next liveness tick. A kill within
 10 minutes of a start waits 10 s for the next one, doubling up to 5 minutes, so a sandbox that runs
-out of memory at boot never loops hot. A stop or a remove calls off a start still owed (SHARD-786).
+out of memory at boot never loops hot. A stop or a remove calls off a start still owed.
 `create` refuses by name a bound above the host's total memory (`MemTotal`
 on Linux, `hw.memsize` on a Mac). Such a bound never binds, because the host OOM killer acts first.
 A bound of the host's whole memory is still accepted, so leaving room for the host is the operator's

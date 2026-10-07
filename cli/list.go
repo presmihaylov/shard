@@ -42,7 +42,10 @@ func (a App) list(ctx context.Context, args []string) error {
 	}
 	shown := result.Sandboxes
 	if !opts.all {
-		shown = slices.DeleteFunc(slices.Clone(shown), func(sb client.Sandbox) bool { return sb.State == models.StateStopped })
+		// A start the daemon owes after an OOM kill keeps the sandbox in view, as the daemon's own list does.
+		shown = slices.DeleteFunc(slices.Clone(shown), func(sb client.Sandbox) bool {
+			return sb.State == models.StateStopped && (sb.OOM == nil || sb.OOM.RestartAt.IsZero())
+		})
 	}
 
 	// The daemon answers with both: the sandboxes it read are printed, and the ones it could not are the exit.
@@ -117,8 +120,7 @@ func writeTable(w io.Writer, sandboxes []client.Sandbox, now time.Time) error {
 	return nil
 }
 
-// state carries the reason a sandbox nobody stopped is stopped, the exit of an entrypoint whose
-// still-running sandbox outlived it, and the memory kills the daemon started it again after.
+// state adds why a sandbox nobody stopped is stopped, an entrypoint exit it outlived, and the memory kills it was started again after.
 func state(sb client.Sandbox, now time.Time) string {
 	var notes []string
 	if sb.State == models.StateRunning && sb.ExitStatus != nil {
