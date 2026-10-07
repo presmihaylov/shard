@@ -54,6 +54,7 @@ func TestConformance(t *testing.T) {
 		Shell:     func(script string) []string { return []string{"/bin/sh", "-c", script} },
 		Reopen:    h.reopen,
 		HostLayer: true,
+		BusyboxNC: true,
 	})
 }
 

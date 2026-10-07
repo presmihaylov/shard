@@ -351,6 +351,7 @@ func TestConformanceOnVMs(t *testing.T) {
 		Reopen:   h.reopen,
 		// The window Firecracker measured for the same guest kernel (SHARD-414); VZ has no measure of its own yet.
 		ReseedWindow: 50 * time.Second,
+		BusyboxNC:    true,
 	})
 }
 

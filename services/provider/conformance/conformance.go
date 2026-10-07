@@ -3,9 +3,14 @@
 package conformance
 
 import (
+	"bytes"
 	"context"
+	"crypto/rand"
 	"errors"
+	"fmt"
+	"io"
 	"io/fs"
+	"net"
 	"os"
 	"path"
 	"path/filepath"
@@ -41,6 +46,8 @@ type Subject struct {
 	ReseedWindow time.Duration
 	// RootHoldsEveryCapability says the runtime gives root every capability in its user namespace whatever the spec asks, as sysbox-runc does.
 	RootHoldsEveryCapability bool
+	// BusyboxNC says the sandbox's shell has busybox nc for a listener on its own loopback; a fake guest that is a host process has neither.
+	BusyboxNC bool
 }
 
 // environments is where the daemon rewrites a stopped sandbox's guest environment.
@@ -68,6 +75,12 @@ const (
 
 // forkCount is how many sandboxes one running source feeds: three, so nothing in a provider can count on a pair.
 const forkCount = 3
+
+// guestPort is where the port subtest listens, on the sandbox's own loopback, and greeting is what its listener says first.
+const (
+	guestPort = 8000
+	greeting  = "conformance-port"
+)
 
 // Run executes the suite. A verb with a false capability must refuse before its subtest skips.
 func Run(t *testing.T, s Subject) {
@@ -746,6 +759,45 @@ func Run(t *testing.T, s Subject) {
 		}
 	})
 
+	// A forward reaches a listener bound to the sandbox's own 127.0.0.1, and carries its greeting out and an echo both ways (SHARD-789).
+	t.Run("DialPortCarriesBytesBothWays", func(t *testing.T) {
+		if !caps.Port {
+			_, err := s.Provider.DialPort(t.Context(), s.running(t), guestPort)
+			s.check(t, models.VerbPort, false, err)
+		}
+		if !s.BusyboxNC {
+			t.Skipf("the sandboxes of %s have no busybox nc to listen with", s.Provider.Name())
+		}
+
+		spec := s.NewSpec(t)
+		spec.Entrypoint = s.Shell("exec nc -lk -p " + strconv.Itoa(guestPort) + " -s 127.0.0.1 -e /bin/sh -c 'echo " + greeting + "; exec cat'")
+		conn := s.greeted(t, s.start(t, spec))
+		defer conn.Close()
+
+		sent := make([]byte, 256<<10)
+		if _, err := rand.Read(sent); err != nil {
+			t.Fatal(err)
+		}
+		if err := conn.SetDeadline(time.Now().Add(waitSlack)); err != nil {
+			t.Fatal(err)
+		}
+		wrote := make(chan error, 1)
+		go func() {
+			_, err := conn.Write(sent)
+			wrote <- err
+		}()
+		got := make([]byte, len(sent))
+		if _, err := io.ReadFull(conn, got); err != nil {
+			t.Fatalf("read the echo back: %v", err)
+		}
+		if err := <-wrote; err != nil {
+			t.Fatalf("write into the sandbox: %v", err)
+		}
+		if !bytes.Equal(got, sent) {
+			t.Fatal("the echo differs from what went in")
+		}
+	})
+
 	// A daemon restart opens a new provider over what the last one left; it runs last, since Reopen may close the first.
 	t.Run("ANewProviderAdoptsARunningSandbox", func(t *testing.T) {
 		spec := s.NewSpec(t)
@@ -928,6 +980,45 @@ func (s Subject) awaitLog(t *testing.T, id string, seen int) int {
 	t.Fatalf("the log of %s did not grow past %d bytes within %s", id, seen, waitSlack)
 
 	return seen
+}
+
+// greeted dials the sandbox's listener until it greets, since it comes up in its own time and a dial before that is refused.
+func (s Subject) greeted(t *testing.T, id string) net.Conn {
+	t.Helper()
+
+	var last error
+	for deadline := time.Now().Add(waitSlack); time.Now().Before(deadline); time.Sleep(readyPoll * 10) {
+		conn, err := s.dialGreeting(t.Context(), id)
+		if err == nil {
+			return conn
+		}
+		last = err
+	}
+	t.Fatalf("port %d of sandbox %s never greeted: %v", guestPort, id, last)
+
+	return nil
+}
+
+func (s Subject) dialGreeting(ctx context.Context, id string) (net.Conn, error) {
+	ctx, cancel := context.WithTimeout(ctx, 10*time.Second)
+	defer cancel()
+
+	conn, err := s.Provider.DialPort(ctx, id, guestPort)
+	if err != nil {
+		return nil, err
+	}
+	if err := conn.SetReadDeadline(time.Now().Add(10 * time.Second)); err != nil {
+		return nil, errors.Join(err, conn.Close())
+	}
+	line := make([]byte, len(greeting)+1)
+	if _, err := io.ReadFull(conn, line); err != nil {
+		return nil, errors.Join(fmt.Errorf("read the greeting: %w", err), conn.Close())
+	}
+	if string(line) != greeting+"\n" {
+		return nil, errors.Join(fmt.Errorf("the listener greeted with %q", line), conn.Close())
+	}
+
+	return conn, nil
 }
 
 // exec runs one command in a sandbox and returns how it ended, with everything it wrote. The spec

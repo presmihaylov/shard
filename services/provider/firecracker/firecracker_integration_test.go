@@ -668,5 +668,6 @@ func TestConformanceOnMicroVMs(t *testing.T) {
 		Reopen:   h.reopen,
 		// A source paused past 47 s of uptime gave equal fork draws without the reseed, 6 runs of 6 (SHARD-414).
 		ReseedWindow: 50 * time.Second,
+		BusyboxNC:    true,
 	})
 }
