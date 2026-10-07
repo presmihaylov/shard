@@ -156,6 +156,37 @@ func TestAGuestThatLeftStillDeliversWhatItSent(t *testing.T) {
 	}
 }
 
+// silentGuest shut only its read side, so a write to it fails and its open write side sends nothing.
+type silentGuest struct{ net.Conn }
+
+func (silentGuest) Write([]byte) (int, error) {
+	return 0, syscall.EPIPE
+}
+
+func TestAGuestThatShutOnlyItsReadSideEndsTheSpliceWithinTheBound(t *testing.T) {
+	server, client := net.Pipe()
+	host, guest := net.Pipe()
+	closePeersOnCleanup(t, server, client, host, guest)
+	done := make(chan error, 1)
+	go func() { done <- spliceWithin(server, silentGuest{host}, 50*time.Millisecond) }()
+	if _, err := client.Write([]byte("stdin close")); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatal(err)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("a silent guest that shut only its read side held the splice past its bound")
+	}
+	for name, peer := range map[string]net.Conn{"shim socket": client, "guest stream": guest} {
+		if _, err := peer.Read(make([]byte, 1)); !errors.Is(err, io.EOF) {
+			t.Fatalf("the %s read %v, want the EOF of a socket the splice closed", name, err)
+		}
+	}
+}
+
 func TestPeerDropEndsABlockedWrite(t *testing.T) {
 	for _, direction := range []string{"client to guest", "guest to client"} {
 		t.Run(direction, func(t *testing.T) {

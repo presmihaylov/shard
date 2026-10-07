@@ -176,9 +176,15 @@ func spliceWithin(a, b net.Conn, bound time.Duration) error {
 
 	first := <-ended
 	err := first.err
+	drained := false
 	// A peer that sent its last bytes and left fails a write first, and the other copy still owes those bytes, as an exec's exit.
 	if first.left {
-		err = errors.Join(err, (<-ended).err)
+		select {
+		case second := <-ended:
+			err, drained = errors.Join(err, second.err), true
+		// A peer that shut only its read side can keep its write side open and silent, so the close below ends that read.
+		case <-time.After(bound):
+		}
 	}
 	if closeErr := a.Close(); !quiet(closeErr) {
 		err = errors.Join(err, fmt.Errorf("close the shim socket: %w", closeErr))
@@ -186,7 +192,7 @@ func spliceWithin(a, b net.Conn, bound time.Duration) error {
 	if closeErr := b.Close(); !quiet(closeErr) {
 		err = errors.Join(err, fmt.Errorf("close the guest stream: %w", closeErr))
 	}
-	if first.left {
+	if drained {
 		return err
 	}
 
