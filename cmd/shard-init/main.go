@@ -288,7 +288,7 @@ type guest struct {
 	// started and lastExit are what a new control connection is told first.
 	started  bool
 	lastExit *models.ExitStatus
-	// oomProbe says whether the guest's own memory bound was hit; nil is a guest with no bound, where a SIGKILL is a signal.
+	// oomProbe says whether an OOM kill took the guest; nil is a guest with no bound, where a SIGKILL is a signal.
 	oomProbe func() (bool, error)
 	// bound is the sandbox cgroup every child is born into, fixed before anything forks; nil off a VM.
 	bound *os.File

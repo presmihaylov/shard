@@ -446,7 +446,9 @@ into the bounded cgroup by `CLONE_INTO_CGROUP`. So everything a guest starts, a 
 its containers included, lands under the bound. The kernel never picks the global init, so
 `shard-init` survives the killer with no `oom_score_adj` exemption, and a child has none to
 inherit. When the killer takes the group, `shard-init` reads
-`memory.events.local` and reports the kill over vsock instead of an exit. The guest then holds
+`memory.events.local` and reports the kill over vsock instead of an exit. The VM's own killer
+can run first, when the kernel grows past the headroom. It takes the same group, and the file
+counts it under `oom_kill` with `oom` still 0, so `shard-init` reads either count as the kill. The guest then holds
 that state and does not power off on its own. The host writes the `oom` marker first, and only then
 sends the stop. So a daemon that dies between the report and the marker finds the kill again in the
 state that the next connection replays, and marks it then. Once the marker is down, `Status` says
