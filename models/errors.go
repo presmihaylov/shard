@@ -148,3 +148,19 @@ func (e *EntrypointNotStartedError) Unwrap() error { return e.Err }
 func (e *EntrypointNotStartedError) Public() string {
 	return fmt.Sprintf("the entrypoint of sandbox %s did not start; the daemon log has the cause", e.Sandbox)
 }
+
+// ErrProcessRunning is a StartProcess of a name the guest still runs or restarts.
+var ErrProcessRunning = errors.New("a process of that name still runs in the sandbox")
+
+// SupervisorTooOldError is a running guest whose shard-init predates named processes; only a stop and a start boot the one that runs them.
+type SupervisorTooOldError struct {
+	Sandbox string
+}
+
+func (e *SupervisorTooOldError) Error() string {
+	return fmt.Sprintf("sandbox %s booted a shard-init that predates named processes; stop and start it, then run again", e.Sandbox)
+}
+
+func (e *SupervisorTooOldError) Unwrap() error { return ErrUnsupported }
+
+func (e *SupervisorTooOldError) Public() string { return e.Error() }
