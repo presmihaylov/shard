@@ -467,6 +467,22 @@ func Run(t *testing.T, s Subject) {
 		}
 	})
 
+	// A runtime links /dev/fd and the three stdio names, which bash's <(...) and >(...) open; a VM boots a bare devtmpfs without them (SHARD-794).
+	t.Run("ExecFindsTheStdioLinksUnderDev", func(t *testing.T) {
+		id := s.running(t)
+
+		status, out := s.exec(t, id, models.ExecSpec{Argv: s.Shell("for l in fd stdin stdout stderr; do readlink /dev/$l; done; test -e /dev/fd/1 && echo resolves")})
+
+		if status.Code != 0 {
+			t.Fatalf("Exec exited %d and printed %q", status.Code, out)
+		}
+		for _, want := range []string{"/proc/self/fd\n", "/proc/self/fd/0\n", "/proc/self/fd/1\n", "/proc/self/fd/2\n", "resolves"} {
+			if !strings.Contains(out, want) {
+				t.Errorf("Exec printed %q, want %q in it", out, want)
+			}
+		}
+	})
+
 	// Refuse, never downgrade: an exec into nothing is an error, not an exit code.
 	t.Run("ExecRefusesAnIdTheSubstrateNeverHeld", func(t *testing.T) {
 		_, err := s.Provider.Exec(t.Context(), "conformance-never-created", models.ExecSpec{Argv: s.Shell("true")})

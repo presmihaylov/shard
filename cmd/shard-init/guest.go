@@ -4,6 +4,8 @@ import (
 	"encoding/binary"
 	"errors"
 	"fmt"
+	"os"
+	"path/filepath"
 )
 
 // guestBoot is what -transport moves PID 1 onto before anything runs; the zero value boots nothing and serves from where it is.
@@ -57,4 +59,20 @@ func swapHeader(size int64, pageSize int) ([]byte, error) {
 	copy(header[pageSize-10:], "SWAPSPACE2")
 
 	return header, nil
+}
+
+// linkStdio lays under dev the links a container runtime makes and a bare devtmpfs lacks; bash's <(...) and >(...) open /dev/fd.
+func linkStdio(dev string) error {
+	for _, l := range []struct{ name, target string }{
+		{"fd", "/proc/self/fd"},
+		{"stdin", "/proc/self/fd/0"},
+		{"stdout", "/proc/self/fd/1"},
+		{"stderr", "/proc/self/fd/2"},
+	} {
+		if err := os.Symlink(l.target, filepath.Join(dev, l.name)); err != nil {
+			return fmt.Errorf("link /dev/%s to %s: %w", l.name, l.target, err)
+		}
+	}
+
+	return nil
 }

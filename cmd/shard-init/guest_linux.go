@@ -53,6 +53,9 @@ func bootGuest(boot guestBoot) error {
 	if err := mountOnce("devpts", "/newroot/dev/pts", "devpts", 0); err != nil {
 		return err
 	}
+	if err := linkStdio("/newroot/dev"); err != nil {
+		return err
+	}
 	// A container runtime inside the guest asserts these at start: dockerd refuses to run without a writable cgroup2 root and a /dev/shm.
 	for _, m := range []struct{ source, target, fstype string }{
 		{"tmpfs", "/newroot/dev/shm", "tmpfs"},

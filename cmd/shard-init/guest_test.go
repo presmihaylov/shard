@@ -3,6 +3,8 @@ package main
 import (
 	"bytes"
 	"encoding/binary"
+	"os"
+	"path/filepath"
 	"testing"
 )
 
@@ -66,6 +68,24 @@ func TestSwapHeaderRefusesASizeTheKernelCannotTake(t *testing.T) {
 	for name, size := range map[string]int64{"one page": 4096, "no page": 0, "past 2^32 pages": (1<<32 + 1) * 4096} {
 		if _, err := swapHeader(size, 4096); err == nil {
 			t.Errorf("swapHeader(%s) took it", name)
+		}
+	}
+}
+
+func TestLinkStdioLaysTheLinksARuntimeMakes(t *testing.T) {
+	dev := t.TempDir()
+	if err := linkStdio(dev); err != nil {
+		t.Fatalf("linkStdio: %v", err)
+	}
+
+	for name, want := range map[string]string{"fd": "/proc/self/fd", "stdin": "/proc/self/fd/0", "stdout": "/proc/self/fd/1", "stderr": "/proc/self/fd/2"} {
+		got, err := os.Readlink(filepath.Join(dev, name))
+		if err != nil {
+			t.Errorf("read /dev/%s: %v", name, err)
+			continue
+		}
+		if got != want {
+			t.Errorf("/dev/%s links to %q, want %q", name, got, want)
 		}
 	}
 }
