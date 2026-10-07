@@ -70,6 +70,11 @@ func main() {
 	}
 	// The daemon runs [/.shard/init process] as root through an exec, to hand PID 1 one process request.
 	if len(os.Args) == 2 && os.Args[1] == supervisor.ProcessMode {
+		// Undumpable, no guest process without CAP_SYS_PTRACE traces the helper into sending a request of its own.
+		if err := setUndumpable(); err != nil {
+			fmt.Fprintln(os.Stderr, "shard-init:", err)
+			os.Exit(1)
+		}
 		os.Exit(runRequest(os.Stdin, os.Stdout))
 	}
 	err := run(os.Args[1:])
@@ -185,7 +190,7 @@ func serveRequests(report *fileReporter, workDir string) error {
 		return fmt.Errorf("%w: %w", errSupervisor, err)
 	}
 	defer l.Close()
-	go g.acceptRequests(l, peerIsRoot)
+	go g.acceptRequests(l, peerIsHost)
 	// The host has no other proof the supervisor came up, so one that cannot say so is a failure.
 	if err := store.WriteFile(report.readyFile, nil, 0o600); err != nil {
 		return fmt.Errorf("%w: write %s: %w", errSupervisor, report.readyFile, err)

@@ -6,6 +6,8 @@ import (
 	"io"
 	"net"
 	"os"
+	"strconv"
+	"strings"
 	"syscall"
 	"time"
 
@@ -77,6 +79,48 @@ func (g *guest) serveRequest(conn net.Conn, admit func(net.Conn) error) {
 	if err := supervisor.WriteMessage(conn, g.request(m)); err != nil {
 		fmt.Fprintln(os.Stderr, "shard-init: answer a process request:", err)
 	}
+}
+
+// admit takes root with no parent in the sandbox's PID namespace: a fork in it always has one, and only the runtime's exec enters from outside.
+func admit(uid uint32, pid int32, status []byte) error {
+	if uid != 0 {
+		return errors.New("only root sends process requests")
+	}
+	seen, err := statusField(status, "Pid")
+	if err != nil {
+		return err
+	}
+	// A caller reaped while its status was read prints pid 0, and that record says nothing of its parent.
+	if seen != int(pid) {
+		return fmt.Errorf("caller %d ended before its parent was read", pid)
+	}
+	parent, err := statusField(status, "PPid")
+	if err != nil {
+		return err
+	}
+	if parent != 0 {
+		return fmt.Errorf("only the host's exec sends process requests, and caller %d has parent %d in the sandbox", pid, parent)
+	}
+
+	return nil
+}
+
+// statusField reads one number of a /proc/<pid>/status record.
+func statusField(status []byte, key string) (int, error) {
+	for line := range strings.Lines(string(status)) {
+		name, value, ok := strings.Cut(line, ":")
+		if !ok || name != key {
+			continue
+		}
+		n, err := strconv.Atoi(strings.TrimSpace(value))
+		if err != nil {
+			return 0, fmt.Errorf("read %s of the caller's status: %w", key, err)
+		}
+
+		return n, nil
+	}
+
+	return 0, fmt.Errorf("the caller's status has no %s", key)
 }
 
 // runRequest hands PID 1 the request on stdin and prints its answer on stdout; any answer printed is a 0, and an empty stdout is a failure to reach PID 1.

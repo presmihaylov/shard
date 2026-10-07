@@ -16,7 +16,7 @@ any other `--provider`, because the other substrate has never heard of those san
 | Docker inside | no | yes | no | yes | yes |
 | systemd as PID 1 | no | no | no | no | no |
 | Tenancy | many tenants on one host | **one tenant per host** (see the Sysbox section) | **one tenant per host**, and only code you trust | many tenants on one Mac | many tenants on one host |
-| Exit code | host-verified, behind the sentry | **guest-attested**, and lost if PID 1 dies while the daemon is down or the daemon dies mid-stop (see the Sysbox section) | **guest-attested**, because guest root is host root | host-verified, behind the VM | host-verified, behind the VM |
+| Exit code | host-verified, behind the sentry, but a root `exec` can forge a named process's (see "Who may start or stop a named process") | **guest-attested**, and lost if PID 1 dies while the daemon is down or the daemon dies mid-stop (see the Sysbox section) | **guest-attested**, because guest root is host root | host-verified, behind the VM | host-verified, behind the VM |
 | Status | every verb | every required verb, no optional verb | every required verb, no optional verb | every verb on Apple silicon with macOS 14+; no pause or resume on 13 or on Intel | every verb |
 
 The capability table uses the CLI names. The first row holds the required verbs. The other three
@@ -580,6 +580,35 @@ every exec, so a guest that swaps its own passwd for a FIFO hangs the exec for i
 
 `ExecSpec` carries `*os.File` instead of `io.Reader`, because a TTY is one pty replica that the
 caller allocates on the host, and a pipe cannot be one.
+
+## Who may start or stop a named process
+
+On gVisor, Sysbox and runc the daemon hands each request to PID 1 through a root exec of
+`/.shard/init process`, which dials the abstract socket `@shard-init/process`. The sandbox's own
+network namespace scopes the name, and PID 1 binds it before it forks anything. PID 1 reads the
+caller's uid and pid from `SO_PEERCRED` and the caller's parent from `/proc/<pid>/status`. It takes
+a request only from root with no parent in the sandbox's PID namespace. Every process born in the
+sandbox has one there, PID 1 at least, so no process the sandbox started can run, stop or replace a
+named process, whatever its uid. Only a process the runtime's exec entered from outside has none.
+The helper clears its dumpable flag before it dials, so a guest process with no `CAP_SYS_PTRACE`
+cannot trace it into a request of its own. The gVisor sentry also refuses a trace of any process
+that is not the tracer's descendant (Yama scope 1), and no exec descends from a guest process.
+
+Two callers still pass:
+
+- The command of a root `exec` has no parent in the sandbox either. While it runs, it can stop a
+  named process and run another under the same name, with an exit code it chooses. Its children
+  cannot. An `exec` needs the `exec` scope, the same as `run` and `kill`, so this grants no right
+  the caller lacked. But a root `exec` of a command that the sandbox can rewrite gives the sandbox's
+  own code that reach. Run such a command with `--user` set to a non-root user when the exit codes
+  of named processes must hold.
+- PID 1 reads the parent after the caller connects. A caller that exits, and whose pid a root
+  `exec` takes before PID 1 reads it, passes. The window is the time PID 1 takes to accept and read.
+
+So on gVisor the exit code of a named process is host-verified unless a root `exec` runs code that
+the sandbox controls. On Sysbox and runc it is guest-attested anyway, as the table says. On vz and
+Firecracker no socket in the guest takes a request: the host sends each one on the control
+connection, and no exec or named process can reach it.
 
 ## Who owns what
 

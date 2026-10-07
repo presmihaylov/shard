@@ -59,13 +59,15 @@ The provider is the boundary between a sandbox and the host. A server runs one p
 
 | Provider | Between the sandbox and the host kernel | Tenants on one host | Exit code |
 | --- | --- | --- | --- |
-| `gvisor` | gVisor, a kernel that runs in user space | many | verified by the host |
+| `gvisor` | gVisor, a kernel that runs in user space | many | verified by the host, unless a root `shard exec` runs code from the sandbox |
 | `firecracker` | a microVM with its own kernel | many | verified by the host |
 | `vz` | a virtual machine with its own kernel | many | verified by the host |
 | `sysbox` | a Linux user namespace, with its own `/proc` and `/sys` | one | reported by the sandbox |
 | `runc` | nothing: namespaces and cgroups on the host kernel | trusted code only | reported by the sandbox |
 
 The exit code is the `EXIT` that `shard ps` reports for each process. On Sysbox and runc, the sandbox itself reports it, so the host cannot verify it.
+
+On gVisor, only a root process that shard's exec started can start or stop a named process. A process that the sandbox started cannot, whatever its user. That includes the command of your own `shard exec` when it runs as root: while it runs, it can stop a named process and start another under the same name, with an exit code it chooses. If that command is code the sandbox can change, such as a script or a binary in its filesystem, the sandbox can forge the exit code. Pass `--user` with a non-root user to `shard exec` when the exit codes must hold. shard-init checks a caller just after it connects, so a sandbox process that exits and whose pid a root exec takes in that instant also gets through.
 
 To see the provider of a server, run `shard info` or `shard daemon status` on the server.
 

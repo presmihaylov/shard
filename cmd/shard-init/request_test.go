@@ -219,3 +219,35 @@ func TestRunRequestReachesAListeningPID1(t *testing.T) {
 	}
 	report.await(t, "web", models.ProcessExited)
 }
+
+// Only root the runtime entered from outside the sandbox has no parent in it; a status read after the reap names no one.
+func TestAdmitTakesOnlyRootTheHostEntered(t *testing.T) {
+	cases := []struct {
+		name   string
+		uid    uint32
+		status string
+		want   string
+	}{
+		{"the host's exec", 0, "Name:\tinit\nPid:\t7\nPPid:\t0\n", ""},
+		{"a sandbox user", 1000, "Pid:\t7\nPPid:\t0\n", "only root"},
+		{"guest root born in the sandbox", 0, "Pid:\t7\nPPid:\t1\n", "caller 7 has parent 1"},
+		{"a caller reaped mid-read", 0, "Pid:\t0\nPPid:\t0\n", "ended before its parent was read"},
+		{"a status with no parent", 0, "Pid:\t7\n", "has no PPid"},
+		{"a parent that is not a number", 0, "Pid:\t7\nPPid:\tx\n", "read PPid"},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			err := admit(c.uid, 7, []byte(c.status))
+			if c.want == "" {
+				if err != nil {
+					t.Fatalf("admit refused: %v", err)
+				}
+
+				return
+			}
+			if err == nil || !strings.Contains(err.Error(), c.want) {
+				t.Fatalf("admit gave %v, want %q", err, c.want)
+			}
+		})
+	}
+}

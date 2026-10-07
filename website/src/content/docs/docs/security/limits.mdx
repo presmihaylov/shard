@@ -91,7 +91,7 @@ The API answers with `409` and the code `unsupported`, and the TypeScript and Py
 
 shard never picks Sysbox or runc for you. Only `shard daemon --provider`, or the records that such a daemon made, can select either one.
 
-On Sysbox and runc, the exit code of a sandbox is what the sandbox reports. The host cannot verify it.
+On Sysbox and runc, the exit code of a sandbox is what the sandbox reports. The host cannot verify it. On gVisor, a command that `shard exec` runs as root can forge the exit code of a named process, so run code from the sandbox with `--user` set to a non-root user when those exit codes must hold.
 
 Each provider also has limits of its own:
 

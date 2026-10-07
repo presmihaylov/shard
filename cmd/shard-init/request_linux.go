@@ -1,9 +1,9 @@
 package main
 
 import (
-	"errors"
 	"fmt"
 	"net"
+	"os"
 
 	"golang.org/x/sys/unix"
 )
@@ -18,27 +18,38 @@ func listenRequests() (net.Listener, error) {
 	return l, nil
 }
 
-// peerIsRoot admits only root, which the daemon's exec runs as, so a sandbox user who dials the socket starts and stops nothing.
-func peerIsRoot(conn net.Conn) error {
+// peerIsHost admits only root the host's exec entered into the sandbox, so no process born in it, root or not, starts or stops one.
+func peerIsHost(conn net.Conn) error {
+	cred, err := peerCred(conn)
+	if err != nil {
+		return err
+	}
+	status, err := os.ReadFile(fmt.Sprintf("/proc/%d/status", cred.Pid))
+	if err != nil {
+		return fmt.Errorf("read the caller's status: %w", err)
+	}
+
+	return admit(cred.Uid, cred.Pid, status)
+}
+
+// peerCred is the uid and pid the kernel recorded when the caller connected.
+func peerCred(conn net.Conn) (*unix.Ucred, error) {
 	unixConn, ok := conn.(*net.UnixConn)
 	if !ok {
-		return fmt.Errorf("a %T is not a unix socket", conn)
+		return nil, fmt.Errorf("a %T is not a unix socket", conn)
 	}
 	raw, err := unixConn.SyscallConn()
 	if err != nil {
-		return fmt.Errorf("read the caller's credentials: %w", err)
+		return nil, fmt.Errorf("read the caller's credentials: %w", err)
 	}
 	var cred *unix.Ucred
 	var credErr error
 	if err := raw.Control(func(fd uintptr) { cred, credErr = unix.GetsockoptUcred(int(fd), unix.SOL_SOCKET, unix.SO_PEERCRED) }); err != nil {
-		return fmt.Errorf("read the caller's credentials: %w", err)
+		return nil, fmt.Errorf("read the caller's credentials: %w", err)
 	}
 	if credErr != nil {
-		return fmt.Errorf("read the caller's credentials: %w", credErr)
-	}
-	if cred.Uid != 0 {
-		return errors.New("only root sends process requests")
+		return nil, fmt.Errorf("read the caller's credentials: %w", credErr)
 	}
 
-	return nil
+	return cred, nil
 }

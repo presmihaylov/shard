@@ -6,4 +6,4 @@ import "net"
 
 func listenRequests() (net.Listener, error) { return nil, errNotLinux }
 
-func peerIsRoot(net.Conn) error { return errNotLinux }
+func peerIsHost(net.Conn) error { return errNotLinux }
