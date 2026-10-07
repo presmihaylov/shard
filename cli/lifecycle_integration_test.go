@@ -5,6 +5,7 @@ package cli
 import (
 	"errors"
 	"os"
+	"reflect"
 	"slices"
 	"strings"
 	"testing"
@@ -15,8 +16,8 @@ import (
 	"github.com/presmihaylov/shard/services/client"
 )
 
-// stubbornEntrypoint ignores SIGTERM, so only the kill after the fixed grace ends it.
-var stubbornEntrypoint = []string{"/bin/sh", "-c", "trap '' TERM; while true; do sleep 1; done"}
+// stubbornProcess ignores SIGTERM, so only the kill after the fixed grace ends it.
+var stubbornProcess = []string{"/bin/sh", "-c", "trap '' TERM; while true; do sleep 1; done"}
 
 // TestStopKeepsTheAddressAndTheRecordOnTheHost is the boundary between the two verbs. The processes end and the
 // record, the lease, the address, the namespace and the link all stay, so a start can follow.
@@ -33,9 +34,9 @@ func TestStopKeepsTheAddressAndTheRecordOnTheHost(t *testing.T) {
 		t.Fatalf("stop: %v", err)
 	}
 
-	// The entrypoint exits on SIGTERM, so the stop ends with it and never waits the grace out (SHARD-460).
+	// The process exits on SIGTERM, so the stop ends with it and never waits the grace out (SHARD-460).
 	if took := time.Since(started); took > models.StopGrace/3 {
-		t.Errorf("the stop took %s of the %s grace, so it waited past an entrypoint that exited on SIGTERM", took, models.StopGrace)
+		t.Errorf("the stop took %s of the %s grace, so it waited past a process that exited on SIGTERM", took, models.StopGrace)
 	}
 	if alive(t, before.PID) {
 		t.Errorf("the sandbox process %d outlived the stop", before.PID)
@@ -49,9 +50,9 @@ func TestStopKeepsTheAddressAndTheRecordOnTheHost(t *testing.T) {
 		t.Errorf("the record holds the address %s, want the %s a start would keep", after.Address, before.Address)
 	}
 
-	// The entrypoint answered the SIGTERM the supervisor forwarded, so the supervisor recorded it.
-	if after.ExitStatus == nil || after.ExitStatus.Signal != 15 {
-		t.Errorf("the record holds the exit status %+v, want the SIGTERM the stop sent", after.ExitStatus)
+	// The process answered the SIGTERM the supervisor forwarded, so the supervisor reported it.
+	if p := processOf(t, after); p.Status.State != models.ProcessStopped || p.Status.Exit == nil || p.Status.Exit.Signal != 15 {
+		t.Errorf("the record holds the process %+v, want it stopped by the SIGTERM the stop sent", p.Status)
 	}
 
 	if held := leases(t, app.Root); !slices.Contains(held, id) {
@@ -91,12 +92,12 @@ func TestStopAndStartAgainNeverTripOverTheLinkTheOtherTook(t *testing.T) {
 	}
 }
 
-// TestStopKillsAnEntrypointThatIgnoresTheSignal is the other half of the grace: an entrypoint that
+// TestStopKillsAProcessThatIgnoresTheSignal is the other half of the grace: a process that
 // never answers is killed once the fixed grace runs out, and nothing then records how it ended.
-func TestStopKillsAnEntrypointThatIgnoresTheSignal(t *testing.T) {
+func TestStopKillsAProcessThatIgnoresTheSignal(t *testing.T) {
 	app, out := newCreateApp(t)
 
-	id := runDetached(t, app, out, stubbornEntrypoint...)
+	id := runDetached(t, app, out, stubbornProcess...)
 	t.Cleanup(func() { cleanUp(t, app, id) })
 
 	before := record(t, app, id)
@@ -120,9 +121,9 @@ func TestStopKillsAnEntrypointThatIgnoresTheSignal(t *testing.T) {
 		t.Errorf("the record says %q, want stopped", sb.State)
 	}
 
-	// The kill takes the supervisor too, so nothing was left to write how the entrypoint ended.
-	if sb.ExitStatus != nil {
-		t.Errorf("the record holds the exit status %+v of an entrypoint that was killed", sb.ExitStatus)
+	// The kill takes the supervisor too, so nothing was left to report how the process ended.
+	if p := processOf(t, sb); p.Status.State != models.ProcessStopped || p.Status.Exit != nil {
+		t.Errorf("the record holds the process %+v, want it stopped with no exit status", p.Status)
 	}
 }
 
@@ -145,8 +146,8 @@ func TestASecondStopChangesNothingOnTheHost(t *testing.T) {
 	}
 
 	second := record(t, app, id)
-	if second.State != first.State || *second.ExitStatus != *first.ExitStatus {
-		t.Errorf("the second stop left %+v, want the %+v the first one wrote", second.ExitStatus, first.ExitStatus)
+	if second.State != first.State || !reflect.DeepEqual(processOf(t, second).Status, processOf(t, first).Status) {
+		t.Errorf("the second stop left %+v, want the %+v the first one wrote", processOf(t, second).Status, processOf(t, first).Status)
 	}
 }
 

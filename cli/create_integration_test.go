@@ -51,61 +51,58 @@ func TestCreateLeavesTheSandboxRunning(t *testing.T) {
 	}
 }
 
-// TestCreateOutlivesAnEntrypointThatExits: the keep-alive rule, at the substrate. The entrypoint is
+// TestCreateOutlivesAProcessThatExits: the keep-alive rule, at the substrate. The process is
 // gone and the sandbox is still there, which is what makes exec worth having.
-func TestCreateOutlivesAnEntrypointThatExits(t *testing.T) {
+func TestCreateOutlivesAProcessThatExits(t *testing.T) {
 	app, out := newCreateApp(t)
 
 	id := runDetached(t, app, out, "/bin/true")
 	t.Cleanup(func() { cleanUp(t, app, id) })
 
-	if status := awaitEntrypoint(t, app, id); status.Code != 0 {
-		t.Errorf("the entrypoint ended %+v, want a clean exit", status)
+	if status := awaitProcess(t, app, id); status.Code != 0 {
+		t.Errorf("the process ended %+v, want a clean exit", status)
 	}
 
 	if sb := record(t, app, id); sb.State != models.StateRunning {
-		t.Errorf("the record says %q after the entrypoint exited, want running", sb.State)
+		t.Errorf("the record says %q after the process exited, want running", sb.State)
 	}
 	if got, err := runExec(t, app, "exec", id, "/bin/echo", "alive"); err != nil || !strings.Contains(got, "alive") {
-		t.Errorf("an exec after the entrypoint exited wrote %q and failed with %v, want a live sandbox", got, err)
+		t.Errorf("an exec after the process exited wrote %q and failed with %v, want a live sandbox", got, err)
 	}
 }
 
-// TestCreateRunsTheEntrypointAsANonRootUser is the bug this ticket fixes. The user went onto the OCI
-// process, which is shard-init, so PID 1 lost the right to write exit.json and Wait polled forever.
-func TestCreateRunsTheEntrypointAsANonRootUser(t *testing.T) {
+// TestRunStartsAProcessAsANonRootUser: the user goes onto the process and never onto shard-init, which keeps the right to report it.
+func TestRunStartsAProcessAsANonRootUser(t *testing.T) {
 	app, out := newCreateApp(t)
 
-	id := runDetachedWith(t, app, out, "--user", "nobody", testImage, "/bin/sh", "-c", "id -u")
+	id := runDetachedWith(t, app, out, nil, []string{"-u", "nobody"}, "/bin/sh", "-c", "id -u")
 	t.Cleanup(func() { cleanUp(t, app, id) })
 
-	// The exit status is the assertion: a supervisor that dropped too could never write it.
-	if status := awaitEntrypoint(t, app, id); status.Code != 0 {
-		t.Errorf("the entrypoint ended %+v, want a clean exit", status)
+	// The exit status is the assertion: a supervisor that dropped too could never report it.
+	if status := awaitProcess(t, app, id); status.Code != 0 {
+		t.Errorf("the process ended %+v, want a clean exit", status)
 	}
 
 	if got := guestOutput(t, app, id); !strings.Contains(got, "65534") {
-		t.Errorf("the entrypoint reported uid %q, want 65534", strings.TrimSpace(got))
+		t.Errorf("the process reported uid %q, want 65534", strings.TrimSpace(got))
 	}
 }
 
-// A --user entrypoint keeps what config.json grants it. The drop happens in the supervisor now, and
-// a uid change away from root clears the permitted and the effective set unless they are raised into
-// the ambient one, so without that the entrypoint got nothing and bind(80) returned EACCES.
-func TestCreateKeepsTheCapabilitiesOfANonRootEntrypoint(t *testing.T) {
+// A non-root process keeps what config.json grants: a uid change away from root clears the effective set unless the supervisor raises it into the ambient one.
+func TestRunKeepsTheCapabilitiesOfANonRootProcess(t *testing.T) {
 	app, out := newCreateApp(t)
 
-	id := runDetachedWith(t, app, out, "--user", "nobody", testImage, "/bin/sh", "-c", "grep CapEff /proc/self/status")
+	id := runDetachedWith(t, app, out, nil, []string{"-u", "nobody"}, "/bin/sh", "-c", "grep CapEff /proc/self/status")
 	t.Cleanup(func() { cleanUp(t, app, id) })
 
-	if status := awaitEntrypoint(t, app, id); status.Code != 0 {
-		t.Fatalf("the entrypoint ended %+v, want a clean exit", status)
+	if status := awaitProcess(t, app, id); status.Code != 0 {
+		t.Fatalf("the process ended %+v, want a clean exit", status)
 	}
 
 	mask := effectiveCapabilities(t, guestOutput(t, app, id))
-	// CAP_NET_BIND_SERVICE is bit 10. It is in the set the spec grants, so the entrypoint must hold it.
+	// CAP_NET_BIND_SERVICE is bit 10. It is in the set the spec grants, so the process must hold it.
 	if mask&(1<<10) == 0 {
-		t.Errorf("the entrypoint holds the effective set %#x, want CAP_NET_BIND_SERVICE in it", mask)
+		t.Errorf("the process holds the effective set %#x, want CAP_NET_BIND_SERVICE in it", mask)
 	}
 }
 
@@ -152,28 +149,32 @@ func TestCreateThatFailsLeavesOnlyAFailedRecord(t *testing.T) {
 	}
 }
 
-// A missing entrypoint is the caller's command_not_started, and the refused create gives back everything, the record too (SHARD-497).
-func TestCreateWhoseEntrypointDoesNotStartLeavesNothing(t *testing.T) {
+// A missing command is the caller's command_not_started, with the shell's 127, and the sandbox it was run in stays up (SHARD-497).
+func TestRunOfACommandThatDoesNotStartExits127(t *testing.T) {
 	app, out := newCreateApp(t)
 
-	before := holdings(t, app)
+	id := printedID(t, app, out, createArgs(testImage))
+	t.Cleanup(func() { cleanUp(t, app, id) })
 
-	creating, _ := ownStderr(app)
-	err := creating.Run(t.Context(), runArgs(testImage, "/no/such/entrypoint"))
+	running, _ := ownStderr(app)
+	err := running.Run(t.Context(), []string{"run", id, "--name", processName, "--", "/no/such/entrypoint"})
 	exit, ok := errors.AsType[*ExitError](err)
 	if !ok || exit.Code != models.CommandNotFoundExitCode || !strings.Contains(err.Error(), "could not run") {
-		t.Fatalf("create failed with %v, want command_not_started with exit code %d", err, models.CommandNotFoundExitCode)
+		t.Fatalf("run failed with %v, want command_not_started with exit code %d", err, models.CommandNotFoundExitCode)
 	}
 
-	// A create that failed prints no id.
+	// A run that failed prints no name.
 	if got := strings.TrimSpace(out.String()); got != "" {
-		t.Errorf("the failed create printed %q, want nothing", got)
+		t.Errorf("the failed run printed %q, want nothing", got)
 	}
 
-	if got := holdings(t, app); !slices.Equal(got, before) {
-		t.Errorf("the refused create left the host holding %v, want the %v it held before", got, before)
+	sb := record(t, app, id)
+	if sb.State != models.StateRunning {
+		t.Errorf("the record says %q after a run that never started, want running", sb.State)
 	}
-	assertNoSandboxMounts(t, app.Root)
+	if p := processOf(t, sb); p.Status.State != models.ProcessExited || p.Status.Exit == nil || p.Status.Exit.Code != models.CommandNotFoundExitCode {
+		t.Errorf("the record holds %+v, want the process exited with %d", p.Status, models.CommandNotFoundExitCode)
+	}
 }
 
 // TestCreateFinishesWhenTheClientGivesUpWaiting: an uncached create runs in the daemon under its own run
@@ -185,7 +186,6 @@ func TestCreateFinishesWhenTheClientGivesUpWaiting(t *testing.T) {
 
 	sb, err := daemonClient(app).CreateSandbox(t.Context(), sandbox.CreateRequest{
 		Image:     testImage,
-		Command:   []string{"/bin/sleep", "600"},
 		Resources: itestResources(),
 	})
 	if err != nil {

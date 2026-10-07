@@ -235,11 +235,6 @@ func createArgs(args ...string) []string {
 	return bounded("create", args)
 }
 
-// runArgs is run -d over args: the sandbox comes up with its app and the id prints once it is up.
-func runArgs(args ...string) []string {
-	return bounded("run", append([]string{"-d"}, args...))
-}
-
 func bounded(verb string, args []string) []string {
 	bound := itestResources().MemoryMiB
 	if bound == nil || slices.Contains(args, "--memory") {
@@ -399,17 +394,39 @@ func daemonClient(app App) *client.Client {
 	return c
 }
 
-// runDetached runs the command under test as the app of a new sandbox and answers with the id it printed.
+// processName is what every helper names the one process it runs, so a test reads it back by that name.
+const processName = "app"
+
+// runDetached creates a sandbox, runs argv in it as the process app, and answers with the sandbox id.
 func runDetached(t *testing.T, app App, out *bytes.Buffer, argv ...string) string {
 	t.Helper()
 
-	return runDetachedWith(t, app, out, append([]string{testImage, "--"}, argv...)...)
+	return runDetachedWith(t, app, out, nil, nil, argv...)
 }
 
-func runDetachedWith(t *testing.T, app App, out *bytes.Buffer, args ...string) string {
+// runDetachedWith is runDetached with create flags for the sandbox and run flags for the process.
+func runDetachedWith(t *testing.T, app App, out *bytes.Buffer, create, run []string, argv ...string) string {
 	t.Helper()
 
-	return printedID(t, app, out, runArgs(args...))
+	id := printedID(t, app, out, createArgs(append(slices.Clone(create), testImage)...))
+	runIn(t, app, out, id, run, argv...)
+
+	return id
+}
+
+// runIn runs argv as the process app of a running sandbox, under the run flags given.
+func runIn(t *testing.T, app App, out *bytes.Buffer, id string, flags []string, argv ...string) {
+	t.Helper()
+
+	args := append(append([]string{"run", id, "--name", processName}, flags...), "--")
+	app, stderr := ownStderr(app)
+	if err := app.Run(t.Context(), append(args, argv...)); err != nil {
+		t.Fatalf("run %v in %s: %v\n%s", argv, id, err, stderr)
+	}
+	if got := strings.TrimSpace(out.String()); got != processName {
+		t.Fatalf("run printed %q, want the process name %s", got, processName)
+	}
+	out.Reset()
 }
 
 // printedID runs one verb that creates a sandbox; the pull progress goes to stderr, so the id is stdout alone.
@@ -586,30 +603,49 @@ func alive(t *testing.T, pid int) bool {
 	return fields[0] != "Z"
 }
 
-// awaitEntrypoint waits for the entrypoint exit the daemon records on the host, off any guest-reachable path.
+// awaitProcess waits for the policy to end the process app, and answers its last exit.
 // It is bounded, because a supervisor that lost the right to report it left a wait that never returned.
-func awaitEntrypoint(t *testing.T, app App, id string) models.ExitStatus {
+func awaitProcess(t *testing.T, app App, id string) models.ExitStatus {
 	t.Helper()
 
 	deadline := time.Now().Add(waitBudget)
 	for {
-		if sb := record(t, app, id); sb.ExitStatus != nil {
-			return *sb.ExitStatus
+		p, err := daemonClient(app).Process(t.Context(), id, processName)
+		if err != nil {
+			t.Fatalf("read process %s of %s: %v", processName, id, err)
+		}
+		if p.Status.State.Ended() && p.Status.Exit == nil {
+			t.Fatalf("process %s of %s is %s and left no exit status", processName, id, p.Status.State)
+		}
+		if p.Status.State.Ended() {
+			return *p.Status.Exit
 		}
 		if time.Now().After(deadline) {
-			t.Fatalf("the entrypoint of %s recorded no exit status in %s", id, waitBudget)
+			t.Fatalf("process %s of %s is still %s after %s", processName, id, p.Status.State, waitBudget)
 		}
 
 		time.Sleep(100 * time.Millisecond)
 	}
 }
 
-// guestOutput is what the entrypoint wrote, over the same socket shard logs reads it from.
+// processOf is the entry the record holds for the process app.
+func processOf(t *testing.T, sb models.Sandbox) models.Process {
+	t.Helper()
+
+	i := slices.IndexFunc(sb.Processes, func(p models.Process) bool { return p.Name == processName })
+	if i < 0 {
+		t.Fatalf("the record of %s holds no process %s: %+v", sb.ID, processName, sb.Processes)
+	}
+
+	return sb.Processes[i]
+}
+
+// guestOutput is what the process app wrote, over the same socket shard logs reads it from.
 func guestOutput(t *testing.T, app App, id string) string {
 	t.Helper()
 
 	written := &bytes.Buffer{}
-	if err := daemonClient(app).Logs(t.Context(), id, false, written); err != nil {
+	if err := daemonClient(app).Logs(t.Context(), id, processName, false, written); err != nil {
 		t.Fatalf("read the logs of %s: %v", id, err)
 	}
 

@@ -366,8 +366,7 @@ func firstLine(t *testing.T, chunks <-chan string) string {
 	return strings.TrimSpace(line)
 }
 
-// runningSandbox creates one sandbox whose entrypoint has already exited, because a sandbox outlives
-// it and an exec must still work.
+// runningSandbox creates one sandbox that runs no process, which an exec needs no more than.
 func runningSandbox(t *testing.T) (App, string) {
 	t.Helper()
 
@@ -385,10 +384,8 @@ func sandboxAs(t *testing.T, user string) (App, string) {
 		flags = append(flags, "--user", user)
 	}
 
-	id := runDetachedWith(t, app, out, append(flags, testImage, "/bin/true")...)
+	id := printedID(t, app, out, createArgs(append(flags, testImage)...))
 	t.Cleanup(func() { cleanUp(t, app, id) })
-
-	awaitEntrypoint(t, app, id)
 
 	return app, id
 }

@@ -17,7 +17,7 @@ func TestLogsFollowOverPlainHTTPEndsOnTheStop(t *testing.T) {
 	id := runDetached(t, app, out, "/bin/sh", "-c", "echo marker; exec sleep 600")
 	t.Cleanup(func() { cleanUp(t, app, id) })
 
-	contentType, body := newRawClient(t, app).follow("/v0/sandboxes/" + id + "/logs?follow=true")
+	contentType, body := newRawClient(t, app).follow("/v0/sandboxes/" + id + "/processes/" + processName + "/logs?follow=true")
 	if contentType != "text/plain; charset=utf-8" {
 		t.Fatalf("the logs follow is %q, want text/plain; charset=utf-8", contentType)
 	}

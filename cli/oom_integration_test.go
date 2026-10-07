@@ -22,9 +22,8 @@ const oomBudget = 3 * time.Minute
 func TestTheDaemonStopsAnOOMKilledSandboxAndAStartBringsItBack(t *testing.T) {
 	app, out := newCreateApp(t)
 
-	// The guest overruns its bound on the first run only, so the run a start brings back can be used.
-	script := "if [ ! -e /ran ]; then touch /ran; " + oomBomb + "; fi; while true; do sleep 1; done"
-	id := runDetachedWith(t, app, out, "--memory", oomBound(), testImage, "--", "/bin/sh", "-c", script)
+	// The process has no restart policy, so the run a start brings back holds no bomb and can be used.
+	id := runDetachedWith(t, app, out, []string{"--memory", oomBound()}, nil, "/bin/sh", "-c", "touch /ran; "+oomBomb)
 	t.Cleanup(func() { cleanUp(t, app, id) })
 
 	sb := awaitRecord(t, app, id, func(sb models.Sandbox) bool { return sb.State == models.StateStopped })

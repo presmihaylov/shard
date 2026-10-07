@@ -28,7 +28,6 @@ func TestCreateFromACachedImageAnswersRunningAtOnce(t *testing.T) {
 
 	sb, err := daemonClient(app).CreateSandbox(t.Context(), sandbox.CreateRequest{
 		Image:     testImage,
-		Command:   []string{"/bin/sleep", "600"},
 		Resources: itestResources(),
 	})
 	if err != nil {
@@ -49,7 +48,6 @@ func TestCreateFromAnUncachedImageIsPendingThenRunning(t *testing.T) {
 
 	sb, err := daemonClient(app).CreateSandbox(t.Context(), sandbox.CreateRequest{
 		Image:     testImage,
-		Command:   []string{"/bin/sleep", "600"},
 		Resources: itestResources(),
 	})
 	if err != nil {
@@ -79,7 +77,6 @@ func TestCreateFromAnUnpullableImageEndsFailed(t *testing.T) {
 
 	sb, err := daemonClient(app).CreateSandbox(t.Context(), sandbox.CreateRequest{
 		Image:     unpullableImage,
-		Command:   []string{"/bin/true"},
 		Resources: itestResources(),
 	})
 	if err != nil {
@@ -114,7 +111,7 @@ func TestCreateFromAnUnpullableImageEndsFailed(t *testing.T) {
 
 	// logs is the first command after a failed create, so it surfaces the reason, not a 500.
 	var sink strings.Builder
-	if err := daemonClient(app).Logs(t.Context(), sb.ID, false, &sink); !errors.As(err, &apiErr) || apiErr.Code != models.CodeSandboxFailed {
+	if err := daemonClient(app).Logs(t.Context(), sb.ID, processName, false, &sink); !errors.As(err, &apiErr) || apiErr.Code != models.CodeSandboxFailed {
 		t.Errorf("logs of a failed sandbox = %v, want 409 %s", err, models.CodeSandboxFailed)
 	}
 

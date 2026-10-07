@@ -388,10 +388,10 @@ func TestLogsProtocolFollowsThenSaysWhyItEnded(t *testing.T) {
 	app, out := newCreateApp(t)
 	c := newRawClient(t, app)
 
-	id := runDetached(t, app, out, "/bin/sh", "-c", "echo up; sleep 600")
+	id := runDetached(t, app, out, "/bin/sh", "-c", "echo up; exec sleep 600")
 	t.Cleanup(func() { cleanUp(t, app, id) })
 
-	conn, _, err := websocket.Dial(t.Context(), "ws://shard/v0/sandboxes/"+id+"/logs?follow=true", &websocket.DialOptions{HTTPClient: c.http}) //nolint:bodyclose // a 101 has no body to close
+	conn, _, err := websocket.Dial(t.Context(), "ws://shard/v0/sandboxes/"+id+"/processes/"+processName+"/logs?follow=true", &websocket.DialOptions{HTTPClient: c.http}) //nolint:bodyclose // a 101 has no body to close
 	if err != nil {
 		t.Fatalf("dial the follow: %v", err)
 	}
@@ -404,29 +404,31 @@ func TestLogsProtocolFollowsThenSaysWhyItEnded(t *testing.T) {
 			t.Fatalf("receive: %v", err)
 		}
 		if stream != api.StreamStdout {
-			t.Fatalf("the follow sent stream %d with %q before the entrypoint wrote", stream, payload)
+			t.Fatalf("the follow sent stream %d with %q before the process wrote", stream, payload)
 		}
 
 		logged.Write(payload)
 	}
 
-	if err := app.Run(t.Context(), []string{"stop", id}); err != nil {
-		t.Fatalf("stop: %v", err)
+	// A kill returns once the process is reaped and leaves the sandbox up, so the end is the process's own.
+	if err := app.Run(t.Context(), []string{"kill", id, processName}); err != nil {
+		t.Fatalf("kill: %v", err)
 	}
+	out.Reset()
 
 	end, err := readEnd(t.Context(), conn)
 	if err != nil {
 		t.Fatalf("read to the end of the follow: %v", err)
 	}
-	if end.Reason != sandbox.LogsStopped {
-		t.Errorf("the follow ended with %q, want %s", end.Reason, sandbox.LogsStopped)
+	if end.Reason != sandbox.LogsEnded {
+		t.Errorf("the follow ended with %q, want %s", end.Reason, sandbox.LogsEnded)
 	}
 	if status := c.closed(conn); status != websocket.StatusNormalClosure {
 		t.Errorf("the daemon closed with %d after the end, want 1000", status)
 	}
 }
 
-// readEnd skips what the entrypoint still wrote and answers the end message.
+// readEnd skips what the process still wrote and answers the end message.
 func readEnd(ctx context.Context, conn *websocket.Conn) (api.EndMessage, error) {
 	for {
 		stream, payload, err := api.Receive(ctx, conn)
