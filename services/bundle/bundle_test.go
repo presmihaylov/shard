@@ -285,7 +285,7 @@ func TestBuildRefusesAUserTheImageDoesNotHave(t *testing.T) {
 
 func TestBuildJoinsTheNetworkNamespace(t *testing.T) {
 	spec := models.SandboxSpec{Network: models.NetworkSpec{NetnsPath: "/var/run/netns/shard-1"}}
-	_, got := build(t, spec, models.ImageConfig{})
+	b, got := build(t, spec, models.ImageConfig{})
 
 	i := slices.IndexFunc(got.Linux.Namespaces, func(n specs.LinuxNamespace) bool { return n.Type == specs.NetworkNamespace })
 	if i < 0 {
@@ -293,6 +293,14 @@ func TestBuildJoinsTheNetworkNamespace(t *testing.T) {
 	}
 	if got.Linux.Namespaces[i].Path != "/var/run/netns/shard-1" {
 		t.Errorf("got netns path %q, want /var/run/netns/shard-1", got.Linux.Namespaces[i].Path)
+	}
+	// A port forward dials in the namespace config.json names, which nothing else records.
+	runtime, err := b.Runtime()
+	if err != nil {
+		t.Fatalf("Runtime: %v", err)
+	}
+	if runtime.NetnsPath != "/var/run/netns/shard-1" {
+		t.Errorf("Runtime reports the netns %q, want /var/run/netns/shard-1", runtime.NetnsPath)
 	}
 }
 

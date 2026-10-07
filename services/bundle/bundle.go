@@ -158,6 +158,8 @@ type Runtime struct {
 	User string
 	// Groups is the supplementary set that goes with User, so an exec adopts the same identity.
 	Groups []uint32
+	// NetnsPath is the network namespace the sandbox joined, empty for one the runtime made; a port forward dials in it.
+	NetnsPath string
 }
 
 // Runtime reads config.json back, so a second process in the sandbox starts where the entrypoint did.
@@ -185,7 +187,21 @@ func (b Bundle) Runtime() (Runtime, error) {
 		WorkDir:   supervisorFlag(spec.Process.Args, "-workdir"),
 		User:      supervisorFlag(spec.Process.Args, "-user"),
 		Groups:    groups,
+		NetnsPath: netnsOf(spec.Linux),
 	}, nil
+}
+
+func netnsOf(linux *specs.Linux) string {
+	if linux == nil {
+		return ""
+	}
+	for _, ns := range linux.Namespaces {
+		if ns.Type == specs.NetworkNamespace {
+			return ns.Path
+		}
+	}
+
+	return ""
 }
 
 // CheckImage refuses an image file or tree that left the host, by the sentinel a public route names.
