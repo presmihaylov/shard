@@ -42,6 +42,15 @@ type Provider interface {
 	// Signal sends one signal to a running exec by the pid ExecSpec.Report gave for it. The pid is
 	// whatever handle that provider signals by, so a caller only ever passes back what Report reported.
 	Signal(ctx context.Context, id string, pid int, signal string) error
+	// StartProcess starts one named process under shard-init in a running sandbox. It returns once the
+	// process execs, a CommandNotStartedError when it cannot, and refuses a name that still runs.
+	StartProcess(ctx context.Context, id string, spec ProcessSpec) error
+	// StopProcess cancels the restarts of one process and terms its group, then kills it once grace runs out; a grace of 0 kills at once. It returns once the process is reaped.
+	StopProcess(ctx context.Context, id, name string, grace time.Duration) error
+	// Processes reads shard-init's process table. It is a file read, so it answers for a stopped sandbox too: the table its last run left.
+	Processes(ctx context.Context, id string) ([]ProcessReport, error)
+	// ProcessLogPath names the file one process's output lands in; it outlives the process and the run.
+	ProcessLogPath(id, name string) (string, error)
 	// StopApp cancels the restarts and terms the entrypoint, or kills it with force; the sandbox stays running (SHARD-454).
 	StopApp(ctx context.Context, id string, force bool) error
 
@@ -222,6 +231,15 @@ type ExitReport struct {
 	// Restarts rides the exit record, since fd 0 is the one channel shard-init has that the guest cannot write (SHARD-634).
 	Restarts RestartCount `json:"restarts,omitzero"`
 }
+
+// ProcessTable is shard-init's newline-framed record on its status channel: every process, rewritten whole on each change.
+type ProcessTable struct {
+	Kind      string          `json:"kind"`
+	Processes []ProcessReport `json:"processes"`
+}
+
+// ProcessTableKind marks the process table, so a reader rejects every other line.
+const ProcessTableKind = "processes"
 
 // ExitReportKind marks the entrypoint's exit, so an exit reader rejects every other line.
 const ExitReportKind = "exit"

@@ -57,6 +57,11 @@ type Sandbox struct {
 	// Restart is the policy shard-init starts the entrypoint again under, nil for a sandbox without one.
 	Restart *Restart `json:"restart,omitempty"`
 
+	// Processes are the named processes shard run started, with the status the daemon last read of each.
+	Processes []Process `json:"processes,omitempty"`
+	// StoppedByOperator says a shard stop ended the last run, which keeps unless-stopped processes down on a daemon start.
+	StoppedByOperator bool `json:"stopped_by_operator,omitempty"`
+
 	// Secrets names what the guest holds a placeholder for. The values live in the secret store and
 	// reach a request only at the proxy, so this list is a grant and never a value.
 	Secrets []string `json:"secrets,omitempty"`
