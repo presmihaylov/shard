@@ -268,9 +268,9 @@ func (p *Provider) GuestKernel() string { return p.cfg.KernelTag }
 // DefaultMemoryMiB is the memory the sandbox service gives a create that names none.
 func (p *Provider) DefaultMemoryMiB() int64 { return DefaultMemoryMiB }
 
-// Capabilities are pause, resume and fork, which every host with /dev/kvm has: a snapshot is two files the vmm writes.
+// Capabilities are pause, resume and fork, which every host with /dev/kvm has: a snapshot is two files the vmm writes. A port rides vsock.
 func (p *Provider) Capabilities() models.Capabilities {
-	return models.Capabilities{Pause: true, Resume: true, Fork: true}
+	return models.Capabilities{Pause: true, Resume: true, Fork: true, Port: true}
 }
 
 // CheckResources is checkResources before any record exists, so a refused --memory leaves no failed sandbox in ls.

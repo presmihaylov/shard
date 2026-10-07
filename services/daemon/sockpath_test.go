@@ -9,6 +9,7 @@ import (
 
 	"github.com/presmihaylov/shard/services/provider/firecracker"
 	"github.com/presmihaylov/shard/services/provider/gvisor"
+	"github.com/presmihaylov/shard/services/provider/runc"
 	"github.com/presmihaylov/shard/services/provider/vzvm"
 )
 
@@ -18,8 +19,8 @@ func rootOf(n int) string {
 }
 
 func TestTheDaemonRefusesARootItsLongestSocketDoesNotFitUnder(t *testing.T) {
-	// What each provider adds to the root: "/jail/firecracker/", a 24-byte id and "/root/api.sock"; "/sandboxes/", the id and vz's longest socket; or "/shard.sock".
-	for provider, suffix := range map[string]int{firecracker.Name: 56, vzvm.Name: 45, gvisor.Name: 11} {
+	// What each provider adds to the root: "/jail/firecracker/", a 24-byte id and "/root/api.sock"; "/sandboxes/", the id and vz's longest socket; "/exec/pf-0123456789/s"; or "/shard.sock".
+	for provider, suffix := range map[string]int{firecracker.Name: 56, vzvm.Name: 45, gvisor.Name: 21, runc.Name: 11} {
 		t.Run(provider, func(t *testing.T) {
 			most := maxSocketPath - suffix
 

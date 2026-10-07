@@ -7,9 +7,6 @@ type NoCheckpoints struct {
 	Provider string
 }
 
-// Capabilities reports no optional verb at all.
-func (NoCheckpoints) Capabilities() Capabilities { return Capabilities{} }
-
 func (n NoCheckpoints) Pause(context.Context, string, string) error {
 	return Unsupported(n.Provider, VerbPause)
 }

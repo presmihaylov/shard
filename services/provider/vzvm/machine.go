@@ -54,6 +54,8 @@ type machine struct {
 	admit sync.RWMutex
 	// logsRound ends the logs stream in use, so a stream the reset killed is dialed again.
 	logsRound atomic.Pointer[context.CancelFunc]
+	// ports is what the guest's state said: a shard-init from before the forward port refuses every port forward.
+	ports atomic.Bool
 	// execs holds each open exec stream, with the verb that cut it, or "" while it runs.
 	execs   map[net.Conn]string
 	execsMu sync.Mutex
@@ -931,6 +933,9 @@ func (p *Provider) reconcile(m *machine, state supervisor.Message) error {
 	p.mu.Lock()
 	m.started = m.started || state.Ready
 	p.mu.Unlock()
+	if state.Kind == supervisor.KindState {
+		m.ports.Store(state.Ports)
+	}
 	if state.OOM {
 		if err := m.markOOM(); err != nil {
 			return err

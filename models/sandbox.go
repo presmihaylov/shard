@@ -65,9 +65,19 @@ type Sandbox struct {
 	// the internet and nothing private.
 	Policy string `json:"policy,omitempty"`
 
+	// Ports are the host ports the daemon forwards into this sandbox while it runs; a fork starts with none.
+	Ports []PortForward `json:"ports,omitempty"`
+
 	// StartedAt is when the daemon last started the sandbox, which a resume keeps: ls reads its uptime from it.
 	StartedAt time.Time `json:"started_at,omitzero"`
 	// RunStartedAt is when this run began, a resume included, so liveness tells one run from the next; never served.
 	RunStartedAt time.Time `json:"run_started_at,omitzero"`
 	CreatedAt    time.Time `json:"created_at"`
+}
+
+// PortForward carries TCP from one host port to one port inside the sandbox, on 127.0.0.1 or, when Public, on 0.0.0.0.
+type PortForward struct {
+	HostPort  uint16 `json:"host_port"`
+	GuestPort uint16 `json:"guest_port"`
+	Public    bool   `json:"public,omitempty"`
 }

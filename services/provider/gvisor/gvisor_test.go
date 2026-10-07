@@ -83,7 +83,7 @@ func TestTheProviderNamesItsSubstrate(t *testing.T) {
 }
 
 func TestEveryOptionalVerbIsClaimed(t *testing.T) {
-	if got, want := newProvider(t).Capabilities(), (models.Capabilities{Pause: true, Resume: true, Fork: true}); got != want {
+	if got, want := newProvider(t).Capabilities(), (models.Capabilities{Pause: true, Resume: true, Fork: true, Port: true}); got != want {
 		t.Errorf("got capabilities %+v, want %+v", got, want)
 	}
 }

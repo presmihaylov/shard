@@ -1176,10 +1176,10 @@ func readVM(t *testing.T, dir string) vm {
 	return r
 }
 
-// A host with /dev/kvm pauses, resumes and forks a running sandbox (SHARD-462).
-func TestCapabilitiesArePauseResumeAndFork(t *testing.T) {
+// A host with /dev/kvm pauses, resumes and forks a running sandbox (SHARD-462), and forwards a port into it.
+func TestCapabilitiesArePauseResumeForkAndPort(t *testing.T) {
 	h := newHarness(t)
-	want := models.Capabilities{Pause: true, Resume: true, Fork: true}
+	want := models.Capabilities{Pause: true, Resume: true, Fork: true, Port: true}
 	if caps := h.provider.Capabilities(); caps != want {
 		t.Fatalf("Capabilities = %+v, want %+v", caps, want)
 	}

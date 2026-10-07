@@ -36,6 +36,7 @@ func (a App) capabilities(ctx context.Context, args []string) error {
 	}{
 		{"create", caps.Create}, {"start", caps.Start}, {"stop", caps.Stop}, {"remove", caps.Remove},
 		{"pause", caps.Pause}, {"resume", caps.Resume}, {"fork", caps.Fork}, {"snapshot", caps.Snapshot},
+		{"port", caps.Port},
 	} {
 		fmt.Fprintf(w, "%s\t%t\n", verb.name, verb.supported)
 	}

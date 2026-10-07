@@ -283,7 +283,7 @@ type versionResponse struct {
 	APIVersion string `json:"api_version"`
 }
 
-// Capabilities is every lifecycle verb and whether this server supports it, the same eight keys for every provider.
+// Capabilities is every lifecycle verb and whether this server supports it, the same nine keys for every provider.
 type Capabilities struct {
 	Create bool `json:"create"`
 	Start  bool `json:"start"`
@@ -294,6 +294,7 @@ type Capabilities struct {
 	Fork   bool `json:"fork"`
 	// Snapshot is the copy of a stopped sandbox's files, which every provider makes.
 	Snapshot bool `json:"snapshot"`
+	Port     bool `json:"port"`
 }
 
 // ScopesResponse lists every scope a token can carry, never the caller's own.
@@ -336,7 +337,7 @@ func (h *Handler) getScopes(context.Context, *struct{}) (*reply[ScopesResponse],
 
 // capabilitiesOf answers true for the verbs every provider runs, and the provider's own answer for the optional ones.
 func capabilitiesOf(c models.Capabilities) Capabilities {
-	return Capabilities{Create: true, Start: true, Stop: true, Remove: true, Pause: c.Pause, Resume: c.Resume, Fork: c.Fork, Snapshot: true}
+	return Capabilities{Create: true, Start: true, Stop: true, Remove: true, Pause: c.Pause, Resume: c.Resume, Fork: c.Fork, Snapshot: true, Port: c.Port}
 }
 
 func (h *Handler) getDaemon(w http.ResponseWriter, r *http.Request) {
