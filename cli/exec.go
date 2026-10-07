@@ -227,7 +227,7 @@ func shellCode(err error) error {
 	return &ExitError{Code: code, Message: message}
 }
 
-// notStarted reads a command that never ran from either side of the socket: a refused create or an attach that ended so.
+// notStarted reads a command that never ran from either side of the socket: a refused run or an attach that ended so.
 func notStarted(err error) (int, string, bool) {
 	var refused *client.APIError
 	if errors.As(err, &refused) && refused.Code == models.CodeCommandNotStarted {

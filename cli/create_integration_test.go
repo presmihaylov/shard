@@ -33,7 +33,7 @@ func TestCreateLeavesTheSandboxRunning(t *testing.T) {
 
 	sb := record(t, app, id)
 	if sb.State != models.StateRunning {
-		t.Errorf("the record says %q, want running: a sandbox outlives its entrypoint", sb.State)
+		t.Errorf("the record says %q, want running: a sandbox outlives its processes", sb.State)
 	}
 
 	if got, err := runExec(t, app, "exec", id, "/bin/echo", "alive"); err != nil || !strings.Contains(got, "alive") {

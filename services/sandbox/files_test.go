@@ -70,7 +70,7 @@ func TestStatFileRunsTheFilesModeAsTheEntrypointUser(t *testing.T) {
 	}
 	spec := l.provider.execSpec
 	if strings.Join(spec.Argv, " ") != supervisor.InitPath+" "+supervisor.FilesMode || spec.User != "" || l.provider.execID != "sandbox1" {
-		t.Fatalf("the exec ran %v as %q in %s, want the files mode as the entrypoint user in sandbox1", spec.Argv, spec.User, l.provider.execID)
+		t.Fatalf("the exec ran %v as %q in %s, want the files mode as the sandbox's user in sandbox1", spec.Argv, spec.User, l.provider.execID)
 	}
 }
 
@@ -335,7 +335,7 @@ func TestListDirStreamsTheEntriesAsTheEntrypointUser(t *testing.T) {
 		t.Fatalf("ls = %+v, want %+v", got, want)
 	}
 	if l.provider.execSpec.User != "" {
-		t.Fatalf("the ls ran as %q, want the entrypoint user", l.provider.execSpec.User)
+		t.Fatalf("the ls ran as %q, want the sandbox's user", l.provider.execSpec.User)
 	}
 }
 
@@ -385,7 +385,7 @@ func TestDeleteFileSendsRecursiveAsTheEntrypointUser(t *testing.T) {
 		t.Fatalf("delete: %v", err)
 	}
 	if l.provider.execSpec.User != "" {
-		t.Fatalf("the delete ran as %q, want the entrypoint user", l.provider.execSpec.User)
+		t.Fatalf("the delete ran as %q, want the sandbox's user", l.provider.execSpec.User)
 	}
 }
 

@@ -69,7 +69,7 @@ func TestTwoExecsShareTheSandbox(t *testing.T) {
 	}
 }
 
-// The env and the workdir belong to the exec'd process, and the entrypoint never sees them.
+// The env and the workdir belong to the exec'd process, and the sandbox's processes never see them.
 func TestExecAppliesItsOwnEnvAndWorkDir(t *testing.T) {
 	app, id := runningSandbox(t)
 
@@ -100,9 +100,8 @@ func TestExecRunsAsTheUserItWasGiven(t *testing.T) {
 	}
 }
 
-// An exec with no user of its own runs as the entrypoint does, or the confinement --user bought is
-// gone for every command after it.
-func TestExecInheritsTheUserTheEntrypointRunsAs(t *testing.T) {
+// An exec with no user of its own runs as the sandbox's user, or the confinement --user bought is gone for every command after it.
+func TestExecInheritsTheSandboxUser(t *testing.T) {
 	app, id := sandboxAs(t, "nobody")
 
 	out, err := runExec(t, app, "exec", id, "/bin/sh", "-c", "id -u")
@@ -111,7 +110,7 @@ func TestExecInheritsTheUserTheEntrypointRunsAs(t *testing.T) {
 	}
 
 	if strings.TrimSpace(out) != "65534" {
-		t.Errorf("exec ran as uid %q, want 65534, which is what the entrypoint runs as", strings.TrimSpace(out))
+		t.Errorf("exec ran as uid %q, want 65534, the sandbox's user", strings.TrimSpace(out))
 	}
 }
 

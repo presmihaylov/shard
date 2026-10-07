@@ -225,7 +225,7 @@ type writeFileInput struct {
 	ID      string `path:"id" doc:"The sandbox id or name."`
 	Path    string `query:"path" required:"true" doc:"The absolute path inside the sandbox."`
 	Mode    string `query:"mode" doc:"The permission bits in octal, at most 0777; absent is 0644."`
-	User    string `query:"user" doc:"The user who writes and owns the file; absent is the entrypoint's user."`
+	User    string `query:"user" doc:"The user who writes and owns the file; absent is the sandbox's user."`
 	Parents bool   `query:"parents" doc:"Make the missing parent directories."`
 }
 

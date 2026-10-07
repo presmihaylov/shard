@@ -60,20 +60,6 @@ func TestCreateRecordsWhenTheSandboxStarted(t *testing.T) {
 	}
 }
 
-// Create reports whether the create succeeded, and it never waits for a process a sandbox may outlive.
-func TestCreateNeverWaitsForTheEntrypoint(t *testing.T) {
-	r := &recorder{}
-	svc, _ := newService(t, r, models.Sandbox{})
-
-	if _, err := svc.Create(t.Context(), alpine()); err != nil {
-		t.Fatalf("create: %v", err)
-	}
-
-	if slices.Contains(r.calls, "provider.Wait") {
-		t.Errorf("create waited for the entrypoint: %v", r.calls)
-	}
-}
-
 // TestCreateTearsDownWhatItBuilt forces a failure at each claim and asserts exactly what is given back.
 // A failed create keeps the record and marks it failed, so it never gives the record back.
 func TestCreateTearsDownWhatItBuilt(t *testing.T) {
@@ -501,7 +487,7 @@ func TestCreateKeepsASandboxAnInterruptedStartMayHaveStarted(t *testing.T) {
 
 	for _, step := range []string{"provider.Remove", "net.Release", "repo.Delete"} {
 		if slices.Contains(r.calls, step) {
-			t.Errorf("ran %s after an interrupted start; the entrypoint may already be live", step)
+			t.Errorf("ran %s after an interrupted start; a process may already be live", step)
 		}
 	}
 }

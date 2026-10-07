@@ -700,6 +700,9 @@ func classify(err error) (int, models.Code) {
 		return http.StatusNotFound, models.CodeNotFound
 	case errors.As(err, &nameTaken):
 		return http.StatusConflict, models.CodeNameTaken
+	// A process name the sandbox never ran is a missing resource, so it answers 404 with its own code.
+	case errors.As(err, &state) && state.Code == models.CodeNoProcess:
+		return http.StatusNotFound, models.CodeNoProcess
 	case errors.As(err, &state):
 		return http.StatusConflict, state.Code
 	case errors.As(err, &unavailable):

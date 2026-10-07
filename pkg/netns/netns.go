@@ -99,7 +99,7 @@ func NamespacePath(name string) string {
 }
 
 // AddNamespace creates a named namespace, which survives until DeleteNamespace. A namespace the
-// runtime makes for itself would die with the sandbox, and a sandbox outlives its entrypoint.
+// runtime makes for itself would die with the sandbox, and a sandbox outlives its processes.
 func (m *Manager) AddNamespace(ctx context.Context, name string) error {
 	return m.run(ctx, "netns", "add", name)
 }

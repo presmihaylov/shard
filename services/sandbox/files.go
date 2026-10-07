@@ -27,7 +27,7 @@ type MkdirRequest struct {
 	Path    string `json:"path" minLength:"1"`
 	Mode    string `json:"mode,omitempty" doc:"The permission bits in octal, at most 0777; absent is 0755."`
 	Parents bool   `json:"parents,omitempty"`
-	// User is who the mkdir runs as and who owns the directory, resolved as an exec's user is; empty is the entrypoint's.
+	// User is who the mkdir runs as and who owns the directory, resolved as an exec's user is; empty is the sandbox's.
 	User string `json:"user,omitempty"`
 }
 
@@ -41,7 +41,7 @@ type Listing interface {
 type FileWrite struct {
 	Path string
 	Mode uint32
-	// User is who the put runs as and who owns the file, resolved as an exec's user is; empty is the entrypoint's.
+	// User is who the put runs as and who owns the file, resolved as an exec's user is; empty is the sandbox's.
 	User    string
 	Parents bool
 	Size    int64
@@ -151,7 +151,7 @@ func (s *Service) putCleanupGrace() time.Duration {
 // ArchiveWrite is what a put of an archive names: the guest directory it unpacks into, and who that runs as.
 type ArchiveWrite struct {
 	Path string
-	// User is who the unpack runs as and who owns what it lands, resolved as an exec's user is; empty is the entrypoint's.
+	// User is who the unpack runs as and who owns what it lands, resolved as an exec's user is; empty is the sandbox's.
 	User string
 }
 
@@ -254,7 +254,7 @@ func dirModeOf(raw string) (uint32, error) {
 	return uint32(mode), nil
 }
 
-// DeleteFile removes one guest path as the entrypoint user; a directory with anything in it needs recursive, and / is never deleted.
+// DeleteFile removes one guest path as the sandbox's user; a directory with anything in it needs recursive, and / is never deleted.
 func (s *Service) DeleteFile(ctx context.Context, ref, guestPath string, recursive bool) error {
 	if err := checkGuestPath(guestPath); err != nil {
 		return err

@@ -897,6 +897,14 @@
             "type": "string"
           },
           "state": {
+            "enum": [
+              "running",
+              "restarting",
+              "exited",
+              "killed",
+              "gave-up",
+              "stopped"
+            ],
             "type": "string"
           }
         },
@@ -1975,12 +1983,12 @@
             }
           },
           {
-            "description": "The user who unpacks and owns the files; absent is the entrypoint's user.",
+            "description": "The user who unpacks and owns the files; absent is the sandbox's user.",
             "explode": false,
             "in": "query",
             "name": "user",
             "schema": {
-              "description": "The user who unpacks and owns the files; absent is the entrypoint's user.",
+              "description": "The user who unpacks and owns the files; absent is the sandbox's user.",
               "type": "string"
             }
           }
@@ -2644,12 +2652,12 @@
             }
           },
           {
-            "description": "The user who writes and owns the file; absent is the entrypoint's user.",
+            "description": "The user who writes and owns the file; absent is the sandbox's user.",
             "explode": false,
             "in": "query",
             "name": "user",
             "schema": {
-              "description": "The user who writes and owns the file; absent is the entrypoint's user.",
+              "description": "The user who writes and owns the file; absent is the sandbox's user.",
               "type": "string"
             }
           },

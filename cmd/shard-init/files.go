@@ -198,7 +198,7 @@ func listDir(path string) (served, error) {
 // makeDir sets the leaf's mode past the umask; with parents it makes what leads to it and takes a directory already there, as mkdir -p does.
 func makeDir(header supervisor.FileHeader) (served, error) {
 	if header.Parents {
-		if err := os.MkdirAll(filepath.Dir(header.Path), 0o755); err != nil { //nolint:gosec // G301: a parent reads as mkdir -p makes it, so a non-root entrypoint can still reach the leaf
+		if err := os.MkdirAll(filepath.Dir(header.Path), 0o755); err != nil { //nolint:gosec // G301: a parent reads as mkdir -p makes it, so a non-root process can still reach the leaf
 			return served{}, err
 		}
 	}
@@ -391,7 +391,7 @@ func modeOf(mode fs.FileMode) uint32 {
 func receiveFile(r io.Reader, header supervisor.FileHeader) error {
 	dir := filepath.Dir(header.Path)
 	if header.Parents {
-		if err := os.MkdirAll(dir, 0o755); err != nil { //nolint:gosec // G301: a parent reads as mkdir -p makes it, so a non-root entrypoint can still reach the file
+		if err := os.MkdirAll(dir, 0o755); err != nil { //nolint:gosec // G301: a parent reads as mkdir -p makes it, so a non-root process can still reach the file
 			return err
 		}
 	}

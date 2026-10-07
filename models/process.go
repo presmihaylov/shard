@@ -53,7 +53,7 @@ type Process struct {
 
 // ProcessStatus is what shard-init last said of one process.
 type ProcessStatus struct {
-	State ProcessState `json:"state"`
+	State ProcessState `json:"state" enum:"running,restarting,exited,killed,gave-up,stopped"`
 	// Restarts counts the starts again since the process was run or its sandbox started.
 	Restarts int `json:"restarts"`
 	// Exit is the last exit, nil before the first one.

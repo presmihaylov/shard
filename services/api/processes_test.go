@@ -186,26 +186,27 @@ func TestAPlainAttachAnswersTheEndedProcess(t *testing.T) {
 	}
 }
 
-// Every refusal of a process verb is a 409 that names its code, and the attach says it before the 101.
-func TestProcessRefusalsAre409WithTheirCode(t *testing.T) {
+// Every refusal of a process verb names its code: a name the sandbox never ran is a 404, the rest a 409, and the attach says it before the 101.
+func TestProcessRefusalsNameTheirCode(t *testing.T) {
 	for _, c := range []struct {
 		code         models.Code
+		status       int
 		method, path string
 		body         string
 	}{
-		{models.CodeNoProcess, http.MethodGet, "/processes/web", ""},
-		{models.CodeNoProcess, http.MethodPost, "/processes/web/kill", ""},
-		{models.CodeNoProcess, http.MethodGet, "/processes/web/logs", ""},
-		{models.CodeNoProcess, http.MethodGet, "/processes/web/attach", ""},
-		{models.CodeProcessLimit, http.MethodPost, "/processes", `{"command":["true"]}`},
-		{models.CodeNameTaken, http.MethodPost, "/processes", `{"name":"web","command":["true"]}`},
+		{models.CodeNoProcess, http.StatusNotFound, http.MethodGet, "/processes/web", ""},
+		{models.CodeNoProcess, http.StatusNotFound, http.MethodPost, "/processes/web/kill", ""},
+		{models.CodeNoProcess, http.StatusNotFound, http.MethodGet, "/processes/web/logs", ""},
+		{models.CodeNoProcess, http.StatusNotFound, http.MethodGet, "/processes/web/attach", ""},
+		{models.CodeProcessLimit, http.StatusConflict, http.MethodPost, "/processes", `{"command":["true"]}`},
+		{models.CodeNameTaken, http.StatusConflict, http.MethodPost, "/processes", `{"name":"web","command":["true"]}`},
 	} {
 		s := seed(t)
 		s.verbs.err = &sandbox.StateError{Sandbox: s.running.ID, State: models.StateRunning, Fix: "the fix", Code: c.code}
 
 		status, body := send(t, s.server, c.method, "/v0/sandboxes/"+s.running.ID+c.path, c.body)
-		if status != http.StatusConflict || errorOf(t, body).code != string(c.code) {
-			t.Errorf("%s %s answered %d %v, want 409 %s", c.method, c.path, status, body, c.code)
+		if status != c.status || errorOf(t, body).code != string(c.code) {
+			t.Errorf("%s %s answered %d %v, want %d %s", c.method, c.path, status, body, c.status, c.code)
 		}
 	}
 }
@@ -220,7 +221,7 @@ func TestAttachRefusesAMissingProcessBeforeTheUpgrade(t *testing.T) {
 	}
 
 	status, body := decodeRefusal(t, resp)
-	if status != http.StatusConflict || errorOf(t, body).code != string(models.CodeNoProcess) {
-		t.Errorf("the attach answered %d %v, want 409 %s", status, body, models.CodeNoProcess)
+	if status != http.StatusNotFound || errorOf(t, body).code != string(models.CodeNoProcess) {
+		t.Errorf("the attach answered %d %v, want 404 %s", status, body, models.CodeNoProcess)
 	}
 }

@@ -485,7 +485,7 @@ func powerOff(reboot bool) error {
 	return nil
 }
 
-// syncDisk flushes every filesystem before the host cuts the VM, so an unsynced kill loses nothing the entrypoint wrote; a test process is not PID 1.
+// syncDisk flushes every filesystem before the host cuts the VM, so an unsynced kill loses nothing a process wrote; a test process is not PID 1.
 func syncDisk() error {
 	if os.Getpid() != 1 {
 		return nil

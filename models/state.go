@@ -14,8 +14,7 @@ const (
 	StatePaused State = "paused"
 	// StateUnresponsive is a running sandbox whose substrate process missed its probe bound; an answer makes it running again, and only stop ends it.
 	StateUnresponsive State = "unresponsive"
-	// StateStopped keeps the writable layer, so a start can follow it. A sandbox stopped before its
-	// entrypoint ran leaves nothing on the substrate, because stopping that one is a delete there.
+	// StateStopped keeps the writable layer for a start; a sandbox stopped before its first start leaves nothing, since that stop is a delete.
 	StateStopped State = "stopped"
 	// StateFailed is a create or fork that never reached running, or a pause that lost the guest. It is terminal, so only rm frees it.
 	StateFailed State = "failed"

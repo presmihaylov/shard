@@ -14,7 +14,7 @@ import (
 type archiveInput struct {
 	ID   string `path:"id" doc:"The sandbox id or name."`
 	Path string `query:"path" required:"true" doc:"The absolute directory inside the sandbox."`
-	User string `query:"user" doc:"The user who unpacks and owns the files; absent is the entrypoint's user."`
+	User string `query:"user" doc:"The user who unpacks and owns the files; absent is the sandbox's user."`
 }
 
 func describeWriteArchive(_ huma.Registry, op *huma.Operation) {
