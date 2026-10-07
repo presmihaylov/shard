@@ -89,6 +89,7 @@ class Shard:
         memory_mib: int | None = None,
         vcpus: int | None = None,
         disk_mib: int | None = None,
+        swap_mib: int | None = None,
     ) -> Sandbox:
         """create a sandbox"""
         body = create_body(
@@ -104,6 +105,7 @@ class Shard:
             memory_mib=memory_mib,
             vcpus=vcpus,
             disk_mib=disk_mib,
+            swap_mib=swap_mib,
             restart=None,
         )
         return Sandbox(self._transport, self._create(body))
@@ -122,6 +124,7 @@ class Shard:
         memory_mib: int | None = None,
         vcpus: int | None = None,
         disk_mib: int | None = None,
+        swap_mib: int | None = None,
         restart: Restart | None = None,
     ) -> App:
         """create a sandbox and start its command"""
@@ -138,6 +141,7 @@ class Shard:
             memory_mib=memory_mib,
             vcpus=vcpus,
             disk_mib=disk_mib,
+            swap_mib=swap_mib,
             restart=restart,
         )
         return App(self._transport, Sandbox(self._transport, self._create(body)))

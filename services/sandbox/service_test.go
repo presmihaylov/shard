@@ -607,6 +607,8 @@ func TestCreateRefusesWhatNoStoreCouldHold(t *testing.T) {
 		"a negative cpu bound":    {Image: "alpine", Resources: sandbox.ResourceRequest{VCPUs: -2}},
 		"a negative disk bound":   {Image: "alpine", Resources: sandbox.ResourceRequest{DiskMiB: -1}},
 		"a disk that overflows":   {Image: "alpine", Resources: sandbox.ResourceRequest{DiskMiB: sandbox.MaxDiskMiB + 1}},
+		"a negative swap":         {Image: "alpine", Resources: sandbox.ResourceRequest{SwapMiB: new(int64(-1))}},
+		"a swap that overflows":   {Image: "alpine", Resources: sandbox.ResourceRequest{SwapMiB: new(int64(sandbox.MaxDiskMiB + 1))}},
 		"a bad policy name":       {Image: "alpine", Policy: "Bad Name"},
 		"an env with no value":    {Image: "alpine", Env: []string{"DEBUG"}},
 		"an env with no name":     {Image: "alpine", Env: []string{"=1"}},

@@ -9,7 +9,7 @@ test("a sandbox create made runs no app", () => {
   assert.equal(info.app, null);
   assert.equal(info.policy, null);
   assert.equal(info.snapshot, null);
-  assert.deepEqual(info.resources, { memoryMiB: 512, vcpus: 1, diskMiB: 1024 });
+  assert.deepEqual(info.resources, { memoryMiB: 512, vcpus: 1, diskMiB: 1024, swapMiB: 0 });
   assert.equal(info.createdAt.toISOString(), "2026-10-04T10:00:00.123Z");
 });
 

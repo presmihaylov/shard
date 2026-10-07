@@ -264,7 +264,7 @@ func TestDaemonIsTheProcessRecordWithTheHandlersVersion(t *testing.T) {
 		"started_at":   "2026-09-16T08:00:00Z",
 		"socket":       "/var/lib/shard/shard.sock",
 		"provider":     "sysbox",
-		"capabilities": map[string]any{"pause": false, "resume": false, "fork": false},
+		"capabilities": map[string]any{"pause": false, "resume": false, "fork": false, "swap": false},
 		"proxy":        map[string]any{"plain_port": float64(30080), "tls_port": float64(30443)},
 		"tasks": []any{
 			map[string]any{"name": "api", "state": "running", "restarts": float64(0)},

@@ -27,7 +27,7 @@ const memoryHeadroom int64 = 32 << 20
 const initCgroup = "init"
 
 // The kernel spares global init, so children need no inherited OOM exemption.
-func boundMemory() error {
+func boundMemory(swap int64) error {
 	if err := cgroup.Delegate(cgroupRoot, "memory"); err != nil {
 		return fmt.Errorf("enable the memory controller: %w", err)
 	}
@@ -48,7 +48,7 @@ func boundMemory() error {
 	if err := cgroup.SetMemoryMax(dir, total-memoryHeadroom); err != nil {
 		return err
 	}
-	if err := cgroup.SetMemorySwapMax(dir, 0); err != nil {
+	if err := cgroup.SetMemorySwapMax(dir, swap); err != nil {
 		return err
 	}
 	if err := cgroup.SetOOMGroup(dir); err != nil {

@@ -153,6 +153,35 @@ func TestParseCreateTellsAnOmittedMemoryFromZero(t *testing.T) {
 	}
 }
 
+// An omitted --swap stays absent for the daemon's default, and --swap 0 is an explicit request for none.
+func TestParseCreateTellsAnOmittedSwapFromZero(t *testing.T) {
+	req, err := parseCreate([]string{"alpine:3.20"})
+	if err != nil {
+		t.Fatalf("parseCreate: %v", err)
+	}
+	if req.Resources.SwapMiB != nil {
+		t.Errorf("swap = %d with no --swap, want it absent", *req.Resources.SwapMiB)
+	}
+
+	if req, err = parseCreate([]string{"--swap", "0", "alpine:3.20"}); err != nil {
+		t.Fatalf("parseCreate: %v", err)
+	}
+	if req.Resources.SwapMiB == nil || *req.Resources.SwapMiB != 0 {
+		t.Errorf("swap = %v with --swap 0, want an explicit 0", req.Resources.SwapMiB)
+	}
+
+	if req, err = parseCreate([]string{"--swap", "1GiB", "alpine:3.20"}); err != nil {
+		t.Fatalf("parseCreate: %v", err)
+	}
+	if req.Resources.SwapMiB == nil || *req.Resources.SwapMiB != 1024 {
+		t.Errorf("swap = %v with --swap 1GiB, want 1024 MiB", req.Resources.SwapMiB)
+	}
+
+	if _, err = parseCreate([]string{"--swap", "16384GiB", "alpine:3.20"}); err == nil || !strings.Contains(err.Error(), "--swap") {
+		t.Errorf("parseCreate --swap 16384GiB = %v, want a refusal that names --swap", err)
+	}
+}
+
 func TestInFlagsWordsARefusalInTheFlags(t *testing.T) {
 	tests := []struct {
 		name    string
@@ -171,6 +200,8 @@ func TestInFlagsWordsARefusalInTheFlags(t *testing.T) {
 			"the snapshot's disk grows to at most 16384 MiB, as a mount took the room a larger one needs; set --disk to 16384 MiB or less"},
 		{"the cpus", "resources.vcpus is 9, more than the 8 CPUs on this host; set it to 8 or less",
 			"--vcpus is 9, more than the 8 CPUs on this host; set it to 8 or less"},
+		{"a swap the disk cannot hold", "resources.swap_mib is 2048 MiB, and the swap file sits on the 2048 MiB disk beside the image; set resources.disk_mib above 2048 MiB, or resources.swap_mib below 2048 MiB, or 0 for no swap",
+			"--swap is 2048 MiB, and the swap file sits on the 2048 MiB disk beside the image; set --disk above 2048 MiB, or --swap below 2048 MiB, or 0 for no swap"},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {

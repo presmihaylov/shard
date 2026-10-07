@@ -37,6 +37,11 @@ const (
 // cmdline boots the guest onto the serial console and hands shard-init the vsock transport, its two disks in attach order, and -reboot: firecracker exits on a guest reboot, never on a power off.
 const cmdline = "console=ttyS0 reboot=k panic=1 pci=off -- -transport vsock -base /dev/vda -overlay /dev/vdb -console /dev/ttyS0 -reboot"
 
+// bootCmdline adds the swap shard-init makes on the overlay disk at each boot.
+func bootCmdline(res models.Resources) string {
+	return fmt.Sprintf("%s -swap %d", cmdline, res.SwapMiB)
+}
+
 // MinMemoryMiB is the smallest --memory a guest boots with: the kernel and shard-init keep 32 MiB, and the bound needs room under that.
 const MinMemoryMiB = 128
 
@@ -268,9 +273,9 @@ func (p *Provider) GuestKernel() string { return p.cfg.KernelTag }
 // DefaultMemoryMiB is the memory the sandbox service gives a create that names none.
 func (p *Provider) DefaultMemoryMiB() int64 { return DefaultMemoryMiB }
 
-// Capabilities are pause, resume and fork, which every host with /dev/kvm has: a snapshot is two files the vmm writes.
+// Capabilities are pause, resume and fork, which every host with /dev/kvm has: a snapshot is two files the vmm writes. Swap is the guest kernel's own.
 func (p *Provider) Capabilities() models.Capabilities {
-	return models.Capabilities{Pause: true, Resume: true, Fork: true}
+	return models.Capabilities{Pause: true, Resume: true, Fork: true, Swap: true}
 }
 
 // CheckResources is checkResources before any record exists, so a refused --memory leaves no failed sandbox in ls.

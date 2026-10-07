@@ -134,13 +134,14 @@ Check `shard capabilities` before you build on `pause`, `resume` or `fork`.
 
 ## Resource bounds by provider
 
-`--memory`, `--vcpus` and `--disk` bound a sandbox on every provider, but what each bound does depends on the provider:
+`--memory`, `--vcpus` and `--disk` bound a sandbox on every provider, and `--swap` adds a swap file on Firecracker and vz, but what each bound does depends on the provider:
 
 | Bound | gVisor | Firecracker | vz | Sysbox and runc |
 | --- | --- | --- | --- | --- |
 | `--memory` | default no bound, at least 64 MiB | default 512 MiB, at least 128 MiB | default 512 MiB, at least 128 MiB | default no bound |
 | `--vcpus` | a CPU time quota | virtual CPUs, at most 32 | virtual CPUs | a CPU time quota |
 | `--disk` | default 10 GiB | default 10 GiB | default 10 GiB | default 10 GiB |
+| `--swap` | refused above 0 | default 2 GiB, inside `--disk` | default 2 GiB, inside `--disk` | refused above 0 |
 | Processes | at most 4096 | no bound | no bound | at most 4096 |
 
 **Memory.** When a sandbox goes past its memory bound, the whole sandbox ends, not just one process in it. It becomes `stopped` with the reason `ran out of memory and the host ended it`. On gVisor, the sandbox slows down when it reaches the bound and ends only once it is a little above it. `create` refuses a bound above the host's total memory.
@@ -148,5 +149,7 @@ Check `shard capabilities` before you build on `pause`, `resume` or `fork`.
 **CPU.** `--vcpus` accepts a non-negative whole number. On gVisor, Sysbox and runc, `0` sets no CPU-time quota. On Firecracker and `vz`, `0` gives the VM as many CPUs as the host and provider allow; Firecracker uses at most 32, and `vz` follows Virtualization.framework's range. Firecracker refuses a count above 32, and `vz` refuses a count outside its allowed range.
 
 **Disk.** The bound covers everything the sandbox writes. A write past it fails with `ENOSPC`, but the sandbox keeps running. `--disk 0` means the default size. The disk is sparse, so an unused sandbox takes no space on the host.
+
+**Swap.** On Firecracker and vz, the guest makes a swap file on its own disk at each boot, 2 GiB unless `--swap` names another size. A sandbox past its memory bound then swaps and slows down instead of ending, and it ends only once the swap is full too. The file comes out of `--disk`, so `create` refuses a swap that is not smaller than the disk. `--swap 0` means no swap. gVisor, Sysbox and runc run on the host kernel, so they refuse any `--swap` above 0.
 
 **Processes.** On gVisor, Sysbox and runc, a sandbox can hold at most 4096 processes, and this limit is fixed. In a Firecracker or vz sandbox, processes run inside the virtual machine, so a fork bomb stays inside it and hits the virtual machine's memory.

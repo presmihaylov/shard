@@ -1,6 +1,10 @@
 package main
 
-import "testing"
+import (
+	"bytes"
+	"encoding/binary"
+	"testing"
+)
 
 func TestGuestBootIsOneDiskOrTwo(t *testing.T) {
 	cases := map[string]struct {
@@ -16,6 +20,10 @@ func TestGuestBootIsOneDiskOrTwo(t *testing.T) {
 		"overlay alone":    {guestBoot{Overlay: "/dev/vdb"}, false, false},
 		"reboot on a disk": {guestBoot{Root: "/dev/vda", Reboot: true}, true, true},
 		"reboot alone":     {guestBoot{Reboot: true}, false, false},
+		"swap on a disk":   {guestBoot{Root: "/dev/vda", SwapMiB: 2048}, true, true},
+		"swap on overlay":  {guestBoot{Base: "/dev/vda", Overlay: "/dev/vdb", SwapMiB: 2048}, true, true},
+		"swap alone":       {guestBoot{SwapMiB: 2048}, false, false},
+		"negative swap":    {guestBoot{Root: "/dev/vda", SwapMiB: -1}, true, false},
 	}
 
 	for name, c := range cases {
@@ -27,5 +35,37 @@ func TestGuestBootIsOneDiskOrTwo(t *testing.T) {
 				t.Errorf("check() = %v, want ok=%v", err, c.ok)
 			}
 		})
+	}
+}
+
+// The kernel's swapon reads the version and last_page at 1024 and the magic at the end of the first page, as mkswap lays them.
+func TestSwapHeaderIsTheOneMkswapWrites(t *testing.T) {
+	const pageSize = 4096
+	header, err := swapHeader(2048<<20, pageSize)
+	if err != nil {
+		t.Fatalf("swapHeader: %v", err)
+	}
+	if len(header) != pageSize {
+		t.Fatalf("the header is %d bytes, want one page of %d", len(header), pageSize)
+	}
+	if version := binary.NativeEndian.Uint32(header[1024:]); version != 1 {
+		t.Errorf("version = %d, want 1", version)
+	}
+	if last := binary.NativeEndian.Uint32(header[1028:]); last != 2048<<8-1 {
+		t.Errorf("last_page = %d, want %d", last, 2048<<8-1)
+	}
+	if magic := header[pageSize-10:]; !bytes.Equal(magic, []byte("SWAPSPACE2")) {
+		t.Errorf("the magic is %q, want SWAPSPACE2", magic)
+	}
+	if !bytes.Equal(header[:1024], make([]byte, 1024)) {
+		t.Error("the boot block before the header is not zero")
+	}
+}
+
+func TestSwapHeaderRefusesASizeTheKernelCannotTake(t *testing.T) {
+	for name, size := range map[string]int64{"one page": 4096, "no page": 0, "past 2^32 pages": (1<<32 + 1) * 4096} {
+		if _, err := swapHeader(size, 4096); err == nil {
+			t.Errorf("swapHeader(%s) took it", name)
+		}
 	}
 }

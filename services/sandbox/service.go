@@ -38,6 +38,9 @@ const MaxMemoryMiB = 1 << 24
 // MaxDiskMiB is what the ext4 writer's 32-bit block count holds, 128 MiB short of 16 TiB.
 const MaxDiskMiB = ext4.MaxDiskSize >> 20
 
+// DefaultSwapMiB is the swap a create gets on a provider that claims swap when it names none.
+const DefaultSwapMiB = 2048
+
 // Repository is the part of sandboxstate.Repository the lifecycle verbs drive.
 type Repository interface {
 	Reader
@@ -176,13 +179,17 @@ type ResourceRequest struct {
 	MemoryMiB *int64 `json:"memory_mib,omitempty" minimum:"0" maximum:"16777216" doc:"The memory bound in MiB. Absent, a create from a snapshot takes the snapshot's bound. Otherwise absent or 0 is 512 on the firecracker and vz providers, and no bound on gvisor, runc and sysbox."`
 	VCPUs     int    `json:"vcpus" required:"false" minimum:"0"`
 	DiskMiB   int64  `json:"disk_mib" required:"false" minimum:"0" maximum:"16777088"`
+	SwapMiB   *int64 `json:"swap_mib,omitempty" minimum:"0" maximum:"16777088" doc:"The swap file in MiB, which the guest makes on its disk and which counts against disk_mib. Absent is 2048 on the firecracker and vz providers and none on gvisor, runc and sysbox, which refuse any swap but 0."`
 }
 
-// bounds is the request as resources, where an omitted memory is 0.
+// bounds is the request as resources, where an omitted memory or swap is 0.
 func (r ResourceRequest) bounds() models.Resources {
 	res := models.Resources{VCPUs: r.VCPUs, DiskMiB: r.DiskMiB}
 	if r.MemoryMiB != nil {
 		res.MemoryMiB = *r.MemoryMiB
+	}
+	if r.SwapMiB != nil {
+		res.SwapMiB = *r.SwapMiB
 	}
 
 	return res
@@ -530,6 +537,11 @@ func (s *Service) Prepare(ctx context.Context, req CreateRequest) (models.Sandbo
 		req, snapshot = seed.req, seed.id
 	}
 	res := s.resources(req.Resources)
+	if res.SwapMiB > 0 {
+		if err := requireVerb(s.cfg.Provider, models.VerbSwap); err != nil {
+			return models.Sandbox{}, err
+		}
+	}
 	// A bound the substrate refuses is the request's fault, and it must not leave a failed record behind.
 	if err := s.cfg.Provider.CheckResources(res); err != nil {
 		return models.Sandbox{}, &RequestError{Err: err}
@@ -544,6 +556,10 @@ func (s *Service) Prepare(ctx context.Context, req CreateRequest) (models.Sandbo
 	}
 	// Record the disk bound the sandbox will actually run under, so inspect shows the enforced value, not a bare 0.
 	res.DiskMiB = bundle.DiskBound(res)
+	// The swap file sits on the disk beside the image, so a swap the disk cannot hold fails the boot instead.
+	if res.SwapMiB >= res.DiskMiB {
+		return models.Sandbox{}, &RequestError{Err: fmt.Errorf("resources.swap_mib is %d MiB, and the swap file sits on the %d MiB disk beside the image; set resources.disk_mib above %d MiB, or resources.swap_mib below %d MiB, or 0 for no swap", res.SwapMiB, res.DiskMiB, res.SwapMiB, res.DiskMiB)}
+	}
 
 	// The canonical reference is what a prune keys a hold on, so the pending record must carry it before
 	// the pull: a prune between the record and the pull would otherwise delete the rootfs the create needs.
@@ -685,6 +701,9 @@ func (s *Service) resources(r ResourceRequest) models.Resources {
 	sizer, ok := s.cfg.Provider.(memorySizer)
 	if ok && res.MemoryMiB == 0 {
 		res.MemoryMiB = sizer.DefaultMemoryMiB()
+	}
+	if r.SwapMiB == nil && s.cfg.Provider.Capabilities().Swap {
+		res.SwapMiB = DefaultSwapMiB
 	}
 
 	return res
@@ -997,6 +1016,13 @@ func validate(req CreateRequest) error {
 	}
 	if req.Resources.DiskMiB > MaxDiskMiB {
 		return &RequestError{Err: fmt.Errorf("the disk bound is in MiB and no host holds that much, got %d", req.Resources.DiskMiB)}
+	}
+	swap := req.Resources.bounds().SwapMiB
+	if swap < 0 {
+		return &RequestError{Err: fmt.Errorf("the swap is in MiB and cannot be negative, got %d", swap)}
+	}
+	if swap > MaxDiskMiB {
+		return &RequestError{Err: fmt.Errorf("the swap is in MiB and no host holds that much, got %d", swap)}
 	}
 	if req.Restart != nil {
 		if err := validRestart(*req.Restart, req.Command); err != nil {

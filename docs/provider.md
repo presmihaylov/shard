@@ -19,9 +19,9 @@ any other `--provider`, because the other substrate has never heard of those san
 | Exit code | host-verified, behind the sentry | **guest-attested**, and lost if PID 1 dies while the daemon is down or the daemon dies mid-stop (see the Sysbox section) | **guest-attested**, because guest root is host root | host-verified, behind the VM | host-verified, behind the VM |
 | Status | every verb | every required verb, no optional verb | every required verb, no optional verb | every verb on Apple silicon with macOS 14+; no pause or resume on 13 or on Intel | every verb |
 
-The capability table uses the CLI names. The first row holds the required verbs. The other three
-rows are the optional verbs: `Capabilities` reports each one, and the daemon refuses the ones a
-substrate lacks.
+The capability table uses the CLI names. The first row holds the required verbs. The other rows
+are the optional verbs and the swap file: `Capabilities` reports each one, and the daemon refuses
+the ones a substrate lacks.
 
 | Verb | gVisor | Sysbox | runc | vz | Firecracker |
 |---|---|---|---|---|---|
@@ -29,6 +29,7 @@ substrate lacks.
 | `pause` | yes | **no** | **no** | Apple silicon on macOS 14+, **no** on 13 or on Intel | yes |
 | `resume` | yes | **no** | **no** | Apple silicon on macOS 14+, **no** on 13 or on Intel | yes |
 | `fork` of a running sandbox | yes | **no** | **no** | Apple silicon on macOS 14+, **no** on 13 or on Intel | yes |
+| `--swap` above 0 | **no** | **no** | **no** | yes | yes |
 
 ### What a host picks without --provider
 
@@ -439,7 +440,8 @@ at its bound is throttled, and only a guest past the ceiling dies. `sysbox-runc`
 one guest process, the sandbox would live on, and the record would never say it ran out of memory.
 On `vz` the bound is the VM's memory, and `shard-init` puts the same pair on a cgroup inside the
 guest. There `memory.max` is the VM's memory less 32 MB of headroom for the kernel and `shard-init`
-itself, with `memory.oom.group=1` and `memory.swap.max=0`. `shard-init` unshares a cgroup namespace
+itself, with `memory.oom.group=1` and `memory.swap.max` at the size of the swap file, as the next
+section says. `shard-init` unshares a cgroup namespace
 rooted at that cgroup, then moves itself to a sibling, `init`. That way a pause can freeze every
 guest process and leave the supervisor free to answer. Each process the supervisor starts is born
 into the bounded cgroup by `CLONE_INTO_CGROUP`. So everything a guest starts, a Docker daemon and
@@ -464,6 +466,26 @@ that configures the machine. cgroup v2 charges a process only for the pages it f
 so a vmm moved in later would leave the guest's memory charged to the parent. That ceiling is for
 host safety and is never the trigger. It sits above the guest's whole memory, so the guest's own
 killer runs first on every workload, and the daemon hears an OOM instead of a death.
+
+## What a swap file means
+
+`--swap` gives a `vz` or `firecracker` sandbox a swap file on its own disk (SHARD-787). A create
+that names none gets 2048 MiB, and `--swap 0` means none. At each boot `shard-init` makes
+`.shard-swap` at the top of the disk the root writes to, switches it on with `swapon`, and sets
+`memory.swap.max` on the bounded cgroup to its size. On Firecracker the file sits on the overlay
+disk beside the upper and work directories, so the guest never sees it. On `vz` the guest sees it
+as `/.shard-swap`. The memory bound stays. A guest past `--memory` swaps instead of dying, and the
+killer takes the group only once the swap is full too.
+
+The file counts against `--disk`, so the guest has that much less room to write, and `create`
+refuses a swap that is not smaller than the disk. A clean stop swaps the file off and removes it,
+so a snapshot never copies it. A forced stop leaves it, and the next boot removes it before it makes
+a new one. A pause and a fork keep it, because the saved memory names pages that sit in it.
+
+gVisor, Sysbox and runc run on the host kernel, which a sandbox cannot `swapon`. They report no
+swap in `Capabilities`, keep `memory.swap.max=0`, and the daemon refuses a `--swap` above 0 on them
+by name. The host cgroup around a Firecracker vmm keeps `memory.swap.max=0` as well, because the
+guest swaps to its own disk and never to the host's.
 
 ## What a cpu bound means
 
@@ -503,7 +525,7 @@ APFS clone of the image's own disk. The bound is never off. `--disk 0`, the defa
 `10240` MiB, and a positive `N` overrides it. The image is sparse, so an unwritten sandbox costs the
 host nothing. It is truncated to the bound, so host usage stops there whatever the guest does.
 Inside the guest a write past the bound fails with `ENOSPC`, and the sandbox lives on. `df` shows
-the bound less what ext4 keeps for itself.
+the bound less what ext4 keeps for itself, and on `vz` and Firecracker less the swap file too.
 
 A stop detaches the disk and a start mounts it again, so the layer survives a stop and the next
 start. On Sysbox the disk stays mounted while `sysbox-runc` holds the stopped sandbox, because

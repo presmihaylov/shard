@@ -513,7 +513,7 @@ func (p *Provider) boot(ctx context.Context, id, dir string, r record, restore s
 	cfg := vz.Config{
 		Kernel:    p.cfg.Kernel,
 		Initrd:    p.initrd,
-		Cmdline:   cmdline,
+		Cmdline:   bootCmdline(r.Resources),
 		CPUs:      uint(max(r.Resources.VCPUs, 0)),                 //nolint:gosec // negative is clamped just before
 		Memory:    uint64(max(bundle.MemoryBound(r.Resources), 0)), //nolint:gosec // negative is clamped just before
 		Disk:      filepath.Join(dir, diskFile),
