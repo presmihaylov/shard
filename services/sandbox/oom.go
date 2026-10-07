@@ -117,15 +117,15 @@ func (s *Service) retryOOMStart(id string, due, now time.Time, cause error, repo
 
 		return nil
 	})
+	failed := fmt.Errorf("start sandbox %s again after it ran out of memory: %w", id, cause)
 	if err != nil {
-		return errors.Join(fmt.Errorf("start sandbox %s again after it ran out of memory: %w", id, cause), fmt.Errorf("sandbox %s: put off the next start again: %w", id, err))
+		return errors.Join(failed, fmt.Errorf("sandbox %s: put off the next start again: %w", id, err))
 	}
-	if next.IsZero() {
-		return fmt.Errorf("start sandbox %s again after it ran out of memory: %w", id, cause)
+	if !next.IsZero() {
+		report(fmt.Sprintf("sandbox %s: the start again after it ran out of memory failed, the daemon tries again %s", id, when(next, now)))
 	}
-	report(fmt.Sprintf("sandbox %s: the start again after it ran out of memory failed, the daemon tries again %s", id, when(next, now)))
 
-	return fmt.Errorf("start sandbox %s again after it ran out of memory: %w", id, cause)
+	return failed
 }
 
 // callOffOOMRestart drops the start again a record waits on, once a stop or another start made it moot.
