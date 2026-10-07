@@ -31,6 +31,7 @@ from .failure_error import FailureError
 from .failure_message import FailureMessage
 from .file_entry import FileEntry
 from .file_entry_type import FileEntryType
+from .host_address import HostAddress
 from .inspection import Inspection
 from .inspection_state import InspectionState
 from .kill_request import KillRequest
@@ -41,6 +42,10 @@ from .policy_attach_request import PolicyAttachRequest
 from .policy_request import PolicyRequest
 from .policy_view import PolicyView
 from .policy_view_dns import PolicyViewDns
+from .port import Port
+from .port_forward import PortForward
+from .port_request import PortRequest
+from .ports_response import PortsResponse
 from .process import Process
 from .process_kill_request import ProcessKillRequest
 from .process_status import ProcessStatus
@@ -103,6 +108,7 @@ __all__ = (
     "FailureMessage",
     "FileEntry",
     "FileEntryType",
+    "HostAddress",
     "Inspection",
     "InspectionState",
     "KillRequest",
@@ -113,6 +119,10 @@ __all__ = (
     "PolicyRequest",
     "PolicyView",
     "PolicyViewDns",
+    "Port",
+    "PortForward",
+    "PortRequest",
+    "PortsResponse",
     "Process",
     "ProcessesResponse",
     "ProcessKillRequest",

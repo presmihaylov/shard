@@ -71,9 +71,9 @@ func TestTheProviderNamesItsSubstrate(t *testing.T) {
 	}
 }
 
-func TestNoOptionalVerbIsClaimed(t *testing.T) {
-	if got := newProvider(t).Capabilities(); got != (models.Capabilities{}) {
-		t.Errorf("got capabilities %+v, want none", got)
+func TestOnlyThePortIsClaimed(t *testing.T) {
+	if got := newProvider(t).Capabilities(); got != (models.Capabilities{Port: true}) {
+		t.Errorf("got capabilities %+v, want only port", got)
 	}
 }
 

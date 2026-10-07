@@ -90,6 +90,7 @@ func parseCreate(args []string) (sandbox.CreateRequest, error) {
 	flags := newFlags("create")
 	sandboxFlags(flags, &req)
 	flags.StringVar(&req.Snapshot, "snapshot", "", "")
+	flags.Var((*portList)(&req.Ports), "port", "")
 	var refused error
 	runFlags(flags, &refused)
 

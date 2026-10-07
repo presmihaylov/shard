@@ -16,6 +16,7 @@ class Capabilities:
     create: bool
     fork: bool
     pause: bool
+    port: bool
     remove: bool
     resume: bool
     snapshot: bool
@@ -28,6 +29,8 @@ class Capabilities:
         fork = self.fork
 
         pause = self.pause
+
+        port = self.port
 
         remove = self.remove
 
@@ -46,6 +49,7 @@ class Capabilities:
                 "create": create,
                 "fork": fork,
                 "pause": pause,
+                "port": port,
                 "remove": remove,
                 "resume": resume,
                 "snapshot": snapshot,
@@ -65,6 +69,8 @@ class Capabilities:
 
         pause = d.pop("pause")
 
+        port = d.pop("port")
+
         remove = d.pop("remove")
 
         resume = d.pop("resume")
@@ -79,6 +85,7 @@ class Capabilities:
             create=create,
             fork=fork,
             pause=pause,
+            port=port,
             remove=remove,
             resume=resume,
             snapshot=snapshot,

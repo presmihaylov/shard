@@ -105,12 +105,12 @@ func TestVersionNamesTheAPIVersion(t *testing.T) {
 	}
 }
 
-// Every provider answers the same eight keys, and sysbox claims none of the optional verbs.
+// Every provider answers the same nine keys, and sysbox claims only the port.
 func TestCapabilitiesAnswerEveryLifecycleVerb(t *testing.T) {
 	s := seed(t)
 
 	status, body := get(t, s.server, "/v0/capabilities")
-	want := map[string]any{"create": true, "start": true, "stop": true, "remove": true, "pause": false, "resume": false, "fork": false, "snapshot": true}
+	want := map[string]any{"create": true, "start": true, "stop": true, "remove": true, "pause": false, "resume": false, "fork": false, "snapshot": true, "port": true}
 	if status != http.StatusOK || !maps.Equal(body, want) {
 		t.Errorf("GET /v0/capabilities answered %d %v, want %v", status, body, want)
 	}

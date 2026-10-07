@@ -130,6 +130,8 @@ type Config struct {
 	PutCleanupGrace time.Duration
 	// Redact hides every secret value in a failed reason before the record keeps it; nil keeps the text, which only a test does.
 	Redact func(string) string
+	// Ports puts up the forwards of the running sandboxes; nil puts up none, which only a test does.
+	Ports Ports
 }
 
 // Service owns create, start, stop and rm, and serializes them per sandbox in memory: one process holds it.
@@ -147,9 +149,16 @@ type Service struct {
 	// running counts each sandbox's admitted execs until their commands end, and runningAll their sum; both under execMu.
 	running    map[string]int
 	runningAll int
+
+	// portsMu makes the check that no other sandbox forwards a host port one step with the write that claims it.
+	portsMu sync.Mutex
 }
 
 func New(cfg Config) *Service {
+	if cfg.Ports == nil {
+		cfg.Ports = noPorts{}
+	}
+
 	return &Service{cfg: cfg, locks: map[string]*sandboxLock{}, pulls: map[string]context.CancelCauseFunc{}, execs: map[string]*execSession{}, running: map[string]int{}}
 }
 
@@ -166,6 +175,8 @@ type CreateRequest struct {
 	// Policy is what the host enforces for the sandbox.
 	Policy    string          `json:"policy,omitempty"`
 	Resources ResourceRequest `json:"resources" required:"false"`
+	// Ports are the host ports forwarded into the sandbox from its first start, as port add would forward them.
+	Ports []models.PortForward `json:"ports,omitempty"`
 }
 
 // ResourceRequest is the bounds a create asks for. A nil memory is an omitted --memory, which a snapshot fills, and 0 is no bound on a container substrate.
@@ -565,6 +576,18 @@ func (s *Service) Prepare(ctx context.Context, req CreateRequest) (models.Sandbo
 		}
 	}
 
+	if len(req.Ports) != 0 {
+		if err := requireVerb(s.cfg.Provider, models.VerbPort); err != nil {
+			return models.Sandbox{}, err
+		}
+		// Held through the create below, so no port add claims one of these host ports between the check and the record.
+		s.portsMu.Lock()
+		defer s.portsMu.Unlock()
+		if err := s.claimPorts(req.Ports); err != nil {
+			return models.Sandbox{}, err
+		}
+	}
+
 	var admit []func(dir string) error
 	reserved := ""
 	disks, admits := s.cfg.Provider.(diskAdmitter)
@@ -589,6 +612,7 @@ func (s *Service) Prepare(ctx context.Context, req CreateRequest) (models.Sandbo
 		Resources: res,
 		Secrets:   req.Secrets,
 		Policy:    req.Policy,
+		Ports:     byHostPort(req.Ports),
 		CreatedAt: time.Now().UTC(),
 	}, admit...)
 	if err != nil {
@@ -838,7 +862,7 @@ func (s *Service) Complete(ctx context.Context, id string, req CreateRequest) (e
 		return fmt.Errorf("sandbox %s is running but its record was not updated: %w", id, err)
 	}
 
-	return nil
+	return s.openPorts(id)
 }
 
 // Create is Prepare then Complete, for a caller that wants the sandbox running before it returns. The
@@ -951,6 +975,9 @@ func validate(req CreateRequest) error {
 	}
 	if req.Resources.DiskMiB > MaxDiskMiB {
 		return &RequestError{Err: fmt.Errorf("the disk bound is in MiB and no host holds that much, got %d", req.Resources.DiskMiB)}
+	}
+	if err := validPorts(req.Ports); err != nil {
+		return err
 	}
 
 	if req.Policy != "" {
@@ -1084,6 +1111,9 @@ func (s *Service) Start(ctx context.Context, ref string) (models.Sandbox, error)
 	if err := s.start(ctx, id); err != nil {
 		return models.Sandbox{}, imageGone(nameOf(id, sb), sb.Image, sb.Digest, "start", err)
 	}
+	if err := s.openPorts(id); err != nil {
+		return models.Sandbox{}, err
+	}
 
 	// Only an operator's start lifts an operator's stop; a daemon start leaves it, as Docker's unless-stopped does.
 	err = s.cfg.Repo.Update(id, func(rec *models.Sandbox) error {
@@ -1200,6 +1230,10 @@ func (s *Service) Stop(ctx context.Context, ref string) (models.Sandbox, error) 
 func (s *Service) stop(ctx context.Context, id string, force bool) error {
 	sb, err := s.cfg.Repo.Get(id)
 	if err != nil {
+		return err
+	}
+	// A failed stop leaves the sandbox running, and the ports task puts its forwards back.
+	if err := s.closePorts(id); err != nil {
 		return err
 	}
 
@@ -1419,6 +1453,7 @@ type holding struct {
 // is the only handle by which either can be found again.
 func (s *Service) free(ctx context.Context, id string) error {
 	held := []holding{
+		{"forwarded host ports", func() error { return s.closePorts(id) }},
 		{"runtime state and rootfs mount", func() error { return s.cfg.Provider.Remove(ctx, id) }},
 		{"netns, veth and address lease", func() error { return s.cfg.Network.Release(ctx, id) }},
 		{"record and state directory", func() error { return s.cfg.Repo.Delete(id) }},

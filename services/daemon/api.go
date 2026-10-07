@@ -111,7 +111,7 @@ func Run(ctx context.Context, cfg Config) error {
 	self := process{deps: d, startedAt: time.Now().UTC().Truncate(time.Second)}
 
 	proxyUp, dnsUp, firewallUp := newGate(), newGate(), newGate()
-	tasks := []Task{apiTask{deps: d, lifecycle: life, process: self}, proxyTask{deps: d, up: proxyUp}, dnsTask{deps: d, up: dnsUp}, egressLogTailer{deps: d}, heldLogRotation{deps: d}, liveness{deps: d, lifecycle: life, interval: livenessInterval}, hostFirewall{deps: d, interval: firewallInterval, up: firewallUp}, processTick{deps: d, lifecycle: life, interval: processInterval}, autostart{deps: d, lifecycle: life, after: []*gate{proxyUp, dnsUp, firewallUp}, wait: autostartWait}}
+	tasks := []Task{apiTask{deps: d, lifecycle: life, process: self}, proxyTask{deps: d, up: proxyUp}, dnsTask{deps: d, up: dnsUp}, egressLogTailer{deps: d}, heldLogRotation{deps: d}, liveness{deps: d, lifecycle: life, interval: livenessInterval}, hostFirewall{deps: d, interval: firewallInterval, up: firewallUp}, processTick{deps: d, lifecycle: life, interval: processInterval}, hostPorts{deps: d, lifecycle: life, interval: portsInterval}, autostart{deps: d, lifecycle: life, after: []*gate{proxyUp, dnsUp, firewallUp}, wait: autostartWait}}
 	dmn := New(cfg.Root, cfg.Out, append(tasks, extra...)...)
 	// vz has no bridge, and a daemon that is not root cannot write the host's netfilter, so neither has the table to share.
 	if cfg.Provider != vzvm.Name && os.Geteuid() == 0 {
@@ -487,6 +487,33 @@ func (l *lifecycle) DetachPolicy(ctx context.Context, ref string) (models.Sandbo
 	}
 
 	return svc.DetachPolicy(ctx, ref)
+}
+
+func (l *lifecycle) AddPort(ctx context.Context, ref string, hostPort uint16, req sandbox.PortRequest) (models.Port, error) {
+	svc, err := l.service()
+	if err != nil {
+		return models.Port{}, err
+	}
+
+	return svc.AddPort(ctx, ref, hostPort, req)
+}
+
+func (l *lifecycle) RemovePort(ctx context.Context, ref string, hostPort uint16) error {
+	svc, err := l.service()
+	if err != nil {
+		return err
+	}
+
+	return svc.RemovePort(ctx, ref, hostPort)
+}
+
+func (l *lifecycle) ListPorts(ctx context.Context, ref string) ([]models.Port, error) {
+	svc, err := l.service()
+	if err != nil {
+		return nil, err
+	}
+
+	return svc.ListPorts(ctx, ref)
 }
 
 func (l *lifecycle) Start(ctx context.Context, ref string) (models.Sandbox, error) {

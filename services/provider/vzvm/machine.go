@@ -53,6 +53,8 @@ type machine struct {
 	holder atomic.Pointer[string]
 	// admit orders an exec's dial against a freeze, so no exec stream opens once a verb holds the VM.
 	admit sync.RWMutex
+	// ports is what the guest's state said: a shard-init from before the forward port refuses every port forward.
+	ports atomic.Bool
 	// execs holds each open exec stream, with the verb that cut it, or "" while it runs.
 	execs   map[net.Conn]string
 	execsMu sync.Mutex
@@ -908,6 +910,9 @@ func (p *Provider) reconcile(m *machine, state supervisor.Message) error {
 	p.mu.Lock()
 	m.started = m.started || state.Ready
 	p.mu.Unlock()
+	if state.Kind == supervisor.KindState {
+		m.ports.Store(state.Ports)
+	}
 	if state.OOM {
 		if err := m.markOOM(); err != nil {
 			return err

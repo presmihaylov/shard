@@ -65,6 +65,17 @@ func TestLaunch(t *testing.T) {
 	})
 }
 
+// TestPorts proves a forward on gVisor reaches a listener on the sandbox's own loopback (SHARD-789); runsc forwards only into a netstack with a network, so the sandbox gets one.
+func TestPorts(t *testing.T) {
+	h := newNetworkedHarness(t)
+
+	conformance.RunPorts(t, conformance.Subject{
+		Provider: h.provider,
+		NewSpec:  h.newSpec,
+		Shell:    func(script string) []string { return []string{"/bin/sh", "-c", script} },
+	})
+}
+
 // TestAProcessExitCodePropagates is half the SHARD-12 acceptance criterion.
 func TestAProcessExitCodePropagates(t *testing.T) {
 	h := newHarness(t)

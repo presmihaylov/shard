@@ -34,6 +34,9 @@ shard is pre-alpha, so a release can change the API, the CLI and the SDKs withou
 - `shard kill SANDBOX NAME` ends one process and cancels its restarts, and the sandbox stays up. `--force` kills it at once.
 - `shard run --attach` prints the output and exits with the process's code. Ctrl+C detaches and leaves the process running.
 - When the daemon starts, it starts again each sandbox that holds an `always` process, or an `unless-stopped` one that neither `shard stop` nor `shard kill` ended, and runs those processes again. So they come back after a host reboot.
+- `shard port add SANDBOX [HOST:]GUEST` forwards a host port to a port inside a sandbox, on `127.0.0.1`, or on `0.0.0.0` with `--public`. `shard port list` and `shard port remove` list and end the forwards, and `shard create --port` forwards from the first start. A forward survives a stop, a start and a daemon restart. It works on every provider, and the SDKs have `sandbox.ports`. See [Reach a port inside a sandbox](/docs/guides/network/#reach-a-port-inside-a-sandbox).
+- Two new token scopes: `port:read` lists the forwards, and `port:write` adds and removes them.
+- `shard capabilities` and `GET /v0/capabilities` list a ninth verb, `port`.
 
 ## v0.1.5
 

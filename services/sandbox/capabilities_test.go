@@ -29,6 +29,12 @@ func TestAnUnclaimedVerbIsRefusedBeforeAnythingIsTouched(t *testing.T) {
 				return err
 			},
 			func(p *fakeProvider) { p.noFork = true }},
+		{models.VerbPort, running(),
+			func(svc *sandbox.Service) error {
+				_, err := svc.AddPort(t.Context(), "sandbox1", 8080, sandbox.PortRequest{GuestPort: 80})
+				return err
+			},
+			func(p *fakeProvider) { p.noPort = true }},
 	}
 
 	for _, tc := range cases {

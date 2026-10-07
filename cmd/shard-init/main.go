@@ -260,7 +260,7 @@ type guest struct {
 	waiters map[int]chan<- models.ExitStatus
 	// ready says the guest took its setup, which a new control connection is told first.
 	ready bool
-	// oomProbe says whether the guest's own memory bound was hit; nil is a guest with no bound, where a SIGKILL is a signal.
+	// oomProbe says whether an OOM kill took the guest; nil is a guest with no bound, where a SIGKILL is a signal.
 	oomProbe func() (bool, error)
 	// bound is the sandbox cgroup every child is born into, fixed before anything forks; nil off a VM.
 	bound *os.File

@@ -1,0 +1,132 @@
+---
+title: Ports
+description: The routes that forward a host port to a port inside a sandbox, list the forwards and remove them.
+sidebar:
+  order: 10
+---
+
+This forwards port 8080 on the host's 127.0.0.1 to port 3000 on the 127.0.0.1 of the sandbox `web`:
+
+```sh
+curl --unix-socket /var/lib/shard/shard.sock -X PUT -H 'Content-Type: application/json' -d '{"guest_port":3000}' http://localhost/v0/sandboxes/web/ports/8080
+```
+
+With `"public":true` the forward listens on `0.0.0.0` instead, so anything that can reach the host can reach the port. A forward stays on the sandbox through a stop and a start; a fork does not copy it. A create can carry forwards in its `ports` field.
+
+{/* make openapi writes this part from the routes. Edit the routes, not this part. */}
+
+Each route answers an error with the [Error](/docs/reference/api/#error) body, unless its responses say otherwise.
+
+## List the host ports forwarded into every sandbox
+
+`GET /v0/ports` · scope `port:read`
+
+**Parameters**
+
+| Name | In | Type | Required | Description |
+| --- | --- | --- | --- | --- |
+| `limit` | query | integer (int64) | no | The most items on a page; absent returns the whole list. At least 1. |
+| `cursor` | query | string | no | The next value of the previous page; this page starts after it. |
+
+**Responses**
+
+| Status | Body |
+| --- | --- |
+| 200 | [PortsResponse](#portsresponse) as `application/json` |
+
+## List the host ports forwarded into a sandbox
+
+`GET /v0/sandboxes/{id}/ports` · scope `port:read`
+
+**Parameters**
+
+| Name | In | Type | Required | Description |
+| --- | --- | --- | --- | --- |
+| `id` | path | string | yes | The sandbox id or name. |
+| `limit` | query | integer (int64) | no | The most items on a page; absent returns the whole list. At least 1. |
+| `cursor` | query | string | no | The next value of the previous page; this page starts after it. |
+
+**Responses**
+
+| Status | Body |
+| --- | --- |
+| 200 | [PortsResponse](#portsresponse) as `application/json` |
+
+## Forward a host port into a sandbox, or change that forward
+
+`PUT /v0/sandboxes/{id}/ports/{host_port}` · scope `port:write`
+
+A PUT of the forward the host port already has changes nothing. A running sandbox listens at once; any other keeps the forward for its next start. The answer is 409 in\_use when another sandbox forwards the host port or another process on the host listens on it.
+
+**Parameters**
+
+| Name | In | Type | Required | Description |
+| --- | --- | --- | --- | --- |
+| `id` | path | string | yes | The sandbox id or name. |
+| `host_port` | path | integer (int32) | yes | The port on the host the forward listens on. From 1 to 65535. |
+
+**Request body**
+
+[PortRequest](#portrequest) as `application/json`, required.
+
+**Responses**
+
+| Status | Body |
+| --- | --- |
+| 200 | [Port](#port) as `application/json` |
+
+## Remove the forward on a host port
+
+`DELETE /v0/sandboxes/{id}/ports/{host_port}` · scope `port:write`
+
+**Parameters**
+
+| Name | In | Type | Required | Description |
+| --- | --- | --- | --- | --- |
+| `id` | path | string | yes | The sandbox id or name. |
+| `host_port` | path | integer (int32) | yes | The port on the host the forward listens on. From 1 to 65535. |
+
+**Responses**
+
+| Status | Body |
+| --- | --- |
+| 204 | none |
+
+## Objects
+
+### HostAddress
+
+| Field | Type | Required |
+| --- | --- | --- |
+| `address` | string | yes |
+| `interface` | string | yes |
+
+### Port
+
+| Field | Type | Required | Description |
+| --- | --- | --- | --- |
+| `address` | string | yes | What the listener binds: 127.0.0.1, or 0.0.0.0 for a public forward. |
+| `error` | string | no | Why a running sandbox's port does not listen, or else what the last connection hit. |
+| `guest_port` | integer (int32) | yes | From 1 to 65535. |
+| `host_port` | integer (int32) | yes | From 1 to 65535. |
+| `listening` | boolean | yes | False while the sandbox is not running, or while the host refuses the port. |
+| `public` | boolean | yes |  |
+| `reachable_on` | array of [HostAddress](#hostaddress) | yes | The IPv4 addresses of the host a client reaches the port on while it listens. |
+| `sandbox` | string | yes | The sandbox id. |
+| `sandbox_name` | string | no |  |
+
+### PortRequest
+
+| Field | Type | Required | Description |
+| --- | --- | --- | --- |
+| `guest_port` | integer (int32) | yes | From 1 to 65535. |
+| `public` | boolean | no | Listen on 0.0.0.0, every interface of the host, instead of 127.0.0.1. |
+
+### PortsResponse
+
+| Field | Type | Required |
+| --- | --- | --- |
+| `next` | string or null | yes |
+| `ports` | array of [Port](#port) | yes |
+
+{/* make openapi writes everything above this line. Write by hand below it. */}

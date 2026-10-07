@@ -1,7 +1,8 @@
-// One sandbox: its record as the last verb answered it, and the verbs, commands, processes and files that act on it.
+// One sandbox: its record as the last verb answered it, and the verbs, commands, processes, files and ports that act on it.
 import { Commands, type Command, type ExecOptions, type ExecResult } from "./commands.js";
 import { Files } from "./files.js";
 import { egressLogEntry, follow } from "./follow.js";
+import { Ports } from "./ports.js";
 import { Processes, type Process, type RunOptions } from "./process.js";
 import { egressDecision, records, sandboxInfo, type EgressDecision, type SandboxInfo } from "./records.js";
 import type { Transport } from "./transport.js";
@@ -20,6 +21,7 @@ export class Sandbox {
   readonly commands: Commands;
   readonly processes: Processes;
   readonly files: Files;
+  readonly ports: Ports;
   private current: SandboxInfo;
 
   constructor(
@@ -30,6 +32,7 @@ export class Sandbox {
     this.commands = new Commands(transport, info.id);
     this.processes = new Processes(transport, info.id);
     this.files = new Files(transport, info.id);
+    this.ports = new Ports(transport, info.id);
   }
 
   /** info is the sandbox as the last call on this handle returned it; inspect() reads it again. */

@@ -12,6 +12,7 @@ from ..types import UNSET, Unset
 
 if TYPE_CHECKING:
     from ..models.effective import Effective
+    from ..models.port_forward import PortForward
     from ..models.process import Process
     from ..models.resources import Resources
 
@@ -34,6 +35,7 @@ class Inspection:
     kernel: str | Unset = UNSET
     name: str | Unset = UNSET
     policy: str | Unset = UNSET
+    ports: list[PortForward] | Unset = UNSET
     processes: list[Process] | Unset = UNSET
     secrets: list[str] | Unset = UNSET
     snapshot: str | Unset = UNSET
@@ -42,6 +44,7 @@ class Inspection:
 
     def to_dict(self) -> dict[str, Any]:
         from ..models.effective import Effective  # noqa: PLC0415
+        from ..models.port_forward import PortForward  # noqa: PLC0415
         from ..models.process import Process  # noqa: PLC0415
         from ..models.resources import Resources  # noqa: PLC0415
 
@@ -72,6 +75,13 @@ class Inspection:
         name = self.name
 
         policy = self.policy
+
+        ports: list[dict[str, Any]] | Unset = UNSET
+        if not isinstance(self.ports, Unset):
+            ports = []
+            for ports_item_data in self.ports:
+                ports_item = ports_item_data.to_dict()
+                ports.append(ports_item)
 
         processes: list[dict[str, Any]] | Unset = UNSET
         if not isinstance(self.processes, Unset):
@@ -118,6 +128,8 @@ class Inspection:
             field_dict["name"] = name
         if policy is not UNSET:
             field_dict["policy"] = policy
+        if ports is not UNSET:
+            field_dict["ports"] = ports
         if processes is not UNSET:
             field_dict["processes"] = processes
         if secrets is not UNSET:
@@ -134,6 +146,7 @@ class Inspection:
     @classmethod
     def from_dict(cls: type[T], src_dict: Mapping[str, Any]) -> T:
         from ..models.effective import Effective  # noqa: PLC0415
+        from ..models.port_forward import PortForward  # noqa: PLC0415
         from ..models.process import Process  # noqa: PLC0415
         from ..models.resources import Resources  # noqa: PLC0415
 
@@ -168,6 +181,15 @@ class Inspection:
         name = d.pop("name", UNSET)
 
         policy = d.pop("policy", UNSET)
+
+        _ports = d.pop("ports", UNSET)
+        ports: list[PortForward] | Unset = UNSET
+        if _ports is not UNSET:
+            ports = []
+            for ports_item_data in _ports:
+                ports_item = PortForward.from_dict(ports_item_data)
+
+                ports.append(ports_item)
 
         _processes = d.pop("processes", UNSET)
         processes: list[Process] | Unset = UNSET
@@ -205,6 +227,7 @@ class Inspection:
             kernel=kernel,
             name=name,
             policy=policy,
+            ports=ports,
             processes=processes,
             secrets=secrets,
             snapshot=snapshot,

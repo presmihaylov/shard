@@ -501,6 +501,17 @@ func requireUp(t *testing.T, h *vmHarness, id string) {
 	}
 }
 
+// TestPorts proves a forward on a VM reaches a listener on the sandbox's own loopback (SHARD-789).
+func TestPorts(t *testing.T) {
+	h := newVMHarness(t)
+
+	conformance.RunPorts(t, conformance.Subject{
+		Provider: h.provider,
+		NewSpec:  h.newSpec,
+		Shell:    func(script string) []string { return []string{"/bin/sh", "-c", script} },
+	})
+}
+
 // A guest's request to an outside address on 80 lands on the redirected port, Host header intact, and the stack drops the rest and says so.
 func TestAGuestReachesTheRedirectedPortAndNothingElse(t *testing.T) {
 	h := newVMHarness(t)

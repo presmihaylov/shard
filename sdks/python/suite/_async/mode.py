@@ -107,6 +107,16 @@ async def cancel_after(run: Callable[[OutputCallback], Awaitable[object]], marke
         raise AssertionError(f"a cancel ended the call with {_outcome(call)}")
 
 
+async def greeting(host_port: int) -> bytes:
+    """The first line the guest sends through a host port of this host, or what it sent before it closed."""
+    reader, writer = await asyncio.wait_for(asyncio.open_connection("127.0.0.1", host_port), 5)
+    try:
+        return await asyncio.wait_for(reader.readline(), 5)
+    finally:
+        writer.close()
+        await writer.wait_closed()
+
+
 def catch_strays(strays: list[str]) -> None:
     """Keep every error no task awaited, so the check that left it fails instead of a log line nobody reads."""
 

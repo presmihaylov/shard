@@ -5,8 +5,10 @@ import (
 	"path/filepath"
 	"syscall"
 
+	"github.com/presmihaylov/shard/pkg/runsc"
 	"github.com/presmihaylov/shard/services/api"
 	"github.com/presmihaylov/shard/services/provider/firecracker"
+	"github.com/presmihaylov/shard/services/provider/gvisor"
 	"github.com/presmihaylov/shard/services/provider/vzvm"
 	"github.com/presmihaylov/shard/services/sandboxstate"
 )
@@ -33,7 +35,7 @@ func checkSocketPaths(root, provider string) error {
 	return fmt.Errorf("the root %s is too long for %s: %s under it takes %d bytes, past the %d a unix socket path holds; use a root of at most %d bytes", root, provider, what, len(longest), maxSocketPath, len(root)-over)
 }
 
-// sandboxSockets names the sockets a provider binds for the sandbox with the longest id: a microVM's in its jail, a vz VM's in its state directory, and the container substrates none.
+// sandboxSockets names the sockets a provider binds for the sandbox with the longest id: a microVM's in its jail, a vz VM's in its state directory, gVisor's port forward one in the exec scratch.
 func sandboxSockets(root, provider string) []string {
 	dir := sandboxstate.LongestDir(root)
 	switch provider {
@@ -46,6 +48,8 @@ func sandboxSockets(root, provider string) []string {
 		}
 
 		return paths
+	case gvisor.Name:
+		return []string{filepath.Join(root, execDir, runsc.PortForwardSocket)}
 	}
 
 	return nil

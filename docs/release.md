@@ -79,18 +79,20 @@ version. A release goes through one pull request, and an ordinary merge publishe
 ### Add a release note
 
 A PR that changes an SDK's source (`src/`, `package.json` or `pyproject.toml`) carries a changeset: a
-short note, and a patch, minor or major bump for each SDK it names. The Changesets root is `sdks/`,
-where the TypeScript SDK is `useshards` and the Python SDK is `useshards-python`:
+short note, and a patch bump for each SDK it names: before 1.0 an SDK bumps patch only, even for a
+breaking change. The Changesets root is `sdks/`, where the TypeScript SDK is `useshards` and the
+Python SDK is `useshards-python`:
 
 ```
 cd sdks
 npm ci
-npx changeset           # pick the SDKs, the bump, and write the note
+npx changeset           # pick the SDKs and patch, and write the note
 npx changeset --empty   # a change that needs no release
 ```
 
 The `sdk changeset` job in `ci.yml` fails a PR that changes an SDK without a changeset that names it.
-It also fails a PR that edits an SDK version, because only the release PR changes one.
+It also fails a minor or major bump, and a PR that edits an SDK version, since only the release PR
+changes a version.
 
 ### Review the release PR
 

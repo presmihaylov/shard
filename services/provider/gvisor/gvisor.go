@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"io"
 	"io/fs"
+	"net"
 	"os"
 	"path/filepath"
 	"slices"
@@ -76,6 +77,7 @@ type runscCtl interface {
 	Forget(id string) error
 	Executable() string
 	DropNullNetns() error
+	PortForward(ctx context.Context, id string, port uint16) (net.Conn, error)
 }
 
 // Provider implements models.Provider on gVisor.
@@ -102,7 +104,7 @@ func New(runner *runsc.Runner, bundles *bundle.Service, dirs StateDirs) (*Provid
 	}
 
 	// Capabilities is fixed once here, so it needs no context and cannot fail.
-	caps := models.Capabilities{Pause: true, Resume: true, Fork: true}
+	caps := models.Capabilities{Pause: true, Resume: true, Fork: true, Port: true}
 
 	return &Provider{runsc: runner, bundles: bundles, dirs: dirs, caps: caps, cgroupRoot: cgroup.Root, procRoot: "/proc", killPinned: pidfdKill}, nil
 }

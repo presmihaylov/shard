@@ -102,11 +102,12 @@ func (f fakeProcess) Daemon() (api.Daemon, error) {
 	}
 
 	return api.Daemon{
-		PID:       4123,
-		StartedAt: time.Date(2026, 9, 16, 8, 0, 0, 0, time.UTC),
-		Socket:    "/var/lib/shard/shard.sock",
-		Provider:  "sysbox",
-		Proxy:     api.Proxy{PlainPort: 30080, TLSPort: 30443},
+		PID:          4123,
+		StartedAt:    time.Date(2026, 9, 16, 8, 0, 0, 0, time.UTC),
+		Socket:       "/var/lib/shard/shard.sock",
+		Provider:     "sysbox",
+		Capabilities: models.Capabilities{Port: true},
+		Proxy:        api.Proxy{PlainPort: 30080, TLSPort: 30443},
 		Tasks: []api.TaskState{
 			{Name: "api", State: "running"},
 			{Name: "liveness", State: "backoff", Restarts: 2, LastError: "boom"},
@@ -264,7 +265,7 @@ func TestDaemonIsTheProcessRecordWithTheHandlersVersion(t *testing.T) {
 		"started_at":   "2026-09-16T08:00:00Z",
 		"socket":       "/var/lib/shard/shard.sock",
 		"provider":     "sysbox",
-		"capabilities": map[string]any{"pause": false, "resume": false, "fork": false},
+		"capabilities": map[string]any{"pause": false, "resume": false, "fork": false, "port": true},
 		"proxy":        map[string]any{"plain_port": float64(30080), "tls_port": float64(30443)},
 		"tasks": []any{
 			map[string]any{"name": "api", "state": "running", "restarts": float64(0)},

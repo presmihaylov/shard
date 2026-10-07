@@ -13,6 +13,8 @@ const (
 	ScopeExec          = "exec"
 	ScopeSecret        = "secret:*"
 	ScopePolicy        = "policy:*"
+	ScopePortRead      = "port:read"
+	ScopePortWrite     = "port:write"
 	ScopeAll           = "*"
 )
 
@@ -24,5 +26,7 @@ var Scopes = []Scope{
 	{ScopeExec, "Run commands and access sandbox files"},
 	{ScopeSecret, "Manage secrets and secret grants"},
 	{ScopePolicy, "Manage policies and attach them to sandboxes"},
+	{ScopePortRead, "View the host ports forwarded into sandboxes"},
+	{ScopePortWrite, "Forward host ports into sandboxes, publicly too, and remove the forwards"},
 	{ScopeAll, "All available permissions"},
 }

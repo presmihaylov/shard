@@ -7,6 +7,7 @@ import { checks as files } from "./checks/files.js";
 import { checks as lifecycle } from "./checks/lifecycle.js";
 import { checks as logs } from "./checks/logs.js";
 import { checks as policies } from "./checks/policies.js";
+import { checks as ports } from "./checks/ports.js";
 import { checks as processes } from "./checks/processes.js";
 import { checks as secrets } from "./checks/secrets.js";
 import { checks as snapshots } from "./checks/snapshots.js";
@@ -23,6 +24,7 @@ const registry: Check[] = [
   ...logs,
   ...secrets,
   ...policies,
+  ...ports,
 ];
 
 const checkTimeoutMs = 300_000;

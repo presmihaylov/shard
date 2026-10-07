@@ -170,12 +170,15 @@ func memTotal() (int64, error) {
 	return 0, fmt.Errorf("/proc/meminfo has no MemTotal")
 }
 
-// oomKilledGuest says the sandbox cgroup's own bound was hit, which under memory.oom.group took every guest process.
-func oomKilledGuest() (bool, error) {
-	events, err := cgroup.LocalMemoryEvents(cgroupRoot)
+// oomKilledGuest says an OOM kill took every guest process under memory.oom.group.
+func oomKilledGuest() (bool, error) { return oomKilledIn(cgroupRoot) }
+
+// oomKilledIn counts the VM's own killer too, which runs first when the kernel outgrows the headroom.
+func oomKilledIn(dir string) (bool, error) {
+	events, err := cgroup.LocalMemoryEvents(dir)
 	if err != nil {
 		return false, err
 	}
 
-	return events.OOM > 0, nil
+	return events.OOM > 0 || events.OOMKill > 0, nil
 }

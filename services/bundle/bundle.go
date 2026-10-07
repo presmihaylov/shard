@@ -8,6 +8,7 @@ import (
 	"os"
 	"path"
 	"path/filepath"
+	"runtime"
 	"slices"
 	"strconv"
 	"strings"
@@ -161,6 +162,8 @@ type Runtime struct {
 	User string
 	// Groups is the supplementary set that goes with User, so an exec adopts the same identity.
 	Groups []uint32
+	// NetnsPath is the network namespace the sandbox joined, empty for one the runtime made; a port forward dials in it.
+	NetnsPath string
 }
 
 // Runtime reads config.json back, so every process in the sandbox starts where the sandbox says.
@@ -188,12 +191,26 @@ func (b Bundle) Runtime() (Runtime, error) {
 		WorkDir:   supervisorFlag(spec.Process.Args, "-workdir"),
 		User:      spec.Annotations[userAnnotation],
 		Groups:    groups,
+		NetnsPath: netnsOf(spec.Linux),
 	}, nil
 }
 
 // RunOf puts a named process where an exec into this sandbox runs by default.
 func (r Runtime) RunOf(spec models.ProcessSpec) supervisor.RunSpec {
 	return supervisor.Base{Env: r.Env, WorkDir: r.WorkDir, User: r.User, Groups: r.Groups}.RunOf(spec)
+}
+
+func netnsOf(linux *specs.Linux) string {
+	if linux == nil {
+		return ""
+	}
+	for _, ns := range linux.Namespaces {
+		if ns.Type == specs.NetworkNamespace {
+			return ns.Path
+		}
+	}
+
+	return ""
 }
 
 // CheckImage refuses an image file or tree that left the host, by the sentinel a public route names.
@@ -324,8 +341,7 @@ func withGuest(b Bundle, spec models.SandboxSpec, fn func(guest, name string) er
 func (s *Service) runtimeSpec(spec models.SandboxSpec, b Bundle, guest string) (*specs.Spec, error) {
 	annotations := map[string]string{
 		// Nothing else records which image tree the overlay stacks over, and a start after a stop needs it.
-		rootfsAnnotation:      spec.RootFS,
-		cpuFeaturesAnnotation: cpuFeatures,
+		rootfsAnnotation: spec.RootFS,
 		// The disk is no cgroup resource, so the bound rides here for inspect and fork to read back.
 		diskAnnotation: strconv.FormatInt(DiskBound(spec.Resources), 10),
 	}
@@ -378,6 +394,9 @@ func (s *Service) runtimeSpec(spec models.SandboxSpec, b Bundle, guest string) (
 			ReadonlyPaths:     readonlyPaths,
 			RootfsPropagation: "rprivate",
 		},
+	}
+	if features, ok := cpuFeaturesFor(runtime.GOARCH); ok {
+		rs.Annotations[cpuFeaturesAnnotation] = features
 	}
 	rs.Process.ApparmorProfile = s.apparmor
 	if s.seccomp == nil {

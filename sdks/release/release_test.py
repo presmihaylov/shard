@@ -187,6 +187,14 @@ class CheckTest(TempRepoTest):
         self.repo.changeset("fix", "useshards-python")
         self.assertEqual(self.check(), [])
 
+    def test_a_minor_or_major_bump_fails(self) -> None:
+        self.repo.write("sdks/typescript/src/index.ts", "export const x = 1;\n")
+        self.repo.write("sdks/.changeset/feature.md", '---\n"useshards": minor\n"useshards-python": major\n---\n\nA note.\n')
+        problems = self.check()
+        self.assertEqual(len(problems), 2, problems)
+        self.assertIn("bumps useshards minor", problems[0])
+        self.assertIn("bumps useshards-python major", problems[1])
+
     def test_a_changeset_for_the_other_sdk_does_not_cover_it(self) -> None:
         self.repo.write("sdks/python/pyproject.toml", '[project]\nname = "useshards"\ndependencies = []\n')
         self.repo.changeset("fix", "useshards")
