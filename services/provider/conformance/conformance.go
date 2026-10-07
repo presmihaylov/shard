@@ -300,9 +300,8 @@ func Run(t *testing.T, s Subject) {
 			if strings.Contains(out, "from-"+other) {
 				t.Errorf("the log of %s holds what %s printed:\n%s", name, other, out)
 			}
-			if report, _ := s.process(t, s.Provider, id, name); report.State != models.ProcessRunning {
-				t.Errorf("process %s reads %+v, want running", name, report.ProcessStatus)
-			}
+			// The log can reach the host before the table does, as on Firecracker, whose host writes the table off the guest's reports.
+			s.awaitProcess(t, id, name, isRunning)
 		}
 	})
 
