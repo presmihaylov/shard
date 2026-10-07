@@ -381,8 +381,7 @@ func (c *Client) ResizeExec(ctx context.Context, ref, execID string, size sandbo
 	return nil
 }
 
-// Logs writes what one process wrote into w. A follow has no bound of its own: it ends when the
-// process ends, the sandbox stops or is removed, or the caller's context does.
+// Logs writes what one process wrote into w; a follow ends when the process ends, the sandbox stops or goes, or ctx does.
 func (c *Client) Logs(ctx context.Context, ref, name string, follow bool, w io.Writer) error {
 	path := processPath(ref, name) + "/logs"
 	if follow {

@@ -1054,8 +1054,7 @@ func (s *Service) recordCreated(ctx context.Context, spec models.SandboxSpec, di
 	})
 }
 
-// Start runs a stopped sandbox again, and the processes a start brings back. Its address, its writable
-// layer and its record all survived the stop, so the provider builds the new run over them.
+// Start runs a stopped sandbox again over the address, writable layer and record the stop kept, and the processes a start brings back.
 func (s *Service) Start(ctx context.Context, ref string) (models.Sandbox, error) {
 	id, err := s.cfg.Repo.Resolve(ref)
 	if err != nil {
