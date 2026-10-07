@@ -155,13 +155,11 @@ func (s *Service) ListPorts(_ context.Context, ref string) ([]models.Port, error
 
 	rows := []models.Port{}
 	for _, sb := range sandboxes {
-		for _, spec := range sb.Ports {
-			row, err := s.portRow(sb.ID, sb, spec)
-			if err != nil {
-				return nil, err
-			}
-			rows = append(rows, row)
+		own, err := s.portRows(sb)
+		if err != nil {
+			return nil, err
 		}
+		rows = append(rows, own...)
 	}
 	// Host ports are unique across sandboxes, so this is the order a list pages in.
 	slices.SortFunc(rows, func(a, b models.Port) int { return cmp.Compare(a.HostPort, b.HostPort) })
@@ -309,6 +307,20 @@ func (s *Service) writePorts(id string, ports []models.PortForward) error {
 
 		return nil
 	})
+}
+
+// portRows are the forwards of one sandbox as the host serves them.
+func (s *Service) portRows(sb models.Sandbox) ([]models.Port, error) {
+	rows := make([]models.Port, 0, len(sb.Ports))
+	for _, spec := range sb.Ports {
+		row, err := s.portRow(sb.ID, sb, spec)
+		if err != nil {
+			return nil, err
+		}
+		rows = append(rows, row)
+	}
+
+	return rows, nil
 }
 
 // portRow is one forward as the host serves it: a sandbox that is not running listens on nothing.

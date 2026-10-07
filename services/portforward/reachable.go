@@ -22,21 +22,34 @@ func (f *Forwarder) Reachable(public bool) ([]models.HostAddress, error) {
 		if !public && iface.Flags&net.FlagLoopback == 0 {
 			continue
 		}
-		addrs, err := iface.Addrs()
+		on, err := addresses(iface, public)
 		if err != nil {
-			return nil, fmt.Errorf("list the addresses of %s: %w", iface.Name, err)
+			return nil, err
 		}
-		for _, addr := range addrs {
-			ip, ok := addr.(*net.IPNet)
-			if !ok || ip.IP.To4() == nil {
-				continue
-			}
-			// A private forward binds 127.0.0.1 alone, not the rest of 127/8 a loopback may carry.
-			if !public && !ip.IP.Equal(net.IPv4(127, 0, 0, 1)) {
-				continue
-			}
-			out = append(out, models.HostAddress{Interface: iface.Name, Address: ip.IP.To4().String()})
+		out = append(out, on...)
+	}
+
+	return out, nil
+}
+
+// addresses lists the IPv4 addresses of one interface a forward answers on.
+func addresses(iface net.Interface, public bool) ([]models.HostAddress, error) {
+	addrs, err := iface.Addrs()
+	if err != nil {
+		return nil, fmt.Errorf("list the addresses of %s: %w", iface.Name, err)
+	}
+
+	var out []models.HostAddress
+	for _, addr := range addrs {
+		ip, ok := addr.(*net.IPNet)
+		if !ok || ip.IP.To4() == nil {
+			continue
 		}
+		// A private forward binds 127.0.0.1 alone, not the rest of 127/8 a loopback may carry.
+		if !public && !ip.IP.Equal(net.IPv4(127, 0, 0, 1)) {
+			continue
+		}
+		out = append(out, models.HostAddress{Interface: iface.Name, Address: ip.IP.To4().String()})
 	}
 
 	return out, nil

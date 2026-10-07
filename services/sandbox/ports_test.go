@@ -323,11 +323,7 @@ func TestTheLifecycleOpensAndClosesTheForwards(t *testing.T) {
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			svc, l := newService(t, &recorder{}, withPorts(tc.sb, forward))
-			if !tc.up {
-				if err := l.ports.Open("sandbox1", forward); err != nil {
-					t.Fatalf("open: %v", err)
-				}
-			}
+			openUnlessUp(t, l.ports, forward, tc.up)
 
 			if err := tc.verb(svc); err != nil {
 				t.Fatalf("%s: %v", tc.name, err)
@@ -337,6 +333,17 @@ func TestTheLifecycleOpensAndClosesTheForwards(t *testing.T) {
 				t.Errorf("after %s the forward is up: %t, want %t (%v)", tc.name, got, tc.up, l.ports.calls)
 			}
 		})
+	}
+}
+
+// openUnlessUp puts the forward up before a verb that must take it down.
+func openUnlessUp(t *testing.T, ports *fakePorts, forward models.PortForward, up bool) {
+	t.Helper()
+	if up {
+		return
+	}
+	if err := ports.Open("sandbox1", forward); err != nil {
+		t.Fatalf("open: %v", err)
 	}
 }
 
