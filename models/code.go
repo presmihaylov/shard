@@ -20,7 +20,6 @@ const (
 	CodeExecRunning       Code = "exec_running"
 	CodeExecLimit         Code = "exec_limit"
 	CodeNoProcess         Code = "no_process"
-	CodeProcessEnded      Code = "process_ended"
 	CodeProcessLimit      Code = "process_limit"
 	CodeUnauthorized      Code = "unauthorized"
 	CodeForbidden         Code = "forbidden"

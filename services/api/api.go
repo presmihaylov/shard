@@ -316,7 +316,7 @@ type sandboxesResponse struct {
 
 // ErrorObject is a code for a program, a line for a human, the holders an in_use names, and the shell code a command_not_started carries.
 type ErrorObject struct {
-	Code     models.Code `json:"code" doc:"What a program matches on: invalid_request, body_too_large, not_found, sandbox_not_running, sandbox_not_stopped, sandbox_not_paused, sandbox_live, sandbox_failed, no_checkpoint, unsupported, in_use, name_taken, exec_exited, exec_running, exec_limit, no_process, process_ended, process_limit, unauthorized, forbidden, timeout, command_not_started or internal. A later daemon may add a code, so a client must take one it does not know."`
+	Code     models.Code `json:"code" doc:"What a program matches on: invalid_request, body_too_large, not_found, sandbox_not_running, sandbox_not_stopped, sandbox_not_paused, sandbox_live, sandbox_failed, no_checkpoint, unsupported, in_use, name_taken, exec_exited, exec_running, exec_limit, no_process, process_limit, unauthorized, forbidden, timeout, command_not_started or internal. A later daemon may add a code, so a client must take one it does not know."`
 	Message  string      `json:"message" doc:"A line for a human; match on code, never on this text."`
 	Holders  []string    `json:"holders,omitempty" doc:"The sandboxes or snapshots that hold the resource, with in_use."`
 	ExitCode int         `json:"exit_code,omitempty" doc:"The exit code of the command that never started, with command_not_started."`
