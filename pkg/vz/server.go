@@ -170,19 +170,33 @@ func splice(a, b net.Conn) error {
 }
 
 func spliceWithin(a, b net.Conn, bound time.Duration) error {
-	ended := make(chan error, 2)
+	ended := make(chan copied, 2)
 	go func() { ended <- forward(b, a, bound) }()
 	go func() { ended <- forward(a, b, bound) }()
 
-	err := <-ended
+	first := <-ended
+	err := first.err
+	drained := false
+	// A peer that sent its last bytes and left fails a write first, and the other copy still owes those bytes, as an exec's exit.
+	if first.left {
+		select {
+		case second := <-ended:
+			err, drained = errors.Join(err, second.err), true
+		// A peer that shut only its read side can keep its write side open and silent, so the close below ends that read.
+		case <-time.After(bound):
+		}
+	}
 	if closeErr := a.Close(); !quiet(closeErr) {
 		err = errors.Join(err, fmt.Errorf("close the shim socket: %w", closeErr))
 	}
 	if closeErr := b.Close(); !quiet(closeErr) {
 		err = errors.Join(err, fmt.Errorf("close the guest stream: %w", closeErr))
 	}
+	if drained {
+		return err
+	}
 
-	return errors.Join(err, <-ended)
+	return errors.Join(err, (<-ended).err)
 }
 
 type streamWriter struct {
@@ -195,17 +209,33 @@ func (w streamWriter) Write(p []byte) (int, error) {
 	if err := w.SetWriteDeadline(time.Now().Add(w.bound)); err != nil {
 		return 0, fmt.Errorf("bound the stream write: %w", err)
 	}
-
-	return w.Conn.Write(p)
-}
-
-func forward(dst, src net.Conn, bound time.Duration) error {
-	_, err := io.Copy(streamWriter{Conn: dst, bound: bound}, struct{ io.Reader }{src})
-	if quiet(err) && !errors.Is(err, os.ErrDeadlineExceeded) {
-		return nil
+	n, err := w.Conn.Write(p)
+	if errors.Is(err, syscall.EPIPE) || errors.Is(err, syscall.ECONNRESET) || errors.Is(err, syscall.ENOTCONN) {
+		return n, peerLeft{err}
 	}
 
-	return err
+	return n, err
+}
+
+// peerLeft marks the write side, since a read can end on the same ECONNRESET without the peer owing anything.
+type peerLeft struct{ error }
+
+// copied is how one direction of a splice ended: left when its destination had gone.
+type copied struct {
+	left bool
+	err  error
+}
+
+func forward(dst, src net.Conn, bound time.Duration) copied {
+	_, err := io.Copy(streamWriter{Conn: dst, bound: bound}, struct{ io.Reader }{src})
+	if _, ok := errors.AsType[peerLeft](err); ok {
+		return copied{left: true}
+	}
+	if quiet(err) && !errors.Is(err, os.ErrDeadlineExceeded) {
+		return copied{}
+	}
+
+	return copied{err: err}
 }
 
 // quiet reports the ends that are how a spliced connection stops, rather than a failure to report.

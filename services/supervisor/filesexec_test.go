@@ -7,6 +7,7 @@ import (
 	"io"
 	"io/fs"
 	"strings"
+	"syscall"
 	"testing"
 	"testing/iotest"
 
@@ -248,7 +249,8 @@ func guestOf(t *testing.T, files map[string]string, codes map[string]string, siz
 		if err := WriteMessage(spec.Stdout, FileReply{Stat: &models.FileStat{Type: models.FileRegular, Size: size}}); err != nil {
 			t.Errorf("reply: %v", err)
 		}
-		if _, err := spec.Stdout.WriteString(content); err != nil {
+		// A host that refuses at the stat has closed its end, so the body can meet EPIPE.
+		if _, err := spec.Stdout.WriteString(content); err != nil && !errors.Is(err, syscall.EPIPE) {
 			t.Errorf("write: %v", err)
 		}
 
