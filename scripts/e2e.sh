@@ -902,7 +902,7 @@ port_answer() {
 # public_address prints the first address that port add --public named beyond loopback.
 public_address() { awk '{ split($2, at, ":"); if (at[1] !~ /^127\./) { print at[1]; exit } }'; }
 
-# port_steps forwards a host port to a listener in a sandbox, and proves it carries bytes both ways through a stop and a start (SHARD-789).
+# port_steps forwards a host port to a listener in a sandbox, and proves it carries bytes through a stop, a start and a daemon restart (SHARD-789).
 # The arguments go to run, so a microVM gets its memory.
 # shellcheck disable=SC2120 # only e2e-fc.sh passes run flags
 port_steps() {
@@ -924,6 +924,12 @@ port_steps() {
 	shard start e2e-port >/dev/null
 	expect "$(port_answer 127.0.0.1 again)" "guest:again" "the start opened host port ${FORWARD_PORT} again"
 
+	step "a daemon restart opens the forward again"
+	stop_daemon || fail "the socket ${SOCKET} outlived the daemon"
+	port_reply 127.0.0.1 "${FORWARD_PORT}" down >/dev/null 2>&1 && fail "host port ${FORWARD_PORT} answered with no daemon"
+	start_daemon || fail "the daemon did not come up"
+	expect "$(port_answer 127.0.0.1 back)" "guest:back" "the restarted daemon opened host port ${FORWARD_PORT} again"
+
 	step "--public listens on every interface, and adding the port without it narrows it again"
 	out=$(shard port add e2e-port "${FORWARD_PORT}:${GUEST_PORT}" --public 2>/dev/null)
 	address=$(public_address <<<"${out}")
@@ -937,7 +943,13 @@ port_steps() {
 	expect "$(shard port remove e2e-port "${FORWARD_PORT}")" "${FORWARD_PORT}" "port remove printed the host port"
 	port_reply 127.0.0.1 "${FORWARD_PORT}" gone >/dev/null 2>&1 && fail "host port ${FORWARD_PORT} answered after its forward was removed"
 	expect "$(shard port list --format json e2e-port)" "[]" "port list shows no forward left"
+
+	step "remove the sandbox and its forwards go with it"
+	shard port add e2e-port "${FORWARD_PORT}:${GUEST_PORT}" >/dev/null
+	expect "$(port_answer 127.0.0.1 last)" "guest:last" "the forward added again reaches the guest"
 	drop_sandbox "${id}"
+	port_reply 127.0.0.1 "${FORWARD_PORT}" removed >/dev/null 2>&1 && fail "host port ${FORWARD_PORT} answered after its sandbox was removed"
+	say "the remove shut host port ${FORWARD_PORT}"
 }
 
 # E2E_LIB_ONLY lets the self-test source the helpers above without driving a sandbox.
