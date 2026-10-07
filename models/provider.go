@@ -74,6 +74,8 @@ type Capabilities struct {
 	Resume bool `json:"resume"`
 	Fork   bool `json:"fork"`
 	Port   bool `json:"port"`
+	// Swap is a swap file on the guest disk, which only a guest kernel of its own can switch on.
+	Swap bool `json:"swap"`
 }
 
 // Status is what the substrate says now, never what the record says.
@@ -196,6 +198,8 @@ type Resources struct {
 	VCPUs     int   `json:"vcpus"`
 	// DiskMiB bounds the writable layer and /tmp together, as one sparse image the guest fills before the host; 0 takes the default.
 	DiskMiB int64 `json:"disk_mib"`
+	// SwapMiB is the swap file the guest makes on that disk at each boot, 0 for none.
+	SwapMiB int64 `json:"swap_mib"`
 }
 
 // ExitStatus is how a process or an exec ended. A sandbox outlives it and has no exit status of its own.

@@ -554,7 +554,7 @@ func (p *Provider) boot(ctx context.Context, id, dir string, r *record) (*machin
 	cfg := fcapi.Config{
 		Kernel:    jailKernel,
 		Initrd:    jailInitrd,
-		Cmdline:   cmdline,
+		Cmdline:   bootCmdline(r.Resources),
 		VCPUs:     vcpus(r.Resources.VCPUs),
 		MemoryMiB: r.Resources.MemoryMiB,
 		Drives: []fcapi.Drive{

@@ -23,7 +23,7 @@ import (
 // A host that saves a VM pauses, resumes and forks a running sandbox (SHARD-463), and forwards a host port into it.
 func TestCapabilitiesArePauseResumeForkAndPort(t *testing.T) {
 	h := newHarness(t)
-	want := models.Capabilities{Pause: true, Resume: true, Fork: true, Port: true}
+	want := models.Capabilities{Pause: true, Resume: true, Fork: true, Port: true, Swap: true}
 	if caps := h.provider.Capabilities(); caps != want {
 		t.Fatalf("Capabilities = %+v, want %+v", caps, want)
 	}

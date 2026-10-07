@@ -1,6 +1,7 @@
 package mountinfo
 
 import (
+	"slices"
 	"strings"
 	"testing"
 )
@@ -58,5 +59,27 @@ func TestAtReportsNothingForAnUnmountedPoint(t *testing.T) {
 	}
 	if found {
 		t.Error("an unmounted point was reported as mounted")
+	}
+}
+
+func TestAllListsEveryMountInOrder(t *testing.T) {
+	mounts, err := parseAll(strings.NewReader(sample))
+	if err != nil {
+		t.Fatalf("parse: %v", err)
+	}
+
+	var got []string
+	for _, m := range mounts {
+		got = append(got, m.FSType+" "+m.Point)
+	}
+	want := []string{
+		"ext4 /",
+		"ext4 /var/lib/shard/sandboxes/s1/disk",
+		"overlay /var/lib/shard/sandboxes/s1/bundle/rootfs",
+		"tmpfs /var/lib/shard/sandboxes/s1/disk",
+		"ext4 /mnt/with space",
+	}
+	if !slices.Equal(got, want) {
+		t.Errorf("got %q, want %q", got, want)
 	}
 }

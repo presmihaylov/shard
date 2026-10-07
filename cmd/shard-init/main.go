@@ -31,14 +31,15 @@ const usage = `shard-init - the guest supervisor, PID 1 inside a sandbox
 
 Usage:
   shard-init -ready-file <path> [-workdir <dir>]
-  shard-init -transport vsock [-root <device> | -base <device> -overlay <device>] [-console <device>] [-reboot]
+  shard-init -transport vsock [-root <device> | -base <device> -overlay <device>] [-console <device>] [-reboot] [-swap <MiB>]
   shard-init process
 
 PID 1 runs nothing of its own: the host starts named processes in it, and each one's status goes to fd 0, which the host holds; the guest cannot reach it.
 On Linux the host runs "shard-init process" to start or stop one, with the request on stdin and the answer on stdout.
 With -transport the host sends every request over vsock, and the statuses go back the same way.
 -root boots one ext4 disk; -base and -overlay boot a read-only EROFS image under an overlay whose upper layer is the second disk.
--reboot ends the VM with a reboot instead of a power off, for a vmm such as firecracker that only exits on one.`
+-reboot ends the VM with a reboot instead of a power off, for a vmm such as firecracker that only exits on one.
+-swap makes a swap file of that many MiB on the disk the root writes to at each boot, and a clean stop removes it.`
 
 // errSupervisor marks a failure of our own bookkeeping, which the host reads back as an exit code.
 var errSupervisor = errors.New("the supervisor failed")
@@ -140,6 +141,7 @@ func run(args []string) error {
 	overlay := flags.String("overlay", "", "the ext4 disk the overlay's upper layer sits on, with -base")
 	console := flags.String("console", "/dev/hvc0", "the console device the supervisor's stderr goes to once the root is in place")
 	reboot := flags.Bool("reboot", false, "end the VM with a reboot instead of a power off, for a vmm that stays up after a power off")
+	swap := flags.Int64("swap", 0, "the swap file in MiB to make on the disk the root writes to at each boot, 0 for none")
 
 	if err := flags.Parse(args); err != nil {
 		return fmt.Errorf("parse flags: %w", err)
@@ -147,7 +149,7 @@ func run(args []string) error {
 	if flags.NArg() != 0 {
 		return fmt.Errorf("shard-init runs no command of its own, so it takes no arguments, got %q", flags.Args())
 	}
-	boot := guestBoot{Root: *root, Base: *base, Overlay: *overlay, Console: *console, Reboot: *reboot}
+	boot := guestBoot{Root: *root, Base: *base, Overlay: *overlay, Console: *console, Reboot: *reboot, SwapMiB: *swap}
 	if err := boot.check(); err != nil {
 		return err
 	}

@@ -92,6 +92,11 @@ test("a create from a snapshot leaves the memory to the snapshot", async () => {
   assert.deepEqual(JSON.parse(sent("POST", "/v0/sandboxes").body), { snapshot: "snap", resources: { vcpus: 0, disk_mib: 0 } });
 });
 
+test("a create sends a swap of 0, which is no swap, and leaves an absent one to the daemon", async () => {
+  await shard.create({ image: "alpine", swapMiB: 0 });
+  assert.deepEqual(JSON.parse(sent("POST", "/v0/sandboxes").body).resources, { vcpus: 0, disk_mib: 0, swap_mib: 0 });
+});
+
 test("a create names an image or a snapshot, exactly one", async () => {
   await assert.rejects(shard.create({}), TypeError);
   await assert.rejects(shard.create({ image: "alpine", snapshot: "snap" }), TypeError);
@@ -223,14 +228,14 @@ test("printing a client, a sandbox or an attached command never shows the API ke
 
 test("version and capabilities read the daemon's records", async () => {
   routes.set("GET /v0/version", () => ({ status: 200, json: { version: "0.9.0", api_version: "v0" } }));
-  const verbs = { create: true, start: true, stop: true, remove: true, pause: false, resume: false, fork: false, snapshot: true, port: true };
+  const verbs = { create: true, start: true, stop: true, remove: true, pause: false, resume: false, fork: false, snapshot: true, port: true, swap: false };
   routes.set("GET /v0/capabilities", () => ({ status: 200, json: verbs }));
   assert.deepEqual(await shard.version(), { version: "0.9.0", apiVersion: "v0" });
   assert.deepEqual(await shard.capabilities(), verbs);
 });
 
 test("a capability that is not a boolean is a protocol error", async () => {
-  const verbs = { create: true, start: true, stop: true, remove: true, pause: true, resume: true, fork: true, snapshot: "yes" };
+  const verbs = { create: true, start: true, stop: true, remove: true, pause: true, resume: true, fork: true, snapshot: "yes", swap: true };
   routes.set("GET /v0/capabilities", () => ({ status: 200, json: verbs }));
   await assert.rejects(shard.capabilities(), ProtocolError);
 });

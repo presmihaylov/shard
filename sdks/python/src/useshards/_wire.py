@@ -76,13 +76,17 @@ def create_body(
     vcpus: int | None,
     disk_mib: int | None,
     ports: Sequence[PortForward] | None,
+    swap_mib: int | None,
 ) -> models.CreateRequest:
-    """The body of a create. A None memory takes the snapshot's or provider's bound, None vcpus or disk the default."""
+    """The body of a create. A None memory takes the snapshot's or provider's bound, any other None the default."""
     if (image is None) == (snapshot is None):
         raise ValueError("a sandbox is made from an image or a snapshot, exactly one of them")
     return models.CreateRequest(
         resources=models.ResourceRequest(
-            vcpus=vcpus or 0, disk_mib=disk_mib or 0, memory_mib=UNSET if memory_mib is None else memory_mib
+            vcpus=vcpus or 0,
+            disk_mib=disk_mib or 0,
+            memory_mib=UNSET if memory_mib is None else memory_mib,
+            swap_mib=UNSET if swap_mib is None else swap_mib,
         ),
         env=_env(env),
         workdir=workdir or UNSET,

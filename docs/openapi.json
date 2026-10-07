@@ -30,6 +30,9 @@
           },
           "stop": {
             "type": "boolean"
+          },
+          "swap": {
+            "type": "boolean"
           }
         },
         "required": [
@@ -41,7 +44,8 @@
           "resume",
           "fork",
           "snapshot",
-          "port"
+          "port",
+          "swap"
         ],
         "type": "object"
       },
@@ -1131,6 +1135,13 @@
             "minimum": 0,
             "type": "integer"
           },
+          "swap_mib": {
+            "description": "The swap file in MiB, which the guest makes on its disk and which counts against disk_mib. Absent is 2048 on the firecracker and vz providers and none on gvisor, runc and sysbox, which refuse any swap but 0.",
+            "format": "int64",
+            "maximum": 16777088,
+            "minimum": 0,
+            "type": "integer"
+          },
           "vcpus": {
             "format": "int64",
             "minimum": 0,
@@ -1150,6 +1161,10 @@
             "format": "int64",
             "type": "integer"
           },
+          "swap_mib": {
+            "format": "int64",
+            "type": "integer"
+          },
           "vcpus": {
             "format": "int64",
             "type": "integer"
@@ -1158,7 +1173,8 @@
         "required": [
           "memory_mib",
           "vcpus",
-          "disk_mib"
+          "disk_mib",
+          "swap_mib"
         ],
         "type": "object"
       },

@@ -15,12 +15,15 @@ T = TypeVar("T", bound="ResourceRequest")
 class ResourceRequest:
     disk_mib: int | Unset = UNSET
     memory_mib: int | Unset = UNSET
+    swap_mib: int | Unset = UNSET
     vcpus: int | Unset = UNSET
 
     def to_dict(self) -> dict[str, Any]:
         disk_mib = self.disk_mib
 
         memory_mib = self.memory_mib
+
+        swap_mib = self.swap_mib
 
         vcpus = self.vcpus
 
@@ -31,6 +34,8 @@ class ResourceRequest:
             field_dict["disk_mib"] = disk_mib
         if memory_mib is not UNSET:
             field_dict["memory_mib"] = memory_mib
+        if swap_mib is not UNSET:
+            field_dict["swap_mib"] = swap_mib
         if vcpus is not UNSET:
             field_dict["vcpus"] = vcpus
 
@@ -43,11 +48,14 @@ class ResourceRequest:
 
         memory_mib = d.pop("memory_mib", UNSET)
 
+        swap_mib = d.pop("swap_mib", UNSET)
+
         vcpus = d.pop("vcpus", UNSET)
 
         resource_request = cls(
             disk_mib=disk_mib,
             memory_mib=memory_mib,
+            swap_mib=swap_mib,
             vcpus=vcpus,
         )
 

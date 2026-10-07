@@ -626,6 +626,7 @@ export interface components {
             snapshot: boolean;
             start: boolean;
             stop: boolean;
+            swap: boolean;
         };
         CopyRequest: {
             name?: string;
@@ -920,6 +921,8 @@ export interface components {
             disk_mib?: number;
             /** @description The memory bound in MiB. Absent, a create from a snapshot takes the snapshot's bound. Otherwise absent or 0 is 512 on the firecracker and vz providers, and no bound on gvisor, runc and sysbox (int64). */
             memory_mib?: number;
+            /** @description The swap file in MiB, which the guest makes on its disk and which counts against disk_mib. Absent is 2048 on the firecracker and vz providers and none on gvisor, runc and sysbox, which refuse any swap but 0 (int64). */
+            swap_mib?: number;
             /** Format: int64 */
             vcpus?: number;
         };
@@ -928,6 +931,8 @@ export interface components {
             disk_mib: number;
             /** Format: int64 */
             memory_mib: number;
+            /** Format: int64 */
+            swap_mib: number;
             /** Format: int64 */
             vcpus: number;
         };

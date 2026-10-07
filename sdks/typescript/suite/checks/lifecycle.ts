@@ -156,7 +156,7 @@ export const checks: Check[] = [
     name: "lifecycle.capabilities",
     run: async (ctx) => {
       const capabilities = await ctx.shard.capabilities();
-      assert.deepEqual(Object.keys(capabilities).sort(), ["create", "fork", "pause", "port", "remove", "resume", "snapshot", "start", "stop"]);
+      assert.deepEqual(Object.keys(capabilities).sort(), ["create", "fork", "pause", "port", "remove", "resume", "snapshot", "start", "stop", "swap"]);
       for (const verb of ["create", "start", "stop", "remove", "port"] as const) {
         assert.equal(capabilities[verb], true, `every provider can ${verb}`);
       }

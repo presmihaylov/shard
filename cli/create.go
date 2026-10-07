@@ -64,7 +64,7 @@ func (a App) createAndWait(ctx context.Context, c *client.Client, req sandbox.Cr
 func sandboxName(sb client.Sandbox) string { return cmp.Or(sb.Name, sb.ID) }
 
 // resourceFlags names each resources field of the API as the flag that sets it.
-var resourceFlags = strings.NewReplacer("resources.memory_mib", "--memory", "resources.vcpus", "--vcpus", "resources.disk_mib", "--disk")
+var resourceFlags = strings.NewReplacer("resources.memory_mib", "--memory", "resources.vcpus", "--vcpus", "resources.disk_mib", "--disk", "resources.swap_mib", "--swap")
 
 // inFlags words a refusal of the request's resources in the flags the operator typed.
 func inFlags(err error) error {
@@ -134,6 +134,7 @@ func sandboxFlags(flags *flag.FlagSet, req *sandbox.CreateRequest) {
 	flags.Var(optionalMiB{&req.Resources.MemoryMiB}, "memory", "")
 	flags.Var((*cpuCount)(&req.Resources.VCPUs), "vcpus", "")
 	flags.Var(sizeMiB{&req.Resources.DiskMiB}, "disk", "")
+	flags.Var(optionalMiB{&req.Resources.SwapMiB}, "swap", "")
 }
 
 // checkSandbox refuses what sandboxFlags parsed and the daemon would refuse only after a pull.
@@ -154,6 +155,9 @@ func checkSandbox(flags *flag.FlagSet, req sandbox.CreateRequest) error {
 	}
 	if req.Resources.DiskMiB > sandbox.MaxDiskMiB {
 		return fmt.Errorf("--disk is a bound in MiB and no host holds that much, got %d", req.Resources.DiskMiB)
+	}
+	if req.Resources.SwapMiB != nil && *req.Resources.SwapMiB > sandbox.MaxDiskMiB {
+		return fmt.Errorf("--swap is in MiB and no host holds that much, got %d", *req.Resources.SwapMiB)
 	}
 
 	if req.Policy != "" {

@@ -26,6 +26,8 @@ export interface Resources {
   memoryMiB: number;
   vcpus: number;
   diskMiB: number;
+  /** The swap file on the disk, which diskMiB counts; 0 is none. */
+  swapMiB: number;
 }
 
 /** Restart says when shard-init starts a process again; backoff is the first wait in seconds, which doubles up to 60. */
@@ -196,7 +198,7 @@ export interface Version {
   apiVersion: string;
 }
 
-/** Capabilities say which of the nine lifecycle verbs the daemon's provider supports; snapshot is the creation of a filesystem snapshot, and port the forward of a host port. */
+/** Capabilities say which of the nine lifecycle verbs the daemon's provider supports, and whether it gives a sandbox swap; snapshot is the creation of a filesystem snapshot, and port the forward of a host port. */
 export interface Capabilities {
   create: boolean;
   start: boolean;
@@ -207,6 +209,7 @@ export interface Capabilities {
   fork: boolean;
   snapshot: boolean;
   port: boolean;
+  swap: boolean;
 }
 
 export function sandboxInfo(value: unknown): SandboxInfo {
@@ -226,7 +229,7 @@ export function sandboxInfo(value: unknown): SandboxInfo {
     stoppedReason: fields.optionalString("stopped_reason"),
     oom: oom(fields.optionalObject("oom")),
     failedReason: fields.optionalString("failed_reason"),
-    resources: { memoryMiB: resources.int("memory_mib"), vcpus: resources.int("vcpus"), diskMiB: resources.int("disk_mib") },
+    resources: { memoryMiB: resources.int("memory_mib"), vcpus: resources.int("vcpus"), diskMiB: resources.int("disk_mib"), swapMiB: resources.int("swap_mib") },
     processes: fields.list("processes").map(processOf),
     secrets: fields.strings("secrets"),
     policy: fields.optionalString("policy"),
@@ -332,6 +335,7 @@ export function capabilities(value: unknown): Capabilities {
     fork: fields.bool("fork"),
     snapshot: fields.bool("snapshot"),
     port: fields.bool("port"),
+    swap: fields.bool("swap"),
   };
 }
 

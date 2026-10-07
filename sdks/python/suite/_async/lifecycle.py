@@ -136,7 +136,7 @@ async def agrees(verb: str, supported: bool, run: Call) -> None:
 
 async def capabilities(ctx: AsyncContext) -> None:
     verbs = attrs.asdict(await ctx.shard.capabilities())
-    equal(sorted(verbs), ["create", "fork", "pause", "port", "remove", "resume", "snapshot", "start", "stop"])
+    equal(sorted(verbs), ["create", "fork", "pause", "port", "remove", "resume", "snapshot", "start", "stop", "swap"])
     ok(all(isinstance(value, bool) for value in verbs.values()), f"every verb is a boolean: {verbs}")
     for verb in ("create", "start", "stop", "remove", "port"):
         equal(verbs[verb], True, f"every provider can {verb}")

@@ -231,7 +231,7 @@ A policy rule is `{ action, rule }`, where `action` is `"allow"` or `"deny"`. `s
 
 ## Capabilities
 
-Not every provider supports every verb. `shard.capabilities()` reports which of the nine lifecycle verbs the server supports, as `true` or `false` for each: `create`, `start`, `stop`, `remove`, `pause`, `resume`, `fork`, `snapshot` and `port`.
+Not every provider supports every verb. `shard.capabilities()` reports which of the nine lifecycle verbs the server supports, as `true` or `false` for each: `create`, `start`, `stop`, `remove`, `pause`, `resume`, `fork`, `snapshot` and `port`. `swap` says whether `swapMiB` above 0 is allowed.
 
 ```ts
 const { fork } = await shard.capabilities();

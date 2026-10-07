@@ -26,6 +26,7 @@ Ask a server which lifecycle verbs it supports before you call one. On a Sysbox 
 		fork         false
 		snapshot     true
 		port         true
+		swap         false
 		```
 	</TabItem>
 	<TabItem label="TypeScript">
@@ -54,7 +55,7 @@ Ask a server which lifecycle verbs it supports before you call one. On a Sysbox 
 
 The SDK examples connect to the server that `SHARD_REMOTE` names, with the API key in `SHARD_API_KEY`.
 
-The answer lists all nine verbs, each `true` or `false`. It comes from the provider of the daemon, so it is the same for every sandbox on that server. Token scopes and sandbox states never change it.
+The answer lists all nine verbs and swap, each `true` or `false`. It comes from the provider of the daemon, so it is the same for every sandbox on that server. Token scopes and sandbox states never change it.
 
 ## The verbs of each provider
 
@@ -67,11 +68,11 @@ One daemon runs one provider for every sandbox on its host. Every provider suppo
 | `resume` | yes | no | no | Apple silicon with macOS 14 or later | yes |
 | `fork` | yes | no | no | Apple silicon with macOS 14 or later | yes |
 
-`snapshot` is `shard snapshot create`, which copies the files of a stopped sandbox. `fork` copies a sandbox while it runs. `port` is `shard port add`, which forwards a host port into a sandbox. Every provider also supports `exec`, `logs` and `inspect`, which the answer does not list.
+`swap` says whether `--swap` can give a sandbox a swap file: yes on vz and Firecracker, no on the rest. `snapshot` is `shard snapshot create`, which copies the files of a stopped sandbox. `fork` copies a sandbox while it runs. `port` is `shard port add`, which forwards a host port into a sandbox. Every provider also supports `exec`, `logs` and `inspect`, which the answer does not list.
 
 ## The API
 
-`GET /v0/capabilities` answers the same nine fields:
+`GET /v0/capabilities` answers the same ten fields:
 
 ```sh
 curl --unix-socket /var/lib/shard/shard.sock http://localhost/v0/capabilities
@@ -87,7 +88,8 @@ curl --unix-socket /var/lib/shard/shard.sock http://localhost/v0/capabilities
   "resume": false,
   "fork": false,
   "snapshot": true,
-  "port": true
+  "port": true,
+  "swap": false
 }
 ```
 

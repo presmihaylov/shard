@@ -68,7 +68,7 @@ Run `shard COMMAND --help` for options and examples.
 
 | Command | Description |
 | --- | --- |
-| [`shard capabilities`](/docs/reference/cli/host/#shard-capabilities) | show the lifecycle verbs the server supports |
+| [`shard capabilities`](/docs/reference/cli/host/#shard-capabilities) | show the lifecycle verbs and swap the server supports |
 | [`shard daemon`](/docs/reference/cli/host/#shard-daemon) | start the daemon or show its status |
 | [`shard info`](/docs/reference/cli/host/#shard-info) | show available providers and the default for this host |
 | [`shard serve`](/docs/reference/cli/host/#shard-serve) | start an HTTP API server with token authentication |
@@ -191,7 +191,7 @@ Without `--all`, `list` leaves out stopped sandboxes. The table then ends with a
 
 | Command | Format | Prints |
 | --- | --- | --- |
-| `capabilities` | table | the eight lifecycle verbs and whether the server supports each |
+| `capabilities` | table | the nine lifecycle verbs and swap, and whether the server supports each |
 | `daemon` | - | its log |
 | `daemon status` | table | the daemon's state and its tasks |
 | `info` | table | the provider a daemon would pick, and why |
@@ -393,16 +393,16 @@ A process has `name`, `command`, `restart` and `status`, and `env`, `workdir` an
   "started_at": "2026-10-01T09:30:00Z",
   "socket": "/var/lib/shard/shard.sock",
   "provider": "gvisor",
-  "capabilities": {"pause": true, "resume": true, "fork": true, "port": true},
+  "capabilities": {"pause": true, "resume": true, "fork": true, "port": true, "swap": false},
   "proxy": {"plain_port": 30080, "tls_port": 30443},
   "tasks": [{"name": "proxy", "state": "running", "restarts": 0}]
 }
 ```
 
-`capabilities` is the body of `GET /v0/capabilities`, with the same nine keys for every provider:
+`capabilities` is the body of `GET /v0/capabilities`, with the same ten keys for every provider:
 
 ```json
-{"create": true, "start": true, "stop": true, "remove": true, "pause": true, "resume": true, "fork": false, "snapshot": true, "port": true}
+{"create": true, "start": true, "stop": true, "remove": true, "pause": true, "resume": true, "fork": false, "snapshot": true, "port": true, "swap": false}
 ```
 
 `version` prints the client and daemon versions. On a Mac, it adds `shim`, which is `embedded` or `absent`:

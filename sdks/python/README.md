@@ -94,7 +94,7 @@ asyncio.run(main())
   the first start.
 - **A verb the provider lacks raises `UnsupportedError`.** `shard.capabilities()` says which of the
   nine lifecycle verbs the daemon's provider supports (create, start, stop, remove, pause, resume,
-  fork, snapshot and port) before you call them.
+  fork, snapshot and port), and whether it gives swap, before you call them.
 
 ## Lists
 

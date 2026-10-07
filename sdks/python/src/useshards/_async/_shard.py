@@ -91,6 +91,7 @@ class AsyncShard:
         vcpus: int | None = None,
         disk_mib: int | None = None,
         ports: Sequence[PortForward] | None = None,
+        swap_mib: int | None = None,
     ) -> AsyncSandbox:
         """create a sandbox"""
         body = create_body(
@@ -106,6 +107,7 @@ class AsyncShard:
             vcpus=vcpus,
             disk_mib=disk_mib,
             ports=ports,
+            swap_mib=swap_mib,
         )
         return AsyncSandbox(self._transport, await self._create(body))
 
@@ -147,7 +149,7 @@ class AsyncShard:
         return [_types.port(record) for record in records]
 
     async def capabilities(self) -> Capabilities:
-        """Return which of the nine lifecycle verbs the daemon's provider supports."""
+        """Return which of the nine lifecycle verbs the daemon's provider supports, and whether it gives swap."""
         return _types.capabilities(
             await self._transport.answer(
                 models.Capabilities, lambda: get_capabilities.asyncio_detailed(client=self._transport.api)

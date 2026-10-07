@@ -35,3 +35,5 @@ func thawRoot(*os.File) error { return nil }
 func rootDisk() (*os.File, error) { return nil, nil }
 
 func syncDisk() error { return nil }
+
+func dropSwap(*os.File, *os.File) error { return nil }

@@ -85,7 +85,7 @@ npx tsx examples/quickstart.ts
   `shard.ports()` read and end them, and `create({ ports })` forwards from the first start.
 - **A verb the provider lacks throws `UnsupportedError`.** `shard.capabilities()` says which of the
   nine lifecycle verbs the daemon's provider supports (create, start, stop, remove, pause, resume,
-  fork, snapshot and port) before you call them.
+  fork, snapshot and port), and whether it gives swap, before you call them.
 
 ## Lists
 

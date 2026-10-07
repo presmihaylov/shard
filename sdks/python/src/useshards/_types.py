@@ -138,7 +138,7 @@ class Version:
 
 @attrs.frozen
 class Capabilities:
-    """Provider support for lifecycle verbs, filesystem snapshots, and host port forwards."""
+    """Provider support for lifecycle verbs, filesystem snapshots, host port forwards, and sandbox swap."""
 
     create: bool
     start: bool
@@ -149,6 +149,7 @@ class Capabilities:
     fork: bool
     snapshot: bool
     port: bool
+    swap: bool
 
 
 @attrs.frozen
@@ -162,6 +163,7 @@ class Resources:
     memory_mib: int
     vcpus: int
     disk_mib: int
+    swap_mib: int
 
 
 RestartPolicy = Literal["no", "on-failure", "always", "unless-stopped"]
@@ -373,6 +375,7 @@ def capabilities(record: models.Capabilities) -> Capabilities:
         fork=record.fork,
         snapshot=record.snapshot,
         port=record.port,
+        swap=record.swap,
     )
 
 
@@ -391,7 +394,10 @@ def sandbox_info(record: models.Sandbox | models.Inspection) -> SandboxInfo:
         oom=_oom(record.oom),
         failed_reason=record.failed_reason or None,
         resources=Resources(
-            memory_mib=record.resources.memory_mib, vcpus=record.resources.vcpus, disk_mib=record.resources.disk_mib
+            memory_mib=record.resources.memory_mib,
+            vcpus=record.resources.vcpus,
+            disk_mib=record.resources.disk_mib,
+            swap_mib=record.resources.swap_mib,
         ),
         processes=tuple(process_info(process) for process in record.processes or ()),
         secrets=tuple(record.secrets or ()),

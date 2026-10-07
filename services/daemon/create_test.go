@@ -23,6 +23,7 @@ type refusingProvider struct {
 
 func (refusingProvider) Name() string                                       { return "gvisor" }
 func (refusingProvider) CheckResources(models.Resources) error              { return nil }
+func (refusingProvider) Capabilities() models.Capabilities                  { return models.Capabilities{} }
 func (p refusingProvider) Create(context.Context, models.SandboxSpec) error { return p.err }
 func (refusingProvider) Remove(context.Context, string) error               { return nil }
 

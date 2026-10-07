@@ -328,7 +328,8 @@ say "only stop ended it"
 
 step "a microVM that outgrows its memory stops with its reason, and the daemon starts it again"
 # Only the first run fills: the marker is on the overlay disk, and the sync keeps it through the stop that follows the OOM.
-OOM_ID=$(shard create --memory "${OOM_MEMORY}MiB" --name e2e-oom "${IMAGE}")
+# No swap: a swap would take the fill, and the bound would never kill.
+OOM_ID=$(shard create --memory "${OOM_MEMORY}MiB" --swap 0 --name e2e-oom "${IMAGE}")
 shard run "${OOM_ID}" --name fill -- /bin/sh -c \
 	'if [ ! -e /root/ran ]; then touch /root/ran && sync && mount -o remount,size=1G /dev/shm && dd if=/dev/zero of=/dev/shm/fill bs=1M; fi; echo e2e-oom-settled; while true; do sleep 1; done' >/dev/null
 OOM_RECORD="${SHARD_ROOT}/sandboxes/${OOM_ID}/sandbox.json"

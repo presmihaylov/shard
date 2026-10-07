@@ -270,7 +270,7 @@ func TestCapabilitiesJSONIsTheObjectTheRouteAnswers(t *testing.T) {
 		t.Fatalf("capabilities --format json: %v", err)
 	}
 
-	want := `{"create":true,"start":true,"stop":true,"remove":true,"pause":false,"resume":false,"fork":true,"snapshot":true,"port":true}`
+	want := `{"create":true,"start":true,"stop":true,"remove":true,"pause":false,"resume":false,"fork":true,"snapshot":true,"port":true,"swap":false}`
 	var got bytes.Buffer
 	if err := json.Compact(&got, out.Bytes()); err != nil || got.String() != want {
 		t.Errorf("capabilities --format json wrote %s (%v), want %s", out.String(), err, want)

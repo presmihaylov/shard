@@ -439,6 +439,7 @@ A create that names secrets also needs the secret:\* scope, one that names a pol
 | --- | --- | --- | --- |
 | `disk_mib` | integer (int64) | no | From 0 to 16777088. |
 | `memory_mib` | integer (int64) | no | The memory bound in MiB. Absent, a create from a snapshot takes the snapshot's bound. Otherwise absent or 0 is 512 on the firecracker and vz providers, and no bound on gvisor, runc and sysbox. From 0 to 16777216. |
+| `swap_mib` | integer (int64) | no | The swap file in MiB, which the guest makes on its disk and which counts against disk\_mib. Absent is 2048 on the firecracker and vz providers and none on gvisor, runc and sysbox, which refuse any swap but 0. From 0 to 16777088. |
 | `vcpus` | integer (int64) | no | At least 0. |
 
 ### Resources
@@ -447,6 +448,7 @@ A create that names secrets also needs the secret:\* scope, one that names a pol
 | --- | --- | --- |
 | `disk_mib` | integer (int64) | yes |
 | `memory_mib` | integer (int64) | yes |
+| `swap_mib` | integer (int64) | yes |
 | `vcpus` | integer (int64) | yes |
 
 ### RestartSpec

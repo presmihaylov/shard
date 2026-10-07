@@ -30,6 +30,14 @@ func bootGuest(boot guestBoot) error {
 	if err := mountRoot(boot); err != nil {
 		return err
 	}
+	// The overlay's upper disk has a path only until the pivot, so the swap goes on before it.
+	swapDir := "/overlay"
+	if boot.Root != "" {
+		swapDir = "/newroot"
+	}
+	if err := makeSwap(swapDir, boot.SwapMiB); err != nil {
+		return err
+	}
 	for _, dir := range []string{"dev", "proc", "sys"} {
 		if err := os.MkdirAll("/newroot/"+dir, 0o755); err != nil { //nolint:gosec // a mount point every guest process must traverse
 			return err
@@ -68,7 +76,7 @@ func bootGuest(boot guestBoot) error {
 	if err := os.Chdir("/"); err != nil {
 		return err
 	}
-	if err := boundMemory(); err != nil {
+	if err := boundMemory(boot.SwapMiB << 20); err != nil {
 		return err
 	}
 
