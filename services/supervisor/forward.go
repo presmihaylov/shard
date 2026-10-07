@@ -38,7 +38,7 @@ func OpenForward(ctx context.Context, conn net.Conn, port uint16) (*Forward, err
 		return nil, fmt.Errorf("forward port %d: %w", port, err)
 	}
 	if reply.Refused {
-		return nil, fmt.Errorf("forward port %d: the guest cannot reach it: %s: %w", port, reply.Error, syscall.ECONNREFUSED)
+		return nil, fmt.Errorf("forward port %d: nothing listens on it in the guest: %w", port, syscall.ECONNREFUSED)
 	}
 	if reply.Error != "" {
 		return nil, fmt.Errorf("forward port %d: the guest cannot reach it: %s", port, reply.Error)

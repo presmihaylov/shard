@@ -4,6 +4,7 @@ package vzvm_test
 
 import (
 	"bufio"
+	"bytes"
 	"context"
 	"crypto/ecdsa"
 	"crypto/elliptic"
@@ -38,6 +39,7 @@ import (
 	"github.com/presmihaylov/shard/pkg/vzshim"
 	"github.com/presmihaylov/shard/services/bundle"
 	"github.com/presmihaylov/shard/services/image"
+	"github.com/presmihaylov/shard/services/portforward"
 	"github.com/presmihaylov/shard/services/provider/conformance"
 	"github.com/presmihaylov/shard/services/provider/vzvm"
 	"github.com/presmihaylov/shard/services/supervisor"
@@ -889,6 +891,180 @@ func TestAPauseFreezesTheRootUnderALoopingWriter(t *testing.T) {
 	if counted <= onDisk {
 		t.Fatalf("the resumed writer is still at %d, where its pause froze it", counted)
 	}
+}
+
+// echoListener greets each connection, then echoes it, on the guest's loopback alone, so only a dial from inside reaches it.
+const echoListener = "exec nc -lk -p 8000 -s 127.0.0.1 -e /bin/sh -c 'echo hello; exec cat'"
+
+// A forwarded host port carries a greeting out of the guest and a megabyte each way, framed in and plain out (SHARD-789).
+func TestAForwardCarriesBytesBothWaysToAGuestListener(t *testing.T) {
+	h := newVMHarness(t)
+	spec := h.newSpec(t, "/bin/sh", "-c", echoListener)
+	if err := h.provider.Create(t.Context(), spec); err != nil {
+		t.Fatal(err)
+	}
+	if err := h.provider.Start(t.Context(), spec.ID); err != nil {
+		t.Fatal(err)
+	}
+
+	forward := models.PortForward{HostPort: freePort(t), GuestPort: 8000}
+	ports := forwarder(t, h)
+	if err := ports.Open(spec.ID, forward); err != nil {
+		t.Fatal(err)
+	}
+
+	echoThrough(t, forward.HostPort)
+}
+
+// A stop shuts the host port and a start opens it again onto the new boot, as the daemon does with the forward on the record (SHARD-789).
+func TestAForwardOutlivesAStopAndAStart(t *testing.T) {
+	h := newVMHarness(t)
+	spec := h.newSpec(t, "/bin/sh", "-c", echoListener)
+	if err := h.provider.Create(t.Context(), spec); err != nil {
+		t.Fatal(err)
+	}
+	if err := h.provider.Start(t.Context(), spec.ID); err != nil {
+		t.Fatal(err)
+	}
+
+	forward := models.PortForward{HostPort: freePort(t), GuestPort: 8000}
+	ports := forwarder(t, h)
+	if err := ports.Open(spec.ID, forward); err != nil {
+		t.Fatal(err)
+	}
+	echoThrough(t, forward.HostPort)
+
+	if err := h.provider.Stop(t.Context(), spec.ID, stopGrace); err != nil {
+		t.Fatal(err)
+	}
+	if err := ports.CloseSandbox(spec.ID); err != nil {
+		t.Fatal(err)
+	}
+	if conn, err := net.DialTimeout("tcp", hostAddress(forward.HostPort), time.Second); err == nil {
+		conn.Close()
+		t.Fatalf("host port %d answered while the sandbox was stopped", forward.HostPort)
+	}
+	if _, err := h.provider.DialPort(t.Context(), spec.ID, forward.GuestPort); err == nil {
+		t.Fatal("DialPort reached a stopped sandbox")
+	}
+
+	if err := h.provider.Start(t.Context(), spec.ID); err != nil {
+		t.Fatal(err)
+	}
+	if err := ports.Open(spec.ID, forward); err != nil {
+		t.Fatal(err)
+	}
+	echoThrough(t, forward.HostPort)
+}
+
+// forwarder is the daemon's, over this provider, with no listener left once the test ends.
+func forwarder(t *testing.T, h *vmHarness) *portforward.Forwarder {
+	t.Helper()
+
+	ports := portforward.New(h.provider.DialPort, func(line string) { t.Log(line) }, "")
+	t.Cleanup(func() {
+		for _, id := range ports.Sandboxes() {
+			if err := ports.CloseSandbox(id); err != nil {
+				t.Errorf("close the forwards of %s: %v", id, err)
+			}
+		}
+	})
+
+	return ports
+}
+
+// echoThrough waits for the guest's greeting on the host port, then sends a megabyte and reads the same megabyte back.
+func echoThrough(t *testing.T, hostPort uint16) {
+	t.Helper()
+
+	conn, greeting := greeted(t, hostPort)
+	defer conn.Close()
+	if greeting != "hello" {
+		t.Fatalf("the guest greeted with %q, want hello", greeting)
+	}
+
+	sent := make([]byte, 1<<20)
+	if _, err := rand.Read(sent); err != nil {
+		t.Fatal(err)
+	}
+	if err := conn.SetDeadline(time.Now().Add(time.Minute)); err != nil {
+		t.Fatal(err)
+	}
+	wrote := make(chan error, 1)
+	go func() {
+		_, err := conn.Write(sent)
+		wrote <- err
+	}()
+	got := make([]byte, len(sent))
+	if _, err := io.ReadFull(conn, got); err != nil {
+		t.Fatalf("read the echo back: %v", err)
+	}
+	if err := <-wrote; err != nil {
+		t.Fatalf("write to the guest: %v", err)
+	}
+	if !bytes.Equal(got, sent) {
+		t.Fatal("the echo differs from what the host sent")
+	}
+}
+
+// greeted dials the host port until the guest's listener answers, since it comes up in its own time after the boot.
+func greeted(t *testing.T, hostPort uint16) (net.Conn, string) {
+	t.Helper()
+
+	var last error
+	for deadline := time.Now().Add(time.Minute); time.Now().Before(deadline); time.Sleep(200 * time.Millisecond) {
+		conn, err := net.DialTimeout("tcp", hostAddress(hostPort), 5*time.Second)
+		if err != nil {
+			last = err
+
+			continue
+		}
+		if err := conn.SetReadDeadline(time.Now().Add(15 * time.Second)); err != nil {
+			t.Fatal(errors.Join(err, conn.Close()))
+		}
+		// One byte at a time, so nothing past the greeting is read ahead of the echo.
+		line, err := readLine(conn)
+		if err == nil {
+			return conn, line
+		}
+		last = errors.Join(err, conn.Close())
+	}
+	t.Fatalf("host port %d never carried the guest's greeting: %v", hostPort, last)
+
+	return nil, ""
+}
+
+func readLine(conn net.Conn) (string, error) {
+	var line []byte
+	one := make([]byte, 1)
+	for {
+		if _, err := io.ReadFull(conn, one); err != nil {
+			return "", fmt.Errorf("read the greeting: %w", err)
+		}
+		if one[0] == '\n' {
+			return string(line), nil
+		}
+		line = append(line, one[0])
+	}
+}
+
+func freePort(t *testing.T) uint16 {
+	t.Helper()
+
+	l, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	port := l.Addr().(*net.TCPAddr).Port
+	if err := l.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	return uint16(port)
+}
+
+func hostAddress(port uint16) string {
+	return net.JoinHostPort("127.0.0.1", strconv.Itoa(int(port)))
 }
 
 // execIn runs one shell line under a deadline, since a write to a root left frozen never returns.
