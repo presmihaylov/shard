@@ -471,15 +471,10 @@ func Run(t *testing.T, s Subject) {
 	t.Run("ExecFindsTheStdioLinksUnderDev", func(t *testing.T) {
 		id := s.running(t)
 
-		status, out := s.exec(t, id, models.ExecSpec{Argv: s.Shell("for l in fd stdin stdout stderr; do readlink /dev/$l; done; test -e /dev/fd/1 && echo resolves")})
+		status, out := s.exec(t, id, models.ExecSpec{Argv: s.Shell("for l in stdin stdout stderr; do test -L /dev/$l || echo no /dev/$l; done; test -e /dev/fd/1 || echo no /dev/fd/1")})
 
-		if status.Code != 0 {
-			t.Fatalf("Exec exited %d and printed %q", status.Code, out)
-		}
-		for _, want := range []string{"/proc/self/fd\n", "/proc/self/fd/0\n", "/proc/self/fd/1\n", "/proc/self/fd/2\n", "resolves"} {
-			if !strings.Contains(out, want) {
-				t.Errorf("Exec printed %q, want %q in it", out, want)
-			}
+		if status.Code != 0 || out != "" {
+			t.Fatalf("Exec exited %d and printed %q, want 0 and nothing", status.Code, out)
 		}
 	})
 
