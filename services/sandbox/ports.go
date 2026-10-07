@@ -54,8 +54,7 @@ func (e *PortInUseError) Unwrap() error { return e.Err }
 
 func (e *PortInUseError) Public() string { return e.Err.Public() }
 
-// AddPort forwards a host port into the sandbox, or changes the forward it already has there. A running sandbox
-// takes it at once; any other only keeps it on the record for its next start.
+// AddPort upserts a forward by host port; a running sandbox takes it at once, any other on its next start.
 func (s *Service) AddPort(ctx context.Context, ref string, hostPort uint16, req PortRequest) (models.Port, error) {
 	if err := requireVerb(s.cfg.Provider, models.VerbPort); err != nil {
 		return models.Port{}, err

@@ -124,8 +124,7 @@ func (f *Forwarder) open(id string, spec models.PortForward) error {
 	return nil
 }
 
-// Set makes the forwards of one sandbox exactly want: it closes the rest of its own and opens or retries each of want.
-// A port the host refuses is no error of Set: its status keeps why, the report takes it once, and the next Set retries it.
+// Set makes one sandbox's forwards exactly want; a port the host refuses keeps why in its status and is retried next Set.
 func (f *Forwarder) Set(id string, want []models.PortForward) error {
 	f.mu.Lock()
 	defer f.mu.Unlock()
