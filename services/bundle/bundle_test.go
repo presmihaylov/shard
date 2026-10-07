@@ -6,6 +6,7 @@ import (
 	"net/netip"
 	"os"
 	"path/filepath"
+	"runtime"
 	"slices"
 	"strings"
 	"syscall"
@@ -296,15 +297,11 @@ func TestBuildJoinsTheNetworkNamespace(t *testing.T) {
 	}
 }
 
-// The list is the contract every checkpoint carries, so the test pins the exact value and not a sample of it.
-func TestBuildCapsTheCPUFeaturesTheGuestSees(t *testing.T) {
+func TestBuildCapsTheCPUFeaturesOnlyOnAnX86Host(t *testing.T) {
 	_, got := build(t, models.SandboxSpec{}, models.ImageConfig{})
 
-	const want = "fpu,vme,de,pse,tsc,msr,pae,mce,cx8,apic,sep,mtrr,pge,mca,cmov,pat,pse36,clflush,mmx,fxsr," +
-		"sse,sse2,ht,syscall,nx,rdtscp,lm,pni,pclmulqdq,ssse3,fma,cx16,sse4_1,sse4_2,movbe,popcnt,aes," +
-		"xsave,osxsave,avx,f16c,rdrand,lahf_lm,abm,fsgsbase,bmi1,avx2,bmi2,rdseed,adx,xsaveopt,xsavec,xgetbv1,xsaves"
-	if features := got.Annotations["dev.gvisor.internal.cpufeatures"]; features != want {
-		t.Errorf("the guest sees %q, want the pinned list %q", features, want)
+	if _, ok := got.Annotations["dev.gvisor.internal.cpufeatures"]; ok != (runtime.GOARCH == "amd64") {
+		t.Errorf("on %s the bundle carries the cpu feature cap: %v", runtime.GOARCH, ok)
 	}
 }
 

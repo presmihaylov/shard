@@ -8,6 +8,7 @@ import (
 	"os"
 	"path"
 	"path/filepath"
+	"runtime"
 	"slices"
 	"strconv"
 	"strings"
@@ -348,8 +349,7 @@ func (s *Service) runtimeSpec(spec models.SandboxSpec, b Bundle, guest string) (
 		Mounts: mounts(b.ShardDir, b.Tmp, s.initPath, spec.Resources),
 		Annotations: map[string]string{
 			// Nothing else records which image tree the overlay stacks over, and a start after a stop needs it.
-			rootfsAnnotation:      spec.RootFS,
-			cpuFeaturesAnnotation: cpuFeatures,
+			rootfsAnnotation: spec.RootFS,
 			// The disk is no cgroup resource, so the bound rides here for inspect and fork to read back.
 			diskAnnotation: strconv.FormatInt(DiskBound(spec.Resources), 10),
 		},
@@ -363,6 +363,9 @@ func (s *Service) runtimeSpec(spec models.SandboxSpec, b Bundle, guest string) (
 			ReadonlyPaths:     readonlyPaths,
 			RootfsPropagation: "rprivate",
 		},
+	}
+	if features, ok := cpuFeaturesFor(runtime.GOARCH); ok {
+		rs.Annotations[cpuFeaturesAnnotation] = features
 	}
 	rs.Process.ApparmorProfile = s.apparmor
 	if s.seccomp == nil {
