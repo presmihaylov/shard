@@ -1,5 +1,12 @@
 # useshards
 
+## 0.1.4
+
+### Patch Changes
+
+- 35f836d: A sandbox record says what the host's memory kills did to it, and when the daemon starts it again, as oom in both SDKs.
+- 049e976: A create or run takes a swap file size, as swapMiB in TypeScript and swap_mib in Python, and a sandbox record's resources name it. Left out, the daemon picks 2048 MiB on firecracker and vz and none on gvisor, runc and sysbox. `capabilities()` gains `swap`, true where a swap above 0 is allowed.
+
 ## 0.1.3
 
 ### Patch Changes
