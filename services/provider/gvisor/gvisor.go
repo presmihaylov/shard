@@ -193,8 +193,7 @@ func (p *Provider) bringUp(ctx context.Context, spec models.SandboxSpec, exitFil
 	// The sandbox keeps its own copy of the fd, so closing ours does not cut the guest's output off.
 	defer func() { err = errors.Join(err, out.Close()) }()
 
-	// shard-init writes its process table on its fd 0, the write end the host holds here: create
-	// cleared the stale file first, and fork or restore appends, so a carried or paused table survives.
+	// Append after create clears the table so fork and restore keep the saved statuses.
 	exit, err := os.OpenFile(exitFile, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o600)
 	if err != nil {
 		return fmt.Errorf("open the exit channel %s: %w", exitFile, err)
@@ -703,8 +702,7 @@ func execOptions(b bundle.Bundle, spec models.ExecSpec) (runsc.ExecOptions, erro
 		Report:  spec.Report,
 	}
 
-	// A named user is resolved against the sandbox's live tree; an unnamed one is the sandbox's own,
-	// which config.json records in an annotation.
+	// A named user resolves against the live tree; an unnamed one is the sandbox's own, from a config.json annotation.
 	opts.User, opts.Groups = runtime.User, runtime.Groups
 	if spec.User != "" {
 		identity, err := bundle.ResolveUser(b.RootFS, spec.User)

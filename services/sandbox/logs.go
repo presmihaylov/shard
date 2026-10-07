@@ -75,31 +75,23 @@ func (s *Service) logged(ref, name string) (string, error) {
 	return id, nil
 }
 
-// follow asks the substrate, not the record, because a record saying running outlives an OOM kill.
+// follow copies the log until the process or its sandbox ends, or the caller hangs up.
 func (s *Service) follow(ctx context.Context, w io.Writer, t *tail, id, name string) (string, error) {
 	for {
 		// Both are read before the copy, so what the process wrote on its way out is drained.
-		status, err := s.cfg.Provider.Status(ctx, id)
+		seen, err := s.sight(ctx, id, name)
 		if err != nil {
 			return "", err
-		}
-		ended := false
-		if status.Alive() {
-			p, _, found, err := s.processOf(ctx, id, name)
-			if err != nil {
-				return "", err
-			}
-			ended = !found || p.Status.State.Ended()
 		}
 
 		if err := t.follow(w); err != nil {
 			return "", err
 		}
 
-		if !status.Alive() {
+		if !seen.status.Alive() {
 			return s.logsEnd(id)
 		}
-		if ended {
+		if !seen.found || seen.p.Status.State.Ended() {
 			return LogsEnded, nil
 		}
 

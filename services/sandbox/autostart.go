@@ -63,13 +63,13 @@ func (s *Service) autostart(ctx context.Context, id string, report func(string))
 			return fmt.Errorf("its processes are not started again while their table is unreadable: %s", why)
 		}
 
-		// A name the guest knows is its own to start again, so only a run the daemon died before handing over is started here.
-		known := map[string]bool{}
-		for _, r := range reports {
-			known[r.Name] = true
+		// The guest starts again what it still runs or waits to restart; an ended name goes through the policy like any other.
+		live := map[string]bool{}
+		for name, r := range latestReports(reports) {
+			live[name] = !r.State.Ended()
 		}
 
-		return s.launch(ctx, id, daemonStart, known)
+		return s.launch(ctx, id, daemonStart, live)
 	}
 
 	return nil

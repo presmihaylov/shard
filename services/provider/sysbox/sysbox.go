@@ -634,8 +634,7 @@ func execOptions(b bundle.Bundle, guest string, spec models.ExecSpec) (runc.Exec
 		Report:  spec.Report,
 	}
 
-	// A named user is resolved against the sandbox's live tree; an unnamed one is the sandbox's own,
-	// which config.json records in an annotation.
+	// A named user resolves against the live tree; an unnamed one is the sandbox's own, from a config.json annotation.
 	opts.User, opts.Groups = runtime.User, runtime.Groups
 	if spec.User != "" {
 		identity, err := bundle.ResolveUser(b.RootFS, spec.User)

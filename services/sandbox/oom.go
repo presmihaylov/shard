@@ -27,6 +27,7 @@ func (s *Service) recordOOMKilled(id string, sb models.Sandbox, now time.Time, r
 		rec.PID = 0
 		rec.StoppedReason = OOMKilledReason
 		rec.UnresponsiveReason = ""
+		rec.Processes = endProcesses(rec.Processes)
 		rec.OOM = &oom
 
 		return nil

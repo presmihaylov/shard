@@ -253,6 +253,32 @@ func (s *Service) processOf(ctx context.Context, id, name string) (models.Proces
 	return procs[i], sb, true, nil
 }
 
+// sighting is one poll of a followed process: the substrate's word, then the process while the sandbox is alive.
+type sighting struct {
+	status models.Status
+	p      models.Process
+	sb     models.Sandbox
+	found  bool
+}
+
+// sight reads the substrate, not the record, because a record saying running outlives an OOM kill.
+func (s *Service) sight(ctx context.Context, id, name string) (sighting, error) {
+	status, err := s.cfg.Provider.Status(ctx, id)
+	if err != nil {
+		return sighting{}, err
+	}
+	if !status.Alive() {
+		return sighting{status: status}, nil
+	}
+
+	p, sb, found, err := s.processOf(ctx, id, name)
+	if err != nil {
+		return sighting{}, err
+	}
+
+	return sighting{status: status, p: p, sb: sb, found: found}, nil
+}
+
 // seen lays shard-init's table over the record's entries while the sandbox runs; a table the guest broke leaves the record's.
 func (s *Service) seen(ctx context.Context, id string, sb models.Sandbox) ([]models.Process, error) {
 	if !sb.State.Live() {
@@ -282,14 +308,7 @@ func (s *Service) table(ctx context.Context, id string) ([]models.ProcessReport,
 
 // merged is a copy of procs with the guest's latest report on each; a name the record never ran is dropped, since guest root can forge one.
 func merged(procs []models.Process, reports []models.ProcessReport) []models.Process {
-	latest := map[string]models.ProcessReport{}
-	for _, r := range reports {
-		if prev, ok := latest[r.Name]; ok && prev.Seq > r.Seq {
-			continue
-		}
-		latest[r.Name] = r
-	}
-
+	latest := latestReports(reports)
 	out := slices.Clone(procs)
 	for i := range out {
 		if r, ok := latest[out[i].Name]; ok {
@@ -298,6 +317,19 @@ func merged(procs []models.Process, reports []models.ProcessReport) []models.Pro
 	}
 
 	return out
+}
+
+// latestReports is the guest's last word on each name, since a table may hold several reports of one.
+func latestReports(reports []models.ProcessReport) map[string]models.ProcessReport {
+	latest := map[string]models.ProcessReport{}
+	for _, r := range reports {
+		if prev, ok := latest[r.Name]; ok && prev.Seq > r.Seq {
+			continue
+		}
+		latest[r.Name] = r
+	}
+
+	return latest
 }
 
 // endProcesses is a run that ended under its processes: whatever still ran or waited to start again is stopped.
@@ -409,31 +441,25 @@ func (s *Service) AttachProcess(ctx context.Context, ref, name string, open func
 
 	for {
 		// Everything is read before the copy, so what the process wrote on its way out is drained.
-		status, err := s.cfg.Provider.Status(ctx, id)
+		seen, err := s.sight(ctx, id, name)
 		if err != nil {
 			return models.Process{}, err
-		}
-		var found bool
-		if status.Alive() {
-			if p, sb, found, err = s.processOf(ctx, id, name); err != nil {
-				return models.Process{}, err
-			}
 		}
 
 		if err := t.follow(w); err != nil {
 			return models.Process{}, err
 		}
 
-		if !status.Alive() {
-			return models.Process{}, &StateError{Sandbox: nameOf(id, sb), State: status.State, Fix: fmt.Sprintf("its process %s had not ended; shard start %s brings it back if its policy says so", name, nameOf(id, sb)), Code: models.CodeSandboxNotRunning}
+		if !seen.status.Alive() {
+			return models.Process{}, &StateError{Sandbox: nameOf(id, sb), State: seen.status.State, Fix: fmt.Sprintf("its process %s had not ended; shard start %s brings it back if its policy says so", name, nameOf(id, sb)), Code: models.CodeSandboxNotRunning}
 		}
 		// A run of another name filled the table and evicted this one, which had ended.
-		if !found {
-			return models.Process{}, noProcess(id, sb, name)
+		if !seen.found {
+			return models.Process{}, noProcess(id, seen.sb, name)
 		}
-		if p.Status.State.Ended() {
+		if seen.p.Status.State.Ended() {
 			// The tick copies the table a second later, so a ps right after the end would still read it running (SHARD-479).
-			return p, s.recordProcessesNow(ctx, id)
+			return seen.p, s.recordProcessesNow(ctx, id)
 		}
 
 		select {

@@ -284,24 +284,38 @@ func latest(table []models.ProcessReport, p models.ProcessReport) []models.Proce
 // bounded drops the oldest ended report of a table past MaxProcesses, as the guest drops it from its own.
 func bounded(table []models.ProcessReport) []models.ProcessReport {
 	for len(table) > models.MaxProcesses {
-		oldest := -1
-		for i, p := range table {
-			if p.State.Ended() && (oldest < 0 || p.Seq < table[oldest].Seq) {
-				oldest = i
-			}
+		i := oldestEnded(table)
+		if i < 0 {
+			i = lowestSeq(table)
 		}
-		if oldest < 0 {
-			oldest = 0
-			for i, p := range table {
-				if p.Seq < table[oldest].Seq {
-					oldest = i
-				}
-			}
-		}
-		table = slices.Delete(table, oldest, oldest+1)
+		table = slices.Delete(table, i, i+1)
 	}
 
 	return table
+}
+
+// oldestEnded is the index of the ended report with the lowest sequence, or -1 when every one still runs.
+func oldestEnded(table []models.ProcessReport) int {
+	oldest := -1
+	for i, p := range table {
+		if p.State.Ended() && (oldest < 0 || p.Seq < table[oldest].Seq) {
+			oldest = i
+		}
+	}
+
+	return oldest
+}
+
+// lowestSeq is the index of the report with the lowest sequence in a table that is not empty.
+func lowestSeq(table []models.ProcessReport) int {
+	lowest := 0
+	for i, p := range table {
+		if p.Seq < table[lowest].Seq {
+			lowest = i
+		}
+	}
+
+	return lowest
 }
 
 func named(name string) func(models.ProcessReport) bool {

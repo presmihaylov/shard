@@ -239,14 +239,10 @@ func TestAdmitTakesOnlyRootTheHostEntered(t *testing.T) {
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
 			err := admit(c.uid, 7, []byte(c.status))
-			if c.want == "" {
-				if err != nil {
-					t.Fatalf("admit refused: %v", err)
-				}
-
-				return
+			if c.want == "" && err != nil {
+				t.Fatalf("admit refused: %v", err)
 			}
-			if err == nil || !strings.Contains(err.Error(), c.want) {
+			if c.want != "" && (err == nil || !strings.Contains(err.Error(), c.want)) {
 				t.Fatalf("admit gave %v, want %q", err, c.want)
 			}
 		})

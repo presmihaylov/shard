@@ -101,6 +101,22 @@ func TestAutostartHandsARunningSandboxOnlyWhatItsGuestLacks(t *testing.T) {
 	}
 }
 
+// A kill ends the guest's entry, and only the policy then decides: always comes back, unless-stopped stays down.
+func TestAutostartBringsBackAKilledAlwaysProcessInARunningSandbox(t *testing.T) {
+	web, keeper := killed(proc("web", models.RestartAlways)), killed(proc("keeper", models.RestartUnlessStopped))
+	sb := withProcesses(running(), web, keeper)
+	svc, l := newService(t, &recorder{}, sb)
+	l.provider.report(models.ProcessReport{Name: "web", ProcessStatus: web.Status})
+	l.provider.report(models.ProcessReport{Name: "keeper", ProcessStatus: keeper.Status})
+
+	if err := svc.Autostart(t.Context(), []models.Sandbox{sb}, func(string) {}); err != nil {
+		t.Fatalf("autostart: %v", err)
+	}
+	if got := specNames(l.provider.specs); !slices.Equal(got, []string{"web"}) {
+		t.Errorf("the autostart ran %v, want web alone", got)
+	}
+}
+
 // Guest root can break the table, and a start of every name then would run a second copy of what still runs.
 func TestAutostartStartsNothingInASandboxWhoseTableIsBroken(t *testing.T) {
 	sb := withProcesses(running(), proc("web", models.RestartAlways))
@@ -115,6 +131,14 @@ func TestAutostartStartsNothingInASandboxWhoseTableIsBroken(t *testing.T) {
 	if len(l.provider.specs) != 0 {
 		t.Errorf("the autostart ran %+v under a broken table", l.provider.specs)
 	}
+}
+
+// killed is p as shard kill leaves it.
+func killed(p models.Process) models.Process {
+	p.Killed = true
+	p.Status.State = models.ProcessKilled
+
+	return p
 }
 
 func specNames(specs []models.ProcessSpec) []string {

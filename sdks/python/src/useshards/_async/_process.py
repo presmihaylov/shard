@@ -88,8 +88,7 @@ class AsyncProcess:
         return self.info
 
     async def wait(self, timeout: float | None = None) -> ProcessInfo:
-        """Block until the process ends and its restart policy starts it no more. A timeout ends the wait, never the
-        process."""
+        """Block until the process ends for good; a timeout ends the wait, never the process."""
         try:
             record = await self._transport.answer(
                 models.Process,
@@ -112,8 +111,7 @@ class AsyncProcess:
         )
 
     def follow_logs(self) -> AsyncFollow[bytes]:
-        """Yield the output from the start of the log, then as it arrives, and end when the process ends or its sandbox
-        stops."""
+        """Yield the log from its start, then as it grows, until the process ends or its sandbox stops."""
         return AsyncFollow(
             self._transport,
             path("sandboxes", self.sandbox, "processes", self.name, "logs"),

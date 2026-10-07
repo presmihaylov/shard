@@ -89,8 +89,7 @@ class Process:
         return self.info
 
     def wait(self, timeout: float | None = None) -> ProcessInfo:
-        """Block until the process ends and its restart policy starts it no more. A timeout ends the wait, never the
-        process."""
+        """Block until the process ends for good; a timeout ends the wait, never the process."""
         try:
             record = self._transport.answer(
                 models.Process,
@@ -113,8 +112,7 @@ class Process:
         )
 
     def follow_logs(self) -> Follow[bytes]:
-        """Yield the output from the start of the log, then as it arrives, and end when the process ends or its sandbox
-        stops."""
+        """Yield the log from its start, then as it grows, until the process ends or its sandbox stops."""
         return Follow(
             self._transport,
             path("sandboxes", self.sandbox, "processes", self.name, "logs"),
