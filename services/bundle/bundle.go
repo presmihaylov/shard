@@ -32,8 +32,7 @@ const exitFileName = "exit.json"
 // exitChannelFileName names the sealed memfd a sysbox create gave PID 1. Only the daemon writes it.
 const exitChannelFileName = "exit-channel.json"
 
-// readyFileName is written once shard-init takes process requests. runsc start unblocks the task and reads
-// nothing back, so this file is the only proof the supervisor came up.
+// readyFileName is written once shard-init takes process requests: the only proof it came up, as runsc start reads nothing back.
 const readyFileName = "started"
 
 // changedFileName marks a config.json written since the substrate last created the container from it.

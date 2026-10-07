@@ -285,10 +285,7 @@ func cgroupDir(root, id string) string {
 	return filepath.Join(root, bundle.CgroupsPath(id))
 }
 
-// Start boots shard-init with no process. runsc never starts a stopped container again, so a stopped sandbox is
-// re-created first over the writable layer its state directory kept.
-// It returns only once shard-init says it takes process requests, because runsc start unblocks the
-// task and reads nothing back: a supervisor that died would otherwise report as a started sandbox.
+// Start re-creates a stopped sandbox over its kept layer, and returns once shard-init takes process requests, as runsc start reads nothing back.
 func (p *Provider) Start(ctx context.Context, id string) error {
 	dir, err := p.dirs(id)
 	if err != nil {

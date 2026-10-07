@@ -184,9 +184,7 @@ func boundMemory(root string, spec models.SandboxSpec) error {
 	return nil
 }
 
-// Start boots shard-init with no process. runc never starts a stopped container again, so a stopped sandbox is
-// re-created first over the writable layer its state directory kept. It returns only once
-// shard-init says it takes process requests, because runc start reads nothing back.
+// Start re-creates a stopped sandbox over its kept layer, and returns once shard-init takes process requests, as runc start reads nothing back.
 func (p *Provider) Start(ctx context.Context, id string) error {
 	dir, err := p.dirs(id)
 	if err != nil {
