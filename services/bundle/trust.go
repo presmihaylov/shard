@@ -154,9 +154,7 @@ func envValue(env []string, name string) string {
 	return ""
 }
 
-// TrustProxy plants the proxy CA in a bundle that is already built, so a sandbox granted a secret after
-// its create trusts the proxy the way a fronted create does. It reads the roots the sandbox holds now and
-// adds the CA only where it is missing, so a second call writes the same bundle.
+// TrustProxy plants the proxy CA in a built bundle, over the roots the sandbox holds now, once.
 func (b Bundle) TrustProxy(proxyCA []byte) error {
 	if len(proxyCA) == 0 {
 		return errors.New("no proxy CA: there is nothing for the sandbox to trust")

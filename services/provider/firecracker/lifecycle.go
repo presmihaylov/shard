@@ -65,7 +65,7 @@ func (p *Provider) launch(ctx context.Context, spec models.SandboxSpec, r record
 		return err
 	}
 
-	m, err := p.boot(ctx, id, dir, r)
+	m, err := p.boot(ctx, id, dir, &r)
 	if err != nil {
 		return errors.Join(err, os.Remove(filepath.Join(dir, recordFile)))
 	}
@@ -272,7 +272,7 @@ func (p *Provider) Start(ctx context.Context, id string) error {
 		return err
 	}
 
-	m, err = p.boot(ctx, id, dir, r)
+	m, err = p.boot(ctx, id, dir, &r)
 	if err != nil {
 		return err
 	}

@@ -1147,6 +1147,10 @@ func TestASnapshotSeedsTheOverlayOfANewSandbox(t *testing.T) {
 	if got, src := readVM(t, seeded.StateDir), readVM(t, source.StateDir); got.BaseDisk != src.BaseDisk {
 		t.Errorf("the seeded sandbox runs over %q, want the source's image %q", got.BaseDisk, src.BaseDisk)
 	}
+	jail := h.jail(seeded.ID)
+	if got, args := readVM(t, seeded.StateDir), readJailer(t, jail); got.UID != args.UID || got.Jail != jail {
+		t.Errorf("the seeded record keeps uid %d and jail %q, want the vmm's uid %d and its jail %q", got.UID, got.Jail, args.UID, jail)
+	}
 }
 
 // vm is the part of the record the tests compare, decoded from the file as the provider wrote it.

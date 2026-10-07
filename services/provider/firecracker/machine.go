@@ -521,8 +521,8 @@ func (p *Provider) spawn(id string) (done func()) {
 	}
 }
 
-// boot starts a vmm for the sandbox over its image and its own overlay, and attaches to the guest once it answers.
-func (p *Provider) boot(ctx context.Context, id, dir string, r record) (*machine, error) {
+// boot starts a vmm for the sandbox over its image and its own overlay, and attaches to the guest once it answers; r takes the jail it records.
+func (p *Provider) boot(ctx context.Context, id, dir string, r *record) (*machine, error) {
 	// A lookup beside the boot waits for its machine, and never attaches a second one the guest's one control stream flips between (SHARD-558).
 	release, err := p.claim(ctx, id)
 	if err != nil {
@@ -545,7 +545,7 @@ func (p *Provider) boot(ctx context.Context, id, dir string, r record) (*machine
 	}
 	done := p.spawn(id)
 	defer done()
-	jail, err := p.jail(id, dir, &r, "")
+	jail, err := p.jail(id, dir, r, "")
 	if err != nil {
 		return nil, fmt.Errorf("boot sandbox %s: %w", id, err)
 	}
