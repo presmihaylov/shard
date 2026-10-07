@@ -54,7 +54,6 @@ func TestConformance(t *testing.T) {
 		Shell:     func(script string) []string { return []string{"/bin/sh", "-c", script} },
 		Reopen:    h.reopen,
 		HostLayer: true,
-		BusyboxNC: true,
 	})
 }
 
@@ -63,6 +62,17 @@ func TestLaunch(t *testing.T) {
 	h := newHarness(t)
 
 	conformance.RunLaunch(t, conformance.Subject{
+		Provider: h.provider,
+		NewSpec:  func(t *testing.T) models.SandboxSpec { return h.newSpec(t, "/bin/true") },
+		Shell:    func(script string) []string { return []string{"/bin/sh", "-c", script} },
+	})
+}
+
+// TestPorts proves a forward on gVisor reaches a listener on the sandbox's own loopback (SHARD-789); runsc forwards only into a netstack with a network, so the sandbox gets one.
+func TestPorts(t *testing.T) {
+	h := newNetworkedHarness(t)
+
+	conformance.RunPorts(t, conformance.Subject{
 		Provider: h.provider,
 		NewSpec:  func(t *testing.T) models.SandboxSpec { return h.newSpec(t, "/bin/true") },
 		Shell:    func(script string) []string { return []string{"/bin/sh", "-c", script} },
