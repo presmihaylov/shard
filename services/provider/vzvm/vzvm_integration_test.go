@@ -24,6 +24,7 @@ import (
 	"os/signal"
 	"path/filepath"
 	"regexp"
+	"slices"
 	"strconv"
 	"strings"
 	"sync/atomic"
@@ -662,30 +663,7 @@ func TestASwapFileHoldsWhatTheBoundCannot(t *testing.T) {
 	if used := swapOf(t, h, spec.ID, spec.Resources.SwapMiB); used == 0 {
 		t.Fatal("the guest holds 320 MiB in a 256 MiB VM with nothing in its swap")
 	}
-	readBack := "tr -d '\\0' < /dev/shm/fill | wc -c; wc -c < /dev/shm/fill"
-	want := fmt.Sprintf("0\n%d", fill)
-
-	if h.provider.Capabilities().Pause {
-		snap := t.TempDir()
-		if err := h.provider.Pause(t.Context(), spec.ID, snap); err != nil {
-			t.Fatal(err)
-		}
-		fork := h.newSpec(t)
-		fork.Resources = spec.Resources
-		if err := h.provider.ForkCheckpoint(t.Context(), snap, fork); err != nil {
-			t.Fatal(err)
-		}
-		if err := h.provider.Resume(t.Context(), spec.ID, snap); err != nil {
-			t.Fatal(err)
-		}
-		// Each reads its pages back through the swap file on its own disk.
-		for _, id := range []string{spec.ID, fork.ID} {
-			if got := execIn(t, h, id, readBack); got != want {
-				t.Fatalf("%s read back %q from /dev/shm/fill after the restore, want %q", id, got, want)
-			}
-			swapOf(t, h, id, spec.Resources.SwapMiB)
-		}
-	}
+	swapRidesAPauseAndAFork(t, h, spec, fill)
 
 	// A swapoff or a removal that fails is the supervisor's death, which the clean stop reports.
 	if err := h.provider.Stop(t.Context(), spec.ID, stopGrace); err != nil {
@@ -702,6 +680,9 @@ func TestASwapFileHoldsWhatTheBoundCannot(t *testing.T) {
 	if strings.Contains(string(console), "Kernel panic - not syncing") {
 		t.Fatalf("the guest panicked in the clean stop:\n%s", console)
 	}
+	if names := diskTop(t, spec.StateDir); slices.Contains(names, ".shard-swap") || !slices.Contains(names, "lost+found") {
+		t.Fatalf("the top of the disk after the clean stop holds %q, want lost+found and no .shard-swap", names)
+	}
 
 	if err := h.provider.Start(t.Context(), spec.ID); err != nil {
 		t.Fatal(err)
@@ -711,11 +692,80 @@ func TestASwapFileHoldsWhatTheBoundCannot(t *testing.T) {
 	if err := h.provider.Stop(t.Context(), spec.ID, time.Second); err != nil {
 		t.Fatal(err)
 	}
+	if names := diskTop(t, spec.StateDir); !slices.Contains(names, ".shard-swap") {
+		t.Fatalf("the top of the disk after the forced stop holds %q, want the .shard-swap it left", names)
+	}
 	// The forced stop left its swap file on the disk, so this boot makes its own only if it removes that one first.
 	if err := h.provider.Start(t.Context(), spec.ID); err != nil {
 		t.Fatal(err)
 	}
 	swapOf(t, h, spec.ID, spec.Resources.SwapMiB)
+}
+
+// swapRidesAPauseAndAFork has the sandbox and a fork of it read their pages back through the swap file on each one's own disk.
+func swapRidesAPauseAndAFork(t *testing.T, h *vmHarness, spec models.SandboxSpec, fill int64) {
+	t.Helper()
+	if !h.provider.Capabilities().Pause {
+		return
+	}
+	snap := t.TempDir()
+	if err := h.provider.Pause(t.Context(), spec.ID, snap); err != nil {
+		t.Fatal(err)
+	}
+	fork := h.newSpec(t)
+	fork.Resources = spec.Resources
+	if err := h.provider.ForkCheckpoint(t.Context(), snap, fork); err != nil {
+		t.Fatal(err)
+	}
+	if err := h.provider.Resume(t.Context(), spec.ID, snap); err != nil {
+		t.Fatal(err)
+	}
+	want := fmt.Sprintf("0\n%d", fill)
+	for _, id := range []string{spec.ID, fork.ID} {
+		if got := execIn(t, h, id, "tr -d '\\0' < /dev/shm/fill | wc -c; wc -c < /dev/shm/fill"); got != want {
+			t.Fatalf("%s read back %q from /dev/shm/fill after the restore, want %q", id, got, want)
+		}
+		swapOf(t, h, id, spec.Resources.SwapMiB)
+	}
+}
+
+// diskTop lists the top of a stopped sandbox's disk, on a clone whose journal is replayed first, since a forced stop leaves the new entries only there.
+func diskTop(t *testing.T, stateDir string) []string {
+	t.Helper()
+	clone := filepath.Join(t.TempDir(), "disk.img")
+	if _, err := bundle.CloneFile(filepath.Join(stateDir, "disk.img"), clone); err != nil {
+		t.Fatal(err)
+	}
+	if out, err := exec.Command(e2fsprogs(t, "e2fsck"), "-E", "journal_only", "-y", clone).CombinedOutput(); err != nil {
+		t.Fatalf("replay the journal: %v\n%s", err, out)
+	}
+	out, err := exec.Command(e2fsprogs(t, "debugfs"), "-R", "ls -p /", clone).Output()
+	if err != nil {
+		t.Fatalf("debugfs: %v", err)
+	}
+	var names []string
+	for line := range strings.Lines(string(out)) {
+		// Each entry reads /inode/mode/uid/gid/name/size/.
+		if fields := strings.Split(line, "/"); len(fields) > 5 {
+			names = append(names, fields[5])
+		}
+	}
+
+	return names
+}
+
+// e2fsprogs finds a tool macOS lacks: on PATH, or where Homebrew keeps it unlinked.
+func e2fsprogs(t *testing.T, tool string) string {
+	t.Helper()
+	if path, err := exec.LookPath(tool); err == nil {
+		return path
+	}
+	path := filepath.Join("/opt/homebrew/opt/e2fsprogs/sbin", tool)
+	if _, err := os.Stat(path); err != nil {
+		t.Skipf("no %s to read the stopped disk, brew install e2fsprogs: %v", tool, err)
+	}
+
+	return path
 }
 
 // swapOf checks the sandbox swaps onto one file of mib, less its header page, and returns the KiB in use.
