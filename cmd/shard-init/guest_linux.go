@@ -30,7 +30,7 @@ func bootGuest(boot guestBoot) error {
 	if err := mountRoot(boot); err != nil {
 		return err
 	}
-	// The overlay's upper disk has a path only until the pivot, and the swap file stays out of the guest's view there.
+	// The overlay's upper disk has a path only until the pivot, so the swap goes on before it.
 	swapDir := "/overlay"
 	if boot.Root != "" {
 		swapDir = "/newroot"

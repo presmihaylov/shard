@@ -44,9 +44,6 @@ func (b guestBoot) check() error {
 	return nil
 }
 
-// swapFile sits at the top of the disk the root writes to: beside the overlay's upper and work, or in the root of a single disk.
-const swapFile = ".shard-swap"
-
 // swapHeader is the first page of a swap file as mkswap writes it, with the version 1 layout of union swap_header.
 func swapHeader(size int64, pageSize int) ([]byte, error) {
 	pages := size / int64(pageSize)

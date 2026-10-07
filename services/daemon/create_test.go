@@ -31,6 +31,7 @@ type refusingProvider struct {
 
 func (refusingProvider) Name() string                                       { return "gvisor" }
 func (refusingProvider) CheckResources(models.Resources) error              { return nil }
+func (refusingProvider) Capabilities() models.Capabilities                  { return models.Capabilities{} }
 func (p refusingProvider) Create(context.Context, models.SandboxSpec) error { return p.err }
 func (refusingProvider) Remove(context.Context, string) error               { return nil }
 
@@ -213,6 +214,8 @@ type refusedApp struct{ models.Provider }
 func (refusedApp) Name() string { return "fake" }
 
 func (refusedApp) CheckResources(models.Resources) error { return nil }
+
+func (refusedApp) Capabilities() models.Capabilities { return models.Capabilities{} }
 
 func (refusedApp) Create(context.Context, models.SandboxSpec) error { return nil }
 

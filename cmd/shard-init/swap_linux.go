@@ -14,6 +14,9 @@ import (
 	"golang.org/x/sys/unix"
 )
 
+// swapFile sits at the top of the disk the root writes to: beside the overlay's upper and work, or in the root of a single disk.
+const swapFile = ".shard-swap"
+
 // makeSwap swaps onto a new file in dir; the old one goes first, since a forced stop never ran the swapoff that removes it.
 func makeSwap(dir string, mib int64) error {
 	path := filepath.Join(dir, swapFile)
@@ -56,8 +59,7 @@ func writeSwapFile(path string, size int64) error {
 	return f.Close()
 }
 
-// dropSwap takes the swap file off the disk a clean stop leaves, so a snapshot never copies it.
-// The guest's processes go first, so swapoff reads none of their pages back in.
+// dropSwap kills the guest's processes first, so swapoff reads none of their pages back in.
 func dropSwap(bound, root *os.File) error {
 	if root == nil {
 		return nil
