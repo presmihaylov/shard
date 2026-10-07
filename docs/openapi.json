@@ -59,6 +59,9 @@
           },
           "stop": {
             "type": "boolean"
+          },
+          "swap": {
+            "type": "boolean"
           }
         },
         "required": [
@@ -69,7 +72,8 @@
           "pause",
           "resume",
           "fork",
-          "snapshot"
+          "snapshot",
+          "swap"
         ],
         "type": "object"
       },

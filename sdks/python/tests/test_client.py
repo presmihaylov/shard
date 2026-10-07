@@ -177,6 +177,7 @@ def test_capabilities(daemon: FakeDaemon, shard: Shard) -> None:
         "resume": False,
         "fork": False,
         "snapshot": True,
+        "swap": False,
     }
     daemon.routes[("GET", "/v0/capabilities")] = (200, verbs)
     assert shard.capabilities() == Capabilities(**verbs)

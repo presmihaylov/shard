@@ -173,7 +173,7 @@ class Shard:
         )
 
     def capabilities(self) -> Capabilities:
-        """Return which of the eight lifecycle verbs the daemon's provider supports."""
+        """Return which of the eight lifecycle verbs the daemon's provider supports, and whether it gives swap."""
         return _types.capabilities(
             self._transport.answer(
                 models.Capabilities, lambda: get_capabilities.sync_detailed(client=self._transport.api)

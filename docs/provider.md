@@ -469,7 +469,7 @@ killer runs first on every workload, and the daemon hears an OOM instead of a de
 
 ## What a swap file means
 
-`--swap` gives a `vz` or `firecracker` sandbox a swap file on its own disk (SHARD-787). A create
+`--swap` gives a `vz` or `firecracker` sandbox a swap file on its own disk. A create
 that names none gets 2048 MiB, and `--swap 0` means none. At each boot `shard-init` makes
 `.shard-swap` at the top of the disk the root writes to, switches it on with `swapon`, and sets
 `memory.swap.max` on the bounded cgroup to its size. On Firecracker the file sits on the overlay
@@ -479,7 +479,9 @@ killer takes the group only once the swap is full too.
 
 The file counts against `--disk`, so the guest has that much less room to write, and `create`
 refuses a swap that is not smaller than the disk. A clean stop swaps the file off and removes it,
-so a snapshot never copies it. A forced stop leaves it, and the next boot removes it before it makes
+so a snapshot never copies it. It kills every process and drops each tmpfs and System V shared
+memory segment first, because swapoff reads what is left back into memory, and a VM that cannot
+hold it panics. A forced stop leaves it, and the next boot removes it before it makes
 a new one. A pause and a fork keep it, because the saved memory names pages that sit in it.
 
 gVisor, Sysbox and runc run on the host kernel, which a sandbox cannot `swapon`. They report no

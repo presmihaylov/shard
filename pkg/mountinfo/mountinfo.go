@@ -37,34 +37,54 @@ func Under(root, point string) (Mount, bool, error) {
 	return parse(f, point)
 }
 
-// parse keeps the last line at point: a later mount shadows an earlier one at the same point.
+// All lists every mount this process can reach.
+func All() ([]Mount, error) {
+	f, err := os.Open(path)
+	if err != nil {
+		return nil, fmt.Errorf("open %s: %w", path, err)
+	}
+	defer f.Close()
+
+	return parseAll(f)
+}
+
+// parse keeps the last mount at point: a later mount shadows an earlier one at the same point.
 func parse(r io.Reader, point string) (Mount, bool, error) {
-	var m Mount
-	found := false
+	mounts, err := parseAll(r)
+	if err != nil {
+		return Mount{}, false, err
+	}
+	for _, m := range slices.Backward(mounts) {
+		if m.Point == point {
+			return m, true, nil
+		}
+	}
+
+	return Mount{}, false, nil
+}
+
+func parseAll(r io.Reader) ([]Mount, error) {
+	var mounts []Mount
 
 	scanner := bufio.NewScanner(r)
 	for scanner.Scan() {
 		// Field 5 is the mount point, and the fields before it never contain a space.
 		fields := strings.Fields(scanner.Text())
-		if len(fields) < 5 || unescape(fields[4]) != point {
-			continue
-		}
 
 		// The optional fields are variable in number, so a lone "-" is what separates them from the rest.
 		sep := indexSeparator(fields)
 		if sep < 0 || len(fields) < sep+4 {
-			return Mount{}, false, fmt.Errorf("%s has an unreadable line for %s", path, point)
+			return nil, fmt.Errorf("%s has an unreadable line: %q", path, scanner.Text())
 		}
 
-		m = Mount{Point: point, FSType: fields[sep+1], Source: unescape(fields[sep+2]), SuperOptions: unescape(fields[sep+3])}
-		found = true
+		mounts = append(mounts, Mount{Point: unescape(fields[4]), FSType: fields[sep+1], Source: unescape(fields[sep+2]), SuperOptions: unescape(fields[sep+3])})
 	}
 
 	if err := scanner.Err(); err != nil {
-		return Mount{}, false, fmt.Errorf("read %s: %w", path, err)
+		return nil, fmt.Errorf("read %s: %w", path, err)
 	}
 
-	return m, found, nil
+	return mounts, nil
 }
 
 // The optional fields start at index 6, so an earlier field that happens to be "-" is not the separator.

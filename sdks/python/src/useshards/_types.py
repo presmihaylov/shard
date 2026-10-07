@@ -138,8 +138,8 @@ class Version:
 
 @attrs.frozen
 class Capabilities:
-    """Which of the eight lifecycle verbs the daemon's provider supports; snapshot is the creation of a filesystem
-    snapshot."""
+    """Which of the eight lifecycle verbs the daemon's provider supports, and whether it gives a sandbox swap; snapshot
+    is the creation of a filesystem snapshot."""
 
     create: bool
     start: bool
@@ -149,6 +149,7 @@ class Capabilities:
     resume: bool
     fork: bool
     snapshot: bool
+    swap: bool
 
 
 @attrs.frozen
@@ -329,6 +330,7 @@ def capabilities(record: models.Capabilities) -> Capabilities:
         resume=record.resume,
         fork=record.fork,
         snapshot=record.snapshot,
+        swap=record.swap,
     )
 
 

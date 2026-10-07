@@ -239,7 +239,7 @@ Use `async with`, or call `await shard.aclose()` when you are done. Iterate `fol
 
 ## Capabilities
 
-Not every provider supports every verb. `shard.capabilities()` reports which of the eight lifecycle verbs the server supports, with `True` or `False` for each: `create`, `start`, `stop`, `remove`, `pause`, `resume`, `fork` and `snapshot`.
+Not every provider supports every verb. `shard.capabilities()` reports which of the eight lifecycle verbs the server supports, with `True` or `False` for each: `create`, `start`, `stop`, `remove`, `pause`, `resume`, `fork` and `snapshot`. `swap` says whether `swap_mib` above 0 is allowed.
 
 ```python
 if shard.capabilities().fork:

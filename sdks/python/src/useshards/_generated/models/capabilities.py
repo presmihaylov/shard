@@ -21,6 +21,7 @@ class Capabilities:
     snapshot: bool
     start: bool
     stop: bool
+    swap: bool
 
     def to_dict(self) -> dict[str, Any]:
         create = self.create
@@ -39,6 +40,8 @@ class Capabilities:
 
         stop = self.stop
 
+        swap = self.swap
+
         field_dict: dict[str, Any] = {}
 
         field_dict.update(
@@ -51,6 +54,7 @@ class Capabilities:
                 "snapshot": snapshot,
                 "start": start,
                 "stop": stop,
+                "swap": swap,
             }
         )
 
@@ -75,6 +79,8 @@ class Capabilities:
 
         stop = d.pop("stop")
 
+        swap = d.pop("swap")
+
         capabilities = cls(
             create=create,
             fork=fork,
@@ -84,6 +90,7 @@ class Capabilities:
             snapshot=snapshot,
             start=start,
             stop=stop,
+            swap=swap,
         )
 
         return capabilities

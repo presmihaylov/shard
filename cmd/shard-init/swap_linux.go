@@ -12,6 +12,8 @@ import (
 	"unsafe"
 
 	"golang.org/x/sys/unix"
+
+	"github.com/presmihaylov/shard/pkg/mountinfo"
 )
 
 // swapFile sits at the top of the disk the root writes to: beside the overlay's upper and work, or in the root of a single disk.
@@ -67,12 +69,42 @@ func dropSwap(bound, root *os.File) error {
 	if err := emptyBound(bound); err != nil {
 		return err
 	}
+	if err := dropShmem(); err != nil {
+		return err
+	}
 	// The root disk has no path of its own once the overlay is on /, but PID 1 holds it open.
 	if err := swapCall(unix.SYS_SWAPOFF, fmt.Sprintf("/proc/self/fd/%d/%s", root.Fd(), swapFile)); err != nil {
 		return fmt.Errorf("swapoff the swap file: %w", err)
 	}
 	if err := unix.Unlinkat(int(root.Fd()), swapFile, 0); err != nil {
 		return fmt.Errorf("remove the swap file: %w", err)
+	}
+
+	return nil
+}
+
+// dropShmem frees the tmpfs files and shared memory segments the dead processes left, or swapoff reads them back into a VM that may not hold them.
+func dropShmem() error {
+	mounts, err := mountinfo.All()
+	if err != nil {
+		return err
+	}
+	var points []string
+	for _, m := range mounts {
+		if m.FSType == "tmpfs" {
+			points = append(points, m.Point)
+		}
+	}
+	// The deepest first, since a detached tmpfs takes the path to the mounts under it.
+	slices.SortStableFunc(points, func(a, b string) int { return strings.Count(b, "/") - strings.Count(a, "/") })
+	for _, point := range points {
+		if err := unix.Unmount(point, unix.MNT_DETACH); err != nil {
+			return fmt.Errorf("detach the tmpfs at %s: %w", point, err)
+		}
+	}
+	// Setting it destroys every segment no process attaches, and no process is left.
+	if err := os.WriteFile("/proc/sys/kernel/shm_rmid_forced", []byte("1"), 0); err != nil {
+		return fmt.Errorf("destroy the shared memory segments: %w", err)
 	}
 
 	return nil

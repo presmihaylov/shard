@@ -79,7 +79,7 @@ npx tsx examples/quickstart.ts
   `uploadDir()` and `downloadDir()` move a whole tree as a tar.
 - **A verb the provider lacks throws `UnsupportedError`.** `shard.capabilities()` says which of the
   eight lifecycle verbs the daemon's provider supports (create, start, stop, remove, pause, resume,
-  fork and snapshot), before you call them.
+  fork and snapshot), and whether it gives swap, before you call them.
 
 ## Lists
 

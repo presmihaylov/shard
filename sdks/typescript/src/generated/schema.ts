@@ -549,6 +549,7 @@ export interface components {
             snapshot: boolean;
             start: boolean;
             stop: boolean;
+            swap: boolean;
         };
         CopyRequest: {
             name?: string;

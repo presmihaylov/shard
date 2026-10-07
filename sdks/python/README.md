@@ -86,7 +86,7 @@ asyncio.run(main())
   and `files.write()` takes bytes, a seekable file, or a stream with `size=`.
 - **A verb the provider lacks raises `UnsupportedError`.** `shard.capabilities()` says which of the
   eight lifecycle verbs the daemon's provider supports (create, start, stop, remove, pause, resume,
-  fork and snapshot), before you call them.
+  fork and snapshot), and whether it gives swap, before you call them.
 
 ## Lists
 

@@ -156,7 +156,7 @@ export interface Version {
   apiVersion: string;
 }
 
-/** Capabilities say which of the eight lifecycle verbs the daemon's provider supports; snapshot is the creation of a filesystem snapshot. */
+/** Capabilities say which of the eight lifecycle verbs the daemon's provider supports, and whether it gives a sandbox swap; snapshot is the creation of a filesystem snapshot. */
 export interface Capabilities {
   create: boolean;
   start: boolean;
@@ -166,6 +166,7 @@ export interface Capabilities {
   resume: boolean;
   fork: boolean;
   snapshot: boolean;
+  swap: boolean;
 }
 
 export function sandboxInfo(value: unknown): SandboxInfo {
@@ -275,6 +276,7 @@ export function capabilities(value: unknown): Capabilities {
     resume: fields.bool("resume"),
     fork: fields.bool("fork"),
     snapshot: fields.bool("snapshot"),
+    swap: fields.bool("swap"),
   };
 }
 

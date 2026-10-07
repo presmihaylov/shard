@@ -111,7 +111,7 @@ export class Shard {
     return records.version((await this.transport.api.GET("/v0/version")).data);
   }
 
-  /** capabilities returns which of the eight lifecycle verbs the daemon's provider supports. */
+  /** capabilities returns which of the eight lifecycle verbs the daemon's provider supports, and whether it gives swap. */
   async capabilities(): Promise<Capabilities> {
     return records.capabilities((await this.transport.api.GET("/v0/capabilities")).data);
   }

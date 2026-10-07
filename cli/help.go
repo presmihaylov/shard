@@ -682,11 +682,11 @@ var helps = map[string]verbHelp{
 	},
 	"capabilities": {
 		usage:   []string{"capabilities [OPTIONS]"},
-		summary: "show the lifecycle verbs the server supports",
+		summary: "show the lifecycle verbs and swap the server supports",
 		about:   "Show sandbox lifecycle capabilities supported by the connected shard server.",
 		flags:   []flagHelp{formatTableHelp},
 		notes: []note{para(
-			"Lists all eight verbs, each true or false for the server's provider.",
+			"Lists all eight verbs and swap, each true or false for the server's provider.",
 			"Token scopes and sandbox states never change the answer.",
 		)},
 		examples: []string{"shard capabilities", "shard capabilities --format json"},

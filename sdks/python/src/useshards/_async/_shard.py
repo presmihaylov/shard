@@ -174,7 +174,7 @@ class AsyncShard:
         )
 
     async def capabilities(self) -> Capabilities:
-        """Return which of the eight lifecycle verbs the daemon's provider supports."""
+        """Return which of the eight lifecycle verbs the daemon's provider supports, and whether it gives swap."""
         return _types.capabilities(
             await self._transport.answer(
                 models.Capabilities, lambda: get_capabilities.asyncio_detailed(client=self._transport.api)

@@ -642,6 +642,106 @@ func TestAGuestThatOutgrowsItsBoundIsOOMKilled(t *testing.T) {
 	}
 }
 
+// A swap file holds what the bound cannot, rides a pause and a fork, and is made again at each boot, whether the last stop took it off the disk or a forced one left it.
+func TestASwapFileHoldsWhatTheBoundCannot(t *testing.T) {
+	h := newVMHarness(t)
+	// The entrypoint ends on TERM until /hold exists, so one sandbox makes both a clean stop and a forced one.
+	spec := h.newSpec(t, "/bin/sh", "-c", "trap '[ -e /hold ] || exit 0' TERM; while true; do sleep 0.2; done")
+	spec.Resources = models.Resources{MemoryMiB: 256, DiskMiB: 1024, SwapMiB: 256}
+	if err := h.provider.Create(t.Context(), spec); err != nil {
+		t.Fatal(err)
+	}
+	if err := h.provider.Start(t.Context(), spec.ID); err != nil {
+		t.Fatal(err)
+	}
+	swapOf(t, h, spec.ID, spec.Resources.SwapMiB)
+
+	// The tmpfs is charged to the writer, and 320 MiB of it outgrows the VM, so the guest lives only through the swap.
+	const fill = 320 << 20
+	execIn(t, h, spec.ID, fmt.Sprintf("mount -o remount,size=1G /dev/shm && dd if=/dev/zero of=/dev/shm/fill bs=1M count=%d 2>/dev/null", fill>>20))
+	if used := swapOf(t, h, spec.ID, spec.Resources.SwapMiB); used == 0 {
+		t.Fatal("the guest holds 320 MiB in a 256 MiB VM with nothing in its swap")
+	}
+	readBack := "tr -d '\\0' < /dev/shm/fill | wc -c; wc -c < /dev/shm/fill"
+	want := fmt.Sprintf("0\n%d", fill)
+
+	if h.provider.Capabilities().Pause {
+		snap := t.TempDir()
+		if err := h.provider.Pause(t.Context(), spec.ID, snap); err != nil {
+			t.Fatal(err)
+		}
+		fork := h.newSpec(t)
+		fork.Resources = spec.Resources
+		if err := h.provider.ForkCheckpoint(t.Context(), snap, fork); err != nil {
+			t.Fatal(err)
+		}
+		if err := h.provider.Resume(t.Context(), spec.ID, snap); err != nil {
+			t.Fatal(err)
+		}
+		// Each reads its pages back through the swap file on its own disk.
+		for _, id := range []string{spec.ID, fork.ID} {
+			if got := execIn(t, h, id, readBack); got != want {
+				t.Fatalf("%s read back %q from /dev/shm/fill after the restore, want %q", id, got, want)
+			}
+			swapOf(t, h, id, spec.Resources.SwapMiB)
+		}
+	}
+
+	// A swapoff or a removal that fails is the supervisor's death, which the clean stop reports.
+	if err := h.provider.Stop(t.Context(), spec.ID, stopGrace); err != nil {
+		t.Fatal(err)
+	}
+	if status, err := h.provider.Status(t.Context(), spec.ID); err != nil || status.State != models.StateStopped || status.SupervisorFailed != "" {
+		t.Fatalf("Status after the clean stop = %+v, %v; want stopped with no supervisor failure", status, err)
+	}
+	// A guest that panics in the swapoff reads as stopped too, so only its console tells.
+	console, err := os.ReadFile(filepath.Join(spec.StateDir, "console.log"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(console), "Kernel panic - not syncing") {
+		t.Fatalf("the guest panicked in the clean stop:\n%s", console)
+	}
+
+	if err := h.provider.Start(t.Context(), spec.ID); err != nil {
+		t.Fatal(err)
+	}
+	swapOf(t, h, spec.ID, spec.Resources.SwapMiB)
+	execIn(t, h, spec.ID, "touch /hold")
+	if err := h.provider.Stop(t.Context(), spec.ID, time.Second); err != nil {
+		t.Fatal(err)
+	}
+	// The forced stop left its swap file on the disk, so this boot makes its own only if it removes that one first.
+	if err := h.provider.Start(t.Context(), spec.ID); err != nil {
+		t.Fatal(err)
+	}
+	swapOf(t, h, spec.ID, spec.Resources.SwapMiB)
+}
+
+// swapOf checks the sandbox swaps onto one file of mib, less its header page, and returns the KiB in use.
+func swapOf(t *testing.T, h *vmHarness, id string, mib int64) int64 {
+	t.Helper()
+
+	lines := strings.Split(execIn(t, h, id, "tail -n +2 /proc/swaps"), "\n")
+	fields := strings.Fields(lines[0])
+	if len(lines) != 1 || len(fields) != 5 || fields[1] != "file" {
+		t.Fatalf("/proc/swaps in %s lists %q, want one swap file", id, lines)
+	}
+	size, err := strconv.ParseInt(fields[2], 10, 64)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if size >= mib<<10 || size < mib<<10-64 {
+		t.Fatalf("the swap in %s is %d KiB, want %d MiB less one page", id, size, mib)
+	}
+	used, err := strconv.ParseInt(fields[3], 10, 64)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	return used
+}
+
 // A resumed VM carries its memory: the counter the entrypoint kept goes on from where the pause froze it.
 func TestAResumeAndAForkCarryTheGuestMemory(t *testing.T) {
 	h := newVMHarness(t)
