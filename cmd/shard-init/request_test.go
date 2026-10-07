@@ -76,14 +76,15 @@ func TestTheProcessSocketRefusesWhatItDoesNotTake(t *testing.T) {
 	}
 }
 
-// A caller admit refuses gets no answer at all, so a sandbox user reads only a closed socket.
-func TestTheProcessSocketClosesOnACallerItRefuses(t *testing.T) {
+// A caller admit refuses reads why, and nothing runs.
+func TestTheProcessSocketAnswersACallerItRefuses(t *testing.T) {
 	g, _ := startGuest(t)
 
 	run := named("web", "say:hi")
 	refuse := func(net.Conn) error { return errors.New("only root sends process requests") }
-	if reply, err := ask(g, refuse, supervisor.Message{Kind: supervisor.KindRun, ID: 1, Run: &run}); err == nil {
-		t.Fatalf("a refused caller got the answer %+v", reply)
+	reply, err := ask(g, refuse, supervisor.Message{Kind: supervisor.KindRun, ID: 1, Run: &run})
+	if err != nil || reply.Kind != supervisor.KindFailure || reply.ID != 1 || reply.Error != "only root sends process requests" {
+		t.Fatalf("a refused caller got %+v, %v; want the refusal", reply, err)
 	}
 	if names := g.procsNamed(); len(names) != 0 {
 		t.Fatalf("a refused caller ran %q", names)

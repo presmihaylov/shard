@@ -60,10 +60,10 @@ func (g *guest) acceptRequests(l net.Listener, admit func(net.Conn) error) {
 func (g *guest) serveRequest(conn net.Conn, admit func(net.Conn) error) {
 	defer conn.Close()
 
-	if err := admit(conn); err != nil {
-		fmt.Fprintln(os.Stderr, "shard-init: refuse a process request:", err)
-
-		return
+	// Judged at accept, before the caller sends, so a caller that hands its socket on cannot outwait the check.
+	refused := admit(conn)
+	if refused != nil {
+		fmt.Fprintln(os.Stderr, "shard-init: refuse a process request:", refused)
 	}
 	if err := conn.SetReadDeadline(time.Now().Add(requestGrace)); err != nil {
 		fmt.Fprintln(os.Stderr, "shard-init: bound a process request:", err)
@@ -76,7 +76,12 @@ func (g *guest) serveRequest(conn net.Conn, admit func(net.Conn) error) {
 
 		return
 	}
-	if err := supervisor.WriteMessage(conn, g.request(m)); err != nil {
+	// A refusal is answered, so a host the check wrongly refuses reads why and not an outdated supervisor.
+	reply := answerOf(m.ID, refused)
+	if refused == nil {
+		reply = g.request(m)
+	}
+	if err := supervisor.WriteMessage(conn, reply); err != nil {
 		fmt.Fprintln(os.Stderr, "shard-init: answer a process request:", err)
 	}
 }
