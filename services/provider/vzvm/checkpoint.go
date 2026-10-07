@@ -150,7 +150,7 @@ func stageCheckpoint(m *machine, r record, verb, stateDir, tmp string) error {
 	if _, err := bundle.CloneFile(filepath.Join(stateDir, diskFile), filepath.Join(tmp, checkpointDiskFile)); err != nil {
 		return fmt.Errorf("copy the disk: %w", err)
 	}
-	snap := checkpoint{MachineID: r.MachineID, Pause: r.Pauses + 1, RootFS: r.RootFS, Resources: r.Resources, Run: r.Run}
+	snap := checkpoint{MachineID: r.MachineID, Pause: r.Pauses + 1, RootFS: r.RootFS, Roots: r.Roots, Resources: r.Resources, Run: r.Run}
 	if err := writeJSON(filepath.Join(tmp, checkpointMeta), snap); err != nil {
 		return err
 	}
@@ -415,7 +415,7 @@ func (p *Provider) forkCheckpoint(ctx context.Context, dir string, spec models.S
 	}
 
 	// The saved memory restores under its own identifier and size only; the network, and the name the guest answers to, are what the fork changes.
-	r := record{MachineID: snap.MachineID, RootFS: firstNonEmpty(spec.RootFS, snap.RootFS), Resources: snap.Resources, Run: snap.Run}
+	r := record{MachineID: snap.MachineID, RootFS: firstNonEmpty(spec.RootFS, snap.RootFS), Roots: snap.Roots, Resources: snap.Resources, Run: snap.Run}
 	r.network(spec)
 	if err := writeRecord(spec.StateDir, r); err != nil {
 		return err

@@ -137,7 +137,8 @@ func runTests(m *testing.M) (exit int) {
 		}
 		defer os.RemoveAll(dir)
 		initBinary = filepath.Join(dir, "shard-init")
-		build := exec.Command("go", "build", "-o", initBinary, "../../../cmd/shard-init")
+		// A host without /proc has no /proc/self/exe for the guest's files exec to run, so the guest is told its own path.
+		build := exec.Command("go", "build", "-ldflags", "-X main.selfBinary="+initBinary, "-o", initBinary, "../../../cmd/shard-init")
 		build.Stderr = os.Stderr
 		if err := build.Run(); err != nil {
 			fmt.Fprintln(os.Stderr, "build shard-init:", err)

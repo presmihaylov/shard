@@ -562,6 +562,10 @@ func (t *transport) launch(spec supervisor.RunSpec) error {
 	if err != nil {
 		return err
 	}
+	env, err := withHome("/", spec.Env, credential)
+	if err != nil {
+		return err
+	}
 
 	restart, err := parseRestart(string(nonEmpty(spec.Restart, models.RestartNo)), spec.Retries, nonEmpty(spec.Backoff, defaultBackoff), nonEmpty(spec.Reset, defaultReset))
 	if err != nil {
@@ -573,7 +577,7 @@ func (t *transport) launch(spec supervisor.RunSpec) error {
 			return err
 		}
 	}
-	ep := entrypoint{argv: spec.Argv, env: spec.Env, dir: spec.WorkDir, credential: credential, out: t.logs.pipe}
+	ep := entrypoint{argv: spec.Argv, env: env, dir: spec.WorkDir, credential: credential, out: t.logs.pipe}
 	t.g.run(func() {
 		if t.g.started {
 			err = errors.New("the entrypoint already runs")

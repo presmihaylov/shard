@@ -92,9 +92,11 @@ func TestTrustProxyRefusesAGuestSymlinkOutOfTheLayer(t *testing.T) {
 // A link that stays inside the layer is the guest's own business, and the write lands where the guest reads it.
 func TestTrustProxyFollowsAGuestSymlinkInsideTheLayer(t *testing.T) {
 	b := built(t)
-	if err := os.MkdirAll(filepath.Join(b.Upper, "usr/ssl"), 0o755); err != nil {
+	if err := os.MkdirAll(filepath.Join(b.Upper, "usr/ssl/certs"), 0o755); err != nil {
 		t.Fatal(err)
 	}
+	// The roots are read where the guest finds them, behind its own link.
+	write(t, filepath.Join(b.Upper, "usr/ssl/certs/ca-certificates.crt"), imageRoots)
 	plantLink(t, filepath.Join(b.Upper, "etc/ssl"), "../usr/ssl")
 
 	if err := b.TrustProxy([]byte(proxyCA)); err != nil {

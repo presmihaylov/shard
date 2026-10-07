@@ -1,6 +1,7 @@
 package bundle
 
 import (
+	"bytes"
 	"errors"
 	"fmt"
 	"io/fs"
@@ -43,34 +44,64 @@ type Store struct {
 	Env   []string
 }
 
-// Trust merges the proxy CA into the image's own roots; a substrate with no upper layer hands it to the guest to write.
-func Trust(rootfs string, env []string, proxyCA []byte) (Store, error) {
+// Roots is the CA bundle a tree holds before the proxy CA joins it, and its path there; no path is a tree with none.
+type Roots struct {
+	Path string `json:"path,omitempty"`
+	PEM  []byte `json:"pem,omitempty"`
+}
+
+// ReadRoots reads the tree's own CA bundle; a tree with none answers empty roots, which only a fronted sandbox refuses.
+func ReadRoots(rootfs string, env []string) (Roots, error) {
 	rel, roots, err := imageRoots(rootfs, env)
+	if errors.Is(err, ErrNoCABundle) {
+		return Roots{}, nil
+	}
 	if err != nil {
-		return Store{}, err
+		return Roots{}, err
 	}
 
-	merged := append(slices.Clone(roots), '\n')
-	if roots[len(roots)-1] == '\n' {
-		merged = slices.Clone(roots)
+	return Roots{Path: "/" + rel, PEM: roots}, nil
+}
+
+// Trust merges the proxy CA into the image's own roots; a substrate with no upper layer hands it to the guest to write.
+func Trust(rootfs string, env []string, proxyCA []byte) (Store, error) {
+	return trustIn(rootfs, "the image rootfs "+rootfs, env, proxyCA)
+}
+
+// trustIn merges the proxy CA into the roots of tree, which a refusal calls name.
+func trustIn(tree, name string, env []string, proxyCA []byte) (Store, error) {
+	rel, roots, err := imageRoots(tree, env)
+	if err != nil {
+		return Store{}, fmt.Errorf("%s: %w", name, err)
 	}
-	merged = append(merged, proxyCA...)
+
+	return Roots{Path: "/" + rel, PEM: roots}.Trust(proxyCA)
+}
+
+// Trust adds the proxy CA to the roots once: a tree a fronted sandbox left, as a snapshot keeps it, holds the CA already.
+func (r Roots) Trust(proxyCA []byte) (Store, error) {
+	if len(r.PEM) == 0 {
+		return Store{}, fmt.Errorf("the sandbox's tree has %w to add the proxy CA to", ErrNoCABundle)
+	}
+
+	merged := slices.Clone(r.PEM)
+	if !bytes.Contains(r.PEM, bytes.TrimSpace(proxyCA)) {
+		if merged[len(merged)-1] != '\n' {
+			merged = append(merged, '\n')
+		}
+		merged = append(merged, proxyCA...)
+	}
 
 	trust := make([]string, 0, len(TrustEnv))
 	for _, key := range TrustEnv {
-		trust = append(trust, key+"=/"+rel)
+		trust = append(trust, key+"="+r.Path)
 	}
 
-	return Store{Path: "/" + rel, Roots: merged, Env: trust}, nil
+	return Store{Path: r.Path, Roots: merged, Env: trust}, nil
 }
 
 // plantTrust writes the merged store into layer, and says which variables point every client at it.
-func plantTrust(layer, rootfs string, env []string, proxyCA []byte, shift idShift) ([]string, error) {
-	trust, err := Trust(rootfs, env, proxyCA)
-	if err != nil {
-		return nil, err
-	}
-
+func plantTrust(layer string, trust Store, shift idShift) ([]string, error) {
 	if err := writeLayer(layer, filepath.FromSlash(strings.TrimPrefix(trust.Path, "/")), trust.Roots, shift); err != nil {
 		return nil, err
 	}
@@ -78,32 +109,38 @@ func plantTrust(layer, rootfs string, env []string, proxyCA []byte, shift idShif
 	return trust.Env, nil
 }
 
-// imageRoots reads the image's own CA bundle from the first path that holds one, inside the rootfs only.
+// imageRoots reads the tree's own CA bundle from the first path that holds one, inside the tree only.
 func imageRoots(rootfs string, env []string) (string, []byte, error) {
 	root, err := os.OpenRoot(rootfs)
 	if err != nil {
-		return "", nil, fmt.Errorf("open the image rootfs %s: %w", rootfs, err)
+		return "", nil, fmt.Errorf("open %s: %w", rootfs, err)
 	}
 	defer root.Close() //nolint:errcheck // a read-only handle has nothing left to flush
 
-	candidates := slices.Clone(rootPaths)
-	if named := envValue(env, "SSL_CERT_FILE"); named != "" {
-		candidates = append([]string{strings.TrimPrefix(path.Clean("/"+named), "/")}, candidates...)
-	}
-
+	candidates := rootCandidates(env)
 	for _, rel := range candidates {
 		roots, err := root.ReadFile(rel)
 		if errors.Is(err, fs.ErrNotExist) || len(roots) == 0 && err == nil {
 			continue
 		}
 		if err != nil {
-			return "", nil, fmt.Errorf("read the CA bundle %s of the image rootfs %s: %w", rel, rootfs, err)
+			return "", nil, fmt.Errorf("read the CA bundle /%s: %w", rel, err)
 		}
 
 		return rel, roots, nil
 	}
 
-	return "", nil, fmt.Errorf("the image rootfs %s has %w to add the proxy CA to; tried /%s", rootfs, ErrNoCABundle, strings.Join(candidates, ", /"))
+	return "", nil, fmt.Errorf("%w to add the proxy CA to; tried /%s", ErrNoCABundle, strings.Join(candidates, ", /"))
+}
+
+// rootCandidates is where a tree may keep its CA bundle, the one SSL_CERT_FILE names first.
+func rootCandidates(env []string) []string {
+	candidates := slices.Clone(rootPaths)
+	if named := envValue(env, "SSL_CERT_FILE"); named != "" {
+		candidates = append([]string{strings.TrimPrefix(path.Clean("/"+named), "/")}, candidates...)
+	}
+
+	return candidates
 }
 
 func envValue(env []string, name string) string {
@@ -118,8 +155,8 @@ func envValue(env []string, name string) string {
 }
 
 // TrustProxy plants the proxy CA in a bundle that is already built, so a sandbox granted a secret after
-// its create trusts the proxy the way a fronted create does. It reads the image roots again, so it is
-// idempotent: a second call writes the same merged bundle.
+// its create trusts the proxy the way a fronted create does. It reads the roots the sandbox holds now and
+// adds the CA only where it is missing, so a second call writes the same bundle.
 func (b Bundle) TrustProxy(proxyCA []byte) error {
 	if len(proxyCA) == 0 {
 		return errors.New("no proxy CA: there is nothing for the sandbox to trust")
@@ -145,7 +182,16 @@ func (b Bundle) TrustProxy(proxyCA []byte) error {
 		if err != nil {
 			return err
 		}
-		trust, err = plantTrust(layer, rootfs, spec.Process.Env, proxyCA, shift)
+		// A mounted overlay shows the merged view itself; a bare upper layer shows it only over the image (SHARD-784).
+		layers := []string{layer}
+		if layer == b.Upper {
+			layers = append(layers, rootfs)
+		}
+		store, err := layeredTrust(layers, "the sandbox's files over the image rootfs "+rootfs, spec.Process.Env, proxyCA)
+		if err != nil {
+			return err
+		}
+		trust, err = plantTrust(layer, store, shift)
 
 		return err
 	})
@@ -157,4 +203,15 @@ func (b Bundle) TrustProxy(proxyCA []byte) error {
 	spec.Process.Env = runspec.MergeEnv(spec.Process.Env, trust)
 
 	return b.writeSpec(spec)
+}
+
+// layeredTrust merges the proxy CA into the roots the overlay of layers shows, which a refusal calls name.
+func layeredTrust(layers []string, name string, env []string, proxyCA []byte) (Store, error) {
+	tree, err := layeredTree(layers, rootCandidates(env))
+	if err != nil {
+		return Store{}, err
+	}
+	trust, err := trustIn(tree, name, env, proxyCA)
+
+	return trust, errors.Join(err, os.RemoveAll(tree))
 }

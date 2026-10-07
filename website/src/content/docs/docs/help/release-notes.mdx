@@ -17,6 +17,16 @@ To upgrade the CLI, run the installer again. To upgrade a host that setup prepar
 
 shard is pre-alpha, so a release can change the API, the CLI and the SDKs without any compatibility guarantees.
 
+## v0.1.5
+
+7 October 2026. [Full notes](https://github.com/presmihaylov/shard/releases/tag/v0.1.5).
+
+**Fixes**
+
+- `shard create --snapshot NAME --user USER` finds a user that the snapshot holds and the image does not. Before, the create failed with `resolve the user "USER": no such entry in the image`.
+- A sandbox created from a snapshot uses the CA bundle of the snapshot for a policy or a secret, at create and at a later `shard policy attach` or `shard secret grant`. Before, shard read the CA bundle of the image, so it failed with `image ... has no CA bundle` when only the snapshot had `ca-certificates`.
+- Firecracker and vz: the entrypoint and every exec get `HOME` from the `/etc/passwd` of the sandbox, as on gVisor, runc and Sysbox. Before, `HOME` was not set, so `~` did not expand. A `HOME` that you set with `--env` still wins.
+
 ## v0.1.4
 
 6 October 2026. [Full notes](https://github.com/presmihaylov/shard/releases/tag/v0.1.4).

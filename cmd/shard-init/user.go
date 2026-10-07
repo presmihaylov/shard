@@ -24,6 +24,44 @@ func execCredential(header supervisor.ExecHeader) (*syscall.Credential, error) {
 	return credentialOf(header.User, header.Groups)
 }
 
+// homeField is the passwd field that names a user's home.
+const homeField = 5
+
+// withHome sets the HOME runsc and runc take from the guest's passwd, which nothing else sets in a VM (SHARD-784).
+func withHome(root string, env []string, credential *syscall.Credential) ([]string, error) {
+	// A HOME already set wins even when empty, as runsc keeps it.
+	if slices.ContainsFunc(env, func(entry string) bool { return strings.HasPrefix(entry, "HOME=") }) {
+		return env, nil
+	}
+	uid := uint32(0)
+	if credential != nil {
+		uid = credential.Uid
+	}
+	passwd, err := readDatabase(filepath.Join(root, "etc/passwd"), 3)
+	if err != nil {
+		return nil, err
+	}
+
+	return append(slices.Clip(env), "HOME="+homeOf(passwd, uid)), nil
+}
+
+// homeOf is what runsc finds: the home of the first entry with the uid, and "/" without one.
+func homeOf(passwd [][]string, uid uint32) string {
+	for _, fields := range passwd {
+		if id, err := parseID(fields[2]); err != nil || id != uid {
+			continue
+		}
+		// An entry with no home field leaves HOME empty, as runsc and runc both do.
+		if len(fields) <= homeField {
+			return ""
+		}
+
+		return fields[homeField]
+	}
+
+	return "/"
+}
+
 // lookupCredential follows the rules of bundle.ResolveUser, which the guest does not import: that package doubles its size.
 func lookupCredential(root, user string) (*syscall.Credential, error) {
 	name, group, hasGroup := strings.Cut(user, ":")

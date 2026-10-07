@@ -428,8 +428,8 @@ func guestPath(root *os.Root, rel string, mounts map[string]string) (string, fs.
 	return resolved, mode, nil
 }
 
-// maxPasswd bounds the one read a HOME takes, so a sparse passwd the guest grew cannot hold an exec past its budget.
-const maxPasswd = 4 << 20
+// MaxGuestFile bounds each read of a guest file shard checks, so a sparse one the guest grew cannot hold a verb past its budget.
+const MaxGuestFile = 4 << 20
 
 // AddHome sets the HOME runsc and runc 1.3 would read from the guest's passwd, so neither opens a file the guest can swap for a fifo (SHARD-752).
 func AddHome(rootfs, user string, env []string) ([]string, error) {
@@ -491,12 +491,12 @@ func guestHome(rootfs string, uid uint32) (string, error) {
 	}
 	defer f.Close()
 
-	data, err := io.ReadAll(io.LimitReader(f, maxPasswd+1))
+	data, err := io.ReadAll(io.LimitReader(f, MaxGuestFile+1))
 	if err != nil {
 		return "", fmt.Errorf("read %s: %w", full, err)
 	}
-	if len(data) > maxPasswd {
-		return "", &UserDatabaseError{Err: fmt.Errorf("/%s is over %d MiB, more than a user database may hold", rel, maxPasswd>>20)}
+	if len(data) > MaxGuestFile {
+		return "", &UserDatabaseError{Err: fmt.Errorf("/%s is over %d MiB, more than a user database may hold", rel, MaxGuestFile>>20)}
 	}
 
 	for line := range strings.SplitSeq(string(data), "\n") {

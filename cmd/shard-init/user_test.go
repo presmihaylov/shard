@@ -126,3 +126,60 @@ func TestExecCredentialTakesResolvedIDs(t *testing.T) {
 		t.Error("a name without Lookup returned no error")
 	}
 }
+
+// A VM's kernel sets no HOME, so the guest finds it in passwd the way runsc does on Linux (SHARD-784).
+func TestWithHomeReadsThePasswdOfTheSandbox(t *testing.T) {
+	root := writeDatabases(t,
+		"root:x:0:0:root:/root:/bin/sh\nreviewer:x:1001:1001::/home/reviewer:/bin/bash\nreviewer2:x:1001:1001::/home/second:/bin/sh\nshort:x:1002:1002:\n",
+		"",
+	)
+
+	cases := map[string]struct {
+		env        []string
+		credential *syscall.Credential
+		want       []string
+	}{
+		"root when nobody is named":  {env: []string{"PATH=/bin"}, want: []string{"PATH=/bin", "HOME=/root"}},
+		"the first entry of a uid":   {credential: &syscall.Credential{Uid: 1001}, want: []string{"HOME=/home/reviewer"}},
+		"an entry with no home":      {credential: &syscall.Credential{Uid: 1002}, want: []string{"HOME="}},
+		"a uid passwd does not list": {credential: &syscall.Credential{Uid: 3000}, want: []string{"HOME=/"}},
+		"a HOME already set":         {env: []string{"HOME=/srv"}, credential: &syscall.Credential{Uid: 1001}, want: []string{"HOME=/srv"}},
+		"an empty HOME already set":  {env: []string{"HOME="}, want: []string{"HOME="}},
+	}
+
+	for name, c := range cases {
+		t.Run(name, func(t *testing.T) {
+			got, err := withHome(root, c.env, c.credential)
+			if err != nil {
+				t.Fatalf("withHome: %v", err)
+			}
+			if !slices.Equal(got, c.want) {
+				t.Errorf("got %q, want %q", got, c.want)
+			}
+		})
+	}
+}
+
+func TestWithHomeWithoutPasswd(t *testing.T) {
+	got, err := withHome(t.TempDir(), nil, &syscall.Credential{Uid: 1001})
+	if err != nil {
+		t.Fatalf("withHome: %v", err)
+	}
+	if !slices.Equal(got, []string{"HOME=/"}) {
+		t.Errorf("got %q, want HOME=/", got)
+	}
+}
+
+func TestWithHomeRefusesAPasswdThatIsNotAFile(t *testing.T) {
+	root := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(root, "etc"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := syscall.Mkfifo(filepath.Join(root, "etc/passwd"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	if _, err := withHome(root, nil, nil); err == nil || !strings.Contains(err.Error(), "/etc/passwd is a named pipe") {
+		t.Fatalf("a fifo at /etc/passwd gave %v, want it named a named pipe", err)
+	}
+}

@@ -69,13 +69,17 @@ func (s *session) run(g *guest, header supervisor.ExecHeader) (models.ExitStatus
 	if err != nil {
 		return models.ExitStatus{}, err
 	}
+	env, err := withHome("/", header.Env, credential)
+	if err != nil {
+		return models.ExitStatus{}, err
+	}
 
 	files, outputs, err := s.open(header)
 	if err != nil {
 		return models.ExitStatus{}, err
 	}
 
-	ep := entrypoint{argv: header.Argv, env: header.Env, dir: header.WorkDir, credential: credential}
+	ep := entrypoint{argv: header.Argv, env: env, dir: header.WorkDir, credential: credential}
 	pid, exited, err := g.spawn(ep, files, header.TTY)
 	// The child holds its own copies, so the supervisor's ends close whether the start took or not.
 	closeAll(files)

@@ -5,6 +5,7 @@ import (
 	"context"
 	"errors"
 	"io"
+	"io/fs"
 	"strings"
 	"testing"
 	"testing/iotest"
@@ -223,5 +224,68 @@ func TestTheContextUnblocksAGuestThatHangs(t *testing.T) {
 	// The read reports the kill when the guest's exit beats the close of its stdout, and the close reports it otherwise.
 	if joined := errors.Join(err, conn.Close()); strings.Count(joined.Error(), "signal 9") != 1 {
 		t.Fatalf("the stat joined with the close gave %v, want the killed exec once", joined)
+	}
+}
+
+// guestOf answers each get from its files by path, and a refusal by its code.
+func guestOf(t *testing.T, files map[string]string, codes map[string]string, sizes map[string]int64) ExecFunc {
+	return fakeGuest(func(header FileHeader, spec models.ExecSpec) models.ExitStatus {
+		if spec.User != "" {
+			t.Errorf("the files exec ran as %q, want root", spec.User)
+		}
+		if code, refused := codes[header.Path]; refused {
+			if err := WriteMessage(spec.Stdout, FileReply{Error: "refused " + header.Path, Code: code}); err != nil {
+				t.Errorf("reply: %v", err)
+			}
+
+			return models.ExitStatus{}
+		}
+		content := files[header.Path]
+		size, stated := sizes[header.Path]
+		if !stated {
+			size = int64(len(content))
+		}
+		if err := WriteMessage(spec.Stdout, FileReply{Stat: &models.FileStat{Type: models.FileRegular, Size: size}}); err != nil {
+			t.Errorf("reply: %v", err)
+		}
+		if _, err := spec.Stdout.WriteString(content); err != nil {
+			t.Errorf("write: %v", err)
+		}
+
+		return models.ExitStatus{}
+	})
+}
+
+func TestGuestFilesReadsWhatTheGuestHolds(t *testing.T) {
+	read := GuestFiles(t.Context(), guestOf(t, map[string]string{"/etc/passwd": "root:x:0:0::/root:/bin/sh\n"}, nil, nil), 64)
+
+	data, mode, err := read("etc/passwd")
+	if err != nil || mode != 0 || string(data) != "root:x:0:0::/root:/bin/sh\n" {
+		t.Fatalf("read gave %q, %v, %v, want the guest's passwd", data, mode, err)
+	}
+}
+
+// The checks over the guest's files take a missing file as absent and a non-file as its mode, as they do over an image.
+func TestGuestFilesMapsTheGuestsRefusals(t *testing.T) {
+	read := GuestFiles(t.Context(), guestOf(t, nil, map[string]string{"/etc/group": FileNotFound, "/etc/passwd": FileInvalid}, nil), 64)
+
+	if _, _, err := read("etc/group"); !errors.Is(err, fs.ErrNotExist) {
+		t.Errorf("a missing file gave %v, want %v", err, fs.ErrNotExist)
+	}
+	if data, mode, err := read("etc/passwd"); err != nil || data != nil || mode != fs.ModeIrregular {
+		t.Errorf("a non-file gave %q, %v, %v, want %v alone", data, mode, err, fs.ModeIrregular)
+	}
+}
+
+// A guest file over the limit is refused whether its stat says so or only its stream does.
+func TestGuestFilesRefusesAFileOverTheLimit(t *testing.T) {
+	big := strings.Repeat("x", 65)
+	run := guestOf(t, map[string]string{"/stated": big, "/streamed": big}, nil, map[string]int64{"/streamed": 0})
+	read := GuestFiles(t.Context(), run, 64)
+
+	for _, rel := range []string{"stated", "streamed"} {
+		if _, _, err := read(rel); err == nil || !strings.Contains(err.Error(), "more than shard reads") {
+			t.Errorf("read %s gave %v, want a refusal over the limit", rel, err)
+		}
 	}
 }

@@ -117,15 +117,24 @@ func (s *Service) Build(spec models.SandboxSpec) (Bundle, error) {
 		return Bundle{}, err
 	}
 
-	if spec.ProxyCA != nil {
-		trust, err := plantTrust(b.Upper, spec.RootFS, spec.Env, spec.ProxyCA, idShift{})
-		if err != nil {
-			return Bundle{}, err
+	var runtimeSpec *specs.Spec
+	err = withGuest(b, spec, func(guest, name string) error {
+		if spec.ProxyCA != nil {
+			store, err := trustIn(guest, name, spec.Env, spec.ProxyCA)
+			if err != nil {
+				return err
+			}
+			trust, err := plantTrust(b.Upper, store, idShift{})
+			if err != nil {
+				return err
+			}
+			spec.Env = runspec.MergeEnv(spec.Env, trust)
 		}
-		spec.Env = runspec.MergeEnv(spec.Env, trust)
-	}
+		built, err := s.runtimeSpec(spec, b, guest)
+		runtimeSpec = built
 
-	runtimeSpec, err := s.runtimeSpec(spec, b)
+		return err
+	})
 	if err != nil {
 		return Bundle{}, err
 	}
@@ -289,8 +298,23 @@ func layout(b Bundle) error {
 	return nil
 }
 
-func (s *Service) runtimeSpec(spec models.SandboxSpec, b Bundle) (*specs.Spec, error) {
-	argv, err := supervisorArgv(spec)
+// withGuest runs fn over the tree a create reads the user and the CA roots from, which a refusal calls name: the image, or what a seed's upper layer shows over it (SHARD-784).
+func withGuest(b Bundle, spec models.SandboxSpec, fn func(guest, name string) error) error {
+	if spec.Seed == "" {
+		return fn(spec.RootFS, "the image rootfs "+spec.RootFS)
+	}
+
+	tree, err := layeredTree([]string{b.Upper, spec.RootFS}, GuestPaths(spec.Env, spec.User))
+	if err != nil {
+		return err
+	}
+
+	return errors.Join(fn(tree, fmt.Sprintf("the seed %s over the image rootfs %s", spec.Seed, spec.RootFS)), os.RemoveAll(tree))
+}
+
+// runtimeSpec resolves the user in guest, the tree that holds the sandbox's own passwd and group.
+func (s *Service) runtimeSpec(spec models.SandboxSpec, b Bundle, guest string) (*specs.Spec, error) {
+	argv, err := supervisorArgv(spec, guest)
 	if err != nil {
 		return nil, err
 	}
@@ -355,7 +379,7 @@ func (s *Service) runtimeSpec(spec models.SandboxSpec, b Bundle) (*specs.Spec, e
 }
 
 // supervisorArgv is the whole point of this ticket: PID 1 is shard-init, and the entrypoint, when there is one, is its child.
-func supervisorArgv(spec models.SandboxSpec) ([]string, error) {
+func supervisorArgv(spec models.SandboxSpec, guest string) ([]string, error) {
 	argv := []string{
 		GuestInitPath,
 		"-ready-file", path.Join(guestShardDir, readyFileName),
@@ -363,12 +387,12 @@ func supervisorArgv(spec models.SandboxSpec) ([]string, error) {
 
 	// runspec.Resolve already folded the image USER in, so an empty one here means nobody asked for a user.
 	if spec.User != "" {
-		identity, err := ResolveUser(spec.RootFS, spec.User)
+		identity, err := ResolveUser(guest, spec.User)
 		if err != nil {
 			return nil, err
 		}
 
-		// The name is resolved on the host, against the image rootfs: the supervisor cannot read a passwd.
+		// The name is resolved on the host, against the guest's files: the supervisor cannot read a passwd.
 		argv = append(argv, "-user", fmt.Sprintf("%d:%d", identity.UID, identity.GID))
 		argv = append(argv, "-groups", formatGroups(identity.Groups))
 	}

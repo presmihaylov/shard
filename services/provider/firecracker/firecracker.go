@@ -328,7 +328,9 @@ type record struct {
 	Nameservers []string `json:"nameservers,omitempty"`
 	Hostname    string   `json:"hostname,omitempty"`
 	// RootFS is the image tree a start reads the CA roots from; an exec resolves a named user in the guest (SHARD-356).
-	RootFS    string             `json:"rootfs,omitempty"`
+	RootFS string `json:"rootfs,omitempty"`
+	// Roots are the CA roots a seed's overlay held at create, which a later trust reads in place of the image's (SHARD-784).
+	Roots     *bundle.Roots      `json:"roots,omitempty"`
 	Resources models.Resources   `json:"resources"`
 	Run       supervisor.RunSpec `json:"run"`
 	// UID is the uid and gid the vmm runs as, which a start and a resume keep; zero is a record from before the jail (SHARD-306).

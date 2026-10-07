@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"io/fs"
 	"os"
 	"strings"
 	"sync"
@@ -45,6 +46,53 @@ func OpenFiles(ctx context.Context, run ExecFunc, user string) (FilesConn, error
 	c.stop = context.AfterFunc(ctx, c.shut)
 
 	return c, nil
+}
+
+// GuestFiles reads one guest file per files exec, as root: a path that leads nowhere is fs.ErrNotExist, one the guest will not read as a file answers fs.ModeIrregular, and one over limit bytes is refused.
+func GuestFiles(ctx context.Context, run ExecFunc, limit int64) func(rel string) ([]byte, fs.FileMode, error) {
+	return func(rel string) ([]byte, fs.FileMode, error) {
+		conn, err := OpenFiles(ctx, run, "")
+		if err != nil {
+			return nil, 0, err
+		}
+		data, readErr := readGuestFile(conn, "/"+rel, limit)
+		if err := conn.Close(); err != nil {
+			return nil, 0, errors.Join(readErr, err)
+		}
+		refused, ok := errors.AsType[*FileError](readErr)
+		if !ok {
+			return data, 0, readErr
+		}
+		switch refused.Code {
+		case FileNotFound:
+			return nil, 0, &fs.PathError{Op: OpGet, Path: "/" + rel, Err: fs.ErrNotExist}
+		case FileInvalid:
+			return nil, fs.ModeIrregular, nil
+		}
+
+		return nil, 0, readErr
+	}
+}
+
+// readGuestFile stops at limit, so a sparse file the guest grew costs the host no more than that.
+func readGuestFile(conn io.ReadWriter, path string, limit int64) ([]byte, error) {
+	stat, body, err := Get(conn, path)
+	if err != nil {
+		return nil, err
+	}
+	tooBig := fmt.Errorf("the guest's %s is over %d MiB, more than shard reads of a guest file", path, limit>>20)
+	if stat.Size > limit {
+		return nil, tooBig
+	}
+	data, err := io.ReadAll(io.LimitReader(body, limit+1))
+	if err != nil {
+		return nil, fmt.Errorf("read the guest's %s: %w", path, err)
+	}
+	if int64(len(data)) > limit {
+		return nil, tooBig
+	}
+
+	return data, nil
 }
 
 type pipe struct{ r, w *os.File }

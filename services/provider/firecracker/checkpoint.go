@@ -21,6 +21,7 @@ import (
 type checkpoint struct {
 	BaseDisk  string             `json:"base_disk"`
 	RootFS    string             `json:"rootfs,omitempty"`
+	Roots     *bundle.Roots      `json:"roots,omitempty"`
 	Resources models.Resources   `json:"resources"`
 	Run       supervisor.RunSpec `json:"run"`
 	// Jailed says the vmstate names each drive by its path in the jail, which every jailed restore has; one from before the jail names host paths (SHARD-306).
@@ -128,7 +129,7 @@ func (p *Provider) stageCheckpoint(m *machine, r record, verb, stateDir, tmp str
 	if err := bundle.Reflink(filepath.Join(stateDir, bundle.OverlayDiskFile), filepath.Join(tmp, bundle.OverlayDiskFile)); err != nil {
 		return fmt.Errorf("copy the overlay: %w", err)
 	}
-	meta := checkpoint{BaseDisk: r.BaseDisk, RootFS: r.RootFS, Resources: r.Resources, Run: r.Run, Jailed: true}
+	meta := checkpoint{BaseDisk: r.BaseDisk, RootFS: r.RootFS, Roots: r.Roots, Resources: r.Resources, Run: r.Run, Jailed: true}
 	if err := writeJSON(filepath.Join(tmp, checkpointMeta), meta); err != nil {
 		return err
 	}
@@ -505,7 +506,7 @@ func (p *Provider) forkCheckpoint(ctx context.Context, dir string, spec models.S
 	}
 
 	// The memory restores under its own bounds; the network, and the name the guest answers to, are what the fork changes.
-	r := record{BaseDisk: snap.BaseDisk, RootFS: snap.RootFS, Resources: snap.Resources, Run: snap.Run}
+	r := record{BaseDisk: snap.BaseDisk, RootFS: snap.RootFS, Roots: snap.Roots, Resources: snap.Resources, Run: snap.Run}
 	r.network(spec)
 	if err := writeRecord(spec.StateDir, r); err != nil {
 		return err

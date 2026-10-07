@@ -44,7 +44,7 @@ func (p *Provider) Create(ctx context.Context, spec models.SandboxSpec) error {
 		return err
 	}
 
-	return p.launch(ctx, spec.ID, spec.StateDir, r, false)
+	return p.launch(ctx, spec, r, false)
 }
 
 // writeDisk clones the image's root disk, or the seed's disk, grown to the bound.
@@ -68,8 +68,9 @@ func writeDisk(spec models.SandboxSpec) error {
 	})
 }
 
-// launch records the sandbox, boots its VM, addresses the guest, and runs the entrypoint when asked.
-func (p *Provider) launch(ctx context.Context, id, dir string, r record, run bool) error {
+// launch records the sandbox, boots its VM, addresses the guest, reads a seed's own files, and runs the entrypoint when asked.
+func (p *Provider) launch(ctx context.Context, spec models.SandboxSpec, r record, run bool) error {
+	id, dir := spec.ID, spec.StateDir
 	if err := writeRecord(dir, r); err != nil {
 		return err
 	}
@@ -87,11 +88,51 @@ func (p *Provider) launch(ctx context.Context, id, dir string, r record, run boo
 	if err := m.readdress(ctx, r); err != nil {
 		return errors.Join(err, p.end(ctx, m))
 	}
+	if spec.Seed != "" {
+		r, err = seeded(r, spec, supervisor.GuestFiles(ctx, guestRun(m), bundle.MaxGuestFile))
+		if err != nil {
+			return errors.Join(err, p.end(ctx, m))
+		}
+		if err := writeRecord(dir, r); err != nil {
+			return errors.Join(err, p.end(ctx, m))
+		}
+	}
 	if !run {
 		return nil
 	}
 
 	return p.run(ctx, m, r)
+}
+
+// guestRun runs one command as root in the VM a launch holds, before any exec can reach the sandbox.
+func guestRun(m *machine) supervisor.ExecFunc {
+	return func(ctx context.Context, spec models.ExecSpec) (models.ExitStatus, error) {
+		return supervisor.Exec(ctx, m.dial, m.id, supervisor.ExecHeader{Argv: spec.Argv, WorkDir: spec.WorkDir}, spec)
+	}
+}
+
+// seeded resolves the user and the CA roots against the seed's own files, which only the booted guest can read off its disk (SHARD-784).
+func seeded(r record, spec models.SandboxSpec, read bundle.ReadGuest) (record, error) {
+	tree, err := bundle.GuestTree(bundle.GuestPaths(r.Run.Env, spec.User), read)
+	if err != nil {
+		return record{}, fmt.Errorf("sandbox %s: read the files of the seed %s: %w", spec.ID, spec.Seed, err)
+	}
+	if err := r.seed(tree, spec); err != nil {
+		return record{}, errors.Join(fmt.Errorf("sandbox %s: %w", spec.ID, err), os.RemoveAll(tree))
+	}
+
+	return r, os.RemoveAll(tree)
+}
+
+// seed keeps the seed's roots for every later trust, then resolves against its files.
+func (r *record) seed(tree string, spec models.SandboxSpec) error {
+	roots, err := bundle.ReadRoots(tree, r.Run.Env)
+	if err != nil {
+		return err
+	}
+	r.Roots = &roots
+
+	return r.identify(tree, spec.User, spec.ProxyCA)
 }
 
 // clear drops what an earlier run of this state directory left, so nothing of it answers for the new one.
@@ -105,7 +146,6 @@ func clear(dir string) error {
 	return nil
 }
 
-// recordOf resolves the spec into what the guest is told: the ids on the host, the policy in the guest's units.
 // checkMemory refuses a bound the guest cannot boot under; zero is unbounded on Linux, and a VM has no such thing.
 func checkMemory(spec models.SandboxSpec) error {
 	if err := checkResources(spec.Resources); err != nil {
@@ -129,25 +169,44 @@ func checkResources(res models.Resources) error {
 	return nil
 }
 
+// recordOf resolves the spec into what the guest is told: the ids on the host, the policy in the guest's units.
 func recordOf(spec models.SandboxSpec) (record, error) {
-	run, err := runOf(spec.RootFS, spec.Entrypoint, spec.Env, spec.WorkDir, spec.User, spec.Restart)
-	if err != nil {
-		return record{}, fmt.Errorf("sandbox %s: %w", spec.ID, err)
-	}
-	r := record{RootFS: spec.RootFS, Resources: spec.Resources, Run: run}
+	r := record{RootFS: spec.RootFS, Resources: spec.Resources, Run: runOf(spec.Entrypoint, spec.Env, spec.WorkDir, spec.Restart)}
 	r.network(spec)
-	if spec.ProxyCA != nil {
-		if err := r.trust(spec.ProxyCA); err != nil {
-			return record{}, fmt.Errorf("sandbox %s: %w", spec.ID, err)
-		}
+	// A seed's passwd and CA bundle are on its disk, not in the image, so launch resolves them once the guest is up.
+	if spec.Seed != "" {
+		// The guest refuses to run as a bare name, so a create cut before launch resolves it never runs as root.
+		r.Run.User = spec.User
+
+		return r, nil
+	}
+	if err := r.identify(spec.RootFS, spec.User, spec.ProxyCA); err != nil {
+		return record{}, fmt.Errorf("sandbox %s: %w", spec.ID, err)
 	}
 
 	return r, nil
 }
 
-// trust merges the proxy CA into the image roots the way the bundle plants them on Linux; the guest writes the store at every start, so a fork's disk carries it too.
+// identify resolves the user, and the trust when there is a proxy CA, against tree: the image rootfs, or a copy of a seed's own files.
+func (r *record) identify(tree, user string, proxyCA []byte) error {
+	if user != "" {
+		identity, err := bundle.ResolveUser(tree, user)
+		if err != nil {
+			return err
+		}
+		r.Run.User = fmt.Sprintf("%d:%d", identity.UID, identity.GID)
+		r.Run.Groups = identity.Groups
+	}
+	if proxyCA == nil {
+		return nil
+	}
+
+	return r.trust(proxyCA)
+}
+
+// trust merges the proxy CA into the roots the way the bundle plants them on Linux; the guest writes the store at every start, so a fork's disk carries it too.
 func (r *record) trust(proxyCA []byte) error {
-	trust, err := bundle.Trust(r.RootFS, r.Run.Env, proxyCA)
+	trust, err := r.roots(proxyCA)
 	if err != nil {
 		return err
 	}
@@ -173,8 +232,17 @@ func (r *record) network(spec models.SandboxSpec) {
 	}
 }
 
-func runOf(rootfs string, argv, env []string, workDir, user string, restart models.RestartSpec) (supervisor.RunSpec, error) {
-	run := supervisor.RunSpec{
+// roots reads the seed's roots the create kept, or the image's.
+func (r *record) roots(proxyCA []byte) (bundle.Store, error) {
+	if r.Roots != nil {
+		return r.Roots.Trust(proxyCA)
+	}
+
+	return bundle.Trust(r.RootFS, r.Run.Env, proxyCA)
+}
+
+func runOf(argv, env []string, workDir string, restart models.RestartSpec) supervisor.RunSpec {
+	return supervisor.RunSpec{
 		Argv:    argv,
 		Env:     bundle.Environment(env),
 		WorkDir: workDir,
@@ -182,18 +250,6 @@ func runOf(rootfs string, argv, env []string, workDir, user string, restart mode
 		Retries: restart.Retries,
 		Backoff: time.Duration(restart.Backoff) * time.Second,
 	}
-	if user == "" {
-		return run, nil
-	}
-
-	identity, err := bundle.ResolveUser(rootfs, user)
-	if err != nil {
-		return supervisor.RunSpec{}, err
-	}
-	run.User = fmt.Sprintf("%d:%d", identity.UID, identity.GID)
-	run.Groups = identity.Groups
-
-	return run, nil
 }
 
 // Start runs the entrypoint, over a VM booted again on the disk the stop kept when the last one is gone.
