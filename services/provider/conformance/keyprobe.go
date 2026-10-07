@@ -26,7 +26,7 @@ func InstallKeyProbe(t *testing.T, rootfs string) {
 	if err != nil {
 		t.Fatalf("read the key probe: %v", err)
 	}
-	if err := os.WriteFile(filepath.Join(rootfs, KeyProbePath), probe, 0o755); err != nil { //nolint:gosec // the guest entrypoint, which the guest root must execute
+	if err := os.WriteFile(filepath.Join(rootfs, KeyProbePath), probe, 0o755); err != nil { //nolint:gosec // the probe, which the guest root must execute
 		t.Fatalf("install the key probe: %v", err)
 	}
 }

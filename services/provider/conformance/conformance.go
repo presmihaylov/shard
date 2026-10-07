@@ -1,5 +1,4 @@
-// Package conformance is the suite every models.Provider must pass: keep-alive, the grace a stop
-// owes an entrypoint, and Capabilities matching the verbs.
+// Package conformance is the suite every models.Provider must pass: keep-alive, named processes, the grace a stop owes them, and Capabilities matching the verbs.
 package conformance
 
 import (
@@ -11,6 +10,7 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+	"syscall"
 	"testing"
 	"time"
 
@@ -20,11 +20,8 @@ import (
 // Subject is what a provider's tests hand to Run.
 type Subject struct {
 	Provider models.Provider
-	// NewSpec returns a fresh spec whose entrypoint exits 0 quickly. Its t.Cleanup must tolerate a sandbox a subtest already removed.
+	// NewSpec returns a fresh spec. Its t.Cleanup must tolerate a sandbox a subtest already removed.
 	NewSpec func(t *testing.T) models.SandboxSpec
-	// NewIgnoresTermSpec returns a spec whose entrypoint ignores SIGTERM, which is what proves grace.
-	// It must print ReadyMarker on stdout once the entrypoint refuses the signal, and not before.
-	NewIgnoresTermSpec func(t *testing.T) models.SandboxSpec
 	// EmptyDir returns an empty directory the suite may write a checkpoint or a snapshot into.
 	EmptyDir func(t *testing.T) string
 	// Shell turns a shell script into the argv that runs it in the sandboxes NewSpec builds.
@@ -48,14 +45,13 @@ type environments interface {
 	Environment(id string) (models.Environment, error)
 }
 
-// ReadyMarker is what an ignores-term entrypoint prints once it refuses SIGTERM. A stop sent before
-// that lands on an entrypoint that still dies on the signal, which proves nothing about grace.
-const ReadyMarker = "conformance-ignores-term"
+// readyMarker is what an ignores-term process prints once it refuses SIGTERM; a stop before that proves nothing about grace.
+const readyMarker = "conformance-ignores-term"
 
 const (
-	// stopGrace is what a cooperative entrypoint never needs. A provider that ignores grace waits it out.
+	// stopGrace is what a cooperative process never needs. A provider that ignores grace waits it out.
 	stopGrace = 5 * time.Second
-	// termGrace is what an entrypoint that refuses SIGTERM is owed, and slack is the kill after it.
+	// termGrace is what a process that refuses SIGTERM is owed, and slack is the kill after it.
 	termGrace = 3 * time.Second
 	killSlack = 15 * time.Second
 	// waitSlack bounds the assertions that must answer at once rather than poll.
@@ -73,8 +69,8 @@ const forkCount = 3
 func Run(t *testing.T, s Subject) {
 	t.Helper()
 
-	if s.Provider == nil || s.NewSpec == nil || s.NewIgnoresTermSpec == nil || s.EmptyDir == nil || s.Shell == nil || s.Reopen == nil {
-		t.Fatal("conformance: Subject needs Provider, NewSpec, NewIgnoresTermSpec, EmptyDir, Shell and Reopen")
+	if s.Provider == nil || s.NewSpec == nil || s.EmptyDir == nil || s.Shell == nil || s.Reopen == nil {
+		t.Fatal("conformance: Subject needs Provider, NewSpec, EmptyDir, Shell and Reopen")
 	}
 
 	caps := s.Provider.Capabilities()
@@ -93,18 +89,17 @@ func Run(t *testing.T, s Subject) {
 
 	t.Run("Lifecycle", func(t *testing.T) {
 		id := s.running(t)
-
-		status, err := s.Provider.Wait(t.Context(), id)
-		if err != nil {
-			t.Fatalf("Wait: %v", err)
-		}
-
-		if status.Code != 0 {
-			t.Errorf("Wait: got exit code %d, want 0", status.Code)
-		}
-
 		if !s.status(t, id).Alive() {
-			t.Fatal("the sandbox died with its entrypoint, and it must outlive it")
+			t.Fatal("a started sandbox runs no process yet, and it must still be running")
+		}
+
+		s.run(t, id, models.ProcessSpec{Name: "job", Argv: s.Shell("exit 0")})
+		job := s.awaitProcess(t, id, "job", hasEnded)
+		if job.State != models.ProcessExited || job.Exit == nil || job.Exit.Code != 0 {
+			t.Errorf("the process ended as %+v, want exited with code 0", job.ProcessStatus)
+		}
+		if !s.status(t, id).Alive() {
+			t.Fatal("the sandbox died with its process, and it must outlive it")
 		}
 
 		started := time.Now()
@@ -112,7 +107,7 @@ func Run(t *testing.T, s Subject) {
 			t.Fatalf("Stop: %v", err)
 		}
 
-		// The entrypoint is already gone, so a stop that costs its grace ended the sandbox with a kill.
+		// Nothing runs, so a stop that costs its grace ended the sandbox with a kill.
 		if elapsed := time.Since(started); elapsed > stopGrace/3 {
 			t.Errorf("Stop took %s of a %s grace, so the signal did not end the sandbox", elapsed, stopGrace)
 		}
@@ -155,10 +150,9 @@ func Run(t *testing.T, s Subject) {
 		}
 	})
 
-	// runsc refuses to signal a container whose entrypoint never started, and every substrate has a
-	// state like it. Stop is the only thing that ends a sandbox, so it must end that one too.
+	// Every substrate has a created state that runs nothing yet, and Stop is the only thing that ends a sandbox, so it must end that one too.
 	t.Run("StopASandboxThatNeverStarted", func(t *testing.T) {
-		spec := s.NewIgnoresTermSpec(t)
+		spec := s.NewSpec(t)
 		if err := s.Provider.Create(t.Context(), spec); err != nil {
 			t.Fatalf("Create: %v", err)
 		}
@@ -206,9 +200,9 @@ func Run(t *testing.T, s Subject) {
 
 	// The grace is the second argument of a required verb, so a provider that ignores it must fail here.
 	t.Run("StopOwnsTheGraceAndThenKills", func(t *testing.T) {
-		spec := s.NewIgnoresTermSpec(t)
-		id := s.start(t, spec)
-		s.awaitReady(t, id)
+		id := s.running(t)
+		s.run(t, id, s.ignoresTerm("stubborn"))
+		s.awaitPrinted(t, id, "stubborn", readyMarker)
 
 		started := time.Now()
 		if err := s.Provider.Stop(t.Context(), id, termGrace); err != nil {
@@ -217,10 +211,10 @@ func Run(t *testing.T, s Subject) {
 		elapsed := time.Since(started)
 
 		if elapsed < termGrace {
-			t.Errorf("Stop took %s, and an entrypoint that ignores SIGTERM is owed its whole %s grace", elapsed, termGrace)
+			t.Errorf("Stop took %s, and a process that ignores SIGTERM is owed its whole %s grace", elapsed, termGrace)
 		}
 		if elapsed > termGrace+killSlack {
-			t.Errorf("Stop took %s of a %s grace, so nothing killed the entrypoint that ignored the signal", elapsed, termGrace)
+			t.Errorf("Stop took %s of a %s grace, so nothing killed the process that ignored the signal", elapsed, termGrace)
 		}
 
 		if s.status(t, id).Alive() {
@@ -228,12 +222,13 @@ func Run(t *testing.T, s Subject) {
 		}
 	})
 
-	// The grace is a bound and never a wait: an entrypoint that exits on SIGTERM ends the stop with it (SHARD-460).
-	t.Run("StopEndsWhenTheEntrypointExitsOnTerm", func(t *testing.T) {
-		spec := s.NewSpec(t)
-		spec.Entrypoint = s.Shell("trap 'exit 0' TERM; echo conformance-exits-on-term; while true; do sleep 0.1; done")
-		id := s.start(t, spec)
-		s.awaitLog(t, id, 0)
+	// The grace is a bound and never a wait: processes that exit on SIGTERM end the stop with them (SHARD-460).
+	t.Run("StopEndsWhenEveryProcessExitsOnTerm", func(t *testing.T) {
+		id := s.running(t)
+		for _, name := range []string{"first", "second"} {
+			s.run(t, id, models.ProcessSpec{Name: name, Argv: s.Shell("trap 'exit 0' TERM; echo conformance-exits-on-term; while true; do sleep 0.1; done")})
+			s.awaitPrinted(t, id, name, "conformance-exits-on-term")
+		}
 
 		started := time.Now()
 		if err := s.Provider.Stop(t.Context(), id, models.StopGrace); err != nil {
@@ -241,21 +236,20 @@ func Run(t *testing.T, s Subject) {
 		}
 
 		if elapsed := time.Since(started); elapsed > stopGrace/3 {
-			t.Errorf("Stop took %s of the %s grace, so it waited past an entrypoint that exited on SIGTERM", elapsed, models.StopGrace)
+			t.Errorf("Stop took %s of the %s grace, so it waited past processes that exited on SIGTERM", elapsed, models.StopGrace)
 		}
 		if s.status(t, id).Alive() {
 			t.Error("the sandbox is still alive after Stop")
 		}
 	})
 
-	// A second Create over a used state directory must not let the first run's exit answer a wait.
-	t.Run("ASecondCreateAnswersNoStaleExitStatus", func(t *testing.T) {
+	// A second Create over a used state directory must not show what the first run ran.
+	t.Run("ASecondCreateHoldsNoProcessOfTheFirst", func(t *testing.T) {
 		spec := s.NewSpec(t)
 		id := s.start(t, spec)
+		s.run(t, id, models.ProcessSpec{Name: "job", Argv: s.Shell("exit 0")})
+		s.awaitProcess(t, id, "job", hasEnded)
 
-		if _, err := s.Provider.Wait(t.Context(), id); err != nil {
-			t.Fatalf("Wait: %v", err)
-		}
 		if err := s.Provider.Stop(t.Context(), id, stopGrace); err != nil {
 			t.Fatalf("Stop: %v", err)
 		}
@@ -266,76 +260,162 @@ func Run(t *testing.T, s Subject) {
 		if err := s.Provider.Create(t.Context(), spec); err != nil {
 			t.Fatalf("the second Create: %v", err)
 		}
-
-		// Nothing has started, so the only status a wait could find is the one the first run left.
-		ctx, cancel := context.WithTimeout(t.Context(), time.Second)
-		defer cancel()
-
-		if status, err := s.Provider.Wait(ctx, id); err == nil {
-			t.Errorf("Wait answered %+v before the second run started its entrypoint", status)
+		if table := s.processes(t, s.Provider, id); len(table) != 0 {
+			t.Errorf("Processes reads %+v after a second Create, want none", table)
 		}
 	})
 
-	t.Run("TheEntrypointIsStartedAgainUnderARestartPolicy", func(t *testing.T) {
-		spec := s.NewSpec(t)
-		spec.Entrypoint = s.Shell("exit 3")
-		spec.Restart = models.RestartSpec{Policy: models.RestartOnFailure, Retries: 2, Backoff: 1}
-		id := s.start(t, spec)
+	t.Run("AProcessIsStartedAgainUnderARestartPolicy", func(t *testing.T) {
+		id := s.running(t)
+		s.run(t, id, models.ProcessSpec{Name: "crash", Argv: s.Shell("exit 3"), Restart: models.RestartSpec{Policy: models.RestartOnFailure, Retries: 2, Backoff: 1}})
 
-		count := s.awaitRestarts(t, id, func(count models.RestartCount) bool { return count.GaveUp })
-		if count.Count != 2 || count.LastAt.IsZero() {
-			t.Errorf("Restarts reads %+v at the give-up, want 2 starts again with a time on the last", count)
+		gaveUp := s.awaitProcess(t, id, "crash", hasEnded)
+		if gaveUp.State != models.ProcessGaveUp || gaveUp.Restarts != 2 {
+			t.Errorf("the process ended as %+v, want it given up after 2 starts again", gaveUp.ProcessStatus)
+		}
+		if gaveUp.Exit == nil || gaveUp.Exit.Code != 3 {
+			t.Errorf("the process gave up with %+v, want code 3 from the last run", gaveUp.Exit)
 		}
 		if !s.status(t, id).Alive() {
 			t.Error("the sandbox ended at the give-up, which only a stop may do")
 		}
 
-		exit, err := s.Provider.Wait(t.Context(), id)
-		if err != nil {
-			t.Fatalf("Wait: %v", err)
-		}
-		if exit.Code != 3 {
-			t.Errorf("Wait reads code %d after the give-up, want 3 from the last run", exit.Code)
-		}
 		if err := s.Provider.Stop(t.Context(), id, stopGrace); err != nil {
 			t.Fatalf("Stop: %v", err)
 		}
-		// The daemon records the count after the stop, so the stop must leave it readable (SHARD-401).
-		if after := s.restarts(t, id); after.Count != count.Count || after.GaveUp != count.GaveUp || !after.LastAt.Equal(count.LastAt) {
-			t.Errorf("Restarts reads %+v after Stop, want %+v as at the give-up", after, count)
-		}
-		if err := s.Provider.Remove(t.Context(), id); err != nil {
-			t.Fatalf("Remove: %v", err)
-		}
-
-		// The next run under this state directory must not inherit what the last one counted.
-		if err := s.Provider.Create(t.Context(), spec); err != nil {
-			t.Fatalf("the second Create: %v", err)
-		}
-		if count := s.restarts(t, id); count != (models.RestartCount{}) {
-			t.Errorf("Restarts reads %+v after a second Create, want zero", count)
+		// The daemon reads the table after the stop, so the stop must leave it readable (SHARD-401).
+		if after, held := s.process(t, s.Provider, id, "crash"); !held || after.State != gaveUp.State || after.Restarts != gaveUp.Restarts {
+			t.Errorf("Processes reads %+v after Stop, want %+v as at the give-up", after, gaveUp)
 		}
 	})
 
-	t.Run("WaitReturnsACancelledContext", func(t *testing.T) {
-		id := s.start(t, s.NewIgnoresTermSpec(t))
+	t.Run("TwoProcessesRunSideBySideWithALogEach", func(t *testing.T) {
+		id := s.running(t)
+		for _, name := range []string{"left", "right"} {
+			s.run(t, id, models.ProcessSpec{Name: name, Argv: s.Shell("echo from-" + name + "; while true; do sleep 0.1; done")})
+		}
 
-		ctx, cancel := context.WithCancel(t.Context())
-		cancel()
-
-		done := make(chan error, 1)
-		go func() {
-			_, err := s.Provider.Wait(ctx, id)
-			done <- err
-		}()
-
-		select {
-		case err := <-done:
-			if !errors.Is(err, ctx.Err()) {
-				t.Errorf("Wait returned %v, want the context error", err)
+		for name, other := range map[string]string{"left": "right", "right": "left"} {
+			out := s.awaitPrinted(t, id, name, "from-"+name)
+			if strings.Contains(out, "from-"+other) {
+				t.Errorf("the log of %s holds what %s printed:\n%s", name, other, out)
 			}
-		case <-time.After(waitSlack):
-			t.Fatal("Wait never answered on an already cancelled context")
+			if report, _ := s.process(t, s.Provider, id, name); report.State != models.ProcessRunning {
+				t.Errorf("process %s reads %+v, want running", name, report.ProcessStatus)
+			}
+		}
+	})
+
+	// A kill ends the one process it names, owes it the grace, and never starts it again.
+	t.Run("StopProcessOwnsTheGraceAndLeavesTheOthersRunning", func(t *testing.T) {
+		id := s.running(t)
+		always := models.RestartSpec{Policy: models.RestartAlways}
+		s.run(t, id, models.ProcessSpec{Name: "steady", Argv: s.Shell("while true; do sleep 0.1; done"), Restart: always})
+		stubborn := s.ignoresTerm("stubborn")
+		stubborn.Restart = always
+		s.run(t, id, stubborn)
+		s.awaitPrinted(t, id, "stubborn", readyMarker)
+
+		started := time.Now()
+		if err := s.Provider.StopProcess(t.Context(), id, "stubborn", termGrace); err != nil {
+			t.Fatalf("StopProcess: %v", err)
+		}
+		elapsed := time.Since(started)
+		if elapsed < termGrace {
+			t.Errorf("StopProcess took %s, and a process that ignores SIGTERM is owed its whole %s grace", elapsed, termGrace)
+		}
+		if elapsed > termGrace+killSlack {
+			t.Errorf("StopProcess took %s of a %s grace, so nothing killed the process that ignored the signal", elapsed, termGrace)
+		}
+
+		killed := s.awaitProcess(t, id, "stubborn", hasEnded)
+		if killed.State != models.ProcessKilled {
+			t.Errorf("the stopped process reads %+v, want killed and never started again", killed.ProcessStatus)
+		}
+		if steady, _ := s.process(t, s.Provider, id, "steady"); steady.State != models.ProcessRunning {
+			t.Errorf("the other process reads %+v, want it running on", steady.ProcessStatus)
+		}
+		if !s.status(t, id).Alive() {
+			t.Error("the sandbox ended with one of its processes, which only a stop may do")
+		}
+	})
+
+	t.Run("StopProcessWithNoGraceKillsAtOnce", func(t *testing.T) {
+		id := s.running(t)
+		s.run(t, id, s.ignoresTerm("stubborn"))
+		s.awaitPrinted(t, id, "stubborn", readyMarker)
+
+		started := time.Now()
+		if err := s.Provider.StopProcess(t.Context(), id, "stubborn", 0); err != nil {
+			t.Fatalf("StopProcess: %v", err)
+		}
+		if elapsed := time.Since(started); elapsed > stopGrace/3 {
+			t.Errorf("StopProcess with no grace took %s, so it waited for a SIGTERM the process ignores", elapsed)
+		}
+
+		killed := s.awaitProcess(t, id, "stubborn", hasEnded)
+		if killed.State != models.ProcessKilled || killed.Exit == nil || killed.Exit.Signal != int(syscall.SIGKILL) {
+			t.Errorf("the process reads %+v, want killed by SIGKILL", killed.ProcessStatus)
+		}
+	})
+
+	// A name is one process at a time, and a run of an ended name starts it over.
+	t.Run("StartProcessRefusesANameThatStillRuns", func(t *testing.T) {
+		id := s.running(t)
+		spec := models.ProcessSpec{Name: "only", Argv: s.Shell("while true; do sleep 0.1; done")}
+		s.run(t, id, spec)
+
+		if err := s.Provider.StartProcess(t.Context(), id, spec); !errors.Is(err, models.ErrProcessRunning) {
+			t.Errorf("a second StartProcess of a name that runs = %v, want ErrProcessRunning", err)
+		}
+
+		if err := s.Provider.StopProcess(t.Context(), id, "only", 0); err != nil {
+			t.Fatalf("StopProcess: %v", err)
+		}
+		s.awaitProcess(t, id, "only", hasEnded)
+		s.run(t, id, spec)
+		if again := s.awaitProcess(t, id, "only", isRunning); again.Restarts != 0 {
+			t.Errorf("the run of an ended name reads %+v, want a fresh process", again.ProcessStatus)
+		}
+	})
+
+	// The refusal is what shard run answers with 127, the code a shell gives a command it cannot find.
+	t.Run("StartProcessRefusesACommandThatIsNotThere", func(t *testing.T) {
+		id := s.running(t)
+
+		err := s.Provider.StartProcess(t.Context(), id, models.ProcessSpec{Name: "missing", Argv: []string{"/no/such/binary"}})
+		refused, ok := errors.AsType[*models.CommandNotStartedError](err)
+		if !ok {
+			t.Fatalf("StartProcess returned %v, want a CommandNotStartedError", err)
+		}
+		if refused.Code != models.CommandNotFoundExitCode {
+			t.Errorf("the refusal carries code %d, want %d", refused.Code, models.CommandNotFoundExitCode)
+		}
+	})
+
+	// A process's env and workdir belong to it alone, as an exec's do.
+	t.Run("AProcessAppliesItsOwnEnvAndWorkDir", func(t *testing.T) {
+		id := s.running(t)
+
+		s.run(t, id, models.ProcessSpec{Name: "env", Argv: s.Shell("pwd; echo conformance-$CONFORMANCE"), Env: []string{"CONFORMANCE=set"}, WorkDir: "/tmp"})
+		out := s.awaitPrinted(t, id, "env", "conformance-set")
+		if !strings.Contains(out, "/tmp") {
+			t.Errorf("the process ran in %q, want /tmp", out)
+		}
+	})
+
+	t.Run("StartProcessRefusesASandboxThatIsStopped", func(t *testing.T) {
+		id := s.running(t)
+		if err := s.Provider.Stop(t.Context(), id, stopGrace); err != nil {
+			t.Fatalf("Stop: %v", err)
+		}
+
+		err := s.Provider.StartProcess(t.Context(), id, models.ProcessSpec{Name: "late", Argv: s.Shell("true")})
+		if err == nil {
+			t.Fatal("StartProcess ran a process in a sandbox that is stopped")
+		}
+		if !strings.Contains(err.Error(), id) {
+			t.Errorf("the refusal is %q, and it must name the sandbox", err)
 		}
 	})
 
@@ -370,7 +450,7 @@ func Run(t *testing.T, s Subject) {
 		}
 	})
 
-	// An exec's env and workdir belong to that process alone, and the entrypoint never sees them.
+	// An exec's env and workdir belong to that command alone.
 	t.Run("ExecAppliesItsOwnEnvAndWorkDir", func(t *testing.T) {
 		id := s.running(t)
 
@@ -571,8 +651,8 @@ func Run(t *testing.T, s Subject) {
 		}
 	})
 
-	// A created container holds the config.json of its create, so a grant before the first start reaches the entrypoint only through a new create (SHARD-526).
-	t.Run("AGrantBeforeTheFirstStartReachesTheEntrypoint", func(t *testing.T) {
+	// A created container holds the config.json of its create, so a grant before the first start reaches a process only through a new create (SHARD-526).
+	t.Run("AGrantBeforeTheFirstStartReachesAProcess", func(t *testing.T) {
 		if !s.HostLayer {
 			t.Skip("the guest's writable layer is not a host directory")
 		}
@@ -584,7 +664,6 @@ func Run(t *testing.T, s Subject) {
 
 		const ca, probed = "conformance late proxy CA", "conformance-probed"
 		spec := s.NewSpec(t)
-		spec.Entrypoint = s.Shell(`printf 'late=%s\n%s\n' "$CONFORMANCE_LATE" "$(tail -c 64 "$SSL_CERT_FILE")"; echo ` + probed)
 		if err := s.Provider.Create(t.Context(), spec); err != nil {
 			t.Fatalf("Create: %v", err)
 		}
@@ -602,13 +681,14 @@ func Run(t *testing.T, s Subject) {
 		if err := s.Provider.Start(t.Context(), spec.ID); err != nil {
 			t.Fatalf("Start: %v", err)
 		}
+		s.run(t, spec.ID, models.ProcessSpec{Name: "probe", Argv: s.Shell(`printf 'late=%s\n%s\n' "$CONFORMANCE_LATE" "$(tail -c 64 "$SSL_CERT_FILE")"; echo ` + probed)})
 
-		out := s.awaitPrinted(t, spec.ID, probed)
+		out := s.awaitPrinted(t, spec.ID, "probe", probed)
 		if !strings.Contains(out, "late=granted\n") {
-			t.Errorf("the entrypoint never saw the variable granted before its first start:\n%s", out)
+			t.Errorf("the process never saw the variable granted before the first start:\n%s", out)
 		}
 		if !strings.Contains(out, ca) {
-			t.Errorf("the entrypoint's CA bundle does not end in the proxy CA planted before its first start:\n%s", out)
+			t.Errorf("the process's CA bundle does not end in the proxy CA planted before the first start:\n%s", out)
 		}
 	})
 
@@ -748,10 +828,9 @@ func Run(t *testing.T, s Subject) {
 
 	// A daemon restart opens a new provider over what the last one left; it runs last, since Reopen may close the first.
 	t.Run("ANewProviderAdoptsARunningSandbox", func(t *testing.T) {
-		spec := s.NewSpec(t)
-		spec.Entrypoint = s.Shell("while true; do echo tick; sleep 0.2; done")
-		id := s.start(t, spec)
-		logged := s.awaitLog(t, id, 0)
+		id := s.running(t)
+		s.run(t, id, models.ProcessSpec{Name: "tick", Argv: s.Shell("while true; do echo tick; sleep 0.2; done")})
+		logged := s.awaitLog(t, id, "tick", 0)
 
 		again := s.Reopen(t)
 		status, err := again.Status(t.Context(), id)
@@ -762,8 +841,11 @@ func Run(t *testing.T, s Subject) {
 			t.Fatalf("the new provider sees %+v, want the sandbox running with its pid", status)
 		}
 
-		// The entrypoint's output must keep landing in the log, on the connection the new provider opened.
-		s.awaitLog(t, id, logged)
+		// The process's output must keep landing in its log, on the connection the new provider opened.
+		s.awaitLog(t, id, "tick", logged)
+		if tick, held := s.process(t, again, id, "tick"); !held || tick.State != models.ProcessRunning {
+			t.Fatalf("the new provider reads %+v for the process the last one started, want it running", tick)
+		}
 
 		out, err := os.CreateTemp(t.TempDir(), "exec-output")
 		if err != nil {
@@ -779,6 +861,9 @@ func Run(t *testing.T, s Subject) {
 			t.Fatalf("Exec over the new provider = %+v, %q, %v", exit, written, err)
 		}
 
+		if err := again.StopProcess(t.Context(), id, "tick", 0); err != nil {
+			t.Fatalf("StopProcess over the new provider: %v", err)
+		}
 		if err := again.Stop(t.Context(), id, stopGrace); err != nil {
 			t.Fatalf("Stop over the new provider: %v", err)
 		}
@@ -855,7 +940,7 @@ func requireLinkNotTarget(t *testing.T, dir, host string) {
 	}
 }
 
-// copyOf is the spec the orchestrator hands Fork: the copy's id, name, lease and bounds, and no entrypoint, which the source keeps.
+// copyOf is the spec the orchestrator hands Fork: the copy's id, name, lease and bounds.
 func copyOf(spec models.SandboxSpec) models.SandboxSpec {
 	return models.SandboxSpec{ID: spec.ID, Name: spec.Name, StateDir: spec.StateDir, Network: spec.Network, Resources: spec.Resources}
 }
@@ -868,28 +953,21 @@ func (s Subject) scratch(name string) string {
 	return path.Join(s.Scratch, name)
 }
 
-// awaitReady blocks until the entrypoint has printed ReadyMarker, which is the only proof the suite
-// can read that it now ignores SIGTERM.
-func (s Subject) awaitReady(t *testing.T, id string) {
-	t.Helper()
-
-	s.awaitPrinted(t, id, ReadyMarker)
+// ignoresTerm is a process that refuses SIGTERM, which is what proves grace; it prints readyMarker once it does.
+func (s Subject) ignoresTerm(name string) models.ProcessSpec {
+	return models.ProcessSpec{Name: name, Argv: s.Shell("trap '' TERM; echo " + readyMarker + "; while true; do sleep 0.1; done")}
 }
 
-// awaitPrinted blocks until the sandbox log holds marker, and returns the log.
-func (s Subject) awaitPrinted(t *testing.T, id, marker string) string {
+// awaitPrinted blocks until the log of the named process holds marker, and returns the log.
+func (s Subject) awaitPrinted(t *testing.T, id, name, marker string) string {
 	t.Helper()
 
-	path, err := s.Provider.LogPath(id)
-	if err != nil {
-		t.Fatalf("LogPath: %v", err)
-	}
-
+	path := s.logPath(t, id, name)
 	deadline := time.Now().Add(waitSlack)
 	for time.Now().Before(deadline) {
 		out, err := os.ReadFile(path)
 		if err != nil && !errors.Is(err, fs.ErrNotExist) {
-			t.Fatalf("read the sandbox log %s: %v", path, err)
+			t.Fatalf("read the log %s: %v", path, err)
 		}
 		if strings.Contains(string(out), marker) {
 			return string(out)
@@ -898,25 +976,21 @@ func (s Subject) awaitPrinted(t *testing.T, id, marker string) string {
 		time.Sleep(readyPoll)
 	}
 
-	t.Fatalf("the entrypoint of %s never printed %q within %s", id, marker, waitSlack)
+	t.Fatalf("process %s of %s never printed %q within %s", name, id, marker, waitSlack)
 
 	return ""
 }
 
-// awaitLog blocks until the sandbox log holds more than seen bytes, and returns how many it holds.
-func (s Subject) awaitLog(t *testing.T, id string, seen int) int {
+// awaitLog blocks until the log of the named process holds more than seen bytes, and returns how many it holds.
+func (s Subject) awaitLog(t *testing.T, id, name string, seen int) int {
 	t.Helper()
 
-	path, err := s.Provider.LogPath(id)
-	if err != nil {
-		t.Fatalf("LogPath: %v", err)
-	}
-
+	path := s.logPath(t, id, name)
 	deadline := time.Now().Add(waitSlack)
 	for time.Now().Before(deadline) {
 		out, err := os.ReadFile(path)
 		if err != nil && !errors.Is(err, fs.ErrNotExist) {
-			t.Fatalf("read the sandbox log %s: %v", path, err)
+			t.Fatalf("read the log %s: %v", path, err)
 		}
 		if len(out) > seen {
 			return len(out)
@@ -925,9 +999,20 @@ func (s Subject) awaitLog(t *testing.T, id string, seen int) int {
 		time.Sleep(readyPoll)
 	}
 
-	t.Fatalf("the log of %s did not grow past %d bytes within %s", id, seen, waitSlack)
+	t.Fatalf("the log of process %s of %s did not grow past %d bytes within %s", name, id, seen, waitSlack)
 
 	return seen
+}
+
+func (s Subject) logPath(t *testing.T, id, name string) string {
+	t.Helper()
+
+	path, err := s.Provider.ProcessLogPath(id, name)
+	if err != nil {
+		t.Fatalf("ProcessLogPath: %v", err)
+	}
+
+	return path
 }
 
 // exec runs one command in a sandbox and returns how it ended, with everything it wrote. The spec
@@ -960,35 +1045,63 @@ func (s Subject) exec(t *testing.T, id string, spec models.ExecSpec) (models.Exi
 	return status, string(written)
 }
 
-func (s Subject) restarts(t *testing.T, id string) models.RestartCount {
+// run starts one named process, which a required verb must do.
+func (s Subject) run(t *testing.T, id string, spec models.ProcessSpec) {
 	t.Helper()
 
-	count, err := s.Provider.Restarts(t.Context(), id)
-	if err != nil {
-		t.Fatalf("Restarts: %v", err)
+	if err := s.Provider.StartProcess(t.Context(), id, spec); err != nil {
+		t.Fatalf("StartProcess %s: %v", spec.Name, err)
 	}
-
-	return count
 }
 
-// awaitRestarts polls the count until it says what the subtest wants, or the slack runs out.
-func (s Subject) awaitRestarts(t *testing.T, id string, want func(models.RestartCount) bool) models.RestartCount {
+func (s Subject) processes(t *testing.T, provider models.Provider, id string) []models.ProcessReport {
 	t.Helper()
 
+	table, err := provider.Processes(t.Context(), id)
+	if err != nil {
+		t.Fatalf("Processes: %v", err)
+	}
+
+	return table
+}
+
+// process is the named process's row in the table, and false when the table holds none.
+func (s Subject) process(t *testing.T, provider models.Provider, id, name string) (models.ProcessReport, bool) {
+	t.Helper()
+
+	for _, report := range s.processes(t, provider, id) {
+		if report.Name == name {
+			return report, true
+		}
+	}
+
+	return models.ProcessReport{}, false
+}
+
+// awaitProcess polls the table until the named process reads as wanted, since an end can reach the host after the verb that caused it returns.
+func (s Subject) awaitProcess(t *testing.T, id, name string, want func(models.ProcessReport) bool) models.ProcessReport {
+	t.Helper()
+
+	var last models.ProcessReport
 	deadline := time.Now().Add(waitSlack)
 	for time.Now().Before(deadline) {
-		count := s.restarts(t, id)
-		if want(count) {
-			return count
+		report, held := s.process(t, s.Provider, id, name)
+		if held && want(report) {
+			return report
 		}
+		last = report
 
 		time.Sleep(readyPoll)
 	}
 
-	t.Fatalf("the restart count of %s never read as wanted within %s", id, waitSlack)
+	t.Fatalf("process %s of %s never read as wanted within %s; it last read %+v", name, id, waitSlack, last)
 
-	return models.RestartCount{}
+	return last
 }
+
+func hasEnded(report models.ProcessReport) bool { return report.State.Ended() }
+
+func isRunning(report models.ProcessReport) bool { return report.State == models.ProcessRunning }
 
 // Only Stop ends a sandbox, so Status is the assertion the whole keep-alive default rests on.
 func (s Subject) status(t *testing.T, id string) models.Status {

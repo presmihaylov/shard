@@ -256,12 +256,15 @@ func TestStateSurvivesARealProcessRestart(t *testing.T) {
 	}
 }
 
-func TestAFinishedEntrypointStaysRunning(t *testing.T) {
+func TestAProcessExitIsRecordedAndTheSandboxStaysRunning(t *testing.T) {
 	r, _ := repo(t)
 	sb := create(t, r)
 
 	err := r.Update(sb.ID, func(sb *models.Sandbox) error {
-		sb.ExitStatus = &models.ExitStatus{Code: 137, Signal: int(syscall.SIGKILL)}
+		sb.Processes = []models.Process{{Name: "web", Command: []string{"/bin/web"}, Status: models.ProcessStatus{
+			State: models.ProcessExited,
+			Exit:  &models.ExitStatus{Code: 137, Signal: int(syscall.SIGKILL)},
+		}}}
 
 		return nil
 	})
@@ -275,25 +278,26 @@ func TestAFinishedEntrypointStaysRunning(t *testing.T) {
 	}
 
 	if got.State != models.StateRunning {
-		t.Errorf("state is %q, want running: the sandbox outlives its entrypoint", got.State)
+		t.Errorf("state is %q, want running: the sandbox outlives its processes", got.State)
 	}
-
-	if got.ExitStatus == nil {
-		t.Fatal("the exit status is nil after it was recorded")
+	if len(got.Processes) != 1 || got.Processes[0].Status.Exit == nil {
+		t.Fatalf("the processes are %+v, want web with its exit", got.Processes)
 	}
-
-	if got.ExitStatus.Code != 137 || got.ExitStatus.Signal != int(syscall.SIGKILL) {
-		t.Errorf("the exit status is %+v, want code 137 and signal SIGKILL", *got.ExitStatus)
+	if exit := got.Processes[0].Status.Exit; exit.Code != 137 || exit.Signal != int(syscall.SIGKILL) {
+		t.Errorf("the exit status is %+v, want code 137 and signal SIGKILL", *exit)
 	}
 }
 
 // A clean exit is the case a value type with omitempty would drop, so it must round trip too.
-func TestACleanExitIsRecordedAndNotMistakenForNone(t *testing.T) {
+func TestACleanProcessExitIsRecordedAndNotMistakenForNone(t *testing.T) {
 	r, _ := repo(t)
 	sb := create(t, r)
 
 	err := r.Update(sb.ID, func(sb *models.Sandbox) error {
-		sb.ExitStatus = &models.ExitStatus{}
+		sb.Processes = []models.Process{{Name: "job", Command: []string{"true"}, Status: models.ProcessStatus{
+			State: models.ProcessExited,
+			Exit:  &models.ExitStatus{},
+		}}}
 
 		return nil
 	})
@@ -306,20 +310,15 @@ func TestACleanExitIsRecordedAndNotMistakenForNone(t *testing.T) {
 		t.Fatalf("Get: %v", err)
 	}
 
-	if got.ExitStatus == nil {
-		t.Fatal("the exit status is nil, and the entrypoint exited 0: that is not the same as never running")
+	if len(got.Processes) != 1 || got.Processes[0].Status.Exit == nil {
+		t.Fatalf("the processes are %+v: a process that exited 0 is not one that never ran", got.Processes)
 	}
-
-	if got.ExitStatus.Code != 0 || got.ExitStatus.Signal != 0 {
-		t.Errorf("the exit status is %+v, want code 0 and no signal", *got.ExitStatus)
-	}
-
-	if got.State != models.StateRunning {
-		t.Errorf("state is %q, want running: the sandbox outlives its entrypoint", got.State)
+	if exit := got.Processes[0].Status.Exit; exit.Code != 0 || exit.Signal != 0 {
+		t.Errorf("the exit status is %+v, want code 0 and no signal", *exit)
 	}
 }
 
-func TestAnExitStatusIsAbsentUntilOneHappens(t *testing.T) {
+func TestASandboxHoldsNoProcessUntilOneIsRun(t *testing.T) {
 	r, _ := repo(t)
 	sb := create(t, r)
 
@@ -328,8 +327,8 @@ func TestAnExitStatusIsAbsentUntilOneHappens(t *testing.T) {
 		t.Fatalf("Get: %v", err)
 	}
 
-	if got.ExitStatus != nil {
-		t.Errorf("the exit status is %+v, want nil: the entrypoint never ran", *got.ExitStatus)
+	if len(got.Processes) != 0 {
+		t.Errorf("the processes are %+v, want none: nothing was run", got.Processes)
 	}
 }
 
