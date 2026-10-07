@@ -45,6 +45,9 @@
           "pause": {
             "type": "boolean"
           },
+          "port": {
+            "type": "boolean"
+          },
           "remove": {
             "type": "boolean"
           },
@@ -69,7 +72,8 @@
           "pause",
           "resume",
           "fork",
-          "snapshot"
+          "snapshot",
+          "port"
         ],
         "type": "object"
       },
@@ -121,6 +125,12 @@
           },
           "policy": {
             "type": "string"
+          },
+          "ports": {
+            "items": {
+              "$ref": "#/components/schemas/PortForward"
+            },
+            "type": "array"
           },
           "resources": {
             "$ref": "#/components/schemas/ResourceRequest"
@@ -654,6 +664,22 @@
         ],
         "type": "object"
       },
+      "HostAddress": {
+        "additionalProperties": false,
+        "properties": {
+          "address": {
+            "type": "string"
+          },
+          "interface": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "interface",
+          "address"
+        ],
+        "type": "object"
+      },
       "Inspection": {
         "additionalProperties": false,
         "properties": {
@@ -696,6 +722,12 @@
           },
           "policy": {
             "type": "string"
+          },
+          "ports": {
+            "items": {
+              "$ref": "#/components/schemas/PortForward"
+            },
+            "type": "array"
           },
           "provider": {
             "type": "string"
@@ -874,6 +906,131 @@
           "dns",
           "name",
           "rules"
+        ],
+        "type": "object"
+      },
+      "Port": {
+        "additionalProperties": false,
+        "properties": {
+          "address": {
+            "description": "What the listener binds: 127.0.0.1, or 0.0.0.0 for a public forward.",
+            "type": "string"
+          },
+          "error": {
+            "description": "Why a running sandbox's port does not listen, or else what the last connection hit.",
+            "type": "string"
+          },
+          "guest_port": {
+            "format": "int32",
+            "maximum": 65535,
+            "minimum": 1,
+            "type": "integer"
+          },
+          "host_port": {
+            "format": "int32",
+            "maximum": 65535,
+            "minimum": 1,
+            "type": "integer"
+          },
+          "listening": {
+            "description": "False while the sandbox is not running, or while the host refuses the port.",
+            "type": "boolean"
+          },
+          "public": {
+            "type": "boolean"
+          },
+          "reachable_on": {
+            "description": "The IPv4 addresses of the host a client reaches the port on while it listens.",
+            "items": {
+              "$ref": "#/components/schemas/HostAddress"
+            },
+            "type": "array"
+          },
+          "sandbox": {
+            "description": "The sandbox id.",
+            "type": "string"
+          },
+          "sandbox_name": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "sandbox",
+          "host_port",
+          "guest_port",
+          "public",
+          "address",
+          "listening",
+          "reachable_on"
+        ],
+        "type": "object"
+      },
+      "PortForward": {
+        "additionalProperties": false,
+        "properties": {
+          "guest_port": {
+            "description": "The port on the sandbox's 127.0.0.1 a connection goes to.",
+            "format": "int32",
+            "maximum": 65535,
+            "minimum": 1,
+            "type": "integer"
+          },
+          "host_port": {
+            "description": "The port on the host the forward listens on.",
+            "format": "int32",
+            "maximum": 65535,
+            "minimum": 1,
+            "type": "integer"
+          },
+          "public": {
+            "description": "Listen on 0.0.0.0, every interface of the host, instead of 127.0.0.1.",
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "host_port",
+          "guest_port"
+        ],
+        "type": "object"
+      },
+      "PortRequest": {
+        "additionalProperties": false,
+        "properties": {
+          "guest_port": {
+            "format": "int32",
+            "maximum": 65535,
+            "minimum": 1,
+            "type": "integer"
+          },
+          "public": {
+            "description": "Listen on 0.0.0.0, every interface of the host, instead of 127.0.0.1.",
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "guest_port"
+        ],
+        "type": "object"
+      },
+      "PortsResponse": {
+        "additionalProperties": false,
+        "properties": {
+          "next": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "ports": {
+            "items": {
+              "$ref": "#/components/schemas/Port"
+            },
+            "type": "array"
+          }
+        },
+        "required": [
+          "ports",
+          "next"
         ],
         "type": "object"
       },
@@ -1096,6 +1253,12 @@
           },
           "policy": {
             "type": "string"
+          },
+          "ports": {
+            "items": {
+              "$ref": "#/components/schemas/PortForward"
+            },
+            "type": "array"
           },
           "provider": {
             "type": "string"
@@ -1641,6 +1804,62 @@
         "x-shard-scope": "policy:*"
       }
     },
+    "/v0/ports": {
+      "get": {
+        "operationId": "list-ports",
+        "parameters": [
+          {
+            "description": "The most items on a page; absent returns the whole list.",
+            "explode": false,
+            "in": "query",
+            "name": "limit",
+            "schema": {
+              "description": "The most items on a page; absent returns the whole list.",
+              "format": "int64",
+              "minimum": 1,
+              "type": "integer"
+            }
+          },
+          {
+            "description": "The next value of the previous page; this page starts after it.",
+            "explode": false,
+            "in": "query",
+            "name": "cursor",
+            "schema": {
+              "description": "The next value of the previous page; this page starts after it.",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PortsResponse"
+                }
+              }
+            },
+            "description": "OK"
+          },
+          "default": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Error"
+          }
+        },
+        "summary": "List the host ports forwarded into every sandbox",
+        "tags": [
+          "ports"
+        ],
+        "x-shard-scope": "port:read"
+      }
+    },
     "/v0/sandboxes": {
       "get": {
         "operationId": "list-sandboxes",
@@ -1707,7 +1926,7 @@
         "x-shard-scope": "sandbox:read"
       },
       "post": {
-        "description": "A create that names secrets also needs the secret:* scope, and one that names a policy needs policy:*; without it the answer is 403 forbidden.",
+        "description": "A create that names secrets also needs the secret:* scope, one that names a policy needs policy:*, and one that forwards ports needs port:write; without it the answer is 403 forbidden.",
         "operationId": "create-sandbox",
         "parameters": [
           {
@@ -3131,6 +3350,188 @@
           "sandboxes"
         ],
         "x-shard-scope": "policy:*"
+      }
+    },
+    "/v0/sandboxes/{id}/ports": {
+      "get": {
+        "operationId": "list-sandbox-ports",
+        "parameters": [
+          {
+            "description": "The sandbox id or name.",
+            "in": "path",
+            "name": "id",
+            "required": true,
+            "schema": {
+              "description": "The sandbox id or name.",
+              "type": "string"
+            }
+          },
+          {
+            "description": "The most items on a page; absent returns the whole list.",
+            "explode": false,
+            "in": "query",
+            "name": "limit",
+            "schema": {
+              "description": "The most items on a page; absent returns the whole list.",
+              "format": "int64",
+              "minimum": 1,
+              "type": "integer"
+            }
+          },
+          {
+            "description": "The next value of the previous page; this page starts after it.",
+            "explode": false,
+            "in": "query",
+            "name": "cursor",
+            "schema": {
+              "description": "The next value of the previous page; this page starts after it.",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PortsResponse"
+                }
+              }
+            },
+            "description": "OK"
+          },
+          "default": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Error"
+          }
+        },
+        "summary": "List the host ports forwarded into a sandbox",
+        "tags": [
+          "ports"
+        ],
+        "x-shard-scope": "port:read"
+      }
+    },
+    "/v0/sandboxes/{id}/ports/{host_port}": {
+      "delete": {
+        "operationId": "remove-port",
+        "parameters": [
+          {
+            "description": "The sandbox id or name.",
+            "in": "path",
+            "name": "id",
+            "required": true,
+            "schema": {
+              "description": "The sandbox id or name.",
+              "type": "string"
+            }
+          },
+          {
+            "description": "The port on the host the forward listens on.",
+            "in": "path",
+            "name": "host_port",
+            "required": true,
+            "schema": {
+              "description": "The port on the host the forward listens on.",
+              "format": "int32",
+              "maximum": 65535,
+              "minimum": 1,
+              "type": "integer"
+            }
+          }
+        ],
+        "responses": {
+          "204": {
+            "description": "No Content"
+          },
+          "default": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Error"
+          }
+        },
+        "summary": "Remove the forward on a host port",
+        "tags": [
+          "ports"
+        ],
+        "x-shard-scope": "port:write"
+      },
+      "put": {
+        "description": "A PUT of the forward the host port already has changes nothing. A running sandbox listens at once; any other keeps the forward for its next start. The answer is 409 in_use when another sandbox forwards the host port or another process on the host listens on it.",
+        "operationId": "put-port",
+        "parameters": [
+          {
+            "description": "The sandbox id or name.",
+            "in": "path",
+            "name": "id",
+            "required": true,
+            "schema": {
+              "description": "The sandbox id or name.",
+              "type": "string"
+            }
+          },
+          {
+            "description": "The port on the host the forward listens on.",
+            "in": "path",
+            "name": "host_port",
+            "required": true,
+            "schema": {
+              "description": "The port on the host the forward listens on.",
+              "format": "int32",
+              "maximum": 65535,
+              "minimum": 1,
+              "type": "integer"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/PortRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Port"
+                }
+              }
+            },
+            "description": "OK"
+          },
+          "default": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Error"
+          }
+        },
+        "summary": "Forward a host port into a sandbox, or change that forward",
+        "tags": [
+          "ports"
+        ],
+        "x-shard-scope": "port:write"
       }
     },
     "/v0/sandboxes/{id}/resume": {

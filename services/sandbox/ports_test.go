@@ -191,7 +191,7 @@ func TestListPortsSaysWhatTheHostServesAndWhyNot(t *testing.T) {
 	if err := l.ports.Set("sandbox1", ports); err != nil {
 		t.Fatalf("set: %v", err)
 	}
-	l.repo.left = []models.Sandbox{l.repo.sb, owner()}
+	l.repo.left = []models.Sandbox{l.repo.sb, withPorts(owner(), models.PortForward{HostPort: 7070, GuestPort: 70})}
 
 	rows, err := svc.ListPorts(t.Context(), "")
 	if err != nil {
@@ -201,14 +201,15 @@ func TestListPortsSaysWhatTheHostServesAndWhyNot(t *testing.T) {
 		t.Fatalf("listed %+v, want the three forwards on record", rows)
 	}
 
-	if !rows[0].Listening || rows[0].Error != "" {
-		t.Errorf("the open forward reads %+v, want listening", rows[0])
+	// Every sandbox's forwards list in one host port order, which the API pages by.
+	if rows[0].Sandbox != "sandbox9" || rows[0].SandboxName != "api" || rows[0].Listening || rows[0].Error != "" {
+		t.Errorf("the stopped sandbox's forward reads %+v, want it first, on record and not listening", rows[0])
 	}
-	if rows[1].Listening || !strings.Contains(rows[1].Error, "in use on the host") || len(rows[1].ReachableOn) != 0 {
-		t.Errorf("the refused forward reads %+v, want why and no address", rows[1])
+	if !rows[1].Listening || rows[1].Error != "" {
+		t.Errorf("the open forward reads %+v, want listening", rows[1])
 	}
-	if rows[2].Sandbox != "sandbox9" || rows[2].SandboxName != "api" || rows[2].Listening || rows[2].Error != "" {
-		t.Errorf("the stopped sandbox's forward reads %+v, want it on record and not listening", rows[2])
+	if rows[2].Listening || !strings.Contains(rows[2].Error, "in use on the host") || len(rows[2].ReachableOn) != 0 {
+		t.Errorf("the refused forward reads %+v, want why and no address", rows[2])
 	}
 
 	one, err := svc.ListPorts(t.Context(), "sandbox1")
@@ -217,6 +218,19 @@ func TestListPortsSaysWhatTheHostServesAndWhyNot(t *testing.T) {
 	}
 	if len(one) != 2 {
 		t.Errorf("listed %+v for sandbox1, want its two forwards", one)
+	}
+}
+
+func TestListPortsOfAFailedSandboxIsRefused(t *testing.T) {
+	failed := withPorts(running(), models.PortForward{HostPort: 8080, GuestPort: 80})
+	failed.State, failed.FailedReason = models.StateFailed, "the guest kernel did not boot"
+	svc, _ := newService(t, &recorder{}, failed)
+
+	_, err := svc.ListPorts(t.Context(), "sandbox1")
+
+	var state *sandbox.StateError
+	if !errors.As(err, &state) || state.Code != models.CodeSandboxFailed {
+		t.Fatalf("list ports returned %v, want sandbox_failed", err)
 	}
 }
 

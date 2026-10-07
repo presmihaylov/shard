@@ -58,7 +58,7 @@ Each route answers an error with the [Error](/docs/reference/api/#error) body, u
 
 `POST /v0/sandboxes` · scope `sandbox:write`
 
-A create that names secrets also needs the secret:\* scope, and one that names a policy needs policy:\*; without it the answer is 403 forbidden.
+A create that names secrets also needs the secret:\* scope, one that names a policy needs policy:\*, and one that forwards ports needs port:write; without it the answer is 403 forbidden.
 
 **Parameters**
 
@@ -325,6 +325,7 @@ A create that names secrets also needs the secret:\* scope, and one that names a
 | `image` | string | no | The image to create from. A create names exactly one of image and snapshot. |
 | `name` | string | no |  |
 | `policy` | string | no |  |
+| `ports` | array of [PortForward](#portforward) | no |  |
 | `resources` | [ResourceRequest](#resourcerequest) | no |  |
 | `restart` | [RestartSpec](#restartspec) | no |  |
 | `secrets` | array of string | no |  |
@@ -425,6 +426,7 @@ A create that names secrets also needs the secret:\* scope, and one that names a
 | `kernel` | string | no |  |
 | `name` | string | no |  |
 | `policy` | string | no |  |
+| `ports` | array of [PortForward](#portforward) | no |  |
 | `provider` | string | yes |  |
 | `resources` | [Resources](#resources) | yes |  |
 | `restart` | [Restart](#restart) | no |  |
@@ -439,6 +441,14 @@ A create that names secrets also needs the secret:\* scope, and one that names a
 | Field | Type | Required | Description |
 | --- | --- | --- | --- |
 | `policy` | string | yes | At least 1 character. |
+
+### PortForward
+
+| Field | Type | Required | Description |
+| --- | --- | --- | --- |
+| `guest_port` | integer (int32) | yes | The port on the sandbox's 127.0.0.1 a connection goes to. From 1 to 65535. |
+| `host_port` | integer (int32) | yes | The port on the host the forward listens on. From 1 to 65535. |
+| `public` | boolean | no | Listen on 0.0.0.0, every interface of the host, instead of 127.0.0.1. |
 
 ### ResourceRequest
 
@@ -491,6 +501,7 @@ A create that names secrets also needs the secret:\* scope, and one that names a
 | `kernel` | string | no |  |
 | `name` | string | no |  |
 | `policy` | string | no |  |
+| `ports` | array of [PortForward](#portforward) | no |  |
 | `provider` | string | yes |  |
 | `resources` | [Resources](#resources) | yes |  |
 | `restart` | [Restart](#restart) | no |  |

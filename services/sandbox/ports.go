@@ -164,6 +164,8 @@ func (s *Service) ListPorts(_ context.Context, ref string) ([]models.Port, error
 			rows = append(rows, row)
 		}
 	}
+	// Host ports are unique across sandboxes, so this is the order a list pages in.
+	slices.SortFunc(rows, func(a, b models.Port) int { return cmp.Compare(a.HostPort, b.HostPort) })
 
 	return rows, nil
 }
@@ -172,6 +174,9 @@ func (s *Service) portSandboxes(ref string) ([]models.Sandbox, error) {
 	if ref != "" {
 		sb, err := Get(s.cfg.Repo, ref)
 		if err != nil {
+			return nil, err
+		}
+		if err := FailedGuard(sb.ID, sb); err != nil {
 			return nil, err
 		}
 

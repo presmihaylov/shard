@@ -497,6 +497,33 @@ func (l *lifecycle) DetachPolicy(ctx context.Context, ref string) (models.Sandbo
 	return svc.DetachPolicy(ctx, ref)
 }
 
+func (l *lifecycle) AddPort(ctx context.Context, ref string, hostPort uint16, req sandbox.PortRequest) (models.Port, error) {
+	svc, err := l.service()
+	if err != nil {
+		return models.Port{}, err
+	}
+
+	return svc.AddPort(ctx, ref, hostPort, req)
+}
+
+func (l *lifecycle) RemovePort(ctx context.Context, ref string, hostPort uint16) error {
+	svc, err := l.service()
+	if err != nil {
+		return err
+	}
+
+	return svc.RemovePort(ctx, ref, hostPort)
+}
+
+func (l *lifecycle) ListPorts(ctx context.Context, ref string) ([]models.Port, error) {
+	svc, err := l.service()
+	if err != nil {
+		return nil, err
+	}
+
+	return svc.ListPorts(ctx, ref)
+}
+
 func (l *lifecycle) Start(ctx context.Context, ref string) (models.Sandbox, error) {
 	svc, err := l.service()
 	if err != nil {
