@@ -41,8 +41,7 @@ type Provider interface {
 	// Signal sends one signal to a running exec by the pid ExecSpec.Report gave for it. The pid is
 	// whatever handle that provider signals by, so a caller only ever passes back what Report reported.
 	Signal(ctx context.Context, id string, pid int, signal string) error
-	// StartProcess starts one named process under shard-init in a running sandbox. It returns once the
-	// process execs, a CommandNotStartedError when it cannot, and refuses a name that still runs.
+	// StartProcess starts one named process under shard-init and returns once it execs; it refuses a name that still runs, and a command that cannot start is a CommandNotStartedError.
 	StartProcess(ctx context.Context, id string, spec ProcessSpec) error
 	// StopProcess cancels the restarts of one process and terms its group, then kills it once grace runs out; a grace of 0 kills at once. It returns once the process is reaped.
 	StopProcess(ctx context.Context, id, name string, grace time.Duration) error
