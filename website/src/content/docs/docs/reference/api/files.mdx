@@ -35,7 +35,7 @@ Each route answers an error with the [Error](/docs/reference/api/#error) body, u
 | `id` | path | string | yes | The sandbox id or name. |
 | `path` | query | string | yes | The absolute path inside the sandbox. |
 | `mode` | query | string | no | The permission bits in octal, at most 0777; absent is 0644. |
-| `user` | query | string | no | The user who writes and owns the file; absent is the entrypoint's user. |
+| `user` | query | string | no | The user who writes and owns the file; absent is the sandbox's user. |
 | `parents` | query | boolean | no | Make the missing parent directories. |
 
 **Request body**
@@ -160,7 +160,7 @@ binary as `application/octet-stream`, required.
 | --- | --- | --- | --- | --- |
 | `id` | path | string | yes | The sandbox id or name. |
 | `path` | query | string | yes | The absolute directory inside the sandbox. |
-| `user` | query | string | no | The user who unpacks and owns the files; absent is the entrypoint's user. |
+| `user` | query | string | no | The user who unpacks and owns the files; absent is the sandbox's user. |
 
 **Request body**
 

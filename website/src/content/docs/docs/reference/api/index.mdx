@@ -8,7 +8,7 @@ sidebar:
 The shard command line and the SDKs talk to the daemon over this API. This request creates a sandbox named `web`, over the daemon's socket:
 
 ```sh
-curl --unix-socket /var/lib/shard/shard.sock -X POST -H 'Content-Type: application/json' -d '{"name":"web","image":"alpine:3.20","command":["sleep","600"],"resources":{"memory_mib":512}}' http://localhost/v0/sandboxes
+curl --unix-socket /var/lib/shard/shard.sock -X POST -H 'Content-Type: application/json' -d '{"name":"web","image":"alpine:3.20","resources":{"memory_mib":512}}' http://localhost/v0/sandboxes
 ```
 
 The daemon answers `201` with the [Sandbox](/docs/reference/api/sandboxes/#sandbox) as JSON. Each page under REST API covers one group of routes, and the [Routes](#routes) tables below list them all.
@@ -56,7 +56,7 @@ A refused request gets a `4xx` or `5xx` status and the [Error](#error) body. A `
 
 ## WebSockets
 
-The routes that follow a stream, such as an exec attach or a `logs` follow, upgrade to a WebSocket and answer `101`. Their sections list the messages. An exec, an app attach and a `logs` follow send binary messages, and each message starts with a stream byte. An `egress-log` follow sends one text message per decision.
+The routes that follow a stream, such as an exec attach or a `logs` follow, upgrade to a WebSocket and answer `101`. Their sections list the messages. An exec, a process attach and a `logs` follow send binary messages, and each message starts with a stream byte. An `egress-log` follow sends one text message per decision.
 
 {/* make openapi writes this part from the routes. Edit the routes, not this part. */}
 
@@ -162,7 +162,7 @@ The routes that follow a stream, such as an exec attach or a `logs` follow, upgr
 
 | Field | Type | Required | Description |
 | --- | --- | --- | --- |
-| `code` | string | yes | What a program matches on: invalid\_request, body\_too\_large, not\_found, sandbox\_not\_running, sandbox\_not\_stopped, sandbox\_not\_paused, sandbox\_live, sandbox\_failed, no\_checkpoint, unsupported, in\_use, name\_taken, exec\_exited, exec\_running, exec\_limit, no\_process, process\_ended, process\_limit, unauthorized, forbidden, timeout, command\_not\_started or internal. A later daemon may add a code, so a client must take one it does not know. |
+| `code` | string | yes | What a program matches on: invalid\_request, body\_too\_large, not\_found, sandbox\_not\_running, sandbox\_not\_stopped, sandbox\_not\_paused, sandbox\_live, sandbox\_failed, no\_checkpoint, unsupported, in\_use, name\_taken, exec\_exited, exec\_running, exec\_limit, no\_process, process\_limit, unauthorized, forbidden, timeout, command\_not\_started or internal. A later daemon may add a code, so a client must take one it does not know. |
 | `exit_code` | integer (int64) | no | The exit code of the command that never started, with command\_not\_started. |
 | `holders` | array of string | no | The sandboxes or snapshots that hold the resource, with in\_use. |
 | `message` | string | yes | A line for a human; match on code, never on this text. |

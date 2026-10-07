@@ -1,7 +1,5 @@
 """Contains all the data models used in inputs/outputs"""
 
-from .app_exit import AppExit
-from .app_stop_request import AppStopRequest
 from .capabilities import Capabilities
 from .copy_request import CopyRequest
 from .create_line import CreateLine
@@ -43,10 +41,13 @@ from .policy_attach_request import PolicyAttachRequest
 from .policy_request import PolicyRequest
 from .policy_view import PolicyView
 from .policy_view_dns import PolicyViewDns
+from .process import Process
+from .process_kill_request import ProcessKillRequest
+from .process_status import ProcessStatus
+from .process_status_state import ProcessStatusState
+from .processes_response import ProcessesResponse
 from .resource_request import ResourceRequest
 from .resources import Resources
-from .restart import Restart
-from .restart_policy import RestartPolicy
 from .restart_spec import RestartSpec
 from .restart_spec_policy import RestartSpecPolicy
 from .rule import Rule
@@ -54,6 +55,7 @@ from .rule_action import RuleAction
 from .rule_protocol import RuleProtocol
 from .rule_text import RuleText
 from .rule_text_action import RuleTextAction
+from .run_request import RunRequest
 from .sandbox import Sandbox
 from .sandbox_state import SandboxState
 from .sandboxes_response import SandboxesResponse
@@ -70,8 +72,6 @@ from .terminal_size import TerminalSize
 from .version_response import VersionResponse
 
 __all__ = (
-    "AppExit",
-    "AppStopRequest",
     "Capabilities",
     "CopyRequest",
     "CreateLine",
@@ -113,10 +113,13 @@ __all__ = (
     "PolicyRequest",
     "PolicyView",
     "PolicyViewDns",
+    "Process",
+    "ProcessesResponse",
+    "ProcessKillRequest",
+    "ProcessStatus",
+    "ProcessStatusState",
     "ResourceRequest",
     "Resources",
-    "Restart",
-    "RestartPolicy",
     "RestartSpec",
     "RestartSpecPolicy",
     "Rule",
@@ -124,6 +127,7 @@ __all__ = (
     "RuleProtocol",
     "RuleText",
     "RuleTextAction",
+    "RunRequest",
     "Sandbox",
     "SandboxesResponse",
     "SandboxState",

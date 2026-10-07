@@ -1,4 +1,4 @@
-"""One sandbox and what runs in it: its commands, the app a run started, its logs and its files."""
+"""One sandbox and what runs in it: its commands, the processes a run started, and its files."""
 
 from __future__ import annotations
 
@@ -6,17 +6,13 @@ import builtins
 from collections.abc import Mapping, Sequence
 from typing import Literal, overload
 
-import httpx
-
 from .._capture import DEFAULT_OUTPUT_LIMIT
 from .._generated import models
-from .._generated.api.app import attach_app, stop_app
 from .._generated.api.exec_ import get_exec, list_execs
 from .._generated.api.sandboxes import (
     fork_sandbox,
     get_sandbox,
     get_sandbox_egress_log,
-    get_sandbox_logs,
     pause_sandbox,
     remove_sandbox,
     resume_sandbox,
@@ -25,24 +21,22 @@ from .._generated.api.sandboxes import (
 )
 from .._generated.types import UNSET
 from .._types import (
-    AppExit,
-    AppInfo,
     CommandInfo,
     CommandResult,
     EgressDecision,
     OutputCallback,
+    Restart,
     SandboxInfo,
     TerminalSize,
-    app_exit,
     command_info,
     egress_decision,
     sandbox_info,
 )
 from .._wire import AsyncCall, path
-from ..errors import ProtocolError, ShardConnectionError
 from ._command import AsyncCommand, run_command, start_command
 from ._files import AsyncFiles
-from ._follow import AsyncFollow, egress_log_entry, log_chunk
+from ._follow import AsyncFollow, egress_log_entry
+from ._process import AsyncProcess, AsyncProcesses
 from ._transport import AsyncTransport
 
 
@@ -53,6 +47,7 @@ class AsyncSandbox:
         self._transport = transport
         self.info = info
         self.commands = AsyncCommands(transport, info.id)
+        self.processes = AsyncProcesses(transport, info.id)
         self.files = AsyncFiles(transport, info.id)
 
     def __repr__(self) -> str:
@@ -152,6 +147,19 @@ class AsyncSandbox:
             on_stderr=on_stderr,
         )
 
+    async def run(
+        self,
+        command: str | Sequence[str],
+        *,
+        name: str | None = None,
+        env: Mapping[str, str] | None = None,
+        workdir: str | None = None,
+        user: str | None = None,
+        restart: Restart | None = None,
+    ) -> AsyncProcess:
+        """start a supervised process in a running sandbox"""
+        return await self.processes.run(command, name=name, env=env, workdir=workdir, user=user, restart=restart)
+
     async def stop(self) -> None:
         """stop a sandbox and preserve its files"""
         await self._verb(lambda: stop_sandbox.asyncio_detailed(self.id, client=self._transport.api))
@@ -183,18 +191,6 @@ class AsyncSandbox:
         await self._transport.send(
             lambda: remove_sandbox.asyncio_detailed(self.id, client=self._transport.api, force=force or UNSET),
             self._transport.read_bound(None),
-        )
-
-    async def logs(self) -> str:
-        """Return the app's output so far, stdout and stderr as the daemon wrote them."""
-        return await self._transport.answer(
-            str, lambda: get_sandbox_logs.asyncio_detailed(self.id, client=self._transport.api)
-        )
-
-    def follow_logs(self) -> AsyncFollow[bytes]:
-        """Yield the app's output from the start of the log, then as it arrives, and end when the sandbox stops."""
-        return AsyncFollow(
-            self._transport, path("sandboxes", self.id, "logs"), f"the logs of sandbox {self.id}", log_chunk
         )
 
     async def egress_log(self) -> builtins.list[EgressDecision]:
@@ -255,44 +251,4 @@ class AsyncCommands:
             output_limit_bytes=output_limit_bytes,
             on_stdout=on_stdout,
             on_stderr=on_stderr,
-        )
-
-
-class AsyncApp:
-    """The app a run started. It ends on its own or by stop(); the sandbox outlives it either way."""
-
-    def __init__(self, transport: AsyncTransport, sandbox: AsyncSandbox) -> None:
-        self._transport = transport
-        self.sandbox = sandbox
-
-    async def inspect(self) -> AppInfo:
-        info = await self.sandbox.inspect()
-        if info.app is None:
-            raise ProtocolError(f"the daemon answered sandbox {info.id} with no app")
-        return info.app
-
-    async def wait(self, timeout: float | None = None) -> AppExit:
-        """Block until the app ends and its restart policy starts it no more. A timeout ends the wait, never the app."""
-        try:
-            record = await self._transport.answer(
-                models.AppExit,
-                lambda: attach_app.asyncio_detailed(self.sandbox.id, client=self._transport.api),
-                self._transport.read_bound(timeout),
-            )
-        except ShardConnectionError as e:
-            if isinstance(e.__cause__, httpx.ReadTimeout):
-                raise TimeoutError(f"the app of sandbox {self.sandbox.id} did not end within {timeout}s") from None
-            raise
-        return app_exit(record)
-
-    async def logs(self) -> str:
-        """Return the app's output so far; the daemon keeps a bounded log, so a long run may hold only its end."""
-        return await self.sandbox.logs()
-
-    async def stop(self, *, force: bool = False) -> None:
-        """End the app with TERM, or KILL with force, and cancel its restart policy; the sandbox keeps running."""
-        body = models.AppStopRequest(force=force or UNSET)
-        await self._transport.send(
-            lambda: stop_app.asyncio_detailed(self.sandbox.id, client=self._transport.api, body=body),
-            self._transport.read_bound(None),
         )

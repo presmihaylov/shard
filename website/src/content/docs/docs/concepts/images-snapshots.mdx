@@ -75,7 +75,7 @@ The TypeScript and Python examples reach `shard serve` at the address in `SHARD_
 
 An image holds the files a sandbox starts from. A server downloads images from a registry, such as Docker Hub, and keeps them on disk. It chooses the Linux image built for the host's architecture.
 
-shard never runs the image's `ENTRYPOINT` or `CMD`. A sandbox from `shard create` has no main command, and a sandbox from `shard run` runs the command you give it.
+shard never runs the image's `ENTRYPOINT` or `CMD`. A new sandbox has no processes, and `shard run` starts the command you give it as a named process.
 
 If the image is missing, `create` downloads it. The sandbox stays `pending` during the download, and the CLI shows the progress on stderr. To download an image ahead of time, run `shard pull` on the server:
 
@@ -194,7 +194,7 @@ A create from a snapshot never downloads an image:
 - Once a pull moves the tag to a new digest, the old snapshot can no longer start. Make a new snapshot from a sandbox on the new image.
 - Only the provider that made the snapshot can start it. A server on another provider fails the create with `400`.
 
-The new sandbox has no main command, and `shard run` does not accept a snapshot. A snapshot does not hold secrets or a network policy, so pass `--secret` and `--policy` to the create again.
+The new sandbox has no processes. A snapshot does not hold secrets or a network policy, so pass `--secret` and `--policy` to the create again.
 
 If you leave out `--memory` or `--disk`, the new sandbox gets the bounds its source ran with. On Firecracker and vz, a larger `--disk` grows the disk, and a smaller one fails with `400`, because a disk can only grow. On gVisor, Sysbox and runc, a `--disk` too small for the snapshot's files fails with `400`.
 

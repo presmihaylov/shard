@@ -164,12 +164,14 @@ class Resources:
     disk_mib: int
 
 
-RestartPolicy = Literal["no", "on-failure", "always"]
+RestartPolicy = Literal["no", "on-failure", "always", "unless-stopped"]
+ProcessState = Literal["running", "restarting", "exited", "killed", "gave-up", "stopped"]
 
 
 @attrs.frozen
 class Restart:
-    """When a run's app starts again. retries caps on-failure, 0 for no cap; backoff is seconds between starts."""
+    """When shard-init starts a process again. retries caps on-failure, 0 for no cap; backoff is the first wait in
+    seconds, which doubles up to 60."""
 
     policy: RestartPolicy
     retries: int = 0
@@ -177,37 +179,34 @@ class Restart:
 
 
 @attrs.frozen
-class RestartInfo:
-    """The app's policy, and the starts again it made; ended is true once the policy starts it no more."""
+class ProcessStatus:
+    """What shard-init last said of a process. restarts counts the starts again since it was run or its sandbox
+    started, and exit is None before the first exit."""
 
-    policy: RestartPolicy
-    retries: int
-    backoff: int
-    count: int
-    last_at: datetime.datetime | None
-    gave_up: bool
-    ended: bool
-
-
-@attrs.frozen
-class AppInfo:
-    command: tuple[str, ...]
-    exit_status: ExitStatus | None
-    restart: RestartInfo | None
-
-
-@attrs.frozen
-class AppExit:
-    """How a run's app ended once its restart policy was over."""
-
-    exit_code: int
-    signal: int | None
+    state: ProcessState
     restarts: int
+    exit: ExitStatus | None
+    started_at: datetime.datetime | None
+
+
+@attrs.frozen
+class ProcessInfo:
+    """One named process a run started in a sandbox. killed keeps an unless-stopped process down on the next start;
+    a run of the same name clears it."""
+
+    name: str
+    command: tuple[str, ...]
+    env: tuple[str, ...]
+    workdir: str | None
+    user: str | None
+    restart: Restart
+    killed: bool
+    status: ProcessStatus
 
 
 @attrs.frozen
 class SandboxInfo:
-    """One sandbox as the daemon holds it. app is None with no command, and kernel is None on a container substrate."""
+    """One sandbox as the daemon holds it, with its processes in run order; kernel is None on a container substrate."""
 
     id: str
     name: str | None
@@ -221,7 +220,7 @@ class SandboxInfo:
     stopped_reason: str | None
     failed_reason: str | None
     resources: Resources
-    app: AppInfo | None
+    processes: tuple[ProcessInfo, ...]
     secrets: tuple[str, ...]
     policy: str | None
     started_at: datetime.datetime | None
@@ -311,6 +310,7 @@ class EgressDecision:
 _COMMAND_STATES: dict[str, Literal["running", "exited"]] = {"running": "running", "exited": "exited"}
 _FILE_TYPES: dict[str, FileType] = {kind: kind for kind in get_args(FileType)}
 _RESTART_POLICIES: dict[str, RestartPolicy] = {policy: policy for policy in get_args(RestartPolicy)}
+_PROCESS_STATES: dict[str, ProcessState] = {state: state for state in get_args(ProcessState)}
 _ACTIONS: dict[str, Literal["allow", "deny"]] = {"allow": "allow", "deny": "deny"}
 
 
@@ -332,13 +332,6 @@ def capabilities(record: models.Capabilities) -> Capabilities:
 
 
 def sandbox_info(record: models.Sandbox | models.Inspection) -> SandboxInfo:
-    app = None
-    if record.command:
-        app = AppInfo(
-            command=tuple(record.command),
-            exit_status=_exit_status(record.exit_status),
-            restart=_restart(record.restart),
-        )
     return SandboxInfo(
         id=record.id,
         name=record.name or None,
@@ -354,7 +347,7 @@ def sandbox_info(record: models.Sandbox | models.Inspection) -> SandboxInfo:
         resources=Resources(
             memory_mib=record.resources.memory_mib, vcpus=record.resources.vcpus, disk_mib=record.resources.disk_mib
         ),
-        app=app,
+        processes=tuple(process_info(process) for process in record.processes or ()),
         secrets=tuple(record.secrets or ()),
         policy=record.policy or None,
         started_at=_time_or_none(record.started_at),
@@ -362,8 +355,26 @@ def sandbox_info(record: models.Sandbox | models.Inspection) -> SandboxInfo:
     )
 
 
-def app_exit(record: models.AppExit) -> AppExit:
-    return AppExit(exit_code=record.code, signal=record.signal or None, restarts=record.restarts)
+def process_info(record: models.Process) -> ProcessInfo:
+    return ProcessInfo(
+        name=record.name,
+        command=tuple(record.command),
+        env=tuple(record.env or ()),
+        workdir=record.workdir or None,
+        user=record.user or None,
+        restart=Restart(
+            policy=_one_of(_RESTART_POLICIES, record.restart.policy, "a restart policy"),
+            retries=record.restart.retries or 0,
+            backoff=record.restart.backoff or 0,
+        ),
+        killed=record.killed is True,
+        status=ProcessStatus(
+            state=_one_of(_PROCESS_STATES, record.status.state, "a process state"),
+            restarts=record.status.restarts,
+            exit=_exit_status(record.status.exit_),
+            started_at=_time_or_none(record.status.started_at),
+        ),
+    )
 
 
 def policy(record: models.Policy | models.PolicyView) -> Policy:
@@ -419,20 +430,6 @@ def _exit_status(record: models.ExitStatus | Unset) -> ExitStatus | None:
     if isinstance(record, Unset):
         return None
     return ExitStatus(code=record.code, signal=record.signal or None)
-
-
-def _restart(record: models.Restart | Unset) -> RestartInfo | None:
-    if isinstance(record, Unset):
-        return None
-    return RestartInfo(
-        policy=_one_of(_RESTART_POLICIES, record.policy, "a restart policy"),
-        retries=record.retries or 0,
-        backoff=record.backoff or 0,
-        count=record.count,
-        last_at=_time_or_none(record.last_at),
-        gave_up=record.gave_up,
-        ended=record.ended,
-    )
 
 
 def _policy_rule(record: models.Rule) -> PolicyRule:

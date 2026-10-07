@@ -71,7 +71,7 @@ Both SDKs export the same classes from `useshards`. Every error from the server,
 | `InvalidRequestError` | 400, 413 | The server refused the request as written. |
 | `AuthenticationError` | 401 | The API key is missing, unknown or expired. |
 | `PermissionDeniedError` | 403 | The key's scopes do not cover the request, or the request is for the server's host only. |
-| `NotFoundError` | 404 | The sandbox, snapshot, command, file, secret or policy does not exist. |
+| `NotFoundError` | 404 | The sandbox, snapshot, command, process, file, secret or policy does not exist. |
 | `ConflictError` | 409 | The request conflicts with the current state, such as a snapshot of a running sandbox. |
 | `UnsupportedError` | 409 | The provider does not support the verb. The message names the provider and the verb. |
 | `ServerError` | 5xx | The daemon or the provider failed. |
@@ -104,10 +104,10 @@ Each request waits up to 60 seconds for the server. If the server sends nothing 
 
 Calls that wait on the sandbox have no bound, because they take as long as the sandbox needs:
 
-- `create()` and `run()`, which wait while the server pulls the image.
+- `create()`, which waits while the server pulls the image, and `run()`.
 - `start()`, `stop()`, `pause()`, `resume()`, `fork()` and `remove()`.
 - `snapshots.create()`.
-- The app's `wait()` and `stop()`.
+- A process's `wait()` and `kill()`.
 - A file remove, and a directory upload.
 - `exec()`, a command's `wait()` and the follow methods, once the stream is open.
 
@@ -120,7 +120,7 @@ To bound one of these waits yourself:
 const result = await command.wait({ signal: AbortSignal.timeout(30_000) });
 ```
 
-An abort rejects with the signal's reason, which for `AbortSignal.timeout()` is a `DOMException` named `TimeoutError`. `exec()`, `app.wait()` and the follow methods also take a `signal`.
+An abort rejects with the signal's reason, which for `AbortSignal.timeout()` is a `DOMException` named `TimeoutError`. `exec()`, a process's `wait()` and the follow methods also take a `signal`.
 
 </TabItem>
 <TabItem label="Python">
@@ -129,12 +129,12 @@ An abort rejects with the signal's reason, which for `AbortSignal.timeout()` is 
 result = command.wait(timeout=30)
 ```
 
-When the time runs out, `wait()` raises the built-in `TimeoutError`. `app.wait()` also takes a `timeout`. With `AsyncShard`, wrap any call in `asyncio.timeout()`.
+When the time runs out, `wait()` raises the built-in `TimeoutError`. A process's `wait()` also takes a `timeout`. With `AsyncShard`, wrap any call in `asyncio.timeout()`.
 
 </TabItem>
 </Tabs>
 
-Ending the wait never ends the command or the app. It keeps running in the sandbox until it exits or until you call `kill()` or `app.stop()`.
+Ending the wait never ends the command or the process. It keeps running in the sandbox until it exits or until you call `kill()`.
 
 ## Server limits
 

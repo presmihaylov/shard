@@ -1,4 +1,4 @@
-// The records the daemon answers about sandboxes, apps, policies, secrets and snapshots, read into camelCase.
+// The records the daemon answers about sandboxes, processes, policies, secrets and snapshots, read into camelCase.
 import { Fields } from "./decode.js";
 import { ProtocolError } from "./errors.js";
 
@@ -6,11 +6,16 @@ export type SandboxState = "pending" | "created" | "running" | "paused" | "unres
 
 const states: readonly SandboxState[] = ["pending", "created", "running", "paused", "unresponsive", "stopped", "failed"];
 
-export type RestartPolicy = "no" | "on-failure" | "always";
+export type RestartPolicy = "no" | "on-failure" | "always" | "unless-stopped";
 
-const restartPolicies: readonly RestartPolicy[] = ["no", "on-failure", "always"];
+const restartPolicies: readonly RestartPolicy[] = ["no", "on-failure", "always", "unless-stopped"];
 
-/** ExitStatus is how an app ended: its exit code, and the signal that ended it or null. */
+/** ProcessState is where a process stands; exited, killed, gave-up and stopped are the states its policy ended it in. */
+export type ProcessState = "running" | "restarting" | "exited" | "killed" | "gave-up" | "stopped";
+
+const processStates: readonly ProcessState[] = ["running", "restarting", "exited", "killed", "gave-up", "stopped"];
+
+/** ExitStatus is how a process ended: its exit code, and the signal that ended it or null. */
 export interface ExitStatus {
   exitCode: number;
   signal: number | null;
@@ -23,42 +28,35 @@ export interface Resources {
   diskMiB: number;
 }
 
-/** Restart says when the daemon starts an app again; backoff is the seconds between two starts. */
+/** Restart says when shard-init starts a process again; backoff is the first wait in seconds, which doubles up to 60. */
 export interface Restart {
   policy: RestartPolicy;
-  /** How many starts again on-failure allows; always takes none. */
+  /** The starts again in a row on-failure allows before it gives up; 0 or absent is no cap. */
   retries?: number;
   backoff?: number;
 }
 
-/** RestartInfo is the policy of an app and what it has done so far. */
-export interface RestartInfo {
-  policy: RestartPolicy;
-  retries: number;
-  backoff: number;
-  /** How many times the app started again. */
-  count: number;
-  lastAt: Date | null;
-  /** The retries ran out. */
-  gaveUp: boolean;
-  /** No start again will follow, as after a stop or a give-up. */
-  ended: boolean;
-}
-
-/** AppInfo is the one app a run started in its sandbox. */
-export interface AppInfo {
-  command: string[];
-  /** null while the app runs. */
-  exitStatus: ExitStatus | null;
-  /** null for a run with no restart policy. */
-  restart: RestartInfo | null;
-}
-
-/** AppExit is how an app ended once its restart policy has nothing left to do. */
-export interface AppExit {
-  exitCode: number;
-  signal: number | null;
+/** ProcessStatus is what shard-init last said of a process. */
+export interface ProcessStatus {
+  state: ProcessState;
+  /** The starts again since the process was run or its sandbox started. */
   restarts: number;
+  /** null before the first exit. */
+  exit: ExitStatus | null;
+  startedAt: Date | null;
+}
+
+/** ProcessInfo is one named process a run started in a sandbox. */
+export interface ProcessInfo {
+  name: string;
+  command: string[];
+  env: string[];
+  workdir: string | null;
+  user: string | null;
+  restart: Restart;
+  /** A kill keeps an unless-stopped process down on the next start; a run of the same name clears it. */
+  killed: boolean;
+  status: ProcessStatus;
 }
 
 /** SandboxInfo is one sandbox as the daemon holds it. */
@@ -78,8 +76,8 @@ export interface SandboxInfo {
   stoppedReason: string | null;
   failedReason: string | null;
   resources: Resources;
-  /** null for a sandbox that create made, which runs no app. */
-  app: AppInfo | null;
+  /** The processes a run started, in the order they were first run. */
+  processes: ProcessInfo[];
   /** The names of the secrets granted to the sandbox. */
   secrets: string[];
   policy: string | null;
@@ -169,7 +167,6 @@ export interface Capabilities {
 export function sandboxInfo(value: unknown): SandboxInfo {
   const fields = Fields.of(value, "a sandbox");
   const resources = fields.object("resources");
-  const command = fields.strings("command");
 
   return {
     id: fields.string("id"),
@@ -184,7 +181,7 @@ export function sandboxInfo(value: unknown): SandboxInfo {
     stoppedReason: fields.optionalString("stopped_reason"),
     failedReason: fields.optionalString("failed_reason"),
     resources: { memoryMiB: resources.int("memory_mib"), vcpus: resources.int("vcpus"), diskMiB: resources.int("disk_mib") },
-    app: command.length === 0 ? null : { command, exitStatus: exitStatus(fields.optionalObject("exit_status")), restart: restart(fields) },
+    processes: fields.list("processes").map(processOf),
     secrets: fields.strings("secrets"),
     policy: fields.optionalString("policy"),
     startedAt: fields.optionalDate("started_at"),
@@ -192,10 +189,8 @@ export function sandboxInfo(value: unknown): SandboxInfo {
   };
 }
 
-export function appExit(value: unknown): AppExit {
-  const fields = Fields.of(value, "an app exit");
-
-  return { exitCode: fields.int("code"), signal: fields.int("signal") || null, restarts: fields.int("restarts") };
+export function processInfo(value: unknown): ProcessInfo {
+  return processOf(Fields.of(value, "a process"));
 }
 
 export function policy(value: unknown): Policy {
@@ -296,20 +291,24 @@ function exitStatus(fields: Fields | null): ExitStatus | null {
   return { exitCode: fields.int("code"), signal: fields.int("signal") || null };
 }
 
-function restart(sandbox: Fields): RestartInfo | null {
-  const fields = sandbox.optionalObject("restart");
-  if (fields === null) {
-    return null;
-  }
+function processOf(fields: Fields): ProcessInfo {
+  const restart = fields.object("restart");
+  const status = fields.object("status");
 
   return {
-    policy: fields.oneOf("policy", restartPolicies),
-    retries: fields.optionalInt("retries", 0),
-    backoff: fields.int("backoff"),
-    count: fields.int("count"),
-    lastAt: fields.optionalDate("last_at"),
-    gaveUp: fields.bool("gave_up"),
-    ended: fields.bool("ended"),
+    name: fields.string("name"),
+    command: fields.strings("command"),
+    env: fields.strings("env"),
+    workdir: fields.optionalString("workdir"),
+    user: fields.optionalString("user"),
+    restart: { policy: restart.oneOf("policy", restartPolicies), retries: restart.optionalInt("retries", 0), backoff: restart.optionalInt("backoff", 0) },
+    killed: fields.bool("killed"),
+    status: {
+      state: status.oneOf("state", processStates),
+      restarts: status.int("restarts"),
+      exit: exitStatus(status.optionalObject("exit")),
+      startedAt: status.optionalDate("started_at"),
+    },
   };
 }
 

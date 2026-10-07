@@ -89,23 +89,6 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
-    "/v0/sandboxes/{id}/app/stop": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        get?: never;
-        put?: never;
-        /** Stop the app of a run */
-        post: operations["stop-app"];
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
     "/v0/sandboxes/{id}/archive": {
         parameters: {
             query?: never;
@@ -117,23 +100,6 @@ export interface paths {
         get: operations["read-archive"];
         /** Copy a directory into a running sandbox */
         put: operations["write-archive"];
-        post?: never;
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
-    "/v0/sandboxes/{id}/attach": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        /** Wait for or attach to the app of a run */
-        get: operations["attach-app"];
-        put?: never;
         post?: never;
         delete?: never;
         options?: never;
@@ -265,23 +231,6 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
-    "/v0/sandboxes/{id}/logs": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        /** Read or follow the output of a sandbox */
-        get: operations["get-sandbox-logs"];
-        put?: never;
-        post?: never;
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
     "/v0/sandboxes/{id}/ls": {
         parameters: {
             query?: never;
@@ -346,6 +295,92 @@ export interface paths {
         post?: never;
         /** Detach the policy of a sandbox */
         delete: operations["detach-policy"];
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/v0/sandboxes/{id}/processes": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** List the processes of a sandbox */
+        get: operations["list-processes"];
+        put?: never;
+        /** Run a named process under supervision in a running sandbox */
+        post: operations["run-process"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/v0/sandboxes/{id}/processes/{name}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Read a process */
+        get: operations["get-process"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/v0/sandboxes/{id}/processes/{name}/attach": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Wait for or attach to a process until its restart policy ends it */
+        get: operations["attach-process"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/v0/sandboxes/{id}/processes/{name}/kill": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** End a process and cancel its restarts */
+        post: operations["kill-process"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/v0/sandboxes/{id}/processes/{name}/logs": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Read or follow the output of a process */
+        get: operations["get-process-logs"];
+        put?: never;
+        post?: never;
+        delete?: never;
         options?: never;
         head?: never;
         patch?: never;
@@ -529,17 +564,6 @@ export interface paths {
 export type webhooks = Record<string, never>;
 export interface components {
     schemas: {
-        AppExit: {
-            /** Format: int64 */
-            code: number;
-            /** Format: int64 */
-            restarts: number;
-            /** Format: int64 */
-            signal: number;
-        };
-        AppStopRequest: {
-            force?: boolean;
-        };
         Capabilities: {
             create: boolean;
             fork: boolean;
@@ -559,16 +583,14 @@ export interface components {
             sandbox?: components["schemas"]["Sandbox"];
         };
         CreateRequest: {
-            command?: string[];
             env?: string[];
             /** @description The image to create from. A create names exactly one of image and snapshot. */
             image?: string;
             name?: string;
             policy?: string;
             resources?: components["schemas"]["ResourceRequest"];
-            restart?: components["schemas"]["RestartSpec"];
             secrets?: string[];
-            /** @description The snapshot id or name to create from; it takes no command and no restart. A create names exactly one of image and snapshot. */
+            /** @description The snapshot id or name to create from. A create names exactly one of image and snapshot. */
             snapshot?: string;
             user?: string;
             workdir?: string;
@@ -610,7 +632,7 @@ export interface components {
         };
         EndMessage: {
             /** @enum {string} */
-            reason: "stopped" | "removed";
+            reason: "ended" | "stopped" | "removed";
         };
         EntriesResponse: {
             entries: components["schemas"]["FileEntry"][];
@@ -619,7 +641,7 @@ export interface components {
             error: components["schemas"]["ErrorObject"];
         };
         ErrorObject: {
-            /** @description What a program matches on: invalid_request, body_too_large, not_found, sandbox_not_running, sandbox_not_stopped, sandbox_not_paused, sandbox_live, sandbox_failed, no_checkpoint, unsupported, in_use, name_taken, exec_exited, exec_running, exec_limit, no_app, app_ended, unauthorized, forbidden, timeout, command_not_started or internal. A later daemon may add a code, so a client must take one it does not know. */
+            /** @description What a program matches on: invalid_request, body_too_large, not_found, sandbox_not_running, sandbox_not_stopped, sandbox_not_paused, sandbox_live, sandbox_failed, no_checkpoint, unsupported, in_use, name_taken, exec_exited, exec_running, exec_limit, no_process, process_limit, unauthorized, forbidden, timeout, command_not_started or internal. A later daemon may add a code, so a client must take one it does not know. */
             code: string;
             /** @description The exit code of the command that never started, with command_not_started (int64). */
             exit_code?: number;
@@ -710,12 +732,10 @@ export interface components {
             uid: number;
         };
         Inspection: {
-            command?: string[];
             /** Format: date-time */
             created_at: string;
             digest?: string;
             egress?: components["schemas"]["Effective"];
-            exit_status?: components["schemas"]["ExitStatus"];
             failed_reason?: string;
             forked_from?: string;
             id: string;
@@ -723,9 +743,9 @@ export interface components {
             kernel?: string;
             name?: string;
             policy?: string;
+            processes?: components["schemas"]["Process"][];
             provider: string;
             resources: components["schemas"]["Resources"];
-            restart?: components["schemas"]["Restart"];
             secrets?: string[];
             snapshot?: string;
             /** Format: date-time */
@@ -766,6 +786,31 @@ export interface components {
             name: string;
             rules: components["schemas"]["Rule"][];
         };
+        Process: {
+            command: string[];
+            env?: string[];
+            killed?: boolean;
+            name: string;
+            restart: components["schemas"]["RestartSpec"];
+            status: components["schemas"]["ProcessStatus"];
+            user?: string;
+            workdir?: string;
+        };
+        ProcessKillRequest: {
+            force?: boolean;
+        };
+        ProcessStatus: {
+            exit?: components["schemas"]["ExitStatus"];
+            /** Format: int64 */
+            restarts: number;
+            /** Format: date-time */
+            started_at?: string;
+            /** @enum {string} */
+            state: "running" | "restarting" | "exited" | "killed" | "gave-up" | "stopped";
+        };
+        ProcessesResponse: {
+            processes: components["schemas"]["Process"][];
+        };
         ResourceRequest: {
             /** Format: int64 */
             disk_mib?: number;
@@ -782,25 +827,11 @@ export interface components {
             /** Format: int64 */
             vcpus: number;
         };
-        Restart: {
-            /** @description The first wait before a restart, in seconds; 0 or absent is 1. It doubles after each restart, up to 60. Only on-failure and always take it (int64). */
-            backoff: number;
-            /** Format: int64 */
-            count: number;
-            ended: boolean;
-            gave_up: boolean;
-            /** Format: date-time */
-            last_at?: string;
-            /** @enum {string} */
-            policy: "no" | "on-failure" | "always";
-            /** @description The restarts in a row before the policy gives up; 0 or absent is unlimited. Only on-failure takes it (int64). */
-            retries?: number;
-        };
         RestartSpec: {
-            /** @description The first wait before a restart, in seconds; 0 or absent is 1. It doubles after each restart, up to 60. Only on-failure and always take it (int64). */
+            /** @description The first wait before a restart, in seconds; 0 or absent is 1. It doubles after each restart, up to 60. Only on-failure, always and unless-stopped take it (int64). */
             backoff?: number;
             /** @enum {string} */
-            policy: "no" | "on-failure" | "always";
+            policy: "no" | "on-failure" | "always" | "unless-stopped";
             /** @description The restarts in a row before the policy gives up; 0 or absent is unlimited. Only on-failure takes it (int64). */
             retries?: number;
         };
@@ -817,12 +848,19 @@ export interface components {
             action: "allow" | "deny";
             rule: string;
         };
+        RunRequest: {
+            command: string[];
+            env?: string[];
+            /** @description The process name: lowercase letters, digits, '.', '_' and '-', at most 32, starting with a letter or a digit. Absent is the base name of command[0]. */
+            name?: string;
+            restart?: components["schemas"]["RestartSpec"];
+            user?: string;
+            workdir?: string;
+        };
         Sandbox: {
-            command?: string[];
             /** Format: date-time */
             created_at: string;
             digest?: string;
-            exit_status?: components["schemas"]["ExitStatus"];
             failed_reason?: string;
             forked_from?: string;
             id: string;
@@ -830,9 +868,9 @@ export interface components {
             kernel?: string;
             name?: string;
             policy?: string;
+            processes?: components["schemas"]["Process"][];
             provider: string;
             resources: components["schemas"]["Resources"];
-            restart?: components["schemas"]["Restart"];
             secrets?: string[];
             snapshot?: string;
             /** Format: date-time */
@@ -1213,40 +1251,6 @@ export interface operations {
             };
         };
     };
-    "stop-app": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path: {
-                /** @description The sandbox id or name. */
-                id: string;
-            };
-            cookie?: never;
-        };
-        requestBody?: {
-            content: {
-                "application/json": components["schemas"]["AppStopRequest"];
-            };
-        };
-        responses: {
-            /** @description No Content */
-            204: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content?: never;
-            };
-            /** @description Error */
-            default: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["Error"];
-                };
-            };
-        };
-    };
     "read-archive": {
         parameters: {
             query: {
@@ -1289,7 +1293,7 @@ export interface operations {
             query: {
                 /** @description The absolute directory inside the sandbox. */
                 path: string;
-                /** @description The user who unpacks and owns the files; absent is the entrypoint's user. */
+                /** @description The user who unpacks and owns the files; absent is the sandbox's user. */
                 user?: string;
             };
             header?: never;
@@ -1311,45 +1315,6 @@ export interface operations {
                     [name: string]: unknown;
                 };
                 content?: never;
-            };
-            /** @description Error */
-            default: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["Error"];
-                };
-            };
-        };
-    };
-    "attach-app": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path: {
-                /** @description The sandbox id or name. */
-                id: string;
-            };
-            cookie?: never;
-        };
-        requestBody?: never;
-        responses: {
-            /** @description A WebSocket attach. Each binary message leads with its stream byte: 1 the output from the start of the log, 3 the AppExit, 5 a FailureMessage. */
-            101: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content?: never;
-            };
-            /** @description How the app ended, once it ends. */
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["AppExit"];
-                };
             };
             /** @description Error */
             default: {
@@ -1672,7 +1637,7 @@ export interface operations {
                 path: string;
                 /** @description The permission bits in octal, at most 0777; absent is 0644. */
                 mode?: string;
-                /** @description The user who writes and owns the file; absent is the entrypoint's user. */
+                /** @description The user who writes and owns the file; absent is the sandbox's user. */
                 user?: string;
                 /** @description Make the missing parent directories. */
                 parents?: boolean;
@@ -1799,48 +1764,6 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["Sandbox"];
-                };
-            };
-            /** @description Error */
-            default: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["Error"];
-                };
-            };
-        };
-    };
-    "get-sandbox-logs": {
-        parameters: {
-            query?: {
-                /** @description Keep the stream open until the sandbox stops or is removed; a WebSocket upgrade requires follow=true. */
-                follow?: boolean;
-            };
-            header?: never;
-            path: {
-                /** @description The sandbox id or name. */
-                id: string;
-            };
-            cookie?: never;
-        };
-        requestBody?: never;
-        responses: {
-            /** @description A WebSocket follow with follow=true. Each binary message leads with its stream byte: 1 the output, 3 an EndMessage naming why the follow ended, 5 a FailureMessage. */
-            101: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content?: never;
-            };
-            /** @description The entrypoint's output as it was written; with follow the body streams until the sandbox stops or is removed. */
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "text/plain": string;
                 };
             };
             /** @description Error */
@@ -2010,6 +1933,231 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["Sandbox"];
+                };
+            };
+            /** @description Error */
+            default: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+        };
+    };
+    "list-processes": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description The sandbox id or name. */
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description OK */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ProcessesResponse"];
+                };
+            };
+            /** @description Error */
+            default: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+        };
+    };
+    "run-process": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description The sandbox id or name. */
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["RunRequest"];
+            };
+        };
+        responses: {
+            /** @description Created */
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Process"];
+                };
+            };
+            /** @description Error */
+            default: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+        };
+    };
+    "get-process": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description The sandbox id or name. */
+                id: string;
+                /** @description The process name. */
+                name: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description OK */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Process"];
+                };
+            };
+            /** @description Error */
+            default: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+        };
+    };
+    "attach-process": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description The sandbox id or name. */
+                id: string;
+                /** @description The process name. */
+                name: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description A WebSocket attach. Each binary message leads with its stream byte: 1 the output from the start of the current run, 3 the ended Process, 5 a FailureMessage. */
+            101: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description The process once its restart policy ended it. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Process"];
+                };
+            };
+            /** @description Error */
+            default: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+        };
+    };
+    "kill-process": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description The sandbox id or name. */
+                id: string;
+                /** @description The process name. */
+                name: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: {
+            content: {
+                "application/json": components["schemas"]["ProcessKillRequest"];
+            };
+        };
+        responses: {
+            /** @description OK */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Process"];
+                };
+            };
+            /** @description Error */
+            default: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+        };
+    };
+    "get-process-logs": {
+        parameters: {
+            query?: {
+                /** @description Keep the stream open until the process ends or the sandbox stops or is removed; a WebSocket upgrade requires follow=true. */
+                follow?: boolean;
+            };
+            header?: never;
+            path: {
+                /** @description The sandbox id or name. */
+                id: string;
+                /** @description The process name. */
+                name: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description A WebSocket follow with follow=true. Each binary message leads with its stream byte: 1 the output, 3 an EndMessage naming why the follow ended, 5 a FailureMessage. */
+            101: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description The process's output as it was written, every run the host keeps; with follow the body streams until the process ends or the sandbox stops or is removed. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "text/plain": string;
                 };
             };
             /** @description Error */

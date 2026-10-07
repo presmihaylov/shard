@@ -162,25 +162,27 @@ print(sandbox.files.read_text("/root/notes.txt"), end="")
 | `upload(local, remote)`, `download(remote, local)` | Copy one file in or out without holding it in memory. A download writes a temporary file and renames it at the end. |
 | `upload_dir(local, remote)`, `download_dir(remote, local)` | Copy a whole directory in or out as a tar. |
 
-## Apps
+## Processes
 
-`shard.run(image, command)` makes a sandbox and starts `command` in it as the sandbox's app. It takes the same arguments as `create()` except `snapshot`, plus a `restart` argument:
+`sandbox.run(command)` starts a named process in a running sandbox, under shard's own supervisor, and returns a `Process` as soon as it runs. It takes `name`, `env`, `workdir`, `user` and `restart`:
 
 ```python
-app = shard.run("alpine:3.20", "for i in 1 2 3; do echo tick $i; done", memory_mib=512)
-try:
-    print(app.wait(timeout=60).exit_code)
-    print(app.logs(), end="")
-finally:
-    app.sandbox.remove(force=True)
+ticker = sandbox.run("for i in 1 2 3; do echo tick $i; done", name="ticker", restart=Restart(policy="no"))
+print(ticker.wait(timeout=60).status.exit)
+print(ticker.logs(), end="")
 ```
 
-When the app exits, its sandbox stays `running`, so you can still run commands in `app.sandbox`. Use `app.sandbox.stop()` or `app.sandbox.remove()` to end it. `app.stop()` stops only the app.
+When a process exits, its sandbox stays `running`, so you can still run commands in it. Use `sandbox.stop()` or `sandbox.remove()` to end the sandbox. A sandbox runs up to 16 processes. A `run()` of a running name raises `ConflictError` with the code `name_taken`, and a `run()` of an ended name replaces it.
 
-- `app.wait()` returns `AppExit(exit_code, signal, restarts)` once the restart policy will not start the app again. With `timeout=`, it raises `TimeoutError` when the time runs out, and the app keeps running.
-- `app.stop()` ends the app with `TERM`, or with `KILL` when you pass `force=True`, and cancels its restart policy. The sandbox keeps running.
-- `app.logs()` returns the app's output so far. The daemon keeps a bounded log, so for a long run it may hold only the end. `app.sandbox.follow_logs()` yields the output from the start of the log, then new output as it arrives, and it ends when the sandbox stops.
-- `restart` is a `Restart(policy, retries=, backoff=)`. `policy` is `"no"`, `"on-failure"` (after a non-zero exit code or a signal) or `"always"` (after any exit). `retries` caps how many times in a row `on-failure` starts the app again, and `0`, the default, means no cap. `backoff` is the first wait in seconds, and it is 1 when you leave it at `0`. Each wait after that doubles, up to 60 seconds. Without `restart`, the daemon never starts the app again.
+A `Process` has `wait()`, `kill()`, `logs()`, `follow_logs()` and `inspect()`. Its `info` holds the record that the last call on that handle returned.
+
+- `name` is up to 32 lowercase letters, digits, `.`, `_` and `-`. Without it, the process takes the base name of its program.
+- `wait()` returns the `ProcessInfo` once the process ends and its restart policy will not start it again. With `timeout=`, it raises `TimeoutError` when the time runs out, and the process keeps running.
+- `kill()` ends the process with `TERM`, or with `KILL` when you pass `force=True`, and cancels its restarts. The sandbox keeps running.
+- `logs()` returns the output of every run of the process. The daemon keeps a bounded log, so for a long run it may hold only the end. `follow_logs()` yields the output from the start of the log, then new output as it arrives, and it ends when the process ends or the sandbox stops.
+- `restart` is a `Restart(policy, retries=, backoff=)`. `policy` is `"no"`, `"on-failure"` (after a non-zero exit code or a signal), `"always"` (after any exit, and whenever the sandbox starts) or `"unless-stopped"`, the default. `unless-stopped` is like `always` until `kill()` ends the process, and a daemon restart leaves it down in a sandbox that `stop()` stopped. `retries` caps how many times in a row `on-failure` starts the process again, and `0`, the default, means no cap. `backoff` is the first wait in seconds, and it is 1 when you leave it at `0`. Each wait after that doubles, up to 60 seconds.
+
+From any client, `sandbox.processes.list()` returns every process of the sandbox as a `ProcessInfo`, in the order they were first run, and `sandbox.processes.get(name)` finds one again. A `ProcessInfo` holds `name`, `command`, `restart`, `killed`, and a `status` with `state`, `restarts`, `exit` and `started_at`. `state` is `"running"`, `"restarting"`, `"exited"`, `"killed"`, `"gave-up"` or `"stopped"`.
 
 ## Secrets, policies and snapshots
 
@@ -235,7 +237,7 @@ async def main() -> None:
 asyncio.run(main())
 ```
 
-Use `async with`, or call `await shard.aclose()` when you are done. Iterate `follow_logs()` and `follow_egress_log()` with `async for`. Cancelling the task ends the wait but not the command.
+Use `async with`, or call `await shard.aclose()` when you are done. Iterate a process's `follow_logs()` and `follow_egress_log()` with `async for`. Cancelling the task ends the wait but not the command.
 
 ## Capabilities
 

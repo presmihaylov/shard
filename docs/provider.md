@@ -25,7 +25,7 @@ substrate lacks.
 
 | Verb | gVisor | Sysbox | runc | vz | Firecracker |
 |---|---|---|---|---|---|
-| `create`, `start`, `stop`, `remove`, `snapshot create`, `exec`, `logs`, `inspect` | yes | yes | yes | yes | yes |
+| `create`, `start`, `stop`, `remove`, `snapshot create`, `exec`, `run`, `ps`, `logs`, `kill`, `inspect` | yes | yes | yes | yes | yes |
 | `pause` | yes | **no** | **no** | Apple silicon on macOS 14+, **no** on 13 or on Intel | yes |
 | `resume` | yes | **no** | **no** | Apple silicon on macOS 14+, **no** on 13 or on Intel | yes |
 | `fork` of a running sandbox | yes | **no** | **no** | Apple silicon on macOS 14+, **no** on 13 or on Intel | yes |
@@ -92,14 +92,14 @@ reason     /dev/kvm opens
 ### systemd is not a sandbox's init
 
 **systemd cannot run as a sandbox's PID 1, on any provider.** `shard-init` is PID 1 in every
-sandbox and starts the command given to `shard run` as its child (`cmd/shard-init` uses `ForkExec`), so
-the entrypoint is never PID 1. The image's own ENTRYPOINT and CMD never run, and after `shard create`
-`shard-init` runs alone. systemd refuses the system-manager role when it is not PID 1. It prints
+sandbox and starts each process `shard run` names as its child (`cmd/shard-init` uses `ForkExec`), so
+no process of the image is ever PID 1. The image's own ENTRYPOINT and CMD never run, and after
+`shard create` `shard-init` runs alone. systemd refuses the system-manager role when it is not PID 1. It prints
 "Explicit --user argument required to run as user manager." and exits. `systemctl is-system-running`
-then reports `offline`, and the record stays `running` because a sandbox outlives its entrypoint.
+then reports `offline`, and the record stays `running` because a sandbox outlives its processes.
 The limit is not specific to Sysbox. It holds on gVisor and Firecracker too, because `shard-init` is
 PID 1 in every sandbox. Docker inside a sandbox is unaffected. It works end to end on Sysbox, and on
-`vz`, where `dockerd` runs as the entrypoint of a VM (SHARD-247, `docs/provider-vz.md`). To run
+`vz`, where `dockerd` runs as a named process in a VM (SHARD-247, `docs/provider-vz.md`). To run
 systemd, run it inside a Docker container that the sandbox starts. It cannot be the sandbox's own
 init.
 
@@ -129,22 +129,22 @@ deny-list, because `sysbox-runc` rewrites an allow-list to admit those three cal
 answers `ENOSYS` and not `EPERM` because `runc` inside the guest skips its session keyring on
 `ENOSYS`, so nested Docker still starts.
 
-**Sysbox does not verify the entrypoint's exit code.** `shard-init` reports the exit record on its
-fd 0, which the host holds. It also clears its dumpable flag, which puts `/proc/1/fd` out of the
+**Sysbox does not verify the exit codes of a sandbox's processes.** `shard-init` reports its process
+table on its fd 0, which the host holds. It also clears its dumpable flag, which puts `/proc/1/fd` out of the
 guest's reach. On gVisor that protection holds. The sentry enforces the capability set the bundle
 grants, which has no `CAP_SYS_PTRACE`, so a guest write to `/proc/1/fd/0` fails with `EACCES`.
 `sysbox-runc` gives guest root the full capability set whatever the bundle lists, `CAP_SYS_PTRACE`
-included. So guest root controls PID 1 and the entrypoint. It can write a forged record, drive the
-exit value or pick the signal, and a background write after the real exit makes `inspect` report
+included. So guest root controls PID 1 and every process it supervises. It can write a forged record, drive the
+exit value or pick the signal, and a background write after the real exit makes `ps` report
 the forged code. No channel on Sysbox is readable by the host and unwritable by the guest, so no
-mechanism can fix this. The exit code of a Sysbox sandbox is what its root attests, and on a
-single-tenant host that is your own code. The channel is a memfd of 4 KiB, sealed against growing
+mechanism can fix this. The exit codes of a Sysbox sandbox's processes are what its root attests,
+and on a single-tenant host that is your own code. The channel is a memfd of 4 KiB, sealed against growing
 and shrinking, so no guest write can fill the host's disk or memory. After a restart the daemon
 finds the channel again through fd 0 of PID 1, confirmed in the sandbox cgroup. It takes the channel
 only while it is a regular file of 4 KiB with its seals and the inode that create recorded.
 `inspect` names anything else as `exit channel replaced`. A stop copies the record before it
 returns. If PID 1 dies while the daemon is down, or the daemon dies inside the stop that ended PID 1,
-the unread exit record is lost with it. Firecracker verifies the exit code behind the VM boundary
+the process table it last wrote is lost with it. Firecracker verifies the exit code behind the VM boundary
 the way gVisor does behind the sentry.
 
 **Sysbox runs where `sysbox-runc` runs.** It needs root, the Sysbox package installed on the host,
@@ -179,10 +179,10 @@ every sandbox would run unconfined. So the daemon refuses the runc provider ther
 
 ## Required verbs against optional verbs
 
-Seventeen verbs are required, beside `Name`. Every substrate must do all of them, and none of them
+Sixteen verbs are required, beside `Name`. Every substrate must do all of them, and none of them
 has a capability flag. They are `CheckResources`, `Create`, `Start`, `Stop`, `Remove`, `Snapshot`,
-`Exec`, `Signal`, `StopApp`, `Wait`, `ExitStatus`, `Status`, `Restarts`, `LogPath`, `HeldLogs`,
-`AdoptStaging`, and `Capabilities` itself.
+`Exec`, `Signal`, `StartProcess`, `StopProcess`, `Processes`, `ProcessLogPath`, `Status`,
+`HeldLogs`, `AdoptStaging`, and `Capabilities` itself.
 
 `CheckResources` answers whether the substrate can run under a bound before the orchestrator writes
 a record, so a refusal leaves nothing in `list`. A VM's memory is real memory, so vz and
@@ -248,7 +248,7 @@ static `shard-init` at `SHARD_INIT_PATH`, which the daemon writes once under `<r
 `SHARD_KERNEL_SHA256` override it. The host needs `erofs-utils` for the pull. The host speaks to
 the guest over vsock alone, through the socket that firecracker proxies it on, so `exec`, `logs`
 and the exit arrive the way they do on `vz`. The vmm has no stop of its own. A stop tells
-`shard-init` to end the entrypoint and reboot, because a reboot is the one guest exit that makes
+`shard-init` to end its processes and reboot, because a reboot is the one guest exit that makes
 firecracker end its process (a power off leaves it running). Before the reboot `shard-init` syncs
 and freezes the root, so a clean stop leaves a disk with no journal to replay. A forced stop does
 not freeze. When the 30 s grace runs out, the stop kills the process. A guest that the host can no longer reach over vsock is still a running VM.
@@ -265,7 +265,7 @@ name. The proxy redirect keys on the leased address, and the private floor keys 
 policy reads and logs the same on every substrate. The other end of the veth is in the sandbox's own
 namespace. There a bridge with no address joins it to a tap that is also named `shardv<n>`, so the
 vmm shares no network namespace with the host (SHARD-431). The vmm opens the tap as the guest's
-`eth0`, with a MAC derived from the lease. Once the guest is up, and before the entrypoint runs,
+`eth0`, with a MAC derived from the lease. Once the guest is up, and before any process runs,
 `shard-init` takes the address, the gateway and the resolver over vsock. The next start after a stop
 leases the same address and builds the namespace and the tap again for the new vmm. `remove` releases
 both.
@@ -324,7 +324,7 @@ and logs streams again after a fork, and thaws the guest over the new control st
 and its command runs on in the sandbox with no reader. An `exec` that starts while the freeze holds
 is refused with `a fork holds the sandbox frozen, and nothing starts in it until that ends: run the
 command again`. Nothing queues it, so the caller runs it again once the verb returns. A restart of
-the entrypoint waits out the freeze.
+a process waits out the freeze.
 If the guest takes no new control stream within 30 s, the fork fails with an error that says the
 source stays frozen. `stop` and `remove` of that source still work, the daemon dials on until the guest
 answers and thaws it, and the next daemon start thaws it from the capture marker.
@@ -368,17 +368,18 @@ A create from a snapshot on Firecracker or `vz` clones the snapshot's disk. A la
 the clone and its ext4 to the new bound before the boot, and a smaller one is refused before the
 record exists, as a disk only grows (SHARD-476). The grow needs a journal with nothing to replay,
 which only the freeze of a clean stop leaves. A snapshot of a sandbox that a forced stop ended
-cannot grow. To make a clean snapshot, start the source sandbox and let its entrypoint exit, or
-end the entrypoint with `shard exec`. Then run `shard stop` and snapshot it again. `shard stop` has
-no `--force` flag: it forces the stop when the entrypoint does not exit within its 30 s grace.
+cannot grow. To make a clean snapshot, start the source sandbox and end each of its processes with
+`shard kill`. Then run `shard stop` and snapshot it again. `shard stop` has no `--force` flag: it
+forces the stop when a process does not exit within its 30 s grace.
 A guest mount can take the metadata room that a larger disk needs, and then the refusal
 names the largest `--disk` that still grows.
 
 `scripts/e2e-fc.sh`, behind `make e2e-firecracker`, drives the whole lifecycle on this provider. It
 starts the daemon over a root that it turns into an XFS image, and runs `create` with `--memory`. It
-checks the vmm's jail, uid and seccomp filter, its host cgroup and its bounds, then `logs`, `exec`
-and an entrypoint that exits. One guest outgrows its memory and stops with its reason, nothing
-starts it again, and `start` brings it back over its kept files. The run then checks the policy and
+checks the vmm's jail, uid and seccomp filter, its host cgroup and its bounds, then `run`, `ps`,
+`logs`, `exec`, a process that exits under `run --attach` and one that `kill` ends. One guest
+outgrows its memory and stops with its reason, nothing starts it again, and `start` brings it back
+over its kept files with its process. The run then checks the policy and
 the proxy on the vmm's link, a daemon restart that adopts the vmm, and a vmm lost while the daemon
 was down. After that come a live `fork`, `pause`, `resume`, `stop` with the
 cgroup kept empty, a snapshot by reflink, two sandboxes from it, a smaller `--disk` refused by
@@ -450,7 +451,7 @@ inherit. When the killer takes the group, `shard-init` reads
 that state and does not power off on its own. The host writes the `oom` marker first, and only then
 sends the stop. So a daemon that dies between the report and the marker finds the kill again in the
 state that the next connection replays, and marks it then. Once the marker is down, `Status` says
-`OOMKilled`, no exit record lands, and the daemon stops the record with its reason exactly as it
+`OOMKilled`, no process exit lands, and the daemon stops the record with its reason exactly as it
 does on Linux. A kill that finds no host attached, during a reconnect after a sleep, waits
 the same way for that replay. The bound needs room under the headroom, so `vz` refuses a
 `--memory` below 128 MiB by name.
@@ -535,8 +536,8 @@ boots. The kernel command line hands it `-base` and `-overlay`, the two block de
 `-console` for where its stderr goes. `shard-init` mounts the EROFS image read-only and the ext4
 disk over it, and lays `upper` and `work` on that disk. It then mounts the overlay as the root,
 moves the kernel filesystems across and pivots onto it, exactly as the one-disk `-root` boot does.
-It stays PID 1, and the host sends the entrypoint over vsock as it does for the one-disk boot. With
-no command the host sends an empty one, and the guest reports ready and forks nothing. `vz`
+It stays PID 1, and the host sends its `setup`, then each `run`, over vsock as it does for the
+one-disk boot. Until the first `run`, the guest reports ready and forks nothing. `vz`
 keeps its ext4 root disk, and an APFS clone is its overlay. The guest kernel must carry
 `CONFIG_EROFS_FS` and `CONFIG_OVERLAY_FS`. Both shipped kernel configs, amd64 and arm64, set both
 (SHARD-265). On a guest kernel that lacks the first, the boot fails at the base mount, and the
@@ -549,7 +550,7 @@ record never answers for it. The two disagree on purpose in these cases:
 
 - A record that says `running` can outlive a `shard` restart, or a sandbox that someone killed by
   hand.
-- On gVisor, a sandbox stopped before its entrypoint ran leaves nothing at the substrate. The
+- On gVisor, a sandbox stopped before `shard-init` ran leaves nothing at the substrate. The
   record says `stopped`, and `Status` reports `Exists: false`. vz retains its `vm.json` and reports
   `Exists: true` with `State: stopped`.
 
@@ -558,23 +559,20 @@ state. A gVisor `Pause` that breaks off after its checkpoint began loses the san
 sentry exits after any checkpoint, whether the checkpoint was taken or not. The provider returns
 `models.LostError`, and the record ends `failed` (SHARD-336). runsc never probes a paused sandbox,
 so `Status` reads a paused sandbox whose sentry is gone as `stopped`. `stop` and `remove --force` then
-end it. The exit of the entrypoint is not a transition, and the return of `Wait` does not end
-anything. Under a restart policy, `Wait` returns the first exit of the run and not the settled one.
-The supervisor rewrites the exit file on each exit and clears nothing, so only a stopped sandbox
-answers with its last exit. No verb waits on the entrypoint. `stop` is the one caller, and it reads
-only after the sandbox is down.
+end it. The exit of a process is not a transition. It changes that process's row in the table
+`Processes` reads, and the sandbox stays `running`.
 
 ## What `Exec` means
 
-`Exec` runs a second process in a sandbox that is already running. That process is never the
-entrypoint. The supervisor does not see it, its exit ends nothing, and a signal that ends it never
-reaches the sandbox. Only `Stop` ends a sandbox.
+`Exec` runs a one-off process in a sandbox that is already running. It is never a named process:
+no restart policy covers it, its exit ends nothing, and a signal that ends it never reaches the
+sandbox. Only `Stop` ends a sandbox.
 
 It reports the command's own exit code, which `Create` and `Start` do not, and that is what makes
 the verb useful. An error means the exec never ran, and an exit code means it did.
 
-An empty `ExecSpec.User` means the user the entrypoint runs as, which is how `docker exec` inherits
-it. The supervisor's own process runs as root. So the entrypoint's user is recorded as the
+An empty `ExecSpec.User` means the sandbox's own user, which is how `docker exec` inherits
+it. The supervisor's own process runs as root. So the sandbox's user is recorded as the
 `-user uid:gid` in the supervisor's argv, and the provider reads it back from the sandbox.
 
 On runc 1.1.15 and sysbox-runc 0.7.1, runc init opens `/etc/passwd` and `/etc/group` by path on
@@ -606,18 +604,23 @@ outlives the `shard daemon` that created it, and the next daemon finds it by tha
 
 `services/provider/conformance` is the suite every substrate imports from its own tests. It proves:
 
-- a sandbox outlives its entrypoint, and only `Stop` ends one;
-- `Stop` signals first and kills only when the grace runs out, against an entrypoint that ignores
+- a sandbox runs with no process, outlives the processes it runs, and only `Stop` ends one;
+- `Stop` signals first and kills only when the grace runs out, against a process that ignores
   SIGTERM and against one that does not;
-- `Stop` returns as soon as an entrypoint that exits on SIGTERM is gone, and never waits out the
+- `Stop` returns as soon as every process that exits on SIGTERM is gone, and never waits out the
   fixed 30 s grace (SHARD-460);
 - `Stop` is idempotent, ends a sandbox that never started, and survives a `Remove`;
 - `Remove` force-ends a running sandbox;
 - `Status` after `Create`, and `Status` on an id the substrate never held;
-- a second `Create` over a used state directory answers no stale exit status;
-- `Wait` returns the context error on a cancelled context;
+- a second `Create` over a used state directory holds no process of the first;
+- shard-init starts a process again under its restart policy, and two processes run side by side
+  with a log each;
+- `StopProcess` gives one process its grace and leaves the others running, and with no grace it
+  kills at once;
+- `StartProcess` refuses a name that still runs, a command that is not there, and a sandbox that is
+  stopped, and a process gets its own env and workdir;
 - `Exec` returns the command's own exit code, and two execs share one sandbox;
-- `Exec` applies its own env and workdir, and the entrypoint never sees them;
+- `Exec` applies its own env and workdir, and a cancelled exec leaves the sandbox running;
 - `Exec` refuses an id the substrate never held, and a sandbox that is stopped, naming both the
   sandbox and its state;
 - `Snapshot` holds what a stopped source kept after the source is removed, and two sandboxes

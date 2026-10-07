@@ -60,9 +60,9 @@ such a shim as a process of its own user that the kernel says runs from the inst
 with a `-config` that names the socket. An argv alone is never enough. When the host sleeps, the VM
 and the shim stay. If the sleep resets the vsock streams, the daemon dials the control and the logs
 streams again while the shim reports that the VM runs, so `logs -f` and the events resume where they
-stopped. The new control connection opens with the guest's state. An exit or a restart that happened
-while no stream was open is recorded from that replay, so `wait` does not wait for an event that is
-gone.
+stopped. The new control connection opens with the guest's state. A process report that the guest made
+while no stream was open is recorded from that replay, so an attach does not wait for an event that
+is gone.
 
 The shim lives exactly as long as its VM. A vsock connect to a port the guest does not serve never
 calls back (the framework "does nothing" for it), so the shim bounds every connect at 5 seconds and
@@ -94,9 +94,9 @@ Docker runs inside a VM (SHARD-247). The kernel carries everything that `dockerd
 at start: netfilter with conntrack and NAT, nf_tables and the xtables compat layer (so either
 `iptables` flavour works), the bridge with its netfilter hook, veth, overlay, cgroup v2 with the
 cpu, memory, pids and device controllers, user namespaces and seccomp. IPv6 is off in this kernel,
-so `dockerd` runs IPv4 only. Before the entrypoint starts, `shard-init` mounts `cgroup2` on
+so `dockerd` runs IPv4 only. Before any process starts, `shard-init` mounts `cgroup2` on
 `/sys/fs/cgroup`, a `tmpfs` on `/dev/shm` and `mqueue` on `/dev/mqueue`. An image that ships
-`dockerd` can therefore start it as the entrypoint or under one. A container's packets leave over
+`dockerd` can therefore run it as a named process or under one. A container's packets leave over
 the bridge, masqueraded to the guest's address, and cross the stack as the guest's own. Traffic to
 80 and 443 goes to the proxy. The rest is judged and dropped like any other frame, and written to
 the egress log under the sandbox.
@@ -148,9 +148,9 @@ port after boot and retries until the listener is up:
 
 | Port | Stream | Carries |
 |---|---|---|
-| 5000 | control | JSON lines. In: `run` (the resolved entrypoint), `signal`, `stop`, `stop-app`, `readdress`, `reseed`, `freeze`, `thaw` and `kill`, each numbered and answered with `done` or `failure`. Out: `state`, `ready`, `exit`, `restarts`, `oom` and `supervisor-failed`. The host refuses a line past 1 MiB. It redials after 100 ms, waits twice as long after each refusal up to 2 s, and starts from 100 ms again after a quiet minute (SHARD-408) |
+| 5000 | control | JSON lines. In: `setup` (once per boot, before any process), `run` (one resolved named process), `stop-process`, `signal`, `stop`, `readdress`, `reseed`, `freeze`, `thaw` and `kill`, each numbered and answered with `done` or `failure`. Out: `state`, `process` (one process's new status), `oom` and `supervisor-failed`. The host refuses a line past 1 MiB. It redials after 100 ms, waits twice as long after each refusal up to 2 s, and starts from 100 ms again after a quiet minute (SHARD-408) |
 | 5001 | exec | one connection per exec session. It carries an `ExecHeader` line, then the 8-byte frames the API already uses, plus stream 6 `started`, 7 `resize` and 8 `cancel` |
-| 5002 | logs | the entrypoint's stdout and stderr, in the protocol that the guest's `state` names as `logs`. At version 1 the guest opens with two big-endian uint64s: the offset of the oldest output byte it holds and the offset of the next one. The host answers with one uint64, the byte to resume from. Then it reads raw bytes and acks each write to `output.log` with the offset after that write. The guest holds up to 1 MiB that no host has acked, so a daemon restart loses nothing and repeats nothing. `output.cursor` maps the file to the offsets, and a fresh boot drops it. A `state` with no `logs` comes from a guest older than the protocol, so the host lands every byte raw and sends nothing back. An unknown version marks the sandbox lost (SHARD-243) |
+| 5002 | logs | one connection per named process, carrying its stdout and stderr, in the protocol that the guest's `state` names as `logs`. At version 2 the host first sends a `{"name"}` line, and a guest that holds no process of that name hangs up. The guest then opens with two big-endian uint64s: the offset of the oldest output byte it holds and the offset of the next one. The host answers with one uint64, the byte to resume from. Then it reads raw bytes and acks each write to `logs/<name>.log` with the offset after that write. The guest holds up to 1 MiB per process that no host has acked, so a daemon restart loses nothing and repeats nothing. `logs/<name>.cursor` maps the file to the offsets, and a fresh boot drops it. A `state` with no `logs` comes from a guest older than the protocol, so the host lands every byte raw and sends nothing back. An unknown version marks the sandbox lost (SHARD-243) |
 
 A files operation has no port of its own. It is an exec of `/.shard/init files` on 5001, as on
 every provider. A put lands under a temp name beside the target. Once the bytes, the mode and the
@@ -158,14 +158,14 @@ sync are in, it renames the file into place and then syncs the directory. A copy
 therefore leaves the old file whole and leaves no partial file. A get streams to the end of the
 file, whatever size its stat reports. Neither operation takes a directory.
 
-Every new control connection hears `state` first (ready, the last exit, the count). The supervisor
+Every new control connection hears `state` first (ready, the process protocol version, and every process the guest holds). The supervisor
 writes it on its own goroutine before any event, so a daemon that restarts, or that re-attaches
 after a restore, loses nothing. A request returns once the guest has done it. `readdress` answers
 after the address and the route are set, so a fork is never exposed on its source address in
 between. A cancelled `Exec` sends a `cancel` frame, which kills the command. When an exec
 connection only closes, the daemon went away, so the command runs on and its output drains, as on
-gVisor (SHARD-270). The host writes the exit record and the count into the same files that gVisor's
-pipe fills, so `Wait`, `ExitStatus` and `inspect` work as they do on gVisor. `services/supervisor`
+gVisor (SHARD-270). The host keeps the guest's last report of each process in `processes.json`, so `Processes`
+answers for a stopped sandbox as it does on gVisor. `services/supervisor`
 holds the wire and the host client, and the Firecracker provider reuses both. In the unit tests the
 same binary runs the protocol over `-transport unix:<dir>`, on any OS. The host side of a tty
 resize, and `pkg/pty` on darwin, ship with the provider (SHARD-218).
@@ -182,13 +182,13 @@ The vz provider records a failure at boot the same way (SHARD-418). It records a
 Firecracker does, and a stop returns only once that report has landed (SHARD-476).
 
 The host is the only client. The shim never listens on a host port, so a guest process that opens a
-vsock connection outward reaches nothing. The exit record travels on the control connection that
+vsock connection outward reaches nothing. The process table travels on the control connection that
 the host opened at boot. `shard-init` holds that connection as a file descriptor behind a cleared
 dumpable flag, the same way it holds fd 0 on gVisor. A cleared dumpable flag alone is not the
 boundary. A root process with `CAP_SYS_PTRACE` in the initial user namespace passes the `/proc`
 ptrace check anyway, opens `/proc/1/fd/<n>` and forges the exit record. shard-tester proved that
 forge on Sysbox. gVisor never grants the guest that capability, but the VM would. So `shard-init`
-drops `CAP_SYS_PTRACE` from its own bounding set in PID 1 and re-execs itself. The entrypoint and
+drops `CAP_SYS_PTRACE` from its own bounding set in PID 1 and re-execs itself. Every named process and
 every exec session inherit that reduced bounding set. A bounding set only shrinks, a child user
 namespace holds no capability over the initial one, and the bounding set masks file capabilities,
 so nothing in the guest regains it. The transport ticket (SHARD-216) ships the test: on nairiclaw,
@@ -274,7 +274,7 @@ frames would need a second hop to reach the proxy anyway.
   between the freeze and the pause, and after a control connection dropped with the freeze's answer.
   A connection dialed again while a pause is still in flight leaves the guest frozen for that pause.
   `shard-init` undoes a freeze whose host was replaced before the answer, since that host's replay
-  may predate the freeze. A stop thaws the guest before it signals the entrypoint. A guest whose
+  may predate the freeze. A stop thaws the guest before it signals the processes. A guest whose
   `shard-init` predates the freeze refuses it, and the pause fails with that refusal. A checkpoint
   taken before the freeze existed never says frozen, and it resumes the same way it always did.
 - `resume` first replaces the live disk with a fresh APFS clone of the checkpoint's `disk.img`. It

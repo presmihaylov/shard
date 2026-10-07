@@ -1,12 +1,12 @@
 // The client: one connection pool to `shard serve`, the sandboxes on it, and the policies, secrets and snapshots they share.
-import { App } from "./app.js";
 import { plainWarning, resolve, type ShardOptions } from "./config.js";
 import type { components } from "./generated/schema.js";
 import { listed } from "./pages.js";
 import * as records from "./records.js";
-import type { Capabilities, Policy, PolicyRule, Restart, SandboxInfo, SecretInfo, Snapshot, Version } from "./records.js";
+import type { Capabilities, Policy, PolicyRule, SandboxInfo, SecretInfo, Snapshot, Version } from "./records.js";
 import { Sandbox, refresh } from "./sandbox.js";
 import { Transport } from "./transport.js";
+import * as wire from "./wire.js";
 
 type CreateRequest = components["schemas"]["CreateRequest"];
 
@@ -44,12 +44,6 @@ export interface CreateOptions {
   diskMiB?: number;
 }
 
-/** RunOptions make the sandbox of a run, which only an image does. */
-export interface RunOptions extends Omit<CreateOptions, "image" | "snapshot"> {
-  /** When the daemon starts the app again; left out, never. */
-  restart?: Restart;
-}
-
 /** SecretOptions are what a set stores: the value, and the hosts the daemon sends it to. */
 export interface SecretOptions {
   value: string;
@@ -79,15 +73,7 @@ export class Shard {
 
   /** create a sandbox */
   async create(options: CreateOptions = {}): Promise<Sandbox> {
-    return new Sandbox(this.transport, await this.made(createBody(options, undefined, undefined)));
-  }
-
-  /** create a sandbox and start its command */
-  async run(image: string, command: string | string[], options: RunOptions = {}): Promise<App> {
-    const { restart, ...rest } = options;
-    const sandbox = new Sandbox(this.transport, await this.made(createBody({ ...rest, image }, command, restart)));
-
-    return new App(this.transport, sandbox);
+    return new Sandbox(this.transport, await this.made(createBody(options)));
   }
 
   /** get returns a sandbox by id, id prefix or name. */
@@ -230,42 +216,23 @@ export class Snapshots {
   }
 }
 
-function createBody(options: CreateOptions, command: string | string[] | undefined, restart: Restart | undefined): CreateRequest {
+function createBody(options: CreateOptions): CreateRequest {
   const { image, snapshot, name, env, workdir, user, secrets, policy, memoryMiB, vcpus, diskMiB } = options;
   if ((image === undefined) === (snapshot === undefined)) {
     throw new TypeError("a sandbox is made from an image or a snapshot, exactly one of them");
   }
-  const body: CreateRequest = {
+
+  return {
     image,
     snapshot,
     name: name || undefined,
+    env: wire.envList(env),
     workdir: workdir || undefined,
     user: user || undefined,
     secrets: secrets?.length ? [...secrets] : undefined,
     policy: policy || undefined,
     resources: { memory_mib: memoryMiB, vcpus: vcpus ?? 0, disk_mib: diskMiB ?? 0 },
   };
-  if (command !== undefined) {
-    body.command = argv(command);
-  }
-  if (env && Object.keys(env).length > 0) {
-    body.env = Object.entries(env).map(([key, value]) => `${key}=${value}`);
-  }
-  if (restart) {
-    body.restart = { policy: restart.policy, retries: restart.retries || undefined, backoff: restart.backoff ?? 0 };
-  }
-
-  return body;
-}
-
-/** argv runs a string under /bin/sh -c, and an array as the argv itself. */
-function argv(command: string | string[]): string[] {
-  const args = typeof command === "string" ? ["/bin/sh", "-c", command] : [...command];
-  if (args.length === 0) {
-    throw new TypeError("command must name a program");
-  }
-
-  return args;
 }
 
 function idOf(sandbox: SandboxRef): string {

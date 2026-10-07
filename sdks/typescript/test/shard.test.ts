@@ -4,7 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { inspect } from "node:util";
 import { after, afterEach, before, beforeEach, test } from "node:test";
-import { APIError, CommandNotStartedError, ProtocolError } from "../src/errors.js";
+import { APIError, ProtocolError } from "../src/errors.js";
 import { Shard } from "../src/shard.js";
 import { FakeDaemon, type Answer, type Request } from "./helpers/daemon.js";
 import { sandboxRecord } from "./helpers/records.js";
@@ -74,32 +74,6 @@ test("a create whose sandbox failed answers it, failed", async () => {
   const sandbox = await shard.create({ image: "alpine" });
   assert.equal(sandbox.info.state, "failed");
   assert.equal(sandbox.info.failedReason, "pull failed");
-});
-
-test("run starts a string under a shell, with its restart policy", async () => {
-  const app = await shard.run("alpine", "echo hi", { restart: { policy: "on-failure", retries: 3 } });
-  assert.equal(app.sandbox.id, "sb_1");
-  const body = JSON.parse(sent("POST", "/v0/sandboxes").body);
-  assert.deepEqual(body.command, ["/bin/sh", "-c", "echo hi"]);
-  assert.deepEqual(body.restart, { policy: "on-failure", retries: 3, backoff: 0 });
-  await assert.rejects(shard.run("alpine", []), TypeError);
-});
-
-test("a run whose command never started throws CommandNotStartedError", async () => {
-  const refusal = { error: { code: "command_not_started", message: "exec: no such file", exit_code: 127 } };
-  routes.set("POST /v0/sandboxes", () => ({ status: 422, json: refusal }));
-  const err = await shard.run("alpine", ["/nope"]).then(
-    () => assert.fail("the run started"),
-    (caught: unknown) => caught,
-  );
-  assert.ok(err instanceof CommandNotStartedError);
-  assert.equal(err.exitCode, 127);
-  assert.equal(err.reason, "exec: no such file");
-});
-
-test("a command_not_started with no exit code stays an APIError", async () => {
-  routes.set("POST /v0/sandboxes", () => ({ status: 422, json: { error: { code: "command_not_started", message: "gone" } } }));
-  await assert.rejects(shard.run("alpine", ["/nope"]), (err) => err instanceof APIError && err.status === 422);
 });
 
 test("list reads every page", async () => {

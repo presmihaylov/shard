@@ -160,7 +160,7 @@ sandbox.start()
 
 A stopped sandbox keeps its files but holds no memory and no processes. `start` runs it again with the same files. Every provider supports stop and start.
 
-`stop` sends `SIGTERM` to the main command and kills it if it is still running after 30 seconds. This grace period is fixed.
+`stop` sends `SIGTERM` to the sandbox's processes and kills any still running after 30 seconds. This grace period is fixed.
 
 ## Pause and resume: keep the memory too
 

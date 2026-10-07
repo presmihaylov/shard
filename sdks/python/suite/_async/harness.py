@@ -10,13 +10,11 @@ from typing import TypeVar
 import attrs
 
 from useshards import (
-    AsyncApp,
     AsyncSandbox,
     AsyncShard,
     NotFoundError,
     Policy,
     PolicyRule,
-    Restart,
     Snapshot,
 )
 
@@ -111,11 +109,6 @@ class AsyncContext:
         )
         self.defer(f"remove sandbox {sandbox.id}", lambda: sandbox.remove(force=True))
         return sandbox
-
-    async def run(self, command: str | Sequence[str], *, restart: Restart | None = None) -> AsyncApp:
-        app = await self.shard.run(self.image, command, name=self.name("app"), restart=restart)
-        self.defer(f"remove sandbox {app.sandbox.id}", lambda: app.sandbox.remove(force=True))
-        return app
 
     async def policy(self, name: str, rules: Sequence[PolicyRule]) -> Policy:
         """Set one; cleanup runs in reverse, so a sandbox made after it is gone before the policy goes."""

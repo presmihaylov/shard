@@ -63,13 +63,14 @@ On Linux the daemon's socket belongs to root, so the commands run with `sudo`. O
 
 ## What a sandbox is
 
-A sandbox starts from an OCI image and keeps running until you stop or remove it. If it has a main
-command, that command can exit, and the sandbox stays available for `exec`. `create` starts no main
-command. `run` starts the command you give it. The image's `ENTRYPOINT` and `CMD` never run.
+A sandbox starts from an OCI image and keeps running until you stop or remove it. `create` starts
+no process in it. `run` starts a named process that shard supervises and can start again, and
+`exec` runs a one-off command. A process can exit, and the sandbox stays available for `exec`. The
+image's `ENTRYPOINT` and `CMD` never run.
 
 | Verb | What it does |
 |---|---|
-| `stop`, `start` | Stop frees the memory and keeps the files. Start uses those files and starts any main command from the beginning. |
+| `stop`, `start` | Stop frees the memory and keeps the files. Start uses those files and starts the processes whose restart policy brings them back. |
 | `pause`, `resume` | Pause saves the memory and the files. Resume continues the processes from that state. |
 | `fork` | Copies a running sandbox's memory and files into a new sandbox. The source pauses briefly, then continues. |
 | `snapshot create` | Saves a stopped sandbox's files, without its memory. A snapshot outlives its sandbox and can seed new ones. |

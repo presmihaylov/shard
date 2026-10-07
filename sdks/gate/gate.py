@@ -84,7 +84,7 @@ CLAIMS: dict[str, list[str]] = {
     "snapshots": ["suite:snapshots.*"],
     "files": ["suite:files.*", "cross.files_ts_to_py", "cross.files_py_to_ts"],
     "authentication": ["suite:auth.*"],
-    "command streams": ["suite:commands.*", "suite:logs.*", "suite:apps.*"],
+    "command streams": ["suite:commands.*", "suite:logs.*", "suite:processes.*"],
     "reconnect": ["suite:commands.reconnect", "cross.reconnect_ts_to_py", "cross.reconnect_py_to_ts"],
     "cancellation": ["suite:commands.cancel_keeps_remote", "cross.cancel_ts_seen_by_py", "cross.cancel_py_seen_by_ts"],
     "output capture": ["suite:capture.*", *(f"capture.last_8mib_{run}" for run in SUITES)],
@@ -547,7 +547,7 @@ class Gate:
         self.sweep_execs(box, sid)
         self.sweep_files(box)
         self.sweep_grants(box, sid)
-        self.sweep_app()
+        self.sweep_processes()
         self.sweep_errors(box)
         if self.sweep("DELETE", f"{box}?force=true").status < 300:
             self.sandboxes.remove(sid)
@@ -570,7 +570,7 @@ class Gate:
 
     def sweep_reads(self, box: str) -> None:
         self.capabilities = self.sweep("GET", "/v0/capabilities").json()
-        for path in ("/v0/version", "/v0/scopes", "/v0/sandboxes", box, f"{box}/logs"):
+        for path in ("/v0/version", "/v0/scopes", "/v0/sandboxes", box):
             self.sweep("GET", path)
 
     def sweep_execs(self, box: str, sid: str) -> None:
@@ -619,32 +619,36 @@ class Gate:
         self.sweep("DELETE", f"/v0/policies/{policy}")
         self.sweep("POST", f"{box}/start")
 
-    def sweep_app(self) -> None:
-        made = {"image": self.image, "name": f"gate-app-{self.tag}", "command": ["sleep", "300"]}
-        app = self.sweep("POST", "/v0/sandboxes?wait=true", made)
-        expect(app.status == 201, f"the app's create answered {app.status}")
-        aid = str(app.json()["id"])
-        self.sandboxes.append(aid)
-        ab = f"/v0/sandboxes/{aid}"
-        self.sweep("GET", f"{ab}/logs")
-        self.sweep("POST", f"{ab}/app/stop", {})
-        # The app has ended, so a plain attach answers its exit at once.
-        self.sweep("GET", f"{ab}/attach")
-        self.sweep("POST", f"{ab}/stop")
+    def sweep_processes(self) -> None:
+        made = {"image": self.image, "name": f"gate-proc-{self.tag}"}
+        created = self.sweep("POST", "/v0/sandboxes?wait=true", made)
+        expect(created.status == 201, f"the process sandbox's create answered {created.status}")
+        sid = str(created.json()["id"])
+        self.sandboxes.append(sid)
+        box = f"/v0/sandboxes/{sid}"
+        run = self.sweep("POST", f"{box}/processes", {"name": "sleeper", "command": ["sleep", "300"]})
+        expect(run.status == 201, f"the run of a process answered {run.status}")
+        proc = f"{box}/processes/sleeper"
+        for path in (f"{box}/processes", proc, f"{proc}/logs"):
+            self.sweep("GET", path)
+        self.sweep("POST", f"{proc}/kill", {})
+        # The kill ended the process, so a plain attach answers it at once.
+        self.sweep("GET", f"{proc}/attach")
+        self.sweep("POST", f"{box}/stop")
         ref = f"gate-snap-{self.tag}"
         self.owned.append(f"/v0/snapshots/{ref}")
-        self.sweep("POST", "/v0/snapshots", {"sandbox": aid, "name": ref})
+        self.sweep("POST", "/v0/snapshots", {"sandbox": sid, "name": ref})
         for path in ("/v0/snapshots", f"/v0/snapshots/{ref}"):
             self.sweep("GET", path)
-        self.sweep("POST", f"{ab}/start")
+        self.sweep("POST", f"{box}/start")
         for verb in ("pause", "resume"):
-            self.sweep("POST", f"{ab}/{verb}")
-        fork = self.sweep("POST", f"{ab}/fork", {"name": f"gate-fork-{self.tag}"})
+            self.sweep("POST", f"{box}/{verb}")
+        fork = self.sweep("POST", f"{box}/fork", {"name": f"gate-fork-{self.tag}"})
         if fork.status == 201:
             self.sandboxes.append(str(fork.json()["id"]))
         self.sweep("DELETE", f"/v0/snapshots/{ref}")
-        if self.sweep("DELETE", f"{ab}?force=true").status < 300:
-            self.sandboxes.remove(aid)
+        if self.sweep("DELETE", f"{box}?force=true").status < 300:
+            self.sandboxes.remove(sid)
 
     def sweep_errors(self, box: str) -> None:
         """The refusals and errors a client meets, each of which could carry the host's detail in its message."""

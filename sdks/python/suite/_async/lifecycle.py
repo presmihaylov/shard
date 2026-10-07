@@ -25,13 +25,13 @@ async def others(sandbox: AsyncSandbox) -> list[str]:
     ]
 
 
-async def create_no_app(ctx: AsyncContext) -> None:
+async def create_no_process(ctx: AsyncContext) -> None:
     sandbox = await ctx.create(env={"MODE": "test"}, memory_mib=256)
     equal(sandbox.info.state, "running")
     equal(sandbox.info.resources.memory_mib, 256)
-    equal(sandbox.info.app, None, "create starts no app")
+    equal(sandbox.info.processes, (), "create starts no process")
     equal((await sandbox.exec("printenv MODE")).stdout, "test\n")
-    equal(await others(sandbox), [], "only init and the exec itself run in a sandbox with no app")
+    equal(await others(sandbox), [], "only init and the exec itself run in a sandbox with no process")
 
 
 async def inspect_get_list(ctx: AsyncContext) -> None:
@@ -161,7 +161,7 @@ async def capabilities(ctx: AsyncContext) -> None:
 
 
 CHECKS = [
-    Check("lifecycle.create_no_app", create_no_app),
+    Check("lifecycle.create_no_process", create_no_process),
     Check("lifecycle.inspect_get_list", inspect_get_list),
     Check("lifecycle.stop_start", stop_start),
     Check("lifecycle.pause_resume", pause_resume),

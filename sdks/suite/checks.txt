@@ -4,7 +4,7 @@ auth.no_key
 auth.bad_key
 auth.local_routes_refused
 auth.version_public
-lifecycle.create_no_app
+lifecycle.create_no_process
 lifecycle.inspect_get_list
 lifecycle.stop_start
 lifecycle.pause_resume
@@ -38,11 +38,12 @@ files.metadata
 files.list_mkdir_remove
 files.file_transfer
 files.dir_transfer
-apps.run_handle
-apps.sandbox_exec
-apps.inspect_logs_wait
-apps.stop_keeps_sandbox
-apps.restart_policy
+processes.run_handle
+processes.list_get
+processes.wait_logs
+processes.kill_keeps_sandbox
+processes.restart_policy
+processes.run_again
 logs.read
 logs.follow
 logs.egress_read

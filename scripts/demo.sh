@@ -63,10 +63,11 @@ shard pull "${IMAGE}" >/dev/null
 
 echo "# shard on a box with no /dev/kvm: pause, resume and fork on gVisor"
 
-show shard run -d --name web "${IMAGE}" /bin/sh -c 'i=0; while true; do i=$((i+1)); echo tick $i; sleep 1; done'
+show shard create --name web "${IMAGE}"
+show shard run web --name ticker -- /bin/sh -c 'i=0; while true; do i=$((i+1)); echo tick $i; sleep 1; done'
 sleep 2
 show shard exec web /bin/sh -c 'echo hello > /root/state'
-show shard logs web
+show shard logs web ticker
 PID=$(pid_of web)
 RSS_BEFORE=$(rss "${PID}")
 FREE_BEFORE=$(mem_available_kib)
@@ -84,7 +85,7 @@ timed shard resume web
 sleep 2
 show shard exec web cat /root/state
 echo "  the loop went on from where the pause froze it:"
-show shard logs web
+show shard logs web ticker
 
 timed shard fork --name web-2 web
 show shard list

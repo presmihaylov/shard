@@ -26,13 +26,13 @@ def others(sandbox: Sandbox) -> list[str]:
     ]
 
 
-def create_no_app(ctx: Context) -> None:
+def create_no_process(ctx: Context) -> None:
     sandbox = ctx.create(env={"MODE": "test"}, memory_mib=256)
     equal(sandbox.info.state, "running")
     equal(sandbox.info.resources.memory_mib, 256)
-    equal(sandbox.info.app, None, "create starts no app")
+    equal(sandbox.info.processes, (), "create starts no process")
     equal((sandbox.exec("printenv MODE")).stdout, "test\n")
-    equal(others(sandbox), [], "only init and the exec itself run in a sandbox with no app")
+    equal(others(sandbox), [], "only init and the exec itself run in a sandbox with no process")
 
 
 def inspect_get_list(ctx: Context) -> None:
@@ -162,7 +162,7 @@ def capabilities(ctx: Context) -> None:
 
 
 CHECKS = [
-    Check("lifecycle.create_no_app", create_no_app),
+    Check("lifecycle.create_no_process", create_no_process),
     Check("lifecycle.inspect_get_list", inspect_get_list),
     Check("lifecycle.stop_start", stop_start),
     Check("lifecycle.pause_resume", pause_resume),

@@ -1,6 +1,6 @@
 ---
 title: How to run Docker inside a sandbox?
-description: Run dockerd as the command of a sandbox, then build and run containers inside it, on Sysbox, vz or Firecracker.
+description: Run dockerd as a supervised process in a sandbox, then build and run containers inside it, on Sysbox, vz or Firecracker.
 sidebar:
   order: 7
 ---
@@ -13,7 +13,8 @@ This example starts `dockerd` in a sandbox, waits for it, then runs a container 
 	<TabItem label="CLI">
 
 ```sh
-shard run -d --name dind --memory 512MiB docker:27-dind dockerd
+shard create --name dind --memory 512MiB docker:27-dind
+shard run dind -- dockerd
 until shard exec dind docker info >/dev/null 2>&1; do sleep 1; done
 shard exec dind docker run --rm alpine:3.20 echo hello from a nested container
 ```
@@ -25,16 +26,17 @@ shard exec dind docker run --rm alpine:3.20 echo hello from a nested container
 import { Shard } from "useshards";
 
 const shard = new Shard();
-const app = await shard.run("docker:27-dind", ["dockerd"], { name: "dind", memoryMiB: 512 });
+const sandbox = await shard.create({ image: "docker:27-dind", name: "dind", memoryMiB: 512 });
 try {
-  const ready = await app.sandbox.exec(
+  await sandbox.run(["dockerd"]);
+  const ready = await sandbox.exec(
     "for i in $(seq 30); do docker info >/dev/null 2>&1 && exit 0; sleep 1; done; exit 1",
   );
   if (ready.exitCode !== 0) throw new Error("dockerd did not answer");
-  const hello = await app.sandbox.exec(["docker", "run", "--rm", "alpine:3.20", "echo", "hello from a nested container"]);
+  const hello = await sandbox.exec(["docker", "run", "--rm", "alpine:3.20", "echo", "hello from a nested container"]);
   console.log(hello.stdout);
 } finally {
-  await app.sandbox.remove({ force: true });
+  await sandbox.remove({ force: true });
   shard.close();
 }
 ```
@@ -46,17 +48,18 @@ try {
 from useshards import Shard
 
 with Shard() as shard:
-    app = shard.run("docker:27-dind", ["dockerd"], name="dind", memory_mib=512)
+    sandbox = shard.create("docker:27-dind", name="dind", memory_mib=512)
     try:
-        ready = app.sandbox.exec(
+        sandbox.run(["dockerd"])
+        ready = sandbox.exec(
             "for i in $(seq 30); do docker info >/dev/null 2>&1 && exit 0; sleep 1; done; exit 1"
         )
         if ready.exit_code != 0:
             raise RuntimeError("dockerd did not answer")
-        hello = app.sandbox.exec(["docker", "run", "--rm", "alpine:3.20", "echo", "hello from a nested container"])
+        hello = sandbox.exec(["docker", "run", "--rm", "alpine:3.20", "echo", "hello from a nested container"])
         print(hello.stdout)
     finally:
-        app.sandbox.remove(force=True)
+        sandbox.remove(force=True)
 ```
 
 	</TabItem>
@@ -89,11 +92,11 @@ shard setup --local --provider sysbox --start-at-boot=true -y
 
 Setup never recommends Sysbox. A daemon started without `--provider` keeps Sysbox only for a data directory that already holds Sysbox sandboxes, so name it the first time. Sysbox needs an x86_64 Linux host, root, and a kernel that Sysbox supports. There is no fallback to another provider.
 
-## Why dockerd is the command
+## Why dockerd is a process
 
-The command you give replaces the image's command. shard runs `dockerd` directly, not the entrypoint script of the `docker:dind` image, and finds it on the image's `PATH`. PID 1 of the sandbox is shard's own supervisor, and `dockerd` is its child.
+shard never runs the image's entrypoint script. `shard run` starts `dockerd` directly, finds it on the image's `PATH`, and names the process `dockerd`. PID 1 of the sandbox is shard's own supervisor, and `dockerd` is its child.
 
-A sandbox outlives its command. If `dockerd` exits, the sandbox stays running and you can still exec into it. Only `shard stop` ends the sandbox. Add `--restart on-failure` to `shard run` to start `dockerd` again after a nonzero exit.
+A sandbox outlives its processes. If `dockerd` exits, the sandbox stays running and you can still exec into it. The default restart policy, `unless-stopped`, starts `dockerd` again after any exit, and brings it back when the daemon restarts. `shard kill dind dockerd` ends it and cancels its restarts. Only `shard stop` ends the sandbox.
 
 ## What the sandbox bounds
 

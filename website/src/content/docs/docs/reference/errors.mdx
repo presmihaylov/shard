@@ -66,18 +66,18 @@ Match on the code, never on the message. The message is for a person to read.
 | --- | --- |
 | 0 | The command did what it says. |
 | 1 | shard failed, or the request did. stderr holds one line: `shard: <reason>`. |
-| The command's own code | `shard exec` exits with the code of the command it ran. `shard shell` exits with the code of the shell. `shard run` exits with the last exit code of its app. |
-| 128 + n | Signal n ended the command of `shard exec` or `shard run`, and shard reports it the way a shell does. SIGTERM gives 143 and SIGKILL gives 137. |
+| The command's own code | `shard exec` exits with the code of the command it ran. `shard shell` exits with the code of the shell. `shard run --attach` exits with the last exit code of its process. |
+| 128 + n | Signal n ended the command of `shard exec` or the process of `shard run --attach`, and shard reports it the way a shell does. SIGTERM gives 143 and SIGKILL gives 137. |
 | 126 or 127 | The command of `shard exec` or `shard run` never started: 126 when it cannot run, 127 when it does not exist. `shard shell` exits 127 when the sandbox has neither bash nor sh, or when the `--workdir` directory does not exist. |
 | 1 or more | `shard exec` or `shard shell` lost the command's output. A lost stream never counts as a pass, even when the command exited 0. |
-| 125 | `shard run` failed in shard itself. The separate code lets a script tell this apart from an app that exits 1. |
-| 130 | Ctrl+C ended `shard run` or `shard setup`, or a second Ctrl+C ended any other verb. See below. |
+| 125 | `shard run` failed in shard itself. The separate code lets a script tell this apart from a process that exits 1. |
+| 130 | Ctrl+C ended `shard run` before the process started, or ended `shard setup`, or a second Ctrl+C ended any other verb. See below. |
 
-When the command in `shard exec` or `shard run` fails, shard writes nothing of its own to stderr, so stderr holds only what the command wrote. If the command never started or its output was lost, shard writes one `shard:` line that says why.
+When the command in `shard exec` or the process of `shard run --attach` fails, shard writes nothing of its own to stderr, so stderr holds only what the command wrote. If the command never started or its output was lost, shard writes one `shard:` line that says why.
 
 ### Ctrl+C in shard run
 
-The first Ctrl+C stops the app, and the second kills it. Each time, `shard run` waits for the app to end and exits with its code, such as 143 or 137. A third Ctrl+C exits 130 at once, without waiting. If you press Ctrl+C before the app starts, `shard run` stops the app as soon as the sandbox is up, then exits 130. In every case the sandbox keeps running. Only `shard stop` ends it.
+With `--attach`, Ctrl+C detaches and exits 0. The process keeps running, and `shard run` prints the `shard kill` command that stops it. A Ctrl+C before the process starts exits 130. In every case the sandbox keeps running. Only `shard stop` ends it.
 
 ### shard setup
 
@@ -121,7 +121,7 @@ If the daemon fails after the WebSocket of a command stream such as `shard exec`
 | `invalid_request` | 400 | The body does not decode, a field does not validate, a named secret or policy is unknown, an image reference does not parse, or a disk does not fit: the host disk has no room for it, or the image or the snapshot cannot take its bound. Also `shard serve`, when the request line does not parse. |
 | `body_too_large` | 413 | A JSON body over 1 MiB. The daemon stops reading and closes the connection after it answers. |
 | `not_found` | 404 | No sandbox, snapshot, policy, secret, image or exec has the reference, or no route has the path. Also a create, start, resume or fork whose image files are no longer on the host. The message names the image by its digest, and `shard pull` brings it back. |
-| `sandbox_not_running` | 409 | Exec, pause, fork, attach or app stop on a sandbox that is not running, that the provider no longer holds, or whose provider process does not answer. |
+| `sandbox_not_running` | 409 | Exec, run, pause or fork on a sandbox that is not running, that the provider no longer holds, or whose provider process does not answer. Also a kill on a paused sandbox, and a process attach that the sandbox stops under. |
 | `sandbox_not_stopped` | 409 | Start on a sandbox that is up. Remove without force on a sandbox that is up or paused. Snapshot create on a sandbox that is not stopped. |
 | `sandbox_not_paused` | 409 | Resume on a sandbox that is not paused. |
 | `sandbox_live` | 409 | Grant, ungrant, policy attach or policy detach while the sandbox is pending, running, paused or unresponsive. These verbs take a created or stopped sandbox only. |
@@ -129,16 +129,16 @@ If the daemon fails after the WebSocket of a command stream such as `shard exec`
 | `no_checkpoint` | 409 | Resume on a paused sandbox that has no saved state to resume. |
 | `unsupported` | 409 | The provider does not support the request, such as a pause on Sysbox. The message names the provider and the request. |
 | `in_use` | 409 | Remove a policy, secret or image that sandboxes hold, remove an image that snapshots hold, or change the placeholder of a secret that sandboxes hold. `holders` lists them. Also a second attach to one exec, without `holders`. |
-| `name_taken` | 409 | A create or fork whose name another sandbox has, or a snapshot create whose name another snapshot has. |
+| `name_taken` | 409 | A create or fork whose name another sandbox has, a snapshot create whose name another snapshot has, or a run whose name a running process of the sandbox has. |
 | `exec_exited` | 409 | Kill on an exec whose command ended. |
 | `exec_running` | 409 | Delete on an exec whose command still runs. |
 | `exec_limit` | 429 | An exec while the sandbox runs 32 execs, or the daemon runs 256 across all sandboxes. shard stops no running exec to make room, so try again after one exits. |
-| `no_app` | 409 | App attach or app stop on a sandbox that `shard create` made, which has no app. |
-| `app_ended` | 409 | App stop after the app ended and its restart policy will not start it again. |
+| `no_process` | 404 | A get, kill, logs or attach of a process name the sandbox does not have. |
+| `process_limit` | 409 | A run while all 16 processes of the sandbox still run. A run of an ended name takes that entry's place. |
 | `unauthorized` | 401 | `shard serve`, when the request has no valid API token. |
 | `forbidden` | 403 | `shard serve`, when the token is valid but its scopes do not cover the route, or when no scope reaches the route, such as an unknown path or a host-only route. Also a create that names, or a fork that copies, a secret without the `secret:*` scope or a policy without the `policy:*` scope. |
 | `timeout` | 504 | A start that the provider did not finish in 60 s, a stop, remove or restart whose provider status call did not answer in time, or an exec that the provider did not start in 20 s. Try again once the runtime is free. |
-| `command_not_started` | 422 | An exec, or the app of a create, whose command never started: it does not exist, it cannot run, or its interpreter does not exist. The message names the command and the reason. `exit_code` is 127 or 126. |
+| `command_not_started` | 422 | An exec or a run whose command never started: it does not exist, it cannot run, or its interpreter does not exist. The message names the command and the reason. `exit_code` is 127 or 126. |
 | `internal` | 500 | Any other failure. The daemon log has the cause. Also `shard serve`, with status 502, when the daemon does not answer on its socket. |
 
 On gVisor, `shard remove --force` works even when the runtime does not answer. It kills the runsc processes of the sandbox, finishes the removal, and returns `timeout` only if that kill fails too.

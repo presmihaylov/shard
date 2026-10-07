@@ -12,7 +12,8 @@ On an Apple silicon Mac with macOS 14 or later, install shard, set it up, and ru
 ```sh
 curl -fsSL https://useshards.com/install | sh
 shard setup --local --provider vz --start-at-boot=true -y
-shard run -d --name demo --memory 512MiB python:3.12 python -c 'print(1)'
+shard create --name demo --memory 512MiB python:3.12
+shard run demo --restart no --attach -- python -c 'print(1)'
 shard logs demo
 shard exec demo uname -a
 shard pause demo
@@ -104,10 +105,10 @@ import { Shard } from "useshards";
 // Reads SHARD_API_KEY.
 const shard = new Shard({ remote: "http://127.0.0.1:7850" });
 try {
-  const app = await shard.run("python:3.12", ["sleep", "infinity"], { name: "demo", memoryMiB: 512 });
-  const result = await app.sandbox.exec(["uname", "-a"]);
+  const sandbox = await shard.create({ image: "python:3.12", name: "demo", memoryMiB: 512 });
+  const result = await sandbox.exec(["uname", "-a"]);
   console.log(result.stdout);
-  await app.sandbox.remove({ force: true });
+  await sandbox.remove({ force: true });
 } finally {
   shard.close();
 }
@@ -121,10 +122,10 @@ from useshards import Shard
 
 # Reads SHARD_API_KEY.
 with Shard(remote="http://127.0.0.1:7850") as shard:
-    app = shard.run("python:3.12", ["sleep", "infinity"], name="demo", memory_mib=512)
-    result = app.sandbox.exec(["uname", "-a"])
+    sandbox = shard.create("python:3.12", name="demo", memory_mib=512)
+    result = sandbox.exec(["uname", "-a"])
     print(result.stdout)
-    app.sandbox.remove(force=True)
+    sandbox.remove(force=True)
 ```
 
 	</TabItem>

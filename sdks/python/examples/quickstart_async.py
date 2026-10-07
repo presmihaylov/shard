@@ -2,7 +2,7 @@
 
 import asyncio
 
-from useshards import AsyncShard
+from useshards import AsyncShard, Restart
 
 IMAGE = "docker.io/library/alpine:3"
 
@@ -23,16 +23,16 @@ async def main() -> None:
             # Commands in one sandbox run side by side.
             results = await asyncio.gather(*(sandbox.exec(f"sleep 1; echo {n}") for n in range(3)))
             print("side by side:", " ".join(each.stdout.strip() for each in results))
+
+            # A process ends, but its sandbox runs on until it is stopped or removed.
+            ticker = await sandbox.run(
+                "for i in 1 2 3; do echo tick $i; done", name="ticker", restart=Restart(policy="no")
+            )
+            ended = await ticker.wait(timeout=60)
+            print(f"process {ticker.name} exited {ended.status.exit.code if ended.status.exit else None}")
+            print(await ticker.logs(), end="")
         finally:
             await sandbox.remove(force=True)
-
-        app = await shard.run(IMAGE, "for i in 1 2 3; do echo tick $i; done")
-        try:
-            # The app ends, but its sandbox stays until it is removed.
-            print(f"app exited {(await app.wait(timeout=60)).exit_code}")
-            print(await app.logs(), end="")
-        finally:
-            await app.sandbox.remove(force=True)
 
 
 if __name__ == "__main__":

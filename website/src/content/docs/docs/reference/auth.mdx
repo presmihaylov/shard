@@ -65,10 +65,10 @@ Both refusals come from `shard serve` before it opens the socket, so a refused r
 
 | Scope | Lets a token | Routes |
 | --- | --- | --- |
-| `sandbox:read` | View sandboxes, logs and snapshots | List and get a sandbox, its logs, its egress log, attach to its app, list and get a snapshot |
-| `sandbox:write` | Create sandboxes, change their state and create snapshots | Create, start, stop, pause, resume and fork a sandbox, stop its app, create a snapshot |
+| `sandbox:read` | View sandboxes, logs and snapshots | List and get a sandbox, its egress log, list and get its processes, read and attach to a process's logs, list and get a snapshot |
+| `sandbox:write` | Create sandboxes, change their state and create snapshots | Create, start, stop, pause, resume and fork a sandbox, create a snapshot |
 | `sandbox:delete` | Remove sandboxes and snapshots | Remove a sandbox, remove a snapshot |
-| `exec` | Run commands and access sandbox files | Every exec route, and every files, ls, mkdir and archive route |
+| `exec` | Run commands and access sandbox files | Every exec route, run and kill a process, and every files, ls, mkdir and archive route |
 | `secret:*` | Manage secrets and secret grants | Every secrets route, and grant and ungrant on a sandbox |
 | `policy:*` | Manage policies and attach them to sandboxes | Every policies route, and attach and detach on a sandbox |
 | `*` | All available permissions | Every route above |

@@ -2,6 +2,7 @@ from enum import StrEnum
 
 
 class EndMessageReason(StrEnum):
+    ENDED = "ended"
     REMOVED = "removed"
     STOPPED = "stopped"
 

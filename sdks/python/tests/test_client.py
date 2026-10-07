@@ -11,13 +11,16 @@ import pytest
 from fakedaemon import RECORD, Answer, FakeDaemon, Peer
 
 from useshards import (
-    AppExit,
     AsyncShard,
     Capabilities,
     ConflictError,
+    ExitStatus,
     NotFoundError,
     Policy,
     PolicyRule,
+    Process,
+    ProcessInfo,
+    ProcessStatus,
     ProtocolError,
     Restart,
     SandboxList,
@@ -36,6 +39,12 @@ SANDBOX: dict[str, Any] = {
     "state": "running",
     "resources": {"memory_mib": 512, "vcpus": 1, "disk_mib": 0},
     "created_at": "2026-10-04T10:00:00Z",
+}
+PROCESS: dict[str, Any] = {
+    "name": "web",
+    "command": ["/bin/sh", "-c", "serve"],
+    "restart": {"policy": "unless-stopped"},
+    "status": {"state": "running", "restarts": 0, "started_at": "2026-10-04T10:00:02Z"},
 }
 RULE = {
     "action": "allow",
@@ -57,6 +66,7 @@ EGRESS_RECORD = {
 def daemon() -> Iterator[FakeDaemon]:
     fake = FakeDaemon()
     fake.routes[("GET", "/v0/sandboxes/sb")] = (200, SANDBOX)
+    fake.routes[("GET", "/v0/sandboxes/sb/processes/web")] = (200, PROCESS)
     yield fake
     fake.close()
     assert fake.errors == []
@@ -79,8 +89,12 @@ def sent(daemon: FakeDaemon, method: str, path: str) -> Any:
     return next(json.loads(body) for m, p, body in daemon.requests if (m, p) == (method, path))
 
 
+def web(shard: Shard) -> Process:
+    return shard.get("sb").processes.get("web")
+
+
 def log_end(peer: Peer) -> str:
-    peer.send(EXIT, json.dumps({"reason": "stopped"}).encode())
+    peer.send(EXIT, json.dumps({"reason": "ended"}).encode())
     return peer.until_end()
 
 
@@ -184,28 +198,88 @@ def test_capabilities(daemon: FakeDaemon, shard: Shard) -> None:
 
 def test_create_and_run_bodies(daemon: FakeDaemon, shard: Shard) -> None:
     daemon.routes[("POST", "/v0/sandboxes")] = (201, SANDBOX)
-    assert shard.create("alpine:3", name="web", env={"MODE": "test"}, secrets=["TOKEN"]).id == "sb"
-    app = shard.run("alpine:3", "sleep 1", memory_mib=0, restart=Restart(policy="on-failure", retries=3, backoff=2))
-    assert app.sandbox.id == "sb"
+    daemon.routes[("POST", "/v0/sandboxes/sb/processes")] = (201, PROCESS)
+    sandbox = shard.create("alpine:3", name="web", env={"MODE": "test"}, secrets=["TOKEN"], memory_mib=0)
+    process = sandbox.run("serve", env={"MODE": "test"}, restart=Restart(policy="on-failure", retries=3))
+    assert (process.sandbox, process.name, process.info.restart.policy) == ("sb", "web", "unless-stopped")
     assert [json.loads(body) for _, _, body in daemon.requests] == [
         {
             "image": "alpine:3",
             "name": "web",
             "env": ["MODE=test"],
             "secrets": ["TOKEN"],
-            "resources": {"vcpus": 0, "disk_mib": 0},
+            "resources": {"vcpus": 0, "disk_mib": 0, "memory_mib": 0},
         },
         {
-            "image": "alpine:3",
-            "command": ["/bin/sh", "-c", "sleep 1"],
-            "resources": {"vcpus": 0, "disk_mib": 0, "memory_mib": 0},
-            "restart": {"policy": "on-failure", "backoff": 2, "retries": 3},
+            "command": ["/bin/sh", "-c", "serve"],
+            "env": ["MODE=test"],
+            "restart": {"policy": "on-failure", "retries": 3},
         },
     ]
-    assert daemon.targets == ["/v0/sandboxes?wait=true"] * 2
+    assert daemon.targets == ["/v0/sandboxes?wait=true", "/v0/sandboxes/sb/processes"]
     with pytest.raises(ValueError, match="exactly one"):
         shard.create()
+    with pytest.raises(ValueError, match="must name a program"):
+        sandbox.run([])
     assert len(daemon.requests) == 2
+
+
+def test_a_run_of_a_running_name_is_a_conflict(daemon: FakeDaemon, shard: Shard) -> None:
+    taken = {"error": {"code": "name_taken", "message": "sandbox sb already runs a process named web"}}
+    daemon.routes[("POST", "/v0/sandboxes/sb/processes")] = (409, taken)
+    with pytest.raises(ConflictError) as raised:
+        shard.get("sb").run("serve", name="web")
+    assert raised.value.code == "name_taken"
+
+
+def test_processes_list_get_and_kill(daemon: FakeDaemon, shard: Shard) -> None:
+    killed = {
+        **PROCESS,
+        "killed": True,
+        "status": {"state": "killed", "restarts": 0, "exit": {"code": 0, "signal": 15}},
+    }
+    daemon.routes[("GET", "/v0/sandboxes/sb/processes")] = (200, {"processes": [PROCESS]})
+    daemon.routes[("POST", "/v0/sandboxes/sb/processes/web/kill")] = (200, killed)
+    sandbox = shard.get("sb")
+    assert [each.name for each in sandbox.processes.list()] == ["web"]
+    process = sandbox.processes.get("web")
+    assert repr(process) == "Process(sandbox='sb', name='web', state='running')"
+    process.kill()
+    process.kill(force=True)
+    assert process.info.killed is True
+    assert process.info.status == ProcessStatus(
+        state="killed", restarts=0, exit=ExitStatus(code=0, signal=15), started_at=None
+    )
+    assert [body for method, path, body in daemon.requests if path.endswith("/kill")] == [b"", b'{"force":true}']
+
+
+def test_a_process_record_reads_whole(daemon: FakeDaemon, shard: Shard) -> None:
+    gave_up = {
+        **PROCESS,
+        "env": ["MODE=test"],
+        "workdir": "/srv",
+        "restart": {"policy": "on-failure", "retries": 2, "backoff": 1},
+        "status": {"state": "gave-up", "restarts": 2, "exit": {"code": 1, "signal": 0}},
+    }
+    daemon.routes[("GET", "/v0/sandboxes/sb")] = (200, {**SANDBOX, "processes": [gave_up]})
+    daemon.routes[("GET", "/v0/sandboxes/sb/processes/odd")] = (
+        200,
+        {**PROCESS, "status": {"state": "odd", "restarts": 0}},
+    )
+    assert shard.get("sb").info.processes == (
+        ProcessInfo(
+            name="web",
+            command=("/bin/sh", "-c", "serve"),
+            env=("MODE=test",),
+            workdir="/srv",
+            user=None,
+            restart=Restart(policy="on-failure", retries=2, backoff=1),
+            killed=False,
+            status=ProcessStatus(state="gave-up", restarts=2, exit=ExitStatus(code=1, signal=None), started_at=None),
+        ),
+    )
+    with pytest.raises(ProtocolError, match="'odd' is not a valid ProcessStatusState"):
+        shard.get("sb").processes.get("odd")
 
 
 def test_exec_refuses_stdin_of_the_other_mode(daemon: FakeDaemon, shard: Shard) -> None:
@@ -241,10 +315,10 @@ def test_changes_keep_the_handle_current(daemon: FakeDaemon, shard: Shard) -> No
 
 
 def test_logs_and_egress_log(daemon: FakeDaemon, shard: Shard) -> None:
-    daemon.routes[("GET", "/v0/sandboxes/sb/logs")] = (200, b"hello \xff")
+    daemon.routes[("GET", "/v0/sandboxes/sb/processes/web/logs")] = (200, b"hello \xff")
     daemon.routes[("GET", "/v0/sandboxes/sb/egress-log")] = (200, [EGRESS_RECORD])
     sandbox = shard.get("sb")
-    assert sandbox.logs() == "hello �"
+    assert sandbox.processes.get("web").logs() == "hello �"
     assert [(each.host, each.port, each.verdict) for each in sandbox.egress_log()] == [("example.com", 443, "allow")]
 
 
@@ -262,10 +336,10 @@ def test_follow_logs_to_the_end(daemon: FakeDaemon, shard: Shard) -> None:
         return log_end(peer)
 
     daemon.attaches = [session]
-    with shard.get("sb").follow_logs() as follow:
+    with web(shard).follow_logs() as follow:
         assert list(follow) == [b"a", b"b"]
     assert daemon.outcomes == ["close"]
-    assert daemon.targets[-1] == "/v0/sandboxes/sb/logs?follow=true"
+    assert daemon.targets[-1] == "/v0/sandboxes/sb/processes/web/logs?follow=true"
 
 
 def test_follow_egress_log_to_a_normal_close(daemon: FakeDaemon, shard: Shard) -> None:
@@ -281,20 +355,20 @@ def test_follow_egress_log_to_a_normal_close(daemon: FakeDaemon, shard: Shard) -
 def test_follow_raises_the_daemon_error(daemon: FakeDaemon, shard: Shard) -> None:
     daemon.attaches = [lambda peer: peer.close(1011, "the log tail failed")]
     with pytest.raises(ServerError, match="the log tail failed"):
-        list(shard.get("sb").follow_logs())
+        list(web(shard).follow_logs())
 
 
 def test_follow_raises_a_failure_message(daemon: FakeDaemon, shard: Shard) -> None:
     daemon.attaches = [lambda peer: peer.fail("not_found", "no sandbox sb")]
     with pytest.raises(NotFoundError, match="no sandbox sb"):
-        list(shard.get("sb").follow_logs())
+        list(web(shard).follow_logs())
 
 
 def test_follow_drop_is_a_connection_error(daemon: FakeDaemon, shard: Shard) -> None:
     daemon.attaches = [lambda peer: peer.send(STDOUT, b"a")]
     got: list[bytes] = []
     with pytest.raises(ShardConnectionError, match="dropped"):
-        for chunk in shard.get("sb").follow_logs():
+        for chunk in web(shard).follow_logs():
             got.append(chunk)
     assert got == [b"a"]
 
@@ -305,7 +379,7 @@ def test_close_from_another_thread_ends_a_blocked_read(daemon: FakeDaemon, shard
         return peer.until_end()
 
     daemon.attaches = [session]
-    follow = shard.get("sb").follow_logs()
+    follow = web(shard).follow_logs()
     got: list[bytes] = []
     errors: list[BaseException] = []
 
@@ -330,30 +404,31 @@ def test_close_from_another_thread_ends_a_blocked_read(daemon: FakeDaemon, shard
 
 
 def test_close_before_a_read_opens_nothing(daemon: FakeDaemon, shard: Shard) -> None:
-    follow = shard.get("sb").follow_logs()
+    follow = web(shard).follow_logs()
     follow.close()
     assert list(follow) == []
-    assert daemon.targets == ["/v0/sandboxes/sb"]
+    assert daemon.targets == ["/v0/sandboxes/sb", "/v0/sandboxes/sb/processes/web"]
 
 
-def test_app_wait_timeout_leaves_the_app(daemon: FakeDaemon, shard: Shard) -> None:
+def test_process_wait_timeout_leaves_the_process(daemon: FakeDaemon, shard: Shard) -> None:
     go = threading.Event()
     calls: list[int] = []
 
     def attach() -> Answer | None:
         calls.append(1)
         if len(calls) > 1:
-            return (200, {"code": 0, "signal": 0, "restarts": 1})
+            return (200, {**PROCESS, "status": {"state": "exited", "restarts": 1, "exit": {"code": 0, "signal": 0}}})
         assert go.wait(5)
         return None
 
-    daemon.routes[("POST", "/v0/sandboxes")] = (201, {**SANDBOX, "command": ["sleep", "60"]})
-    daemon.routes[("GET", "/v0/sandboxes/sb/attach")] = attach
-    app = shard.run("alpine:3", ["sleep", "60"])
+    daemon.routes[("GET", "/v0/sandboxes/sb/processes/web/attach")] = attach
+    process = web(shard)
     with pytest.raises(TimeoutError, match="did not end within 0.1s"):
-        app.wait(timeout=0.1)
+        process.wait(timeout=0.1)
     go.set()
-    assert app.wait() == AppExit(exit_code=0, signal=None, restarts=1)
+    assert process.wait().status == ProcessStatus(
+        state="exited", restarts=1, exit=ExitStatus(code=0, signal=None), started_at=None
+    )
 
 
 def test_async_follow_to_the_end(daemon: FakeDaemon) -> None:
@@ -365,8 +440,8 @@ def test_async_follow_to_the_end(daemon: FakeDaemon) -> None:
 
     async def run() -> list[bytes]:
         async with async_shard(daemon) as client:
-            sandbox = await client.get("sb")
-            async with sandbox.follow_logs() as follow:
+            process = await (await client.get("sb")).processes.get("web")
+            async with process.follow_logs() as follow:
                 return [chunk async for chunk in follow]
 
     assert asyncio.run(run()) == [b"a"]
@@ -382,7 +457,7 @@ def test_async_cancel_lets_go_of_the_follow(daemon: FakeDaemon) -> None:
 
     async def run() -> list[bytes]:
         async with async_shard(daemon) as client:
-            follow = (await client.get("sb")).follow_logs()
+            follow = (await (await client.get("sb")).processes.get("web")).follow_logs()
             first = asyncio.Event()
 
             async def consume() -> None:

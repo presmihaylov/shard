@@ -242,11 +242,14 @@ DEFAULT_ID=$(shard create "${IMAGE}")
 expect "$(grep -o '"memory_mib": *[0-9]*' "${SHARD_ROOT}/sandboxes/${DEFAULT_ID}/sandbox.json" | grep -o '[0-9]*$')" "512" "the record of a create with no --memory holds 512 MiB"
 shard remove --force "${DEFAULT_ID}" >/dev/null
 
-step "run a microVM detached"
-create_it() { ID=$(shard run -d --memory "${MEMORY}MiB" --secret E2E_TOKEN --secret E2E_SHAPED --policy e2e-policy "${IMAGE}" /bin/sh -c 'echo shard-e2e-entrypoint; exec /bin/sleep 600'); }
-timed "run -d" create_it
-[ -n "${ID}" ] || fail "run -d printed no id"
-say "run -d printed the id ${ID}"
+step "create a microVM and run a process in it"
+create_it() { ID=$(shard create --memory "${MEMORY}MiB" --secret E2E_TOKEN --secret E2E_SHAPED --policy e2e-policy "${IMAGE}"); }
+timed "create" create_it
+[ -n "${ID}" ] || fail "create printed no id"
+say "create printed the id ${ID}"
+# The process speaks once, so logs has something to show, and then sleeps on.
+expect "$(shard run "${ID}" --name e2e -- /bin/sh -c 'echo shard-e2e-banner; exec /bin/sleep 600')" "e2e" "run prints the name of the process it started"
+expect "$(ps_of "${ID}" e2e)" "running 0 - unless-stopped" "ps shows the process running under unless-stopped, the default"
 RECORD="${SHARD_ROOT}/sandboxes/${ID}/sandbox.json"
 [ -f "${RECORD}" ] || fail "there is no record at ${RECORD}"
 ADDRESS=$(record_field "${ID}" address)
@@ -286,13 +289,13 @@ expect "$(cat "${CGROUP}/memory.oom.group")" "1" "memory.oom.group is 1, so a ho
 grep -qx "${VMM_PID}" "${CGROUP}/cgroup.procs" || fail "the vmm ${VMM_PID} is not in ${CGROUP}, which holds: $(cat "${CGROUP}/cgroup.procs")"
 say "the vmm ${VMM_PID} runs in ${CGROUP}"
 
-step "read the output of the entrypoint"
+step "read the output of the process"
 for _ in $(seq 1 50); do
-	holds "shard-e2e-entrypoint" shard logs "${ID}" && break
+	holds "shard-e2e-banner" shard logs "${ID}" e2e && break
 	sleep 0.2
 done
-holds "shard-e2e-entrypoint" shard logs "${ID}" || fail "shard logs does not show what the entrypoint wrote"
-say "logs shows what the entrypoint wrote"
+holds "shard-e2e-banner" shard logs "${ID}" e2e || fail "shard logs does not show what the process wrote"
+say "logs shows what the process wrote"
 
 step "exec a command in the microVM"
 expect_exec "shard-e2e" "the command ran and wrote a file" /bin/sh -c 'echo shard-e2e > /tmp/marker; cat /tmp/marker'
@@ -304,31 +307,30 @@ CODE=0
 shard exec "${ID}" /bin/sh -c 'exit 7' >/dev/null 2>&1 || CODE=$?
 expect "${CODE}" "7" "exec carries the guest's exit code"
 expect "$(printf 'over vsock\n' | shard exec -i "${ID}" /bin/cat)" "over vsock" "exec carries stdin in"
-expect_exec "1" "the entrypoint is a child of PID 1, which is shard-init" /bin/sh -c 'awk '"'"'$2 == "(sleep)" { print $4 }'"'"' /proc/[0-9]*/stat'
+expect_exec "1" "the process is a child of PID 1, which is shard-init" /bin/sh -c 'awk '"'"'$2 == "(sleep)" { print $4 }'"'"' /proc/[0-9]*/stat'
 
-step "run exits with the app's code, and the microVM outlives the app"
+step "run --attach exits with the process's code, kill ends one, and the microVM outlives both"
+EXIT_ID=$(shard create --memory "${MEMORY}MiB" --name e2e-exited "${IMAGE}")
 CODE=0
-OUT=$(shard run --memory "${MEMORY}MiB" --name e2e-exited "${IMAGE}" /bin/sh -c 'echo e2e-run-out; exit 3') || CODE=$?
-EXIT_ID=$(id_of e2e-exited)
-expect "${CODE}" "3" "run exits with the app's code"
-expect "${OUT}" "e2e-run-out" "run prints the app output once"
-# The liveness tick writes the exit into the record, seconds after run returns (SHARD-479).
-for _ in $(seq 1 50); do
-	grep -q '"exit_status"' "${SHARD_ROOT}/sandboxes/${EXIT_ID}/sandbox.json" && break
-	sleep 0.2
-done
-grep -q '"exit_status"' "${SHARD_ROOT}/sandboxes/${EXIT_ID}/sandbox.json" || fail "the record of ${EXIT_ID} never took the app's exit"
-expect "$(listed_state "${EXIT_ID}")" "running" "the sandbox is running after its app exited 3"
-expect_exec_in "${EXIT_ID}" "still-up" "an exec answers in a sandbox whose entrypoint is gone" /bin/echo still-up
+OUT=$(shard run "${EXIT_ID}" --name once --restart no --attach -- /bin/sh -c 'echo e2e-run-out; exit 3') || CODE=$?
+expect "${CODE}" "3" "run --attach exits with the process's code"
+expect "${OUT}" "e2e-run-out" "run --attach prints the process output once"
+expect "$(ps_of "${EXIT_ID}" once)" "exited 0 3 no" "ps shows the process exited 3 under policy no"
+expect "$(shard run "${EXIT_ID}" -- /bin/sleep 600)" "sleep" "run names the process after its command and prints the name"
+expect "$(shard kill "${EXIT_ID}" sleep)" "sleep" "kill prints the name of the process it ended"
+expect "$(ps_of "${EXIT_ID}" sleep)" "killed 0 signal 15 unless-stopped" "ps shows the process killed by SIGTERM"
+expect "$(listed_state "${EXIT_ID}")" "running" "the sandbox is running after its processes ended"
+expect_exec_in "${EXIT_ID}" "still-up" "an exec answers in a sandbox whose processes are gone" /bin/echo still-up
 shard stop "${EXIT_ID}" >/dev/null
 shard remove "${EXIT_ID}" >/dev/null
 EXIT_ID=""
 say "only stop ended it"
 
 step "a microVM that outgrows its memory stops with its reason, and nothing starts it again"
-# Only the first boot fills: the marker is on the overlay disk, and the sync keeps it through the stop that follows the OOM.
-OOM_ID=$(shard run -d --memory "${OOM_MEMORY}MiB" --name e2e-oom "${IMAGE}" /bin/sh -c \
-	'if [ ! -e /root/ran ]; then touch /root/ran && sync && mount -o remount,size=1G /dev/shm && dd if=/dev/zero of=/dev/shm/fill bs=1M; fi; echo e2e-oom-settled; while true; do sleep 1; done')
+# Only the first run fills: the marker is on the overlay disk, and the sync keeps it through the stop that follows the OOM.
+OOM_ID=$(shard create --memory "${OOM_MEMORY}MiB" --name e2e-oom "${IMAGE}")
+shard run "${OOM_ID}" --name fill -- /bin/sh -c \
+	'if [ ! -e /root/ran ]; then touch /root/ran && sync && mount -o remount,size=1G /dev/shm && dd if=/dev/zero of=/dev/shm/fill bs=1M; fi; echo e2e-oom-settled; while true; do sleep 1; done' >/dev/null
 OOM_RECORD="${SHARD_ROOT}/sandboxes/${OOM_ID}/sandbox.json"
 for _ in $(seq 1 120); do
 	grep -q '"state": *"stopped"' "${OOM_RECORD}" && break
@@ -343,17 +345,18 @@ sleep 11
 grep -q '"state": *"stopped"' "${OOM_RECORD}" || fail "something started ${OOM_ID} again after its OOM: $(cat "${OOM_RECORD}")"
 say "the daemon read the end as an OOM, not a crash, and left the microVM stopped"
 
-step "start brings the microVM back over its kept files"
+step "start brings the microVM back over its kept files, and its process with it"
 shard start "${OOM_ID}" >/dev/null
 for _ in $(seq 1 50); do
-	holds "e2e-oom-settled" shard logs "${OOM_ID}" && break
+	holds "e2e-oom-settled" shard logs "${OOM_ID}" fill && break
 	sleep 0.2
 done
-holds "e2e-oom-settled" shard logs "${OOM_ID}" || fail "the second boot of ${OOM_ID} did not get past the fill: $(shard logs "${OOM_ID}")"
+holds "e2e-oom-settled" shard logs "${OOM_ID}" fill || fail "the second run of ${OOM_ID} did not get past the fill: $(shard logs "${OOM_ID}" fill)"
+expect "$(ps_of "${OOM_ID}" fill | cut -d' ' -f1)" "running" "the start brought back the unless-stopped process"
 expect_exec_in "${OOM_ID}" "alive" "an exec answers in the microVM a start brought back" /bin/echo alive
 shard remove --force "${OOM_ID}" >/dev/null
 OOM_ID=""
-say "one OOM, one stop, and the boot a start brought back skipped the fill"
+say "one OOM, one stop, and the run a start brought back skipped the fill"
 
 step "reach the network from the microVM"
 expect_network "after the create"
@@ -412,15 +415,17 @@ start_daemon || fail "the daemon did not come up"
 expect "$(listed_state "${ID}")" "running" "the new daemon adopted the vmm by its socket"
 expect "$(record_pid "${ID}")" "${VMM_PID}" "the record still names the same vmm"
 expect_exec "restarted" "an exec answers after the daemon restart" /bin/echo restarted
-expect_exec "alive" "the entrypoint process in the guest outlived the daemon" \
+expect_exec "alive" "the process in the guest outlived the daemon" \
 	/bin/sh -c 'pgrep -f "[s]leep 600" >/dev/null && echo alive'
+expect "$(ps_of "${ID}" e2e)" "running 0 - unless-stopped" "the process outlived the daemon restart, and nothing started it again"
 nft list table inet shard | grep -c "chain egress_${LINK}" >/dev/null || fail "the host holds no chain for ${LINK} after the daemon restart"
 expect_fronted "${ID}" "the proxy fronts the sandbox after the daemon restart"
 grep -q "with reflink" "${DAEMON_LOG}" && fail "the second daemon provisioned the data dir again"
 say "the second daemon found the xfs mount and provisioned nothing"
 
 step "reconcile a microVM the host lost while the daemon was down"
-RECONCILE_ID=$(shard run -d --memory "${MEMORY}MiB" --name e2e-lost "${IMAGE}" /bin/sleep 600)
+# It runs no process, so the daemon start has nothing to bring back and the record stays stopped.
+RECONCILE_ID=$(shard create --memory "${MEMORY}MiB" --name e2e-lost "${IMAGE}")
 RECONCILE_LINK=$(record_field "${RECONCILE_ID}" host_interface)
 RECONCILE_PID=$(record_pid "${RECONCILE_ID}")
 stop_daemon || fail "the socket ${SOCKET} outlived the daemon"
@@ -461,7 +466,7 @@ say "the record says stopped and keeps the address and its lease"
 expect "$(cat "${CGROUP}/cgroup.procs")" "" "the cgroup stays, empty, for the next start"
 holds "^${ID}" shard list && fail "shard list still lists the stopped sandbox"
 expect "$(listed_state "${ID}")" "stopped" "list hides the stopped sandbox and list --all shows it stopped"
-holds "shard-e2e-entrypoint" timeout 10 "${PREFIX}/shard" --root "${SHARD_ROOT}" logs -f "${ID}" || fail "shard logs -f on a stopped sandbox did not print its output and end"
+holds "shard-e2e-banner" timeout 10 "${PREFIX}/shard" --root "${SHARD_ROOT}" logs -f "${ID}" e2e || fail "shard logs -f on a stopped sandbox did not print its output and end"
 say "logs still reads a stopped sandbox, and -f ends on its own"
 shard stop "${ID}" >/dev/null
 say "a second stop is idempotent"
@@ -489,9 +494,12 @@ for SEEDED_ID in "$@"; do
 	[ "${SEEDED_ADDRESS}" != "${ADDRESS}" ] || fail "sandbox ${SEEDED_ID} got the source's address ${ADDRESS}"
 	expect "$(listed_state "${SEEDED_ID}")" "running" "sandbox ${SEEDED_ID} runs on its own address ${SEEDED_ADDRESS}"
 	expect "$(record_field "${SEEDED_ID}" snapshot)" "${SNAPSHOT_ID}" "sandbox ${SEEDED_ID} names the snapshot it came from"
-	# A snapshot runs shard-init alone, so the source's app never prints its banner again.
-	expect "$(shard logs "${SEEDED_ID}" | grep -c "shard-e2e-entrypoint")" "0" "sandbox ${SEEDED_ID} ran no entrypoint"
-	holds '"exit_status"' shard inspect "${SEEDED_ID}" && fail "sandbox ${SEEDED_ID} carries the source's exit status"
+	# A snapshot runs shard-init alone, so the source's processes and their logs never come along.
+	holds '"processes"' shard inspect "${SEEDED_ID}" && fail "sandbox ${SEEDED_ID} carries the source's processes"
+	CODE=0
+	REFUSAL=$(shard logs "${SEEDED_ID}" 2>&1) || CODE=$?
+	[ "${CODE}" != "0" ] || fail "sandbox ${SEEDED_ID} printed logs it never wrote: ${REFUSAL}"
+	grep -q "has no process to show the output of" <<<"${REFUSAL}" || fail "logs of sandbox ${SEEDED_ID} said '${REFUSAL}', want no process"
 	expect_exec_in "${SEEDED_ID}" "kept" "sandbox ${SEEDED_ID} holds the file the source wrote before the stop" /bin/cat /root/kept
 	expect_exec_in "${SEEDED_ID}" "e2e-seeded-${N}" "sandbox ${SEEDED_ID} carries its own hostname" /bin/hostname
 	expect_exec_in "${SEEDED_ID}" "mock-E2E_TOKEN" "sandbox ${SEEDED_ID} holds the placeholder its create granted" /bin/sh -c 'echo "$E2E_TOKEN"'
@@ -547,6 +555,7 @@ NEW_VMM_PID=$(record_pid "${ID}")
 expect "$(ps -o comm= -p "${NEW_VMM_PID}" | tr -d ' ')" "firecracker" "a new vmm ${NEW_VMM_PID} drives the same address"
 grep -qx "${NEW_VMM_PID}" "${CGROUP}/cgroup.procs" || fail "the new vmm ${NEW_VMM_PID} is not in ${CGROUP}, which holds: $(cat "${CGROUP}/cgroup.procs")"
 say "the new vmm runs in the cgroup the stop kept"
+expect "$(ps_of "${ID}" e2e | cut -d' ' -f1)" "running" "the start brought back the unless-stopped process"
 expect_exec "kept" "the file written before the stop is there after the start" /bin/cat /root/kept
 expect_network "after the start"
 expect_fronted "${ID}" "the proxy fronts the sandbox after the start"
@@ -601,4 +610,4 @@ say "the root, the image, the fstab line, every cgroup of the run and the parent
 
 trap - EXIT
 echo
-echo "e2e PASSED on firecracker: install, xfs bootstrap, daemon up, create, the vmm's host cgroup, logs, exec, an entrypoint exit, an OOM stop and start, network, policy, proxy, daemon restart, reconcile, a live fork, pause, resume, stop, snapshot, create twice from it, start, remove, prune, daemon down, and a host with no cgroup, no bridge and no policy table left"
+echo "e2e PASSED on firecracker: install, xfs bootstrap, daemon up, create, the vmm's host cgroup, run, ps, logs, exec, a process exit and kill, an OOM stop and start, network, policy, proxy, daemon restart, reconcile, a live fork, pause, resume, stop, snapshot, create twice from it, start, remove, prune, daemon down, and a host with no cgroup, no bridge and no policy table left"

@@ -44,14 +44,14 @@ async function agrees(verb: string, supported: boolean, run: () => Promise<unkno
 
 export const checks: Check[] = [
   {
-    name: "lifecycle.create_no_app",
+    name: "lifecycle.create_no_process",
     run: async (ctx) => {
       const sandbox = await ctx.create({ env: { MODE: "test" }, memoryMiB: 256 });
       assert.equal(sandbox.info.state, "running");
       assert.equal(sandbox.info.resources.memoryMiB, 256);
-      assert.equal(sandbox.info.app, null, "create starts no app");
+      assert.deepEqual(sandbox.info.processes, [], "create starts no process");
       assert.equal((await sandbox.exec("printenv MODE")).stdout, "test\n");
-      assert.deepEqual(await others(sandbox), [], "only init and the exec itself run in a sandbox with no app");
+      assert.deepEqual(await others(sandbox), [], "only init and the exec itself run in a sandbox with no process");
     },
   },
   {

@@ -50,7 +50,7 @@ try {
 }
 ```
 
-`examples/quickstart.ts` has it in full, with a background command and an app. Set
+`examples/quickstart.ts` has it in full, with a background command and a supervised process. Set
 `SHARD_REMOTE` and `SHARD_API_KEY`, then run these commands from `sdks/typescript`:
 
 ```sh
@@ -62,9 +62,11 @@ npx tsx examples/quickstart.ts
 
 - **`create()` runs no command.** It returns a running sandbox, or one in state `failed` with
   `info.failedReason`. Run commands in it with `exec()`.
-- **A sandbox outlives its app.** `shard.run(image, command, { restart })` starts one app and returns
-  an `App`. When the app exits, or after `app.stop()`, the sandbox stays running, so you can still exec
-  into it. Only `stop()` or `remove()` ends it.
+- **A sandbox outlives its processes.** `sandbox.run(command, { name, restart })` starts a named
+  process that shard-init supervises and returns a `Process`, whose restart policy defaults to
+  `unless-stopped`. `processes.list()` and `processes.get(name)` find them again; `wait()`, `logs()`,
+  `followLogs()` and `kill()` act on one. When a process exits or is killed, the sandbox stays
+  running, so you can still exec into it. Only `stop()` or `remove()` ends it.
 - **A string command runs under `/bin/sh -c`.** An array runs as it is.
 - **`exec(command, { background: true })` returns a `Command`.** `wait()`, `kill()`, `writeStdin()`,
   `closeStdin()` and `resize()` act on it. `commands.get(id)` finds it again from another client.
@@ -73,7 +75,7 @@ npx tsx examples/quickstart.ts
 - **Output may hold only its end.** A result keeps the newest 8 MiB of stdout and stderr together
   (`outputLimitBytes`, 0 keeps none). `onStdout` and `onStderr` see every chunk as it arrives.
   `result.lostBytes` is different: it counts output the daemon dropped before any client read it.
-  `logs()` is bounded on the daemon too, so a long app may hold only its end.
+  A process's `logs()` is bounded on the host too, so a long run may hold only its end.
 - **Files stream.** `files.download()` writes to a temporary file and renames it at the end, so a
   large file never sits in memory. `files.upload()` sends a local file with its length.
   `uploadDir()` and `downloadDir()` move a whole tree as a tar.

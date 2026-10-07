@@ -64,7 +64,6 @@ def exec_body(
 
 def create_body(
     image: str | None,
-    command: str | Sequence[str] | None,
     *,
     snapshot: str | None,
     name: str | None,
@@ -76,7 +75,6 @@ def create_body(
     memory_mib: int | None,
     vcpus: int | None,
     disk_mib: int | None,
-    restart: Restart | None,
 ) -> models.CreateRequest:
     """The body of a create. A None memory takes the snapshot's or provider's bound, None vcpus or disk the default."""
     if (image is None) == (snapshot is None):
@@ -91,9 +89,27 @@ def create_body(
         image=UNSET if image is None else image,
         snapshot=UNSET if snapshot is None else snapshot,
         name=name or UNSET,
-        command=UNSET if command is None else argv(command),
         secrets=list(secrets) if secrets else UNSET,
         policy=policy or UNSET,
+    )
+
+
+def run_body(
+    command: str | Sequence[str],
+    *,
+    name: str | None,
+    env: Mapping[str, str] | None,
+    workdir: str | None,
+    user: str | None,
+    restart: Restart | None,
+) -> models.RunRequest:
+    """The body of a run. None env, workdir and user take the sandbox's own, and a None restart is unless-stopped."""
+    return models.RunRequest(
+        command=argv(command),
+        name=name or UNSET,
+        env=_env(env),
+        workdir=workdir or UNSET,
+        user=user or UNSET,
         restart=UNSET if restart is None else _restart_spec(restart),
     )
 
@@ -112,7 +128,9 @@ def _env(env: Mapping[str, str] | None) -> list[str] | Unset:
 
 def _restart_spec(restart: Restart) -> models.RestartSpec:
     return models.RestartSpec(
-        policy=models.RestartSpecPolicy(restart.policy), backoff=restart.backoff, retries=restart.retries or UNSET
+        policy=models.RestartSpecPolicy(restart.policy),
+        backoff=restart.backoff or UNSET,
+        retries=restart.retries or UNSET,
     )
 
 

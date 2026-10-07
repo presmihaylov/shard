@@ -136,7 +136,7 @@ An ordinary daemon restart leaves already running sandboxes alive, and the next 
 
 **`stopped (the sandbox process died)`.** The host or a crash ended the sandbox. `shard start <name>` brings it back.
 
-**`running (exited 7)`.** The entrypoint exited with code 7, but the sandbox is still up. A sandbox outlives its entrypoint, so you can still `exec` into it until `shard stop` ends it.
+**`exited` with `7` in `shard ps`.** The process exited with code 7, but the sandbox is still up. A sandbox outlives its processes, so you can still `exec` into it, or `shard run` the process again, until `shard stop` ends it. `shard logs <sandbox> <name>` shows what the process printed.
 
 **An outgoing request from the sandbox times out.** A firewall rule of your own on the host can drop the request before shard sees it. shard lets the bridge `shard0` through `ufw` and `firewalld` itself, so look for another rule that drops traffic on `shard0`:
 

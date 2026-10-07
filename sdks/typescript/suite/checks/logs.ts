@@ -23,10 +23,11 @@ export const checks: Check[] = [
   {
     name: "logs.read",
     run: async (ctx) => {
-      const app = await ctx.run("echo line-one; echo line-two >&2; sleep 300");
+      const sandbox = await ctx.create();
+      const job = await sandbox.run("echo line-one; echo line-two >&2; sleep 300");
       let logs = "";
       await waitFor("both lines in the logs", 15_000, async () => {
-        logs = await app.sandbox.logs();
+        logs = await job.logs();
 
         return logs.includes("line-two\n");
       });
@@ -36,9 +37,10 @@ export const checks: Check[] = [
   {
     name: "logs.follow",
     run: async (ctx) => {
-      const app = await ctx.run("for i in 1 2 3; do echo tick $i; sleep 1; done; sleep 300");
+      const sandbox = await ctx.create();
+      const job = await sandbox.run("for i in 1 2 3; do echo tick $i; sleep 1; done; sleep 300");
       let out = "";
-      for await (const chunk of app.sandbox.followLogs()) {
+      for await (const chunk of job.followLogs()) {
         out += text(chunk);
         if (out.includes("tick 3\n")) {
           break;
@@ -47,12 +49,12 @@ export const checks: Check[] = [
       assert.match(out, /tick 1\n[\s\S]*tick 2\n[\s\S]*tick 3\n/, "the follow yields the lines as they come");
 
       let rest = "";
-      const ended = consume(app.sandbox.followLogs(), (chunk) => {
+      const ended = consume(job.followLogs(), (chunk) => {
         rest += text(chunk);
       });
       await waitFor("the second follow to replay the log", 10_000, async () => rest.includes("tick 3\n"));
       assert.ok(rest.startsWith("tick 1\n"), "a follow starts at the beginning of the log");
-      await app.sandbox.stop();
+      await sandbox.stop();
       assert.equal(await ended, undefined, "a stop ends the follow without an error");
     },
   },

@@ -4,11 +4,9 @@ import { request } from "node:https";
 import {
   NotFoundError,
   Shard,
-  type App,
   type CreateOptions,
   type Policy,
   type PolicyRule,
-  type RunOptions,
   type Sandbox,
   type SecretOptions,
   type Snapshot,
@@ -93,13 +91,6 @@ export class Context {
     this.defer(`remove sandbox ${sandbox.id}`, () => sandbox.remove({ force: true }));
 
     return sandbox;
-  }
-
-  async run(command: string | string[], options: Partial<RunOptions> = {}): Promise<App> {
-    const app = await this.shard.run(this.image, command, { name: this.name("app"), ...options });
-    this.defer(`remove sandbox ${app.sandbox.id}`, () => app.sandbox.remove({ force: true }));
-
-    return app;
   }
 
   /** policy sets one; cleanup runs in reverse, so a sandbox made after it is gone before the policy goes. */

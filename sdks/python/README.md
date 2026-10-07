@@ -69,8 +69,11 @@ asyncio.run(main())
 
 - **`create()` runs no command.** It returns a running sandbox, or one in state `failed` with
   `info.failed_reason`. Run commands in it with `exec()`.
-- **A sandbox outlives its app.** `shard.run(image, command)` returns an `App`. When the app exits,
-  its sandbox stays running, so you can still exec into it. Only `stop()` or `remove()` ends it.
+- **A sandbox outlives its processes.** `sandbox.run(command, name=...)` starts a named process that
+  shard-init supervises and returns a `Process`, whose restart policy defaults to `unless-stopped`.
+  `processes.list()` and `processes.get(name)` find them again; `wait()`, `logs()`, `follow_logs()`
+  and `kill()` act on one. When a process exits or is killed, its sandbox stays running, so you can
+  still exec into it. Only `stop()` or `remove()` ends it.
 - **A string command runs under `/bin/sh -c`.** A list runs as it is.
 - **`exec(..., background=True)` returns a `Command`.** `wait()`, `kill()`, `write_stdin()`, `close_stdin()`
   and `resize()` act on it. `commands.get(id)` finds it again from another client. In the foreground `stdin=` is
@@ -80,7 +83,7 @@ asyncio.run(main())
 - **Output may hold only its end.** A result keeps the newest 8 MiB of stdout and stderr together
   (`output_limit_bytes=`, 0 keeps none). `on_stdout=` and `on_stderr=` see every chunk as it arrives.
   `result.lost_bytes` is different: it counts output the daemon dropped before any client read it.
-  `logs()` is bounded on the daemon too, so a long app may hold only its end.
+  A process's `logs()` is bounded on the host too, so a long run may hold only its end.
 - **Files stream.** `files.download()` writes to a temporary file and renames it at the end, so a
   large file never sits in memory. An upload sends its length first: `files.upload()` takes a path,
   and `files.write()` takes bytes, a seekable file, or a stream with `size=`.

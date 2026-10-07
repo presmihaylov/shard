@@ -190,10 +190,10 @@ A token's scopes limit which routes it can reach:
 
 | Scope | What it allows |
 | --- | --- |
-| `sandbox:read` | list, inspect, logs, the egress log, attach, and reading snapshots |
+| `sandbox:read` | list, inspect, the egress log, reading a process and its logs, and reading snapshots |
 | `sandbox:write` | create, start, stop, pause, resume, fork, and making a snapshot |
 | `sandbox:delete` | removing a sandbox or a snapshot |
-| `exec` | exec, and every file route |
+| `exec` | exec, run and kill a process, and every file route |
 | `secret:*` | every secret route, and grants on a sandbox |
 | `policy:*` | every policy route, and the policy of a sandbox |
 

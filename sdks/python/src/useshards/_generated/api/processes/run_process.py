@@ -6,35 +6,41 @@ import httpx
 
 from ... import errors
 from ...client import AuthenticatedClient, Client
-from ...models.app_exit import AppExit
 from ...models.error import Error
+from ...models.process import Process
+from ...models.run_request import RunRequest
 from ...types import UNSET, Response
 
 
 def _get_kwargs(
     id: str,
+    *,
+    body: RunRequest,
 ) -> dict[str, Any]:
+    headers: dict[str, Any] = {}
+
     _kwargs: dict[str, Any] = {
-        "method": "get",
-        "url": "/v0/sandboxes/{id}/attach".format(
+        "method": "post",
+        "url": "/v0/sandboxes/{id}/processes".format(
             id=quote(str(id), safe=""),
         ),
     }
 
+    _kwargs["json"] = body.to_dict()
+
+    headers["Content-Type"] = "application/json"
+
+    _kwargs["headers"] = headers
     return _kwargs
 
 
 def _parse_response(
     *, client: AuthenticatedClient | Client, response: httpx.Response
-) -> Any | AppExit | Error:
-    if response.status_code == 101:
-        response_101 = cast(Any, None)
-        return response_101
+) -> Error | Process:
+    if response.status_code == 201:
+        response_201 = Process.from_dict(response.json())
 
-    if response.status_code == 200:
-        response_200 = AppExit.from_dict(response.json())
-
-        return response_200
+        return response_201
 
     response_default = Error.from_dict(response.json())
 
@@ -43,7 +49,7 @@ def _parse_response(
 
 def _build_response(
     *, client: AuthenticatedClient | Client, response: httpx.Response
-) -> Response[Any | AppExit | Error]:
+) -> Response[Error | Process]:
     return Response(
         status_code=HTTPStatus(response.status_code),
         content=response.content,
@@ -56,11 +62,13 @@ def sync_detailed(
     id: str,
     *,
     client: AuthenticatedClient | Client,
-) -> Response[Any | AppExit | Error]:
-    """Wait for or attach to the app of a run"""
+    body: RunRequest,
+) -> Response[Error | Process]:
+    """Run a named process under supervision in a running sandbox"""
 
     kwargs = _get_kwargs(
         id=id,
+        body=body,
     )
 
     response = client.get_httpx_client().request(
@@ -74,12 +82,14 @@ def sync(
     id: str,
     *,
     client: AuthenticatedClient | Client,
-) -> Any | AppExit | Error | None:
-    """Wait for or attach to the app of a run"""
+    body: RunRequest,
+) -> Error | Process | None:
+    """Run a named process under supervision in a running sandbox"""
 
     return sync_detailed(
         id=id,
         client=client,
+        body=body,
     ).parsed
 
 
@@ -87,11 +97,13 @@ async def asyncio_detailed(
     id: str,
     *,
     client: AuthenticatedClient | Client,
-) -> Response[Any | AppExit | Error]:
-    """Wait for or attach to the app of a run"""
+    body: RunRequest,
+) -> Response[Error | Process]:
+    """Run a named process under supervision in a running sandbox"""
 
     kwargs = _get_kwargs(
         id=id,
+        body=body,
     )
 
     response = await client.get_async_httpx_client().request(**kwargs)
@@ -103,12 +115,14 @@ async def asyncio(
     id: str,
     *,
     client: AuthenticatedClient | Client,
-) -> Any | AppExit | Error | None:
-    """Wait for or attach to the app of a run"""
+    body: RunRequest,
+) -> Error | Process | None:
+    """Run a named process under supervision in a running sandbox"""
 
     return (
         await asyncio_detailed(
             id=id,
             client=client,
+            body=body,
         )
     ).parsed

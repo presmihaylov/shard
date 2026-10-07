@@ -8,11 +8,11 @@ from attrs import field as _attrs_field
 
 from ..types import UNSET, Unset
 
-T = TypeVar("T", bound="AppStopRequest")
+T = TypeVar("T", bound="ProcessKillRequest")
 
 
 @_attrs_define
-class AppStopRequest:
+class ProcessKillRequest:
     force: bool | Unset = UNSET
 
     def to_dict(self) -> dict[str, Any]:
@@ -31,8 +31,8 @@ class AppStopRequest:
         d = dict(src_dict)
         force = d.pop("force", UNSET)
 
-        app_stop_request = cls(
+        process_kill_request = cls(
             force=force,
         )
 
-        return app_stop_request
+        return process_kill_request

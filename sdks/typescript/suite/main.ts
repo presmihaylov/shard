@@ -1,6 +1,5 @@
 // Run with SHARD_REMOTE, and SHARD_API_KEY and SHARD_SUITE_WILDCARD_KEY both "*" tokens, since the secret, policy and log checks need every scope; SHARD_SUITE_ONLY=name,name runs a subset and SHARD_SUITE_IMAGE picks the image.
 import { readFile } from "node:fs/promises";
-import { checks as apps } from "./checks/apps.js";
 import { checks as auth } from "./checks/auth.js";
 import { checks as capture } from "./checks/capture.js";
 import { checks as commands } from "./checks/commands.js";
@@ -8,6 +7,7 @@ import { checks as files } from "./checks/files.js";
 import { checks as lifecycle } from "./checks/lifecycle.js";
 import { checks as logs } from "./checks/logs.js";
 import { checks as policies } from "./checks/policies.js";
+import { checks as processes } from "./checks/processes.js";
 import { checks as secrets } from "./checks/secrets.js";
 import { checks as snapshots } from "./checks/snapshots.js";
 import { Context, Skip, describe, type Check } from "./harness.js";
@@ -19,7 +19,7 @@ const registry: Check[] = [
   ...commands,
   ...capture,
   ...files,
-  ...apps,
+  ...processes,
   ...logs,
   ...secrets,
   ...policies,

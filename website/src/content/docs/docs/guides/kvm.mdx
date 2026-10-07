@@ -10,7 +10,8 @@ On a Linux x86_64 host with `/dev/kvm`, install shard, set it up with Firecracke
 ```sh
 curl -fsSL https://useshards.com/install | sh
 shard setup --local --provider firecracker --start-at-boot=true -y
-sudo shard run -d --name demo --memory 512MiB python:3.12 python -c 'print(1)'
+sudo shard create --name demo --memory 512MiB python:3.12
+sudo shard run demo --restart no --attach -- python -c 'print(1)'
 sudo shard logs demo
 sudo shard exec demo uname -r
 sudo shard pause demo

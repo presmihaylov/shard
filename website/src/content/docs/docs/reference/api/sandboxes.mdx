@@ -5,10 +5,10 @@ sidebar:
   order: 2
 ---
 
-This creates a sandbox named `web`, then stops it. A stopped sandbox keeps its files, and a start runs it again:
+This creates a sandbox named `web`, then stops it. A stopped sandbox keeps its files, and a start runs it again. The [Processes](/docs/reference/api/processes/) routes run commands in it:
 
 ```sh
-curl --unix-socket /var/lib/shard/shard.sock -X POST -H 'Content-Type: application/json' -d '{"name":"web","image":"alpine:3.20","command":["sleep","600"],"resources":{"memory_mib":512}}' 'http://localhost/v0/sandboxes?wait=true'
+curl --unix-socket /var/lib/shard/shard.sock -X POST -H 'Content-Type: application/json' -d '{"name":"web","image":"alpine:3.20","resources":{"memory_mib":512}}' 'http://localhost/v0/sandboxes?wait=true'
 curl --unix-socket /var/lib/shard/shard.sock -X POST http://localhost/v0/sandboxes/web/stop
 curl --unix-socket /var/lib/shard/shard.sock -X POST http://localhost/v0/sandboxes/web/start
 ```
@@ -407,12 +407,12 @@ A create that names secrets also needs the secret:\* scope, and one that names a
 
 ### ProcessStatus
 
-| Field | Type | Required |
-| --- | --- | --- |
-| `exit` | [ExitStatus](#exitstatus) | no |
-| `restarts` | integer (int64) | yes |
-| `started_at` | string (date-time) | no |
-| `state` | string | yes |
+| Field | Type | Required | Description |
+| --- | --- | --- | --- |
+| `exit` | [ExitStatus](#exitstatus) | no |  |
+| `restarts` | integer (int64) | yes |  |
+| `started_at` | string (date-time) | no |  |
+| `state` | string | yes | One of `running`, `restarting`, `exited`, `killed`, `gave-up`, `stopped`. |
 
 ### ResourceRequest
 

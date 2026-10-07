@@ -6,40 +6,31 @@ import httpx
 
 from ... import errors
 from ...client import AuthenticatedClient, Client
-from ...models.app_stop_request import AppStopRequest
 from ...models.error import Error
-from ...types import UNSET, Response, Unset
+from ...models.processes_response import ProcessesResponse
+from ...types import UNSET, Response
 
 
 def _get_kwargs(
     id: str,
-    *,
-    body: AppStopRequest | Unset = UNSET,
 ) -> dict[str, Any]:
-    headers: dict[str, Any] = {}
-
     _kwargs: dict[str, Any] = {
-        "method": "post",
-        "url": "/v0/sandboxes/{id}/app/stop".format(
+        "method": "get",
+        "url": "/v0/sandboxes/{id}/processes".format(
             id=quote(str(id), safe=""),
         ),
     }
 
-    if not isinstance(body, Unset):
-        _kwargs["json"] = body.to_dict()
-
-    headers["Content-Type"] = "application/json"
-
-    _kwargs["headers"] = headers
     return _kwargs
 
 
 def _parse_response(
     *, client: AuthenticatedClient | Client, response: httpx.Response
-) -> Any | Error:
-    if response.status_code == 204:
-        response_204 = cast(Any, None)
-        return response_204
+) -> Error | ProcessesResponse:
+    if response.status_code == 200:
+        response_200 = ProcessesResponse.from_dict(response.json())
+
+        return response_200
 
     response_default = Error.from_dict(response.json())
 
@@ -48,7 +39,7 @@ def _parse_response(
 
 def _build_response(
     *, client: AuthenticatedClient | Client, response: httpx.Response
-) -> Response[Any | Error]:
+) -> Response[Error | ProcessesResponse]:
     return Response(
         status_code=HTTPStatus(response.status_code),
         content=response.content,
@@ -61,13 +52,11 @@ def sync_detailed(
     id: str,
     *,
     client: AuthenticatedClient | Client,
-    body: AppStopRequest | Unset = UNSET,
-) -> Response[Any | Error]:
-    """Stop the app of a run"""
+) -> Response[Error | ProcessesResponse]:
+    """List the processes of a sandbox"""
 
     kwargs = _get_kwargs(
         id=id,
-        body=body,
     )
 
     response = client.get_httpx_client().request(
@@ -81,14 +70,12 @@ def sync(
     id: str,
     *,
     client: AuthenticatedClient | Client,
-    body: AppStopRequest | Unset = UNSET,
-) -> Any | Error | None:
-    """Stop the app of a run"""
+) -> Error | ProcessesResponse | None:
+    """List the processes of a sandbox"""
 
     return sync_detailed(
         id=id,
         client=client,
-        body=body,
     ).parsed
 
 
@@ -96,13 +83,11 @@ async def asyncio_detailed(
     id: str,
     *,
     client: AuthenticatedClient | Client,
-    body: AppStopRequest | Unset = UNSET,
-) -> Response[Any | Error]:
-    """Stop the app of a run"""
+) -> Response[Error | ProcessesResponse]:
+    """List the processes of a sandbox"""
 
     kwargs = _get_kwargs(
         id=id,
-        body=body,
     )
 
     response = await client.get_async_httpx_client().request(**kwargs)
@@ -114,14 +99,12 @@ async def asyncio(
     id: str,
     *,
     client: AuthenticatedClient | Client,
-    body: AppStopRequest | Unset = UNSET,
-) -> Any | Error | None:
-    """Stop the app of a run"""
+) -> Error | ProcessesResponse | None:
+    """List the processes of a sandbox"""
 
     return (
         await asyncio_detailed(
             id=id,
             client=client,
-            body=body,
         )
     ).parsed

@@ -43,7 +43,8 @@ The daemon runs these background tasks. `shard daemon status` lists them:
 | `dns` | Answers DNS lookups for every sandbox that has a policy. |
 | `egress-log-tailer` | Copies the host's records of dropped packets into each sandbox's egress log. |
 | `liveness` | Every 5 seconds, checks each running sandbox against the provider and corrects the record. |
-| `restart-policy` | Copies each sandbox's restart count onto its record. |
+| `processes` | Every second, copies the state, restarts and last exit of each process onto its sandbox's record, which `shard ps` reads. |
+| `autostart` | Once per daemon start, after the proxy, the resolver and the host firewall are up, starts the sandboxes and processes whose restart policy brings them back. |
 | `held-log-rotation` | Caps each output log that the runtime writes at about 16 MiB, and keeps one older file. |
 | `log-reopen` | Reopens the daemon's own log file, if `shard daemon --log` names one. |
 
@@ -52,6 +53,8 @@ A failed task restarts after a backoff of up to one minute.
 ## A sandbox outlives the daemon
 
 Sandboxes that already run normally survive a daemon restart. On startup, the daemon checks their records against the provider before it serves any request. A create, fork or restore that the restart interrupted can instead end as `failed` or `stopped`. A record that says `running` with no process behind it usually becomes `stopped`, with the reason `daemon restarted and found no process`. When the provider reports an OOM kill or a supervisor failure, the record keeps that specific reason.
+
+Then the `autostart` task starts each stopped sandbox that holds an `always` process, or an `unless-stopped` one that neither `shard stop` nor `shard kill` ended, and runs those processes again. In a sandbox that still runs, it starts any such process that the guest no longer runs. This is how sandboxes come back after a host reboot.
 
 An `exec` session does not outlive the daemon. A restart disconnects every client and discards the daemon's output buffer and command handle. A command that already started can continue inside the sandbox, but the client cannot reconnect to that handle.
 

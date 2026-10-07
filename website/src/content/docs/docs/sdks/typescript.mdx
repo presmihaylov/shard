@@ -160,26 +160,27 @@ console.log(await sandbox.files.read("/root/notes.txt", { encoding: "utf8" }));
 | `upload(local, remote)`, `download(remote, local)` | Copy one file in or out without holding it in memory. A download writes a temporary file and renames it at the end. |
 | `uploadDir(local, remote)`, `downloadDir(remote, local)` | Copy a whole directory in or out as a tar archive. |
 
-## Apps
+## Processes
 
-`shard.run(image, command, options)` makes a sandbox and starts `command` in it as its app. It takes the same options as `create()`, except `image` and `snapshot`, plus a `restart` option:
+`sandbox.run(command, options)` starts a named process in a running sandbox, under shard's own supervisor, and returns a `Process` as soon as it runs. Its options are `name`, `env`, `workdir`, `user` and `restart`:
 
 ```ts
-const app = await shard.run("alpine:3.20", "for i in 1 2 3; do echo tick $i; done", { memoryMiB: 512 });
-try {
-  console.log((await app.wait()).exitCode);
-  process.stdout.write(await app.logs());
-} finally {
-  await app.sandbox.remove({ force: true });
-}
+const ticker = await sandbox.run("for i in 1 2 3; do echo tick $i; done", { name: "ticker", restart: { policy: "no" } });
+console.log((await ticker.wait()).status.exit);
+process.stdout.write(await ticker.logs());
 ```
 
-When the app exits, its sandbox stays `running`, so you can still run commands in `app.sandbox`. Use `app.sandbox.stop()` or `app.sandbox.remove()` to end it. `app.stop()` stops only the app.
+When a process exits, its sandbox stays `running`, so you can still run commands in it. Use `sandbox.stop()` or `sandbox.remove()` to end the sandbox. A sandbox runs up to 16 processes. A `run()` of a running name throws `ConflictError` with the code `name_taken`, and a `run()` of an ended name replaces it.
 
-- `app.wait()` returns `{ exitCode, signal, restarts }` once the restart policy will not start the app again.
-- `app.stop()` ends the app with `TERM`, or with `KILL` when you pass `{ force: true }`, and cancels its restart policy. The sandbox keeps running.
-- `app.logs()` returns the app's output so far. The daemon keeps a bounded log, so for a long run it may hold only the end. `app.sandbox.followLogs()` yields the output from the start of the log, then new output as it arrives, and ends when the sandbox stops.
-- `restart` is `{ policy, retries, backoff }`. `policy` is `"no"`, `"on-failure"` (after a non-zero exit code or a signal) or `"always"` (after any exit). `retries` caps how many times in a row `on-failure` starts the app again, and `0` or no value means no cap. `backoff` is the first wait in seconds, 1 by default, and each later wait doubles, up to 60 seconds. Without `restart`, the daemon never starts the app again.
+A `Process` has `wait()`, `kill()`, `logs()`, `followLogs()` and `inspect()`. Its `info` holds the record that the last call on that handle returned.
+
+- `name` is up to 32 lowercase letters, digits, `.`, `_` and `-`. Without it, the process takes the base name of its program.
+- `wait()` returns the `ProcessInfo` once the process ends and its restart policy will not start it again.
+- `kill()` ends the process with `TERM`, or with `KILL` when you pass `{ force: true }`, and cancels its restarts. The sandbox keeps running.
+- `logs()` returns the output of every run of the process. The daemon keeps a bounded log, so for a long run it may hold only the end. `followLogs()` yields the output from the start of the log, then new output as it arrives, and ends when the process ends or the sandbox stops.
+- `restart` is `{ policy, retries, backoff }`. `policy` is `"no"`, `"on-failure"` (after a non-zero exit code or a signal), `"always"` (after any exit, and whenever the sandbox starts) or `"unless-stopped"`, the default. `unless-stopped` is like `always` until `kill()` ends the process, and a daemon restart leaves it down in a sandbox that `stop()` stopped. `retries` caps how many times in a row `on-failure` starts the process again, and `0` or no value means no cap. `backoff` is the first wait in seconds, 1 by default, and each later wait doubles, up to 60 seconds.
+
+From any client, `sandbox.processes.list()` returns every process of the sandbox as a `ProcessInfo`, in the order they were first run, and `sandbox.processes.get(name)` finds one again. A `ProcessInfo` holds `name`, `command`, `restart`, `killed`, and a `status` with `state`, `restarts`, `exit` and `startedAt`. `state` is `"running"`, `"restarting"`, `"exited"`, `"killed"`, `"gave-up"` or `"stopped"`.
 
 ## Secrets, policies and snapshots
 

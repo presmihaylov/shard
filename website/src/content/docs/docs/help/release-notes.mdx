@@ -17,6 +17,24 @@ To upgrade the CLI, run the installer again. To upgrade a host that setup prepar
 
 shard is pre-alpha, so a release can change the API, the CLI and the SDKs without any compatibility guarantees.
 
+## Unreleased
+
+**Breaking**
+
+- A sandbox is a machine, and `shard run` starts named processes in it. `shard run SANDBOX [--name NAME] [--restart POLICY] [--attach] -- COMMAND` starts a process that shard-init supervises, prints its name and returns. The restart policy is `no`, `on-failure`, `always` or `unless-stopped`, the default.
+- `shard run IMAGE COMMAND` and `-d`/`--detach` are gone. Run `shard create IMAGE`, then `shard run SANDBOX -- COMMAND`.
+- `shard create` takes no command and no restart flags. A new sandbox runs no process until `shard run` starts one.
+- `shard logs SANDBOX [NAME]` shows the output of one process. With no name, it shows the sandbox's only process.
+- The API runs processes under `/v0/sandboxes/{id}/processes`. The sandbox's `/logs`, `/attach` and `/app/stop` routes are gone, a create refuses `command` and `restart`, and a sandbox record lists `processes` in place of `command`, `restart` and `exit_status`. The error codes `no_app` and `app_ended` give way to `no_process` and `process_limit`, and a run of a name that still runs answers `name_taken`.
+- The SDKs follow: `sandbox.run(command)` returns a `Process`, and `shard.run(image, command)`, `App` and the sandbox's own `logs()` are gone.
+
+**New**
+
+- `shard ps SANDBOX` lists the processes of a sandbox with their state, restarts, last exit and policy. `shard list` counts the processes that run in each sandbox.
+- `shard kill SANDBOX NAME` ends one process and cancels its restarts, and the sandbox stays up. `--force` kills it at once.
+- `shard run --attach` prints the output and exits with the process's code. Ctrl+C detaches and leaves the process running.
+- When the daemon starts, it starts again each sandbox that holds an `always` process, or an `unless-stopped` one that neither `shard stop` nor `shard kill` ended, and runs those processes again. So they come back after a host reboot.
+
 ## v0.1.5
 
 7 October 2026. [Full notes](https://github.com/presmihaylov/shard/releases/tag/v0.1.5).

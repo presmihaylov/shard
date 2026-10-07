@@ -11,11 +11,9 @@ from typing import TypeVar
 import attrs
 
 from useshards import (
-    App,
     NotFoundError,
     Policy,
     PolicyRule,
-    Restart,
     Sandbox,
     Shard,
     Snapshot,
@@ -112,11 +110,6 @@ class Context:
         )
         self.defer(f"remove sandbox {sandbox.id}", lambda: sandbox.remove(force=True))
         return sandbox
-
-    def run(self, command: str | Sequence[str], *, restart: Restart | None = None) -> App:
-        app = self.shard.run(self.image, command, name=self.name("app"), restart=restart)
-        self.defer(f"remove sandbox {app.sandbox.id}", lambda: app.sandbox.remove(force=True))
-        return app
 
     def policy(self, name: str, rules: Sequence[PolicyRule]) -> Policy:
         """Set one; cleanup runs in reverse, so a sandbox made after it is gone before the policy goes."""

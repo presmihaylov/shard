@@ -93,11 +93,11 @@ No. shard pulls images from a registry and drives the runtime itself. To run Doc
 
 ## Does the image's entrypoint run?
 
-No. `shard create` starts no main command, and `shard run` starts the command you give it. The image's `ENTRYPOINT` and `CMD` never run.
+No. A new sandbox has no processes, and `shard run` starts the command you give it as a named process. The image's `ENTRYPOINT` and `CMD` never run.
 
-## What happens when the main command exits?
+## What happens when a process exits?
 
-The sandbox keeps running, and `shard exec` still works in it. Only `shard stop` or `shard remove` ends a sandbox, and there is no idle timer.
+The sandbox keeps running, and `shard exec` still works in it. The process's restart policy decides whether shard-init starts it again, and `shard ps` shows its state and exit. Only `shard stop` or `shard remove` ends a sandbox, and there is no idle timer.
 
 ## Can a sandbox run systemd?
 
@@ -107,7 +107,7 @@ Not as its first process. shard's own supervisor is the first process in every s
 
 | Verb | What it does | Then |
 | --- | --- | --- |
-| `stop` | frees the memory and keeps the files | `start` runs the main command from the beginning |
+| `stop` | frees the memory and keeps the files | `start` boots it again and runs its `always` and `unless-stopped` processes from the beginning |
 | `pause` | saves the memory and the files | `resume` continues the processes where they left off |
 | `fork` | copies a running sandbox, with its memory and files | the copy runs as a new sandbox, and the source keeps running |
 | `snapshot create` | saves the files of a stopped sandbox | `create --snapshot` starts new sandboxes from them |

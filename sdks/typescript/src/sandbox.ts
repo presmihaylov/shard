@@ -1,7 +1,8 @@
-// One sandbox: its record as the last verb answered it, and the verbs, commands and files that act on it.
+// One sandbox: its record as the last verb answered it, and the verbs, commands, processes and files that act on it.
 import { Commands, type Command, type ExecOptions, type ExecResult } from "./commands.js";
 import { Files } from "./files.js";
-import { egressLogEntry, follow, logChunk } from "./follow.js";
+import { egressLogEntry, follow } from "./follow.js";
+import { Processes, type Process, type RunOptions } from "./process.js";
 import { egressDecision, records, sandboxInfo, type EgressDecision, type SandboxInfo } from "./records.js";
 import type { Transport } from "./transport.js";
 import * as wire from "./wire.js";
@@ -10,13 +11,14 @@ import * as wire from "./wire.js";
 export const refresh = Symbol("refresh");
 
 export interface FollowOptions {
-  /** An abort ends the follow with the signal's reason; the sandbox runs on. */
+  /** An abort ends the follow with the signal's reason; what it follows runs on. */
   signal?: AbortSignal;
 }
 
 /** Sandbox is one sandbox; info is the sandbox as the last call on this handle returned it. */
 export class Sandbox {
   readonly commands: Commands;
+  readonly processes: Processes;
   readonly files: Files;
   private current: SandboxInfo;
 
@@ -26,6 +28,7 @@ export class Sandbox {
   ) {
     this.current = info;
     this.commands = new Commands(transport, info.id);
+    this.processes = new Processes(transport, info.id);
     this.files = new Files(transport, info.id);
   }
 
@@ -98,16 +101,9 @@ export class Sandbox {
     return this.commands.run(command, rest);
   }
 
-  /** logs returns the app's output so far, stdout and stderr as the daemon wrote them. */
-  async logs(): Promise<string> {
-    const { data } = await this.transport.api.GET("/v0/sandboxes/{id}/logs", { params: this.params, headers: { Accept: "text/plain" }, parseAs: "text" });
-
-    return data ?? "";
-  }
-
-  /** followLogs yields the app's output from the start of the log, then as it arrives, and ends when the sandbox stops. */
-  followLogs(options: FollowOptions = {}): AsyncGenerator<Uint8Array> {
-    return follow(this.transport, wire.path("sandboxes", this.id, "logs"), `the logs of sandbox ${this.id}`, logChunk, options.signal);
+  /** start a supervised process in a running sandbox */
+  run(command: string | string[], options: RunOptions = {}): Promise<Process> {
+    return this.processes.run(command, options);
   }
 
   /** egressLog returns the egress decisions the daemon still holds, oldest first. */

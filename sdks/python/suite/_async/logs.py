@@ -24,12 +24,13 @@ def denied_host(records: list[EgressDecision], host: str) -> EgressDecision | No
 
 
 async def read(ctx: AsyncContext) -> None:
-    app = await ctx.run("echo line-one; echo line-two >&2; sleep 300")
+    sandbox = await ctx.create()
+    job = await sandbox.run("echo line-one; echo line-two >&2; sleep 300")
     logs = ""
 
     async def both() -> bool:
         nonlocal logs
-        logs = await app.sandbox.logs()
+        logs = await job.logs()
         return "line-two\n" in logs
 
     await wait_for("both lines in the logs", 15, both)
@@ -37,9 +38,10 @@ async def read(ctx: AsyncContext) -> None:
 
 
 async def follow(ctx: AsyncContext) -> None:
-    app = await ctx.run("for i in 1 2 3; do echo tick $i; sleep 1; done; sleep 300")
+    sandbox = await ctx.create()
+    job = await sandbox.run("for i in 1 2 3; do echo tick $i; sleep 1; done; sleep 300")
     out = b""
-    async with app.sandbox.follow_logs() as stream:
+    async with job.follow_logs() as stream:
         async for chunk in stream:
             out += chunk
             if b"tick 3\n" in out:
@@ -47,14 +49,14 @@ async def follow(ctx: AsyncContext) -> None:
     matches(out.decode(), r"tick 1\n[\s\S]*tick 2\n[\s\S]*tick 3\n", "the follow yields the lines as they come")
 
     rest = bytearray()
-    ended = consume(app.sandbox.follow_logs(), rest.extend)
+    ended = consume(job.follow_logs(), rest.extend)
 
     async def replayed() -> bool:
         return b"tick 3\n" in rest
 
     await wait_for("the second follow to replay the log", 10, replayed)
     ok(rest.startswith(b"tick 1\n"), "a follow starts at the beginning of the log")
-    await app.sandbox.stop()
+    await sandbox.stop()
     equal(await ended.result(), None, "a stop ends the follow without an error")
 
 

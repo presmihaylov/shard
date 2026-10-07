@@ -7,5 +7,7 @@ pid
 netns_path
 address
 host_interface
+stopped_by_operator
+log_starts
 run_started_at
 path

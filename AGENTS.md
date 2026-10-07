@@ -218,11 +218,11 @@ or a sandbox.
 - **Refuse, never downgrade.** An unsupported verb fails fast with an error that
   names the provider and the verb. Never fall back to a weaker mechanism.
   Capabilities are per provider, one boolean per optional verb.
-- **A sandbox outlives its entrypoint.** When the entrypoint exits the sandbox
-  stays `running`, and you can still exec, pause or fork it. `stop` is the only
-  thing that ends one. There is no policy, no idle timer and no on-exit setting
-  to change any of this. This is why `shard-init` is PID 1 in every sandbox and
-  the command given to `shard run`, if any, is its child.
+- **A sandbox outlives its processes.** `shard-init` is PID 1 in every sandbox
+  and supervises the named processes that `shard run` starts as its children.
+  When any or all of them exit, the sandbox stays `running`, and you can still
+  exec, pause or fork it. `stop` is the only thing that ends one. No restart
+  policy, idle timer or on-exit setting changes that.
 - **The daemon never binds TCP.** A network address is `shard serve`, a separate
   and unprivileged process that speaks plain HTTP behind a proxy that terminates
   TLS, checks a bearer token and then passes the bytes to the daemon's socket. It is a byte proxy, never a second API. It maps the

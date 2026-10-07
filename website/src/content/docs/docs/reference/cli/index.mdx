@@ -101,7 +101,9 @@ Global options go before the command. If you type one after it, the command fail
 shard: --remote goes before the verb: shard --remote <url> list
 ```
 
-A command's own options go before its arguments, as in `shard logs -f web`. shard reads an option after an argument as an argument, and the error says to put the flags before the arguments.
+A command's own options go before its arguments, as in `shard exec -it web sh`. shard reads an option after an argument as an argument, and the error says to put the flags before the arguments.
+
+`run`, `logs` and `kill` also take their options after the sandbox and the process name, as in `shard logs web api -f`. In `run`, the command starts at the first word that is not an option. Put `--` before a command that starts with a dash.
 
 ## Remote and local commands
 
@@ -133,7 +135,7 @@ Short options:
 | `exec` | `-i`, `-t`, `-it` for both | `--interactive`, `--tty` |
 | `list` | `-q` | `--quiet` |
 | `logs`, `policy logs` | `-f` | `--follow` |
-| `run` | `-d` | `--detach` |
+| `run` | `-e`, `-w`, `-u` | `--env`, `--workdir`, `--user` |
 | `setup` | `-y` | `--yes` |
 | `secret set` | | `--dest` and `--destination` are the same option |
 
@@ -146,10 +148,12 @@ The Format column shows the default `--format`. A dash means the command has no 
 | Command | Format | Prints |
 | --- | --- | --- |
 | `create` | - | the id |
-| `run` | - | the app's output, or the id with `--detach` |
+| `run` | - | the process name, or the process's output with `--attach` |
 | `exec` | - | the command's output |
 | `list` | table | the sandboxes, or one id per line with `-q` |
-| `logs` | - | the main command's output |
+| `ps` | table | the processes of the sandbox |
+| `logs` | - | the output of one process |
+| `kill` | - | the process name, once the process has ended |
 | `inspect` | json | the record |
 | `stop`, `start`, `pause`, `resume` | - | the id of each sandbox |
 | `remove` | - | the id of each sandbox, or nothing for a missing one with `--force` |
@@ -225,8 +229,14 @@ A `--format json` call writes one value or nothing:
     "provider": "gvisor",
     "state": "running",
     "resources": {"memory_mib": 512, "vcpus": 1, "disk_mib": 2048},
-    "command": ["python", "-m", "http.server"],
-    "restart": {"policy": "on-failure", "retries": 3, "backoff": 1, "count": 0, "gave_up": false, "ended": false},
+    "processes": [
+      {
+        "name": "api",
+        "command": ["python", "-m", "http.server"],
+        "restart": {"policy": "on-failure", "retries": 3, "backoff": 1},
+        "status": {"state": "running", "restarts": 0, "started_at": "2026-10-01T09:30:06Z"}
+      }
+    ],
     "secrets": ["API_TOKEN"],
     "policy": "api-only",
     "started_at": "2026-10-01T09:30:05Z",
@@ -243,16 +253,20 @@ A `--format json` call writes one value or nothing:
 | `digest` | the provider created it; the image digest |
 | `snapshot` | `create --snapshot` made it; the snapshot id |
 | `forked_from` | `fork` made it; the id of the source sandbox |
-| `exit_status` | the main command exited since the last start: `{"code": 0, "signal": 0}` |
 | `stopped_reason` | shard stopped it with no operator, or `shard-init` died on a stop |
 | `failed_reason` | `state` is `failed` |
-| `command` | `run` made it; the app's argv |
-| `restart` | it has a restart policy |
+| `processes` | `run` started a process in it |
 | `secrets` | it holds a placeholder; the secret names |
 | `policy` | it holds a network policy |
 | `started_at` | the daemon started it at least once; a resume keeps the first start |
 
-`restart.policy` is `on-failure` or `always`. `retries` is absent when there is no cap. `backoff` is the first wait in seconds. `count` is the number of restarts in this run, and `last_at` is absent before the first one. `gave_up` is true when an exit asked for a restart after the retries ran out. `ended` is true when no restart follows the last exit.
+A process has `name`, `command`, `restart` and `status`, and `env`, `workdir` and `user` when the run set them. `killed` is true once `shard kill` ended it, until a run of the same name. `ps --format json` prints the same records as an array.
+
+- `restart.policy` is `no`, `on-failure`, `always` or `unless-stopped`. `retries` is absent when there is no cap. `backoff` is the first wait in seconds.
+- `status.state` is `running`, `restarting`, `exited`, `killed`, `gave-up` or `stopped`.
+- `status.restarts` counts the restarts since the run or the sandbox's last start.
+- `status.exit` is the last exit, such as `{"code": 3, "signal": 0}`, and is absent before the first one.
+- `status.started_at` is the last time shard-init started the process.
 
 `inspect` prints one sandbox record. It adds `egress` when the record names a network policy:
 
@@ -262,8 +276,15 @@ A `--format json` call writes one value or nothing:
   "image": "python:3.12",
   "provider": "gvisor",
   "state": "stopped",
-  "exit_status": {"code": 0, "signal": 0},
   "resources": {"memory_mib": 512, "vcpus": 1, "disk_mib": 2048},
+  "processes": [
+    {
+      "name": "api",
+      "command": ["python", "-m", "http.server"],
+      "restart": {"policy": "unless-stopped", "backoff": 1},
+      "status": {"state": "stopped", "restarts": 0, "exit": {"code": 0, "signal": 15}}
+    }
+  ],
   "policy": "api-only",
   "created_at": "2026-10-01T09:30:00Z",
   "egress": {
@@ -392,7 +413,8 @@ A `--format json` call writes one value or nothing:
 
 | Command | Columns |
 | --- | --- |
-| `list` | `ID NAME IMAGE STATE UPTIME RESTART POLICY` |
+| `list` | `ID NAME IMAGE STATE UPTIME PROCESSES POLICY` |
+| `ps` | `NAME STATE RESTARTS EXIT POLICY COMMAND` |
 | `image list` | `REFERENCE DIGEST SIZE CREATED` |
 | `snapshot list` | `ID NAME SOURCE IMAGE SIZE CREATED` |
 | `secret list` | `NAME DESTINATIONS PLACEHOLDER UPDATED` |
@@ -400,6 +422,8 @@ A `--format json` call writes one value or nothing:
 | `tokens list` | `ID NAME ISSUED EXPIRES SCOPES STATUS` |
 | `tokens scopes` | `SCOPE DESCRIPTION` |
 | `capabilities` | `CAPABILITY SUPPORTED` |
+
+In `list`, PROCESSES is the processes that have not ended, of all the sandbox has, such as `2/3`, or `-` for none. In `ps`, RESTARTS is `2/5` for an `on-failure` policy with 5 retries, and EXIT is `-` before the first exit, the exit code, or `signal 15`.
 
 The commands that print JSON by default have these tables:
 
@@ -414,12 +438,14 @@ The commands that print JSON by default have these tables:
 | --- | --- |
 | 0 | the verb did what it says |
 | 1 | any failure of shard, or of the request, with `shard: <reason>` on stderr |
-| the command's code | `exec`, and `run` with the app's last code |
+| the command's code | `exec`, and `run --attach` with the process's last code |
 | 126, 127 | `exec` of a command that is not executable, or not found |
 | 1 or more | `exec` whose output was lost, so a lost stream never reads as a pass |
-| 128 + n | `run` of an app that signal n ended |
-| 125 | `run` when shard itself fails, so a script tells it from an app that exits 1 |
-| 130 | `run` that Ctrl+C left; the sandbox stays running |
+| 128 + n | `run --attach` of a process that signal n ended |
+| 125 | `run` when shard itself fails, so a script tells it from a process that exits 1 |
+| 130 | `run` that Ctrl+C left before the daemon answered |
 | 130 | `setup` that Ctrl+C left; the steps done so far stay in place |
+
+Ctrl+C on `run --attach` detaches: the process runs on, and `run` exits 0.
 
 `daemon status` exits 1 when a background task is in backoff, after it prints the whole status.

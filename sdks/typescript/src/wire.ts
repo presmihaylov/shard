@@ -48,16 +48,32 @@ export interface ExecSettings {
   tty?: TerminalSize;
 }
 
-/** execRequest builds a command start. A string runs under /bin/sh -c, an array as the argv itself. */
-export function execRequest(command: string | string[], settings: ExecSettings): ExecRequest {
-  const argv = typeof command === "string" ? ["/bin/sh", "-c", command] : [...command];
-  if (argv.length === 0) {
+/** argv runs a string under /bin/sh -c, and an array as the argv itself. */
+export function argv(command: string | string[]): string[] {
+  const args = typeof command === "string" ? ["/bin/sh", "-c", command] : [...command];
+  if (args.length === 0) {
     throw new TypeError("command must name a program");
   }
+
+  return args;
+}
+
+/** envList spells an environment as the daemon takes it, KEY=VALUE, or undefined for none. */
+export function envList(env: Record<string, string> | undefined): string[] | undefined {
+  if (!env || Object.keys(env).length === 0) {
+    return undefined;
+  }
+
+  return Object.entries(env).map(([key, value]) => `${key}=${value}`);
+}
+
+/** execRequest builds a command start. */
+export function execRequest(command: string | string[], settings: ExecSettings): ExecRequest {
   // The attach follows at once, so the daemon keeps the output for it rather than evict any.
-  const request: ExecRequest = { command: argv, stdin: settings.stdin, tty: settings.tty !== undefined, attach: true };
-  if (settings.env && Object.keys(settings.env).length > 0) {
-    request.env = Object.entries(settings.env).map(([key, value]) => `${key}=${value}`);
+  const request: ExecRequest = { command: argv(command), stdin: settings.stdin, tty: settings.tty !== undefined, attach: true };
+  const env = envList(settings.env);
+  if (env) {
+    request.env = env;
   }
   if (settings.workdir) {
     request.workdir = settings.workdir;

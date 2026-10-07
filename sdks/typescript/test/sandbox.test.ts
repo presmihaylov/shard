@@ -1,23 +1,25 @@
 import assert from "node:assert/strict";
 import { afterEach, beforeEach, test } from "node:test";
-import { App } from "../src/app.js";
-import { NotFoundError, ProtocolError, ServerError, ShardConnectionError } from "../src/errors.js";
+import { APIError, CommandNotStartedError, ConflictError, NotFoundError, ProtocolError, ServerError, ShardConnectionError } from "../src/errors.js";
 import { opClose } from "../src/frames.js";
-import { sandboxInfo } from "../src/records.js";
+import { Process } from "../src/process.js";
+import { processInfo, sandboxInfo } from "../src/records.js";
 import { Sandbox } from "../src/sandbox.js";
 import { Transport } from "../src/transport.js";
 import { FakeDaemon, type Answer, type Request } from "./helpers/daemon.js";
-import { sandboxRecord } from "./helpers/records.js";
+import { processRecord, sandboxRecord } from "./helpers/records.js";
 
 let daemon: FakeDaemon;
 let transport: Transport;
 let sandbox: Sandbox;
+let web: Process;
 let routes: Map<string, (request: Request) => Answer>;
 
 beforeEach(async () => {
   daemon = await FakeDaemon.start();
   transport = new Transport({ baseUrl: daemon.url, apiKey: "test-key", ca: undefined });
   sandbox = new Sandbox(transport, sandboxInfo(sandboxRecord()));
+  web = new Process(transport, "sb_1", processInfo(processRecord()));
   routes = new Map();
   daemon.route = (request) => routes.get(`${request.method} ${request.url.pathname}`)?.(request);
   daemon.upgrade = () => undefined;
@@ -73,18 +75,18 @@ test("a forced remove says so", async () => {
   assert.equal(sent("DELETE", "/v0/sandboxes/sb_1").url.searchParams.get("force"), "true");
 });
 
-test("logs answer the app's output as text", async () => {
-  routes.set("GET /v0/sandboxes/sb_1/logs", () => ({ status: 200, raw: "hello\nworld\n", headers: { "Content-Type": "text/plain" } }));
-  assert.equal(await sandbox.logs(), "hello\nworld\n");
+test("logs answer the process's output as text", async () => {
+  routes.set("GET /v0/sandboxes/sb_1/processes/web/logs", () => ({ status: 200, raw: "hello\nworld\n", headers: { "Content-Type": "text/plain" } }));
+  assert.equal(await web.logs(), "hello\nworld\n");
 });
 
-test("a log follow yields each chunk and ends with the sandbox", async () => {
-  const chunks = collect(sandbox.followLogs());
+test("a log follow yields each chunk and ends with the process", async () => {
+  const chunks = collect(web.followLogs());
   const peer = await daemon.peer(0);
-  assert.equal(peer.path, "/v0/sandboxes/sb_1/logs");
+  assert.equal(peer.path, "/v0/sandboxes/sb_1/processes/web/logs");
   peer.send(1, "hello ");
   peer.send(1, "world");
-  peer.send(3, JSON.stringify({ reason: "stopped" }));
+  peer.send(3, JSON.stringify({ reason: "ended" }));
   peer.close();
   assert.deepEqual(
     (await chunks).map((chunk) => Buffer.from(chunk).toString()),
@@ -94,23 +96,23 @@ test("a log follow yields each chunk and ends with the sandbox", async () => {
 });
 
 test("a failure on a log follow throws the daemon's error", async () => {
-  const chunks = collect(sandbox.followLogs());
+  const chunks = collect(web.followLogs());
   const peer = await daemon.peer(0);
   peer.send(5, JSON.stringify({ error: { code: "not_found", message: "no such sandbox" } }));
   await assert.rejects(chunks, NotFoundError);
 });
 
 test("a follow the daemon closes with an error throws it, and a dropped one throws ShardConnectionError", async () => {
-  const failed = collect(sandbox.followLogs());
+  const failed = collect(web.followLogs());
   (await daemon.peer(0)).close(1011, "tail broke");
   await assert.rejects(failed, (err: unknown) => err instanceof ServerError && err.message.includes("tail broke"));
-  const dropped = collect(sandbox.followLogs());
+  const dropped = collect(web.followLogs());
   (await daemon.peer(1)).socket.destroy();
   await assert.rejects(dropped, ShardConnectionError);
 });
 
 test("a break out of a follow lets go of the stream", async () => {
-  const follow = sandbox.followLogs();
+  const follow = web.followLogs();
   const first = follow.next();
   const peer = await daemon.peer(0);
   peer.send(1, "once");
@@ -121,7 +123,7 @@ test("a break out of a follow lets go of the stream", async () => {
 
 test("an abort ends a follow with the caller's reason", async () => {
   const controller = new AbortController();
-  const follow = sandbox.followLogs({ signal: controller.signal });
+  const follow = web.followLogs({ signal: controller.signal });
   const first = follow.next();
   const peer = await daemon.peer(0);
   peer.send(1, "once");
@@ -167,20 +169,65 @@ test("an egress log follow refuses what is not a JSON record", async () => {
   await assert.rejects(garbled, ProtocolError);
 });
 
-test("an app waits on attach and stops by TERM, or KILL with force", async () => {
-  const app = new App(transport, sandbox);
-  routes.set("GET /v0/sandboxes/sb_1/attach", () => ({ status: 200, json: { code: 0, signal: 15, restarts: 2 } }));
-  routes.set("POST /v0/sandboxes/sb_1/app/stop", () => ({ status: 204 }));
-  assert.deepEqual(await app.wait(), { exitCode: 0, signal: 15, restarts: 2 });
-  await app.stop();
-  await app.stop({ force: true });
-  const stops = daemon.requests.filter((r) => r.url.pathname === "/v0/sandboxes/sb_1/app/stop").map((r) => r.body);
-  assert.deepEqual(stops, ["", JSON.stringify({ force: true })]);
+test("run starts a string under a shell, and answers a handle by the name the daemon gave", async () => {
+  routes.set("POST /v0/sandboxes/sb_1/processes", () => ({ status: 201, json: processRecord() }));
+  const run = await sandbox.run("serve", { env: { MODE: "test" }, restart: { policy: "on-failure", retries: 3 } });
+  assert.equal(run.name, "web");
+  assert.equal(run.info.status.state, "running");
+  assert.deepEqual(JSON.parse(sent("POST", "/v0/sandboxes/sb_1/processes").body), {
+    command: ["/bin/sh", "-c", "serve"],
+    env: ["MODE=test"],
+    restart: { policy: "on-failure", retries: 3 },
+  });
+  await assert.rejects(sandbox.run([]), TypeError);
 });
 
-test("an app whose sandbox answers no app is a protocol error", async () => {
-  routes.set("GET /v0/sandboxes/sb_1", () => ({ status: 200, json: sandboxRecord() }));
-  await assert.rejects(new App(transport, sandbox).inspect(), ProtocolError);
-  routes.set("GET /v0/sandboxes/sb_1", () => ({ status: 200, json: sandboxRecord({ command: ["sleep", "9"] }) }));
-  assert.deepEqual((await new App(transport, sandbox).inspect()).command, ["sleep", "9"]);
+test("a run of a name that still runs is a conflict", async () => {
+  const refusal = { error: { code: "name_taken", message: "sandbox web is running: its process web still runs" } };
+  routes.set("POST /v0/sandboxes/sb_1/processes", () => ({ status: 409, json: refusal }));
+  await assert.rejects(sandbox.run(["serve"], { name: "web" }), (err) => err instanceof ConflictError && err.code === "name_taken");
+});
+
+test("a run whose command never started throws CommandNotStartedError, and one with no exit code stays an APIError", async () => {
+  const refusal = { error: { code: "command_not_started", message: "exec: no such file", exit_code: 127 } };
+  routes.set("POST /v0/sandboxes/sb_1/processes", () => ({ status: 422, json: refusal }));
+  const err = await sandbox.run(["/nope"]).then(
+    () => assert.fail("the run started"),
+    (caught: unknown) => caught,
+  );
+  assert.ok(err instanceof CommandNotStartedError);
+  assert.equal(err.exitCode, 127);
+  assert.equal(err.reason, "exec: no such file");
+  routes.set("POST /v0/sandboxes/sb_1/processes", () => ({ status: 422, json: { error: { code: "command_not_started", message: "gone" } } }));
+  await assert.rejects(sandbox.run(["/nope"]), (caught) => caught instanceof APIError && caught.status === 422);
+});
+
+test("list answers every process in run order, and get a handle to one", async () => {
+  routes.set("GET /v0/sandboxes/sb_1/processes", () => ({ status: 200, json: { processes: [processRecord(), processRecord({ name: "worker" })] } }));
+  routes.set("GET /v0/sandboxes/sb_1/processes/worker", () => ({ status: 200, json: processRecord({ name: "worker" }) }));
+  assert.deepEqual(
+    (await sandbox.processes.list()).map((each) => each.name),
+    ["web", "worker"],
+  );
+  assert.equal((await sandbox.processes.get("worker")).name, "worker");
+});
+
+test("a process waits on attach and kills by TERM, or KILL with force, keeping its info current", async () => {
+  const ended = processRecord({ status: { state: "exited", restarts: 2, exit: { code: 1, signal: 0 } } });
+  const killed = processRecord({ killed: true, status: { state: "killed", restarts: 0, exit: { code: 0, signal: 15 } } });
+  routes.set("GET /v0/sandboxes/sb_1/processes/web/attach", () => ({ status: 200, json: ended }));
+  routes.set("POST /v0/sandboxes/sb_1/processes/web/kill", () => ({ status: 200, json: killed }));
+  assert.deepEqual((await web.wait()).status.exit, { exitCode: 1, signal: null });
+  assert.equal(web.info.status.state, "exited");
+  await web.kill();
+  await web.kill({ force: true });
+  assert.equal(web.info.status.state, "killed");
+  assert.equal(web.info.killed, true);
+  const kills = daemon.requests.filter((r) => r.url.pathname === "/v0/sandboxes/sb_1/processes/web/kill").map((r) => r.body);
+  assert.deepEqual(kills, ["", JSON.stringify({ force: true })]);
+});
+
+test("a process the daemon answers malformed is a protocol error", async () => {
+  routes.set("GET /v0/sandboxes/sb_1/processes/web", () => ({ status: 200, json: processRecord({ status: { state: "running" } }) }));
+  await assert.rejects(web.inspect(), ProtocolError);
 });

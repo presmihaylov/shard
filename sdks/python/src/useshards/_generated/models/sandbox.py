@@ -11,9 +11,8 @@ from ..models.sandbox_state import SandboxState
 from ..types import UNSET, Unset
 
 if TYPE_CHECKING:
-    from ..models.exit_status import ExitStatus
+    from ..models.process import Process
     from ..models.resources import Resources
-    from ..models.restart import Restart
 
 
 T = TypeVar("T", bound="Sandbox")
@@ -27,24 +26,21 @@ class Sandbox:
     provider: str
     resources: Resources
     state: SandboxState
-    command: list[str] | Unset = UNSET
     digest: str | Unset = UNSET
-    exit_status: ExitStatus | Unset = UNSET
     failed_reason: str | Unset = UNSET
     forked_from: str | Unset = UNSET
     kernel: str | Unset = UNSET
     name: str | Unset = UNSET
     policy: str | Unset = UNSET
-    restart: Restart | Unset = UNSET
+    processes: list[Process] | Unset = UNSET
     secrets: list[str] | Unset = UNSET
     snapshot: str | Unset = UNSET
     started_at: datetime.datetime | Unset = UNSET
     stopped_reason: str | Unset = UNSET
 
     def to_dict(self) -> dict[str, Any]:
-        from ..models.exit_status import ExitStatus  # noqa: PLC0415
+        from ..models.process import Process  # noqa: PLC0415
         from ..models.resources import Resources  # noqa: PLC0415
-        from ..models.restart import Restart  # noqa: PLC0415
 
         created_at = self.created_at.isoformat()
 
@@ -58,15 +54,7 @@ class Sandbox:
 
         state = self.state.value
 
-        command: list[str] | Unset = UNSET
-        if not isinstance(self.command, Unset):
-            command = self.command
-
         digest = self.digest
-
-        exit_status: dict[str, Any] | Unset = UNSET
-        if not isinstance(self.exit_status, Unset):
-            exit_status = self.exit_status.to_dict()
 
         failed_reason = self.failed_reason
 
@@ -78,9 +66,12 @@ class Sandbox:
 
         policy = self.policy
 
-        restart: dict[str, Any] | Unset = UNSET
-        if not isinstance(self.restart, Unset):
-            restart = self.restart.to_dict()
+        processes: list[dict[str, Any]] | Unset = UNSET
+        if not isinstance(self.processes, Unset):
+            processes = []
+            for processes_item_data in self.processes:
+                processes_item = processes_item_data.to_dict()
+                processes.append(processes_item)
 
         secrets: list[str] | Unset = UNSET
         if not isinstance(self.secrets, Unset):
@@ -106,12 +97,8 @@ class Sandbox:
                 "state": state,
             }
         )
-        if command is not UNSET:
-            field_dict["command"] = command
         if digest is not UNSET:
             field_dict["digest"] = digest
-        if exit_status is not UNSET:
-            field_dict["exit_status"] = exit_status
         if failed_reason is not UNSET:
             field_dict["failed_reason"] = failed_reason
         if forked_from is not UNSET:
@@ -122,8 +109,8 @@ class Sandbox:
             field_dict["name"] = name
         if policy is not UNSET:
             field_dict["policy"] = policy
-        if restart is not UNSET:
-            field_dict["restart"] = restart
+        if processes is not UNSET:
+            field_dict["processes"] = processes
         if secrets is not UNSET:
             field_dict["secrets"] = secrets
         if snapshot is not UNSET:
@@ -137,9 +124,8 @@ class Sandbox:
 
     @classmethod
     def from_dict(cls: type[T], src_dict: Mapping[str, Any]) -> T:
-        from ..models.exit_status import ExitStatus  # noqa: PLC0415
+        from ..models.process import Process  # noqa: PLC0415
         from ..models.resources import Resources  # noqa: PLC0415
-        from ..models.restart import Restart  # noqa: PLC0415
 
         d = dict(src_dict)
         created_at = datetime.datetime.fromisoformat(d.pop("created_at"))
@@ -154,16 +140,7 @@ class Sandbox:
 
         state = SandboxState(d.pop("state"))
 
-        command = cast(list[str], d.pop("command", UNSET))
-
         digest = d.pop("digest", UNSET)
-
-        _exit_status = d.pop("exit_status", UNSET)
-        exit_status: ExitStatus | Unset
-        if isinstance(_exit_status, Unset):
-            exit_status = UNSET
-        else:
-            exit_status = ExitStatus.from_dict(_exit_status)
 
         failed_reason = d.pop("failed_reason", UNSET)
 
@@ -175,12 +152,14 @@ class Sandbox:
 
         policy = d.pop("policy", UNSET)
 
-        _restart = d.pop("restart", UNSET)
-        restart: Restart | Unset
-        if isinstance(_restart, Unset):
-            restart = UNSET
-        else:
-            restart = Restart.from_dict(_restart)
+        _processes = d.pop("processes", UNSET)
+        processes: list[Process] | Unset = UNSET
+        if _processes is not UNSET:
+            processes = []
+            for processes_item_data in _processes:
+                processes_item = Process.from_dict(processes_item_data)
+
+                processes.append(processes_item)
 
         secrets = cast(list[str], d.pop("secrets", UNSET))
 
@@ -202,15 +181,13 @@ class Sandbox:
             provider=provider,
             resources=resources,
             state=state,
-            command=command,
             digest=digest,
-            exit_status=exit_status,
             failed_reason=failed_reason,
             forked_from=forked_from,
             kernel=kernel,
             name=name,
             policy=policy,
-            restart=restart,
+            processes=processes,
             secrets=secrets,
             snapshot=snapshot,
             started_at=started_at,

@@ -1,12 +1,12 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import { ProtocolError } from "../src/errors.js";
-import { appExit, egressDecision, policy, records, sandboxInfo } from "../src/records.js";
-import { sandboxRecord } from "./helpers/records.js";
+import { egressDecision, policy, processInfo, records, sandboxInfo } from "../src/records.js";
+import { processRecord, sandboxRecord } from "./helpers/records.js";
 
-test("a sandbox create made runs no app", () => {
+test("a sandbox create made runs no process", () => {
   const info = sandboxInfo(sandboxRecord());
-  assert.equal(info.app, null);
+  assert.deepEqual(info.processes, []);
   assert.equal(info.policy, null);
   assert.equal(info.snapshot, null);
   assert.deepEqual(info.resources, { memoryMiB: 512, vcpus: 1, diskMiB: 1024 });
@@ -18,33 +18,41 @@ test("a fork names the sandbox it was forked from", () => {
   assert.equal(sandboxInfo(sandboxRecord()).forkedFrom, null);
 });
 
-test("a run's app carries its exit and its restart policy, and a signal of 0 is none", () => {
+test("a process carries its policy and its last exit, and a signal of 0 is none", () => {
   const info = sandboxInfo(
     sandboxRecord({
-      command: ["/bin/sh", "-c", "exit 3"],
-      exit_status: { code: 3, signal: 0 },
-      restart: { policy: "on-failure", retries: 2, backoff: 1, count: 2, last_at: "2026-10-04T10:00:05Z", gave_up: true, ended: true },
+      processes: [
+        processRecord({
+          restart: { policy: "on-failure", retries: 2, backoff: 1 },
+          status: { state: "gave-up", restarts: 2, exit: { code: 3, signal: 0 }, started_at: "2026-10-04T10:00:05Z" },
+        }),
+      ],
     }),
   );
-  assert.deepEqual(info.app?.command, ["/bin/sh", "-c", "exit 3"]);
-  assert.deepEqual(info.app?.exitStatus, { exitCode: 3, signal: null });
-  assert.equal(info.app?.restart?.gaveUp, true);
-  assert.equal(info.app?.restart?.lastAt?.toISOString(), "2026-10-04T10:00:05.000Z");
-  assert.equal(sandboxInfo(sandboxRecord({ command: ["sleep", "9"] })).app?.restart, null);
+  const [web] = info.processes;
+  assert.deepEqual(web?.command, ["/bin/sh", "-c", "serve"]);
+  assert.deepEqual(web?.restart, { policy: "on-failure", retries: 2, backoff: 1 });
+  assert.deepEqual(web?.status.exit, { exitCode: 3, signal: null });
+  assert.equal(web?.status.state, "gave-up");
+  assert.equal(web?.status.startedAt?.toISOString(), "2026-10-04T10:00:05.000Z");
 });
 
-test("an always policy has no retries on the wire", () => {
-  const restart = { policy: "always", backoff: 1, count: 0, gave_up: false, ended: false };
-  assert.equal(sandboxInfo(sandboxRecord({ command: ["sleep", "9"], restart })).app?.restart?.retries, 0);
+test("a running process has no exit, and the wire leaves out what it does not set", () => {
+  const info = processInfo(processRecord());
+  assert.deepEqual(info.restart, { policy: "unless-stopped", retries: 0, backoff: 0 });
+  assert.equal(info.status.exit, null);
+  assert.equal(info.killed, false);
+  assert.deepEqual(info.env, []);
+  assert.equal(info.workdir, null);
+  assert.equal(info.user, null);
+});
+
+test("a process state the SDK does not know is refused", () => {
+  assert.throws(() => processInfo(processRecord({ status: { state: "exploded", restarts: 0 } })), ProtocolError);
 });
 
 test("a sandbox state the SDK does not know is refused", () => {
   assert.throws(() => sandboxInfo(sandboxRecord({ state: "exploded" })), ProtocolError);
-});
-
-test("an app exit by signal names it", () => {
-  assert.deepEqual(appExit({ code: 137, signal: 9, restarts: 1 }), { exitCode: 137, signal: 9, restarts: 1 });
-  assert.deepEqual(appExit({ code: 0, signal: 0, restarts: 0 }), { exitCode: 0, signal: null, restarts: 0 });
 });
 
 test("a policy's rules come back spelled as a set takes them", () => {

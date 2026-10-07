@@ -374,20 +374,20 @@ check "seen is sha256sum in hex" "$(seen abc)" "ba7816bf8f01cfea414140de5dae2223
 check "basic is the digest of the header the proxy re-encodes" "$(basic value)" "$(seen "Basic YXBpOnZhbHVl")"
 
 echo
-echo "== entrypoint_clock takes one pid and its start time, and nothing else"
+echo "== process_clock takes one pid and its start time, and nothing else"
 STUB_CLOCK="42 1234"
 shard() { printf '%s\n' "${STUB_CLOCK}"; }
-check "a pid and a start time" "$(entrypoint_clock tidy-otter-0102 2>/dev/null)" "42 1234"
+check "a pid and a start time" "$(process_clock tidy-otter-0102 2>/dev/null)" "42 1234"
 # What pgrep -x sleep gave: no pid, so cut read /proc/stat.
 STUB_CLOCK=$'  \n\n0'
-(entrypoint_clock tidy-otter-0102) >/dev/null 2>&1
+(process_clock tidy-otter-0102) >/dev/null 2>&1
 check "blank lines and a 0" "$?" "1"
 STUB_CLOCK=$'42 1234\n43 1235'
-(entrypoint_clock tidy-otter-0102) >/dev/null 2>&1
-check "two entrypoints" "$?" "1"
+(process_clock tidy-otter-0102) >/dev/null 2>&1
+check "two processes" "$?" "1"
 shard() { return 1; }
-(entrypoint_clock tidy-otter-0102) >/dev/null 2>&1
-check "no entrypoint" "$?" "1"
+(process_clock tidy-otter-0102) >/dev/null 2>&1
+check "no process" "$?" "1"
 
 echo
 echo "== expect_env_clean greps the guest's environment on the host"
@@ -664,4 +664,4 @@ if [ "${FAILURES}" -ne 0 ]; then
 	exit 1
 fi
 
-echo "e2e self-test PASSED: the root guard, the provider guard, the host guard, the unmount, the teardown, the daemon wait, the timer, the failure report, the exec status, the echo digests, the entrypoint clock, the env check, the host net sweep, the line match and the grep -q scan"
+echo "e2e self-test PASSED: the root guard, the provider guard, the host guard, the unmount, the teardown, the daemon wait, the timer, the failure report, the exec status, the echo digests, the process clock, the env check, the host net sweep, the line match and the grep -q scan"

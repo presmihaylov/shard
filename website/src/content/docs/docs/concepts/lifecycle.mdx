@@ -109,11 +109,11 @@ A sandbox is always in one of seven states.
 
 ## What each command does
 
-**`create`** puts the sandbox in `pending`. The CLI and both SDKs then wait until it is `running` or `failed`. While it waits, the CLI shows the download on stderr. A sandbox from `shard create` has no main command. Only shard's own supervisor runs in it, and you run your commands with `exec`. `shard run` creates a sandbox with a main command. If that command cannot start, shard removes the sandbox and the create fails with `command_not_started`. If the removal also fails, the error says that the sandbox was not removed.
+**`create`** puts the sandbox in `pending`. The CLI and both SDKs then wait until it is `running` or `failed`. While it waits, the CLI shows the download on stderr. A new sandbox has no processes. Only shard's own supervisor runs in it. `shard run` starts a named process in it, and `exec` runs a one-off command.
 
-**`stop`** sends SIGTERM to the main command and gives it 30 seconds to exit, then kills it. The 30 seconds are fixed. `stop` succeeds only once the sandbox's processes have ended. Its files stay on disk. If the provider still reports a live process after 5 more seconds, the stop fails and the state does not change. A `stop` on a `pending` sandbox cancels the create, and the sandbox becomes `failed` with the reason `the create was cancelled by shard stop`.
+**`stop`** sends SIGTERM to the sandbox's processes and gives them 30 seconds to exit, then kills them. The 30 seconds are fixed. `stop` succeeds only once the sandbox's processes have ended. Its files stay on disk. If the provider still reports a live process after 5 more seconds, the stop fails and the state does not change. A `stop` on a `pending` sandbox cancels the create, and the sandbox becomes `failed` with the reason `the create was cancelled by shard stop`.
 
-**`start`** runs a `stopped` sandbox again, with the files the stop kept. Memory, processes and open sockets are lost at the stop. If the sandbox has a main command, it starts again from the beginning.
+**`start`** runs a `stopped` sandbox again, with the files the stop kept. Memory, processes and open sockets are lost at the stop. A process with the `always` restart policy starts again from the beginning, and so does an `unless-stopped` one that `shard kill` did not end.
 
 **`pause`** saves the memory and the processes to disk and frees the memory. **`resume`** continues from that checkpoint, and the processes carry on where they left off. A `pause` ends any `exec` that is still running. An `exec` on a paused sandbox fails with `sandbox <name> is paused: resume it with shard resume <name>`.
 
@@ -123,9 +123,11 @@ A sandbox is always in one of seven states.
 
 **`remove`** deletes the sandbox and its files. It refuses a `running` or `paused` sandbox unless you pass `--force`. Then it stops the sandbox first, with the same 30 seconds. A `pending` sandbox needs no `--force`: the remove cancels its download.
 
-## A sandbox outlives its main command
+## A sandbox outlives its processes
 
-`running` means the sandbox is up. It does not mean a program is still running in it. When the main command of `shard run` exits, the sandbox stays `running`, and you can still `exec`, `pause` or `fork` it. `shard list` then shows the exit, for example `running (exited 0)`. The `--restart` flag of `shard run` can start the command again.
+`running` means the sandbox is up. It does not mean a program is still running in it. When a process that `shard run` started exits, the sandbox stays `running`, and you can still `exec`, `pause` or `fork` it. `shard ps` shows each process's state and exit, and the `PROCESSES` column of `shard list` counts the ones still running, for example `1/2`. The `--restart` flag of `shard run` decides whether shard starts a process again. `shard kill` ends one process and leaves the sandbox running.
+
+When the daemon starts, after its own restart or the host's, it starts every sandbox with an `always` process. It also starts every sandbox with an `unless-stopped` process, unless `shard stop` stopped the sandbox or `shard kill` ended the process. Then it starts those processes again.
 
 Only `stop` ends a sandbox. An exit does not, and no idle timer or setting does either. The sandbox process itself can still die. Then the sandbox is `stopped`, and `shard list --all` shows the reason:
 
