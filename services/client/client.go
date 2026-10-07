@@ -59,6 +59,9 @@ type Version struct {
 // Sandbox is the public record every sandbox route answers: the host side stays in the daemon's state.
 type Sandbox = api.Sandbox
 
+// OOM is the memory kills of a sandbox, which the daemon starts again after each one.
+type OOM = api.OOM
+
 // Inspection is the public record beside the egress rules the host enforces for it.
 type Inspection = api.Inspection
 

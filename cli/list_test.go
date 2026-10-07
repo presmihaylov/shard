@@ -10,6 +10,7 @@ import (
 
 	"github.com/presmihaylov/shard/models"
 	"github.com/presmihaylov/shard/services/client"
+	"github.com/presmihaylov/shard/services/sandbox"
 	"github.com/presmihaylov/shard/services/sandboxstate"
 )
 
@@ -94,6 +95,27 @@ func TestListAllShowsTheStoppedOnesToo(t *testing.T) {
 		if !strings.Contains(lines[2], want) {
 			t.Errorf("the line %q lacks %q", lines[2], want)
 		}
+	}
+}
+
+// The daemon starts this one again on its own, so it is up as far as an operator is concerned.
+func TestListShowsAStoppedSandboxTheDaemonStartsAgain(t *testing.T) {
+	var out, stderr bytes.Buffer
+
+	owed := models.Sandbox{ID: "oom-3", Image: "alpine:3.20", State: models.StateStopped, StoppedReason: sandbox.OOMKilledReason, CreatedAt: time.Now(),
+		OOM: &models.OOM{Kills: 1, InARow: 1, KilledAt: time.Now(), RestartAt: time.Now().Add(time.Minute)}}
+	app := newListApp(t, &out, append(listed(), owed), nil)
+	app.Err = &stderr
+
+	if err := app.Run(t.Context(), []string{"list"}); err != nil {
+		t.Fatalf("list: %v", err)
+	}
+
+	if !strings.Contains(out.String(), "oom-3") || strings.Contains(out.String(), "down-2") {
+		t.Errorf("list printed\n%s\nwant oom-3 and not down-2", out.String())
+	}
+	if want := "1 stopped sandbox; shard list --all\n"; stderr.String() != want {
+		t.Errorf("list said %q on stderr, want %q", stderr.String(), want)
 	}
 }
 
@@ -183,6 +205,32 @@ func TestListGivesTheReasonASandboxNobodyStoppedIsStopped(t *testing.T) {
 
 	if !strings.Contains(out.String(), "stopped (daemon restarted and found no process)") {
 		t.Errorf("list printed %q, want the state and the reason beside it", out.String())
+	}
+}
+
+// The kill count outlives the stop it caused, so ls still says the memory ran out once the daemon started it again (SHARD-786).
+func TestListStateCountsTheMemoryKillsAndTheStartAgain(t *testing.T) {
+	now := time.Date(2026, 10, 7, 12, 0, 0, 0, time.UTC)
+	cases := map[string]struct {
+		sb   client.Sandbox
+		want string
+	}{
+		"a start again owed in a while": {client.Sandbox{State: models.StateStopped, StoppedReason: sandbox.OOMKilledReason,
+			OOM: &client.OOM{Kills: 3, KilledAt: now, RestartAt: now.Add(40 * time.Second)}}, "stopped (ran out of memory 3 times, starts again in 40s)"},
+		"a start again due": {client.Sandbox{State: models.StateStopped, StoppedReason: sandbox.OOMKilledReason,
+			OOM: &client.OOM{Kills: 1, KilledAt: now, RestartAt: now}}, "stopped (ran out of memory once, starts again now)"},
+		"a stop called it off": {client.Sandbox{State: models.StateStopped, StoppedReason: sandbox.OOMKilledReason,
+			OOM: &client.OOM{Kills: 2, KilledAt: now}}, "stopped (ran out of memory 2 times)"},
+		"running again": {client.Sandbox{State: models.StateRunning, OOM: &client.OOM{Kills: 1, KilledAt: now}},
+			"running (ran out of memory once)"},
+		"died after an earlier kill": {client.Sandbox{State: models.StateStopped, StoppedReason: sandbox.DiedReason,
+			OOM: &client.OOM{Kills: 1, KilledAt: now}}, "stopped (the sandbox process died; ran out of memory once)"},
+	}
+
+	for name, c := range cases {
+		if got := state(c.sb, now); got != c.want {
+			t.Errorf("%s: the state reads %q, want %q", name, got, c.want)
+		}
 	}
 }
 

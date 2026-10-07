@@ -44,9 +44,9 @@ func (t liveness) Run(ctx context.Context) error {
 		if err != nil {
 			return err
 		}
-		// A root with nothing live needs no substrate, so a host without runsc keeps its daemon.
+		// A root with nothing live and no start owed needs no substrate, so a host without runsc keeps its daemon.
 		if !slices.ContainsFunc(sandboxes, func(sb models.Sandbox) bool {
-			return sb.State.Live()
+			return sb.State.Live() || sb.OOM.RestartDue()
 		}) {
 			failures.tick(ctx, nil)
 
@@ -58,6 +58,6 @@ func (t liveness) Run(ctx context.Context) error {
 			return err
 		}
 		// SHARD-376 (shard's ruling): a sandbox's error is logged and the task goes on, so one sandbox cannot hold back the rest.
-		failures.tick(ctx, svc.Liveness(ctx, sandboxes, func(line string) { logger.Print(line) }))
+		failures.tick(ctx, svc.Liveness(ctx, sandboxes, time.Now().UTC(), func(line string) { logger.Print(line) }))
 	}
 }

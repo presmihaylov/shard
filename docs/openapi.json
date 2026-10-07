@@ -671,6 +671,9 @@
           "name": {
             "type": "string"
           },
+          "oom": {
+            "$ref": "#/components/schemas/OOM"
+          },
           "policy": {
             "type": "string"
           },
@@ -761,6 +764,32 @@
         },
         "required": [
           "path"
+        ],
+        "type": "object"
+      },
+      "OOM": {
+        "additionalProperties": false,
+        "properties": {
+          "killed_at": {
+            "description": "When the host last ended the sandbox for its memory.",
+            "format": "date-time",
+            "type": "string"
+          },
+          "kills": {
+            "description": "Every time the host ended the sandbox for its memory.",
+            "format": "int64",
+            "minimum": 1,
+            "type": "integer"
+          },
+          "restart_at": {
+            "description": "When the daemon starts the sandbox again; absent once a start ran or a stop called it off.",
+            "format": "date-time",
+            "type": "string"
+          }
+        },
+        "required": [
+          "kills",
+          "killed_at"
         ],
         "type": "object"
       },
@@ -1281,6 +1310,9 @@
           },
           "name": {
             "type": "string"
+          },
+          "oom": {
+            "$ref": "#/components/schemas/OOM"
           },
           "policy": {
             "type": "string"

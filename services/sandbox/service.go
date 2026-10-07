@@ -1250,6 +1250,17 @@ func (s *Service) stop(ctx context.Context, id string, force bool) error {
 			// A stopped record cannot confirm it is gone under a wedge, so it falls through to the kill.
 		case err != nil:
 			return err
+		case sb.State == models.StateStopped && !status.Alive() && sb.OOM.RestartDue():
+			// An operator stop outranks the start again an OOM kill waits on.
+			if err := s.cfg.Repo.Update(id, func(rec *models.Sandbox) error {
+				callOffOOMRestart(rec)
+
+				return nil
+			}); err != nil {
+				return err
+			}
+
+			return s.dropCheckpoint(id)
 		case sb.State == models.StateStopped && !status.Alive():
 			// A second stop changes nothing but the mark and the checkpoint, which an earlier stop's failed drop leaves behind (SHARD-592).
 			if err := s.cfg.Repo.Update(id, byOperator); err != nil {
@@ -1283,6 +1294,7 @@ func (s *Service) stop(ctx context.Context, id string, force bool) error {
 		sb.State = models.StateStopped
 		sb.PID = 0
 		sb.UnresponsiveReason = ""
+		callOffOOMRestart(sb)
 		// A stop ends the sandbox, so no resume can read its checkpoint again (SHARD-592).
 		sb.Checkpoint = ""
 		sb.Processes = endProcesses(merged(sb.Processes, after))

@@ -36,6 +36,7 @@ from .inspection import Inspection
 from .inspection_state import InspectionState
 from .kill_request import KillRequest
 from .mkdir_request import MkdirRequest
+from .oom import OOM
 from .policies_response import PoliciesResponse
 from .policy import Policy
 from .policy_attach_request import PolicyAttachRequest
@@ -113,6 +114,7 @@ __all__ = (
     "InspectionState",
     "KillRequest",
     "MkdirRequest",
+    "OOM",
     "PoliciesResponse",
     "Policy",
     "PolicyAttachRequest",

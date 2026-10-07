@@ -65,3 +65,6 @@ func (s *Service) RunningExecs(id string) (int, int) {
 
 	return s.running[id], s.runningAll
 }
+
+// OOMBackoff exposes the wait after a kill in a row, so a test pins the doubling and the cap.
+var OOMBackoff = oomBackoff

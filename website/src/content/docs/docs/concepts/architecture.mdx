@@ -53,7 +53,7 @@ A failed task restarts after a backoff of up to one minute.
 
 ## A sandbox outlives the daemon
 
-Sandboxes that already run normally survive a daemon restart. On startup, the daemon checks their records against the provider before it serves any request. A create, fork or restore that the restart interrupted can instead end as `failed` or `stopped`. A record that says `running` with no process behind it usually becomes `stopped`, with the reason `daemon restarted and found no process`. When the provider reports an OOM kill or a supervisor failure, the record keeps that specific reason.
+Sandboxes that already run normally survive a daemon restart. On startup, the daemon checks their records against the provider before it serves any request. A create, fork or restore that the restart interrupted can instead end as `failed` or `stopped`. A record that says `running` with no process behind it usually becomes `stopped`, with the reason `daemon restarted and found no process`. When the provider reports an OOM kill or a supervisor failure, the record keeps that specific reason. The daemon then starts a sandbox that ran out of memory again, as it does while it is up.
 
 Then the `autostart` task starts each stopped sandbox that holds an `always` process, or an `unless-stopped` one that neither `shard stop` nor `shard kill` ended, and runs those processes again. In a sandbox that still runs, it starts any such process that the guest no longer runs. This is how sandboxes come back after a host reboot.
 

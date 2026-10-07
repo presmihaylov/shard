@@ -44,6 +44,29 @@ func TestLivenessFailsLoudWhenTheSubstrateIsGone(t *testing.T) {
 	}
 }
 
+// A stopped sandbox the daemon owes a start after an OOM kill is no reason to skip the tick, even when nothing else runs.
+func TestLivenessAsksForTheSubstrateForAStartOwed(t *testing.T) {
+	d := noRunscDeps(t)
+	oom := &models.OOM{Kills: 1, InARow: 1, KilledAt: time.Now(), RestartAt: time.Now()}
+	if _, err := d.repoSvc.Create(models.Sandbox{Image: "alpine", State: models.StateStopped, OOM: oom}); err != nil {
+		t.Fatalf("create the record: %v", err)
+	}
+
+	_, want := d.lifecycle()
+	if want == nil {
+		t.Skip("this host holds a substrate")
+	}
+
+	ctx, cancel := context.WithTimeout(t.Context(), 5*time.Second)
+	defer cancel()
+
+	task := liveness{deps: d, lifecycle: &lifecycle{deps: d}, interval: time.Millisecond}
+	err := task.Run(ctx)
+	if err == nil || err.Error() != want.Error() {
+		t.Fatalf("Run = %v, want the layers' own refusal %v, since the start owed needs the substrate", err, want)
+	}
+}
+
 // noRunscDeps is a gvisor daemon's layers on a host where runsc is not on PATH, with its repository built.
 func noRunscDeps(t *testing.T) *deps {
 	t.Helper()

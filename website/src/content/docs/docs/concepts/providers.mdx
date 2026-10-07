@@ -144,7 +144,7 @@ Check `shard capabilities` before you build on `pause`, `resume` or `fork`.
 | `--disk` | default 10 GiB | default 10 GiB | default 10 GiB | default 10 GiB |
 | Processes | at most 4096 | no bound | no bound | at most 4096 |
 
-**Memory.** When a sandbox goes past its memory bound, the whole sandbox ends, not just one process in it. It becomes `stopped` with the reason `ran out of memory and the host ended it`. On gVisor, the sandbox slows down when it reaches the bound and ends only once it is a little above it. `create` refuses a bound above the host's total memory.
+**Memory.** When a sandbox goes past its memory bound, the whole sandbox ends, not just one process in it. It becomes `stopped` with the reason `ran out of memory and the host ended it`, and the daemon then starts it again on its own. On gVisor, the sandbox slows down when it reaches the bound and ends only once it is a little above it. `create` refuses a bound above the host's total memory.
 
 **CPU.** `--vcpus` accepts a non-negative whole number. On gVisor, Sysbox and runc, `0` sets no CPU-time quota. On Firecracker and `vz`, `0` gives the VM as many CPUs as the host and provider allow; Firecracker uses at most 32, and `vz` follows Virtualization.framework's range. Firecracker refuses a count above 32, and `vz` refuses a count outside its allowed range.
 

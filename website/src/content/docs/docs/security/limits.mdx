@@ -108,7 +108,7 @@ For each provider in detail, see [the provider matrix](https://github.com/presmi
 
 A sandbox can have four bounds: memory, CPU, processes and disk.
 
-**Memory.** When a sandbox goes past its `--memory` bound, the whole sandbox ends, not just one process in it. The record then says `stopped`, with the reason `ran out of memory and the host ended it`, and nothing restarts it on its own. On gVisor, the sandbox slows down at 32 MiB over its bound and ends at 64 MiB over it. The host counts gVisor's own memory against the same bound.
+**Memory.** When a sandbox goes past its `--memory` bound, the whole sandbox ends, not just one process in it. The record then says `stopped`, with the reason `ran out of memory and the host ended it`, and the daemon starts the sandbox again on its own with the files it kept. The first start runs within 5 seconds. A sandbox that runs out of memory again within 10 minutes of a start waits 10 seconds for the next one, and the wait doubles up to 5 minutes. A `stop` or a `remove` calls off a start that is still due. On gVisor, the sandbox slows down at 32 MiB over its bound and ends at 64 MiB over it. The host counts gVisor's own memory against the same bound.
 
 `create` refuses these bounds:
 

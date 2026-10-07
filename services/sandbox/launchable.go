@@ -8,7 +8,7 @@ type trigger int
 const (
 	// operatorStart is shard start.
 	operatorStart trigger = iota
-	// daemonStart is a daemon that comes up, after its own restart or the host's.
+	// daemonStart is a daemon that comes up, after its own restart or the host's, or that starts a sandbox again after an OOM kill.
 	daemonStart
 )
 

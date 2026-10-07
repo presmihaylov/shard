@@ -842,7 +842,7 @@ func TestForkCarriesThePolicyAndTellsTheHostBeforeTheRestore(t *testing.T) {
 }
 
 // copyRunState is every record field a copy does not take from its source: its own identity, its run, what the substrate reports, and the host ports, which stay the source's.
-var copyRunState = []string{"ID", "Name", "Provider", "State", "StoppedReason", "FailedReason", "FailedPublic", "UnresponsiveReason", "Checkpoint", "Pausing", "Snapshot",
+var copyRunState = []string{"ID", "Name", "Provider", "State", "StoppedReason", "FailedReason", "FailedPublic", "UnresponsiveReason", "OOM", "Checkpoint", "Pausing", "Snapshot",
 	"PID", "NetnsPath", "Address", "HostInterface", "ExitChannel",
 	"StoppedByOperator", "LogStarts", "StartedAt", "RunStartedAt", "CreatedAt", "ForkedFrom", "Ports"}
 

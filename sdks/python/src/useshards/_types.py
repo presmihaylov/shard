@@ -169,6 +169,16 @@ ProcessState = Literal["running", "restarting", "exited", "killed", "gave-up", "
 
 
 @attrs.frozen
+class OOMInfo:
+    """What the host's memory kills did to a sandbox, which the daemon starts again after each one; restart_at is None
+    once a start ran or a stop called it off."""
+
+    kills: int
+    killed_at: datetime.datetime
+    restart_at: datetime.datetime | None
+
+
+@attrs.frozen
 class Restart:
     """When shard-init starts a process again. retries caps on-failure, 0 for no cap; backoff is the first wait in
     seconds, which doubles up to 60."""
@@ -250,6 +260,7 @@ class SandboxInfo:
     kernel: str | None
     state: str
     stopped_reason: str | None
+    oom: OOMInfo | None
     failed_reason: str | None
     resources: Resources
     processes: tuple[ProcessInfo, ...]
@@ -377,6 +388,7 @@ def sandbox_info(record: models.Sandbox | models.Inspection) -> SandboxInfo:
         kernel=record.kernel or None,
         state=record.state.value,
         stopped_reason=record.stopped_reason or None,
+        oom=_oom(record.oom),
         failed_reason=record.failed_reason or None,
         resources=Resources(
             memory_mib=record.resources.memory_mib, vcpus=record.resources.vcpus, disk_mib=record.resources.disk_mib
@@ -482,6 +494,12 @@ def _exit_status(record: models.ExitStatus | Unset) -> ExitStatus | None:
     if isinstance(record, Unset):
         return None
     return ExitStatus(code=record.code, signal=record.signal or None)
+
+
+def _oom(record: models.OOM | Unset) -> OOMInfo | None:
+    if isinstance(record, Unset):
+        return None
+    return OOMInfo(kills=record.kills, killed_at=record.killed_at, restart_at=_time_or_none(record.restart_at))
 
 
 def _policy_rule(record: models.Rule) -> PolicyRule:

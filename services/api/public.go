@@ -23,6 +23,7 @@ type Sandbox struct {
 	Kernel        string               `json:"kernel,omitempty"`
 	State         models.State         `json:"state" enum:"pending,created,running,paused,unresponsive,stopped,failed"`
 	StoppedReason string               `json:"stopped_reason,omitempty"`
+	OOM           *OOM                 `json:"oom,omitempty"`
 	FailedReason  string               `json:"failed_reason,omitempty"`
 	Resources     models.Resources     `json:"resources"`
 	Processes     []models.Process     `json:"processes,omitempty"`
@@ -31,6 +32,13 @@ type Sandbox struct {
 	Ports         []models.PortForward `json:"ports,omitempty"`
 	StartedAt     time.Time            `json:"started_at,omitzero"`
 	CreatedAt     time.Time            `json:"created_at"`
+}
+
+// OOM is what the host's memory kills did to the sandbox, which the daemon starts again after each one.
+type OOM struct {
+	Kills     int       `json:"kills" minimum:"1" doc:"Every time the host ended the sandbox for its memory."`
+	KilledAt  time.Time `json:"killed_at" doc:"When the host last ended the sandbox for its memory."`
+	RestartAt time.Time `json:"restart_at,omitzero" doc:"When the daemon starts the sandbox again; absent once a start ran or a stop called it off."`
 }
 
 // Inspection is the public record beside the egress rules the host enforces for it.
@@ -63,6 +71,7 @@ func PublicSandbox(sb models.Sandbox) Sandbox {
 		Kernel:        sb.Kernel,
 		State:         sb.State,
 		StoppedReason: publicStoppedReason(sb.StoppedReason),
+		OOM:           publicOOM(sb.OOM),
 		FailedReason:  sandbox.PublicReason(sb),
 		Resources:     sb.Resources,
 		Processes:     sb.Processes,
@@ -88,6 +97,15 @@ func publicStoppedReason(reason string) string {
 	}
 
 	return "the sandbox stopped; the daemon log has the cause"
+}
+
+// publicOOM leaves out the kills in a row, which only the backoff reads.
+func publicOOM(o *models.OOM) *OOM {
+	if o == nil {
+		return nil
+	}
+
+	return &OOM{Kills: o.Kills, KilledAt: o.KilledAt, RestartAt: o.RestartAt}
 }
 
 func PublicInspection(insp sandbox.Inspection) Inspection {

@@ -36,6 +36,15 @@ export interface Restart {
   backoff?: number;
 }
 
+/** OOMInfo is what the host's memory kills did to a sandbox, which the daemon starts again after each one. */
+export interface OOMInfo {
+  /** Every time the host ended the sandbox for its memory. */
+  kills: number;
+  killedAt: Date;
+  /** When the daemon starts the sandbox again; null once a start ran or a stop called it off. */
+  restartAt: Date | null;
+}
+
 /** ProcessStatus is what shard-init last said of a process. */
 export interface ProcessStatus {
   state: ProcessState;
@@ -74,6 +83,8 @@ export interface SandboxInfo {
   kernel: string | null;
   state: SandboxState;
   stoppedReason: string | null;
+  /** null for a sandbox the host never ended for its memory. */
+  oom: OOMInfo | null;
   failedReason: string | null;
   resources: Resources;
   /** The processes a run started, in the order they were first run. */
@@ -213,6 +224,7 @@ export function sandboxInfo(value: unknown): SandboxInfo {
     kernel: fields.optionalString("kernel"),
     state: fields.oneOf("state", states),
     stoppedReason: fields.optionalString("stopped_reason"),
+    oom: oom(fields.optionalObject("oom")),
     failedReason: fields.optionalString("failed_reason"),
     resources: { memoryMiB: resources.int("memory_mib"), vcpus: resources.int("vcpus"), diskMiB: resources.int("disk_mib") },
     processes: fields.list("processes").map(processOf),
@@ -345,6 +357,14 @@ function exitStatus(fields: Fields | null): ExitStatus | null {
   }
 
   return { exitCode: fields.int("code"), signal: fields.int("signal") || null };
+}
+
+function oom(fields: Fields | null): OOMInfo | null {
+  if (fields === null) {
+    return null;
+  }
+
+  return { kills: fields.int("kills"), killedAt: fields.date("killed_at"), restartAt: fields.optionalDate("restart_at") };
 }
 
 function processOf(fields: Fields): ProcessInfo {

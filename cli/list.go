@@ -12,6 +12,7 @@ import (
 
 	"github.com/presmihaylov/shard/models"
 	"github.com/presmihaylov/shard/services/client"
+	"github.com/presmihaylov/shard/services/sandbox"
 )
 
 // listOptions is one parsed shard list invocation.
@@ -41,7 +42,10 @@ func (a App) list(ctx context.Context, args []string) error {
 	}
 	shown := result.Sandboxes
 	if !opts.all {
-		shown = slices.DeleteFunc(slices.Clone(shown), func(sb client.Sandbox) bool { return sb.State == models.StateStopped })
+		// A start the daemon owes after an OOM kill keeps the sandbox in view, as the daemon's own list does.
+		shown = slices.DeleteFunc(slices.Clone(shown), func(sb client.Sandbox) bool {
+			return sb.State == models.StateStopped && (sb.OOM == nil || sb.OOM.RestartAt.IsZero())
+		})
 	}
 
 	// The daemon answers with both: the sandboxes it read are printed, and the ones it could not are the exit.
@@ -106,7 +110,7 @@ func writeTable(w io.Writer, sandboxes []client.Sandbox, now time.Time) error {
 	fmt.Fprintln(tw, "ID\tNAME\tIMAGE\tSTATE\tUPTIME\tPROCESSES\tPOLICY")
 
 	for _, sb := range sandboxes {
-		fmt.Fprintf(tw, "%s\t%s\t%s\t%s\t%s\t%s\t%s\n", sb.ID, orDash(sb.Name), sb.Image, state(sb), uptime(sb, now), processes(sb), orDash(sb.Policy))
+		fmt.Fprintf(tw, "%s\t%s\t%s\t%s\t%s\t%s\t%s\n", sb.ID, orDash(sb.Name), sb.Image, state(sb, now), uptime(sb, now), processes(sb), orDash(sb.Policy))
 	}
 
 	if err := tw.Flush(); err != nil {
@@ -116,13 +120,38 @@ func writeTable(w io.Writer, sandboxes []client.Sandbox, now time.Time) error {
 	return nil
 }
 
-// state carries the reason a sandbox nobody stopped is stopped, which is the one an operator asks about.
-func state(sb client.Sandbox) string {
-	if sb.StoppedReason != "" {
-		return fmt.Sprintf("%s (%s)", sb.State, sb.StoppedReason)
+// state adds why a sandbox nobody stopped is stopped, and the memory kills it was started again after.
+func state(sb client.Sandbox, now time.Time) string {
+	var notes []string
+	// The kill count says the memory ran out, so the reason would say it twice.
+	if sb.StoppedReason != "" && (sb.OOM == nil || sb.StoppedReason != sandbox.OOMKilledReason) {
+		notes = append(notes, sb.StoppedReason)
+	}
+	if sb.OOM != nil {
+		notes = append(notes, outOfMemory(*sb.OOM, now))
+	}
+	if len(notes) == 0 {
+		return string(sb.State)
 	}
 
-	return string(sb.State)
+	return fmt.Sprintf("%s (%s)", sb.State, strings.Join(notes, "; "))
+}
+
+// outOfMemory counts the kills, and says when the daemon starts the sandbox again if it still owes that.
+func outOfMemory(oom client.OOM, now time.Time) string {
+	times := fmt.Sprintf("%d times", oom.Kills)
+	if oom.Kills == 1 {
+		times = "once"
+	}
+	note := "ran out of memory " + times
+	if oom.RestartAt.IsZero() {
+		return note
+	}
+	if !oom.RestartAt.After(now) {
+		return note + ", starts again now"
+	}
+
+	return note + ", starts again in " + short(oom.RestartAt.Sub(now).Round(time.Second))
 }
 
 // processes is how many of the sandbox's named processes run, of all it has; shard ps names them.

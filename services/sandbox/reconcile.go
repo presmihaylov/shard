@@ -7,6 +7,7 @@ import (
 	"os"
 	"path/filepath"
 	"sync"
+	"time"
 
 	"github.com/presmihaylov/shard/models"
 	"github.com/presmihaylov/shard/services/egress"
@@ -113,9 +114,9 @@ func (s *Service) applyReconcile(ctx context.Context, sb models.Sandbox, status 
 	if probeErr != nil {
 		return "", fmt.Errorf("ask %s about sandbox %s: %w", s.cfg.Provider.Name(), sb.ID, probeErr)
 	}
-	// The host ended it for its memory while the daemon was down, so no verb reads a running record with no process (SHARD-311).
+	// The host ended it for its memory while the daemon was down, so the record stops and the liveness tick starts it again (SHARD-311).
 	if sb.State.Live() && !status.Alive() && status.OOMKilled {
-		if err := s.recordDied(sb.ID, OOMKilledReason, report); err != nil {
+		if err := s.recordOOMKilled(sb.ID, sb, time.Now().UTC(), report); err != nil {
 			return "", err
 		}
 
