@@ -27,6 +27,11 @@ const Name = "vz"
 // cmdline boots the guest, hands shard-init the vsock transport and the root disk; the shim ends the VM when the kernel prints its panic banner on the console.
 const cmdline = "console=hvc0 -- -transport vsock -root /dev/vda"
 
+// bootCmdline adds the swap shard-init makes on the root disk at each boot.
+func bootCmdline(res models.Resources) string {
+	return fmt.Sprintf("%s -swap %d", cmdline, res.SwapMiB)
+}
+
 // MinMemoryMiB is the smallest --memory a guest boots with: the kernel and shard-init keep 32 MiB, and the bound needs room under that.
 const MinMemoryMiB = 128
 
@@ -179,9 +184,9 @@ func (p *Provider) Close() error {
 	return errors.Join(errs...)
 }
 
-// Capabilities: pause, resume and fork are each a VZ save or a restore, so a host without them has none.
+// Capabilities: pause, resume and fork are each a VZ save or a restore, so a host without them has none; swap is the guest kernel's own.
 func (p *Provider) Capabilities() models.Capabilities {
-	return models.Capabilities{Pause: p.cfg.SaveRestore, Resume: p.cfg.SaveRestore, Fork: p.cfg.SaveRestore}
+	return models.Capabilities{Pause: p.cfg.SaveRestore, Resume: p.cfg.SaveRestore, Fork: p.cfg.SaveRestore, Swap: true}
 }
 
 // ReleaseRoot has nothing to give back: a VM pins nothing under the root between sandboxes.

@@ -45,6 +45,8 @@ type transport struct {
 	endSent bool
 	// forced marks a stop the grace outran, whose disk is left as the kill left it.
 	forced atomic.Bool
+	// swap says the boot made a swap file, which a clean stop takes off the disk.
+	swap bool
 }
 
 // capbsetEnv marks the re-exec, so the second image knows the bounding set is already shrunk and the disk is the root.
@@ -91,7 +93,7 @@ func serveTransport(name string, boot guestBoot) error {
 		return fmt.Errorf("%w: %w", errSupervisor, err)
 	}
 
-	t := &transport{logs: logs, attached: make(chan struct{}, 1), bound: bound, root: root}
+	t := &transport{logs: logs, attached: make(chan struct{}, 1), bound: bound, root: root, swap: boot.SwapMiB > 0}
 	t.g = newGuest(t, restartPolicy{})
 	t.g.bound = bound
 	// Only a VM has the bound and a crng of its own; a test on a Linux host runs unconfined and would read its own cgroup.
@@ -130,8 +132,12 @@ func (t *transport) seal(freeze func(*os.File) error) error {
 	if t.forced.Load() {
 		return nil
 	}
+	if !t.swap {
+		return sealRoot(t.root, freeze)
+	}
 
-	return sealRoot(t.root, freeze)
+	// A snapshot copies the disk a clean stop leaves, and the swap file is no part of what the sandbox wrote.
+	return errors.Join(dropSwap(t.bound, t.root), sealRoot(t.root, freeze))
 }
 
 // sealRoot flushes, then freezes the root last of all, so a clean stop leaves a disk with no journal to replay that a host can grow (SHARD-476).

@@ -88,6 +88,7 @@ class AsyncShard:
         memory_mib: int | None = None,
         vcpus: int | None = None,
         disk_mib: int | None = None,
+        swap_mib: int | None = None,
     ) -> AsyncSandbox:
         """create a sandbox"""
         body = create_body(
@@ -103,6 +104,7 @@ class AsyncShard:
             memory_mib=memory_mib,
             vcpus=vcpus,
             disk_mib=disk_mib,
+            swap_mib=swap_mib,
             restart=None,
         )
         return AsyncSandbox(self._transport, await self._create(body))
@@ -121,6 +123,7 @@ class AsyncShard:
         memory_mib: int | None = None,
         vcpus: int | None = None,
         disk_mib: int | None = None,
+        swap_mib: int | None = None,
         restart: Restart | None = None,
     ) -> AsyncApp:
         """create a sandbox and start its command"""
@@ -137,6 +140,7 @@ class AsyncShard:
             memory_mib=memory_mib,
             vcpus=vcpus,
             disk_mib=disk_mib,
+            swap_mib=swap_mib,
             restart=restart,
         )
         return AsyncApp(self._transport, AsyncSandbox(self._transport, await self._create(body)))

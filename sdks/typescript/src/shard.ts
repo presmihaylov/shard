@@ -42,6 +42,8 @@ export interface CreateOptions {
   /** Left out, the daemon's default. */
   vcpus?: number;
   diskMiB?: number;
+  /** The swap file on the disk, which diskMiB counts; left out, 2048 MiB on firecracker and vz and none on gvisor, runc and sysbox, which refuse any but 0. */
+  swapMiB?: number;
 }
 
 /** RunOptions make the sandbox of a run, which only an image does. */
@@ -231,7 +233,7 @@ export class Snapshots {
 }
 
 function createBody(options: CreateOptions, command: string | string[] | undefined, restart: Restart | undefined): CreateRequest {
-  const { image, snapshot, name, env, workdir, user, secrets, policy, memoryMiB, vcpus, diskMiB } = options;
+  const { image, snapshot, name, env, workdir, user, secrets, policy, memoryMiB, vcpus, diskMiB, swapMiB } = options;
   if ((image === undefined) === (snapshot === undefined)) {
     throw new TypeError("a sandbox is made from an image or a snapshot, exactly one of them");
   }
@@ -243,7 +245,7 @@ function createBody(options: CreateOptions, command: string | string[] | undefin
     user: user || undefined,
     secrets: secrets?.length ? [...secrets] : undefined,
     policy: policy || undefined,
-    resources: { memory_mib: memoryMiB, vcpus: vcpus ?? 0, disk_mib: diskMiB ?? 0 },
+    resources: { memory_mib: memoryMiB, vcpus: vcpus ?? 0, disk_mib: diskMiB ?? 0, swap_mib: swapMiB },
   };
   if (command !== undefined) {
     body.command = argv(command);

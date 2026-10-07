@@ -113,6 +113,7 @@ var sandboxFlagHelps = []flagHelp{
 	{"--memory <size>", "memory limit; 512MiB by default on Firecracker and vz, none on gVisor, runc and Sysbox", ""},
 	{"--vcpus <n>", "CPU count; 0 uses all available host CPUs, up to 32 on Firecracker", ""},
 	{"--disk <size>", "disk limit; 0 uses the default", ""},
+	{"--swap <size>", "swap file inside the disk limit; 2GiB by default on Firecracker and vz, 0 for none", ""},
 }
 
 // The flags more than one verb takes.
@@ -137,7 +138,7 @@ var (
 		noPolicyLine,
 		"Use 'shard policy attach' to assign a policy after creation.",
 	}}
-	limitsNote     = note{title: "Resource limits", lines: []string{"Use sizes such as 512MiB or 2GiB, and whole numbers for CPUs."}}
+	limitsNote     = note{title: "Resource limits", lines: []string{"Use sizes such as 512MiB or 2GiB, and whole numbers for CPUs.", "gVisor, runc and Sysbox refuse any --swap but 0."}}
 	signingKeyNote = para("The default signing key is created automatically on first use.", "A custom signing key file must already exist.")
 	hostOnlyNote   = para("Runs only on the daemon host and refuses --remote, " + client.RemoteEnv + " and a saved connection.")
 )

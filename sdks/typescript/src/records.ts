@@ -21,6 +21,8 @@ export interface Resources {
   memoryMiB: number;
   vcpus: number;
   diskMiB: number;
+  /** The swap file on the disk, which diskMiB counts; 0 is none. */
+  swapMiB: number;
 }
 
 /** Restart says when the daemon starts an app again; backoff is the seconds between two starts. */
@@ -183,7 +185,7 @@ export function sandboxInfo(value: unknown): SandboxInfo {
     state: fields.oneOf("state", states),
     stoppedReason: fields.optionalString("stopped_reason"),
     failedReason: fields.optionalString("failed_reason"),
-    resources: { memoryMiB: resources.int("memory_mib"), vcpus: resources.int("vcpus"), diskMiB: resources.int("disk_mib") },
+    resources: { memoryMiB: resources.int("memory_mib"), vcpus: resources.int("vcpus"), diskMiB: resources.int("disk_mib"), swapMiB: resources.int("swap_mib") },
     app: command.length === 0 ? null : { command, exitStatus: exitStatus(fields.optionalObject("exit_status")), restart: restart(fields) },
     secrets: fields.strings("secrets"),
     policy: fields.optionalString("policy"),

@@ -162,6 +162,7 @@ class Resources:
     memory_mib: int
     vcpus: int
     disk_mib: int
+    swap_mib: int
 
 
 RestartPolicy = Literal["no", "on-failure", "always"]
@@ -352,7 +353,10 @@ def sandbox_info(record: models.Sandbox | models.Inspection) -> SandboxInfo:
         stopped_reason=record.stopped_reason or None,
         failed_reason=record.failed_reason or None,
         resources=Resources(
-            memory_mib=record.resources.memory_mib, vcpus=record.resources.vcpus, disk_mib=record.resources.disk_mib
+            memory_mib=record.resources.memory_mib,
+            vcpus=record.resources.vcpus,
+            disk_mib=record.resources.disk_mib,
+            swap_mib=record.resources.swap_mib,
         ),
         app=app,
         secrets=tuple(record.secrets or ()),

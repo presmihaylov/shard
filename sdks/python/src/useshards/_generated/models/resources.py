@@ -15,12 +15,15 @@ T = TypeVar("T", bound="Resources")
 class Resources:
     disk_mib: int
     memory_mib: int
+    swap_mib: int
     vcpus: int
 
     def to_dict(self) -> dict[str, Any]:
         disk_mib = self.disk_mib
 
         memory_mib = self.memory_mib
+
+        swap_mib = self.swap_mib
 
         vcpus = self.vcpus
 
@@ -30,6 +33,7 @@ class Resources:
             {
                 "disk_mib": disk_mib,
                 "memory_mib": memory_mib,
+                "swap_mib": swap_mib,
                 "vcpus": vcpus,
             }
         )
@@ -43,11 +47,14 @@ class Resources:
 
         memory_mib = d.pop("memory_mib")
 
+        swap_mib = d.pop("swap_mib")
+
         vcpus = d.pop("vcpus")
 
         resources = cls(
             disk_mib=disk_mib,
             memory_mib=memory_mib,
+            swap_mib=swap_mib,
             vcpus=vcpus,
         )
 

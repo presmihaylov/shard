@@ -63,6 +63,11 @@ test("a create from a snapshot leaves the memory to the snapshot", async () => {
   assert.deepEqual(JSON.parse(sent("POST", "/v0/sandboxes").body), { snapshot: "snap", resources: { vcpus: 0, disk_mib: 0 } });
 });
 
+test("a create sends a swap of 0, which is no swap, and leaves an absent one to the daemon", async () => {
+  await shard.create({ image: "alpine", swapMiB: 0 });
+  assert.deepEqual(JSON.parse(sent("POST", "/v0/sandboxes").body).resources, { vcpus: 0, disk_mib: 0, swap_mib: 0 });
+});
+
 test("a create names an image or a snapshot, exactly one", async () => {
   await assert.rejects(shard.create({}), TypeError);
   await assert.rejects(shard.create({ image: "alpine", snapshot: "snap" }), TypeError);
