@@ -12,8 +12,7 @@ import (
 	"github.com/presmihaylov/shard/models"
 )
 
-// Resolve fills the spec from the image config it will run over, but never its ENTRYPOINT or CMD: the spec's command is the
-// only one. Every provider needs the same precedence, so it lives here rather than being redone once per substrate.
+// Resolve fills the spec from the image config it will run over, never its ENTRYPOINT or CMD, since a sandbox runs only what shard run names.
 func Resolve(s models.SandboxSpec, cfg models.ImageConfig) models.SandboxSpec {
 	s.Env = MergeEnv(cfg.Env, s.Env)
 	s.WorkDir = firstNonEmpty(s.WorkDir, cfg.WorkDir)
@@ -27,7 +26,7 @@ func Resolve(s models.SandboxSpec, cfg models.ImageConfig) models.SandboxSpec {
 // defaultTerm is what docker exec -t sets, since a terminal with no TERM leaves a shell and curses tools guessing.
 const defaultTerm = "TERM=xterm"
 
-// ExecEnv is the env of one exec over what the entrypoint runs with; a terminal exec that names no TERM gets xterm.
+// ExecEnv is the env of one exec over what the sandbox runs its processes with; a terminal exec that names no TERM gets xterm.
 func ExecEnv(base, overrides []string, tty bool) []string {
 	env := MergeEnv(base, overrides)
 	if !tty || slices.ContainsFunc(env, func(entry string) bool { return strings.HasPrefix(entry, "TERM=") }) {
@@ -38,7 +37,7 @@ func ExecEnv(base, overrides []string, tty bool) []string {
 }
 
 // MergeEnv keeps the base order, so a base that sets a variable twice still resolves the same way.
-// An exec merges the same way over what the entrypoint runs with, which is why this is exported.
+// An exec merges the same way over what the sandbox runs its processes with, which is why this is exported.
 func MergeEnv(imageEnv, overrides []string) []string {
 	env := make([]string, 0, len(imageEnv)+len(overrides))
 	applied := make(map[string]bool, len(overrides))

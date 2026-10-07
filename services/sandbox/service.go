@@ -1226,11 +1226,7 @@ func (s *Service) stop(ctx context.Context, id string, force bool) error {
 		}
 	}
 
-	before, err := s.ran(ctx, id, sb)
-	if err != nil {
-		return err
-	}
-
+	// The table is read only after the stop, so a guest whose table the host lost still stops.
 	if err := s.cfg.Provider.Stop(ctx, id, models.StopGrace); err != nil {
 		return err
 	}
@@ -1255,7 +1251,7 @@ func (s *Service) stop(ctx context.Context, id string, force bool) error {
 		sb.UnresponsiveReason = ""
 		// A stop ends the sandbox, so no resume can read its checkpoint again (SHARD-592).
 		sb.Checkpoint = ""
-		sb.Processes = stoppedUnder(sb.Processes, before, after)
+		sb.Processes = endProcesses(merged(sb.Processes, after))
 		if status.SupervisorFailed != "" {
 			supervisorFailed(sb, status.SupervisorFailed)
 		}
@@ -1315,31 +1311,6 @@ func byOperator(sb *models.Sandbox) error {
 	sb.StoppedByOperator = true
 
 	return nil
-}
-
-// ran is the table before a stop, which says what still ran; a sandbox not live has no run to read.
-func (s *Service) ran(ctx context.Context, id string, sb models.Sandbox) ([]models.ProcessReport, error) {
-	if !sb.State.Live() {
-		return nil, nil
-	}
-
-	reports, _, err := s.table(ctx, id)
-
-	return reports, err
-}
-
-// stoppedUnder ends every process that still ran before the stop, with the last exit the table after it holds.
-func stoppedUnder(procs []models.Process, before, after []models.ProcessReport) []models.Process {
-	ran := merged(procs, before)
-	went := merged(procs, after)
-	out := endProcesses(ran)
-	for i := range out {
-		if !ran[i].Status.State.Ended() && went[i].Status.Exit != nil {
-			out[i].Status.Exit = went[i].Status.Exit
-		}
-	}
-
-	return out
 }
 
 // Remove frees everything a stopped sandbox holds. A sandbox that is still up or paused is refused

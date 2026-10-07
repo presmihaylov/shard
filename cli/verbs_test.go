@@ -55,8 +55,8 @@ func TestCreatePrintsTheIDTheDaemonAnswered(t *testing.T) {
 		t.Errorf("the record is %+v, want builder with 512 MiB and running", created)
 	}
 	spec := d.providerSvc.(*fakeLifecycleProvider).created
-	if spec.ID != "sandbox2" || spec.Name != "builder" || len(spec.Entrypoint) != 0 {
-		t.Errorf("the substrate got %+v, want sandbox2 named builder with no app", spec)
+	if spec.ID != "sandbox2" || spec.Name != "builder" {
+		t.Errorf("the substrate got %+v, want sandbox2 named builder", spec)
 	}
 }
 

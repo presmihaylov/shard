@@ -154,23 +154,6 @@ func TestAFailedCreateAnswersTheCausesPublicText(t *testing.T) {
 	}
 }
 
-func TestAFailedCreateWhoseEntrypointDidNotStartSaysSo(t *testing.T) {
-	notStarted := &models.EntrypointNotStartedError{Sandbox: "sb1", Err: errors.New(hostCause)}
-	svc, l := newService(t, &recorder{}, models.Sandbox{}, failStart(notStarted))
-
-	if _, err := svc.Create(t.Context(), alpine()); err == nil {
-		t.Fatal("a failed start returned no error")
-	}
-
-	sb := l.repo.sb
-	if !strings.Contains(sb.FailedPublic, "the entrypoint of sandbox sb1 did not start") || strings.Contains(sb.FailedPublic, "/var/lib/shard") || strings.Contains(sb.FailedPublic, "4242") {
-		t.Errorf("failed_public = %q, want it to say the entrypoint did not start and name no host path or pid", sb.FailedPublic)
-	}
-	if !strings.Contains(sb.FailedReason, hostCause) {
-		t.Errorf("failed_reason = %q, want the sandbox log quoted for the daemon", sb.FailedReason)
-	}
-}
-
 // createProvider fails every create with err, the way a substrate refuses a user the image does not list.
 type createProvider struct {
 	models.Provider

@@ -31,7 +31,7 @@ func TestExecEnvNamesATerminalOnlyWhenNothingElseDoes(t *testing.T) {
 }
 
 // The image's own command never runs, but what it says about the process still applies to every one the sandbox starts.
-func TestResolveNeverTakesTheImageEntrypointOrCmd(t *testing.T) {
+func TestResolveTakesTheImageProcessSettings(t *testing.T) {
 	got := runspec.Resolve(models.SandboxSpec{}, models.ImageConfig{
 		Entrypoint: []string{"/bin/sh"},
 		Cmd:        []string{"-c", "true"},
@@ -40,21 +40,8 @@ func TestResolveNeverTakesTheImageEntrypointOrCmd(t *testing.T) {
 		User:       "app",
 	})
 
-	if len(got.Entrypoint) != 0 {
-		t.Errorf("got entrypoint %v, want none", got.Entrypoint)
-	}
 	if !slices.Equal(got.Env, []string{"TZ=UTC"}) || got.WorkDir != "/app" || got.User != "app" {
 		t.Errorf("got env %v workdir %q user %q, want the image's", got.Env, got.WorkDir, got.User)
-	}
-}
-
-// The spec's command is the whole argv, so neither half of the image's is added to it.
-func TestResolveKeepsTheSpecCommandAlone(t *testing.T) {
-	spec := models.SandboxSpec{Entrypoint: []string{"/bin/echo", "hello"}}
-	got := runspec.Resolve(spec, models.ImageConfig{Entrypoint: []string{"/bin/sh"}, Cmd: []string{"-c", "true"}})
-
-	if want := []string{"/bin/echo", "hello"}; !slices.Equal(got.Entrypoint, want) {
-		t.Errorf("got entrypoint %v, want %v", got.Entrypoint, want)
 	}
 }
 
@@ -117,11 +104,11 @@ func TestResolveNamesAnUnnamedSandboxAfterItsID(t *testing.T) {
 
 // Resolve is pure, so a caller may resolve the same spec against a second image.
 func TestResolveLeavesTheGivenSpecAlone(t *testing.T) {
-	spec := models.SandboxSpec{ID: "amber-otter-1a2b"}
+	spec := models.SandboxSpec{ID: "amber-otter-1a2b", Env: []string{"APP=shard"}}
 
-	runspec.Resolve(spec, models.ImageConfig{Entrypoint: []string{"/bin/sh"}})
+	runspec.Resolve(spec, models.ImageConfig{Env: []string{"PATH=/usr/bin"}, WorkDir: "/app"})
 
-	if len(spec.Entrypoint) != 0 || spec.Name != "" {
+	if !slices.Equal(spec.Env, []string{"APP=shard"}) || spec.WorkDir != "" || spec.Name != "" {
 		t.Errorf("Resolve changed the spec it was given: %+v", spec)
 	}
 }
