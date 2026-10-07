@@ -103,10 +103,10 @@ func writeIDs(w io.Writer, sandboxes []client.Sandbox) error {
 func writeTable(w io.Writer, sandboxes []client.Sandbox, now time.Time) error {
 	tw := tabwriter.NewWriter(w, 0, 0, 3, ' ', 0)
 
-	fmt.Fprintln(tw, "ID\tNAME\tIMAGE\tSTATE\tUPTIME\tRESTART\tPOLICY")
+	fmt.Fprintln(tw, "ID\tNAME\tIMAGE\tSTATE\tUPTIME\tPROCESSES\tPOLICY")
 
 	for _, sb := range sandboxes {
-		fmt.Fprintf(tw, "%s\t%s\t%s\t%s\t%s\t%s\t%s\n", sb.ID, orDash(sb.Name), sb.Image, state(sb), uptime(sb, now), restart(sb), orDash(sb.Policy))
+		fmt.Fprintf(tw, "%s\t%s\t%s\t%s\t%s\t%s\t%s\n", sb.ID, orDash(sb.Name), sb.Image, state(sb), uptime(sb, now), processes(sb), orDash(sb.Policy))
 	}
 
 	if err := tw.Flush(); err != nil {
@@ -116,12 +116,8 @@ func writeTable(w io.Writer, sandboxes []client.Sandbox, now time.Time) error {
 	return nil
 }
 
-// state carries the reason a sandbox nobody stopped is stopped, or the exit of an entrypoint whose
-// still-running sandbox outlived it, which is the one an operator asks about.
+// state carries the reason a sandbox nobody stopped is stopped, which is the one an operator asks about.
 func state(sb client.Sandbox) string {
-	if sb.State == models.StateRunning && sb.ExitStatus != nil {
-		return fmt.Sprintf("%s (exited %d)", sb.State, sb.ExitStatus.Code)
-	}
 	if sb.StoppedReason != "" {
 		return fmt.Sprintf("%s (%s)", sb.State, sb.StoppedReason)
 	}
@@ -129,28 +125,20 @@ func state(sb client.Sandbox) string {
 	return string(sb.State)
 }
 
-// restart is the entrypoint policy the sandbox asked for, and how much of its cap has been spent on it.
-func restart(sb client.Sandbox) string {
-	if sb.Restart == nil {
+// processes is how many of the sandbox's named processes run, of all it has; shard ps names them.
+func processes(sb client.Sandbox) string {
+	if len(sb.Processes) == 0 {
 		return "-"
 	}
 
-	return spent(string(sb.Restart.Policy), sb.Restart.Count, sb.Restart.Retries, sb.Restart.GaveUp)
-}
-
-// spent is a policy with its count beside it once a start again happened, its limit when it has one, and the give-up.
-func spent(policy string, count, limit int, gaveUp bool) string {
-	if count != 0 && limit != 0 {
-		policy = fmt.Sprintf("%s %d/%d", policy, count, limit)
-	}
-	if count != 0 && limit == 0 {
-		policy = fmt.Sprintf("%s %d", policy, count)
-	}
-	if gaveUp {
-		return policy + " gave up"
+	up := 0
+	for _, p := range sb.Processes {
+		if !p.Status.State.Ended() {
+			up++
+		}
 	}
 
-	return policy
+	return fmt.Sprintf("%d/%d", up, len(sb.Processes))
 }
 
 // uptime is how long the sandbox has run since its last start, which a resume keeps; only a live one is up.

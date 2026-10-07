@@ -22,15 +22,16 @@ type tail struct {
 	awaiting bool
 }
 
-func openTail(path string) (*tail, error) {
+// openTail opens a log from its start: the rotated file the daemon keeps, then the log.
+func openTail(path string) (*tail, error) { return openTailFrom(path, 0) }
+
+// openTailFrom opens a log at offset, where one run began; a log not written yet opens on its first byte.
+func openTailFrom(path string, offset int64) (*tail, error) {
 	t := &tail{path: path}
 
-	older, err := os.Open(logfile.Rotated(path))
-	if err != nil && !errors.Is(err, fs.ErrNotExist) {
-		return nil, fmt.Errorf("open %s: %w", logfile.Rotated(path), err)
-	}
-	if err == nil {
-		t.older = older
+	var err error
+	if t.older, err = openLog(logfile.Rotated(path)); err != nil {
+		return nil, err
 	}
 
 	t.rotated, err = rotatedAt(path)
@@ -38,12 +39,84 @@ func openTail(path string) (*tail, error) {
 		return nil, errors.Join(err, t.close())
 	}
 
-	t.file, err = os.Open(path)
-	if err != nil {
-		return nil, errors.Join(fmt.Errorf("open %s: %w", path, err), t.close())
+	if t.file, err = openLog(path); err != nil {
+		return nil, errors.Join(err, t.close())
+	}
+
+	if err := t.seek(offset); err != nil {
+		return nil, errors.Join(err, t.close())
 	}
 
 	return t, nil
+}
+
+// seek starts the read at offset: in the log while it holds that much, else in the rotated file it moved to; a start neither holds reads from the log's top.
+func (t *tail) seek(offset int64) error {
+	if offset == 0 {
+		return nil
+	}
+
+	inLog, err := seekWithin(t.file, offset)
+	if err != nil {
+		return err
+	}
+	if inLog {
+		return t.dropOlder()
+	}
+
+	inOlder, err := seekWithin(t.older, offset)
+	if err != nil || inOlder {
+		return err
+	}
+
+	return t.dropOlder()
+}
+
+// seekWithin seeks f to offset when f holds that much.
+func seekWithin(f *os.File, offset int64) (bool, error) {
+	if f == nil {
+		return false, nil
+	}
+
+	info, err := f.Stat()
+	if err != nil {
+		return false, fmt.Errorf("stat %s: %w", f.Name(), err)
+	}
+	if info.Size() < offset {
+		return false, nil
+	}
+	if _, err := f.Seek(offset, io.SeekStart); err != nil {
+		return false, fmt.Errorf("seek %s: %w", f.Name(), err)
+	}
+
+	return true, nil
+}
+
+func (t *tail) dropOlder() error {
+	if t.older == nil {
+		return nil
+	}
+
+	err := t.older.Close()
+	t.older = nil
+	if err != nil {
+		return fmt.Errorf("close %s: %w", logfile.Rotated(t.path), err)
+	}
+
+	return nil
+}
+
+// openLog is nil for a log its writer has not created yet.
+func openLog(path string) (*os.File, error) {
+	f, err := os.Open(path)
+	if errors.Is(err, fs.ErrNotExist) {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, fmt.Errorf("open %s: %w", path, err)
+	}
+
+	return f, nil
 }
 
 func (t *tail) close() error {
@@ -68,11 +141,19 @@ func (t *tail) read(w io.Writer) error {
 		}
 	}
 
+	if t.file == nil {
+		return nil
+	}
+
 	return copyOutput(w, t.file)
 }
 
 // follow restarts from the top of the log when the daemon rotated it since the last read, then reads.
 func (t *tail) follow(w io.Writer) error {
+	if t.file == nil {
+		return t.await(w)
+	}
+
 	held, err := t.file.Stat()
 	if err != nil {
 		return fmt.Errorf("stat %s: %w", t.path, err)
@@ -120,6 +201,25 @@ func (t *tail) reopen(w io.Writer) error {
 		return err
 	}
 	t.awaiting = false
+
+	return copyOutput(w, t.file)
+}
+
+// await reads a log its writer has created since the open, from its start.
+func (t *tail) await(w io.Writer) error {
+	if err := t.read(w); err != nil {
+		return err
+	}
+
+	file, err := openLog(t.path)
+	if err != nil || file == nil {
+		return err
+	}
+	t.file = file
+
+	if t.rotated, err = rotatedAt(t.path); err != nil {
+		return err
+	}
 
 	return copyOutput(w, t.file)
 }

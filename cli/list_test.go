@@ -186,30 +186,15 @@ func TestListGivesTheReasonASandboxNobodyStoppedIsStopped(t *testing.T) {
 	}
 }
 
-func TestListShowsTheEntrypointExitOfAStillRunningSandbox(t *testing.T) {
-	var out bytes.Buffer
-
-	sandboxes := []models.Sandbox{{ID: "up-7", Image: "alpine:3.20", State: models.StateRunning,
-		ExitStatus: &models.ExitStatus{Code: 7}, CreatedAt: time.Now()}}
-
-	app := newListApp(t, &out, sandboxes, nil)
-
-	if err := app.Run(t.Context(), []string{"list"}); err != nil {
-		t.Fatalf("list: %v", err)
-	}
-
-	if !strings.Contains(out.String(), "running (exited 7)") {
-		t.Errorf("list printed %q, want the running state and the entrypoint exit beside it", out.String())
-	}
-}
-
-func TestListPrintsTheRestartPolicyAndWhatItSpent(t *testing.T) {
+// PROCESSES counts the ones still up against all the sandbox holds, so an ended process shows without a ps.
+func TestListPrintsHowManyProcessesAreUp(t *testing.T) {
 	var out bytes.Buffer
 
 	sandboxes := listed()
-	sandboxes[0].Restart = &models.Restart{
-		RestartSpec:  models.RestartSpec{Policy: models.RestartOnFailure, Retries: 5, Backoff: 1},
-		RestartCount: models.RestartCount{Count: 2},
+	sandboxes[0].Processes = []models.Process{
+		{Name: "api", Status: models.ProcessStatus{State: models.ProcessRunning}},
+		{Name: "worker", Status: models.ProcessStatus{State: models.ProcessRestarting}},
+		{Name: "migrate", Status: models.ProcessStatus{State: models.ProcessExited, Exit: &models.ExitStatus{}}},
 	}
 
 	app := newListApp(t, &out, sandboxes, nil)
@@ -219,61 +204,11 @@ func TestListPrintsTheRestartPolicyAndWhatItSpent(t *testing.T) {
 	}
 
 	lines := strings.Split(strings.TrimSpace(out.String()), "\n")
-	if !strings.Contains(lines[0], "RESTART") {
-		t.Errorf("the header is %q, want a RESTART column", lines[0])
+	if got := strings.Fields(lines[1]); !slices.Contains(got, "2/3") {
+		t.Errorf("the line %q does not count two of three processes up", lines[1])
 	}
-	if !strings.Contains(lines[1], "on-failure 2/5") {
-		t.Errorf("the line %q does not show the policy and the starts it spent", lines[1])
-	}
-	if strings.Contains(lines[2], "on-failure") {
-		t.Errorf("the line %q shows a policy the sandbox never asked for", lines[2])
-	}
-}
-
-// An unlimited policy shows the count with no limit beside it.
-func TestListPrintsAnUnlimitedRestartWithoutALimit(t *testing.T) {
-	var out bytes.Buffer
-
-	sandboxes := listed()
-	sandboxes[0].Restart = &models.Restart{
-		RestartSpec:  models.RestartSpec{Policy: models.RestartAlways, Backoff: 1},
-		RestartCount: models.RestartCount{Count: 3},
-	}
-
-	app := newListApp(t, &out, sandboxes, nil)
-
-	if err := app.Run(t.Context(), []string{"list", "--all"}); err != nil {
-		t.Fatalf("list --all: %v", err)
-	}
-
-	lines := strings.Split(strings.TrimSpace(out.String()), "\n")
-	if !strings.Contains(lines[1], "always 3") || strings.Contains(lines[1], "always 3/") {
-		t.Errorf("the line %q does not show the count with no limit", lines[1])
-	}
-}
-
-func TestListPrintsTheRestartPolicyOfTheSupervisor(t *testing.T) {
-	var out bytes.Buffer
-
-	sandboxes := listed()
-	sandboxes[0].Restart = &models.Restart{
-		RestartSpec:  models.RestartSpec{Policy: models.RestartOnFailure, Retries: 5, Backoff: 1},
-		RestartCount: models.RestartCount{Count: 5, GaveUp: true},
-	}
-	sandboxes[1].Restart = &models.Restart{RestartSpec: models.RestartSpec{Policy: models.RestartAlways, Retries: 5, Backoff: 1}}
-
-	app := newListApp(t, &out, sandboxes, nil)
-
-	if err := app.Run(t.Context(), []string{"list", "--all"}); err != nil {
-		t.Fatalf("list --all: %v", err)
-	}
-
-	lines := strings.Split(strings.TrimSpace(out.String()), "\n")
-	if !strings.Contains(lines[1], "on-failure 5/5 gave up") || strings.Contains(lines[1], "on-oom") {
-		t.Errorf("the line %q does not show the policy, the starts spent and the give-up alone", lines[1])
-	}
-	if !strings.Contains(lines[2], "always") || strings.Contains(lines[2], "always 0") {
-		t.Errorf("the line %q does not show a policy that has not started again yet as the policy alone", lines[2])
+	if got := strings.Fields(lines[2]); !slices.Contains(got, "-") || slices.Contains(got, "0/0") {
+		t.Errorf("the line %q shows processes for a sandbox that has none", lines[2])
 	}
 }
 
@@ -287,7 +222,7 @@ func TestListPrintsNoHealthColumn(t *testing.T) {
 	}
 
 	header := strings.Fields(strings.SplitN(out.String(), "\n", 2)[0])
-	want := []string{"ID", "NAME", "IMAGE", "STATE", "UPTIME", "RESTART", "POLICY"}
+	want := []string{"ID", "NAME", "IMAGE", "STATE", "UPTIME", "PROCESSES", "POLICY"}
 	if !slices.Equal(header, want) {
 		t.Errorf("the header is %q, want %q", header, want)
 	}

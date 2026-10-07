@@ -57,11 +57,13 @@ type Lifecycle interface {
 	DeleteFile(ctx context.Context, ref, path string, recursive bool) error
 	ReadArchive(ctx context.Context, ref, path string) (models.FileStat, io.ReadCloser, error)
 	WriteArchive(ctx context.Context, ref string, req sandbox.ArchiveWrite, src io.Reader) error
-	Logs(ctx context.Context, ref string, w io.Writer) error
-	FollowLogs(ctx context.Context, ref string, w io.Writer) (string, error)
-	AttachApp(ctx context.Context, ref string, open func() (io.Writer, error)) (models.AppExit, error)
-	WaitApp(ctx context.Context, ref string) (models.AppExit, error)
-	StopApp(ctx context.Context, ref string, force bool) error
+	Run(ctx context.Context, ref string, req sandbox.RunRequest) (models.Process, error)
+	Processes(ctx context.Context, ref string) ([]models.Process, error)
+	Process(ctx context.Context, ref, name string) (models.Process, error)
+	Kill(ctx context.Context, ref, name string, force bool) (models.Process, error)
+	Logs(ctx context.Context, ref, name string, w io.Writer) error
+	FollowLogs(ctx context.Context, ref, name string, w io.Writer) (string, error)
+	AttachProcess(ctx context.Context, ref, name string, open func() (io.Writer, error)) (models.Process, error)
 	GrantSecret(ctx context.Context, ref, name string) (models.Sandbox, error)
 	UngrantSecret(ctx context.Context, ref, name string) (models.Sandbox, error)
 	AttachPolicy(ctx context.Context, ref, name string) (models.Sandbox, error)
@@ -235,9 +237,12 @@ func (h *Handler) routeTable() []routeEntry {
 		public("POST", "/v0/sandboxes/{id}/mkdir", Exec, operation("files", "make-dir", "Make a directory", 0), typed(h.makeDir)),
 		public("PUT", "/v0/sandboxes/{id}/archive", Exec, operation("files", "write-archive", "Copy a directory into a running sandbox", http.StatusNoContent), raw[archiveInput](h.putArchive, describeWriteArchive)),
 		public("GET", "/v0/sandboxes/{id}/archive", Exec, operation("files", "read-archive", "Copy a directory out of a running sandbox", 0), raw[filePath](h.getArchive, describeReadArchive)),
-		public("GET", "/v0/sandboxes/{id}/logs", SandboxRead, operation("sandboxes", "get-sandbox-logs", "Read or follow the output of a sandbox", 0), raw[followInput](h.sandboxLogs, describeLogs)),
-		public("GET", "/v0/sandboxes/{id}/attach", SandboxRead, operation("app", "attach-app", "Wait for or attach to the app of a run", 0), raw[sandboxPath](h.attachApp, describeAttachApp)),
-		public("POST", "/v0/sandboxes/{id}/app/stop", SandboxWrite, operation("app", "stop-app", "Stop the app of a run", 0), typed(h.stopApp)),
+		public("POST", "/v0/sandboxes/{id}/processes", Exec, operation("processes", "run-process", "Run a named process under supervision in a running sandbox", http.StatusCreated), typed(h.runProcess)),
+		public("GET", "/v0/sandboxes/{id}/processes", SandboxRead, operation("processes", "list-processes", "List the processes of a sandbox", 0), typed(h.listProcesses)),
+		public("GET", "/v0/sandboxes/{id}/processes/{name}", SandboxRead, operation("processes", "get-process", "Read a process", 0), typed(h.getProcess)),
+		public("POST", "/v0/sandboxes/{id}/processes/{name}/kill", Exec, operation("processes", "kill-process", "End a process and cancel its restarts", 0), typed(h.killProcess)),
+		public("GET", "/v0/sandboxes/{id}/processes/{name}/logs", SandboxRead, operation("processes", "get-process-logs", "Read or follow the output of a process", 0), raw[processLogsInput](h.processLogs, describeLogs)),
+		public("GET", "/v0/sandboxes/{id}/processes/{name}/attach", SandboxRead, operation("processes", "attach-process", "Wait for or attach to a process until its restart policy ends it", 0), raw[processPath](h.attachProcess, describeAttachProcess)),
 		public("GET", "/v0/sandboxes/{id}/egress-log", SandboxRead, operation("sandboxes", "get-sandbox-egress-log", "Read or follow the egress decisions of a sandbox", 0), raw[followInput](h.sandboxEgressLog, describeEgressLog)),
 		public("POST", "/v0/sandboxes/{id}/secrets/{name}", Secret, operation("sandboxes", "grant-secret", "Grant a secret to a sandbox", 0), typed(h.grantSecret)),
 		public("DELETE", "/v0/sandboxes/{id}/secrets/{name}", Secret, operation("sandboxes", "ungrant-secret", "Ungrant a secret from a sandbox", 0), typed(h.ungrantSecret)),
@@ -311,7 +316,7 @@ type sandboxesResponse struct {
 
 // ErrorObject is a code for a program, a line for a human, the holders an in_use names, and the shell code a command_not_started carries.
 type ErrorObject struct {
-	Code     models.Code `json:"code" doc:"What a program matches on: invalid_request, body_too_large, not_found, sandbox_not_running, sandbox_not_stopped, sandbox_not_paused, sandbox_live, sandbox_failed, no_checkpoint, unsupported, in_use, name_taken, exec_exited, exec_running, exec_limit, no_app, app_ended, unauthorized, forbidden, timeout, command_not_started or internal. A later daemon may add a code, so a client must take one it does not know."`
+	Code     models.Code `json:"code" doc:"What a program matches on: invalid_request, body_too_large, not_found, sandbox_not_running, sandbox_not_stopped, sandbox_not_paused, sandbox_live, sandbox_failed, no_checkpoint, unsupported, in_use, name_taken, exec_exited, exec_running, exec_limit, no_process, process_ended, process_limit, unauthorized, forbidden, timeout, command_not_started or internal. A later daemon may add a code, so a client must take one it does not know."`
 	Message  string      `json:"message" doc:"A line for a human; match on code, never on this text."`
 	Holders  []string    `json:"holders,omitempty" doc:"The sandboxes or snapshots that hold the resource, with in_use."`
 	ExitCode int         `json:"exit_code,omitempty" doc:"The exit code of the command that never started, with command_not_started."`

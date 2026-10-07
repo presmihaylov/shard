@@ -110,7 +110,8 @@ func Run(ctx context.Context, cfg Config) error {
 	life := &lifecycle{deps: d, base: ctx}
 	self := process{deps: d, startedAt: time.Now().UTC().Truncate(time.Second)}
 
-	tasks := []Task{apiTask{deps: d, lifecycle: life, process: self}, proxyTask{deps: d}, dnsTask{deps: d}, egressLogTailer{deps: d}, heldLogRotation{deps: d}, liveness{deps: d, lifecycle: life, interval: livenessInterval}, hostFirewall{deps: d, interval: firewallInterval}, restartPolicy{deps: d, lifecycle: life, interval: restartInterval}}
+	proxyUp, dnsUp, firewallUp := newGate(), newGate(), newGate()
+	tasks := []Task{apiTask{deps: d, lifecycle: life, process: self}, proxyTask{deps: d, up: proxyUp}, dnsTask{deps: d, up: dnsUp}, egressLogTailer{deps: d}, heldLogRotation{deps: d}, liveness{deps: d, lifecycle: life, interval: livenessInterval}, hostFirewall{deps: d, interval: firewallInterval, up: firewallUp}, processTick{deps: d, lifecycle: life, interval: processInterval}, autostart{deps: d, lifecycle: life, after: []*gate{proxyUp, dnsUp, firewallUp}, wait: autostartWait}}
 	dmn := New(cfg.Root, cfg.Out, append(tasks, extra...)...)
 	// vz has no bridge, and a daemon that is not root cannot write the host's netfilter, so neither has the table to share.
 	if cfg.Provider != vzvm.Name && os.Geteuid() == 0 {
@@ -329,14 +330,14 @@ func (l *lifecycle) service() (*sandbox.Service, error) {
 
 // An uncached create runs under the daemon context so a disconnected client does not cancel it.
 func (l *lifecycle) Create(ctx context.Context, req sandbox.CreateRequest) (models.Sandbox, error) {
-	sb, _, err := l.create(ctx, req, false)
+	sb, _, err := l.create(ctx, req)
 
 	return sb, err
 }
 
 // CreateAndWait holds the create it starts, so a background one the request was at fault for answers that refusal as a cached one does.
 func (l *lifecycle) CreateAndWait(ctx context.Context, req sandbox.CreateRequest) (models.Sandbox, error) {
-	sb, c, err := l.create(ctx, req, true)
+	sb, c, err := l.create(ctx, req)
 	if err != nil || c == nil {
 		return sb, err
 	}
@@ -347,11 +348,8 @@ func (l *lifecycle) CreateAndWait(ctx context.Context, req sandbox.CreateRequest
 		return models.Sandbox{}, ctx.Err()
 	}
 
-	// A refusal answers the caller, and so does a removal that left its sandbox; any other failure leaves the failed record to read.
-	_, invalid := errors.AsType[*sandbox.RequestError](c.err)
-	_, refused := errors.AsType[*models.CommandNotStartedError](c.err)
-	_, notRemoved := errors.AsType[*sandbox.NotRemovedError](c.err)
-	if invalid || refused || notRemoved {
+	// A refusal answers the caller; any other failure leaves the failed record to read.
+	if _, invalid := errors.AsType[*sandbox.RequestError](c.err); invalid {
 		return models.Sandbox{}, c.err
 	}
 
@@ -364,7 +362,7 @@ func (l *lifecycle) CreateAndWait(ctx context.Context, req sandbox.CreateRequest
 }
 
 // create answers no creation when the create finished here, and the one it left running in the background otherwise.
-func (l *lifecycle) create(ctx context.Context, req sandbox.CreateRequest, waited bool) (models.Sandbox, *creation, error) {
+func (l *lifecycle) create(ctx context.Context, req sandbox.CreateRequest) (models.Sandbox, *creation, error) {
 	svc, err := l.service()
 	if err != nil {
 		return models.Sandbox{}, nil, err
@@ -391,7 +389,6 @@ func (l *lifecycle) create(ctx context.Context, req sandbox.CreateRequest, waite
 	}
 
 	if cached {
-		// A caller that hangs up never leaves its started app behind a pending record.
 		sb, err := svc.Create(detached, req)
 
 		return sb, nil, err
@@ -411,12 +408,7 @@ func (l *lifecycle) create(ctx context.Context, req sandbox.CreateRequest, waite
 	l.mu.Unlock()
 
 	l.wg.Go(func() {
-		complete := svc.Complete
-		// Only a waited create owns the refusal, so only it removes the sandbox; an unwaited one keeps the failed record to read.
-		if waited {
-			complete = svc.Settle
-		}
-		c.err = complete(detached, sb.ID, req)
+		c.err = svc.Complete(detached, sb.ID, req)
 
 		l.mu.Lock()
 		delete(l.pending, sb.ID)
@@ -731,54 +723,73 @@ func (l *lifecycle) WriteArchive(ctx context.Context, ref string, req sandbox.Ar
 	return svc.WriteArchive(ctx, ref, req, src)
 }
 
-func (l *lifecycle) Logs(ctx context.Context, ref string, w io.Writer) error {
+func (l *lifecycle) Run(ctx context.Context, ref string, req sandbox.RunRequest) (models.Process, error) {
+	svc, err := l.service()
+	if err != nil {
+		return models.Process{}, err
+	}
+
+	return svc.Run(ctx, ref, req)
+}
+
+func (l *lifecycle) Processes(ctx context.Context, ref string) ([]models.Process, error) {
+	svc, err := l.service()
+	if err != nil {
+		return nil, err
+	}
+
+	return svc.Processes(ctx, ref)
+}
+
+func (l *lifecycle) Process(ctx context.Context, ref, name string) (models.Process, error) {
+	svc, err := l.service()
+	if err != nil {
+		return models.Process{}, err
+	}
+
+	return svc.Process(ctx, ref, name)
+}
+
+func (l *lifecycle) Kill(ctx context.Context, ref, name string, force bool) (models.Process, error) {
+	svc, err := l.service()
+	if err != nil {
+		return models.Process{}, err
+	}
+
+	return svc.Kill(ctx, ref, name, force)
+}
+
+func (l *lifecycle) Logs(ctx context.Context, ref, name string, w io.Writer) error {
 	svc, err := l.service()
 	if err != nil {
 		return err
 	}
 
-	return svc.Logs(ctx, ref, w)
+	return svc.Logs(ctx, ref, name, w)
 }
 
-func (l *lifecycle) FollowLogs(ctx context.Context, ref string, w io.Writer) (string, error) {
+func (l *lifecycle) FollowLogs(ctx context.Context, ref, name string, w io.Writer) (string, error) {
 	svc, err := l.service()
 	if err != nil {
 		return "", err
 	}
 
-	return svc.FollowLogs(ctx, ref, w)
+	return svc.FollowLogs(ctx, ref, name, w)
 }
 
-func (l *lifecycle) AttachApp(ctx context.Context, ref string, open func() (io.Writer, error)) (models.AppExit, error) {
+func (l *lifecycle) AttachProcess(ctx context.Context, ref, name string, open func() (io.Writer, error)) (models.Process, error) {
 	svc, err := l.service()
 	if err != nil {
-		return models.AppExit{}, err
+		return models.Process{}, err
 	}
 
-	return svc.AttachApp(ctx, ref, open)
-}
-
-func (l *lifecycle) WaitApp(ctx context.Context, ref string) (models.AppExit, error) {
-	svc, err := l.service()
-	if err != nil {
-		return models.AppExit{}, err
-	}
-
-	return svc.WaitApp(ctx, ref)
-}
-
-func (l *lifecycle) StopApp(ctx context.Context, ref string, force bool) error {
-	svc, err := l.service()
-	if err != nil {
-		return err
-	}
-
-	return svc.StopApp(ctx, ref, force)
+	return svc.AttachProcess(ctx, ref, name, open)
 }
 
 // proxyTask runs the egress proxy every fronted sandbox's web traffic is turned to, on the bridge gateway.
 type proxyTask struct {
 	deps *deps
+	up   *gate
 }
 
 func (proxyTask) Name() string { return "proxy" }
@@ -845,6 +856,7 @@ func (t proxyTask) Run(ctx context.Context) error {
 	}
 
 	logger.Printf("proxy listening on %s, plain %d and tls %d", hostNet.Gateway(), proxy.PlainPort, proxy.TLSPort)
+	t.up.open()
 
 	return server.Serve(ctx, plain, secure)
 }
@@ -852,6 +864,7 @@ func (t proxyTask) Run(ctx context.Context) error {
 // dnsTask runs the resolver every policy sandbox's lookups are turned to, on the bridge gateway beside the proxy.
 type dnsTask struct {
 	deps *deps
+	up   *gate
 }
 
 func (dnsTask) Name() string { return "dns" }
@@ -918,6 +931,7 @@ func (t dnsTask) Run(ctx context.Context) error {
 	}
 
 	logger.Printf("dns resolver listening on %s, udp and tcp %d", hostNet.Gateway(), dns.Port)
+	t.up.open()
 
 	return server.Serve(ctx, udp, tcp)
 }

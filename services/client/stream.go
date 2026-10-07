@@ -381,17 +381,17 @@ func (c *Client) ResizeExec(ctx context.Context, ref, execID string, size sandbo
 	return nil
 }
 
-// Logs writes what the entrypoint wrote into w. A follow has no bound of its own: it ends when the
-// sandbox stops or is removed, or when the caller's context does.
-func (c *Client) Logs(ctx context.Context, ref string, follow bool, w io.Writer) error {
-	path := "/v0/sandboxes/" + url.PathEscape(ref) + "/logs"
+// Logs writes what one process wrote into w. A follow has no bound of its own: it ends when the
+// process ends, the sandbox stops or is removed, or the caller's context does.
+func (c *Client) Logs(ctx context.Context, ref, name string, follow bool, w io.Writer) error {
+	path := processPath(ref, name) + "/logs"
 	if follow {
-		return c.followLogs(ctx, ref, path+"?follow=true", w)
+		return c.followLogs(ctx, ref, name, path+"?follow=true", w)
 	}
 
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, c.endpoint("http", path), nil) //nolint:gosec // G704: the ref only lands in the path; the dialer goes to the socket whatever the URL says
 	if err != nil {
-		return fmt.Errorf("build the request for the output of sandbox %s: %w", ref, err)
+		return fmt.Errorf("build the request for the output of process %s of sandbox %s: %w", name, ref, err)
 	}
 	c.authorize(req.Header)
 
@@ -409,22 +409,23 @@ func (c *Client) Logs(ctx context.Context, ref string, follow bool, w io.Writer)
 	if resp.StatusCode >= http.StatusBadRequest {
 		answer, err := io.ReadAll(resp.Body)
 		if err != nil {
-			return fmt.Errorf("read the refusal of the output of sandbox %s: %w", ref, err)
+			return fmt.Errorf("read the refusal of the output of process %s of sandbox %s: %w", name, ref, err)
 		}
 
 		return missing(ref, c.decodeError(resp.StatusCode, answer))
 	}
 
 	if _, err := io.Copy(w, resp.Body); err != nil {
-		return fmt.Errorf("read the output of sandbox %s: %w", ref, err)
+		return fmt.Errorf("read the output of process %s of sandbox %s: %w", name, ref, err)
 	}
 
 	return nil
 }
 
 // followLogs prints the output as the daemon sends it and ends on the end message, whatever its reason.
-func (c *Client) followLogs(ctx context.Context, ref, path string, w io.Writer) (err error) {
-	conn, err := c.open(ctx, path, "the output of sandbox "+ref)
+func (c *Client) followLogs(ctx context.Context, ref, name, path string, w io.Writer) (err error) {
+	what := "the output of process " + name + " of sandbox " + ref
+	conn, err := c.open(ctx, path, what)
 	if err != nil && ctx.Err() != nil {
 		return nil
 	}
@@ -440,7 +441,7 @@ func (c *Client) followLogs(ctx context.Context, ref, path string, w io.Writer) 
 			return nil
 		}
 		if err != nil {
-			return dropped("follow the output of sandbox "+ref, err)
+			return dropped("follow "+what, err)
 		}
 
 		switch stream {

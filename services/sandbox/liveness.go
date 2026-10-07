@@ -17,7 +17,7 @@ const DiedReason = "the sandbox process died"
 // SupervisorFailedReason is what a record says once shard-init itself died, followed by the reason it gave.
 const SupervisorFailedReason = "shard-init failed"
 
-// Liveness records each entrypoint exit, and stops a sandbox whose process is gone, with the OOM as its reason if there was one.
+// Liveness stops a sandbox whose process is gone, with the OOM as its reason if there was one.
 func (s *Service) Liveness(ctx context.Context, sandboxes []models.Sandbox, report func(string)) error {
 	var errs []error
 	for _, sb := range sandboxes {
@@ -95,9 +95,9 @@ func (s *Service) reconcileLive(ctx context.Context, sb models.Sandbox, report f
 		}
 	}
 
-	// The sandbox outlives its entrypoint, so a live one that lost its entrypoint stays running with the exit noted.
+	// The sandbox outlives its processes, whose ends the process tick records.
 	if status.Alive() {
-		return s.recordEntrypointExit(ctx, sb.ID, current, report)
+		return nil
 	}
 	if status.OOMKilled {
 		return s.recordDied(sb.ID, OOMKilledReason, report)
@@ -122,44 +122,6 @@ func (s *Service) probeLive(ctx context.Context, id string, report func(string))
 	}
 
 	return status, true, nil
-}
-
-// recordEntrypointExit writes the entrypoint's exit onto a still-running record, so ls tells a crash from a
-// clean exit and the sandbox stays up for another exec. It is idempotent: a recorded exit is left alone.
-func (s *Service) recordEntrypointExit(ctx context.Context, id string, sb models.Sandbox, report func(string)) error {
-	exit, err := s.cfg.Provider.ExitStatus(ctx, id)
-	// Log and continue, as Pres decided on 2026-10-03: a failed task backs off liveness for every sandbox, and only this guest loses its own exit.
-	if errors.Is(err, models.ErrExitFileTooLarge) {
-		report(fmt.Sprintf("sandbox %s: %v; its entrypoint exit is unknown until the next one", id, err))
-		return nil
-	}
-	if errors.Is(err, models.ErrExitChannelReplaced) {
-		return s.recordExitChannel(id, sb, err.Error(), report)
-	}
-	if err != nil {
-		return fmt.Errorf("read the exit of sandbox %s: %w", id, err)
-	}
-	if err := s.recordExitChannel(id, sb, "", report); err != nil {
-		return err
-	}
-	if exit == nil {
-		return nil
-	}
-	if sb.ExitStatus != nil && *sb.ExitStatus == *exit {
-		return nil
-	}
-
-	err = s.cfg.Repo.Update(id, func(rec *models.Sandbox) error {
-		rec.ExitStatus = exit
-
-		return nil
-	})
-	if err != nil {
-		return fmt.Errorf("sandbox %s entrypoint exited but its record was not updated: %w", id, err)
-	}
-	report(fmt.Sprintf("sandbox %s entrypoint exited (code %d, signal %d): recorded, the sandbox stays running", id, exit.Code, exit.Signal))
-
-	return nil
 }
 
 // noteUnresponsive records what a verb's own probe found, unless a verb holds the sandbox or its run changed since; the next tick asks then.
@@ -227,7 +189,7 @@ func (s *Service) recordAnswered(id string, status models.Status, report func(st
 	return nil
 }
 
-// recordExitChannel keeps on the record why the exit cannot be read, so inspect names it, and reports each change once.
+// recordExitChannel keeps on the record why the process table cannot be read, so inspect names it, and reports each change once.
 func (s *Service) recordExitChannel(id string, sb models.Sandbox, why string, report func(string)) error {
 	if sb.ExitChannel == why {
 		return nil
@@ -245,7 +207,7 @@ func (s *Service) recordExitChannel(id string, sb models.Sandbox, why string, re
 		report(fmt.Sprintf("sandbox %s: its exit channel reads again", id))
 		return nil
 	}
-	report(fmt.Sprintf("sandbox %s: %s; its entrypoint exit is unknown until the channel reads again", id, why))
+	report(fmt.Sprintf("sandbox %s: %s; its processes are unknown until the channel reads again", id, why))
 
 	return nil
 }
@@ -257,6 +219,7 @@ func (s *Service) recordDied(id, reason string, report func(string)) error {
 		rec.PID = 0
 		rec.StoppedReason = reason
 		rec.UnresponsiveReason = ""
+		rec.Processes = endProcesses(rec.Processes)
 
 		return nil
 	})
@@ -269,12 +232,13 @@ func (s *Service) recordDied(id, reason string, report func(string)) error {
 	return nil
 }
 
-// recordSupervisorFailed stops the record of a sandbox whose shard-init died, with its exit and the reason it gave.
+// recordSupervisorFailed stops the record of a sandbox whose shard-init died, with the reason it gave.
 func (s *Service) recordSupervisorFailed(id, why string, report func(string)) error {
 	err := s.cfg.Repo.Update(id, func(rec *models.Sandbox) error {
 		rec.State = models.StateStopped
 		rec.PID = 0
 		rec.UnresponsiveReason = ""
+		rec.Processes = endProcesses(rec.Processes)
 		supervisorFailed(rec, why)
 
 		return nil
@@ -287,8 +251,7 @@ func (s *Service) recordSupervisorFailed(id, why string, report func(string)) er
 	return nil
 }
 
-// supervisorFailed makes shard-init's death the record's exit, as runsc wait reads its 125 on gVisor.
+// supervisorFailed names shard-init's death as the reason the sandbox stopped.
 func supervisorFailed(rec *models.Sandbox, why string) {
 	rec.StoppedReason = SupervisorFailedReason + ": " + why
-	rec.ExitStatus = &models.ExitStatus{Code: models.SupervisorFailedExitCode}
 }

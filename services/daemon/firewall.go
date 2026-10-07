@@ -10,6 +10,7 @@ import (
 type hostFirewall struct {
 	deps     *deps
 	interval time.Duration
+	up       *gate
 }
 
 const firewallInterval = 5 * time.Second
@@ -28,6 +29,8 @@ func (t hostFirewall) Run(ctx context.Context) error {
 	// A VM host has no bridge, so the host firewall never sees a sandbox.
 	opener, ok := hostNet.(firewallOpener)
 	if !ok {
+		t.up.open()
+
 		return nil
 	}
 
@@ -37,13 +40,18 @@ func (t hostFirewall) Run(ctx context.Context) error {
 	ticker := time.NewTicker(t.interval)
 	defer ticker.Stop()
 
+	// The first pass runs at once, since the autostart waits on it before any sandbox starts.
 	for {
+		err := opener.OpenFirewall(ctx)
+		failures.tick(ctx, err)
+		if err == nil {
+			t.up.open()
+		}
+
 		select {
 		case <-ctx.Done():
 			return nil
 		case <-ticker.C:
 		}
-
-		failures.tick(ctx, opener.OpenFirewall(ctx))
 	}
 }

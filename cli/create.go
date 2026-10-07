@@ -105,7 +105,7 @@ func parseCreate(args []string) (sandbox.CreateRequest, error) {
 
 	rest := flags.Args()
 	if len(rest) > 1 {
-		return sandbox.CreateRequest{}, errors.New("create takes no command: shard " + helps["run"].usage[0])
+		return sandbox.CreateRequest{}, errors.New("create takes no command; start one in the sandbox with shard " + helps["run"].usage[0])
 	}
 	if req.Snapshot != "" && len(rest) == 1 {
 		return sandbox.CreateRequest{}, fmt.Errorf("create takes an image or --snapshot, never both: snapshot %s already names its image", req.Snapshot)
@@ -122,7 +122,7 @@ func parseCreate(args []string) (sandbox.CreateRequest, error) {
 	return req, nil
 }
 
-// sandboxFlags are the flags create and run share: everything about the sandbox, nothing about an app.
+// sandboxFlags are create's flags for the sandbox itself, which every command in it inherits.
 func sandboxFlags(flags *flag.FlagSet, req *sandbox.CreateRequest) {
 	flags.StringVar(&req.Name, "name", "", "")
 	flags.Var((*envList)(&req.Env), "env", "")
@@ -172,10 +172,10 @@ func checkSandbox(flags *flag.FlagSet, req sandbox.CreateRequest) error {
 	return nil
 }
 
-// restartFlagNames are the flags of the restart policy, which only run takes, because only a run has an app.
+// restartFlagNames are the flags of the restart policy, which only run takes, because only a run starts a supervised process.
 var restartFlagNames = []string{"restart", "restart-retries", "restart-backoff"}
 
-// runFlags takes the restart flags on a verb that has no app, and keeps the refusal that points to run.
+// runFlags takes the restart flags on a verb that supervises nothing, and keeps the refusal that points to run.
 func runFlags(flags *flag.FlagSet, refused *error) {
 	for _, name := range restartFlagNames {
 		flags.Var(runFlag{name: name, refusal: refused}, name, "")
@@ -194,7 +194,7 @@ func (r runFlag) refused() {}
 
 func (r runFlag) Set(value string) error {
 	if *r.refusal == nil {
-		*r.refusal = fmt.Errorf("--%s is a run flag: shard run --%s %s IMAGE COMMAND", r.name, r.name, value)
+		*r.refusal = fmt.Errorf("--%s is a run flag: shard run SANDBOX --%s %s -- COMMAND", r.name, r.name, value)
 	}
 
 	return nil
@@ -207,7 +207,7 @@ type restartFlags struct {
 	backoff time.Duration
 }
 
-// request turns the flags into the create body's policy, or nil when none names one.
+// request turns the flags into the run body's policy, or nil for the daemon's unless-stopped.
 func (r restartFlags) request() (*models.RestartSpec, error) {
 	if r.policy == "" {
 		if r.retries != 0 || r.backoff != 0 {
@@ -220,8 +220,8 @@ func (r restartFlags) request() (*models.RestartSpec, error) {
 	if r.retries < 0 {
 		return nil, fmt.Errorf("--restart-retries is a count and cannot be negative, got %d", r.retries)
 	}
-	if models.RestartPolicy(r.policy) == models.RestartAlways && r.retries != 0 {
-		return nil, errors.New("--restart always never gives up, so it takes no --restart-retries")
+	if models.RestartPolicy(r.policy) != models.RestartOnFailure && r.retries != 0 {
+		return nil, fmt.Errorf("--restart-retries is only for on-failure, the one policy that gives up, got --restart %s", r.policy)
 	}
 
 	spec := &models.RestartSpec{Policy: models.RestartPolicy(r.policy), Retries: r.retries}

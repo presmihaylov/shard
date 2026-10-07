@@ -45,7 +45,7 @@ shard create --name worker --memory 512MiB --secret API_TOKEN python:3.12
 | `--disk <size>` | disk limit; 0 uses the default |
 | `--snapshot <id\|name>` | create from a filesystem snapshot instead of an image |
 
-The sandbox starts without a main command. Use `shard exec` to execute commands or `shard run` to create one with a main command. The sandbox stays active until stopped.
+The sandbox starts with no processes. Use `shard run` to start a supervised process in it, or `shard exec` for a one-off command. The sandbox stays active until stopped.
 
 **Names**
 
@@ -65,72 +65,57 @@ Use sizes such as 512MiB or 2GiB, and whole numbers for CPUs.
 
 ## shard run
 
-Create a sandbox and run a command in the foreground.
+Start a supervised process in a running sandbox.
 
 ```text
-shard run [OPTIONS] IMAGE COMMAND [ARGS...]
+shard run SANDBOX [OPTIONS] [--] COMMAND [ARGS...]
 ```
 
 **Examples**
 
 ```sh
-shard run --name web --memory 512MiB python:3.12 python -m http.server
-shard run --detach --name web --memory 512MiB --restart on-failure python:3.12 python -m http.server
+shard run web --name api -- python -m http.server
+shard run web --name db --restart on-failure --restart-retries 5 -- pg_ctlcluster 16 main start --foreground
+shard run web --restart no --attach -- python script.py
 ```
 
 **Arguments**
 
 | Argument | Description |
 | --- | --- |
-| `IMAGE` | image to use; downloaded if needed |
-| `COMMAND` | main command to execute |
+| `SANDBOX` | sandbox ID or name |
+| `COMMAND` | command to execute |
 | `ARGS` | arguments for the command |
 
 **Options**
 
 | Option | Description | Default |
 | --- | --- | --- |
-| `--name <name>` | sandbox name to use instead of its ID |  |
-| `--env KEY=VALUE` | set an environment variable; repeatable |  |
-| `--secret <NAME>` | let the sandbox use a stored secret; repeatable |  |
-| `--policy <name>` | outbound network policy |  |
-| `--workdir <dir>` | default directory for commands |  |
-| `--user <user>` | default user for commands |  |
-| `--memory <size>` | memory limit; 512MiB by default on Firecracker and vz, none on gVisor, runc and Sysbox |  |
-| `--vcpus <n>` | CPU count; 0 uses all available host CPUs, up to 32 on Firecracker |  |
-| `--disk <size>` | disk limit; 0 uses the default |  |
-| `--restart <policy>` | restart policy: no, on-failure or always |  |
-| `--restart-retries <n>` | maximum restarts; default unlimited |  |
+| `--name <name>` | process name; COMMAND's base name by default |  |
+| `-e, --env KEY=VALUE` | set an environment variable; repeatable |  |
+| `-w, --workdir <dir>` | directory for this process |  |
+| `-u, --user <user>` | user for this process |  |
+| `--restart <policy>` | restart policy | `unless-stopped` |
+| `--restart-retries <n>` | restart limit for on-failure; default unlimited |  |
 | `--restart-backoff <duration>` | initial restart delay, up to 1m | `1s` |
-| `-d, --detach` | run in the background and print the sandbox ID |  |
+| `--attach` | stay for the output and exit with its code |  |
 
-The specified command replaces the image's default command. Command output appears in your terminal unless you use `--detach`. The sandbox stays active after the command exits.
+Prints the process name and returns; the process runs on in the background. A sandbox runs up to 16 processes, each under its own name. A run of an ended name replaces it, and its log keeps the earlier output.
 
-Press Ctrl+C to stop the command and cancel its restarts. Use `shard stop` to stop the sandbox.
-
-**Names**
-
-Use lower-case letters, digits, hyphens and underscores.
-
-**Secrets**
-
-Store a secret with `shard secret set`, then select it with `--secret`. Commands receive `$NAME` with a placeholder instead of the secret value. In HTTPS request headers sent to approved destinations, shard replaces the placeholder with the secret. The secret value stays outside the sandbox.
-
-**Network access**
-
-Without a policy, the sandbox can access the internet but not private networks. Use `shard policy attach` to assign a policy after creation.
+With `--attach`, Ctrl+C detaches and leaves the process running. It exits with the process's last exit code, or 128 plus the ending signal. An exit code of 125 means shard itself failed.
 
 **Restarts**
 
-- `no`: do not restart the command (default)
+- `no`: do not restart the process
 - `on-failure`: restart after a nonzero exit
-- `always`: restart after any exit
+- `always`: restart after any exit, and whenever the sandbox starts
+- `unless-stopped`: like always, until `shard kill` ends it (default)
 
-`--restart-retries` applies to on-failure only. Restart delays double after each restart, up to 60s.
+`--restart-retries` applies to on-failure only. Restart delays double after each restart, up to 60s. When the daemon starts, it starts the sandboxes these policies bring back, except unless-stopped ones in a sandbox that `shard stop` stopped.
 
-**Resource limits**
+**Names**
 
-Use sizes such as 512MiB or 2GiB, and whole numbers for CPUs.
+Use up to 32 lower-case letters, digits, dots, hyphens and underscores.
 
 ## shard exec
 
@@ -224,23 +209,23 @@ shard list -q
 | `-q, --quiet` | print only sandbox IDs, one per line |  |
 | `--format <format>` | output format: json or table | `table` |
 
-Table columns: ID, NAME, IMAGE, STATE, UPTIME, RESTART and POLICY.
+Table columns: ID, NAME, IMAGE, STATE, UPTIME, PROCESSES and POLICY. PROCESSES counts the running processes of all the sandbox has.
 
 Use `--quiet` to pass the IDs to another command, as in `shard stop $(shard list -q)`. `--quiet` cannot be combined with `--format`.
 
-## shard logs
+## shard ps
 
-Show output from the sandbox's main command.
+List the processes of a sandbox.
 
 ```text
-shard logs [OPTIONS] SANDBOX
+shard ps [OPTIONS] SANDBOX
 ```
 
 **Examples**
 
 ```sh
-shard logs web
-shard logs --follow web
+shard ps web
+shard ps --format json web
 ```
 
 **Arguments**
@@ -251,9 +236,71 @@ shard logs --follow web
 
 **Options**
 
+| Option | Description | Default |
+| --- | --- | --- |
+| `--format <format>` | output format: json or table | `table` |
+
+Table columns: NAME, STATE, RESTARTS, EXIT, POLICY and COMMAND. A state is running, restarting, exited, killed, gave-up or stopped.
+
+## shard logs
+
+Show output from a process.
+
+```text
+shard logs SANDBOX [NAME] [OPTIONS]
+```
+
+**Examples**
+
+```sh
+shard logs web
+shard logs web api -f
+```
+
+**Arguments**
+
+| Argument | Description |
+| --- | --- |
+| `SANDBOX` | sandbox ID or name |
+| `NAME` | process name |
+
+**Options**
+
 | Option | Description |
 | --- | --- |
-| `-f, --follow` | show new output until the sandbox stops |
+| `-f, --follow` | show new output until the process ends or the sandbox stops |
+
+Without a NAME, shows the sandbox's only process; with several, name one. The output of every run of the process is kept, restarts included.
+
+## shard kill
+
+Stop a process and cancel its restarts.
+
+```text
+shard kill SANDBOX NAME [OPTIONS]
+```
+
+**Examples**
+
+```sh
+shard kill web api
+shard kill web api --force
+```
+
+**Arguments**
+
+| Argument | Description |
+| --- | --- |
+| `SANDBOX` | sandbox ID or name |
+| `NAME` | process name |
+
+**Options**
+
+| Option | Description |
+| --- | --- |
+| `--force` | kill at once instead of asking the process to exit |
+
+The process has up to 30 seconds to exit before it is terminated. The sandbox stays running, and only an always policy brings the process back. Use `shard run` with the same name to start it again.
 
 ## shard inspect
 
@@ -304,7 +351,7 @@ shard stop $(shard list -q)
 | --- | --- |
 | `SANDBOX` | sandbox ID or name; repeatable |
 
-The main command has up to 30 seconds to exit before it is terminated. Files remain available, but memory and process state are lost.
+Each process has up to 30 seconds to exit before it is terminated. Files remain available, but memory and process state are lost.
 
 Use `shard start` to start the sandbox again. Use `shard snapshot create` to save its files as a snapshot.
 
@@ -330,7 +377,7 @@ shard start web
 | --- | --- |
 | `SANDBOX` | sandbox ID or name |
 
-If the sandbox has a main command, it starts from the beginning.
+Processes with the always or unless-stopped policy start again, except those killed.
 
 ## shard remove
 

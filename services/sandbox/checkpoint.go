@@ -222,7 +222,7 @@ func (s *Service) settleLivePause(ctx context.Context, id string, status models.
 	return nil
 }
 
-// Resume continues the run the pause froze, so the record keeps any exit its entrypoint had and the checkpoint stays.
+// Resume continues the run the pause froze, so the record keeps its processes and the checkpoint stays.
 func (s *Service) Resume(ctx context.Context, ref string) (models.Sandbox, error) {
 	if err := requireVerb(s.cfg.Provider, models.VerbResume); err != nil {
 		return models.Sandbox{}, err
@@ -301,7 +301,7 @@ func (s *Service) Fork(ctx context.Context, ref string, req CopyRequest) (sb mod
 
 	var td Teardown
 
-	// The capture holds the source's run, so an entrypoint that had exited before it has in the fork too.
+	// The capture holds the source's run, so the fork's guest runs the source's processes; its logs start empty.
 	claim, err := s.claimCopy(ctx, &td, req, models.Sandbox{
 		ForkedFrom: source,
 		Image:      src.Image,
@@ -309,9 +309,7 @@ func (s *Service) Fork(ctx context.Context, ref string, req CopyRequest) (sb mod
 		Resources:  src.Resources,
 		Secrets:    slices.Clone(src.Secrets),
 		Policy:     src.Policy,
-		Command:    slices.Clone(src.Command),
-		Restart:    src.Restart,
-		ExitStatus: src.ExitStatus,
+		Processes:  slices.Clone(src.Processes),
 		Kernel:     src.Kernel,
 	})
 	defer claim.unlock()

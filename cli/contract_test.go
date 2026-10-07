@@ -70,11 +70,11 @@ func TestTheLongFlagsParseAsTheShortOnes(t *testing.T) {
 		}
 	}
 
-	f, err := parseLogs("logs", []string{"-f", "web"})
+	f, err := parseProcessLogs([]string{"-f", "web"})
 	if err != nil {
 		t.Fatalf("logs -f: %v", err)
 	}
-	follow, err := parseLogs("logs", []string{"--follow", "web"})
+	follow, err := parseProcessLogs([]string{"--follow", "web"})
 	if err != nil {
 		t.Fatalf("logs --follow: %v", err)
 	}

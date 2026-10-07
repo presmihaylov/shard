@@ -6,9 +6,9 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"reflect"
 	"slices"
 	"strings"
-	"sync"
 	"syscall"
 	"testing"
 	"time"
@@ -16,111 +16,107 @@ import (
 	"github.com/presmihaylov/shard/models"
 )
 
-// newRunApp is a daemon on fakes whose app has written output into the log the attach follows.
-func newRunApp(t *testing.T, out *bytes.Buffer, output string) (App, *fakeDaemon, *recorder) {
+// newRunApp is a daemon on fakes with one running sandbox, whose process log already holds an earlier run's output.
+func newRunApp(t *testing.T, out *bytes.Buffer) (App, *fakeLifecycleProvider, *recorder) {
 	t.Helper()
 
-	app, d, r := newDaemonCreateApp(t, out)
-	logPath := filepath.Join(t.TempDir(), "sandbox.log")
-	if err := os.WriteFile(logPath, []byte(output), 0o600); err != nil {
+	r := &recorder{}
+	app, d := newLifecycleApp(t, out, r, running())
+	provider := d.providerSvc.(*fakeLifecycleProvider)
+	provider.logPath = filepath.Join(t.TempDir(), "process.log")
+	if err := os.WriteFile(provider.logPath, []byte("an earlier run\n"), 0o600); err != nil {
 		t.Fatalf("write the log: %v", err)
 	}
-	d.providerSvc.(*fakeLifecycleProvider).logPath = logPath
 
-	return app, d, r
+	return app, provider, r
 }
 
-func TestRunPrintsTheAppOutputAndExitsWithItsCode(t *testing.T) {
+// The name is the output, so a script takes it: name=$(shard run web -- python app.py).
+func TestRunPrintsTheProcessName(t *testing.T) {
 	var out bytes.Buffer
 
-	app, d, _ := newRunApp(t, &out, "ready\n")
-	provider := d.providerSvc.(*fakeLifecycleProvider)
-	provider.endApp(models.ExitStatus{Code: 3}, 2)
+	app, provider, r := newRunApp(t, &out)
 
-	err := app.Run(t.Context(), []string{"run", "--restart", "on-failure", "alpine:3.20", "sh", "-c", "exit 3"})
+	if err := app.Run(t.Context(), []string{"run", "sandbox1", "--", "/usr/bin/sleep", "60"}); err != nil {
+		t.Fatalf("run: %v", err)
+	}
+	if got := out.String(); got != "sleep\n" {
+		t.Errorf("run printed %q, want the name the command gave the process", got)
+	}
 
-	var exit *ExitError
-	if !errors.As(err, &exit) || exit.Code != 3 || exit.Message != "" {
-		t.Fatalf("run returned %v, want the app's code 3 and no message", err)
+	want := []models.ProcessSpec{{Name: "sleep", Argv: []string{"/usr/bin/sleep", "60"}, Restart: models.RestartSpec{Policy: models.RestartUnlessStopped, Backoff: 1}}}
+	if got := provider.runs(); !reflect.DeepEqual(got, want) {
+		t.Errorf("the guest started %+v, want %+v", got, want)
 	}
-	if got := out.String(); got != "ready\n" {
-		t.Errorf("run printed %q, want the app's output once", got)
-	}
-	if want := []string{"sh", "-c", "exit 3"}; !slices.Equal(provider.created.Entrypoint, want) {
-		t.Errorf("the substrate got %v as the app, want %v", provider.created.Entrypoint, want)
+	// Run reads the log size once for where this run starts, and an attach would open the log a second time.
+	if got := keep(r.seen(), "provider.ProcessLogPath"); len(got) != 1 {
+		t.Errorf("run drove %v, want no attach", r.seen())
 	}
 }
 
-func TestRunExitsZeroForAnAppThatSucceeded(t *testing.T) {
+func TestRunHandsTheGuestEveryFlag(t *testing.T) {
 	var out bytes.Buffer
 
-	app, d, _ := newRunApp(t, &out, "")
-	d.providerSvc.(*fakeLifecycleProvider).endApp(models.ExitStatus{}, 0)
+	app, provider, _ := newRunApp(t, &out)
 
-	if err := app.Run(t.Context(), []string{"run", "alpine:3.20", "true"}); err != nil {
-		t.Fatalf("run returned %v, want nil", err)
+	args := []string{"run", "sandbox1", "--name", "api", "-e", "A=1", "--env", "B=2", "-w", "/srv", "-u", "nobody", "--restart", "on-failure", "--restart-retries", "2", "--restart-backoff", "3s", "python", "-m", "http.server"}
+	if err := app.Run(t.Context(), args); err != nil {
+		t.Fatalf("run: %v", err)
+	}
+	if got := out.String(); got != "api\n" {
+		t.Errorf("run printed %q, want the name it was given", got)
+	}
+
+	want := []models.ProcessSpec{{
+		Name:    "api",
+		Argv:    []string{"python", "-m", "http.server"},
+		Env:     []string{"A=1", "B=2"},
+		WorkDir: "/srv",
+		User:    "nobody",
+		Restart: models.RestartSpec{Policy: models.RestartOnFailure, Retries: 2, Backoff: 3},
+	}}
+	if got := provider.runs(); !reflect.DeepEqual(got, want) {
+		t.Errorf("the guest started %+v, want %+v", got, want)
 	}
 }
 
-// -d is for a script that wants the id and not the app, so it prints the id once the sandbox is up and attaches to nothing.
-func TestRunDetachedPrintsTheIDAndAttachesToNothing(t *testing.T) {
-	var out bytes.Buffer
+// With --attach stdout is the current run's output alone, and the exit is the process's, as a shell gives it.
+func TestRunAttachedPrintsTheOutputAndExitsWithTheCode(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		exit models.ExitStatus
+		want int
+	}{
+		{name: "success", exit: models.ExitStatus{}, want: 0},
+		{name: "failure", exit: models.ExitStatus{Code: 3}, want: 3},
+		{name: "signal", exit: models.ExitStatus{Code: 137, Signal: 9}, want: 137},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			var out bytes.Buffer
 
-	app, _, r := newRunApp(t, &out, "never printed\n")
+			app, provider, _ := newRunApp(t, &out)
+			var stderr bytes.Buffer
+			app.Err = &stderr
+			provider.output = "ready\n"
+			provider.endOnStart = &tc.exit
 
-	if err := app.Run(t.Context(), []string{"run", "-d", "alpine:3.20", "sleep", "60"}); err != nil {
-		t.Fatalf("run -d: %v", err)
+			err := app.Run(t.Context(), []string{"run", "sandbox1", "--attach", "--", "sh", "-c", "exit 3"})
+
+			var exit *ExitError
+			if tc.want == 0 && err != nil {
+				t.Fatalf("run returned %v, want nil", err)
+			}
+			if tc.want != 0 && (!errors.As(err, &exit) || exit.Code != tc.want || exit.Message != "") {
+				t.Fatalf("run returned %v, want code %d and no message", err, tc.want)
+			}
+			if got := out.String(); got != "ready\n" {
+				t.Errorf("run printed %q, want this run's output alone", got)
+			}
+			if got := stderr.String(); got != "" {
+				t.Errorf("run wrote %q to stderr, want nothing", got)
+			}
+		})
 	}
-	if got := out.String(); got != "sandbox2\n" {
-		t.Errorf("run -d printed %q, want the bare id", got)
-	}
-	if slices.Contains(r.seen(), "provider.LogPath") {
-		t.Errorf("run -d drove %v, want no attach", r.seen())
-	}
-}
-
-// A shard failure is 125, so a script tells it from an app that exited 1.
-func TestRunExitsWith125WhenShardFails(t *testing.T) {
-	var out bytes.Buffer
-
-	app, _, r := newRunApp(t, &out, "")
-	r.fail = []string{"images.Pull"}
-
-	err := app.Run(t.Context(), []string{"run", "alpine:3.20", "true"})
-
-	var exit *ExitError
-	// The create route is public, so the cause stays in the daemon log.
-	if !errors.As(err, &exit) || exit.Code != runFailedExitCode || !strings.Contains(exit.Message, "the daemon log has the cause") || strings.Contains(exit.Message, "forced failure") {
-		t.Fatalf("run returned %v, want 125 with the public text", err)
-	}
-}
-
-// A script reads an app that never ran as a shell does, 127 or 126, never as shard failing with 125.
-func TestRunExitsWithTheCodeOfAnAppThatNeverStarted(t *testing.T) {
-	var out bytes.Buffer
-
-	app, d, r := newRunApp(t, &out, "")
-	d.providerSvc.(*fakeLifecycleProvider).startErr = &models.CommandNotStartedError{Sandbox: "sandbox2", Reason: "no such file or directory", Code: models.CommandNotFoundExitCode}
-
-	err := app.Run(t.Context(), []string{"run", "alpine:3.20", "no-such-app"})
-
-	var exit *ExitError
-	if !errors.As(err, &exit) || exit.Code != models.CommandNotFoundExitCode || !strings.Contains(exit.Message, `could not run "no-such-app"`) {
-		t.Fatalf("run returned %v, want %d with the command named", err, models.CommandNotFoundExitCode)
-	}
-	if !slices.Contains(r.seen(), "provider.Remove") {
-		t.Errorf("the daemon drove %v, want the sandbox removed behind the refusal", r.seen())
-	}
-}
-
-// startRun runs shard run with interrupts main would route, and answers once the run took them.
-func startRun(t *testing.T, app App, args ...string) (chan<- os.Signal, <-chan error) {
-	t.Helper()
-
-	signals, done := goRun(t, &app, args...)
-	waitFor(t, "the run to take the interrupts", func() bool { return app.Interrupts.receiver() != nil })
-
-	return signals, done
 }
 
 func goRun(t *testing.T, app *App, args ...string) (chan<- os.Signal, <-chan error) {
@@ -129,7 +125,7 @@ func goRun(t *testing.T, app *App, args ...string) (chan<- os.Signal, <-chan err
 	signals := make(chan os.Signal, 3)
 	ctx, cancel := context.WithCancel(t.Context())
 	t.Cleanup(cancel)
-	app.Interrupts = NewInterrupts(signals, cancel, func() { t.Error("the process left on a signal the run took") })
+	app.Interrupts = NewInterrupts(signals, cancel, func() { t.Error("the process left on a single interrupt") })
 	go app.Interrupts.Watch()
 
 	done := make(chan error, 1)
@@ -150,124 +146,154 @@ func waitFor(t *testing.T, what string, ok func() bool) {
 	}
 }
 
-func TestRunStopsTheAppOnTheFirstInterruptAndExitsWithItsCode(t *testing.T) {
+// One Ctrl+C leaves the attach and never the process, which only shard kill ends.
+func TestRunAttachedDetachesOnOneInterrupt(t *testing.T) {
 	var out bytes.Buffer
 
-	app, d, r := newRunApp(t, &out, "")
-	provider := d.providerSvc.(*fakeLifecycleProvider)
-	provider.endOnStop = &models.ExitStatus{Code: 143, Signal: 15}
+	app, provider, r := newRunApp(t, &out)
+	notes := &syncBuffer{}
+	app.Err = notes
 
-	signals, done := startRun(t, app, "--restart", "always", "alpine:3.20", "sleep", "60")
-	// An interrupt during the create takes cancelApp's path, which exits 130, so the press waits for the attach.
-	waitFor(t, "the attach", func() bool { return slices.Contains(r.seen(), "provider.LogPath") })
+	signals, done := goRun(t, &app, "sandbox1", "--attach", "--name", "api", "--", "sleep", "60")
+	waitFor(t, "the attach", func() bool { return len(keep(r.seen(), "provider.ProcessLogPath")) == 2 })
 	signals <- syscall.SIGINT
 
-	err := <-done
-	var exit *ExitError
-	if !errors.As(err, &exit) || exit.Code != 143 {
-		t.Fatalf("run returned %v, want the app's 143", err)
+	if err := <-done; err != nil {
+		t.Fatalf("run returned %v, want nil once it detached", err)
 	}
-	if got := provider.stops(); !slices.Equal(got, []bool{false}) {
-		t.Errorf("run asked for stops %v, want one without force", got)
+	if want := "shard: detached; process api runs on, and shard kill sandbox1 api stops it\n"; notes.String() != want {
+		t.Errorf("run noted %q, want %q", notes.String(), want)
 	}
-	if !strings.Contains(out.String(), "shard: stopping the main command; Ctrl+C again to kill it") {
-		t.Errorf("run printed %q, want the note on the stop", out.String())
-	}
-	if slices.Contains(r.seen(), "provider.Stop") {
-		t.Errorf("run stopped the sandbox, want it running with only shard-init")
+	if got := provider.killed(); len(got) != 0 {
+		t.Errorf("run killed the process with graces %v, want it left running", got)
 	}
 }
 
-// An app that ignores TERM keeps the run attached: the second interrupt kills it and the third leaves.
-func TestRunKillsOnTheSecondInterruptAndLeavesOnTheThird(t *testing.T) {
+// A shard failure is 125, so a script tells it from a process that exited 1.
+func TestRunExitsWith125WhenShardFails(t *testing.T) {
 	var out bytes.Buffer
 
-	app, d, _ := newRunApp(t, &out, "")
-	provider := d.providerSvc.(*fakeLifecycleProvider)
+	r := &recorder{}
+	app, _ := newLifecycleApp(t, &out, r, stopped())
 
-	signals, done := startRun(t, app, "alpine:3.20", "sleep", "60")
-	signals <- syscall.SIGINT
-	waitFor(t, "the stop", func() bool { return len(provider.stops()) == 1 })
-	signals <- syscall.SIGINT
-	waitFor(t, "the kill", func() bool { return len(provider.stops()) == 2 })
-	signals <- syscall.SIGINT
+	err := app.Run(t.Context(), []string{"run", "web", "--", "true"})
 
-	err := <-done
 	var exit *ExitError
-	if !errors.As(err, &exit) || exit.Code != InterruptedExitCode || exit.Message != "left the run; sandbox sandbox2 stays running" {
-		t.Fatalf("run returned %v, want 130 that names the sandbox", err)
+	if !errors.As(err, &exit) || exit.Code != runFailedExitCode || !strings.Contains(exit.Message, "web") {
+		t.Fatalf("run returned %v, want 125 that names the sandbox", err)
 	}
-	if got := provider.stops(); !slices.Equal(got, []bool{false, true}) {
-		t.Errorf("run asked for stops %v, want a term then a kill", got)
-	}
-	if !strings.Contains(out.String(), "shard: killing the main command; Ctrl+C again to leave") {
-		t.Errorf("run printed %q, want the note on the kill", out.String())
+	if slices.Contains(r.seen(), "provider.StartProcess") {
+		t.Errorf("run drove %v, want no process started in a stopped sandbox", r.seen())
 	}
 }
 
-// The daemon starts the app of a create its caller left, so a Ctrl+C before the sandbox is up stops the app once it is, and the run never leaves before.
-func TestRunStopsTheAppOfACreateItInterrupted(t *testing.T) {
-	for _, tc := range []struct {
-		name     string
-		uncached bool
-		detach   bool
-		presses  int
-		note     string
-		stops    []bool
-	}{
-		{name: "cached", presses: 1, note: "stopping the main command once the sandbox is up; Ctrl+C again to kill it", stops: []bool{false}},
-		{name: "cached detached", detach: true, presses: 1, note: "stopping the main command once the sandbox is up; Ctrl+C again to kill it", stops: []bool{false}},
-		{name: "cached pressed three times", presses: 3, note: "killing the main command once the sandbox is up", stops: []bool{true}},
-		{name: "uncached", uncached: true, presses: 1, note: "stopping the main command once the sandbox is up; Ctrl+C again to kill it", stops: []bool{false}},
-		{name: "uncached detached", uncached: true, detach: true, presses: 1, note: "stopping the main command once the sandbox is up; Ctrl+C again to kill it", stops: []bool{false}},
-		{name: "uncached pressed three times", uncached: true, presses: 3, note: "killing the main command once the sandbox is up", stops: []bool{true}},
+// A script reads a command that never ran as a shell does, 127 or 126, never as shard failing with 125.
+func TestRunExitsWithTheCodeOfACommandThatNeverStarted(t *testing.T) {
+	for _, attach := range []bool{false, true} {
+		var out bytes.Buffer
+
+		app, provider, _ := newRunApp(t, &out)
+		provider.startProcessErr = &models.CommandNotStartedError{Sandbox: "sandbox1", Reason: "no such file or directory", Code: models.CommandNotFoundExitCode}
+
+		args := []string{"run", "sandbox1", "--", "no-such-app"}
+		if attach {
+			args = slices.Insert(args, 2, "--attach")
+		}
+		err := app.Run(t.Context(), args)
+
+		var exit *ExitError
+		if !errors.As(err, &exit) || exit.Code != models.CommandNotFoundExitCode || !strings.Contains(exit.Message, `could not run "no-such-app"`) {
+			t.Errorf("run with attach %v returned %v, want %d with the command named", attach, err, models.CommandNotFoundExitCode)
+		}
+	}
+}
+
+func TestParseRunTakesFlagsOnEitherSideOfTheSandbox(t *testing.T) {
+	for _, args := range [][]string{
+		{"--name", "api", "-e", "A=1", "web", "--", "python", "-m", "http.server"},
+		{"web", "--name", "api", "-e", "A=1", "python", "-m", "http.server"},
+		{"--name", "api", "web", "-e", "A=1", "--", "python", "-m", "http.server"},
 	} {
-		t.Run(tc.name, func(t *testing.T) {
-			var out bytes.Buffer
+		opts, err := parseRun(args)
+		if err != nil {
+			t.Fatalf("parseRun(%v): %v", args, err)
+		}
+		if opts.id != "web" || opts.req.Name != "api" || !slices.Equal(opts.req.Env, []string{"A=1"}) || !slices.Equal(opts.req.Command, []string{"python", "-m", "http.server"}) {
+			t.Errorf("parseRun(%v) = %+v, want process api of web", args, opts)
+		}
+	}
+}
 
-			app, d, r := newRunApp(t, &out, "app output\n")
-			if tc.uncached {
-				d.creates = newBackgroundCreates(t)
-			}
-			provider := d.providerSvc.(*fakeLifecycleProvider)
-			provider.endOnStop = &models.ExitStatus{Code: 143, Signal: 15}
-			provider.startGate = make(chan struct{})
-			release := sync.OnceFunc(func() { close(provider.startGate) })
-			t.Cleanup(release)
-			notes := &syncBuffer{}
-			app.Err = notes
+func TestParseRunPreservesArguments(t *testing.T) {
+	command := []string{"sh", "-c", "echo ready", "", "--", "--help", "--name", "guest", "-it"}
+	for _, separator := range [][]string{nil, {"--"}} {
+		args := []string{"--name", "lab", "web"}
+		args = append(args, separator...)
+		args = append(args, command...)
+		opts, err := parseRun(args)
+		if err != nil {
+			t.Fatalf("parseRun: %v", err)
+		}
+		if opts.req.Name != "lab" || opts.id != "web" || !slices.Equal(opts.req.Command, command) {
+			t.Errorf("parseRun = %+v, want the guest arguments intact", opts)
+		}
+	}
+}
 
-			args := []string{"alpine:3.20", "sleep", "60"}
-			if tc.detach {
-				args = append([]string{"-d"}, args...)
-			}
-			signals, done := goRun(t, &app, args...)
-			waitFor(t, "the start", func() bool { return slices.Contains(r.seen(), "provider.Start") })
-			for range tc.presses {
-				signals <- syscall.SIGINT
-			}
-			waitFor(t, "the note on every press, or the run to end", func() bool {
-				return strings.Count(notes.String(), "shard: ") == tc.presses || len(done) > 0
-			})
-			if len(done) > 0 {
-				t.Fatalf("run returned %v before the sandbox was up", <-done)
-			}
-			if !strings.Contains(notes.String(), "shard: "+tc.note+"\n") {
-				t.Errorf("run noted %q, want %q last", notes.String(), tc.note)
-			}
-			release()
+func TestParseRunTakesACommandThatStartsWithAHyphenAfterTheSeparator(t *testing.T) {
+	opts, err := parseRun([]string{"web", "--", "--guest", "-it"})
+	if err != nil {
+		t.Fatalf("parseRun: %v", err)
+	}
+	if !slices.Equal(opts.req.Command, []string{"--guest", "-it"}) {
+		t.Errorf("command = %v, want the guest command intact", opts.req.Command)
+	}
+}
 
-			err := <-done
-			var exit *ExitError
-			if !errors.As(err, &exit) || exit.Code != InterruptedExitCode || exit.Message != "interrupted; the main command of sandbox sandbox2 ended, and the sandbox stays running" {
-				t.Fatalf("run returned %v, want 130 once the app ended", err)
-			}
-			if got := provider.stops(); !slices.Equal(got, tc.stops) {
-				t.Errorf("run asked for stops %v, want %v", got, tc.stops)
-			}
-			if tc.detach == strings.Contains(out.String(), "app output") {
-				t.Errorf("run with detach %v printed %q", tc.detach, out.String())
-			}
-		})
+func TestParseRunNeedsASandboxAndACommand(t *testing.T) {
+	for args, want := range map[string]string{
+		"":                 "run takes one sandbox id or name, got none",
+		"--attach":         "run takes one sandbox id or name, got none",
+		"web":              "run takes a command after the sandbox id or name: shard run SANDBOX [OPTIONS] [--] COMMAND [ARGS...]",
+		"web --":           "run takes a command after the sandbox id or name: shard run SANDBOX [OPTIONS] [--] COMMAND [ARGS...]",
+		"--name= web true": "--name needs a process name; leave it out to name the process after its command",
+	} {
+		if _, err := parseRun(strings.Fields(args)); err == nil || err.Error() != want {
+			t.Errorf("parseRun(%q) = %v, want %q", args, err, want)
+		}
+	}
+}
+
+func TestParseRunRestartFlags(t *testing.T) {
+	for args, want := range map[string]*models.RestartSpec{
+		"--restart on-failure --restart-retries 2 --restart-backoff 3s web true": {Policy: models.RestartOnFailure, Retries: 2, Backoff: 3},
+		"--restart always web true": {Policy: models.RestartAlways},
+		"web true":                  nil,
+	} {
+		opts, err := parseRun(strings.Fields(args))
+		if err != nil {
+			t.Fatalf("parseRun(%q): %v", args, err)
+		}
+		if !reflect.DeepEqual(opts.req.Restart, want) {
+			t.Errorf("parseRun(%q) restart = %+v, want %+v with the rest left for the daemon's defaults", args, opts.req.Restart, want)
+		}
+	}
+}
+
+func TestParseRunRejections(t *testing.T) {
+	cases := map[string][]string{
+		"a policy setting alone":    {"--restart-retries", "2", "web", "true"},
+		"a negative start count":    {"--restart", "on-failure", "--restart-retries", "-1", "web", "true"},
+		"always with a start count": {"--restart", "always", "--restart-retries", "2", "web", "true"},
+		"a sub-second backoff":      {"--restart", "always", "--restart-backoff", "500ms", "web", "true"},
+		"an env with no value":      {"-e", "DEBUG", "web", "true"},
+		"a create flag":             {"--memory", "512MiB", "web", "true"},
+		"the old detach":            {"-d", "web", "true"},
+	}
+
+	for name, args := range cases {
+		if _, err := parseRun(args); err == nil {
+			t.Errorf("parseRun(%s) returned no error", name)
+		}
 	}
 }

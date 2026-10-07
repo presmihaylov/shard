@@ -4,26 +4,25 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"io"
-	"os"
 
 	"github.com/presmihaylov/shard/models"
 	"github.com/presmihaylov/shard/services/client"
 	"github.com/presmihaylov/shard/services/sandbox"
 )
 
-// runFailedExitCode is docker run's code for its own failure, so a script tells shard failing from an app that exited 1.
+// runFailedExitCode is docker run's code for its own failure, so a script tells shard failing from a process that exited 1.
 const runFailedExitCode = 125
 
-// runOptions is one parsed shard run: the sandbox to create with its app, and whether to wait on the app.
+// runOptions is one parsed shard run: the sandbox, the process to start in it, and whether to stay for its output.
 type runOptions struct {
-	req    sandbox.CreateRequest
-	detach bool
+	id     string
+	req    sandbox.RunRequest
+	attach bool
 }
 
-// launch creates a sandbox whose app is the command, then waits on the app and exits with its last code; -d prints the id instead.
-func (a App) launch(ctx context.Context, args []string) error {
-	err := shellCode(a.runApp(ctx, args))
+// runProcess starts a named process in a running sandbox and prints its name; --attach stays for its output and exits with its code.
+func (a App) runProcess(ctx context.Context, args []string) error {
+	err := shellCode(a.startProcess(ctx, args))
 
 	var exit *ExitError
 	var help printExit
@@ -37,7 +36,7 @@ func (a App) launch(ctx context.Context, args []string) error {
 	return &ExitError{Code: runFailedExitCode, Message: err.Error()}
 }
 
-func (a App) runApp(ctx context.Context, args []string) error {
+func (a App) startProcess(ctx context.Context, args []string) error {
 	opts, err := parseRun(args)
 	if err != nil {
 		return err
@@ -48,146 +47,51 @@ func (a App) runApp(ctx context.Context, args []string) error {
 		return err
 	}
 
-	interrupts := a.Interrupts.take()
-	// An interrupt that raced the take cancelled the work before the create began.
-	if ctx.Err() != nil {
-		return ctx.Err()
-	}
-
-	sb, asked, err := a.createCaught(ctx, c, opts.req, interrupts)
+	p, err := c.Run(ctx, opts.id, opts.req)
 	if err != nil {
 		return err
 	}
-	if asked > 0 {
-		return a.cancelApp(ctx, c, sb, interrupts, asked, opts.detach)
-	}
-	if opts.detach {
-		return a.printCreated(sb)
+	if !opts.attach {
+		return a.print(p.Name)
 	}
 
-	return a.attachApp(ctx, c, sb, interrupts, 0, a.Out)
+	return a.attachProcess(ctx, c, opts.id, p.Name)
 }
 
-// createCaught counts the interrupts that land during the create and never leaves it, as the daemon starts the app of a create its caller left.
-func (a App) createCaught(ctx context.Context, c *client.Client, req sandbox.CreateRequest, interrupts <-chan os.Signal) (client.Sandbox, int, error) {
-	type created struct {
-		sb  client.Sandbox
-		err error
-	}
-	result := make(chan created, 1)
-	go func() {
-		sb, err := a.createAndWait(ctx, c, req)
-		result <- created{sb: sb, err: err}
-	}()
+// attachProcess prints the output until the policy ends the process, and exits with its code; an interrupt leaves it running.
+func (a App) attachProcess(ctx context.Context, c *client.Client, id, name string) error {
+	p, err := c.AttachProcess(ctx, id, name, a.Out)
+	if err != nil && ctx.Err() != nil {
+		a.note(fmt.Sprintf("detached; process %s runs on, and shard kill %s %s stops it", name, id, name))
 
-	asked := 0
-	for {
-		select {
-		case r := <-result:
-			return r.sb, asked, r.err
-		case <-interrupts:
-			asked = min(asked+1, 2)
-			a.note(createNote(asked == 2))
-		}
-	}
-}
-
-func createNote(force bool) string {
-	if force {
-		return "killing the main command once the sandbox is up"
-	}
-
-	return "stopping the main command once the sandbox is up; Ctrl+C again to kill it"
-}
-
-// cancelApp stops an app the operator interrupted before it began and waits for its end, so the run leaves no app behind.
-func (a App) cancelApp(ctx context.Context, c *client.Client, sb client.Sandbox, interrupts <-chan os.Signal, asked int, detach bool) error {
-	// The stop lands before any leave, so a run that leaves on a later interrupt strands no app.
-	if err := stopApp(ctx, c, sb, asked == 2); err != nil {
-		return err
-	}
-
-	out := a.Out
-	if detach {
-		out = io.Discard
-	}
-
-	err := a.attachApp(ctx, c, sb, interrupts, asked, out)
-	var exit *ExitError
-	if err != nil && (!errors.As(err, &exit) || exit.Message != "") {
-		return err
-	}
-
-	return &ExitError{Code: InterruptedExitCode, Message: fmt.Sprintf("interrupted; the main command of sandbox %s ended, and the sandbox stays running", sandboxName(sb))}
-}
-
-// attachedApp is how the attach ended: the app's last exit, or why the attach failed.
-type attachedApp struct {
-	exit models.AppExit
-	err  error
-}
-
-// attachApp prints the app's output until its policy ends; interrupts stop, then kill, then leave, and the sandbox runs on.
-// asked counts the stops already sent.
-func (a App) attachApp(ctx context.Context, c *client.Client, sb client.Sandbox, interrupts <-chan os.Signal, asked int, out io.Writer) error {
-	attached := make(chan attachedApp, 1)
-	go func() {
-		exit, err := c.AttachApp(ctx, sb.ID, out)
-		attached <- attachedApp{exit: exit, err: err}
-	}()
-
-	stopped := make(chan error, 2)
-	for {
-		select {
-		case result := <-attached:
-			if result.err != nil {
-				return result.err
-			}
-			if result.exit.Code != 0 {
-				return &ExitError{Code: result.exit.Code}
-			}
-
-			return nil
-		case err := <-stopped:
-			if err != nil {
-				return err
-			}
-		case <-interrupts:
-			asked++
-			if asked > 2 {
-				return &ExitError{Code: InterruptedExitCode, Message: fmt.Sprintf("left the run; sandbox %s stays running", sandboxName(sb))}
-			}
-
-			force := asked == 2
-			a.note(stopNote(force))
-			go func() { stopped <- stopApp(ctx, c, sb, force) }()
-		}
-	}
-}
-
-func stopNote(force bool) string {
-	if force {
-		return "killing the main command; Ctrl+C again to leave"
-	}
-
-	return "stopping the main command; Ctrl+C again to kill it"
-}
-
-// stopApp asks the daemon to stop the app; one that already ended is what the stop asked for, and the attach brings its exit.
-func stopApp(ctx context.Context, c *client.Client, sb client.Sandbox, force bool) error {
-	err := c.StopApp(ctx, sb.ID, force)
-	var answer *client.APIError
-	if errors.As(err, &answer) && answer.Code == models.CodeAppEnded {
 		return nil
 	}
 	if err != nil {
-		return fmt.Errorf("stop the main command of sandbox %s: %w", sandboxName(sb), err)
+		return err
 	}
 
-	return nil
+	return processExit(id, p)
 }
 
-// note tells the operator what shard does on their behalf, on stderr, so stdout stays the app's alone.
+// processExit is the code a shell gives the process's last exit, 128 and the signal for one a signal ended.
+func processExit(id string, p models.Process) error {
+	exit := p.Status.Exit
+	if exit == nil {
+		return fmt.Errorf("process %s of sandbox %s is %s and left no exit status", p.Name, id, p.Status.State)
+	}
+
+	code := exit.Code
+	if exit.Signal != 0 {
+		code = 128 + exit.Signal
+	}
+	if code == 0 {
+		return nil
+	}
+
+	return &ExitError{Code: code}
+}
+
+// note tells the operator what shard does on their behalf, on stderr, so stdout stays the process's alone.
 func (a App) note(message string) {
 	if a.Err == nil {
 		return
@@ -196,44 +100,43 @@ func (a App) note(message string) {
 	fmt.Fprintln(a.Err, "shard:", message)
 }
 
-// parseRun is create's flags, the restart policy and -d, then the image and the command, which run needs.
+// parseRun takes the flags on either side of the sandbox, and everything after the first argument past it as the command.
 func parseRun(args []string) (runOptions, error) {
 	var opts runOptions
 
 	flags := newFlags("run")
-	sandboxFlags(flags, &opts.req)
+	flags.StringVar(&opts.req.Name, "name", "", "")
+	flags.Var((*envList)(&opts.req.Env), "e", "")
+	flags.Var((*envList)(&opts.req.Env), "env", "")
+	flags.StringVar(&opts.req.WorkDir, "w", "", "")
+	flags.StringVar(&opts.req.WorkDir, "workdir", "", "")
+	flags.StringVar(&opts.req.User, "u", "", "")
+	flags.StringVar(&opts.req.User, "user", "", "")
 	var restart restartFlags
 	flags.StringVar(&restart.policy, "restart", "", "")
 	flags.IntVar(&restart.retries, "restart-retries", 0, "")
 	flags.DurationVar(&restart.backoff, "restart-backoff", 0, "")
-	flags.BoolVar(&opts.detach, "d", false, "")
-	flags.BoolVar(&opts.detach, "detach", false, "")
+	flags.BoolVar(&opts.attach, "attach", false, "")
 
-	if err := parseVerb(flags, args); err != nil {
+	refs, command, err := parseAround(flags, args, 1)
+	if err != nil {
 		return runOptions{}, err
 	}
+	if len(refs) == 0 {
+		return runOptions{}, errors.New("run takes one sandbox id or name, got none")
+	}
+	opts.id, opts.req.Command = refs[0], command
+	if len(opts.req.Command) == 0 {
+		return runOptions{}, errors.New("run takes a command after the sandbox id or name: shard " + helps["run"].usage[0])
+	}
 
-	var err error
 	if opts.req.Restart, err = restart.request(); err != nil {
 		return runOptions{}, err
 	}
-	if err := checkSandbox(flags, opts.req); err != nil {
-		return runOptions{}, err
+	// An empty name would read as none, and the daemon would name the process after its command instead.
+	if named(flags) && opts.req.Name == "" {
+		return runOptions{}, errors.New("--name needs a process name; leave it out to name the process after its command")
 	}
-
-	rest := flags.Args()
-	if len(rest) == 0 {
-		return runOptions{}, errors.New("run takes one image reference, got none")
-	}
-
-	opts.req.Image, rest = rest[0], rest[1:]
-	if len(rest) > 0 && rest[0] == "--" {
-		rest = rest[1:]
-	}
-	if len(rest) == 0 {
-		return runOptions{}, errors.New("run needs a command after the image")
-	}
-	opts.req.Command = rest
 
 	return opts, nil
 }

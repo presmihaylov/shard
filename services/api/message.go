@@ -33,7 +33,7 @@ type ExitMessage struct {
 
 // EndMessage is the payload of StreamExit on a log follow: why the daemon stopped following.
 type EndMessage struct {
-	Reason string `json:"reason" enum:"stopped,removed"`
+	Reason string `json:"reason" enum:"ended,stopped,removed"`
 }
 
 // FailureMessage is the payload of StreamFailure, nested under error like every other error body.

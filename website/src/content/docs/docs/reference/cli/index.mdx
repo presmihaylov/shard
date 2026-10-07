@@ -36,11 +36,13 @@ Run `shard COMMAND --help` for options and examples.
 | Command | Description |
 | --- | --- |
 | [`shard create`](/docs/reference/cli/sandboxes/#shard-create) | create a sandbox and print its ID |
-| [`shard run`](/docs/reference/cli/sandboxes/#shard-run) | create a sandbox and run a command in the foreground |
+| [`shard run`](/docs/reference/cli/sandboxes/#shard-run) | start a supervised process in a running sandbox |
 | [`shard exec`](/docs/reference/cli/sandboxes/#shard-exec) | execute a command in a running sandbox |
 | [`shard shell`](/docs/reference/cli/sandboxes/#shard-shell) | open an interactive shell in a running sandbox |
 | [`shard list`](/docs/reference/cli/sandboxes/#shard-list) | list active sandboxes |
-| [`shard logs`](/docs/reference/cli/sandboxes/#shard-logs) | show output from the sandbox's main command |
+| [`shard ps`](/docs/reference/cli/sandboxes/#shard-ps) | list the processes of a sandbox |
+| [`shard logs`](/docs/reference/cli/sandboxes/#shard-logs) | show output from a process |
+| [`shard kill`](/docs/reference/cli/sandboxes/#shard-kill) | stop a process and cancel its restarts |
 | [`shard inspect`](/docs/reference/cli/sandboxes/#shard-inspect) | show detailed information about a sandbox |
 | [`shard stop`](/docs/reference/cli/sandboxes/#shard-stop) | stop sandboxes and preserve their files |
 | [`shard start`](/docs/reference/cli/sandboxes/#shard-start) | start a stopped sandbox with its saved files |

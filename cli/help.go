@@ -84,6 +84,7 @@ var (
 	sandboxesArg = row{"SANDBOX", "sandbox ID or name; repeatable"}
 	sourceArg    = row{"SANDBOX", "source sandbox ID or name"}
 	argsArg      = row{"ARGS", "arguments for the command"}
+	processArg   = row{"NAME", "process name"}
 	snapshotArg  = row{"SNAPSHOT", "snapshot ID or name"}
 	secretArg    = row{"NAME", "secret name"}
 	policyArg    = row{"NAME", "policy name"}
@@ -97,12 +98,12 @@ var verbGroups = []struct {
 	title string
 	verbs []string
 }{
-	{"Sandboxes", []string{"create", "run", "exec", "shell", "list", "logs", "inspect", "stop", "start", "remove", "prune", "pause", "resume", "fork", "cp"}},
+	{"Sandboxes", []string{"create", "run", "exec", "shell", "list", "ps", "logs", "kill", "inspect", "stop", "start", "remove", "prune", "pause", "resume", "fork", "cp"}},
 	{"Images, snapshots, secrets and network policies", []string{"pull", "image", "snapshot", "secret", "policy"}},
 	{"Host and access", []string{"capabilities", "daemon", "info", "serve", "setup", "tokens", "version"}},
 }
 
-// sandboxFlagHelps are the flags create and run share, as sandboxFlags parses them.
+// sandboxFlagHelps are create's flags for the sandbox itself, as sandboxFlags parses them.
 var sandboxFlagHelps = []flagHelp{
 	{"--name <name>", "sandbox name to use instead of its ID", ""},
 	{"--env KEY=VALUE", "set an environment variable; repeatable", ""},
@@ -174,8 +175,8 @@ var helps = map[string]verbHelp{
 		),
 		notes: []note{
 			para(
-				"The sandbox starts without a main command.",
-				"Use 'shard exec' to execute commands or 'shard run' to create one with a main command.",
+				"The sandbox starts with no processes.",
+				"Use 'shard run' to start a supervised process in it, or 'shard exec' for a one-off command.",
 				"The sandbox stays active until stopped.",
 			),
 			namesNote, secretsNote, networkNote, limitsNote,
@@ -187,40 +188,51 @@ var helps = map[string]verbHelp{
 		},
 	},
 	"run": {
-		usage:   []string{"run [OPTIONS] IMAGE COMMAND [ARGS...]"},
-		summary: "create a sandbox and run a command in the foreground",
-		args:    []row{imageArg, {"COMMAND", "main command to execute"}, argsArg},
-		flags: append(slices.Clone(sandboxFlagHelps),
-			flagHelp{"--restart <policy>", "restart policy: no, on-failure or always", ""},
-			flagHelp{"--restart-retries <n>", "maximum restarts; default unlimited", ""},
-			flagHelp{"--restart-backoff <duration>", "initial restart delay, up to " + seconds(models.RestartBackoffCap), seconds(sandbox.DefaultRestartBackoff)},
-			flagHelp{"-d, --detach", "run in the background and print the sandbox ID", ""},
-		),
+		usage:   []string{"run SANDBOX [OPTIONS] [--] COMMAND [ARGS...]"},
+		summary: "start a supervised process in a running sandbox",
+		args:    []row{sandboxArg, {"COMMAND", "command to execute"}, argsArg},
+		flags: []flagHelp{
+			{"--name <name>", "process name; COMMAND's base name by default", ""},
+			{"-e, --env KEY=VALUE", "set an environment variable; repeatable", ""},
+			{"-w, --workdir <dir>", "directory for this process", ""},
+			{"-u, --user <user>", "user for this process", ""},
+			{"--restart <policy>", "restart policy", string(models.RestartUnlessStopped)},
+			{"--restart-retries <n>", "restart limit for on-failure; default unlimited", ""},
+			{"--restart-backoff <duration>", "initial restart delay, up to " + seconds(models.RestartBackoffCap), seconds(sandbox.DefaultRestartBackoff)},
+			{"--attach", "stay for the output and exit with its code", ""},
+		},
 		notes: []note{
 			para(
-				"The specified command replaces the image's default command.",
-				"Command output appears in your terminal unless you use --detach.",
-				"The sandbox stays active after the command exits.",
+				"Prints the process name and returns; the process runs on in the background.",
+				"A sandbox runs up to "+strconv.Itoa(models.MaxProcesses)+" processes, each under its own name.",
+				"A run of an ended name replaces it, and its log keeps the earlier output.",
 			),
-			para("Press Ctrl+C to stop the command and cancel its restarts.", "Use 'shard stop' to stop the sandbox."),
-			namesNote, secretsNote, networkNote,
+			para(
+				"With --attach, Ctrl+C detaches and leaves the process running.",
+				"It exits with the process's last exit code, or 128 plus the ending signal.",
+				"An exit code of "+strconv.Itoa(runFailedExitCode)+" means shard itself failed.",
+			),
 			{
 				title: "Restarts",
 				rows: []row{
-					{string(models.RestartNo), "do not restart the command (default)"},
+					{string(models.RestartNo), "do not restart the process"},
 					{string(models.RestartOnFailure), "restart after a nonzero exit"},
-					{string(models.RestartAlways), "restart after any exit"},
+					{string(models.RestartAlways), "restart after any exit, and whenever the sandbox starts"},
+					{string(models.RestartUnlessStopped), "like always, until 'shard kill' ends it (default)"},
 				},
 				lines: []string{
 					"--restart-retries applies to on-failure only.",
 					"Restart delays double after each restart, up to " + strconv.Itoa(models.RestartBackoffCap) + "s.",
+					"When the daemon starts, it starts the sandboxes these policies bring back,",
+					"except unless-stopped ones in a sandbox that 'shard stop' stopped.",
 				},
 			},
-			limitsNote,
+			{title: "Names", lines: []string{"Use up to " + strconv.Itoa(models.MaxProcessName) + " lower-case letters, digits, dots, hyphens and underscores."}},
 		},
 		examples: []string{
-			"shard run --name web --memory 512MiB python:3.12 python -m http.server",
-			"shard run --detach --name web --memory 512MiB --restart on-failure python:3.12 python -m http.server",
+			"shard run web --name api -- python -m http.server",
+			"shard run web --name db --restart on-failure --restart-retries 5 -- pg_ctlcluster 16 main start --foreground",
+			"shard run web --restart no --attach -- python script.py",
 		},
 	},
 	"exec": {
@@ -266,17 +278,41 @@ var helps = map[string]verbHelp{
 			formatTableHelp,
 		},
 		notes: []note{
-			para("Table columns: ID, NAME, IMAGE, STATE, UPTIME, RESTART and POLICY."),
+			para("Table columns: ID, NAME, IMAGE, STATE, UPTIME, PROCESSES and POLICY.", "PROCESSES counts the running processes of all the sandbox has."),
 			para("Use --quiet to pass the IDs to another command, as in 'shard stop $(shard list -q)'.", "--quiet cannot be combined with --format."),
 		},
 		examples: []string{"shard list", "shard list --all", "shard list --format json", "shard list -q"},
 	},
-	"logs": {
-		usage:    []string{"logs [OPTIONS] SANDBOX"},
-		summary:  "show output from the sandbox's main command",
+	"ps": {
+		usage:    []string{"ps [OPTIONS] SANDBOX"},
+		summary:  "list the processes of a sandbox",
 		args:     []row{sandboxArg},
-		flags:    []flagHelp{{"-f, --follow", "show new output until the sandbox stops", ""}},
-		examples: []string{"shard logs web", "shard logs --follow web"},
+		flags:    []flagHelp{formatTableHelp},
+		notes:    []note{para("Table columns: NAME, STATE, RESTARTS, EXIT, POLICY and COMMAND.", "A state is running, restarting, exited, killed, gave-up or stopped.")},
+		examples: []string{"shard ps web", "shard ps --format json web"},
+	},
+	"logs": {
+		usage:   []string{"logs SANDBOX [NAME] [OPTIONS]"},
+		summary: "show output from a process",
+		args:    []row{sandboxArg, processArg},
+		flags:   []flagHelp{{"-f, --follow", "show new output until the process ends or the sandbox stops", ""}},
+		notes: []note{para(
+			"Without a NAME, shows the sandbox's only process; with several, name one.",
+			"The output of every run of the process is kept, restarts included.",
+		)},
+		examples: []string{"shard logs web", "shard logs web api -f"},
+	},
+	"kill": {
+		usage:   []string{"kill SANDBOX NAME [OPTIONS]"},
+		summary: "stop a process and cancel its restarts",
+		args:    []row{sandboxArg, processArg},
+		flags:   []flagHelp{{"--force", "kill at once instead of asking the process to exit", ""}},
+		notes: []note{para(
+			"The process has up to "+strconv.Itoa(int(models.StopGrace/time.Second))+" seconds to exit before it is terminated.",
+			"The sandbox stays running, and only an always policy brings the process back.",
+			"Use 'shard run' with the same name to start it again.",
+		)},
+		examples: []string{"shard kill web api", "shard kill web api --force"},
 	},
 	"inspect": {
 		usage:    []string{"inspect [OPTIONS] SANDBOX"},
@@ -291,7 +327,7 @@ var helps = map[string]verbHelp{
 		args:    []row{sandboxesArg},
 		notes: []note{
 			para(
-				"The main command has up to "+strconv.Itoa(int(models.StopGrace/time.Second))+" seconds to exit before it is terminated.",
+				"Each process has up to "+strconv.Itoa(int(models.StopGrace/time.Second))+" seconds to exit before it is terminated.",
 				"Files remain available, but memory and process state are lost.",
 			),
 			para("Use 'shard start' to start the sandbox again.", "Use 'shard snapshot create' to save its files as a snapshot."),
@@ -303,7 +339,7 @@ var helps = map[string]verbHelp{
 		usage:    []string{"start SANDBOX"},
 		summary:  "start a stopped sandbox with its saved files",
 		args:     []row{sandboxArg},
-		notes:    []note{para("If the sandbox has a main command, it starts from the beginning.")},
+		notes:    []note{para("Processes with the always or unless-stopped policy start again, except those killed.")},
 		examples: []string{"shard start web"},
 	},
 	"remove": {

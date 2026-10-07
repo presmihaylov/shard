@@ -47,25 +47,3 @@ func TestNoStopSignalIsLostBehindTheCancellation(t *testing.T) {
 		t.Fatal("a second stop signal that arrived during the cancellation was dropped")
 	}
 }
-
-// A verb that took the signals gets every one of them, and neither the cancel nor the leave runs.
-func TestATakenSignalReachesTheVerbAlone(t *testing.T) {
-	signals := make(chan os.Signal)
-	escaped := make(chan string, 2)
-	interrupts := NewInterrupts(signals, func() { escaped <- "cancel" }, func() { escaped <- "leave" })
-	go interrupts.Watch()
-
-	taken := interrupts.take()
-	for range 3 {
-		signals <- os.Interrupt
-		if got := <-taken; got != os.Interrupt {
-			t.Fatalf("the verb got %v, want the interrupt", got)
-		}
-	}
-
-	select {
-	case what := <-escaped:
-		t.Fatalf("a taken signal also ran the %s", what)
-	case <-time.After(settle):
-	}
-}

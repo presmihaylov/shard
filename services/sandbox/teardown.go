@@ -77,7 +77,7 @@ func (e *noAddressError) Public() string {
 }
 
 // Reconcile is for a failed start or resume: the substrate may hold a live sandbox anyway, and only stop ends one.
-func Reconcile(ctx context.Context, repo Repository, provider models.Provider, id string, keepExit bool) error {
+func Reconcile(ctx context.Context, repo Repository, provider models.Provider, id string, resumed bool) error {
 	status, err := provider.Status(ctx, id)
 	if err != nil {
 		return err
@@ -86,15 +86,15 @@ func Reconcile(ctx context.Context, repo Repository, provider models.Provider, i
 		return nil
 	}
 
-	if err := RecordRunning(ctx, repo, provider, id, keepExit); err != nil {
+	if err := RecordRunning(ctx, repo, provider, id, resumed); err != nil {
 		return err
 	}
 
 	return fmt.Errorf("sandbox %s may be running and it stays on the host", id)
 }
 
-// RecordRunning writes the substrate's pid into the record; keepExit is for a resume, whose entrypoint may be gone.
-func RecordRunning(ctx context.Context, repo Repository, provider models.Provider, id string, keepExit bool) error {
+// RecordRunning writes the substrate's pid into the record; resumed is a run the pause froze, which goes on.
+func RecordRunning(ctx context.Context, repo Repository, provider models.Provider, id string, resumed bool) error {
 	status, err := provider.Status(ctx, id)
 	if err != nil {
 		return err
@@ -109,17 +109,11 @@ func RecordRunning(ctx context.Context, repo Repository, provider models.Provide
 		sb.Pausing = false
 		sb.RunStartedAt = time.Now().UTC()
 		// A resume is no start, so the first start stays; a fork has none yet.
-		if !keepExit || sb.StartedAt.IsZero() {
+		if !resumed || sb.StartedAt.IsZero() {
 			sb.StartedAt = sb.RunStartedAt
 		}
-		if !keepExit {
-			// The old exit is what the previous run did, and this run has not ended.
-			sb.ExitStatus = nil
-		}
-		// A new run starts with nothing started again; a resume keeps the count.
-		if !keepExit {
-			sb.Restart = freshRestart(sb.Restart)
-			// A new run booted the substrate's kernel, where a resume runs the memory image of the one before.
+		// A new run booted the substrate's kernel, where a resume runs the memory image of the one before.
+		if !resumed {
 			sb.Kernel = guestKernel(provider)
 		}
 

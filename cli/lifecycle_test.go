@@ -3,9 +3,11 @@ package cli
 import (
 	"bytes"
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"net/netip"
+	"os"
 	"path/filepath"
 	"slices"
 	"sync"
@@ -231,9 +233,6 @@ type fakeLifecycleProvider struct {
 
 	r      *recorder
 	status models.Status
-	exit   models.ExitStatus
-	// waitErr is what a sandbox the stop had to kill answers with: it recorded no exit status.
-	waitErr error
 
 	grace   time.Duration
 	started bool
@@ -261,65 +260,111 @@ type fakeLifecycleProvider struct {
 	// serve stands in for the guest end of an exec, as a files exec needs.
 	serve func(spec models.ExecSpec) (models.ExitStatus, error)
 
-	// appMu guards the app's files, which a run's attach polls while its stop writes them.
-	appMu    sync.Mutex
-	restarts models.RestartCount
-	appExit  *models.ExitStatus
-	// stopApps is the force of every StopApp, in order; endOnStop is the exit a stop leaves, nil to leave the app running.
-	stopApps  []bool
-	endOnStop *models.ExitStatus
-	// startGate holds Start until it closes and ignores the caller, as the daemon's background create does.
-	startGate chan struct{}
+	// procMu guards shard-init's table, which an attach polls while a test ends a process.
+	procMu  sync.Mutex
+	reports []models.ProcessReport
+	specs   []models.ProcessSpec
+	// kills is the grace of every StopProcess, in order.
+	kills []time.Duration
+	// endOnStart is the exit every process ends with as it starts, nil to leave it running.
+	endOnStart *models.ExitStatus
+	// output is what every process writes to logPath as it starts.
+	output string
+	// startProcessErr is what StartProcess answers, as a guest that never ran the command does.
+	startProcessErr error
 	// startErr is what Start answers, as a substrate whose app never ran does.
 	startErr error
 	// createErr is what Create answers, as a VM substrate that refuses a disk does.
 	createErr error
 }
 
-func (f *fakeLifecycleProvider) Restarts(context.Context, string) (models.RestartCount, error) {
-	f.appMu.Lock()
-	defer f.appMu.Unlock()
+// StartProcess is shard-init taking the process into its table, and ending it at once when the test says so.
+func (f *fakeLifecycleProvider) StartProcess(_ context.Context, _ string, spec models.ProcessSpec) error {
+	if err := f.r.record("provider.StartProcess"); err != nil {
+		return err
+	}
+	if f.startProcessErr != nil {
+		return f.startProcessErr
+	}
 
-	return f.restarts, nil
-}
-
-func (f *fakeLifecycleProvider) ExitStatus(context.Context, string) (*models.ExitStatus, error) {
-	f.appMu.Lock()
-	defer f.appMu.Unlock()
-
-	return f.appExit, nil
-}
-
-func (f *fakeLifecycleProvider) StopApp(_ context.Context, _ string, force bool) error {
-	if err := f.r.record("provider.StopApp"); err != nil {
+	if err := appendLog(f.logPath, f.output); err != nil {
 		return err
 	}
 
-	f.appMu.Lock()
-	defer f.appMu.Unlock()
-	f.stopApps = append(f.stopApps, force)
-	if f.endOnStop != nil {
-		f.appExit = f.endOnStop
-		f.restarts.Ended = true
+	f.procMu.Lock()
+	defer f.procMu.Unlock()
+	f.specs = append(f.specs, spec)
+	status := models.ProcessStatus{State: models.ProcessRunning, StartedAt: time.Now()}
+	if f.endOnStart != nil {
+		status.State, status.Exit = models.ProcessExited, f.endOnStart
 	}
+	f.report(spec.Name, status)
 
 	return nil
 }
 
-// endApp is shard-init writing the app's last exit and ending its restart policy.
-func (f *fakeLifecycleProvider) endApp(exit models.ExitStatus, restarts int) {
-	f.appMu.Lock()
-	defer f.appMu.Unlock()
-
-	f.appExit = &exit
-	f.restarts = models.RestartCount{Count: restarts, Ended: true}
+// report replaces the guest's word on one process, as a later report of the same name does.
+func (f *fakeLifecycleProvider) report(name string, status models.ProcessStatus) {
+	f.reports = slices.DeleteFunc(f.reports, func(r models.ProcessReport) bool { return r.Name == name })
+	f.reports = append(f.reports, models.ProcessReport{Name: name, ProcessStatus: status, Seq: uint64(len(f.specs) + len(f.kills))})
 }
 
-func (f *fakeLifecycleProvider) stops() []bool {
-	f.appMu.Lock()
-	defer f.appMu.Unlock()
+func (f *fakeLifecycleProvider) StopProcess(_ context.Context, _ string, name string, grace time.Duration) error {
+	if err := f.r.record("provider.StopProcess"); err != nil {
+		return err
+	}
 
-	return slices.Clone(f.stopApps)
+	f.procMu.Lock()
+	defer f.procMu.Unlock()
+	f.kills = append(f.kills, grace)
+	f.report(name, models.ProcessStatus{State: models.ProcessKilled, Exit: &models.ExitStatus{Signal: 15}})
+
+	return nil
+}
+
+func (f *fakeLifecycleProvider) Processes(context.Context, string) ([]models.ProcessReport, error) {
+	f.procMu.Lock()
+	defer f.procMu.Unlock()
+
+	return slices.Clone(f.reports), nil
+}
+
+// endProcess is shard-init writing a process's last exit and ending its restart policy.
+func (f *fakeLifecycleProvider) endProcess(name string, exit models.ExitStatus) {
+	f.procMu.Lock()
+	defer f.procMu.Unlock()
+
+	f.report(name, models.ProcessStatus{State: models.ProcessExited, Exit: &exit})
+}
+
+func appendLog(path, output string) error {
+	if output == "" {
+		return nil
+	}
+
+	f, err := os.OpenFile(path, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0o600)
+	if err != nil {
+		return fmt.Errorf("open the process log: %w", err)
+	}
+	if _, err := f.WriteString(output); err != nil {
+		return errors.Join(fmt.Errorf("write the process log: %w", err), f.Close())
+	}
+
+	return f.Close()
+}
+
+func (f *fakeLifecycleProvider) runs() []models.ProcessSpec {
+	f.procMu.Lock()
+	defer f.procMu.Unlock()
+
+	return slices.Clone(f.specs)
+}
+
+func (f *fakeLifecycleProvider) killed() []time.Duration {
+	f.procMu.Lock()
+	defer f.procMu.Unlock()
+
+	return slices.Clone(f.kills)
 }
 
 func (f *fakeLifecycleProvider) Exec(_ context.Context, id string, spec models.ExecSpec) (models.ExitStatus, error) {
@@ -363,8 +408,8 @@ func (f *fakeLifecycleProvider) Capabilities() models.Capabilities {
 	return models.Capabilities{Pause: !f.noPause, Resume: !f.noResume, Fork: !f.noFork}
 }
 
-func (f *fakeLifecycleProvider) LogPath(string) (string, error) {
-	if err := f.r.record("provider.LogPath"); err != nil {
+func (f *fakeLifecycleProvider) ProcessLogPath(string, string) (string, error) {
+	if err := f.r.record("provider.ProcessLogPath"); err != nil {
 		return "", err
 	}
 
@@ -396,9 +441,6 @@ func (f *fakeLifecycleProvider) Create(_ context.Context, spec models.SandboxSpe
 func (f *fakeLifecycleProvider) Start(context.Context, string) error {
 	if err := f.r.record("provider.Start"); err != nil {
 		return err
-	}
-	if f.startGate != nil {
-		<-f.startGate
 	}
 	if f.startErr != nil {
 		return f.startErr
@@ -470,17 +512,6 @@ func (f *fakeLifecycleProvider) Remove(context.Context, string) error {
 	return nil
 }
 
-func (f *fakeLifecycleProvider) Wait(context.Context, string) (models.ExitStatus, error) {
-	if err := f.r.record("provider.Wait"); err != nil {
-		return models.ExitStatus{}, err
-	}
-	if f.waitErr != nil {
-		return models.ExitStatus{}, f.waitErr
-	}
-
-	return f.exit, nil
-}
-
 // fakeLifecycleSubstrate stands in for the runsc root, which off Linux has no mount to give back.
 type fakeLifecycleSubstrate struct {
 	r       *recorder
@@ -539,7 +570,7 @@ func running() models.Sandbox {
 }
 
 func stopped() models.Sandbox {
-	return models.Sandbox{ID: "sandbox1", Name: "web", State: models.StateStopped, ExitStatus: &models.ExitStatus{Code: 3}}
+	return models.Sandbox{ID: "sandbox1", Name: "web", State: models.StateStopped}
 }
 
 // paused is the record of a sandbox that holds a checkpoint, which is what resume is given.

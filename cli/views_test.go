@@ -3,6 +3,7 @@ package cli
 import (
 	"bytes"
 	"encoding/json"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -112,7 +113,7 @@ func TestInspectTableIsTheRecordThenTheRules(t *testing.T) {
 	rule := models.Rule{Action: models.ActionDeny, Destination: models.Destination{Kind: models.DestinationCIDR, Value: "10.0.0.0/8"}}
 	created := time.Date(2026, 10, 4, 10, 0, 0, 123456789, time.FixedZone("EEST", 3*60*60))
 	insp := client.Inspection{
-		Sandbox: client.Sandbox{ID: "s-1", Image: "python:3.12", Command: []string{"echo", "2026-10-04T10:00:00.5+03:00"}, State: models.StateRunning, Resources: models.Resources{MemoryMiB: 512}, Policy: "web", CreatedAt: created},
+		Sandbox: client.Sandbox{ID: "s-1", Image: "python:3.12", Processes: []models.Process{{Name: "api", Command: []string{"echo", "2026-10-04T10:00:00.5+03:00"}}}, State: models.StateRunning, Resources: models.Resources{MemoryMiB: 512}, Policy: "web", CreatedAt: created},
 		Egress:  &egress.Effective{Rules: []egress.EffectiveRule{{Rule: rule, ID: "r1", Implied: "private ranges"}}},
 	}
 
@@ -126,8 +127,12 @@ func TestInspectTableIsTheRecordThenTheRules(t *testing.T) {
 	}
 
 	// A time prints to the second in UTC as every other table, and a command argument shaped like one prints as typed.
-	for _, line := range []string{"id                     s-1", "command[1]             2026-10-04T10:00:00.5+03:00", "resources.memory_mib   512", "created_at             2026-10-04T07:00:00Z", "ID   RULE              IMPLIED", "r1   deny 10.0.0.0/8   private ranges"} {
-		if !strings.Contains(out.String(), line+"\n") {
+	var lines []string
+	for line := range strings.Lines(out.String()) {
+		lines = append(lines, strings.Join(strings.Fields(line), " "))
+	}
+	for _, line := range []string{"id s-1", "processes[0].name api", "processes[0].command[1] 2026-10-04T10:00:00.5+03:00", "resources.memory_mib 512", "created_at 2026-10-04T07:00:00Z", "ID RULE IMPLIED", "r1 deny 10.0.0.0/8 private ranges"} {
+		if !slices.Contains(lines, line) {
 			t.Errorf("the table has no line %q:\n%s", line, out.String())
 		}
 	}

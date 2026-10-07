@@ -13,25 +13,23 @@ import (
 
 // Sandbox is the record a public route answers. It is built field by field, so a field the record gains stays off the wire until it is named here.
 type Sandbox struct {
-	ID            string             `json:"id"`
-	Name          string             `json:"name,omitempty"`
-	Image         string             `json:"image"`
-	Digest        string             `json:"digest,omitempty"`
-	Snapshot      string             `json:"snapshot,omitempty"`
-	ForkedFrom    string             `json:"forked_from,omitempty"`
-	Provider      string             `json:"provider"`
-	Kernel        string             `json:"kernel,omitempty"`
-	State         models.State       `json:"state" enum:"pending,created,running,paused,unresponsive,stopped,failed"`
-	ExitStatus    *models.ExitStatus `json:"exit_status,omitempty"`
-	StoppedReason string             `json:"stopped_reason,omitempty"`
-	FailedReason  string             `json:"failed_reason,omitempty"`
-	Resources     models.Resources   `json:"resources"`
-	Command       []string           `json:"command,omitempty"`
-	Restart       *models.Restart    `json:"restart,omitempty"`
-	Secrets       []string           `json:"secrets,omitempty"`
-	Policy        string             `json:"policy,omitempty"`
-	StartedAt     time.Time          `json:"started_at,omitzero"`
-	CreatedAt     time.Time          `json:"created_at"`
+	ID            string           `json:"id"`
+	Name          string           `json:"name,omitempty"`
+	Image         string           `json:"image"`
+	Digest        string           `json:"digest,omitempty"`
+	Snapshot      string           `json:"snapshot,omitempty"`
+	ForkedFrom    string           `json:"forked_from,omitempty"`
+	Provider      string           `json:"provider"`
+	Kernel        string           `json:"kernel,omitempty"`
+	State         models.State     `json:"state" enum:"pending,created,running,paused,unresponsive,stopped,failed"`
+	StoppedReason string           `json:"stopped_reason,omitempty"`
+	FailedReason  string           `json:"failed_reason,omitempty"`
+	Resources     models.Resources `json:"resources"`
+	Processes     []models.Process `json:"processes,omitempty"`
+	Secrets       []string         `json:"secrets,omitempty"`
+	Policy        string           `json:"policy,omitempty"`
+	StartedAt     time.Time        `json:"started_at,omitzero"`
+	CreatedAt     time.Time        `json:"created_at"`
 }
 
 // Inspection is the public record beside the egress rules the host enforces for it.
@@ -63,12 +61,10 @@ func PublicSandbox(sb models.Sandbox) Sandbox {
 		Provider:      sb.Provider,
 		Kernel:        sb.Kernel,
 		State:         sb.State,
-		ExitStatus:    sb.ExitStatus,
 		StoppedReason: publicStoppedReason(sb.StoppedReason),
 		FailedReason:  sandbox.PublicReason(sb),
 		Resources:     sb.Resources,
-		Command:       sb.Command,
-		Restart:       sb.Restart,
+		Processes:     sb.Processes,
 		Secrets:       sb.Secrets,
 		Policy:        sb.Policy,
 		StartedAt:     sb.StartedAt,

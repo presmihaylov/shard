@@ -353,16 +353,16 @@ func (h *Handler) resizeExec(ctx context.Context, in *execBody[sandbox.TerminalS
 	return done(h.lifecycle.ResizeExec(ctx, in.ID, in.Exec, value(in.Body)))
 }
 
-// describeLogs names the two answers of sandboxLogs: the output as text, or with follow over a WebSocket.
+// describeLogs names the two answers of processLogs: the output as text, or with follow over a WebSocket.
 func describeLogs(registry huma.Registry, op *huma.Operation) {
-	op.Responses["200"] = response("The entrypoint's output as it was written; with follow the body streams until the sandbox stops or is removed.", "text/plain", text())
+	op.Responses["200"] = response("The process's output as it was written, every run the host keeps; with follow the body streams until the process ends or the sandbox stops or is removed.", "text/plain", text())
 	op.Responses["101"] = upgrade("A WebSocket follow with follow=true. Each binary message leads with its stream byte: 1 the output, 3 an EndMessage naming why the follow ended, 5 a FailureMessage.", map[string]*huma.Schema{
 		"3": schemaOf[EndMessage](registry),
 		"5": schemaOf[FailureMessage](registry),
 	})
 }
 
-func (h *Handler) sandboxLogs(w http.ResponseWriter, r *http.Request) {
+func (h *Handler) processLogs(w http.ResponseWriter, r *http.Request) {
 	follow, err := boolQuery(r, "follow")
 	if err != nil {
 		h.writeError(w, r, err)
@@ -378,11 +378,11 @@ func (h *Handler) sandboxLogs(w http.ResponseWriter, r *http.Request) {
 
 	out := &logWriter{w: w, contentType: plainText}
 
-	err = h.lifecycle.Logs(r.Context(), r.PathValue("id"), out)
+	err = h.lifecycle.Logs(r.Context(), r.PathValue("id"), r.PathValue("name"), out)
 
 	// Once a byte is out the status is already 200, so the rest of the failure goes to the daemon's log.
 	if err != nil && out.wrote {
-		h.log.Printf("api: logs of sandbox %s: %v", r.PathValue("id"), err)
+		h.log.Printf("api: %s: %v", logsLabel(r.PathValue("id"), r), err)
 
 		return
 	}
@@ -392,10 +392,10 @@ func (h *Handler) sandboxLogs(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// A sandbox that wrote nothing still answers, and an empty body is what it wrote.
+	// A process that wrote nothing still answers, and an empty body is what it wrote.
 	if !out.wrote {
 		if err := out.header(); err != nil {
-			h.log.Printf("api: logs of sandbox %s: %v", r.PathValue("id"), err)
+			h.log.Printf("api: %s: %v", logsLabel(r.PathValue("id"), r), err)
 		}
 	}
 }
@@ -475,7 +475,7 @@ func (h *Handler) followLogs(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	f, err := h.follow(w, r, "logs of sandbox "+id)
+	f, err := h.follow(w, r, logsLabel(id, r))
 	if err != nil {
 		h.writeError(w, r, err)
 
@@ -483,7 +483,7 @@ func (h *Handler) followLogs(w http.ResponseWriter, r *http.Request) {
 	}
 	defer f.close(websocket.StatusNormalClosure, "")
 
-	reason, err := h.lifecycle.FollowLogs(f.ctx, id, writerFunc(func(p []byte) (int, error) {
+	reason, err := h.lifecycle.FollowLogs(f.ctx, id, r.PathValue("name"), writerFunc(func(p []byte) (int, error) {
 		if err := Send(f.ctx, f.conn, StreamStdout, p); err != nil {
 			return 0, err
 		}
@@ -504,24 +504,28 @@ func (h *Handler) followLogs(w http.ResponseWriter, r *http.Request) {
 	f.send(StreamExit, EndMessage{Reason: reason})
 }
 
-// followLogsPlain is the follow for curl -N: the bytes as they come, and the body ends when the sandbox stops or is removed.
+// followLogsPlain is the follow for curl -N: the bytes as they come, and the body ends when the process ends or the sandbox stops or is removed.
 func (h *Handler) followLogsPlain(w http.ResponseWriter, r *http.Request, id string) {
 	out := &logWriter{w: w, contentType: plainText}
 	if err := out.header(); err != nil {
-		h.log.Printf("api: logs of sandbox %s: %v", id, err)
+		h.log.Printf("api: %s: %v", logsLabel(id, r), err)
 
 		return
 	}
 
-	_, err := h.lifecycle.FollowLogs(r.Context(), id, out)
+	_, err := h.lifecycle.FollowLogs(r.Context(), id, r.PathValue("name"), out)
 
 	// A client that hung up is the usual end of a follow, and no failure.
 	if r.Context().Err() != nil {
 		err = nil
 	}
 	if err != nil {
-		h.log.Printf("api: logs of sandbox %s: %v", id, err)
+		h.log.Printf("api: %s: %v", logsLabel(id, r), err)
 	}
+}
+
+func logsLabel(id string, r *http.Request) string {
+	return "logs of process " + r.PathValue("name") + " of sandbox " + id
 }
 
 // followEgressLog streams decisions until the sandbox stops, fails or is removed.

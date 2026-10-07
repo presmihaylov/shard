@@ -44,7 +44,7 @@ type App struct {
 	InitPath string
 	// Remote is the shard serve front, or the proxy in front of it, a verb speaks to instead of the socket, as https://shard.example.com.
 	Remote string
-	// Interrupts hands out the stop signals; nil, as a test builds, gives a verb none.
+	// Interrupts is the stop signal watcher main runs; no verb takes the signals over from it.
 	Interrupts *Interrupts
 
 	// clientTimeout bounds one daemon call. A test sets it; zero keeps the client's default.
@@ -134,6 +134,24 @@ func parseArgs(verb string, args []string) ([]string, error) {
 	return flags.Args(), nil
 }
 
+// parseAround parses the flags on either side of up to most leading arguments, as in shard run web --name api -- CMD; rest is what follows them.
+func parseAround(flags *flag.FlagSet, args []string, most int) (refs, rest []string, err error) {
+	if err := parseVerb(flags, args); err != nil {
+		return nil, nil, err
+	}
+
+	rest = flags.Args()
+	for len(rest) > 0 && len(refs) < most {
+		refs = append(refs, rest[0])
+		if err := parseVerb(flags, rest[1:]); err != nil {
+			return nil, nil, err
+		}
+		rest = flags.Args()
+	}
+
+	return refs, rest, nil
+}
+
 // helpKey is the key in helps of the verb a flag set parses: shard image remove is image remove, and shard alone the top level.
 func helpKey(flags *flag.FlagSet) string {
 	return strings.TrimPrefix(strings.TrimPrefix(flags.Name(), "shard"), " ")
@@ -220,11 +238,13 @@ type command struct {
 func commands() []command {
 	return []command{
 		{name: "create", run: App.create},
-		{name: "run", run: App.launch},
+		{name: "run", run: App.runProcess},
 		{name: "exec", run: App.exec},
 		{name: "shell", run: App.shell},
 		{name: "list", aliases: []string{"ls"}, run: App.list},
+		{name: "ps", run: App.ps},
 		{name: "logs", run: App.logs},
+		{name: "kill", run: App.kill},
 		{name: "inspect", run: App.inspect},
 		{name: "stop", run: App.stop},
 		{name: "start", run: App.start},

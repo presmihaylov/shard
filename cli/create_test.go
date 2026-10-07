@@ -4,7 +4,6 @@ import (
 	"bytes"
 	"errors"
 	"os"
-	"reflect"
 	"runtime"
 	"slices"
 	"strings"
@@ -15,47 +14,10 @@ import (
 	"github.com/presmihaylov/shard/services/sandbox"
 )
 
-func TestParseRunTheGoalCommand(t *testing.T) {
-	opts, err := parseRun([]string{"python:3.12", "python", "-c", "print(1)"})
-	if err != nil {
-		t.Fatalf("parseRun: %v", err)
-	}
-
-	if opts.req.Image != "python:3.12" || opts.detach {
-		t.Errorf("parseRun = %+v, want python:3.12 attached", opts)
-	}
-
-	if want := []string{"python", "-c", "print(1)"}; !slices.Equal(opts.req.Command, want) {
-		t.Errorf("argv = %v, want %v", opts.req.Command, want)
-	}
-}
-
-func TestParseRunDetachesOnEitherSpelling(t *testing.T) {
-	for _, flag := range []string{"-d", "--detach"} {
-		opts, err := parseRun([]string{flag, "alpine:3.20", "sleep", "60"})
-		if err != nil {
-			t.Fatalf("parseRun(%s): %v", flag, err)
-		}
-		if !opts.detach {
-			t.Errorf("parseRun(%s) = %+v, want it detached", flag, opts)
-		}
-	}
-}
-
-// A sandbox with no app is create's, so run with no command says what it misses rather than run nothing.
-func TestParseRunNeedsACommand(t *testing.T) {
-	for _, args := range [][]string{{"alpine:3.20"}, {"alpine:3.20", "--"}} {
-		_, err := parseRun(args)
-		if want := "run needs a command after the image"; err == nil || err.Error() != want {
-			t.Errorf("parseRun(%v) = %v, want %q", args, err, want)
-		}
-	}
-}
-
 func TestParseCreateRefusesACommand(t *testing.T) {
 	for _, args := range [][]string{{"alpine:3.20", "sleep", "600"}, {"alpine:3.20", "--", "sleep", "600"}} {
 		_, err := parseCreate(args)
-		if want := "create takes no command: shard run [OPTIONS] IMAGE COMMAND [ARGS...]"; err == nil || err.Error() != want {
+		if want := "create takes no command; start one in the sandbox with shard run SANDBOX [OPTIONS] [--] COMMAND [ARGS...]"; err == nil || err.Error() != want {
 			t.Errorf("parseCreate(%v) = %v, want %q", args, err, want)
 		}
 	}
@@ -78,13 +40,6 @@ func TestParseCreateTakesAnImageOrASnapshot(t *testing.T) {
 		if _, err := parseCreate(strings.Fields(args)); err == nil || err.Error() != want {
 			t.Errorf("parseCreate(%q) = %v, want %q", args, err, want)
 		}
-	}
-}
-
-// run starts an app over an image, so --snapshot is create's alone.
-func TestParseRunRefusesASnapshot(t *testing.T) {
-	if _, err := parseRun([]string{"--snapshot", "web-base", "alpine:3.20", "sleep", "600"}); err == nil || !strings.Contains(err.Error(), "snapshot") {
-		t.Errorf("parseRun --snapshot = %v, want a refusal of the flag", err)
 	}
 }
 
@@ -113,9 +68,6 @@ func TestParseCreateFlags(t *testing.T) {
 		t.Errorf("resources = %+v, want 512 MiB, 2 vcpus and a 64 MiB disk", req.Resources)
 	}
 
-	if len(req.Command) != 0 {
-		t.Errorf("argv = %v, want none: the image's own ENTRYPOINT and CMD never run", req.Command)
-	}
 }
 
 func TestParseCreateTakesASizeWithAUnit(t *testing.T) {
@@ -234,41 +186,12 @@ func TestInitPathFromEnv(t *testing.T) {
 	}
 }
 
-func TestParseRunRestartFlags(t *testing.T) {
-	opts, err := parseRun([]string{"--restart", "on-failure", "--restart-retries", "2", "--restart-backoff", "3s", "alpine:3.20", "sleep", "60"})
-	if err != nil {
-		t.Fatalf("parseRun: %v", err)
-	}
-	want := &models.RestartSpec{Policy: models.RestartOnFailure, Retries: 2, Backoff: 3}
-	if !reflect.DeepEqual(opts.req.Restart, want) {
-		t.Errorf("restart = %+v, want %+v", opts.req.Restart, want)
-	}
-
-	opts, err = parseRun([]string{"--restart", "always", "alpine:3.20", "sleep", "60"})
-	if err != nil {
-		t.Fatalf("parseRun: %v", err)
-	}
-	want = &models.RestartSpec{Policy: models.RestartAlways}
-	if !reflect.DeepEqual(opts.req.Restart, want) {
-		t.Errorf("restart = %+v, want %+v with the settings left for the daemon's defaults", opts.req.Restart, want)
-	}
-
-	opts, err = parseRun([]string{"alpine:3.20", "sleep", "60"})
-	if err != nil {
-		t.Fatalf("parseRun: %v", err)
-	}
-	if opts.req.Restart != nil {
-		t.Errorf("restart = %+v, want none when no flag asked for a policy", opts.req.Restart)
-	}
-}
-
-// Only a run has an app to start again, so create and exec point every restart flag at run, with its value.
 func TestCreateAndExecPointARestartFlagToRun(t *testing.T) {
 	cases := map[string][]string{
-		"--restart is a run flag: shard run --restart always IMAGE COMMAND":             {"create", "--restart", "always", "alpine:3.20"},
-		"--restart-retries is a run flag: shard run --restart-retries 2 IMAGE COMMAND":  {"create", "--restart-retries", "2", "alpine:3.20"},
-		"--restart-backoff is a run flag: shard run --restart-backoff 5s IMAGE COMMAND": {"create", "--restart-backoff=5s", "alpine:3.20"},
-		"--restart is a run flag: shard run --restart on-failure IMAGE COMMAND":         {"exec", "--restart", "on-failure", "web", "true"},
+		"--restart is a run flag: shard run SANDBOX --restart always -- COMMAND":             {"create", "--restart", "always", "alpine:3.20"},
+		"--restart-retries is a run flag: shard run SANDBOX --restart-retries 2 -- COMMAND":  {"create", "--restart-retries", "2", "alpine:3.20"},
+		"--restart-backoff is a run flag: shard run SANDBOX --restart-backoff 5s -- COMMAND": {"create", "--restart-backoff=5s", "alpine:3.20"},
+		"--restart is a run flag: shard run SANDBOX --restart on-failure -- COMMAND":         {"exec", "--restart", "on-failure", "web", "true"},
 	}
 
 	for want, args := range cases {
@@ -310,24 +233,6 @@ func TestParseCreateRejections(t *testing.T) {
 	}
 }
 
-func TestParseRunRejections(t *testing.T) {
-	cases := map[string][]string{
-		"no image":                  {},
-		"a policy setting alone":    {"--restart-retries", "2", "alpine:3.20", "true"},
-		"a negative start count":    {"--restart", "on-failure", "--restart-retries", "-1", "alpine:3.20", "true"},
-		"always with a start count": {"--restart", "always", "--restart-retries", "2", "alpine:3.20", "true"},
-		"a sub-second backoff":      {"--restart", "always", "--restart-backoff", "500ms", "alpine:3.20", "true"},
-		"a memory with no unit":     {"--memory", "512", "alpine:3.20", "true"},
-		"a bad secret":              {"--secret", "api_key", "alpine:3.20", "true"},
-	}
-
-	for name, args := range cases {
-		if _, err := parseRun(args); err == nil {
-			t.Errorf("parseRun(%s) returned no error", name)
-		}
-	}
-}
-
 func TestParseCreateNamesAFractionalCPUBound(t *testing.T) {
 	for _, value := range []string{"0.5", "1.0"} {
 		_, err := parseCreate([]string{"--vcpus", value, "alpine:3.20"})
@@ -357,31 +262,5 @@ func TestParseCreateRefusesABadOrDoubledSecret(t *testing.T) {
 func TestParseCreateRefusesABadPolicyName(t *testing.T) {
 	if _, err := parseCreate([]string{"--policy", "Bad Name", "alpine"}); err == nil {
 		t.Error("parseCreate accepted a bad policy name")
-	}
-}
-
-func TestParseRunPreservesArguments(t *testing.T) {
-	command := []string{"sh", "-c", "echo ready", "", "--", "--help", "--name", "guest", "-it"}
-	for _, separator := range [][]string{nil, {"--"}} {
-		args := []string{"--name", "lab", "alpine:3.22"}
-		args = append(args, separator...)
-		args = append(args, command...)
-		opts, err := parseRun(args)
-		if err != nil {
-			t.Fatalf("parseRun: %v", err)
-		}
-		if opts.req.Name != "lab" || opts.req.Image != "alpine:3.22" || !slices.Equal(opts.req.Command, command) {
-			t.Errorf("parseRun = %+v, want the guest arguments intact", opts.req)
-		}
-	}
-}
-
-func TestParseRunTakesACommandThatStartsWithAHyphen(t *testing.T) {
-	opts, err := parseRun([]string{"alpine:3.22", "--guest", "-it"})
-	if err != nil {
-		t.Fatalf("parseRun: %v", err)
-	}
-	if !slices.Equal(opts.req.Command, []string{"--guest", "-it"}) {
-		t.Errorf("command = %v, want the guest command intact", opts.req.Command)
 	}
 }

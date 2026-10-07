@@ -272,8 +272,6 @@ func (h *Handler) register(mux *http.ServeMux) huma.API {
 		}
 		e.serve(api, op)
 	}
-	// A record carries the backoff its request may leave out, and the two share one field.
-	registry.Map()["Restart"].Required = append(registry.Map()["Restart"].Required, "backoff")
 	nullStructs(registry)
 
 	// The mux answers an unknown path with a JSON error, like every other error body on this socket.

@@ -24,11 +24,9 @@ type Sandbox struct {
 	// Kernel is the guest kernel a microVM substrate last booted, as its release tag or local-<sha12>; empty on a container substrate.
 	Kernel string `json:"kernel,omitempty"`
 	State  State  `json:"state"`
-	// ExitStatus is the last entrypoint exit, nil until one happens. A sandbox has none of its own.
-	ExitStatus *ExitStatus `json:"exit_status,omitempty"`
-	// ExitChannel says why the daemon no longer reads the entrypoint exit from the guest, empty while it does.
+	// ExitChannel says why the daemon no longer reads the process table from the guest, empty while it does.
 	ExitChannel string `json:"exit_channel,omitempty"`
-	// StoppedReason says why shard stopped it when no operator did, or why shard-init died on a stop; empty otherwise.
+	// StoppedReason says why shard stopped it when no operator did, or why shard-init died; empty otherwise.
 	StoppedReason string `json:"stopped_reason,omitempty"`
 	// FailedReason is the raw cause of a create that never reached running or a pause that lost the guest; never served on a public route.
 	FailedReason string `json:"failed_reason,omitempty"`
@@ -52,15 +50,12 @@ type Sandbox struct {
 	// Resources is what the sandbox was bounded by, because SHARD-24 start re-creates it from the record.
 	Resources Resources `json:"resources"`
 
-	// Command is the app shard run started under shard-init, empty for a sandbox create made.
-	Command []string `json:"command,omitempty"`
-	// Restart is the policy shard-init starts the entrypoint again under, nil for a sandbox without one.
-	Restart *Restart `json:"restart,omitempty"`
-
 	// Processes are the named processes shard run started, with the status the daemon last read of each.
 	Processes []Process `json:"processes,omitempty"`
 	// StoppedByOperator says a shard stop ended the last run, which keeps unless-stopped processes down on a daemon start.
 	StoppedByOperator bool `json:"stopped_by_operator,omitempty"`
+	// LogStarts is each process log's size when its current run started, where an attach begins; never served.
+	LogStarts map[string]int64 `json:"log_starts,omitempty"`
 
 	// Secrets names what the guest holds a placeholder for. The values live in the secret store and
 	// reach a request only at the proxy, so this list is a grant and never a value.

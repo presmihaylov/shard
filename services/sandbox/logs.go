@@ -5,9 +5,9 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"slices"
 	"time"
 
-	"github.com/presmihaylov/shard/models"
 	"github.com/presmihaylov/shard/services/sandboxstate"
 )
 
@@ -16,23 +16,19 @@ const followInterval = 200 * time.Millisecond
 
 // The reasons a follow ends on its own, which the end message of logs?follow=true carries.
 const (
+	LogsEnded   = "ended"
 	LogsStopped = "stopped"
 	LogsRemoved = "removed"
 )
 
-// Logs writes what the entrypoint wrote into w: the rotated file the daemon keeps, then the log, so a stopped sandbox still answers.
-func (s *Service) Logs(_ context.Context, ref string, w io.Writer) (err error) {
-	id, sb, err := s.logged(ref)
+// Logs writes what one process wrote, every run the host still keeps of it, so a stopped sandbox still answers.
+func (s *Service) Logs(_ context.Context, ref, name string, w io.Writer) (err error) {
+	id, err := s.logged(ref, name)
 	if err != nil {
 		return err
 	}
 
-	// A create still pulling has written nothing, so it answers what a created sandbox that never ran does.
-	if sb.State == models.StatePending {
-		return nil
-	}
-
-	t, err := s.openLogs(id)
+	t, err := s.openProcessLog(id, name, 0)
 	if err != nil {
 		return err
 	}
@@ -41,82 +37,59 @@ func (s *Service) Logs(_ context.Context, ref string, w io.Writer) (err error) {
 	return t.read(w)
 }
 
-// FollowLogs writes the output as it grows and answers why that ended, or nothing when the caller left first.
-func (s *Service) FollowLogs(ctx context.Context, ref string, w io.Writer) (reason string, err error) {
-	id, sb, err := s.logged(ref)
+// FollowLogs writes one process's output as it grows and answers why that ended, or nothing when the caller left first.
+func (s *Service) FollowLogs(ctx context.Context, ref, name string, w io.Writer) (reason string, err error) {
+	id, err := s.logged(ref, name)
 	if err != nil {
 		return "", err
 	}
 
-	// The output appears with the substrate, so a follow of a pending create waits on the record until the create ends.
-	for sb.State == models.StatePending {
-		select {
-		case <-ctx.Done():
-			return "", nil
-		case <-time.After(followInterval):
-		}
-
-		sb, err = s.cfg.Repo.Get(id)
-		if errors.Is(err, sandboxstate.ErrNotFound) {
-			return LogsRemoved, nil
-		}
-		if err != nil {
-			return "", err
-		}
-		if err := FailedGuard(id, sb); err != nil {
-			return "", err
-		}
-	}
-
-	t, err := s.openLogs(id)
+	t, err := s.openProcessLog(id, name, 0)
 	if err != nil {
 		return "", err
 	}
 	defer func() { err = errors.Join(err, t.close()) }()
 
-	return s.follow(ctx, w, t, id)
+	return s.follow(ctx, w, t, id, name)
 }
 
-// logged asks the record before the provider, so an id nobody ever created is refused as one.
-func (s *Service) logged(ref string) (string, models.Sandbox, error) {
+// logged asks the record before the provider, so an id nobody ever created and a name it never ran are refused as such.
+func (s *Service) logged(ref, name string) (string, error) {
 	id, err := s.cfg.Repo.Resolve(ref)
 	if err != nil {
-		return "", models.Sandbox{}, err
+		return "", err
 	}
 
 	sb, err := s.cfg.Repo.Get(id)
 	if err != nil {
-		return "", models.Sandbox{}, err
+		return "", err
 	}
 
 	if err := FailedGuard(id, sb); err != nil {
-		return "", models.Sandbox{}, err
+		return "", err
+	}
+	if !slices.ContainsFunc(sb.Processes, named(name)) {
+		return "", noProcess(id, sb, name)
 	}
 
-	return id, sb, nil
-}
-
-func (s *Service) openLogs(id string) (*tail, error) {
-	path, err := s.cfg.Provider.LogPath(id)
-	if err != nil {
-		return nil, err
-	}
-
-	t, err := openTail(path)
-	if err != nil {
-		return nil, fmt.Errorf("open the output of sandbox %s: %w", id, err)
-	}
-
-	return t, nil
+	return id, nil
 }
 
 // follow asks the substrate, not the record, because a record saying running outlives an OOM kill.
-func (s *Service) follow(ctx context.Context, w io.Writer, t *tail, id string) (string, error) {
+func (s *Service) follow(ctx context.Context, w io.Writer, t *tail, id, name string) (string, error) {
 	for {
-		// The status is read before the copy, so what the entrypoint wrote on its way out is drained.
+		// Both are read before the copy, so what the process wrote on its way out is drained.
 		status, err := s.cfg.Provider.Status(ctx, id)
 		if err != nil {
 			return "", err
+		}
+		ended := false
+		if status.Alive() {
+			p, _, found, err := s.processOf(ctx, id, name)
+			if err != nil {
+				return "", err
+			}
+			ended = !found || p.Status.State.Ended()
 		}
 
 		if err := t.follow(w); err != nil {
@@ -125,6 +98,9 @@ func (s *Service) follow(ctx context.Context, w io.Writer, t *tail, id string) (
 
 		if !status.Alive() {
 			return s.logsEnd(id)
+		}
+		if ended {
+			return LogsEnded, nil
 		}
 
 		select {

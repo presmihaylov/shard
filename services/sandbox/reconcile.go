@@ -220,6 +220,7 @@ func (s *Service) applyReconcile(ctx context.Context, sb models.Sandbox, status 
 		rec.PID = 0
 		rec.StoppedReason = LostReason
 		rec.UnresponsiveReason = ""
+		rec.Processes = endProcesses(rec.Processes)
 
 		return nil
 	})
