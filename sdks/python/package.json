@@ -1,6 +1,6 @@
 {
   "name": "useshards-python",
-  "version": "0.1.2",
+  "version": "0.1.3",
   "private": true,
   "description": "The semver twin of the Python SDK's version, for Changesets; release.py sync writes its PEP 440 form into _version.py."
 }
