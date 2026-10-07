@@ -69,7 +69,7 @@ func (t autostart) Run(ctx context.Context) error {
 	}
 	// SHARD-376 (shard's ruling): a sandbox's error is logged and the rest still start.
 	failures := sandboxErrors{logger: logger, task: t.Name()}
-	failures.tick(ctx, svc.Autostart(ctx, sandboxes))
+	failures.tick(ctx, svc.Autostart(ctx, sandboxes, func(line string) { logger.Print(line) }))
 
 	return nil
 }

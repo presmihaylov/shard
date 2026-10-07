@@ -10,10 +10,10 @@ import (
 )
 
 // Autostart brings back what a daemon start owes: each stopped sandbox with a process that start launches, and each such process a running sandbox's guest never got.
-func (s *Service) Autostart(ctx context.Context, sandboxes []models.Sandbox) error {
+func (s *Service) Autostart(ctx context.Context, sandboxes []models.Sandbox, report func(string)) error {
 	var errs []error
 	for _, sb := range sandboxes {
-		if err := s.autostart(ctx, sb.ID); err != nil {
+		if err := s.autostart(ctx, sb.ID, report); err != nil {
 			errs = append(errs, fmt.Errorf("sandbox %s: %w", nameOf(sb.ID, sb), err))
 		}
 	}
@@ -31,7 +31,7 @@ func Owed(sb models.Sandbox) bool {
 }
 
 // autostart reads the record again under the lock, because a verb may have moved the sandbox since the list.
-func (s *Service) autostart(ctx context.Context, id string) error {
+func (s *Service) autostart(ctx context.Context, id string, report func(string)) error {
 	unlock, err := s.lock(ctx, id)
 	if err != nil {
 		return err
@@ -51,6 +51,7 @@ func (s *Service) autostart(ctx context.Context, id string) error {
 		if err := s.start(ctx, id); err != nil {
 			return imageGone(nameOf(id, sb), sb.Image, sb.Digest, "start", err)
 		}
+		report(fmt.Sprintf("sandbox %s: started as the daemon came up, for the processes its restart policies bring back", nameOf(id, sb)))
 
 		return s.launch(ctx, id, daemonStart, nil)
 	case models.StateRunning:

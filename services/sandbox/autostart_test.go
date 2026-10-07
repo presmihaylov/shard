@@ -51,8 +51,9 @@ func TestAutostartStartsAStoppedSandboxAndWhatItOwes(t *testing.T) {
 	sb := withProcesses(stopped(), proc("web", models.RestartAlways), proc("job", models.RestartNo))
 	r := &recorder{}
 	svc, l := newService(t, r, sb)
+	var reports []string
 
-	if err := svc.Autostart(t.Context(), []models.Sandbox{sb}); err != nil {
+	if err := svc.Autostart(t.Context(), []models.Sandbox{sb}, func(line string) { reports = append(reports, line) }); err != nil {
 		t.Fatalf("autostart: %v", err)
 	}
 
@@ -62,6 +63,9 @@ func TestAutostartStartsAStoppedSandboxAndWhatItOwes(t *testing.T) {
 	if got := specNames(l.provider.specs); !slices.Equal(got, []string{"web"}) {
 		t.Errorf("the autostart ran %v, want web alone", got)
 	}
+	if len(reports) != 1 || !strings.Contains(reports[0], "started as the daemon came up") {
+		t.Errorf("the autostart reported %v, want one line on the start", reports)
+	}
 }
 
 func TestAutostartLeavesASandboxTheOperatorStopped(t *testing.T) {
@@ -70,7 +74,7 @@ func TestAutostartLeavesASandboxTheOperatorStopped(t *testing.T) {
 	r := &recorder{}
 	svc, _ := newService(t, r, sb)
 
-	if err := svc.Autostart(t.Context(), []models.Sandbox{sb}); err != nil {
+	if err := svc.Autostart(t.Context(), []models.Sandbox{sb}, func(string) {}); err != nil {
 		t.Fatalf("autostart: %v", err)
 	}
 	if got := keep(r.calls, "provider.Start", "provider.StartProcess"); len(got) != 0 {
@@ -85,7 +89,7 @@ func TestAutostartHandsARunningSandboxOnlyWhatItsGuestLacks(t *testing.T) {
 	svc, l := newService(t, r, sb)
 	l.provider.report(models.ProcessReport{Name: "web", ProcessStatus: models.ProcessStatus{State: models.ProcessRestarting}})
 
-	if err := svc.Autostart(t.Context(), []models.Sandbox{sb}); err != nil {
+	if err := svc.Autostart(t.Context(), []models.Sandbox{sb}, func(string) {}); err != nil {
 		t.Fatalf("autostart: %v", err)
 	}
 
@@ -103,7 +107,7 @@ func TestAutostartStartsNothingInASandboxWhoseTableIsBroken(t *testing.T) {
 	svc, l := newService(t, &recorder{}, sb)
 	l.provider.tableErr = fmt.Errorf("fd 0 of PID 1 is not a regular file: %w", models.ErrExitChannelReplaced)
 
-	err := svc.Autostart(t.Context(), []models.Sandbox{sb})
+	err := svc.Autostart(t.Context(), []models.Sandbox{sb}, func(string) {})
 
 	if err == nil || !strings.Contains(err.Error(), "unreadable") {
 		t.Errorf("autostart returned %v, want the broken table named", err)
