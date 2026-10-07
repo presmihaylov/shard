@@ -16,7 +16,7 @@ func Rotated(path string) string { return path + ".1" }
 
 // Truncate bounds a log another process appends to, which a rename would leave writing the renamed file: past max, the last max bytes move to Rotated and the log is emptied in place.
 func Truncate(path string, max int64) (err error) {
-	f, err := os.OpenFile(path, os.O_RDWR, 0)
+	f, err := openRegular(path, os.O_RDWR)
 	if errors.Is(err, fs.ErrNotExist) {
 		return nil
 	}

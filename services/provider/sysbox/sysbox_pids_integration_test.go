@@ -23,7 +23,7 @@ import (
 func TestEverySandboxGetsThePidsBound(t *testing.T) {
 	h := newHarness(t)
 
-	spec := h.newSpec(t, "/bin/sh", "-c", "while true; do sleep 1; done")
+	spec := h.newSpec(t)
 
 	if err := h.provider.Create(t.Context(), spec); err != nil {
 		t.Fatalf("Create: %v", err)
@@ -45,7 +45,7 @@ func TestEverySandboxGetsThePidsBound(t *testing.T) {
 func TestThePidsBoundStopsAForkStorm(t *testing.T) {
 	h := newHarness(t)
 
-	spec := h.newSpec(t, "/bin/sh", "-c", "while true; do sleep 1; done")
+	spec := h.newSpec(t)
 
 	if err := h.provider.Create(t.Context(), spec); err != nil {
 		t.Fatalf("Create: %v", err)
@@ -79,7 +79,7 @@ func TestThePidsBoundStopsAForkStorm(t *testing.T) {
 func TestAPreFixConfigStillGetsThePidsBoundOnRestart(t *testing.T) {
 	h := newHarness(t)
 
-	spec := h.newSpec(t, "/bin/sh", "-c", "while true; do sleep 1; done")
+	spec := h.newSpec(t)
 
 	if err := h.provider.Create(t.Context(), spec); err != nil {
 		t.Fatalf("Create: %v", err)

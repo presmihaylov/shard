@@ -39,6 +39,17 @@ func (b Bundle) UnmountDisk() error {
 	return diskimage.Unmount(b.Image, b.Disk)
 }
 
+// KeepDisk mounts a stopped sandbox's disk and leaves it up until the next start or remove, so the logs on it read; a bundle never provisioned has none.
+func (b Bundle) KeepDisk() error {
+	defer b.lockDisk()()
+
+	if _, err := os.Stat(b.Image); errors.Is(err, fs.ErrNotExist) {
+		return nil
+	}
+
+	return b.MountDisk()
+}
+
 // withDisk runs fn over a mounted disk and leaves it as found; a bundle never provisioned, as a unit test's, keeps its layers on the host.
 func (b Bundle) withDisk(fn func() error) error {
 	defer b.lockDisk()()

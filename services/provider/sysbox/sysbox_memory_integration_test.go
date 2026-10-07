@@ -20,7 +20,7 @@ const boundMiB = 64
 func TestABoundSandboxPinsSwapAndGroupsItsOOMKill(t *testing.T) {
 	h := newHarness(t)
 
-	spec := h.newSpec(t, "/bin/sh", "-c", "while true; do sleep 1; done")
+	spec := h.newSpec(t)
 	spec.Resources = models.Resources{MemoryMiB: boundMiB}
 
 	if err := h.provider.Create(t.Context(), spec); err != nil {

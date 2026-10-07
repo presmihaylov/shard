@@ -44,14 +44,11 @@ func TestASandboxResolvesANameThroughTheWrittenResolverConfig(t *testing.T) {
 // A sandbox with no network at all must still create and run, because most tests ask for none.
 func TestASandboxWithNoNetworkHasNoResolverConfigOfItsOwn(t *testing.T) {
 	h := newHarness(t)
-	spec := h.start(t, "/bin/sh", "-c", "nc -w 3 1.1.1.1 80 < /dev/null")
+	spec := h.start(t)
 
-	status, err := h.provider.Wait(t.Context(), spec.ID)
-	if err != nil {
-		t.Fatalf("Wait: %v", err)
-	}
-	if status.Code == 0 {
-		t.Error("a sandbox with --network=none reached the internet")
+	report, _ := h.runToEnd(t, spec.ID, "dial", "/bin/sh", "-c", "nc -w 3 1.1.1.1 80 < /dev/null")
+	if report.Exit == nil || report.Exit.Code == 0 {
+		t.Errorf("a sandbox with --network=none reached the internet: %+v", report)
 	}
 }
 
@@ -60,9 +57,10 @@ func TestASandboxWithNoNetworkHasNoResolverConfigOfItsOwn(t *testing.T) {
 func TestOneSandboxCannotReachAnother(t *testing.T) {
 	h := newNetworkedHarness(t)
 
-	listener := h.newSpec(t, "/bin/sh", "-c", "while true; do echo served | nc -l -p 8080; done")
+	listener := h.newSpec(t)
 	address := listener.Network.Address.Addr().String()
 	h.startSpec(t, listener)
+	h.run(t, listener.ID, "listener", "/bin/sh", "-c", "while true; do echo served | nc -l -p 8080; done")
 
 	awaitDial(t, net.JoinHostPort(address, "8080"))
 
@@ -104,19 +102,14 @@ func TestASandboxCannotReachTheHost(t *testing.T) {
 func (h *harness) runNetworked(t *testing.T, command string) (int, string) {
 	t.Helper()
 
-	spec := h.start(t, "/bin/sh", "-c", command)
+	spec := h.start(t)
 
-	status, err := h.provider.Wait(t.Context(), spec.ID)
-	if err != nil {
-		t.Fatalf("Wait: %v", err)
+	report, log := h.runToEnd(t, spec.ID, "probe", "/bin/sh", "-c", command)
+	if report.Exit == nil {
+		t.Fatalf("probe ended with no exit: %+v", report)
 	}
 
-	path, err := h.provider.LogPath(spec.ID)
-	if err != nil {
-		t.Fatalf("LogPath: %v", err)
-	}
-
-	return status.Code, readFile(t, path)
+	return report.Exit.Code, log
 }
 
 // startSpec runs a sandbox the caller already built, which a test that needs its address must do.
@@ -131,7 +124,7 @@ func (h *harness) startSpec(t *testing.T, spec models.SandboxSpec) {
 	}
 }
 
-// awaitDial waits for a listener to answer, because a sandbox's entrypoint starts after Start returns.
+// awaitDial waits for a listener to answer, because a listener binds after its process execs.
 func awaitDial(t *testing.T, address string) {
 	t.Helper()
 
@@ -165,7 +158,7 @@ func acceptForever(listener net.Listener) {
 // so that only Reapply can put them back. Only the input chain exists yet; SHARD-70 adds an egress case.
 func TestTheHostRulesHoldAfterAResume(t *testing.T) {
 	h := newNetworkedHarness(t)
-	spec := h.start(t, "/bin/sh", "-c", "sleep 300")
+	spec := h.start(t)
 	checkpoint := filepath.Join(t.TempDir(), "checkpoint")
 
 	gateway := h.net.Gateway().String()

@@ -13,7 +13,7 @@ import (
 func TestTrustProxyOnAMountedOverlayLeavesTheStoreRemovable(t *testing.T) {
 	requireRunsc(t)
 
-	b, lower := buildBundle(t, t.TempDir(), []string{"/bin/true"})
+	b, lower := buildBundle(t, t.TempDir())
 	if err := b.Mount(lower); err != nil {
 		t.Fatalf("mount the overlay: %v", err)
 	}

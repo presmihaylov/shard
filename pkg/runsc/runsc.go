@@ -181,7 +181,7 @@ type CreateOptions struct {
 	Bundle string
 	Stdout *os.File
 	Stderr *os.File
-	// Stdin is the guest's fd 0. shard-init reports the entrypoint exit on it, a channel the guest cannot reach.
+	// Stdin is the guest's fd 0. shard-init reports its process table on it, a channel the guest cannot reach.
 	Stdin *os.File
 }
 
@@ -219,8 +219,7 @@ func (r *Runner) Create(ctx context.Context, id string, opts CreateOptions) erro
 	return nil
 }
 
-// ExecOptions is one process in a sandbox that already runs. It is never the entrypoint, so it has
-// no supervisor and its exit ends nothing.
+// ExecOptions is one process in a sandbox that already runs; it is never PID 1, so its exit ends nothing.
 type ExecOptions struct {
 	// Bundle holds config.json, whose process the exec starts from.
 	Bundle  string

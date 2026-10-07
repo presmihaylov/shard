@@ -120,12 +120,14 @@ func TestForkRefusesACheckpointWithNoConfig(t *testing.T) {
 	}
 }
 
-// A fork of an exited sandbox must answer Wait at once, so Export carries the exit record and Fork lays it back.
-func TestForkCarriesTheExitRecord(t *testing.T) {
+// A fork of a stopped sandbox lists what its source last ran, so Export carries the process table and Fork lays it back.
+func TestForkCarriesTheProcessTable(t *testing.T) {
 	source := newSpec(t)
 	b, _ := build(t, source, models.ImageConfig{})
 
-	write(t, b.ExitFile, "{\"kind\":\"exit\",\"code\":7,\"signal\":0}\n")
+	if err := os.WriteFile(b.ExitFile, []byte(table("web")), 0o600); err != nil {
+		t.Fatalf("plant the table: %v", err)
+	}
 
 	checkpoint := t.TempDir()
 	if err := b.Export(t.Context(), checkpoint); err != nil {
@@ -139,12 +141,9 @@ func TestForkCarriesTheExitRecord(t *testing.T) {
 		t.Fatalf("Fork: %v", err)
 	}
 
-	exit, found, err := bundle.ReadExitStatus(c.ExitFile)
-	if err != nil || !found {
-		t.Fatalf("ReadExitStatus(%q) = %+v, %v, %v, want the carried record", c.ExitFile, exit, found, err)
-	}
-	if exit.Code != 7 {
-		t.Errorf("the fork carried exit %+v, want code 7", exit)
+	got, err := bundle.ReadProcessTable(c.ExitFile)
+	if err != nil || len(got) != 1 || got[0].Name != "web" || got[0].State != models.ProcessRunning {
+		t.Fatalf("ReadProcessTable(%q) = %+v, %v, want the carried table", c.ExitFile, got, err)
 	}
 }
 

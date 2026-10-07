@@ -116,19 +116,6 @@ func TestAWedgedRuncFailsWithTheContextRatherThanHanging(t *testing.T) {
 	}
 }
 
-// Wait polls for a file that may never arrive, so its context is the only thing that ends it.
-func TestWaitGivesUpWithItsContext(t *testing.T) {
-	p := newProviderOver(t, `echo '{"id":"amber-otter-1a2b","status":"running","pid":42}'`)
-
-	ctx, cancel := context.WithTimeout(t.Context(), 200*time.Millisecond)
-	defer cancel()
-
-	_, err := p.Wait(ctx, "amber-otter-1a2b")
-	if !errors.Is(err, context.DeadlineExceeded) {
-		t.Errorf("Wait returned %v, want the context deadline", err)
-	}
-}
-
 // A sandbox sysbox-runc never heard of reads as absent, not as an error, so a stale record can be read past.
 func TestStatusOfAnUnknownSandboxIsAbsent(t *testing.T) {
 	p := newProviderOver(t, `echo 'container "amber-otter-1a2b" does not exist' >&2; exit 1`)

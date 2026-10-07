@@ -128,7 +128,7 @@ type CreateOptions struct {
 	Bundle string
 	Stdout *os.File
 	Stderr *os.File
-	// Stdin is the guest's fd 0. shard-init reports the entrypoint exit on it, a channel the guest cannot reach.
+	// Stdin is the guest's fd 0. shard-init reports its process table on it, a channel the guest cannot reach.
 	Stdin *os.File
 }
 
@@ -171,8 +171,7 @@ func createArgs(id, bundle string, noNewKeyring bool) []string {
 	return append(args, id)
 }
 
-// ExecOptions is one process in a container that already runs. It is never the entrypoint, so it has
-// no supervisor and its exit ends nothing.
+// ExecOptions is one process in a container that already runs; it is never PID 1, so its exit ends nothing.
 type ExecOptions struct {
 	// Bundle is the directory create was given. Its config.json process is what the exec starts from, as runc's own flags would.
 	Bundle  string

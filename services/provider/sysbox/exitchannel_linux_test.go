@@ -1,7 +1,6 @@
 package sysbox_test
 
 import (
-	"encoding/json"
 	"errors"
 	"fmt"
 	"os"
@@ -40,56 +39,49 @@ func (l *channelLab) script(t *testing.T, body string) {
 	}
 }
 
-func record(t *testing.T, exit models.ExitStatus) []byte {
-	t.Helper()
-
-	encoded, err := json.Marshal(models.ExitReport{Kind: models.ExitReportKind, Code: exit.Code, Signal: exit.Signal})
-	if err != nil {
-		t.Fatal(err)
-	}
-
-	return []byte("\n" + string(encoded) + "\n")
-}
-
-func writeRecord(t *testing.T, f *os.File, exit models.ExitStatus) {
+func writeTable(t *testing.T, f *os.File, reports ...models.ProcessReport) {
 	t.Helper()
 
 	page := make([]byte, models.ExitChannelSize)
-	copy(page, record(t, exit))
+	copy(page, tableLine(t, reports...))
 	if _, err := f.WriteAt(page, 0); err != nil {
 		t.Fatal(err)
 	}
 }
 
-// After a restart the daemon finds the page through PID 1's fd 0 and copies its record into the exit file.
+// hasProcess reports a table of exactly one process, name, in state.
+func hasProcess(rows []models.ProcessReport, name string, state models.ProcessState) bool {
+	return len(rows) == 1 && rows[0].Name == name && rows[0].State == state
+}
+
+// After a restart the daemon finds the page through PID 1's fd 0 and copies its table into the exit file.
 func TestAReopenReadsTheSealedPageCreateRecorded(t *testing.T) {
 	lab := newChannelLab(t)
 	page := sealedPage(t)
 	lab.pointFd0(t, fmt.Sprintf("/proc/self/fd/%d", page.Fd()))
 	lab.record(t, inodeOf(t, fmt.Sprintf("/proc/self/fd/%d", page.Fd())))
-	writeRecord(t, page, models.ExitStatus{Code: 5})
+	writeTable(t, page, reportOf("web", models.ProcessRunning, 0))
 
-	exit, err := lab.exitStatus(t)
-	if err != nil || exit == nil || *exit != (models.ExitStatus{Code: 5}) {
-		t.Fatalf("ExitStatus returned %+v, %v, want {code:5}", exit, err)
+	rows, err := lab.processes(t)
+	if err != nil || !hasProcess(rows, "web", models.ProcessRunning) {
+		t.Fatalf("Processes returned %+v, %v, want web running", rows, err)
 	}
 
-	// A guest write that is no record leaves the last one standing.
-	if _, err := page.WriteAt([]byte("not a record\n"), 0); err != nil {
+	// A guest write that is no table fails the read and nothing else, and the next table reads again.
+	if _, err := page.WriteAt([]byte("not a table\n"), 0); err != nil {
 		t.Fatal(err)
 	}
-	exit, err = lab.exitStatus(t)
-	if err != nil || exit == nil || *exit != (models.ExitStatus{Code: 5}) {
-		t.Errorf("ExitStatus after a guest write returned %+v, %v, want {code:5} still", exit, err)
+	if rows, err := lab.processes(t); err == nil {
+		t.Errorf("Processes after a guest write returned %+v, want the forged page refused", rows)
 	}
 
-	writeRecord(t, page, models.ExitStatus{Code: 7})
-	if exit, err := lab.exitStatus(t); err != nil || exit == nil || *exit != (models.ExitStatus{Code: 7}) {
-		t.Errorf("ExitStatus after the next exit returned %+v, %v, want {code:7}", exit, err)
+	writeTable(t, page, reportOf("web", models.ProcessGaveUp, 2))
+	if rows, err := lab.processes(t); err != nil || !hasProcess(rows, "web", models.ProcessGaveUp) {
+		t.Errorf("Processes after the next table returned %+v, %v, want web gave up", rows, err)
 	}
-	got, found, err := bundle.ReadExitStatus(lab.b.ExitFile)
-	if err != nil || !found || got != (models.ExitStatus{Code: 7}) {
-		t.Errorf("the exit file reads %+v (found %v, %v), want {code:7}", got, found, err)
+	rows, err = bundle.ReadProcessTable(lab.b.ExitFile)
+	if err != nil || !hasProcess(rows, "web", models.ProcessGaveUp) {
+		t.Errorf("the exit file reads %+v, %v, want web gave up", rows, err)
 	}
 }
 
@@ -101,22 +93,22 @@ func TestAReopenNamesTheGuestsOwnSealedPageReplaced(t *testing.T) {
 	lab.pointFd0(t, fmt.Sprintf("/proc/self/fd/%d", theirs.Fd()))
 	lab.record(t, inodeOf(t, fmt.Sprintf("/proc/self/fd/%d", ours.Fd())))
 
-	_, err := lab.exitStatus(t)
+	_, err := lab.processes(t)
 	if !errors.Is(err, models.ErrExitChannelReplaced) {
-		t.Errorf("ExitStatus over the guest's own memfd returned %v, want %v", err, models.ErrExitChannelReplaced)
+		t.Errorf("Processes over the guest's own memfd returned %v, want %v", err, models.ErrExitChannelReplaced)
 	}
 }
 
-// PID 1 writes its record and exits inside Stop, so Stop copies it before it returns: a daemon that dies next keeps it.
-func TestAStopCopiesTheRecordPidOneLeftBeforeItReturns(t *testing.T) {
+// PID 1 writes its last table and exits inside Stop, so Stop copies it before it returns: a daemon that dies next keeps it.
+func TestAStopCopiesTheTablePidOneLeftBeforeItReturns(t *testing.T) {
 	lab := newChannelLab(t)
 	page := sealedPage(t)
 	lab.pointFd0(t, fmt.Sprintf("/proc/self/fd/%d", page.Fd()))
 	lab.record(t, inodeOf(t, fmt.Sprintf("/proc/self/fd/%d", page.Fd())))
 
 	dir := t.TempDir()
-	report := filepath.Join(dir, "record")
-	if err := os.WriteFile(report, record(t, models.ExitStatus{Code: 7}), 0o600); err != nil {
+	report := filepath.Join(dir, "table")
+	if err := os.WriteFile(report, tableLine(t, reportOf("web", models.ProcessExited, 0)), 0o600); err != nil {
 		t.Fatal(err)
 	}
 	killed := filepath.Join(dir, "killed")
@@ -130,13 +122,13 @@ esac`, report, os.Getpid(), page.Fd(), killed, killed, labID, labID, labPid))
 		t.Fatalf("Stop: %v", err)
 	}
 
-	got, found, err := bundle.ReadExitStatus(lab.b.ExitFile)
-	if err != nil || !found || got != (models.ExitStatus{Code: 7}) {
-		t.Errorf("after Stop the exit file reads %+v (found %v, %v), want {code:7}", got, found, err)
+	rows, err := bundle.ReadProcessTable(lab.b.ExitFile)
+	if err != nil || !hasProcess(rows, "web", models.ProcessExited) {
+		t.Errorf("after Stop the exit file reads %+v, %v, want web exited", rows, err)
 	}
 }
 
-// Guest root that replaced fd 0 loses its exit record, never the stop that only the host may give.
+// Guest root that replaced fd 0 loses its process table, never the stop that only the host may give.
 func TestAStopEndsASandboxWhoseFdZeroWasReplaced(t *testing.T) {
 	for name, target := range map[string]func(*testing.T) string{
 		"a FIFO": func(t *testing.T) string {
@@ -190,8 +182,8 @@ esac`, filepath.Join(work, "killed"), ended, onTerm, ended, labID, labID, labPid
 	return lab, work
 }
 
-// The grace bounds the stop and is never a wait: an entrypoint that exits on TERM ends it at once (SHARD-460).
-func TestAStopReturnsOnceTheEntrypointExitsOnTerm(t *testing.T) {
+// The grace bounds the stop and is never a wait: a shard-init that exits on TERM ends it at once (SHARD-460).
+func TestAStopReturnsOnceShardInitExitsOnTerm(t *testing.T) {
 	lab, work := stopLab(t, true)
 
 	started := time.Now()
@@ -200,14 +192,14 @@ func TestAStopReturnsOnceTheEntrypointExitsOnTerm(t *testing.T) {
 	}
 
 	if took := time.Since(started); took > 3*time.Second {
-		t.Errorf("Stop took %s of the %s grace, so it waited past an entrypoint that exited on TERM", took, models.StopGrace)
+		t.Errorf("Stop took %s of the %s grace, so it waited past a sandbox that exited on TERM", took, models.StopGrace)
 	}
 	if _, err := os.Stat(filepath.Join(work, "killed")); err == nil {
-		t.Error("Stop sent KILL to an entrypoint that exited on TERM")
+		t.Error("Stop sent KILL to a sandbox that exited on TERM")
 	}
 }
 
-func TestAStopKillsAnEntrypointThatIgnoresTermOnceTheGraceRunsOut(t *testing.T) {
+func TestAStopKillsASandboxThatIgnoresTermOnceTheGraceRunsOut(t *testing.T) {
 	lab, work := stopLab(t, false)
 
 	grace := 500 * time.Millisecond
@@ -220,6 +212,6 @@ func TestAStopKillsAnEntrypointThatIgnoresTermOnceTheGraceRunsOut(t *testing.T) 
 		t.Errorf("Stop took %s, want the %s grace and then the kill", took, grace)
 	}
 	if _, err := os.Stat(filepath.Join(work, "killed")); err != nil {
-		t.Errorf("Stop never sent KILL to an entrypoint that ignored TERM: %v", err)
+		t.Errorf("Stop never sent KILL to a sandbox that ignored TERM: %v", err)
 	}
 }

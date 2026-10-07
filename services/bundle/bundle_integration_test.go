@@ -5,6 +5,7 @@ package bundle_test
 import (
 	"context"
 	"errors"
+	"fmt"
 	"io/fs"
 	"os"
 	"os/exec"
@@ -17,6 +18,7 @@ import (
 	"github.com/presmihaylov/shard/services/bundle"
 	"github.com/presmihaylov/shard/services/image"
 	"github.com/presmihaylov/shard/services/runspec"
+	"github.com/presmihaylov/shard/services/supervisor"
 )
 
 // hostInitPath is where make devbox-sync installs the supervisor.
@@ -29,14 +31,14 @@ func TestWritesSurviveAStopAndStart(t *testing.T) {
 	requireRunsc(t)
 
 	stateDir := t.TempDir()
-	b, lower := buildBundle(t, stateDir, []string{"/bin/sh", "-c", "echo written-by-the-first-run > /root/marker"})
+	b, lower := buildBundle(t, stateDir)
 
 	if err := b.Mount(lower); err != nil {
 		t.Fatalf("mount the overlay: %v", err)
 	}
 	t.Cleanup(func() { b.Unmount() })
 
-	runSandbox(t, b, "shard-11-first")
+	runSandbox(t, b, "shard-11-first", "/bin/sh", "-c", "echo written-by-the-first-run > /root/marker")
 
 	// The upper layer is the sandbox's own, so a guest write must be visible on the host.
 	marker := filepath.Join(b.Upper, "root/marker")
@@ -49,24 +51,24 @@ func TestWritesSurviveAStopAndStart(t *testing.T) {
 		t.Fatalf("unmount after the first run: %v", err)
 	}
 
-	second, lower := buildBundle(t, stateDir, []string{"/bin/sh", "-c", "cp /root/marker /root/read-back"})
+	second, lower := buildBundle(t, stateDir)
 	if err := second.Mount(lower); err != nil {
 		t.Fatalf("mount the overlay again: %v", err)
 	}
 	t.Cleanup(func() { second.Unmount() })
 
-	runSandbox(t, second, "shard-11-second")
+	runSandbox(t, second, "shard-11-second", "/bin/sh", "-c", "cp /root/marker /root/read-back")
 
 	if got := readFile(t, filepath.Join(second.Upper, "root/read-back")); !strings.Contains(got, "written-by-the-first-run") {
 		t.Errorf("the second run read back %q, want what the first run wrote", got)
 	}
 }
 
-// TestTheSandboxOutlivesItsEntrypoint proves the one line this ticket exists for.
-func TestTheSandboxOutlivesItsEntrypoint(t *testing.T) {
+// TestTheSandboxOutlivesItsProcess proves the one line this ticket exists for.
+func TestTheSandboxOutlivesItsProcess(t *testing.T) {
 	requireRunsc(t)
 
-	b, lower := buildBundle(t, t.TempDir(), []string{"/bin/true"})
+	b, lower := buildBundle(t, t.TempDir())
 	if err := b.Mount(lower); err != nil {
 		t.Fatalf("mount the overlay: %v", err)
 	}
@@ -74,12 +76,12 @@ func TestTheSandboxOutlivesItsEntrypoint(t *testing.T) {
 
 	id := "shard-11-keepalive"
 	runscRoot, logPath := start(t, b, id)
-	requireCleanExit(t, b, logPath)
+	runToEnd(t, b, runscRoot, id, logPath, "/bin/true")
 
-	// The entrypoint is gone and the supervisor is not, so exec must still land in a live sandbox.
+	// The process is gone and the supervisor is not, so exec must still land in a live sandbox.
 	out, err := runsc(runscRoot, "exec", id, "/bin/echo", "still-here").CombinedOutput()
 	if err != nil {
-		t.Fatalf("exec after the entrypoint exited: %v: %s", err, out)
+		t.Fatalf("exec after the process exited: %v: %s", err, out)
 	}
 	if !strings.Contains(string(out), "still-here") {
 		t.Errorf("got %q from the exec, want still-here", out)
@@ -87,14 +89,14 @@ func TestTheSandboxOutlivesItsEntrypoint(t *testing.T) {
 }
 
 // buildBundle returns the bundle and the image rootfs Mount stacks it over.
-func buildBundle(t *testing.T, stateDir string, entrypoint []string) (bundle.Bundle, string) {
+func buildBundle(t *testing.T, stateDir string) (bundle.Bundle, string) {
 	t.Helper()
 
-	return buildBoundedBundle(t, stateDir, 0, entrypoint)
+	return buildBoundedBundle(t, stateDir, 0)
 }
 
 // buildBoundedBundle provisions the disk the way the provider does before Build, sized to diskMiB, then builds over it.
-func buildBoundedBundle(t *testing.T, stateDir string, diskMiB int64, entrypoint []string) (bundle.Bundle, string) {
+func buildBoundedBundle(t *testing.T, stateDir string, diskMiB int64) (bundle.Bundle, string) {
 	t.Helper()
 
 	if _, err := os.Stat(hostInitPath); err != nil {
@@ -109,11 +111,10 @@ func buildBoundedBundle(t *testing.T, stateDir string, diskMiB int64, entrypoint
 	}
 
 	spec := models.SandboxSpec{
-		ID:         "shard-11",
-		StateDir:   stateDir,
-		RootFS:     img.RootFS,
-		Entrypoint: entrypoint,
-		Resources:  models.Resources{DiskMiB: diskMiB},
+		ID:        "shard-11",
+		StateDir:  stateDir,
+		RootFS:    img.RootFS,
+		Resources: models.Resources{DiskMiB: diskMiB},
 	}
 
 	// Build writes the layers into the disk, so the disk is up first.
@@ -153,12 +154,12 @@ func pullTestImage(t *testing.T) image.Image {
 	return img
 }
 
-// runSandbox starts one, waits for the entrypoint to finish, then ends it the way Provider.Stop will.
-func runSandbox(t *testing.T, b bundle.Bundle, id string) {
+// runSandbox starts one, runs argv in it to a clean exit, then ends it the way Provider.Stop will.
+func runSandbox(t *testing.T, b bundle.Bundle, id string, argv ...string) {
 	t.Helper()
 
 	runscRoot, logPath := start(t, b, id)
-	requireCleanExit(t, b, logPath)
+	runToEnd(t, b, runscRoot, id, logPath, argv...)
 	stop(t, runscRoot, id)
 }
 
@@ -169,7 +170,7 @@ func start(t *testing.T, b bundle.Bundle, id string) (string, string) {
 	dir := t.TempDir()
 	runscRoot := filepath.Join(dir, "runsc")
 
-	// A restart reuses the state directory, so the previous run's status must not answer for this one.
+	// A restart reuses the state directory, so the previous run's table must not answer for this one.
 	if err := os.Remove(b.ExitFile); err != nil && !errors.Is(err, fs.ErrNotExist) {
 		t.Fatalf("clear %s: %v", b.ExitFile, err)
 	}
@@ -181,7 +182,7 @@ func start(t *testing.T, b bundle.Bundle, id string) (string, string) {
 		t.Fatalf("create %s: %v", logPath, err)
 	}
 
-	// shard-init reports the exit on its fd 0, so the exit file is its stdin, as every provider hands it.
+	// shard-init reports its process table on its fd 0, so the exit file is its stdin, as every provider hands it.
 	exit, err := os.OpenFile(b.ExitFile, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o600)
 	if err != nil {
 		t.Fatalf("open the exit channel %s: %v", b.ExitFile, err)
@@ -222,37 +223,65 @@ func stop(t *testing.T, runscRoot, id string) {
 	}
 }
 
-// This is what Provider.Wait will do: runsc wait would block forever on a supervisor.
-func requireCleanExit(t *testing.T, b bundle.Bundle, logPath string) {
+// runToEnd hands argv to shard-init as the providers do, and polls the table until it exited 0.
+func runToEnd(t *testing.T, b bundle.Bundle, runscRoot, id, logPath string, argv ...string) {
 	t.Helper()
+
+	run := supervisor.RunSpec{Name: "probe", Argv: argv, WorkDir: "/", User: "0:0"}
+	if err := supervisor.RunProcess(t.Context(), execIn(runscRoot, id), run); err != nil {
+		t.Fatalf("run the process: %v; the console said: %s", err, readFile(t, logPath))
+	}
 
 	deadline := time.Now().Add(30 * time.Second)
 	for time.Now().Before(deadline) {
-		status, found, err := bundle.ReadExitStatus(b.ExitFile)
+		rows, err := bundle.ReadProcessTable(b.ExitFile)
 		if err != nil {
-			t.Fatalf("read the exit status: %v", err)
+			t.Fatalf("read the process table: %v", err)
 		}
-		if !found {
-			time.Sleep(100 * time.Millisecond)
+		for _, row := range rows {
+			if row.Name != run.Name || !row.State.Ended() {
+				continue
+			}
+			if row.Exit == nil || row.Exit.Code != 0 {
+				t.Fatalf("the process ended with %+v, want code 0; the console said: %s", row, readFile(t, logPath))
+			}
 
-			continue
-		}
-		if status.Code != 0 {
-			t.Fatalf("the entrypoint exited with %+v, want code 0; the console said: %s", status, readFile(t, logPath))
+			return
 		}
 
-		return
+		time.Sleep(100 * time.Millisecond)
 	}
 
-	t.Fatalf("the entrypoint exit status never appeared at %s; the console said: %s", b.ExitFile, readFile(t, logPath))
+	t.Fatalf("the process never ended in %s; the console said: %s", b.ExitFile, readFile(t, logPath))
+}
+
+// execIn is the exec a provider gives the supervisor, over bare runsc.
+func execIn(runscRoot, id string) supervisor.ExecFunc {
+	return func(ctx context.Context, spec models.ExecSpec) (models.ExitStatus, error) {
+		args := append([]string{"exec", "--user", spec.User, "--cwd", spec.WorkDir, id}, spec.Argv...)
+		cmd := exec.CommandContext(ctx, "runsc", runscArgs(runscRoot, args...)...)
+		cmd.Stdin, cmd.Stdout, cmd.Stderr = spec.Stdin, spec.Stdout, spec.Stderr
+
+		err := cmd.Run()
+		if exit, ok := errors.AsType[*exec.ExitError](err); ok {
+			return models.ExitStatus{Code: exit.ExitCode()}, nil
+		}
+		if err != nil {
+			return models.ExitStatus{}, fmt.Errorf("runsc exec: %w", err)
+		}
+
+		return models.ExitStatus{}, nil
+	}
 }
 
 // The sandbox needs no network here, and no cgroup: SHARD-13 and the provider own those.
 // --overlay2=none matters: runsc defaults to root:self, whose writes land in a filestore a stop throws away.
 func runsc(root string, args ...string) *exec.Cmd {
-	base := []string{"--root", root, "--network=none", "--ignore-cgroups", "--overlay2=none"}
+	return exec.Command("runsc", runscArgs(root, args...)...)
+}
 
-	return exec.Command("runsc", append(base, args...)...)
+func runscArgs(root string, args ...string) []string {
+	return append([]string{"--root", root, "--network=none", "--ignore-cgroups", "--overlay2=none"}, args...)
 }
 
 func requireRunsc(t *testing.T) {

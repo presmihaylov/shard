@@ -21,7 +21,7 @@ func TestARestartedDaemonStopsASandboxWhoseFdZeroIsAWriteOnlySysfsFile(t *testin
 		t.Skip("no write-only sysfs file at /sys/bus/*/uevent on this host")
 	}
 
-	spec := h.newSpec(t, "/bin/sh", "-c", "while true; do sleep 1; done")
+	spec := h.newSpec(t)
 	if err := h.provider.Create(t.Context(), spec); err != nil {
 		t.Fatalf("Create: %v", err)
 	}

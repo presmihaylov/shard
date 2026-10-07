@@ -256,7 +256,7 @@ func TestGrowSeedRefusesADiskAForceStopLeftDirty(t *testing.T) {
 	if !errors.Is(err, ext4.ErrNeedsRecovery) {
 		t.Fatalf("GrowSeed = %v, want ErrNeedsRecovery", err)
 	}
-	for _, want := range []string{"not stopped clean", "128 MiB", "omit resources.disk_mib", "let its entrypoint exit", "shard exec", "then stop it"} {
+	for _, want := range []string{"not stopped clean", "128 MiB", "omit resources.disk_mib", "stop its processes", "then stop it"} {
 		if !strings.Contains(err.Error(), want) {
 			t.Errorf("the refusal %q does not say %q", err, want)
 		}

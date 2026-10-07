@@ -108,7 +108,7 @@ func (t *tail) dropOlder() error {
 
 // openLog is nil for a log its writer has not created yet.
 func openLog(path string) (*os.File, error) {
-	f, err := os.Open(path)
+	f, err := logfile.Open(path)
 	if errors.Is(err, fs.ErrNotExist) {
 		return nil, nil
 	}
@@ -186,7 +186,7 @@ func (t *tail) reopen(w io.Writer) error {
 		return err
 	}
 
-	next, err := os.Open(t.path)
+	next, err := logfile.Open(t.path)
 	if err != nil {
 		return fmt.Errorf("open %s: %w", t.path, err)
 	}

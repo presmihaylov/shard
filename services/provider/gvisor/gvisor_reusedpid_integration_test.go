@@ -20,7 +20,7 @@ import (
 func TestRemoveSparesHostProcessesThatReusedTheStoredPids(t *testing.T) {
 	requireNsLastPid(t)
 	h := newHarness(t)
-	spec := h.start(t, "/bin/sh", "-c", "sleep 3600")
+	spec := h.start(t)
 
 	sentry := h.sentryPID(t, spec.ID)
 	gofer := h.goferPID(t, spec.ID)

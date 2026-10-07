@@ -35,21 +35,18 @@ const hostInitPath = "/usr/local/bin/shard-init"
 
 const testImage = "alpine:3.20"
 
-// stopGrace is generous: these entrypoints are already gone, so nothing here waits it out.
+// stopGrace is generous: shard-init exits on TERM, so nothing here waits it out.
 const stopGrace = 10 * time.Second
+
+// waitGrace bounds the wait on a process that ends by itself, so one that hangs never hangs the run.
+const waitGrace = 30 * time.Second
 
 func TestConformance(t *testing.T) {
 	h := newHarness(t)
 
 	conformance.Run(t, conformance.Subject{
-		Provider: h.provider,
-		NewSpec:  func(t *testing.T) models.SandboxSpec { return h.newSpec(t, "/bin/true") },
-		NewIgnoresTermSpec: func(t *testing.T) models.SandboxSpec {
-			// The marker comes after the trap, so the suite never stops an entrypoint that still dies on SIGTERM.
-			script := fmt.Sprintf("trap '' TERM; echo %s; while true; do sleep 1; done", conformance.ReadyMarker)
-
-			return h.newSpec(t, "/bin/sh", "-c", script)
-		},
+		Provider:  h.provider,
+		NewSpec:   h.newSpec,
 		EmptyDir:  func(t *testing.T) string { return t.TempDir() },
 		Shell:     func(script string) []string { return []string{"/bin/sh", "-c", script} },
 		Reopen:    h.reopen,
@@ -63,79 +60,53 @@ func TestLaunch(t *testing.T) {
 
 	conformance.RunLaunch(t, conformance.Subject{
 		Provider: h.provider,
-		NewSpec:  func(t *testing.T) models.SandboxSpec { return h.newSpec(t, "/bin/true") },
+		NewSpec:  h.newSpec,
 		Shell:    func(script string) []string { return []string{"/bin/sh", "-c", script} },
 	})
 }
 
-// TestTheEntrypointExitCodePropagates is half the SHARD-12 acceptance criterion.
-func TestTheEntrypointExitCodePropagates(t *testing.T) {
+// TestAProcessExitCodePropagates is half the SHARD-12 acceptance criterion.
+func TestAProcessExitCodePropagates(t *testing.T) {
 	h := newHarness(t)
-	spec := h.start(t, "/bin/sh", "-c", "exit 7")
+	spec := h.start(t)
 
-	status, err := h.provider.Wait(t.Context(), spec.ID)
-	if err != nil {
-		t.Fatalf("Wait: %v", err)
-	}
-
-	if status.Code != 7 {
-		t.Errorf("got exit code %d, want 7", status.Code)
-	}
-	if status.Signal != 0 {
-		t.Errorf("got signal %v, want none: the entrypoint exited on its own", status.Signal)
+	report, _ := h.runToEnd(t, spec.ID, "exit", "/bin/sh", "-c", "exit 7")
+	if report.Exit == nil || report.Exit.Code != 7 || report.Exit.Signal != 0 {
+		t.Errorf("the process ended %+v, want exit code 7 and no signal", report.Exit)
 	}
 }
 
-// A signalled entrypoint has no exit code of its own, so the record must carry the signal too.
-func TestASignalledEntrypointReportsItsSignal(t *testing.T) {
+// A signalled process has no exit code of its own, so the report must carry the signal too.
+func TestASignalledProcessReportsItsSignal(t *testing.T) {
 	h := newHarness(t)
-	spec := h.start(t, "/bin/sh", "-c", "kill -9 $$")
+	spec := h.start(t)
 
-	status, err := h.provider.Wait(t.Context(), spec.ID)
-	if err != nil {
-		t.Fatalf("Wait: %v", err)
-	}
-
-	if status.Signal != 9 {
-		t.Errorf("got signal %v, want 9", status.Signal)
-	}
-	if status.Code != 137 {
-		t.Errorf("got exit code %d, want 137, which is what a shell reports for SIGKILL", status.Code)
+	report, _ := h.runToEnd(t, spec.ID, "killed", "/bin/sh", "-c", "kill -9 $$")
+	if report.Exit == nil || report.Exit.Signal != 9 || report.Exit.Code != 137 {
+		t.Errorf("the process ended %+v, want signal 9 and the 137 a shell reports for it", report.Exit)
 	}
 }
 
-// TestTheGuestOutputStreams is the other half: runsc create hands the fds over and exits, and the
-// sandbox keeps writing to them.
+// TestTheGuestOutputStreams is the other half: shard-init points a process's stdout and stderr at its log on the sandbox's disk.
 func TestTheGuestOutputStreams(t *testing.T) {
 	h := newHarness(t)
-	spec := h.start(t, "/bin/sh", "-c", "echo out-from-the-guest; echo err-from-the-guest >&2")
+	spec := h.start(t)
 
-	if _, err := h.provider.Wait(t.Context(), spec.ID); err != nil {
-		t.Fatalf("Wait: %v", err)
-	}
-
-	path, err := h.provider.LogPath(spec.ID)
-	if err != nil {
-		t.Fatalf("LogPath: %v", err)
-	}
-
-	got := readFile(t, path)
+	_, got := h.runToEnd(t, spec.ID, "talker", "/bin/sh", "-c", "echo out-from-the-guest; echo err-from-the-guest >&2")
 	for _, want := range []string{"out-from-the-guest", "err-from-the-guest"} {
 		if !strings.Contains(got, want) {
-			t.Errorf("the sandbox log holds %q, which is missing %q", got, want)
+			t.Errorf("the process log holds %q, which is missing %q", got, want)
 		}
 	}
 }
 
-// A stop is final. Only Remove and a second Create re-run an entrypoint, which is what keeps the
-// writable layer: runsc refuses to start a container it has already stopped.
+// runsc refuses to start a container it has already stopped, so a start again re-creates it over the writable layer it kept.
 func TestAStoppedSandboxStartsAgainOverWhatItKept(t *testing.T) {
 	h := newHarness(t)
-	spec := h.start(t, "/bin/sh", "-c", "test -f /root/marker && echo seen-by-the-second-run; touch /root/marker")
+	spec := h.start(t)
+	marker := "test -f /root/marker && echo seen-by-the-second-run; touch /root/marker"
 
-	if _, err := h.provider.Wait(t.Context(), spec.ID); err != nil {
-		t.Fatalf("Wait: %v", err)
-	}
+	h.runToEnd(t, spec.ID, "first", "/bin/sh", "-c", marker)
 	if err := h.provider.Stop(t.Context(), spec.ID, stopGrace); err != nil {
 		t.Fatalf("Stop: %v", err)
 	}
@@ -143,52 +114,37 @@ func TestAStoppedSandboxStartsAgainOverWhatItKept(t *testing.T) {
 	if err := h.provider.Start(t.Context(), spec.ID); err != nil {
 		t.Fatalf("the second Start: %v", err)
 	}
-	exit, err := h.provider.Wait(t.Context(), spec.ID)
-	if err != nil {
-		t.Fatalf("the second Wait: %v", err)
+	report, got := h.runToEnd(t, spec.ID, "second", "/bin/sh", "-c", marker)
+	if report.Exit == nil || report.Exit.Code != 0 {
+		t.Errorf("the second run ended %+v, want 0", report.Exit)
 	}
-	if exit.Code != 0 {
-		t.Errorf("the second run exited %d, want 0", exit.Code)
-	}
-
-	path, err := h.provider.LogPath(spec.ID)
-	if err != nil {
-		t.Fatalf("LogPath: %v", err)
-	}
-	if got := readFile(t, path); !strings.Contains(got, "seen-by-the-second-run") {
+	if !strings.Contains(got, "seen-by-the-second-run") {
 		t.Errorf("the second run read back %q, want the file the first run wrote", got)
 	}
 }
 
-// runsc start alone proves no launch, so the supervisor's refusal must reach the caller.
-func TestStartRefusesAnEntrypointThatNeverRan(t *testing.T) {
+// shard-init answers a start only once the execve took, so a command the image does not hold reaches the caller and the sandbox runs on.
+func TestStartProcessRefusesACommandThatNeverRan(t *testing.T) {
 	h := newHarness(t)
-	spec := h.newSpec(t, "/no/such/entrypoint")
+	spec := h.start(t)
 
-	if err := h.provider.Create(t.Context(), spec); err != nil {
-		t.Fatalf("Create: %v", err)
-	}
-
-	err := h.provider.Start(t.Context(), spec.ID)
-	if err == nil {
-		t.Fatal("Start reported success for an entrypoint the image does not hold")
-	}
+	err := h.provider.StartProcess(t.Context(), spec.ID, models.ProcessSpec{Name: "missing", Argv: []string{"/no/such/command"}})
 	var refused *models.CommandNotStartedError
 	if !errors.As(err, &refused) {
-		t.Fatalf("Start failed with %v, want CommandNotStartedError", err)
+		t.Fatalf("StartProcess failed with %v, want CommandNotStartedError", err)
 	}
 	if refused.Code != models.CommandNotFoundExitCode {
-		t.Errorf("Start returned exit code %d, want %d", refused.Code, models.CommandNotFoundExitCode)
+		t.Errorf("StartProcess returned exit code %d, want %d", refused.Code, models.CommandNotFoundExitCode)
 	}
 
-	assertAlive(t, h, spec.ID, false)
+	assertAlive(t, h, spec.ID, true)
 }
 
 // The merged view is the sandbox's rootfs, so nothing may remove the state directory while it stands.
 func TestStopAndRemoveBothDropTheWritableLayerMount(t *testing.T) {
 	h := newHarness(t)
 
-	stopped := h.start(t, "/bin/true")
+	stopped := h.start(t)
 	assertMounted(t, h, stopped.ID, true)
 	if err := h.provider.Stop(t.Context(), stopped.ID, stopGrace); err != nil {
 		t.Fatalf("Stop: %v", err)
@@ -196,7 +152,7 @@ func TestStopAndRemoveBothDropTheWritableLayerMount(t *testing.T) {
 	assertMounted(t, h, stopped.ID, false)
 
 	// Remove takes the same sandbox down from running, because --force is what makes that safe.
-	removed := h.start(t, "/bin/sh", "-c", "sleep 3600")
+	removed := h.start(t)
 	assertMounted(t, h, removed.ID, true)
 	if err := h.provider.Remove(t.Context(), removed.ID); err != nil {
 		t.Fatalf("Remove a running sandbox: %v", err)
@@ -209,36 +165,23 @@ func TestStopAndRemoveBothDropTheWritableLayerMount(t *testing.T) {
 // directory reads it back.
 func TestASecondCreateReadsBackWhatTheFirstRunWrote(t *testing.T) {
 	h := newHarness(t)
-	first := h.start(t, "/bin/sh", "-c", "echo written-by-the-first-run > /root/marker")
+	spec := h.start(t)
 
-	if _, err := h.provider.Wait(t.Context(), first.ID); err != nil {
-		t.Fatalf("Wait: %v", err)
-	}
-	if err := h.provider.Stop(t.Context(), first.ID, stopGrace); err != nil {
+	h.runToEnd(t, spec.ID, "writer", "/bin/sh", "-c", "echo written-by-the-first-run > /root/marker")
+	if err := h.provider.Stop(t.Context(), spec.ID, stopGrace); err != nil {
 		t.Fatalf("Stop: %v", err)
 	}
-	if err := h.provider.Remove(t.Context(), first.ID); err != nil {
+	if err := h.provider.Remove(t.Context(), spec.ID); err != nil {
 		t.Fatalf("Remove: %v", err)
 	}
 
-	second := first
-	second.Entrypoint = []string{"/bin/sh", "-c", "cat /root/marker"}
-
-	if err := h.provider.Create(t.Context(), second); err != nil {
+	if err := h.provider.Create(t.Context(), spec); err != nil {
 		t.Fatalf("the second Create: %v", err)
 	}
-	if err := h.provider.Start(t.Context(), second.ID); err != nil {
+	if err := h.provider.Start(t.Context(), spec.ID); err != nil {
 		t.Fatalf("the second Start: %v", err)
 	}
-	if _, err := h.provider.Wait(t.Context(), second.ID); err != nil {
-		t.Fatalf("the second Wait: %v", err)
-	}
-
-	path, err := h.provider.LogPath(second.ID)
-	if err != nil {
-		t.Fatalf("LogPath: %v", err)
-	}
-	if got := readFile(t, path); !strings.Contains(got, "written-by-the-first-run") {
+	if _, got := h.runToEnd(t, spec.ID, "reader", "/bin/sh", "-c", "cat /root/marker"); !strings.Contains(got, "written-by-the-first-run") {
 		t.Errorf("the second run read back %q, want what the first run wrote", got)
 	}
 }
@@ -247,7 +190,7 @@ func TestASecondCreateReadsBackWhatTheFirstRunWrote(t *testing.T) {
 // the first sandbox is running on.
 func TestCreateRefusesAnIdThatIsAlreadyLive(t *testing.T) {
 	h := newHarness(t)
-	spec := h.start(t, "/bin/sh", "-c", "sleep 3600")
+	spec := h.start(t)
 
 	if err := h.provider.Create(t.Context(), spec); err == nil {
 		t.Fatal("Create accepted an id that is already running")
@@ -260,7 +203,7 @@ func TestCreateRefusesAnIdThatIsAlreadyLive(t *testing.T) {
 // Create must refuse an orphaned mount too: building over it would give two sandboxes one writable layer.
 func TestCreateRefusesASandboxRunscLostThatIsStillMounted(t *testing.T) {
 	h := newHarness(t)
-	spec := h.start(t, "/bin/sh", "-c", "sleep 3600")
+	spec := h.start(t)
 	h.loseTheSandbox(t, spec.ID)
 
 	if err := h.provider.Create(t.Context(), spec); err == nil {
@@ -273,7 +216,7 @@ func TestCreateRefusesASandboxRunscLostThatIsStillMounted(t *testing.T) {
 // The cgroup proves the rootfs is idle even when the runtime metadata is gone.
 func TestRemoveDropsTheMountAfterRunscLostASandbox(t *testing.T) {
 	h := newHarness(t)
-	spec := h.start(t, "/bin/sh", "-c", "sleep 3600")
+	spec := h.start(t)
 	h.loseTheSandbox(t, spec.ID)
 
 	if err := h.provider.Remove(t.Context(), spec.ID); err != nil {
@@ -286,7 +229,7 @@ func TestRemoveDropsTheMountAfterRunscLostASandbox(t *testing.T) {
 // Stop uses the runtime status, so absent metadata cannot prove that the rootfs is idle.
 func TestStopRefusesWhenRunscLostASandboxThatIsStillMounted(t *testing.T) {
 	h := newHarness(t)
-	spec := h.start(t, "/bin/sh", "-c", "sleep 3600")
+	spec := h.start(t)
 	h.loseTheSandbox(t, spec.ID)
 
 	if err := h.provider.Stop(t.Context(), spec.ID, 5*time.Second); err == nil {
@@ -296,38 +239,19 @@ func TestStopRefusesWhenRunscLostASandboxThatIsStillMounted(t *testing.T) {
 	assertMounted(t, h, spec.ID, true)
 }
 
-// A wait in flight when a stop lands must report the signal, and never a clean exit that never happened.
-func TestAWaitInFlightSeesTheStopSignal(t *testing.T) {
+// A process stop must report the TERM that ended it, and never a clean exit that never happened.
+func TestAStoppedProcessReportsTheTerm(t *testing.T) {
 	h := newHarness(t)
-	spec := h.start(t, "/bin/sh", "-c", "sleep 3600")
+	spec := h.start(t)
+	h.run(t, spec.ID, "sleeper", "sleep", "3600")
 
-	answered := make(chan models.ExitStatus, 1)
-	failed := make(chan error, 1)
-	go func() {
-		status, err := h.provider.Wait(context.Background(), spec.ID)
-		if err != nil {
-			failed <- err
-
-			return
-		}
-		answered <- status
-	}()
-
-	// Long enough for the wait to be polling, and short enough that the entrypoint is still asleep.
-	time.Sleep(500 * time.Millisecond)
-	if err := h.provider.Stop(t.Context(), spec.ID, stopGrace); err != nil {
-		t.Fatalf("Stop: %v", err)
+	if err := h.provider.StopProcess(t.Context(), spec.ID, "sleeper", stopGrace); err != nil {
+		t.Fatalf("StopProcess: %v", err)
 	}
 
-	select {
-	case status := <-answered:
-		if status.Signal != int(syscall.SIGTERM) {
-			t.Errorf("the wait reported signal %v, want SIGTERM: the stop is what ended the entrypoint", status.Signal)
-		}
-	case err := <-failed:
-		t.Fatalf("the wait failed: %v", err)
-	case <-time.After(stopGrace):
-		t.Fatal("the wait never answered after the stop ended the sandbox")
+	report := h.awaitEnded(t, spec.ID, "sleeper")
+	if report.State != models.ProcessKilled || report.Exit == nil || report.Exit.Signal != int(syscall.SIGTERM) {
+		t.Errorf("the stopped process reads %+v, want killed by SIGTERM", report)
 	}
 }
 
@@ -335,15 +259,12 @@ func TestAWaitInFlightSeesTheStopSignal(t *testing.T) {
 func TestOneSandboxIsUnmovedByAnother(t *testing.T) {
 	h := newHarness(t)
 
-	long := h.start(t, "/bin/sh", "-c", "sleep 3600")
-	short := h.start(t, "/bin/sh", "-c", "exit 9")
+	long := h.start(t)
+	h.run(t, long.ID, "sleeper", "sleep", "3600")
+	short := h.start(t)
 
-	status, err := h.provider.Wait(t.Context(), short.ID)
-	if err != nil {
-		t.Fatalf("Wait: %v", err)
-	}
-	if status.Code != 9 {
-		t.Errorf("got exit code %d, want 9", status.Code)
+	if report, _ := h.runToEnd(t, short.ID, "exit", "/bin/sh", "-c", "exit 9"); report.Exit == nil || report.Exit.Code != 9 {
+		t.Errorf("the process ended %+v, want exit code 9", report.Exit)
 	}
 
 	if err := h.provider.Stop(t.Context(), short.ID, stopGrace); err != nil {
@@ -506,7 +427,7 @@ func (h *harness) stateDir(id string) (string, error) {
 }
 
 // newSpec gives every sandbox its own id and its own state directory, and ends it when the test does.
-func (h *harness) newSpec(t *testing.T, entrypoint ...string) models.SandboxSpec {
+func (h *harness) newSpec(t *testing.T) models.SandboxSpec {
 	t.Helper()
 
 	id := fmt.Sprintf("shard-12-%d", h.next.Add(1))
@@ -526,11 +447,10 @@ func (h *harness) newSpec(t *testing.T, entrypoint ...string) models.SandboxSpec
 	})
 
 	spec := models.SandboxSpec{
-		ID:         id,
-		StateDir:   dir,
-		RootFS:     h.image.RootFS,
-		Entrypoint: entrypoint,
-		Network:    networkSpec,
+		ID:       id,
+		StateDir: dir,
+		RootFS:   h.image.RootFS,
+		Network:  networkSpec,
 	}
 
 	return runspec.Resolve(spec, h.image.Config)
@@ -585,10 +505,11 @@ func requireNetworkTools(t *testing.T) {
 	}
 }
 
-func (h *harness) start(t *testing.T, entrypoint ...string) models.SandboxSpec {
+// start creates and starts a sandbox, which runs shard-init alone until a test starts a process in it.
+func (h *harness) start(t *testing.T) models.SandboxSpec {
 	t.Helper()
 
-	spec := h.newSpec(t, entrypoint...)
+	spec := h.newSpec(t)
 
 	if err := h.provider.Create(t.Context(), spec); err != nil {
 		t.Fatalf("Create: %v", err)
@@ -599,6 +520,61 @@ func (h *harness) start(t *testing.T, entrypoint ...string) models.SandboxSpec {
 	}
 
 	return spec
+}
+
+// run starts one named process in a started sandbox.
+func (h *harness) run(t *testing.T, id, name string, argv ...string) {
+	t.Helper()
+
+	if err := h.provider.StartProcess(t.Context(), id, models.ProcessSpec{Name: name, Argv: argv}); err != nil {
+		t.Fatalf("StartProcess %s: %v", name, err)
+	}
+}
+
+// runToEnd runs one process and returns its last report and its log once it ended.
+func (h *harness) runToEnd(t *testing.T, id, name string, argv ...string) (models.ProcessReport, string) {
+	t.Helper()
+
+	h.run(t, id, name, argv...)
+	report := h.awaitEnded(t, id, name)
+
+	return report, h.logOf(t, id, name)
+}
+
+// awaitEnded polls the table, because shard-init reports an exit after it reaped the process.
+func (h *harness) awaitEnded(t *testing.T, id, name string) models.ProcessReport {
+	t.Helper()
+
+	ctx, cancel := context.WithTimeout(t.Context(), waitGrace)
+	defer cancel()
+	for {
+		rows, err := h.provider.Processes(ctx, id)
+		if err != nil {
+			t.Fatalf("Processes: %v", err)
+		}
+		for _, row := range rows {
+			if row.Name == name && row.State.Ended() {
+				return row
+			}
+		}
+		select {
+		case <-ctx.Done():
+			t.Fatalf("%s did not end within %s: %+v", name, waitGrace, rows)
+		case <-time.After(50 * time.Millisecond):
+		}
+	}
+}
+
+// logOf reads what a process wrote so far.
+func (h *harness) logOf(t *testing.T, id, name string) string {
+	t.Helper()
+
+	path, err := h.provider.ProcessLogPath(id, name)
+	if err != nil {
+		t.Fatalf("ProcessLogPath %s: %v", name, err)
+	}
+
+	return readFile(t, path)
 }
 
 // The image is read-only and shared by design, so every test in this package pulls it once.

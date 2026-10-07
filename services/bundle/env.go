@@ -73,7 +73,7 @@ func (b Bundle) readSpec() (*specs.Spec, error) {
 	}
 
 	if spec.Process == nil {
-		return nil, fmt.Errorf("%s names no process, so nothing says what the entrypoint runs with", b.configPath())
+		return nil, fmt.Errorf("%s names no process, so nothing says what a process runs with", b.configPath())
 	}
 
 	return &spec, nil

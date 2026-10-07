@@ -14,7 +14,7 @@ import (
 // Each sandbox needs a separate layer copy to keep its writes private.
 func TestOneSnapshotSeedsTwoIndependentSandboxes(t *testing.T) {
 	h := newNetworkedHarness(t)
-	source := h.start(t, "/bin/sh", "-c", "while true; do sleep 0.2; done")
+	source := h.start(t)
 
 	execIn(t, h, source.ID, "echo from-the-source > /root/marker")
 
@@ -82,7 +82,7 @@ func TestOneSnapshotSeedsTwoIndependentSandboxes(t *testing.T) {
 
 func TestSnapshotRefusesARunningSource(t *testing.T) {
 	h := newHarness(t)
-	source := h.start(t, "/bin/sh", "-c", "while true; do sleep 1; done")
+	source := h.start(t)
 
 	err := h.provider.Snapshot(t.Context(), source.ID, t.TempDir())
 	if err == nil || !strings.Contains(err.Error(), "stop it first") {

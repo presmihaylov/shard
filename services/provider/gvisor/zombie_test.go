@@ -33,7 +33,7 @@ func TestZombieStatReadsTheStateAfterTheComm(t *testing.T) {
 	}
 }
 
-// After the entrypoint exits, the sentry sits as a zombie until PID 1 reaps it, and runsc keeps
+// After shard-init exits, the sentry sits as a zombie until PID 1 reaps it, and runsc keeps
 // answering running for it. A stop that returned must not be followed by an rm that says running.
 func TestStatusCallsAZombieSandboxStopped(t *testing.T) {
 	if runtime.GOOS != "linux" {

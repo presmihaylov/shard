@@ -507,20 +507,6 @@ func TestAWedgedRunscFailsWithTheContextRatherThanHanging(t *testing.T) {
 	}
 }
 
-// Wait polls for a file that may never arrive, so its context is the only thing that ends it.
-func TestWaitGivesUpWithItsContext(t *testing.T) {
-	p := newProviderOver(t, `echo '{"id":"amber-otter-1a2b","status":"running","pid":42}'`)
-
-	ctx, cancel := context.WithTimeout(t.Context(), 200*time.Millisecond)
-	defer cancel()
-
-	// The sandbox reads as alive and never writes an exit status, which is the case that would spin.
-	_, err := p.Wait(ctx, "amber-otter-1a2b")
-	if !errors.Is(err, context.DeadlineExceeded) {
-		t.Errorf("Wait returned %v, want the context deadline", err)
-	}
-}
-
 func unitFile(t *testing.T, path string) string {
 	t.Helper()
 
@@ -614,8 +600,8 @@ esac`)
 	return p, work
 }
 
-// The grace bounds the stop and is never a wait: an entrypoint that exits on TERM ends it at once (SHARD-460).
-func TestStopReturnsOnceTheEntrypointExitsOnTerm(t *testing.T) {
+// The grace bounds the stop and is never a wait: a shard-init that exits on TERM ends it at once (SHARD-460).
+func TestStopReturnsOnceShardInitExitsOnTerm(t *testing.T) {
 	p, work := stopRunsc(t, true)
 
 	started := time.Now()
@@ -626,17 +612,17 @@ func TestStopReturnsOnceTheEntrypointExitsOnTerm(t *testing.T) {
 	}
 
 	if took := time.Since(started); took > 3*time.Second {
-		t.Errorf("Stop took %s of the %s grace, so it waited past an entrypoint that exited on TERM", took, models.StopGrace)
+		t.Errorf("Stop took %s of the %s grace, so it waited past a sandbox that exited on TERM", took, models.StopGrace)
 	}
 	if _, err := os.Stat(filepath.Join(work, "ended")); err != nil {
 		t.Errorf("Stop never sent TERM: %v", err)
 	}
 	if _, err := os.Stat(filepath.Join(work, "killed")); err == nil {
-		t.Error("Stop sent KILL to an entrypoint that exited on TERM")
+		t.Error("Stop sent KILL to a sandbox that exited on TERM")
 	}
 }
 
-func TestStopKillsAnEntrypointThatIgnoresTermOnceTheGraceRunsOut(t *testing.T) {
+func TestStopKillsASandboxThatIgnoresTermOnceTheGraceRunsOut(t *testing.T) {
 	p, work := stopRunsc(t, false)
 
 	grace := 500 * time.Millisecond
@@ -651,7 +637,7 @@ func TestStopKillsAnEntrypointThatIgnoresTermOnceTheGraceRunsOut(t *testing.T) {
 		t.Errorf("Stop took %s, want the %s grace and then the kill", took, grace)
 	}
 	if _, err := os.Stat(filepath.Join(work, "killed")); err != nil {
-		t.Errorf("Stop never sent KILL to an entrypoint that ignored TERM: %v", err)
+		t.Errorf("Stop never sent KILL to a sandbox that ignored TERM: %v", err)
 	}
 }
 

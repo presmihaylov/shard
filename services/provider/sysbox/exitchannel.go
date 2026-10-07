@@ -28,7 +28,8 @@ type exitChannel struct {
 	mu     sync.Mutex
 	opened bool
 	file   *os.File
-	last   *models.ExitReport
+	// last is the page the exit file holds, so an unchanged one costs no write.
+	last []byte
 }
 
 // exitChannels is every channel this daemon holds, by sandbox id.
@@ -110,7 +111,7 @@ func newExitChannel(b bundle.Bundle) (*os.File, error) {
 	return f, nil
 }
 
-// collect copies a new record from the page into the exit file, which every reader of the exit and the count then reads.
+// collect copies a changed page into the exit file, which every read of the process table then reads.
 func (p *Provider) collect(ctx context.Context, id string, b bundle.Bundle) error {
 	ch := p.exits.get(id)
 	ch.mu.Lock()
@@ -127,23 +128,23 @@ func (p *Provider) collect(ctx context.Context, id string, b bundle.Bundle) erro
 		return nil
 	}
 
-	report, found, err := readPage(ch.file)
+	page, err := stablePage(ch.file)
 	if err != nil {
 		return fmt.Errorf("read the exit channel of sandbox %s: %w", id, err)
 	}
-	if !found || (ch.last != nil && *ch.last == report) {
+	if page == nil || bytes.Equal(page, ch.last) {
 		return nil
 	}
-	if err := bundle.WriteExitReport(b.ExitFile, report); err != nil {
+	if err := bundle.WriteProcessPage(b.ExitFile, page); err != nil {
 		return err
 	}
-	ch.last = &report
+	ch.last = page
 
 	return nil
 }
 
 // reopen finds the page again after a daemon restart, through PID 1's fd 0, which guest root can replace.
-// If PID 1 died while the daemon was down, the record it left there is lost with it.
+// If PID 1 died while the daemon was down, the table it left there is lost with it.
 func (p *Provider) reopen(ctx context.Context, id string, b bundle.Bundle) (*os.File, error) {
 	want, recorded, err := b.ExitChannel()
 	if err != nil {
@@ -268,34 +269,6 @@ func replaced(why string) error {
 
 func unreadable(err error) error {
 	return replaced(fmt.Sprintf("does not read as the page (%v)", err))
-}
-
-// readPage reads the exit record, and the restart count on it, off a stable page.
-func readPage(f *os.File) (models.ExitReport, bool, error) {
-	page, err := stablePage(f)
-	if err != nil {
-		return models.ExitReport{}, false, err
-	}
-	report, found := bundle.DecodeExitPage(page)
-
-	return report, found, nil
-}
-
-// refusal reads the not-started record off the page, which the daemon still holds after PID 1 died.
-func (p *Provider) refusal(id string) (*models.CommandNotStartedError, error) {
-	ch := p.exits.get(id)
-	ch.mu.Lock()
-	defer ch.mu.Unlock()
-
-	if ch.file == nil {
-		return nil, nil
-	}
-	page, err := stablePage(ch.file)
-	if err != nil {
-		return nil, fmt.Errorf("read the exit channel of sandbox %s: %w", id, err)
-	}
-
-	return bundle.DecodeNotStartedPage(id, page), nil
 }
 
 // stablePage takes the page only from two equal reads, because a guest write can tear one, and never reads past it; nil is no stable read.

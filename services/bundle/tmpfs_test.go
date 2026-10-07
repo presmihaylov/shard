@@ -17,8 +17,7 @@ import (
 func TestTheShmTmpfsFitsInsideTheBound(t *testing.T) {
 	for _, boundMiB := range []int64{64, 128, 512, 4096} {
 		_, spec := build(t, models.SandboxSpec{
-			Entrypoint: []string{"/bin/sh"},
-			Resources:  models.Resources{MemoryMiB: boundMiB},
+			Resources: models.Resources{MemoryMiB: boundMiB},
 		}, models.ImageConfig{})
 
 		if got := tmpfsMiB(t, spec, "/dev/shm"); got > boundMiB {
@@ -30,7 +29,7 @@ func TestTheShmTmpfsFitsInsideTheBound(t *testing.T) {
 // TestAnUnboundedSandboxKeepsTheDockerShmSize pins the other side: nothing charges an unbounded
 // sandbox, so shrinking its /dev/shm would cost a workload for no gain.
 func TestAnUnboundedSandboxKeepsTheDockerShmSize(t *testing.T) {
-	_, spec := build(t, models.SandboxSpec{Entrypoint: []string{"/bin/sh"}}, models.ImageConfig{})
+	_, spec := build(t, models.SandboxSpec{}, models.ImageConfig{})
 
 	if got := tmpfsMiB(t, spec, "/dev/shm"); got != 64 {
 		t.Errorf("/dev/shm is %d MiB in an unbounded sandbox, want 64", got)
@@ -59,8 +58,7 @@ func TestTmpIsABindOfTheSandboxDisk(t *testing.T) {
 
 func TestDevIsReadOnly(t *testing.T) {
 	_, spec := build(t, models.SandboxSpec{
-		Entrypoint: []string{"/bin/sh"},
-		Resources:  models.Resources{MemoryMiB: 64},
+		Resources: models.Resources{MemoryMiB: 64},
 	}, models.ImageConfig{})
 
 	if !slices.Contains(mountAt(t, spec, "/dev").Options, "ro") {

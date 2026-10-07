@@ -254,7 +254,7 @@ func TestAForkRefusesASourceThatDoesNotRun(t *testing.T) {
 func liveForkProvider(t *testing.T, dir, beforePause, onCheckpoint string) (*gvisor.Provider, string) {
 	t.Helper()
 	calls := filepath.Join(dir, "calls")
-	for _, layer := range []string{"bundle", "disk/upper", "disk/tmp", "disk/shard"} {
+	for _, layer := range []string{"bundle", "disk/upper", "disk/tmp", "disk/shard", "disk/logs"} {
 		if err := os.MkdirAll(filepath.Join(dir, liveSource, layer), 0o700); err != nil {
 			t.Fatal(err)
 		}

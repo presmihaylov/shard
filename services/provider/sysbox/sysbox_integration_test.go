@@ -31,22 +31,19 @@ const hostInitPath = "/usr/local/bin/shard-init"
 
 const testImage = "alpine:3.20"
 
-// stopGrace is generous: these entrypoints are already gone, so nothing here waits it out.
+// stopGrace is generous: shard-init exits on TERM, so nothing here waits it out.
 const stopGrace = 10 * time.Second
+
+// waitGrace bounds the wait on a process that ends by itself, so a supervisor that cannot drop never hangs the run.
+const waitGrace = 30 * time.Second
 
 // TestConformance runs the suite over sysbox-runc, where it proves the refuse path of every checkpoint verb (SHARD-93).
 func TestConformance(t *testing.T) {
 	h := newHarness(t)
 
 	conformance.Run(t, conformance.Subject{
-		Provider: h.provider,
-		NewSpec:  func(t *testing.T) models.SandboxSpec { return h.newSpec(t, "/bin/true") },
-		NewIgnoresTermSpec: func(t *testing.T) models.SandboxSpec {
-			// The marker comes after the trap, so the suite never stops an entrypoint that still dies on SIGTERM.
-			script := fmt.Sprintf("trap '' TERM; echo %s; while true; do sleep 1; done", conformance.ReadyMarker)
-
-			return h.newSpec(t, "/bin/sh", "-c", script)
-		},
+		Provider:  h.provider,
+		NewSpec:   h.newSpec,
 		EmptyDir:  func(t *testing.T) string { return t.TempDir() },
 		Shell:     func(script string) []string { return []string{"/bin/sh", "-c", script} },
 		Reopen:    h.reopen,
@@ -60,7 +57,7 @@ func TestLaunch(t *testing.T) {
 
 	conformance.RunLaunch(t, conformance.Subject{
 		Provider: h.provider,
-		NewSpec:  func(t *testing.T) models.SandboxSpec { return h.newSpec(t, "/bin/true") },
+		NewSpec:  h.newSpec,
 		Shell:    func(script string) []string { return []string{"/bin/sh", "-c", script} },
 
 		RootHoldsEveryCapability: true,
@@ -139,7 +136,7 @@ func (h *harness) stateDir(id string) (string, error) {
 
 // newSpec gives every sandbox its own id and its own state directory, and ends it when the test does.
 // No network: sysbox-runc makes a namespace of its own, which is all the suite needs.
-func (h *harness) newSpec(t *testing.T, entrypoint ...string) models.SandboxSpec {
+func (h *harness) newSpec(t *testing.T) models.SandboxSpec {
 	t.Helper()
 
 	id := fmt.Sprintf("shard-93-%d", h.next.Add(1))
@@ -157,13 +154,45 @@ func (h *harness) newSpec(t *testing.T, entrypoint ...string) models.SandboxSpec
 	})
 
 	spec := models.SandboxSpec{
-		ID:         id,
-		StateDir:   dir,
-		RootFS:     h.image.RootFS,
-		Entrypoint: entrypoint,
+		ID:       id,
+		StateDir: dir,
+		RootFS:   h.image.RootFS,
 	}
 
 	return runspec.Resolve(spec, h.image.Config)
+}
+
+// runToEnd runs one process in a started sandbox and returns its last report and its log once it ended.
+func (h *harness) runToEnd(t *testing.T, id string, spec models.ProcessSpec) (models.ProcessReport, string) {
+	t.Helper()
+
+	if err := h.provider.StartProcess(t.Context(), id, spec); err != nil {
+		t.Fatalf("StartProcess %s: %v", spec.Name, err)
+	}
+	ctx, cancel := context.WithTimeout(t.Context(), waitGrace)
+	defer cancel()
+	for {
+		rows, err := h.provider.Processes(ctx, id)
+		if err != nil {
+			t.Fatalf("Processes: %v", err)
+		}
+		for _, row := range rows {
+			if row.Name != spec.Name || !row.State.Ended() {
+				continue
+			}
+			path, err := h.provider.ProcessLogPath(id, spec.Name)
+			if err != nil {
+				t.Fatalf("ProcessLogPath: %v", err)
+			}
+
+			return row, readFile(t, path)
+		}
+		select {
+		case <-ctx.Done():
+			t.Fatalf("%s did not end within %s: %+v", spec.Name, waitGrace, rows)
+		case <-time.After(50 * time.Millisecond):
+		}
+	}
 }
 
 func requireSysboxRunc(t *testing.T) {

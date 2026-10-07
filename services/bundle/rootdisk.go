@@ -56,7 +56,7 @@ func GrowSeed(dst string, r models.Resources, copy func() error) error {
 // seedRefusal names the resources.disk_mib that works when ext4 cannot grow a snapshot's disk.
 func seedRefusal(err error, mib int64) error {
 	if errors.Is(err, ext4.ErrNeedsRecovery) {
-		return &BoundError{Fix: fmt.Sprintf("the snapshot's disk was not stopped clean, so it cannot grow to %d MiB; omit resources.disk_mib, or start the sandbox it came from, let its entrypoint exit or end it with shard exec, then stop it and snapshot it again", mib), Err: err}
+		return &BoundError{Fix: fmt.Sprintf("the snapshot's disk was not stopped clean, so it cannot grow to %d MiB; omit resources.disk_mib, or start the sandbox it came from, stop its processes, then stop it and snapshot it again", mib), Err: err}
 	}
 	var taken *ext4.DescriptorTakenError
 	if errors.As(err, &taken) {

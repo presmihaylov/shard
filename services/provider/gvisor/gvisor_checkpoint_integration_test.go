@@ -12,10 +12,11 @@ import (
 	"github.com/presmihaylov/shard/models"
 )
 
-// A pause is a checkpoint and a teardown, so a resumed sandbox is a new runsc container that must still be the same run: same files, same entrypoint mid-loop, and its output still reaching the log.
+// A pause is a checkpoint and a teardown, so a resumed sandbox is a new runsc container that must still be the same run: same files, same process mid-loop, and its output still reaching its log.
 func TestAPausedSandboxResumesWhereItWas(t *testing.T) {
 	h := newHarness(t)
-	spec := h.start(t, "/bin/sh", "-c", "i=0; while true; do i=$((i+1)); echo tick $i; sleep 0.2; done")
+	spec := h.start(t)
+	h.run(t, spec.ID, "ticker", "/bin/sh", "-c", "i=0; while true; do i=$((i+1)); echo tick $i; sleep 0.2; done")
 	checkpoint := filepath.Join(t.TempDir(), "checkpoint")
 
 	// /root is on the writable layer, and the gofer must flush it to the host before the checkpoint.
@@ -33,13 +34,9 @@ func TestAPausedSandboxResumesWhereItWas(t *testing.T) {
 	assertAlive(t, h, spec.ID, false)
 	assertMounted(t, h, spec.ID, false)
 
-	path, err := h.provider.LogPath(spec.ID)
-	if err != nil {
-		t.Fatalf("LogPath: %v", err)
-	}
-	ticksAtPause := strings.Count(readFile(t, path), "tick")
+	ticksAtPause := strings.Count(h.logOf(t, spec.ID, "ticker"), "tick")
 	if ticksAtPause == 0 {
-		t.Fatal("the entrypoint never ticked before the pause")
+		t.Fatal("the process never ticked before the pause")
 	}
 
 	started = time.Now()
@@ -57,7 +54,7 @@ func TestAPausedSandboxResumesWhereItWas(t *testing.T) {
 
 	// The tick counter lives in the sandbox's memory, so a resumed loop counts on from where it froze.
 	time.Sleep(time.Second)
-	log := readFile(t, path)
+	log := h.logOf(t, spec.ID, "ticker")
 	if got := strings.Count(log, "tick"); got <= ticksAtPause {
 		t.Errorf("the log holds %d ticks after the resume, want more than the %d it held at the pause", got, ticksAtPause)
 	}
@@ -69,7 +66,7 @@ func TestAPausedSandboxResumesWhereItWas(t *testing.T) {
 // A resume does not consume the checkpoint: the same one brings the sandbox back as often as asked.
 func TestACheckpointSurvivesItsResume(t *testing.T) {
 	h := newHarness(t)
-	spec := h.start(t, "/bin/sh", "-c", "sleep 300")
+	spec := h.start(t)
 	checkpoint := filepath.Join(t.TempDir(), "checkpoint")
 
 	if err := h.provider.Pause(t.Context(), spec.ID, checkpoint); err != nil {
@@ -90,7 +87,7 @@ func TestACheckpointSurvivesItsResume(t *testing.T) {
 
 func TestPauseAndResumeRefuseTheWrongState(t *testing.T) {
 	h := newHarness(t)
-	spec := h.start(t, "/bin/sh", "-c", "sleep 300")
+	spec := h.start(t)
 	checkpoint := filepath.Join(t.TempDir(), "checkpoint")
 
 	// A running sandbox is one no pause ended, so a restore over it is refused before runsc sees it.
@@ -123,7 +120,7 @@ func TestPauseAndResumeRefuseTheWrongState(t *testing.T) {
 // The checkpoint holds the guest's memory, so it must go with the sandbox and never with a stop.
 func TestAStopAfterAPauseKeepsTheCheckpoint(t *testing.T) {
 	h := newHarness(t)
-	spec := h.start(t, "/bin/sh", "-c", "sleep 300")
+	spec := h.start(t)
 	checkpoint := filepath.Join(t.TempDir(), "checkpoint")
 
 	if err := h.provider.Pause(t.Context(), spec.ID, checkpoint); err != nil {

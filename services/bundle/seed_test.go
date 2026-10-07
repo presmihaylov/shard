@@ -48,7 +48,7 @@ func TestBuildResolvesAUserOnlyTheSeedHolds(t *testing.T) {
 	_, got := build(t, spec, models.ImageConfig{})
 
 	if want := "1001:1001"; userArg(t, got) != want {
-		t.Errorf("got -user %q, want %q", userArg(t, got), want)
+		t.Errorf("got the user %q, want %q", userArg(t, got), want)
 	}
 }
 
@@ -82,7 +82,7 @@ func TestBuildReadsTheImageUnderASeedThatLeftItAlone(t *testing.T) {
 	b, got := build(t, spec, models.ImageConfig{})
 
 	if want := "1000:2000"; userArg(t, got) != want {
-		t.Errorf("got -user %q, want %q", userArg(t, got), want)
+		t.Errorf("got the user %q, want %q", userArg(t, got), want)
 	}
 	if got := readFile(t, filepath.Join(b.Upper, "etc/ssl/certs/ca-certificates.crt")); got != imageRoots+proxyCA {
 		t.Errorf("the merged bundle is:\n%s", got)
@@ -141,7 +141,7 @@ func TestBuildFollowsASeedLinkIntoTheImage(t *testing.T) {
 			_, got := build(t, spec, models.ImageConfig{})
 
 			if want := "1001:1001"; userArg(t, got) != want {
-				t.Errorf("got -user %q, want %q", userArg(t, got), want)
+				t.Errorf("got the user %q, want %q", userArg(t, got), want)
 			}
 		})
 	}

@@ -103,7 +103,6 @@ func TestBuildPointsCurlAtTheMergedBundle(t *testing.T) {
 // A bundle holding the proxy CA alone would make the guest trust nothing but the proxy, so no bundle is a refusal.
 func TestBuildRefusesToFrontAnImageWithNoRoots(t *testing.T) {
 	spec := newSpec(t)
-	spec.Entrypoint = []string{"/bin/sh"}
 	spec.ProxyCA = []byte(proxyCA)
 	if err := os.MkdirAll(filepath.Join(spec.RootFS, "etc/ssl/certs"), 0o755); err != nil {
 		t.Fatal(err)
@@ -128,7 +127,6 @@ func TestBuildRefusesToFrontAnImageWithNoRoots(t *testing.T) {
 
 func TestBuildReadsTheRootsInsideTheRootfsOnly(t *testing.T) {
 	spec := newSpec(t)
-	spec.Entrypoint = []string{"/bin/sh"}
 	spec.ProxyCA = []byte(proxyCA)
 	outside := filepath.Join(t.TempDir(), "host-roots.crt")
 	write(t, outside, imageRoots)

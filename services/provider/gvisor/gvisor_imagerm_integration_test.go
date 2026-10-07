@@ -61,7 +61,7 @@ func TestACreateKeepsTheRootFSAnImageRmHasPassed(t *testing.T) {
 		t.Fatalf("Pull during the removal: %v", pullErr)
 	}
 
-	spec := h.newSpec(t, "/bin/true")
+	spec := h.newSpec(t)
 	spec.RootFS = img.RootFS
 	if err := h.provider.Create(t.Context(), spec); err != nil {
 		t.Fatalf("Create over the rootfs the pull handed out: %v", err)

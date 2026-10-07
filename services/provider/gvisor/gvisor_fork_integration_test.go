@@ -19,7 +19,8 @@ import (
 // and address, and no write crosses between the source and either fork (SHARD-457).
 func TestALiveForkLeavesTheSourceRunningAndSharesNothing(t *testing.T) {
 	h := newNetworkedHarness(t)
-	source := h.start(t, "/bin/sh", "-c", "i=0; while true; do i=$((i+1)); echo tick $i; sleep 0.2; done")
+	source := h.start(t)
+	h.run(t, source.ID, "ticker", "/bin/sh", "-c", "i=0; while true; do i=$((i+1)); echo tick $i; sleep 0.2; done")
 	execIn(t, h, source.ID, "echo from-the-source > /root/marker")
 	sentry := h.sentryPID(t, source.ID)
 
@@ -75,11 +76,7 @@ func TestALiveForkLeavesTheSourceRunningAndSharesNothing(t *testing.T) {
 	// The memory restored twice, so both loops count on in their own logs.
 	time.Sleep(time.Second)
 	for _, fork := range forks {
-		path, err := h.provider.LogPath(fork.ID)
-		if err != nil {
-			t.Fatalf("LogPath: %v", err)
-		}
-		if ticks := strings.Count(readFile(t, path), "tick"); ticks == 0 {
+		if ticks := strings.Count(h.logOf(t, fork.ID, "ticker"), "tick"); ticks == 0 {
 			t.Errorf("fork %s wrote no ticks to its own log", fork.ID)
 		}
 	}
@@ -88,7 +85,7 @@ func TestALiveForkLeavesTheSourceRunningAndSharesNothing(t *testing.T) {
 // A fork captures the source as it runs now, so a write made after an earlier pause and resume is in it (SHARD-457).
 func TestAForkCapturesTheSourceAsItRunsNotItsLastCheckpoint(t *testing.T) {
 	h := newNetworkedHarness(t)
-	source := h.start(t, "/bin/sh", "-c", "while true; do sleep 1; done")
+	source := h.start(t)
 	checkpoint := filepath.Join(t.TempDir(), "checkpoint")
 
 	if err := h.provider.Pause(t.Context(), source.ID, checkpoint); err != nil {
@@ -116,7 +113,7 @@ func TestAForkCapturesTheSourceAsItRunsNotItsLastCheckpoint(t *testing.T) {
 // A daemon cut inside a live fork leaves the source frozen with its mark, and the next daemon's read of it thaws it (SHARD-457).
 func TestTheNextDaemonThawsASourceACutForkLeftFrozen(t *testing.T) {
 	h := newHarness(t)
-	source := h.start(t, "/bin/sh", "-c", "while true; do sleep 1; done")
+	source := h.start(t)
 
 	if err := os.WriteFile(filepath.Join(stateDirOf(t, h, source.ID), "fork-frozen"), nil, 0o600); err != nil {
 		t.Fatal(err)
@@ -136,10 +133,10 @@ func TestTheNextDaemonThawsASourceACutForkLeftFrozen(t *testing.T) {
 // A fork over an id that is live would unmount the rootfs it runs on, so it is refused, and the source is never frozen (SHARD-457).
 func TestForkRefusesAnIdThatIsLive(t *testing.T) {
 	h := newHarness(t)
-	source := h.start(t, "/bin/sh", "-c", "while true; do sleep 1; done")
+	source := h.start(t)
 	sentry := h.sentryPID(t, source.ID)
 
-	live := h.start(t, "/bin/sh", "-c", "while true; do sleep 1; done")
+	live := h.start(t)
 	err := h.provider.Fork(t.Context(), source.ID, live)
 	if err == nil || !strings.Contains(err.Error(), "already exists") {
 		t.Errorf("Fork over a live id returned %v, want a refusal", err)

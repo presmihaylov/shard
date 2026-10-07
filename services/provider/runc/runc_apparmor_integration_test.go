@@ -4,11 +4,11 @@ package runc_test
 
 import (
 	"bytes"
-	"context"
 	"os"
 	"strings"
 	"testing"
 
+	"github.com/presmihaylov/shard/models"
 	"github.com/presmihaylov/shard/services/bundle"
 )
 
@@ -20,7 +20,7 @@ func TestTheGuestRunsUnderDockersAppArmorProfile(t *testing.T) {
 	}
 	h := newHarness(t)
 
-	spec := h.newSpec(t, "cat", "/proc/self/attr/current")
+	spec := h.newSpec(t)
 	if err := h.provider.Create(t.Context(), spec); err != nil {
 		t.Fatalf("Create: %v", err)
 	}
@@ -28,21 +28,9 @@ func TestTheGuestRunsUnderDockersAppArmorProfile(t *testing.T) {
 		t.Fatalf("Start: %v", err)
 	}
 
-	ctx, cancel := context.WithTimeout(t.Context(), waitGrace)
-	defer cancel()
-	if _, err := h.provider.Wait(ctx, spec.ID); err != nil {
-		t.Fatalf("Wait: %v", err)
-	}
-
-	path, err := h.provider.LogPath(spec.ID)
-	if err != nil {
-		t.Fatalf("LogPath: %v", err)
-	}
-	log, err := os.ReadFile(path)
-	if err != nil {
-		t.Fatalf("read the log: %v", err)
-	}
-	if want := bundle.AppArmorProfile + " (enforce)"; !strings.Contains(string(log), want) {
+	// shard-init forks every process, so one reads the profile PID 1 runs under.
+	_, log := h.runToEnd(t, spec.ID, models.ProcessSpec{Name: "attr", Argv: []string{"cat", "/proc/self/attr/current"}})
+	if want := bundle.AppArmorProfile + " (enforce)"; !strings.Contains(log, want) {
 		t.Errorf("the guest runs under %q, want %q", log, want)
 	}
 }

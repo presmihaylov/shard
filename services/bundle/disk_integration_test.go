@@ -22,13 +22,13 @@ func TestAWritePastTheDiskBoundFailsInTheGuest(t *testing.T) {
 	script := `t=$(dd if=/dev/zero of=/tmp/fill bs=1M count=192 2>&1 | grep -c "No space left on device"); rm -f /tmp/fill; ` +
 		`r=$(dd if=/dev/zero of=/fill bs=1M count=192 2>&1 | grep -c "No space left on device"); rm -f /fill; ` +
 		`echo "tmp=$t root=$r" > /root/enospc`
-	b, lower := buildBoundedBundle(t, t.TempDir(), boundMiB, []string{"/bin/sh", "-c", script})
+	b, lower := buildBoundedBundle(t, t.TempDir(), boundMiB)
 	if err := b.Mount(lower); err != nil {
 		t.Fatalf("mount the overlay: %v", err)
 	}
 	t.Cleanup(func() { b.Unmount() })
 
-	runSandbox(t, b, "shard-173-fill")
+	runSandbox(t, b, "shard-173-fill", "/bin/sh", "-c", script)
 
 	if got := strings.TrimSpace(readFile(t, filepath.Join(b.Upper, "root/enospc"))); got != "tmp=1 root=1" {
 		t.Errorf("the guest saw %q, want ENOSPC once on /tmp and once on the root", got)
@@ -55,7 +55,7 @@ func TestAWritePastTheDiskBoundFailsInTheGuest(t *testing.T) {
 func TestUnmountDetachesTheDisk(t *testing.T) {
 	requireRunsc(t)
 
-	b, lower := buildBoundedBundle(t, t.TempDir(), boundMiB, []string{"/bin/true"})
+	b, lower := buildBoundedBundle(t, t.TempDir(), boundMiB)
 	if err := b.Mount(lower); err != nil {
 		t.Fatalf("mount the overlay: %v", err)
 	}
@@ -77,7 +77,7 @@ func TestUnmountDetachesTheDisk(t *testing.T) {
 func TestUnmountOverlayKeepsTheDisk(t *testing.T) {
 	requireRunsc(t)
 
-	b, lower := buildBoundedBundle(t, t.TempDir(), boundMiB, []string{"/bin/true"})
+	b, lower := buildBoundedBundle(t, t.TempDir(), boundMiB)
 	if err := b.Mount(lower); err != nil {
 		t.Fatalf("mount the overlay: %v", err)
 	}

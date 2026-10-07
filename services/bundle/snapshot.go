@@ -19,7 +19,7 @@ import (
 // layersDir is where a checkpoint keeps the copy of the writable layers its memory image was taken over.
 const layersDir = "layers"
 
-// seedLayers is what a snapshot keeps: /.shard holds the last run's ready, restart and exit files, which a new sandbox must not inherit.
+// seedLayers is what a snapshot keeps: /.shard and the logs hold the last run's ready file and its processes' output, which a new sandbox must not inherit.
 var seedLayers = []string{"upper", "tmp"}
 
 // Export copies config.json and the writable layers into dir, so a fork restores over what the memory saw; ctx ends the copy, which runs while the guest is frozen.
@@ -39,8 +39,7 @@ func (b Bundle) Export(ctx context.Context, dir string) error {
 		}
 	}
 
-	// The exit record lives off the layers now, so a fork of an already-exited sandbox must carry it,
-	// or the fork's Wait would block on an exit its restored shard-init never re-reports.
+	// The process table lives off the layers, so a fork must carry it, or the fork would answer for no process until its restored shard-init reports again.
 	if err := copyExitFile(b.ExitFile, filepath.Join(dir, exitFileName)); err != nil {
 		return err
 	}
@@ -55,7 +54,7 @@ func (s *Service) Fork(checkpoint string, spec models.SandboxSpec) (Bundle, erro
 		layers[name] = filepath.Join(checkpoint, layersDir, name)
 	}
 
-	// A fork carries the source exit record, so a fork of an exited sandbox answers Wait at once.
+	// A fork carries the source's process table, so it answers for the processes it restores at once.
 	return s.copyBundle(filepath.Join(checkpoint, "config.json"), layers, filepath.Join(checkpoint, exitFileName), spec)
 }
 
@@ -94,7 +93,7 @@ func seed(b Bundle, dir string) error {
 	return nil
 }
 
-// copyBundle copies the layers and rewrites config.json under the new identity, and carries the source's exit record.
+// copyBundle copies the layers and rewrites config.json under the new identity, and carries the source's process table.
 func (s *Service) copyBundle(configPath string, layers map[string]string, sourceExit string, spec models.SandboxSpec) (Bundle, error) {
 	if spec.ID == "" || spec.StateDir == "" {
 		return Bundle{}, fmt.Errorf("a fork needs an id and a state directory, got %q and %q", spec.ID, spec.StateDir)
@@ -140,7 +139,7 @@ func (s *Service) copyBundle(configPath string, layers map[string]string, source
 	cfg.Linux.UIDMappings = idMappings(spec.Network.Userns)
 	cfg.Linux.GIDMappings = idMappings(spec.Network.Userns)
 	// The same mounts by destination, type and options, which a restore checks, over this bundle's sources.
-	cfg.Mounts = mounts(b.ShardDir, b.Tmp, s.initPath, resourcesOf(cfg.Linux))
+	cfg.Mounts = mounts(b.ShardDir, b.Logs, b.Tmp, s.initPath, resourcesOf(cfg.Linux))
 
 	encoded, err := json.MarshalIndent(cfg, "", "\t")
 	if err != nil {
@@ -159,7 +158,7 @@ func (s *Service) copyBundle(configPath string, layers map[string]string, source
 	return b, nil
 }
 
-// copyExitFile carries shard-init's exit record between a bundle and a checkpoint; a missing source is not an error.
+// copyExitFile carries shard-init's process table between a bundle and a checkpoint; a missing source is not an error.
 func copyExitFile(src, dst string) error {
 	blob, err := readExitFile(src)
 	if errors.Is(err, fs.ErrNotExist) {
@@ -170,15 +169,15 @@ func copyExitFile(src, dst string) error {
 	}
 
 	if err := store.WriteFile(dst, blob, 0o600); err != nil {
-		return fmt.Errorf("copy the exit record to %s: %w", dst, err)
+		return fmt.Errorf("copy the process table to %s: %w", dst, err)
 	}
 
 	return nil
 }
 
-// layers names what a checkpoint carries. The overlay work directory is scratch and is never copied.
+// layers names what a checkpoint carries; the logs go too, as a restore reopens each one at its path. The overlay work directory is scratch and is never copied.
 func (b Bundle) layers() map[string]string {
-	return map[string]string{"upper": b.Upper, "tmp": b.Tmp, "shard": b.ShardDir}
+	return map[string]string{"upper": b.Upper, "tmp": b.Tmp, "shard": b.ShardDir, "logs": b.Logs}
 }
 
 // copyTree is cp -a, because a file walk would drop the whiteout nodes and trusted xattrs of an upper layer.

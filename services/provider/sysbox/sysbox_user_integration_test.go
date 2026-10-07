@@ -7,21 +7,17 @@ import (
 	"os"
 	"strings"
 	"testing"
-	"time"
 
 	"github.com/presmihaylov/shard/models"
 	"github.com/presmihaylov/shard/pkg/netns"
 	"github.com/presmihaylov/shard/services/provider/sysbox"
 )
 
-// waitGrace bounds a Wait on an entrypoint that ends by itself, so a supervisor that cannot drop never hangs the run.
-const waitGrace = 30 * time.Second
-
 // TestAUserSandboxRunsInTheOwnedNamespace is SHARD-211: in the userns the daemon pins, a holder born with setgroups denied made every --user drop and su die with EPERM.
 func TestAUserSandboxRunsInTheOwnedNamespace(t *testing.T) {
 	h := newHarness(t)
 
-	spec := h.newSpec(t, "/bin/sh", "-c", "id -u; id -g; cat /proc/self/setgroups; exit 3")
+	spec := h.newSpec(t)
 	spec.User = "1000:1000"
 	spec.Network = ownedNetwork(t, spec.ID)
 
@@ -32,24 +28,13 @@ func TestAUserSandboxRunsInTheOwnedNamespace(t *testing.T) {
 		t.Fatalf("Start: %v", err)
 	}
 
-	ctx, cancel := context.WithTimeout(t.Context(), waitGrace)
-	defer cancel()
-
 	// The exit code is the assertion: before the fix shard-init never got to exec, and the run ended with EPERM.
-	exit, err := h.provider.Wait(ctx, spec.ID)
-	if err != nil {
-		t.Fatalf("Wait: %v", err)
+	report, got := h.runToEnd(t, spec.ID, models.ProcessSpec{Name: "probe", Argv: []string{"/bin/sh", "-c", "id -u; id -g; cat /proc/self/setgroups; exit 3"}})
+	if report.Exit == nil || report.Exit.Code != 3 {
+		t.Errorf("the process ended %+v, want the exit code 3 it asked for", report)
 	}
-	if exit.Code != 3 {
-		t.Errorf("the entrypoint ended %+v, want the exit code 3 it asked for", exit)
-	}
-
-	path, err := h.provider.LogPath(spec.ID)
-	if err != nil {
-		t.Fatalf("LogPath: %v", err)
-	}
-	if got := readFile(t, path); !strings.Contains(got, "1000\n1000\nallow") {
-		t.Errorf("the entrypoint reported %q, want uid 1000, gid 1000 and setgroups allowed", got)
+	if !strings.Contains(got, "1000\n1000\nallow") {
+		t.Errorf("the process reported %q, want uid 1000, gid 1000 and setgroups allowed", got)
 	}
 }
 

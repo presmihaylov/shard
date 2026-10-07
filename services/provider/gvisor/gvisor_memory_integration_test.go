@@ -38,18 +38,15 @@ func TestAGuestThatHoldsMostOfItsBoundStaysAlive(t *testing.T) {
 	script := "head -1 /proc/meminfo; dd if=/dev/zero of=/dev/shm/fill bs=1M count=" + strconv.Itoa(fillMiB) +
 		" 2>/dev/null && echo " + filledMarker + "; while true; do sleep 1; done"
 
-	spec := h.newSpec(t, "/bin/sh", "-c", script)
+	spec := h.newSpec(t)
 	spec.Resources = models.Resources{MemoryMiB: boundMiB}
 
 	h.startSpec(t, spec)
-	awaitMarker(t, h, spec.ID, filledMarker)
+	h.run(t, spec.ID, "fill", "/bin/sh", "-c", script)
+	awaitMarker(t, h, spec.ID, "fill", filledMarker)
 
 	// The guest reads the sentry's budget as MemTotal, so headroom that reached the spec would show here.
-	path, err := h.provider.LogPath(spec.ID)
-	if err != nil {
-		t.Fatalf("LogPath: %v", err)
-	}
-	if got := memTotalKiB(t, readFile(t, path)); got != boundMiB*1024 {
+	if got := memTotalKiB(t, h.logOf(t, spec.ID, "fill")); got != boundMiB*1024 {
 		t.Errorf("the guest reads MemTotal %d kB, want %d", got, boundMiB*1024)
 	}
 
@@ -76,7 +73,7 @@ func TestAGuestThatHoldsMostOfItsBoundStaysAlive(t *testing.T) {
 func TestTheCgroupCarriesTheThrottleAndTheCeiling(t *testing.T) {
 	h := newHarness(t)
 
-	spec := h.newSpec(t, "/bin/sh", "-c", "while true; do sleep 1; done")
+	spec := h.newSpec(t)
 	spec.Resources = models.Resources{MemoryMiB: boundMiB}
 
 	h.startSpec(t, spec)
@@ -100,7 +97,7 @@ func TestTheCgroupCarriesTheThrottleAndTheCeiling(t *testing.T) {
 func TestAStaleCgroupThatWouldUnboundTheSandboxIsRefused(t *testing.T) {
 	h := newHarness(t)
 
-	spec := h.newSpec(t, "/bin/sh", "-c", "while true; do sleep 1; done")
+	spec := h.newSpec(t)
 	spec.Resources = models.Resources{MemoryMiB: boundMiB}
 
 	dir := filepath.Join(cgroup.Root, bundle.CgroupsPath(spec.ID))
@@ -124,7 +121,7 @@ func TestAStaleCgroupThatWouldUnboundTheSandboxIsRefused(t *testing.T) {
 	}
 }
 
-// memTotalKiB reads the first field of the guest's own /proc/meminfo, which the entrypoint printed.
+// memTotalKiB reads the first field of the guest's own /proc/meminfo, which the process printed.
 func memTotalKiB(t *testing.T, log string) int {
 	t.Helper()
 
@@ -146,13 +143,13 @@ func memTotalKiB(t *testing.T, log string) int {
 	return 0
 }
 
-// awaitMarker waits for the entrypoint to say it finished, because Start returns before it runs.
-func awaitMarker(t *testing.T, h *harness, id, marker string) {
+// awaitMarker waits for a process to say it finished, because StartProcess returns once it execs.
+func awaitMarker(t *testing.T, h *harness, id, name, marker string) {
 	t.Helper()
 
-	path, err := h.provider.LogPath(id)
+	path, err := h.provider.ProcessLogPath(id, name)
 	if err != nil {
-		t.Fatalf("LogPath: %v", err)
+		t.Fatalf("ProcessLogPath: %v", err)
 	}
 
 	deadline := time.Now().Add(2 * time.Minute)
@@ -179,18 +176,14 @@ func TestTheGuestCannotWriteToDev(t *testing.T) {
 		" echo " + tmpfsMarker + " devnull; df -m /dev/shm | tail -1 | awk '{print \"" + tmpfsMarker + " shm \" $2}';" +
 		" echo " + tmpfsMarker + " done; while true; do sleep 1; done"
 
-	spec := h.newSpec(t, "/bin/sh", "-c", script)
+	spec := h.newSpec(t)
 	spec.Resources = models.Resources{MemoryMiB: boundMiB}
 
 	h.startSpec(t, spec)
-	awaitMarker(t, h, spec.ID, tmpfsMarker+" done")
+	h.run(t, spec.ID, "probe", "/bin/sh", "-c", script)
+	awaitMarker(t, h, spec.ID, "probe", tmpfsMarker+" done")
 
-	path, err := h.provider.LogPath(spec.ID)
-	if err != nil {
-		t.Fatalf("LogPath: %v", err)
-	}
-
-	log := readFile(t, path)
+	log := h.logOf(t, spec.ID, "probe")
 	if strings.Contains(log, tmpfsMarker+" writable") {
 		t.Error("the guest wrote a file to /dev, so it can still fill the host and end its own sandbox")
 	}
@@ -212,10 +205,11 @@ func TestAGuestThatFillsItsTmpfsKeepsItsSandbox(t *testing.T) {
 
 	script := "dd if=/dev/zero of=/dev/shm/fill bs=1M 2>/dev/null; while true; do sleep 1; done"
 
-	spec := h.newSpec(t, "/bin/sh", "-c", script)
+	spec := h.newSpec(t)
 	spec.Resources = models.Resources{MemoryMiB: boundMiB}
 
 	h.startSpec(t, spec)
+	h.run(t, spec.ID, "fill", "/bin/sh", "-c", script)
 	time.Sleep(90 * time.Second)
 
 	status, err := h.provider.Status(t.Context(), spec.ID)
@@ -235,7 +229,7 @@ func TestAGuestThatFillsItsTmpfsKeepsItsSandbox(t *testing.T) {
 	}
 }
 
-// guestTmpfsMiB reads back a size the entrypoint printed, in MiB.
+// guestTmpfsMiB reads back a size the process printed, in MiB.
 func guestTmpfsMiB(t *testing.T, log, mount string) int64 {
 	t.Helper()
 
@@ -263,11 +257,11 @@ func guestTmpfsMiB(t *testing.T, log, mount string) int64 {
 func TestRemovingOneSandboxLeavesItsSiblingBound(t *testing.T) {
 	h := newHarness(t)
 
-	first := h.newSpec(t, "/bin/sh", "-c", "while true; do sleep 1; done")
+	first := h.newSpec(t)
 	first.Resources = models.Resources{MemoryMiB: boundMiB}
 	h.startSpec(t, first)
 
-	second := h.newSpec(t, "/bin/sh", "-c", "while true; do sleep 1; done")
+	second := h.newSpec(t)
 	second.Resources = models.Resources{MemoryMiB: boundMiB}
 	h.startSpec(t, second)
 

@@ -17,6 +17,7 @@ import (
 	"github.com/presmihaylov/shard/models"
 	"github.com/presmihaylov/shard/pkg/netns"
 	"github.com/presmihaylov/shard/services/runspec"
+	"github.com/presmihaylov/shard/services/supervisor"
 )
 
 // guestShardDir is the guest mount point of the per-sandbox host directory shard-init writes to.
@@ -30,8 +31,8 @@ const exitFileName = "exit.json"
 // exitChannelFileName names the sealed memfd a sysbox create gave PID 1. Only the daemon writes it.
 const exitChannelFileName = "exit-channel.json"
 
-// readyFileName is written once the entrypoint is forked. runsc start unblocks the task and reads
-// nothing back, so this file is the only proof the entrypoint ever ran.
+// readyFileName is written once shard-init takes process requests. runsc start unblocks the task and reads
+// nothing back, so this file is the only proof the supervisor came up.
 const readyFileName = "started"
 
 // changedFileName marks a config.json written since the substrate last created the container from it.
@@ -44,7 +45,7 @@ type Bundle struct {
 	RootFS string
 	// ShardDir is bind mounted at guestShardDir, and shard-init writes ReadyFile into it.
 	ShardDir string
-	// ExitFile sits at the state directory root, off every bind mount, so the guest cannot forge an exit.
+	// ExitFile holds shard-init's process table, off every bind mount, so the guest reaches it only through its fd 0.
 	ExitFile string
 	// ExitChannelFile names the sealed memfd a sysbox PID 1 holds as fd 0, beside ExitFile for the same reason.
 	ExitChannelFile string
@@ -58,8 +59,10 @@ type Bundle struct {
 
 	// Tmp is bind mounted at /tmp, on the disk, so a guest that fills it hits its own bound and not the host's.
 	Tmp string
+	// Logs is bind mounted at /.shard/logs and holds each process's log; it sits off ShardDir, so guest root cannot swap it for a link.
+	Logs string
 
-	// Disk is where Image, a sparse ext4 file sized to the bound, mounts; Upper, Work, Tmp and ShardDir live on it, so one bound covers every guest write.
+	// Disk is where Image, a sparse ext4 file sized to the bound, mounts; Upper, Work, Tmp, Logs and ShardDir live on it, so one bound covers every guest write.
 	Disk  string
 	Image string
 
@@ -146,7 +149,7 @@ func (s *Service) Build(spec models.SandboxSpec) (Bundle, error) {
 	return b, nil
 }
 
-// Runtime is what the entrypoint runs with. Nothing records it but config.json, so an exec into a
+// Runtime is what every process and exec runs with. Nothing records it but config.json, so an exec into a
 // live sandbox reads it back from there.
 type Runtime struct {
 	// RootFS is the image tree the writable layer stacks over, so a start after a stop mounts it again.
@@ -154,22 +157,22 @@ type Runtime struct {
 	Resources models.Resources
 	Env       []string
 	WorkDir   string
-	// User is the uid:gid the supervisor drops the entrypoint to, and empty when nobody named one.
+	// User is the uid:gid a process or an exec drops to by default, and empty when nobody named one.
 	User string
 	// Groups is the supplementary set that goes with User, so an exec adopts the same identity.
 	Groups []uint32
 }
 
-// Runtime reads config.json back, so a second process in the sandbox starts where the entrypoint did.
+// Runtime reads config.json back, so every process in the sandbox starts where the sandbox says.
 func (b Bundle) Runtime() (Runtime, error) {
 	spec, err := b.readSpec()
 	if err != nil {
 		return Runtime{}, err
 	}
 
-	groups, err := parseGroups(supervisorFlag(spec.Process.Args, "-groups"))
+	groups, err := parseGroups(spec.Annotations[groupsAnnotation])
 	if err != nil {
-		return Runtime{}, fmt.Errorf("read the entrypoint groups back from %s: %w", b.configPath(), err)
+		return Runtime{}, fmt.Errorf("read the sandbox groups back from %s: %w", b.configPath(), err)
 	}
 
 	resources := resourcesOf(spec.Linux)
@@ -183,9 +186,14 @@ func (b Bundle) Runtime() (Runtime, error) {
 		Resources: resources,
 		Env:       spec.Process.Env,
 		WorkDir:   supervisorFlag(spec.Process.Args, "-workdir"),
-		User:      supervisorFlag(spec.Process.Args, "-user"),
+		User:      spec.Annotations[userAnnotation],
 		Groups:    groups,
 	}, nil
+}
+
+// RunOf puts a named process where an exec into this sandbox runs by default.
+func (r Runtime) RunOf(spec models.ProcessSpec) supervisor.RunSpec {
+	return supervisor.Base{Env: r.Env, WorkDir: r.WorkDir, User: r.User, Groups: r.Groups}.RunOf(spec)
 }
 
 // CheckImage refuses an image file or tree that left the host, by the sentinel a public route names.
@@ -201,13 +209,9 @@ func CheckImage(path string) error {
 	return nil
 }
 
-// supervisorFlag reads back a flag the supervisor was given. Its own process user is root, so the
-// argv is the only record of which identity the entrypoint runs as.
+// supervisorFlag reads back a flag the supervisor was given.
 func supervisorFlag(args []string, name string) string {
 	for i, arg := range args {
-		if arg == "--" {
-			return ""
-		}
 		if arg == name && i+1 < len(args) {
 			return args[i+1]
 		}
@@ -217,7 +221,7 @@ func supervisorFlag(args []string, name string) string {
 }
 
 // Open derives an existing sandbox's paths from its state directory alone, so a later shard process
-// can unmount it and read its exit status without the image the bundle was built from.
+// can unmount it and read its processes without the image the bundle was built from.
 func Open(stateDir string) (Bundle, error) {
 	if stateDir == "" {
 		return Bundle{}, errors.New("no state directory: nothing names the bundle")
@@ -255,6 +259,7 @@ func newBundle(stateDir string) (Bundle, error) {
 		Upper:           filepath.Join(disk, "upper"),
 		Work:            filepath.Join(disk, "work"),
 		Tmp:             filepath.Join(disk, "tmp"),
+		Logs:            filepath.Join(disk, "logs"),
 		Disk:            disk,
 		Image:           filepath.Join(stateDir, "disk.img"),
 	}
@@ -282,7 +287,10 @@ func layout(b Bundle) error {
 		{b.Work, 0o750},
 		// Others may only traverse it, as sysbox looks /.shard/init up as the exec user; the files in it stay 0600.
 		{b.ShardDir, 0o751},
+		// The mount point of Logs, made here so no runtime makes it through a guest-written /.shard.
+		{filepath.Join(b.ShardDir, supervisor.ProcessLogs), 0o700},
 		{b.Tmp, 0o777 | os.ModeSticky},
+		{b.Logs, 0o700},
 	}
 
 	for _, dir := range dirs {
@@ -314,9 +322,22 @@ func withGuest(b Bundle, spec models.SandboxSpec, fn func(guest, name string) er
 
 // runtimeSpec resolves the user in guest, the tree that holds the sandbox's own passwd and group.
 func (s *Service) runtimeSpec(spec models.SandboxSpec, b Bundle, guest string) (*specs.Spec, error) {
-	argv, err := supervisorArgv(spec, guest)
-	if err != nil {
-		return nil, err
+	annotations := map[string]string{
+		// Nothing else records which image tree the overlay stacks over, and a start after a stop needs it.
+		rootfsAnnotation:      spec.RootFS,
+		cpuFeaturesAnnotation: cpuFeatures,
+		// The disk is no cgroup resource, so the bound rides here for inspect and fork to read back.
+		diskAnnotation: strconv.FormatInt(DiskBound(spec.Resources), 10),
+	}
+	// runspec.Resolve already folded the image USER in, so an empty one here means nobody asked for a user.
+	if spec.User != "" {
+		identity, err := ResolveUser(guest, spec.User)
+		if err != nil {
+			return nil, err
+		}
+		// PID 1 stays root, so these are the one record of the user every process and exec drops to.
+		annotations[userAnnotation] = fmt.Sprintf("%d:%d", identity.UID, identity.GID)
+		annotations[groupsAnnotation] = formatGroups(identity.Groups)
 	}
 
 	rs := &specs.Spec{
@@ -327,9 +348,9 @@ func (s *Service) runtimeSpec(spec models.SandboxSpec, b Bundle, guest string) (
 			Readonly: false,
 		},
 		Hostname: firstNonEmpty(spec.Name, spec.ID),
-		// No User here: PID 1 stays root to reap and report the exit, and drops only the entrypoint.
+		// No User here: PID 1 stays root to reap and report its processes, and drops each of them.
 		Process: &specs.Process{
-			Args: argv,
+			Args: supervisorArgv(spec),
 			Env:  Environment(spec.Env),
 			// runc makes a missing cwd before it sets the umask, so shard-init makes the work directory instead (SHARD-764).
 			Cwd: "/",
@@ -345,14 +366,8 @@ func (s *Service) runtimeSpec(spec models.SandboxSpec, b Bundle, guest string) (
 				{Type: "RLIMIT_NOFILE", Hard: defaultNoFile, Soft: defaultNoFile},
 			},
 		},
-		Mounts: mounts(b.ShardDir, b.Tmp, s.initPath, spec.Resources),
-		Annotations: map[string]string{
-			// Nothing else records which image tree the overlay stacks over, and a start after a stop needs it.
-			rootfsAnnotation:      spec.RootFS,
-			cpuFeaturesAnnotation: cpuFeatures,
-			// The disk is no cgroup resource, so the bound rides here for inspect and fork to read back.
-			diskAnnotation: strconv.FormatInt(DiskBound(spec.Resources), 10),
-		},
+		Mounts:      mounts(b.ShardDir, b.Logs, b.Tmp, s.initPath, spec.Resources),
+		Annotations: annotations,
 		Linux: &specs.Linux{
 			CgroupsPath:       CgroupsPath(spec.ID),
 			Namespaces:        namespaces(spec.Network),
@@ -378,39 +393,14 @@ func (s *Service) runtimeSpec(spec models.SandboxSpec, b Bundle, guest string) (
 	return rs, nil
 }
 
-// supervisorArgv is the whole point of this ticket: PID 1 is shard-init, and the entrypoint, when there is one, is its child.
-func supervisorArgv(spec models.SandboxSpec, guest string) ([]string, error) {
-	argv := []string{
-		GuestInitPath,
-		"-ready-file", path.Join(guestShardDir, readyFileName),
-	}
-
-	// runspec.Resolve already folded the image USER in, so an empty one here means nobody asked for a user.
-	if spec.User != "" {
-		identity, err := ResolveUser(guest, spec.User)
-		if err != nil {
-			return nil, err
-		}
-
-		// The name is resolved on the host, against the guest's files: the supervisor cannot read a passwd.
-		argv = append(argv, "-user", fmt.Sprintf("%d:%d", identity.UID, identity.GID))
-		argv = append(argv, "-groups", formatGroups(identity.Groups))
-	}
-
+// supervisorArgv makes shard-init PID 1, which runs nothing until the daemon asks it to.
+func supervisorArgv(spec models.SandboxSpec) []string {
+	argv := []string{GuestInitPath, "-ready-file", path.Join(guestShardDir, readyFileName)}
 	if spec.WorkDir != "" {
 		argv = append(argv, "-workdir", spec.WorkDir)
 	}
 
-	// The policy is fixed at create: shard-init has no control channel, so the flags are the whole of it.
-	if spec.Restart.Set() {
-		argv = append(argv,
-			"-restart", string(spec.Restart.Policy),
-			"-retries", strconv.Itoa(spec.Restart.Retries),
-			"-backoff", strconv.Itoa(spec.Restart.Backoff)+"s",
-		)
-	}
-
-	return append(append(argv, "--"), spec.Entrypoint...), nil
+	return argv
 }
 
 // Environment adds the one default that is runtime policy rather than image data, which every substrate applies.

@@ -171,7 +171,7 @@ func (p *Provider) Create(ctx context.Context, spec models.SandboxSpec) error {
 }
 
 func (p *Provider) create(ctx context.Context, spec models.SandboxSpec, b bundle.Bundle) error {
-	// A fresh create must not inherit the old exit, readiness, restart count, or spec-change mark.
+	// A fresh create must not inherit the old process table, readiness, or spec-change mark.
 	if err := b.ClearRun(); err != nil {
 		return err
 	}
@@ -191,8 +191,8 @@ func (p *Provider) bringUp(ctx context.Context, spec models.SandboxSpec, exitFil
 	// The sandbox keeps its own copy of the fd, so closing ours does not cut the guest's output off.
 	defer func() { err = errors.Join(err, out.Close()) }()
 
-	// shard-init reports the entrypoint exit on its fd 0, the write end the host holds here: create
-	// cleared the stale file first, and fork or restore appends, so a carried or paused record survives.
+	// shard-init writes its process table on its fd 0, the write end the host holds here: create
+	// cleared the stale file first, and fork or restore appends, so a carried or paused table survives.
 	exit, err := os.OpenFile(exitFile, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o600)
 	if err != nil {
 		return fmt.Errorf("open the exit channel %s: %w", exitFile, err)
@@ -283,10 +283,10 @@ func cgroupDir(root, id string) string {
 	return filepath.Join(root, bundle.CgroupsPath(id))
 }
 
-// Start runs the entrypoint. runsc never starts a stopped container again, so a stopped sandbox is
+// Start boots shard-init with no process. runsc never starts a stopped container again, so a stopped sandbox is
 // re-created first over the writable layer its state directory kept.
-// It returns only once the supervisor says the entrypoint forked, because runsc start unblocks the
-// task and reads nothing back: a broken entrypoint would otherwise report as a started sandbox.
+// It returns only once shard-init says it takes process requests, because runsc start unblocks the
+// task and reads nothing back: a supervisor that died would otherwise report as a started sandbox.
 func (p *Provider) Start(ctx context.Context, id string) error {
 	dir, err := p.dirs(id)
 	if err != nil {
@@ -368,7 +368,7 @@ func (p *Provider) reclaim(ctx context.Context, id, dir string, b bundle.Bundle,
 }
 
 // awaitStarted watches for the handshake and for the sandbox dying under it, which is what a
-// supervisor that could not run the entrypoint does within milliseconds.
+// supervisor that could not set up does within milliseconds.
 func (p *Provider) awaitStarted(ctx context.Context, id string, b bundle.Bundle) error {
 	deadline := time.Now().Add(startGrace)
 
@@ -389,12 +389,12 @@ func (p *Provider) awaitStarted(ctx context.Context, id string, b bundle.Bundle)
 			return p.neverStarted(id, b)
 		}
 		if !time.Now().Before(deadline) {
-			return fmt.Errorf("the entrypoint of sandbox %s did not report that it started within %s", id, startGrace)
+			return fmt.Errorf("shard-init in sandbox %s did not report that it started within %s", id, startGrace)
 		}
 
 		select {
 		case <-ctx.Done():
-			return fmt.Errorf("wait for the entrypoint of %s to start: %w", id, ctx.Err())
+			return fmt.Errorf("wait for shard-init in %s to start: %w", id, ctx.Err())
 		case <-time.After(pollInterval):
 		}
 	}
@@ -411,20 +411,13 @@ func (p *Provider) neverStarted(id string, b bundle.Bundle) error {
 	if started {
 		return nil
 	}
-	refused, err := bundle.ReadNotStarted(id, b.ExitFile)
-	if err != nil {
-		return err
-	}
-	if refused != nil {
-		return refused
-	}
 
-	path, err := p.LogPath(id)
+	path, err := p.outputLog(id)
 	if err != nil {
 		return err
 	}
 
-	return &models.EntrypointNotStartedError{Sandbox: id, Err: diagnostics(path)}
+	return fmt.Errorf("sandbox %s: shard-init did not start: %w", id, diagnostics(path))
 }
 
 // hasStarted reports whether the supervisor wrote its handshake. The file arrives by rename, so its
@@ -482,7 +475,7 @@ func (p *Provider) Stop(ctx context.Context, id string, grace time.Duration) err
 		return err
 	}
 
-	// runsc refuses to signal a container whose entrypoint never started, so only safeDelete ends that one.
+	// runsc refuses to signal a container whose init never started, so only safeDelete ends that one.
 	if status.State == models.StateCreated {
 		if err := p.safeDelete(ctx, id); err != nil {
 			return err
@@ -507,7 +500,7 @@ func (p *Provider) Stop(ctx context.Context, id string, grace time.Duration) err
 		}
 	}
 
-	// TERM goes to PID 1, which is shard-init: it forwards the signal to the entrypoint and then exits.
+	// TERM goes to PID 1, which is shard-init: it terms every process, reaps them and then exits.
 	if err := p.runsc.Kill(ctx, id, "TERM", false); err != nil && !gone(err) {
 		if errors.Is(err, runsc.ErrUnreachable) {
 			return p.endWedged(ctx, id, status.Exists)
@@ -615,7 +608,7 @@ func gone(err error) bool {
 	return errors.Is(err, runsc.ErrNotRunning) || errors.Is(err, runsc.ErrNotFound)
 }
 
-// Exec runs a command in a sandbox that already runs. It is not the entrypoint: the supervisor never
+// Exec runs a command in a sandbox that already runs. It is no named process: the supervisor never
 // sees it, and Ctrl-C during one ends this command alone, because only Stop ends a sandbox.
 func (p *Provider) Exec(ctx context.Context, id string, spec models.ExecSpec) (models.ExitStatus, error) {
 	if len(spec.Argv) == 0 {
@@ -666,19 +659,6 @@ func (p *Provider) Signal(ctx context.Context, id string, pid int, signal string
 	return nil
 }
 
-// StopApp signals shard-init, PID 1: USR1 terms the app and USR2 kills it, and both cancel every start again.
-func (p *Provider) StopApp(ctx context.Context, id string, force bool) error {
-	signal := "USR1"
-	if force {
-		signal = "USR2"
-	}
-	if err := p.runsc.Kill(ctx, id, signal, false); err != nil {
-		return fmt.Errorf("sandbox %s: stop the app: %w", id, err)
-	}
-
-	return nil
-}
-
 // execFailure splits runsc's internal 128: a refused start gets a shell's own exit code, a lost wait the sentinel a pause can claim.
 func execFailure(id string, err error) error {
 	if lost, ok := errors.AsType[*runsc.ExecLostError](err); ok {
@@ -699,7 +679,7 @@ func execFailure(id string, err error) error {
 	return &models.CommandNotStartedError{Sandbox: id, Reason: start.Reason, Code: code}
 }
 
-// execOptions puts the exec where the entrypoint runs. config.json is the only record of that, and
+// execOptions puts the exec where the sandbox says. config.json is the only record of that, and
 // the rootfs it resolves a user against is the sandbox's live tree, not the image's.
 func execOptions(b bundle.Bundle, spec models.ExecSpec) (runsc.ExecOptions, error) {
 	runtime, err := b.Runtime()
@@ -724,8 +704,8 @@ func execOptions(b bundle.Bundle, spec models.ExecSpec) (runsc.ExecOptions, erro
 		Report:  spec.Report,
 	}
 
-	// A named user is resolved against the sandbox's live tree; an unnamed one is the entrypoint's own,
-	// which config.json records as the -user the supervisor was given.
+	// A named user is resolved against the sandbox's live tree; an unnamed one is the sandbox's own,
+	// which config.json records in an annotation.
 	opts.User, opts.Groups = runtime.User, runtime.Groups
 	if spec.User != "" {
 		identity, err := bundle.ResolveUser(b.RootFS, spec.User)
@@ -752,59 +732,6 @@ func firstNonEmpty(values ...string) string {
 	}
 
 	return ""
-}
-
-// Wait blocks until the entrypoint exits. runsc wait cannot serve it: PID 1 is the supervisor and it
-// never exits, so runsc wait would block forever. Watch the file shard-init writes instead.
-func (p *Provider) Wait(ctx context.Context, id string) (models.ExitStatus, error) {
-	b, err := p.open(id)
-	if err != nil {
-		return models.ExitStatus{}, err
-	}
-
-	for {
-		exit, found, err := bundle.ReadExitStatus(b.ExitFile)
-		if err != nil {
-			return models.ExitStatus{}, err
-		}
-		if found {
-			return exit, nil
-		}
-
-		status, err := p.Status(ctx, id)
-		if err != nil {
-			return models.ExitStatus{}, err
-		}
-		if !status.Alive() {
-			// The supervisor may have written the file between the read above and this check.
-			return lastExitStatus(b.ExitFile, id)
-		}
-
-		select {
-		case <-ctx.Done():
-			return models.ExitStatus{}, fmt.Errorf("wait for the entrypoint of %s: %w", id, ctx.Err())
-		case <-time.After(pollInterval):
-		}
-	}
-}
-
-// ExitStatus reads how the entrypoint ended so far, nil while it still runs. It is a file read, so the
-// liveness task polls it every tick, where Wait would block on an entrypoint that never exited.
-func (p *Provider) ExitStatus(_ context.Context, id string) (*models.ExitStatus, error) {
-	b, err := p.open(id)
-	if err != nil {
-		return nil, err
-	}
-
-	exit, found, err := bundle.ReadExitStatus(b.ExitFile)
-	if err != nil {
-		return nil, err
-	}
-	if !found {
-		return nil, nil
-	}
-
-	return &exit, nil
 }
 
 // Status asks the substrate, because a record saying running can outlive a shard restart.
@@ -852,16 +779,6 @@ func (p *Provider) Status(ctx context.Context, id string) (models.Status, error)
 	}
 
 	return status, nil
-}
-
-// Restarts is a file read, not a substrate call, so a task may poll it every second.
-func (p *Provider) Restarts(_ context.Context, id string) (models.RestartCount, error) {
-	b, err := p.open(id)
-	if err != nil {
-		return models.RestartCount{}, err
-	}
-
-	return b.RestartCount()
 }
 
 // stale reports an alive runsc state whose pid is not this sandbox's live sentry (SHARD-411).
@@ -1297,8 +1214,8 @@ func imageOf(b bundle.Bundle, id string) (bundle.Runtime, error) {
 	return rt, nil
 }
 
-// LogPath is where the guest's stdout and stderr land. SHARD-23 turns it into shard logs.
-func (p *Provider) LogPath(id string) (string, error) {
+// outputLog holds what shard-init and the runtime print, apart from each process's own log.
+func (p *Provider) outputLog(id string) (string, error) {
 	dir, err := p.dirs(id)
 	if err != nil {
 		return "", err
@@ -1307,17 +1224,25 @@ func (p *Provider) LogPath(id string) (string, error) {
 	return filepath.Join(dir, logFile), nil
 }
 
-// HeldLogs is the output log: the runtime holds it, so the daemon bounds it by copy and truncate.
+// HeldLogs is the output log and each process log: the runtime and shard-init hold them, so the daemon bounds them by copy and truncate.
 func (p *Provider) HeldLogs(id string) ([]string, error) {
-	path, err := p.LogPath(id)
+	dir, err := p.dirs(id)
 	if err != nil {
 		return nil, err
 	}
+	b, err := bundle.Open(dir)
+	if err != nil {
+		return nil, err
+	}
+	logs, err := b.ProcessLogs()
+	if err != nil {
+		return nil, fmt.Errorf("sandbox %s: %w", id, err)
+	}
 
-	return []string{path}, nil
+	return append([]string{filepath.Join(dir, logFile)}, logs...), nil
 }
 
-// Environment is the bundle: its config.json is the one record of what the entrypoint runs with.
+// Environment is the bundle: its config.json is the one record of what every process runs with.
 func (p *Provider) Environment(id string) (models.Environment, error) {
 	return bundle.Opener(p.dirs).Environment(id)
 }
@@ -1365,17 +1290,4 @@ func openLog(path string) (*os.File, error) {
 	}
 
 	return f, nil
-}
-
-// lastExitStatus answers a wait on a sandbox that has already ended, which only Stop can have done.
-func lastExitStatus(path, id string) (models.ExitStatus, error) {
-	status, found, err := bundle.ReadExitStatus(path)
-	if err != nil {
-		return models.ExitStatus{}, err
-	}
-	if !found {
-		return models.ExitStatus{}, fmt.Errorf("sandbox %s: %w", id, models.ErrNoExitStatus)
-	}
-
-	return status, nil
 }

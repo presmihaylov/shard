@@ -22,7 +22,7 @@ func TestACancelledCreateLeavesNothingRmCannotFree(t *testing.T) {
 	h := newHarness(t)
 
 	for _, after := range []time.Duration{0, 50 * time.Millisecond, 150 * time.Millisecond, 300 * time.Millisecond, 600 * time.Millisecond, time.Second} {
-		spec := h.newSpec(t, "/bin/sh", "-c", "sleep 3600")
+		spec := h.newSpec(t)
 
 		ctx, cancel := context.WithCancel(t.Context())
 		timer := time.AfterFunc(after, cancel)
@@ -46,7 +46,7 @@ func TestACancelledCreateLeavesNothingRmCannotFree(t *testing.T) {
 // A create killed before runsc saved its state leaves a sentry and a gofer runsc cannot name, and rm must still end them.
 func TestRemoveEndsASandboxRunscNeverSaved(t *testing.T) {
 	h := newHarness(t)
-	spec := h.newSpec(t, "/bin/sh", "-c", "sleep 3600")
+	spec := h.newSpec(t)
 
 	if err := h.provider.Create(t.Context(), spec); err != nil {
 		t.Fatalf("Create: %v", err)

@@ -110,24 +110,24 @@ func (l *channelLab) record(t *testing.T, inode uint64) {
 	}
 }
 
-// exitStatus fails the test rather than hang, because a reopen must never block on what the guest put on fd 0.
-func (l *channelLab) exitStatus(t *testing.T) (*models.ExitStatus, error) {
+// processes fails the test rather than hang, because a reopen must never block on what the guest put on fd 0.
+func (l *channelLab) processes(t *testing.T) ([]models.ProcessReport, error) {
 	t.Helper()
 
 	type answer struct {
-		exit *models.ExitStatus
+		rows []models.ProcessReport
 		err  error
 	}
 	done := make(chan answer, 1)
 	go func() {
-		exit, err := l.p.ExitStatus(t.Context(), labID)
-		done <- answer{exit, err}
+		rows, err := l.p.Processes(t.Context(), labID)
+		done <- answer{rows, err}
 	}()
 	select {
 	case got := <-done:
-		return got.exit, got.err
+		return got.rows, got.err
 	case <-time.After(10 * time.Second):
-		t.Fatal("ExitStatus blocked on fd 0 of PID 1")
+		t.Fatal("Processes blocked on fd 0 of PID 1")
 		return nil, nil
 	}
 }
@@ -178,9 +178,9 @@ func TestAReopenNamesAFileTheDaemonCannotOpenReplaced(t *testing.T) {
 	lab.pointFd0(t, path)
 	lab.record(t, inodeOf(t, path))
 
-	_, err := lab.exitStatus(t)
+	_, err := lab.processes(t)
 	if !errors.Is(err, models.ErrExitChannelReplaced) {
-		t.Errorf("ExitStatus over a file the daemon cannot open returned %v, want %v", err, models.ErrExitChannelReplaced)
+		t.Errorf("Processes over a file the daemon cannot open returned %v, want %v", err, models.ErrExitChannelReplaced)
 	}
 }
 
@@ -194,9 +194,9 @@ func TestAReopenNamesAFifoOnFdZeroReplacedWithoutOpeningIt(t *testing.T) {
 	lab.pointFd0(t, fifo)
 	lab.record(t, inodeOf(t, fifo))
 
-	_, err := lab.exitStatus(t)
+	_, err := lab.processes(t)
 	if !errors.Is(err, models.ErrExitChannelReplaced) {
-		t.Errorf("ExitStatus over a FIFO on fd 0 returned %v, want %v", err, models.ErrExitChannelReplaced)
+		t.Errorf("Processes over a FIFO on fd 0 returned %v, want %v", err, models.ErrExitChannelReplaced)
 	}
 }
 
@@ -221,9 +221,9 @@ func TestAReopenNamesARegularFileThatIsNotThePageReplaced(t *testing.T) {
 			lab.pointFd0(t, path)
 			lab.record(t, inodeOf(t, path)+tc.shift)
 
-			_, err := lab.exitStatus(t)
+			_, err := lab.processes(t)
 			if !errors.Is(err, models.ErrExitChannelReplaced) {
-				t.Errorf("ExitStatus over a regular file with %s returned %v, want %v", tc.name, err, models.ErrExitChannelReplaced)
+				t.Errorf("Processes over a regular file with %s returned %v, want %v", tc.name, err, models.ErrExitChannelReplaced)
 			}
 		})
 	}
@@ -240,9 +240,9 @@ func TestAReopenOpensNothingOfAPidOutsideTheCgroup(t *testing.T) {
 	lab.pointFd0(t, fifo)
 	lab.record(t, inodeOf(t, fifo))
 
-	exit, err := lab.exitStatus(t)
-	if err != nil || exit != nil {
-		t.Errorf("ExitStatus of a foreign pid returned %+v, %v, want no exit and no error", exit, err)
+	rows, err := lab.processes(t)
+	if err != nil || rows != nil {
+		t.Errorf("Processes of a foreign pid returned %+v, %v, want no table and no error", rows, err)
 	}
 }
 
@@ -254,12 +254,12 @@ func TestASandboxFromBeforeTheChannelReadsItsExitFile(t *testing.T) {
 		t.Fatal(err)
 	}
 	lab.pointFd0(t, fifo)
-	if err := bundle.WriteExitReport(lab.b.ExitFile, models.ExitReport{Kind: models.ExitReportKind, Code: 9}); err != nil {
+	if err := os.WriteFile(lab.b.ExitFile, tableLine(t, reportOf("web", models.ProcessExited, 0)), 0o600); err != nil {
 		t.Fatal(err)
 	}
 
-	exit, err := lab.exitStatus(t)
-	if err != nil || exit == nil || *exit != (models.ExitStatus{Code: 9}) {
-		t.Errorf("ExitStatus returned %+v, %v, want {code:9} from the exit file", exit, err)
+	rows, err := lab.processes(t)
+	if err != nil || len(rows) != 1 || rows[0].Name != "web" || rows[0].State != models.ProcessExited {
+		t.Errorf("Processes returned %+v, %v, want web exited from the exit file", rows, err)
 	}
 }

@@ -23,34 +23,11 @@ const guestReadyFile = "/.shard/started"
 // Build only records the supervisor path, so the tests never need a real binary there.
 const supervisorPath = "/usr/local/bin/shard-init"
 
-func TestBuildRunsTheEntrypointUnderTheSupervisor(t *testing.T) {
-	_, got := build(t, models.SandboxSpec{Entrypoint: []string{"/bin/sh", "-c", "true"}}, models.ImageConfig{})
-
-	want := []string{bundle.GuestInitPath, "-ready-file", guestReadyFile, "--", "/bin/sh", "-c", "true"}
-	if !slices.Equal(got.Process.Args, want) {
-		t.Errorf("got args %v, want %v", got.Process.Args, want)
-	}
-}
-
-func TestBuildHandsTheRestartPolicyToTheSupervisor(t *testing.T) {
-	restart := models.RestartSpec{Policy: models.RestartOnFailure, Retries: 3, Backoff: 2}
-	_, got := build(t, models.SandboxSpec{Restart: restart, Entrypoint: []string{"/bin/sh"}}, models.ImageConfig{})
-
-	want := []string{
-		bundle.GuestInitPath, "-ready-file", guestReadyFile,
-		"-restart", "on-failure", "-retries", "3", "-backoff", "2s",
-		"--", "/bin/sh",
-	}
-	if !slices.Equal(got.Process.Args, want) {
-		t.Errorf("got args %v, want %v", got.Process.Args, want)
-	}
-}
-
-// The image's own command never runs, so with none the argv ends at -- and keeps the user an exec defaults to.
-func TestBuildWithNoCommandRunsTheSupervisorAlone(t *testing.T) {
+// PID 1 runs nothing of the image's until the daemon asks, so its argv is the supervisor's flags alone.
+func TestBuildRunsTheSupervisorAlone(t *testing.T) {
 	_, got := build(t, models.SandboxSpec{}, models.ImageConfig{Entrypoint: []string{"/bin/sh"}, Cmd: []string{"-c", "true"}, User: "app"})
 
-	want := []string{bundle.GuestInitPath, "-ready-file", guestReadyFile, "-user", "1000:2000", "-groups", "2000,50,10", "--"}
+	want := []string{bundle.GuestInitPath, "-ready-file", guestReadyFile}
 	if !slices.Equal(got.Process.Args, want) {
 		t.Errorf("got args %v, want %v", got.Process.Args, want)
 	}
@@ -81,9 +58,38 @@ func TestBuildBindsTheSupervisorReadOnly(t *testing.T) {
 	if strings.HasPrefix(b.ExitFile, shard.Source+string(filepath.Separator)) {
 		t.Errorf("the exit file %q is under the /.shard bind mount %q, so the guest can reach it", b.ExitFile, shard.Source)
 	}
-	// The handshake lands inside the bind mount, and the host reads it to learn the entrypoint ever ran.
+	// The handshake lands inside the bind mount, and the host reads it to learn the supervisor came up.
 	if want := filepath.Join(shard.Source, "started"); b.ReadyFile != want {
 		t.Errorf("got the ready file at %q, want %q", b.ReadyFile, want)
+	}
+}
+
+// The host follows each process log by path, so the logs sit on the disk and off /.shard, where guest root could swap the directory for a link.
+func TestBuildBindsTheProcessLogsOffTheShardDir(t *testing.T) {
+	b, got := build(t, newSpec(t), models.ImageConfig{})
+
+	logs := mountAt(t, got, "/.shard/logs")
+	if logs.Source != b.Logs {
+		t.Errorf("got the logs from %q, want %q", logs.Source, b.Logs)
+	}
+	if indexOfMount(got, "/.shard") > indexOfMount(got, "/.shard/logs") {
+		t.Error("/.shard is mounted after /.shard/logs")
+	}
+	shard := mountAt(t, got, "/.shard")
+	if strings.HasPrefix(b.Logs, shard.Source+string(filepath.Separator)) {
+		t.Errorf("the logs %q sit under the /.shard bind mount %q", b.Logs, shard.Source)
+	}
+	if !strings.HasPrefix(b.Logs, b.Disk+string(filepath.Separator)) {
+		t.Errorf("the logs %q sit off the disk %q, so a process could fill the host", b.Logs, b.Disk)
+	}
+	for _, dir := range []string{b.Logs, filepath.Join(shard.Source, "logs")} {
+		info, err := os.Stat(dir)
+		if err != nil {
+			t.Fatalf("stat %s: %v", dir, err)
+		}
+		if mode := info.Mode().Perm(); mode != 0o700 {
+			t.Errorf("%s is %o, want 700", dir, mode)
+		}
 	}
 }
 
@@ -150,7 +156,7 @@ func TestBuildResolvesANamedUserFromTheImage(t *testing.T) {
 	_, got := build(t, models.SandboxSpec{}, models.ImageConfig{User: "app"})
 
 	if want := "1000:2000"; userArg(t, got) != want {
-		t.Errorf("got -user %q, want %q", userArg(t, got), want)
+		t.Errorf("got the user %q, want %q", userArg(t, got), want)
 	}
 }
 
@@ -158,7 +164,7 @@ func TestBuildResolvesAUserAndGroupPair(t *testing.T) {
 	_, got := build(t, models.SandboxSpec{User: "app:staff"}, models.ImageConfig{User: "root"})
 
 	if want := "1000:50"; userArg(t, got) != want {
-		t.Errorf("got -user %q, want %q", userArg(t, got), want)
+		t.Errorf("got the user %q, want %q", userArg(t, got), want)
 	}
 }
 
@@ -166,7 +172,7 @@ func TestBuildResolvesNumericIds(t *testing.T) {
 	_, got := build(t, models.SandboxSpec{User: "65534:65534"}, models.ImageConfig{})
 
 	if want := "65534:65534"; userArg(t, got) != want {
-		t.Errorf("got -user %q, want %q", userArg(t, got), want)
+		t.Errorf("got the user %q, want %q", userArg(t, got), want)
 	}
 }
 
@@ -175,7 +181,7 @@ func TestBuildResolvesANumericUserThroughPasswd(t *testing.T) {
 	_, got := build(t, models.SandboxSpec{User: "1000"}, models.ImageConfig{})
 
 	if want := "1000:2000"; userArg(t, got) != want {
-		t.Errorf("got -user %q, want %q from the passwd entry", userArg(t, got), want)
+		t.Errorf("got the user %q, want %q from the passwd entry", userArg(t, got), want)
 	}
 }
 
@@ -183,7 +189,7 @@ func TestBuildAcceptsANumericUserTheImageDoesNotList(t *testing.T) {
 	_, got := build(t, models.SandboxSpec{User: "4242"}, models.ImageConfig{})
 
 	if want := "4242:0"; userArg(t, got) != want {
-		t.Errorf("got -user %q, want %q", userArg(t, got), want)
+		t.Errorf("got the user %q, want %q", userArg(t, got), want)
 	}
 }
 
@@ -191,11 +197,11 @@ func TestBuildResolvesRoot(t *testing.T) {
 	_, got := build(t, models.SandboxSpec{User: "root"}, models.ImageConfig{})
 
 	if want := "0:0"; userArg(t, got) != want {
-		t.Errorf("got -user %q, want %q", userArg(t, got), want)
+		t.Errorf("got the user %q, want %q", userArg(t, got), want)
 	}
 }
 
-// The supervisor writes the exit file into a root owned directory, so it must never drop its own ids.
+// The supervisor writes into root owned directories, so it must never drop its own ids.
 func TestBuildLeavesTheSupervisorAsRoot(t *testing.T) {
 	_, got := build(t, models.SandboxSpec{User: "app"}, models.ImageConfig{})
 
@@ -204,12 +210,12 @@ func TestBuildLeavesTheSupervisorAsRoot(t *testing.T) {
 	}
 }
 
-func TestBuildPassesNoUserWhenNothingAsksForOne(t *testing.T) {
+func TestBuildRecordsNoUserWhenNothingAsksForOne(t *testing.T) {
 	_, got := build(t, models.SandboxSpec{}, models.ImageConfig{})
 
-	for _, flag := range []string{"-user", "-groups"} {
-		if slices.Contains(got.Process.Args, flag) {
-			t.Errorf("got args %v, want no %s", got.Process.Args, flag)
+	for _, key := range []string{userKey, groupsKey} {
+		if value, ok := got.Annotations[key]; ok {
+			t.Errorf("got the annotation %s=%q, want none", key, value)
 		}
 	}
 }
@@ -228,33 +234,35 @@ func TestBuildPassesTheSecondaryGroups(t *testing.T) {
 		t.Run(name, func(t *testing.T) {
 			_, got := build(t, models.SandboxSpec{User: c.user}, models.ImageConfig{})
 
-			if flagArg(t, got, "-groups") != c.want {
-				t.Errorf("got -groups %q, want %q", flagArg(t, got, "-groups"), c.want)
+			if identityOf(t, got, groupsKey) != c.want {
+				t.Errorf("got the groups %q, want %q", identityOf(t, got, groupsKey), c.want)
 			}
 		})
 	}
 }
 
-// userArg reads the ids the supervisor is told to drop its child to.
+// userKey and groupsKey are where config.json keeps the identity every process and exec drops to.
+const (
+	userKey   = "dev.shard.user"
+	groupsKey = "dev.shard.groups"
+)
+
+// userArg reads the ids every process and exec drops to by default.
 func userArg(t *testing.T, got specs.Spec) string {
 	t.Helper()
 
-	return flagArg(t, got, "-user")
+	return identityOf(t, got, userKey)
 }
 
-func flagArg(t *testing.T, got specs.Spec, flag string) string {
+func identityOf(t *testing.T, got specs.Spec, key string) string {
 	t.Helper()
 
-	i := slices.Index(got.Process.Args, flag)
-	if i < 0 || i+1 >= len(got.Process.Args) {
-		t.Fatalf("got args %v, want a %s flag with a value", got.Process.Args, flag)
-	}
-	// Every flag must precede the separator, or shard-init reads it as part of the entrypoint.
-	if separator := slices.Index(got.Process.Args, "--"); separator >= 0 && separator < i {
-		t.Errorf("got args %v, want %s before the -- separator", got.Process.Args, flag)
+	value, ok := got.Annotations[key]
+	if !ok {
+		t.Fatalf("got annotations %v, want %s", got.Annotations, key)
 	}
 
-	return got.Process.Args[i+1]
+	return value
 }
 
 func TestBuildRefusesALayerPathOverlayfsCannotParse(t *testing.T) {
@@ -346,8 +354,8 @@ func TestBuildIsAValidRuntimeSpec(t *testing.T) {
 	}
 }
 
-// An exec with no user of its own runs as the entrypoint does, and config.json is the only record of it.
-func TestRuntimeReadsBackTheUserTheEntrypointRunsAs(t *testing.T) {
+// An exec or a process with no user of its own runs as the sandbox does, and config.json is the only record of it.
+func TestRuntimeReadsBackTheUserEveryProcessRunsAs(t *testing.T) {
 	b, _ := build(t, models.SandboxSpec{User: "app"}, models.ImageConfig{})
 
 	runtime, err := b.Runtime()
@@ -366,7 +374,7 @@ func TestRuntimeReadsBackTheUserTheEntrypointRunsAs(t *testing.T) {
 
 // Nobody named a user, so nothing may claim one: an empty answer is what makes the exec run as root.
 func TestRuntimeReportsNoUserWhenNobodyNamedOne(t *testing.T) {
-	b, _ := build(t, models.SandboxSpec{Entrypoint: []string{"/bin/sh", "-user", "1000:1000"}}, models.ImageConfig{})
+	b, _ := build(t, models.SandboxSpec{}, models.ImageConfig{})
 
 	runtime, err := b.Runtime()
 	if err != nil {
@@ -374,7 +382,7 @@ func TestRuntimeReportsNoUserWhenNobodyNamedOne(t *testing.T) {
 	}
 
 	if runtime.User != "" {
-		t.Errorf("Runtime reports the user %q, and the -user in it is the command's own argument", runtime.User)
+		t.Errorf("Runtime reports the user %q, want none", runtime.User)
 	}
 	if runtime.Groups != nil {
 		t.Errorf("Runtime reports the groups %v, want none", runtime.Groups)
@@ -383,13 +391,13 @@ func TestRuntimeReportsNoUserWhenNobodyNamedOne(t *testing.T) {
 
 // SHARD-764: runc made the cwd under the daemon's umask 0077, so shard-init gets the work directory and runc a cwd that is there.
 func TestTheSupervisorGetsTheWorkDirectoryAndRuntimeReadsItBack(t *testing.T) {
-	b, got := build(t, models.SandboxSpec{Entrypoint: []string{"/bin/sh"}}, models.ImageConfig{WorkDir: "/work/deep"})
+	b, got := build(t, models.SandboxSpec{}, models.ImageConfig{WorkDir: "/work/deep"})
 
 	if got.Process.Cwd != "/" {
 		t.Errorf("got cwd %q, want / so runc makes nothing", got.Process.Cwd)
 	}
-	if arg := flagArg(t, got, "-workdir"); arg != "/work/deep" {
-		t.Errorf("got -workdir %q, want /work/deep", arg)
+	if i := slices.Index(got.Process.Args, "-workdir"); i < 0 || i+1 >= len(got.Process.Args) || got.Process.Args[i+1] != "/work/deep" {
+		t.Errorf("got args %v, want -workdir /work/deep", got.Process.Args)
 	}
 	runtime, err := b.Runtime()
 	if err != nil {
@@ -574,7 +582,7 @@ func TestBuildLeavesTheImageResolverConfigAloneWithoutANetwork(t *testing.T) {
 
 // TestTheCgroupSitsUnderOneShardParent pins SHARD-98: nothing of shard's lands at the cgroup root.
 func TestTheCgroupSitsUnderOneShardParent(t *testing.T) {
-	_, spec := build(t, models.SandboxSpec{ID: "amber-otter-1a2b", Entrypoint: []string{"/bin/sh"}}, models.ImageConfig{})
+	_, spec := build(t, models.SandboxSpec{ID: "amber-otter-1a2b"}, models.ImageConfig{})
 
 	if got, want := spec.Linux.CgroupsPath, "/shard/amber-otter-1a2b"; got != want {
 		t.Errorf("cgroupsPath is %q, want %q", got, want)
@@ -585,9 +593,8 @@ func TestTheCgroupSitsUnderOneShardParent(t *testing.T) {
 func TestRuntimeReadsTheRestartSpecBack(t *testing.T) {
 	rootfs := t.TempDir()
 	b, _ := build(t, models.SandboxSpec{
-		RootFS:     rootfs,
-		Entrypoint: []string{"/bin/sh"},
-		Resources:  models.Resources{MemoryMiB: 256, VCPUs: 2},
+		RootFS:    rootfs,
+		Resources: models.Resources{MemoryMiB: 256, VCPUs: 2},
 	}, models.ImageConfig{})
 
 	rt, err := b.Runtime()

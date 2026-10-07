@@ -2,10 +2,12 @@ package bundle
 
 import (
 	"fmt"
+	"path"
 
 	specs "github.com/opencontainers/runtime-spec/specs-go"
 
 	"github.com/presmihaylov/shard/models"
+	"github.com/presmihaylov/shard/services/supervisor"
 )
 
 // defaultPath is what the OCI image spec says to use when the image config sets no PATH.
@@ -16,6 +18,12 @@ const defaultNoFile = 1024
 
 // rootfsAnnotation is where config.json keeps the image tree the overlay stacks over.
 const rootfsAnnotation = "dev.shard.rootfs"
+
+// userAnnotation and groupsAnnotation keep the uid:gid and the supplementary set the sandbox's processes and execs drop to.
+const (
+	userAnnotation   = "dev.shard.user"
+	groupsAnnotation = "dev.shard.groups"
+)
 
 // cpuFeaturesAnnotation caps what CPUID shows the guest, and runsc reads the names /proc/cpuinfo uses.
 const cpuFeaturesAnnotation = "dev.gvisor.internal.cpufeatures"
@@ -92,7 +100,7 @@ func tmpfsSize(mib int64) string {
 	return fmt.Sprintf("size=%dm", mib)
 }
 
-func mounts(shardDir, tmpDir, initPath string, r models.Resources) []specs.Mount {
+func mounts(shardDir, logsDir, tmpDir, initPath string, r models.Resources) []specs.Mount {
 	return []specs.Mount{
 		{Destination: "/proc", Type: "proc", Source: "proc", Options: []string{"nosuid", "noexec", "nodev"}},
 		// gVisor mounts its own devtmpfs here and drops our size=, so the only bound left is ro: a
@@ -104,10 +112,12 @@ func mounts(shardDir, tmpDir, initPath string, r models.Resources) []specs.Mount
 		{Destination: "/sys", Type: "sysfs", Source: "sysfs", Options: []string{"nosuid", "noexec", "nodev", "ro"}},
 		// runsc puts an unsized tmpfs on an empty /tmp, and tmpfs is guest memory: 200 MB of dd killed a sandbox.
 		{Destination: "/tmp", Type: "bind", Source: tmpDir, Options: []string{"rbind", "rw", "nosuid", "nodev"}},
-		// The host side of this one holds the started and restart-count files shard-init writes.
+		// The host side of this one holds the started file shard-init writes.
 		{Destination: guestShardDir, Type: "bind", Source: shardDir, Options: []string{"rbind", "rw", "nosuid", "nodev"}},
 		// Mounted after its parent, and read-only: the guest may run the supervisor and never replace it.
 		{Destination: GuestInitPath, Type: "bind", Source: initPath, Options: []string{"rbind", "ro", "nosuid", "nodev"}},
+		// Mounted after its parent too: shard-init writes each process's log here, and the host reads it.
+		{Destination: path.Join(guestShardDir, supervisor.ProcessLogs), Type: "bind", Source: logsDir, Options: []string{"rbind", "rw", "nosuid", "nodev"}},
 	}
 }
 
