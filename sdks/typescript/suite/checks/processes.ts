@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { setTimeout as sleep } from "node:timers/promises";
-import { ConflictError } from "useshards";
+import { ConflictError, NotFoundError } from "useshards";
 import { rejects, type Check } from "../harness.js";
 
 export const checks: Check[] = [
@@ -37,7 +37,7 @@ export const checks: Check[] = [
       assert.equal((await sandbox.processes.get("second")).info.status.state, "running");
       const ps = await sandbox.exec(["ps", "-o", "args"]);
       assert.ok(ps.stdout.split("\n").includes("sleep 301"), "a command in the sandbox sees its processes");
-      assert.equal((await rejects(ConflictError, () => sandbox.processes.get("none"))).code, "no_process");
+      assert.equal((await rejects(NotFoundError, () => sandbox.processes.get("none"))).code, "no_process");
       assert.equal((await rejects(ConflictError, () => sandbox.run(["sleep", "300"], { name: "first" }))).code, "name_taken");
     },
   },

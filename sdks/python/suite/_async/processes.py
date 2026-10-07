@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from useshards import ConflictError, ExitStatus, Restart
+from useshards import ConflictError, ExitStatus, NotFoundError, Restart
 
 from .._shared import equal, ok
 from .harness import AsyncContext, Check, rejects
@@ -29,7 +29,7 @@ async def list_get(ctx: AsyncContext) -> None:
     equal((await sandbox.processes.get("second")).info.status.state, "running")
     ps = await sandbox.exec(["ps", "-o", "args"])
     ok("sleep 301" in ps.stdout.split("\n"), "a command in the sandbox sees its processes")
-    equal((await rejects(ConflictError, lambda: sandbox.processes.get("none"))).code, "no_process")
+    equal((await rejects(NotFoundError, lambda: sandbox.processes.get("none"))).code, "no_process")
     taken = await rejects(ConflictError, lambda: sandbox.run(["sleep", "300"], name="first"))
     equal(taken.code, "name_taken")
 

@@ -61,7 +61,7 @@ export class AuthenticationError extends APIError {}
 /** PermissionDeniedError is a 403: the key's scopes do not cover the route, or the route is local to the host. */
 export class PermissionDeniedError extends APIError {}
 
-/** NotFoundError is a 404: no such sandbox, snapshot, command, file, secret or policy. */
+/** NotFoundError is a 404: no such sandbox, snapshot, command, process, file, secret or policy. */
 export class NotFoundError extends APIError {}
 
 /** InvalidRequestError is a 400 or a 413: the daemon refused the request as written. */

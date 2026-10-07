@@ -86,7 +86,7 @@ class PermissionDeniedError(APIError):
 
 
 class NotFoundError(APIError):
-    """404: no such sandbox, snapshot, command, file, secret or policy."""
+    """404: no such sandbox, snapshot, command, process, file, secret or policy."""
 
 
 class InvalidRequestError(APIError):

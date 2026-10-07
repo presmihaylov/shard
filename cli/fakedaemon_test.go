@@ -83,9 +83,7 @@ type fakeDaemon struct {
 	once   sync.Once
 	svc    *sandbox.Service
 	stores *sandbox.Stores
-	// creates, when set, answers a create pending and starts it in the background, as the daemon does off an uncached image.
-	creates *backgroundCreates
-	life    api.Lifecycle
+	life   api.Lifecycle
 }
 
 func (f *fakeDaemon) build() {
@@ -111,10 +109,6 @@ func (f *fakeDaemon) build() {
 			PullTimeout: time.Minute,
 		})
 		f.life = f.svc
-		if f.creates != nil {
-			f.creates.Service, f.creates.repo = f.svc, f.repoSvc
-			f.life = f.creates
-		}
 		f.stores = sandbox.NewStores(sandbox.StoresConfig{
 			Repo:        f.repoSvc,
 			Policies:    f.policySvc,
@@ -129,74 +123,6 @@ func (f *fakeDaemon) build() {
 }
 
 func (f *fakeDaemon) policies() (*egress.Store, error) { return f.policySvc, nil }
-
-// backgroundCreates is the daemon's create off an uncached image: the record answers pending, and the start runs on whatever the caller does.
-type backgroundCreates struct {
-	*sandbox.Service
-
-	t       *testing.T
-	repo    sandbox.Reader
-	wg      sync.WaitGroup
-	mu      sync.Mutex
-	pending map[string]chan struct{}
-}
-
-func newBackgroundCreates(t *testing.T) *backgroundCreates {
-	b := &backgroundCreates{t: t, pending: map[string]chan struct{}{}}
-	t.Cleanup(b.wg.Wait)
-
-	return b
-}
-
-func (b *backgroundCreates) Create(ctx context.Context, req sandbox.CreateRequest) (models.Sandbox, error) {
-	sb, err := b.Prepare(ctx, req)
-	if err != nil {
-		return models.Sandbox{}, err
-	}
-
-	done := make(chan struct{})
-	b.mu.Lock()
-	b.pending[sb.ID] = done
-	b.mu.Unlock()
-	b.wg.Go(func() {
-		defer close(done)
-		if err := b.Complete(context.WithoutCancel(ctx), sb.ID, req); err != nil {
-			b.t.Errorf("complete the create of %s: %v", sb.ID, err)
-		}
-	})
-
-	return sb, nil
-}
-
-// CreateAndWait answers once the background start ends, as the daemon's does off an uncached image.
-func (b *backgroundCreates) CreateAndWait(ctx context.Context, req sandbox.CreateRequest) (models.Sandbox, error) {
-	sb, err := b.Create(ctx, req)
-	if err != nil {
-		return models.Sandbox{}, err
-	}
-
-	if err := b.WaitState(ctx, sb.ID); err != nil {
-		return models.Sandbox{}, err
-	}
-
-	return sandbox.Get(b.repo, sb.ID)
-}
-
-func (b *backgroundCreates) WaitState(ctx context.Context, ref string) error {
-	b.mu.Lock()
-	done, ok := b.pending[ref]
-	b.mu.Unlock()
-	if !ok {
-		return nil
-	}
-
-	select {
-	case <-done:
-		return nil
-	case <-ctx.Done():
-		return ctx.Err()
-	}
-}
 
 // docsResolver answers every name with a documentation address and .invalid with nothing, as RFC 6761 has it, so no test asks the network.
 type docsResolver struct{}
