@@ -2,6 +2,7 @@ package conformance
 
 import (
 	"errors"
+	"io"
 	"os"
 	"strings"
 	"sync"
@@ -10,6 +11,7 @@ import (
 	"github.com/presmihaylov/shard/models"
 	"github.com/presmihaylov/shard/pkg/pty"
 	"github.com/presmihaylov/shard/services/bundle"
+	"github.com/presmihaylov/shard/services/supervisor"
 )
 
 // launchDir holds the files whose modes the refusals need, in the one sandbox RunLaunch drives.
@@ -153,6 +155,44 @@ func RunLaunch(t *testing.T, s Subject) {
 		out := s.launched(t, id, models.ExecSpec{Argv: []string{"/bin/cat", "/proc/self/status"}}, false, 0)
 		emptyCapabilities(t, out, "CapInh")
 	})
+
+	// The trailing exit keeps the shell from exec'ing the helper, so the helper is born in the sandbox as a forged request would be.
+	t.Run("ARootProcessTheSandboxForksStartsNoProcess", func(t *testing.T) {
+		request := processRequest(t, supervisor.Message{Kind: supervisor.KindRun, Run: &supervisor.RunSpec{Name: "forged", Argv: []string{"/bin/sleep", "60"}}})
+		status, out := s.exec(t, id, models.ExecSpec{Argv: s.Shell(supervisor.InitPath + " " + supervisor.ProcessMode + "; exit $?"), Stdin: request})
+		if status.Code != 0 {
+			t.Fatalf("the helper exited %d with no answer: %s", status.Code, out)
+		}
+		if !strings.Contains(out, "only the host's exec sends process requests") {
+			t.Errorf("PID 1 answered a root process the sandbox forked with %q, want a refusal", out)
+		}
+		if report, ok := s.process(t, s.Provider, id, "forged"); ok {
+			t.Errorf("a refused request still started %+v", report.ProcessStatus)
+		}
+	})
+}
+
+// processRequest is m on a file, for an exec's stdin.
+func processRequest(t *testing.T, m supervisor.Message) *os.File {
+	t.Helper()
+
+	f, err := os.CreateTemp(t.TempDir(), "process-request")
+	if err != nil {
+		t.Fatalf("create a file for the request: %v", err)
+	}
+	t.Cleanup(func() {
+		if err := f.Close(); err != nil {
+			t.Errorf("close the request file: %v", err)
+		}
+	})
+	if err := supervisor.WriteMessage(f, m); err != nil {
+		t.Fatalf("write the request: %v", err)
+	}
+	if _, err := f.Seek(0, io.SeekStart); err != nil {
+		t.Fatalf("rewind the request: %v", err)
+	}
+
+	return f
 }
 
 // emptyCapabilities checks that each named set in a /proc/self/status reads all zero.
