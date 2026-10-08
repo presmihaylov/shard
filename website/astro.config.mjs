@@ -44,6 +44,21 @@ const sidebar = [
 	{ label: 'Help', items: dir('docs/help') },
 ].filter((entry) => entry.items.length > 0);
 
+// A shell block holds commands, so each line that starts one gets the landing's prompt; a comment and a continued line do not.
+/** @type {import('@astrojs/starlight/expressive-code').ExpressiveCodePlugin} */
+const promptLines = {
+	name: 'shard-prompts',
+	hooks: {
+		postprocessRenderedLine: ({ codeBlock, lineIndex, line, renderData }) => {
+			if (!['sh', 'bash', 'shell', 'zsh'].includes(codeBlock.language)) return;
+			const text = line.text.trim();
+			const previous = codeBlock.getLines()[lineIndex - 1]?.text.trimEnd() ?? '';
+			if (!text || text.startsWith('#') || previous.endsWith('\\')) return;
+			const properties = (renderData.lineAst.properties ??= {});
+			properties.className = [...(properties.className ?? []), 'cmd'];
+		},
+	},
+};
 // The landing's code panel and its Prism token colors, as a Shiki theme.
 const terminal = {
 	name: 'shard-terminal',
@@ -62,6 +77,7 @@ const terminal = {
 		{ scope: ['keyword.operator', 'punctuation'], settings: { foreground: '#d1e2ef' } },
 		{ scope: ['entity.name.type', 'entity.name.class', 'support.class', 'support.type'], settings: { foreground: '#ffffff' } },
 		{ scope: ['support.function.builtin', 'variable.language', 'entity.name.command'], settings: { foreground: '#badff9' } },
+		{ scope: ['string.unquoted.argument.shell'], settings: { foreground: '#edf7ff' } },
 	],
 };
 
@@ -94,11 +110,12 @@ export default defineConfig({
 			// The landing's terminal panel, dark in both themes.
 			expressiveCode: {
 				themes: [terminal],
+				plugins: [promptLines],
 				useStarlightDarkModeSwitch: false,
 				useStarlightUiThemeColors: false,
 				styleOverrides: {
-					borderRadius: '11px',
-					borderColor: '#416a86',
+					borderRadius: '10px',
+					borderColor: '#1b3042',
 					codeBackground: '#030b13',
 					codeFontFamily: "'JetBrains Mono Variable', ui-monospace, monospace",
 					uiFontFamily: "'JetBrains Mono Variable', ui-monospace, monospace",
@@ -106,20 +123,22 @@ export default defineConfig({
 					frames: {
 						editorBackground: '#030b13',
 						editorTabBarBackground: '#030b13',
-						editorTabBarBorderBottomColor: '#20384b',
+						editorTabBarBorderBottomColor: '#16293a',
 						editorActiveTabBackground: '#030b13',
 						editorActiveTabForeground: '#e2f4ff',
 						editorActiveTabIndicatorTopColor: 'transparent',
 						editorActiveTabIndicatorBottomColor: '#91C4ED',
 						editorActiveTabIndicatorHeight: '2px',
 						terminalBackground: '#030b13',
-						terminalTitlebarBackground: '#0c1c29',
+						terminalTitlebarBackground: '#030b13',
 						terminalTitlebarForeground: '#a9c7dc',
 						terminalTitlebarBorderBottomColor: 'transparent',
 						terminalTitlebarDotsOpacity: '0',
 						frameBoxShadowCssValue: 'none',
 						inlineButtonForeground: '#91C4ED',
 						inlineButtonBorder: 'transparent',
+						tooltipSuccessBackground: '#91C4ED',
+						tooltipSuccessForeground: '#0a2a48',
 					},
 				},
 			},

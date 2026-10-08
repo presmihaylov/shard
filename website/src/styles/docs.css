@@ -14,6 +14,9 @@
 	--line: #1b3042;
 	--soft: #0b1925;
 	--surface: #0a1722;
+	--rail: #07111a;
+	--panel: #0a1722;
+	--panel-line: #1d3247;
 	--line-strong: #294459;
 	--selection: #2d81be66;
 
@@ -25,11 +28,14 @@
 	--paper: #faf9f8;
 	--ink: #052955;
 	--muted: #526579;
-	--blue: #2d81be;
-	--line: #cdc1c150;
+	--blue: #1f6aa5;
+	--line: color-mix(in oklab, var(--ink) 9%, var(--paper));
 	--soft: #eaf3fa;
 	--surface: #ffffff;
-	--line-strong: #dededc;
+	--rail: #f2f1ee;
+	--panel: #030b13;
+	--panel-line: #1b3042;
+	--line-strong: color-mix(in oklab, var(--ink) 16%, var(--paper));
 	--selection: #d7e8f5;
 }
 
@@ -57,7 +63,7 @@
 	--sl-color-text-invert: var(--paper);
 	--sl-color-bg: var(--paper);
 	--sl-color-bg-nav: var(--paper);
-	--sl-color-bg-sidebar: var(--paper);
+	--sl-color-bg-sidebar: var(--rail);
 	--sl-color-bg-inline-code: var(--soft);
 	--sl-color-bg-accent: var(--blue);
 	--sl-color-hairline: var(--line);
@@ -82,7 +88,13 @@
 	background: var(--selection);
 }
 
-/* Header: the landing nav, paper with one line under it. */
+h1#_top {
+	font-size: clamp(2.25rem, 3.4vw, 3.25rem);
+	line-height: 1.05;
+	letter-spacing: -0.03em;
+}
+
+/* Header: the landing nav's mark, wordmark and GitHub key. */
 .site-title {
 	display: flex;
 	align-items: center;
@@ -105,10 +117,9 @@
 	letter-spacing: -1.6px;
 }
 .site-title .eyebrow {
-	margin-inline-start: 3px;
-	font: 11px var(--mono);
-	letter-spacing: 1.8px;
-	text-transform: uppercase;
+	margin-inline-start: 4px;
+	font: 13px var(--mono);
+	text-transform: lowercase;
 	color: var(--muted);
 }
 /* GitHub is the one solid control in the header, as on the landing page. */
@@ -150,21 +161,19 @@
 	width: 32px;
 	height: 32px;
 	padding: 0;
-	border: 1px solid var(--line-strong);
-	border-radius: 7px;
-	background: var(--surface);
-	color: var(--blue);
+	border: 0;
+	background: none;
+	color: var(--muted);
 	cursor: pointer;
-	transition: color 0.2s, border-color 0.2s;
+	transition: color 0.2s;
 }
 .theme-toggle:hover {
 	color: var(--ink);
-	border-color: var(--blue);
 }
-/* The mobile menu button, in the toggle's bordered style in place of Starlight's filled circle. */
+/* The mobile menu button is a square outline, in place of Starlight's filled circle. */
 .sl-menu-button {
 	border: 1px solid var(--line-strong);
-	border-radius: 7px;
+	border-radius: 2px;
 	background-color: var(--surface);
 	color: var(--ink);
 	box-shadow: none;
@@ -175,32 +184,30 @@
 .mobile-preferences {
 	align-items: center;
 }
-:is(.nav-link, .theme-toggle):focus-visible {
-	outline: 3px solid var(--blue);
-	outline-offset: 5px;
+/* One focus ring for every control, in place of each browser's own. */
+:focus-visible {
+	outline: 2px solid var(--blue);
+	outline-offset: 3px;
 }
 @media (min-width: 50rem) {
 	site-search button[data-open-modal] {
 		border-color: var(--line-strong);
-		border-radius: 7px;
+		border-radius: 2px;
 		background-color: var(--surface);
 		color: var(--muted);
+		font-family: var(--mono);
 	}
 	site-search button[data-open-modal]:hover {
 		border-color: var(--blue);
 		color: var(--ink);
 	}
 }
-site-search dialog {
-	border-color: var(--line-strong);
-	border-radius: 11px;
-}
 
-/* Sidebar: eyebrow group labels, the current page on the soft fill with a blue edge. */
+/* Sidebar: group titles on the logo's edge, and pages indented under them. */
 #starlight__sidebar .top-level a,
 #starlight__sidebar .top-level summary {
-	border-radius: 7px;
-	padding: 0.375rem 0.75rem;
+	border-radius: 2px;
+	padding: 0.375rem 0;
 }
 #starlight__sidebar .top-level a {
 	font-size: var(--sl-text-sm);
@@ -209,58 +216,142 @@ site-search dialog {
 }
 #starlight__sidebar .top-level a:hover {
 	color: var(--ink);
-	background-color: var(--soft);
+	background-color: transparent;
 }
 #starlight__sidebar .group-label .large {
-	font: 11px var(--mono);
-	letter-spacing: 1.8px;
-	text-transform: uppercase;
+	font: 600 14px/1.3 var(--body);
+	color: var(--ink);
+}
+#starlight__sidebar summary svg {
+	width: 14px;
 	color: var(--muted);
+}
+/* A group inside a group reads as one more page under its parent, and opens like the others. */
+#starlight__sidebar .top-level details details > summary {
+	padding-inline-start: 1.25rem;
+}
+#starlight__sidebar .top-level details details > summary .group-label .large {
+	font: 400 var(--sl-text-sm) var(--body);
+	color: var(--muted);
+}
+#starlight__sidebar .top-level details details > summary:hover .group-label .large {
+	color: var(--ink);
+}
+#starlight__sidebar .top-level details details > ul a {
+	padding-inline-start: 2.5rem;
+}
+#starlight__sidebar .top-level details details > ul a[aria-current='page']::before {
+	inset-inline-start: 1.25rem;
+}
+#starlight__sidebar .top-level > li > details > ul {
+	margin-top: 0.25rem;
+	margin-bottom: 1.25rem;
+}
+#starlight__sidebar .top-level ul a {
+	padding-inline-start: 1.25rem;
 }
 #starlight__sidebar ul ul li {
 	border-inline-start: none;
 	margin-inline-start: 0;
 	padding-inline-start: 0;
 }
+/* The current page takes the marker the CLI's own picker draws, in place of a fill and an edge. */
 #starlight__sidebar a[aria-current='page'],
 #starlight__sidebar a[aria-current='page']:hover,
 #starlight__sidebar a[aria-current='page']:focus {
+	position: relative;
 	font-weight: 500;
 	color: var(--ink);
-	background-color: var(--soft);
-	box-shadow: inset 2px 0 var(--blue);
+	background-color: transparent;
+}
+#starlight__sidebar a[aria-current='page']::before {
+	content: '\276F';
+	position: absolute;
+	inset-inline-start: 0;
+	top: 50%;
+	font: 700 0.7rem/1 var(--mono);
+	color: var(--blue);
+	transform: translateY(-50%);
 }
 #starlight__on-this-page {
-	font: 11px var(--mono);
-	letter-spacing: 1.8px;
-	text-transform: uppercase;
+	margin-bottom: 0.5rem;
+	font: 600 14px var(--body);
+	color: var(--ink);
+}
+starlight-toc a {
+	position: relative;
+	padding-block: 0.25rem;
+	padding-inline-start: calc(1.25rem + var(--depth, 0) * 0.875rem);
+	font-size: var(--sl-text-sm);
 	color: var(--muted);
 }
+starlight-toc a:hover {
+	color: var(--ink);
+}
+starlight-toc a[aria-current='true'] {
+	color: var(--ink);
+}
+starlight-toc a[aria-current='true']::before {
+	content: '\276F';
+	position: absolute;
+	inset-inline-start: calc(var(--depth, 0) * 0.875rem);
+	top: 50%;
+	font: 700 0.65rem/1 var(--mono);
+	color: var(--blue);
+	transform: translateY(-50%);
+}
 
-/* Headings: Gugi at its one weight, as the landing sets it; Geist for the small ones. */
+/* The page title is the body face at its boldest; Gugi's capital H reads as "I-l" at this size, so it stays in the wordmark. */
 h1#_top,
-.sl-markdown-content :is(h1, h2, h3):not(:where(.not-content *)) {
-	font-family: var(--display);
-	font-weight: 400;
-	letter-spacing: -0.025em;
+.sl-markdown-content h1:not(:where(.not-content *)) {
+	font-family: var(--body);
+	font-weight: 600;
+	letter-spacing: -0.03em;
 }
 .sl-markdown-content :is(h4, h5, h6):not(:where(.not-content *)) {
 	font-family: var(--body);
 	font-weight: 600;
 	letter-spacing: -0.01em;
 }
+/* A section opens with size and space, and a sub-heading at body size reads as part of it; the space goes on Starlight's wrapper, since the heading inside it is inline. */
 .sl-markdown-content h2:not(:where(.not-content *)) {
-	line-height: 1.22;
-	margin-top: 2.5em;
-	margin-bottom: 0.75em;
+	font-family: var(--body);
+	font-size: 1.625rem;
+	font-weight: 600;
+	line-height: 1.2;
+	letter-spacing: -0.02em;
 }
 .sl-markdown-content h3:not(:where(.not-content *)) {
-	line-height: 1.3;
-	margin-top: 2em;
-	margin-bottom: 0.5em;
+	font-family: var(--body);
+	font-size: 1.125rem;
+	font-weight: 600;
+	letter-spacing: -0.01em;
+	line-height: 1.35;
 }
-.sl-markdown-content :is(h2, h3) + *:not(:where(.not-content *)) {
+.sl-markdown-content .sl-heading-wrapper.level-h2 {
+	margin-top: 3.5rem;
+}
+.sl-markdown-content .sl-heading-wrapper.level-h3 {
+	margin-top: 2.25rem;
+}
+.sl-markdown-content > .sl-heading-wrapper:first-child {
 	margin-top: 0;
+}
+.sl-markdown-content .level-h2 + * {
+	margin-top: 0.875rem;
+}
+.sl-markdown-content .level-h3 + * {
+	margin-top: 0.5rem;
+}
+/* A bold line alone, like "Options" in the CLI reference, is a label for the block under it. */
+.sl-markdown-content p:has(> strong:only-child) {
+	margin-top: 1.75rem;
+}
+.sl-markdown-content p:has(> strong:only-child) + * {
+	margin-top: 0.5rem;
+}
+:root {
+	--sl-text-h4: 1rem;
 }
 
 /* Links: the landing blue, with a thin underline so a link reads as one in running text. */
@@ -275,35 +366,66 @@ h1#_top,
 	text-decoration-color: var(--blue);
 }
 
-/* Tables: the landing command sheet, a soft header and lines between rows only. */
+/* Tables: a plain header and lines between rows only. */
 .sl-markdown-content table:not(:where(.not-content *)) {
-	font-size: 0.875rem;
+	font-size: var(--sl-text-sm);
 	line-height: 1.5;
 	border-collapse: collapse;
 }
 .sl-markdown-content :is(th, td):not(:where(.not-content *)) {
 	border: none;
-	padding: 0.75rem 1rem;
+	padding: 0.625rem 0.75rem;
 	vertical-align: top;
 }
-.sl-markdown-content thead th:not(:where(.not-content *)) {
-	background-color: var(--soft);
-	color: var(--muted);
+.sl-markdown-content tbody td:first-child:not(:where(.not-content *)) {
+	min-width: 7.5rem;
 	font-weight: 500;
+}
+/* In a table code is plain mono, so a column of chips does not crowd the row; a long path breaks only where the column ends, and a name in a header never does. */
+.sl-markdown-content :is(th, td) code:not(:where(.not-content *)) {
+	padding: 0;
+	background: none;
+	overflow-wrap: anywhere;
+}
+.sl-markdown-content th code:not(:where(.not-content *)) {
+	white-space: nowrap;
+}
+.sl-markdown-content :is(th, td)[style*='right']:not(:where(.not-content *)) {
+	white-space: nowrap;
+	font-variant-numeric: tabular-nums;
+}
+@media (min-width: 50rem) {
+	.sl-markdown-content table:not(:where(.not-content *)) {
+		display: table;
+		width: 100%;
+	}
+}
+.sl-markdown-content th code:not(:where(.not-content *)) {
+	font-weight: 600;
+}
+.sl-markdown-content thead th:not(:where(.not-content *)) {
+	background-color: transparent;
+	color: var(--ink);
+	font: 600 var(--sl-text-sm) var(--body);
 	text-align: start;
-	border-top: 1px solid var(--line-strong);
 	border-bottom: 1px solid var(--line-strong);
+}
+.sl-markdown-content :is(th, td):first-child:not(:where(.not-content *)) {
+	padding-inline-start: 0;
 }
 .sl-markdown-content tbody tr:not(:where(.not-content *)) {
 	border-bottom: 1px solid var(--line);
 }
 
-/* Inline code: a soft chip; Expressive Code blocks are not touched. */
-.sl-markdown-content :not(pre) > code:not(:where(.not-content *)) {
-	border: 1px solid var(--line);
-	border-radius: 5px;
-	padding: 0.125em 0.375em;
+/* A chip that wraps closes on each line instead of leaving its ends open. */
+.sl-markdown-content :where(:not(pre)) > code:not(:where(.not-content *)) {
+	border: 0;
+	border-radius: 3px;
+	padding: 0.1em 0.35em;
+	background-color: var(--soft);
 	font-size: 0.875em;
+	-webkit-box-decoration-break: clone;
+	box-decoration-break: clone;
 }
 
 /* Code blocks: the landing terminal's title bar, left-aligned with no window dots. */
@@ -311,54 +433,53 @@ h1#_top,
 	justify-content: flex-start;
 	padding-inline: 19px;
 }
+/* The landing's prompt on each command line; it is drawn, not typed, so a copy takes the command alone. */
+.expressive-code .ec-line.cmd .code::before {
+	content: '$ ';
+	color: #5d7f98;
+}
+/* A shell block with no title would draw an empty title bar, so it starts at its first line instead. */
+.expressive-code .frame.is-terminal .header:has(.title:empty) {
+	display: none;
+}
+.expressive-code .frame.is-terminal:has(.header .title:empty) pre {
+	border-radius: 11px;
+}
+.expressive-code .frame.is-terminal:has(.header .title:empty) {
+	--button-spacing: 0.4rem;
+}
 
-/* Tabs: the landing's terminal tabs, mono labels over one line, the active one underlined in blue. */
+/* Every tab panel opens with code, so the tabs are the title bar of that code's terminal, as on the landing page. */
+starlight-tabs .tablist-wrapper {
+	padding-inline: 0.5rem;
+	border: 1px solid var(--panel-line);
+	border-bottom-color: color-mix(in oklab, var(--panel-line) 70%, var(--panel));
+	border-radius: 11px 11px 0 0;
+	background: var(--panel);
+}
 starlight-tabs .tablist-wrapper [role='tablist'] {
-	border-bottom: 1px solid var(--line-strong);
+	border: 0;
 }
 starlight-tabs .tab > [role='tab'] {
+	padding: 0.75rem 0.875rem;
 	font: 0.8125rem var(--mono);
-	color: var(--muted);
+	color: #839dae;
 	border-bottom: 2px solid transparent;
 }
 starlight-tabs .tab > [role='tab']:hover {
-	color: var(--blue);
+	color: #e2f4ff;
 }
 starlight-tabs .tab > [role='tab'][aria-selected='true'] {
-	color: var(--ink);
-	border-bottom-color: var(--blue);
+	color: #e2f4ff;
+	border-bottom-color: #91c4ed;
 }
-
-/* Cards and prev/next: the landing's install box, one line border and no shadow. */
-:is(.card, .sl-link-card, .pagination-links > a) {
-	border: 1px solid var(--line-strong);
-	border-radius: 9px;
-	background-color: var(--surface);
-	box-shadow: none;
+starlight-tabs [role='tabpanel'] {
+	margin-top: 0;
 }
-:is(.sl-link-card, .pagination-links > a):hover {
-	border-color: var(--blue);
-	background-color: var(--surface);
-}
-.card {
-	--sl-card-border: var(--line-strong);
-	--sl-card-bg: var(--soft);
-}
-.card .icon {
-	color: var(--blue);
-}
-:is(.card, .sl-link-card) .title {
-	font-family: var(--display);
-	font-weight: 400;
-	letter-spacing: -0.025em;
-}
-.pagination-links > a {
-	color: var(--muted);
-	font-size: 13px;
-}
-.pagination-links .link-title {
-	font-size: var(--sl-text-base);
-	color: var(--ink);
+starlight-tabs [role='tabpanel'] > .expressive-code:first-child .frame pre,
+starlight-tabs [role='tabpanel'] > .expressive-code:first-child .frame.is-terminal:has(.header .title:empty) pre {
+	border-top: 0;
+	border-radius: 0 0 11px 11px;
 }
 
 /* Asides: an eyebrow title over a tinted panel; index.html has no status colors, so these keep the old tones. */
@@ -390,9 +511,8 @@ starlight-tabs .tab > [role='tab'][aria-selected='true'] {
 	--aside-tone: #f1748f;
 }
 .starlight-aside__title {
-	font: 11px var(--mono);
-	letter-spacing: 1.8px;
-	text-transform: uppercase;
+	font: 13px var(--mono);
+	text-transform: lowercase;
 	color: var(--ink);
 }
 .starlight-aside__icon {
@@ -404,8 +524,294 @@ starlight-tabs .tab > [role='tab'][aria-selected='true'] {
 	line-height: 1.6;
 }
 
+/* Space separates the regions, as on the landing page, so the frame draws none of Starlight's hairlines. */
+header.header,
+.right-sidebar,
+.content-panel + .content-panel {
+	border: 0;
+}
+@media (min-width: 50rem) {
+	.sidebar-pane {
+		border-inline-end: 0;
+	}
+}
+.social-icons::after {
+	content: none;
+}
+/* Search sits with the other controls at the right, not where the grid's free column happens to start. */
+@media (min-width: 50rem) {
+	header.header .header {
+		column-gap: 1rem;
+	}
+	header.header .header > :nth-child(2) {
+		justify-content: flex-end;
+	}
+	site-search button[data-open-modal] {
+		width: 15rem;
+		max-width: none;
+		height: 32px;
+		padding-block: 0;
+	}
+}
+@media (min-width: 72rem) {
+	:root {
+		--sl-content-pad-x: 3.5rem;
+		--sl-sidebar-width: 17rem;
+		--sl-content-width: 47rem;
+	}
+	#starlight__sidebar .sidebar-content {
+		padding-inline: var(--sl-nav-pad-x);
+	}
+}
+.content-panel:first-of-type {
+	padding-bottom: 0.5rem;
+}
+
+/* The pager is two plain links, a mono label over the title, as the landing's text links are. */
+.pagination-links {
+	margin-top: 4rem;
+	gap: 2rem;
+	align-items: start;
+}
+.pagination-links > a,
+.pagination-links > a:hover {
+	padding: 0;
+	border: 0;
+	background: none;
+	box-shadow: none;
+}
+.pagination-links > a svg {
+	display: none;
+}
+.pagination-links > a > span {
+	display: grid;
+	gap: 0.375rem;
+	font: 13px var(--mono);
+	text-transform: lowercase;
+	color: var(--blue);
+}
+.pagination-links > a > span > br {
+	display: none;
+}
+.pagination-links .link-title {
+	font: 600 1.125rem/1.35 var(--body);
+	letter-spacing: -0.01em;
+	text-transform: none;
+	color: var(--ink);
+	transition: color 0.2s;
+}
+.pagination-links > a:hover .link-title {
+	color: var(--blue);
+}
+
+/* A link card reads as a heading with an arrow, not a box. */
+.sl-link-card,
+.sl-link-card:hover {
+	padding: 0;
+	border: 0;
+	background: none;
+	box-shadow: none;
+}
+.sl-link-card .title {
+	font: 600 1.125rem/1.35 var(--body);
+	color: var(--ink);
+	transition: color 0.2s;
+}
+.sl-link-card:hover .title {
+	color: var(--blue);
+}
+.sl-link-card .icon {
+	display: none;
+}
+.sl-link-card .title::after {
+	content: ' \2192';
+	color: var(--blue);
+}
+
+.sl-markdown-content .sl-anchor-link {
+	color: var(--muted);
+}
+.sl-markdown-content .sl-anchor-link:hover {
+	color: var(--blue);
+}
+
+/* Lines of prose stop near 85 characters; code, tables and tabs keep the full column. */
+.sl-markdown-content > :is(p, ul, ol):not(:where(.not-content *)) {
+	max-width: 42rem;
+}
+
+/* The header draws its edge only once content scrolls under it, so a page at rest has no lines. */
+@supports (animation-timeline: scroll()) {
+	header.header {
+		animation: header-edge linear both;
+		animation-timeline: scroll(root);
+		animation-range: 0 48px;
+	}
+	@keyframes header-edge {
+		to {
+			box-shadow: 0 1px 0 var(--line);
+		}
+	}
+}
+
+/* Search is a command palette: one flat input, then a plain list where the result under the cursor gets the CLI's marker. */
+site-search dialog {
+	border: 1px solid var(--line-strong);
+	background-color: var(--paper);
+	box-shadow: 0 24px 64px -24px rgb(5 41 85 / 0.35);
+}
+site-search dialog::backdrop {
+	-webkit-backdrop-filter: none;
+	backdrop-filter: none;
+}
+#starlight__search {
+	--pagefind-ui-font: var(--body);
+	--pagefind-ui-border-radius: 0;
+	--pagefind-ui-background: var(--paper);
+	--pagefind-ui-border: var(--line);
+}
+#starlight__search .pagefind-ui__search-input {
+	height: 3.25rem;
+	border-width: 0 0 1px;
+	font-size: 1rem;
+	outline: none;
+}
+#starlight__search input:focus {
+	--pagefind-ui-border: var(--line-strong);
+}
+#starlight__search .pagefind-ui__form::before {
+	opacity: 0.6;
+}
+#starlight__search .pagefind-ui__search-clear::before {
+	background-color: var(--muted);
+}
+#starlight__search .pagefind-ui__message {
+	padding: 1rem 0 0.25rem;
+	font: 13px var(--mono);
+	color: var(--muted);
+}
+#starlight__search .pagefind-ui__results > * + * {
+	margin-top: 0.5rem;
+}
+#starlight__search .pagefind-ui__result-inner {
+	gap: 0;
+}
+#starlight__search .pagefind-ui__result-inner > .pagefind-ui__result-title,
+#starlight__search .pagefind-ui__result-nested {
+	padding: 0.375rem 0.5rem 0.375rem 1.5rem;
+	border-radius: 0;
+	background: none;
+	outline: none;
+}
+#starlight__search .pagefind-ui__result-inner > .pagefind-ui__result-title::before,
+#starlight__search .pagefind-ui__result-nested::before {
+	content: none;
+}
+#starlight__search .pagefind-ui__result-link {
+	font-size: 0.9375rem;
+	font-weight: 600;
+	--pagefind-ui-text: var(--ink);
+}
+#starlight__search .pagefind-ui__result-nested .pagefind-ui__result-link {
+	font-size: var(--sl-text-sm);
+	font-weight: 500;
+}
+#starlight__search .pagefind-ui__result-nested {
+	--marker-x: 2.25rem;
+	padding-inline-start: 2.25rem;
+}
+#starlight__search .pagefind-ui__result-nested:has(a[href$='#_top']) {
+	padding-inline-start: 1.5rem;
+}
+#starlight__search .pagefind-ui__result-nested:has(a[href$='#_top']) .pagefind-ui__result-title {
+	display: none;
+}
+#starlight__search .pagefind-ui__result-nested:has(a[href$='#_top']) {
+	padding-top: 0;
+}
+#starlight__search .pagefind-ui__result-excerpt {
+	display: -webkit-box;
+	margin-top: 0.125rem;
+	overflow: hidden;
+	-webkit-line-clamp: 2;
+	-webkit-box-orient: vertical;
+	font-size: 0.8125rem;
+	line-height: 1.5;
+	color: var(--muted);
+}
+#starlight__search mark {
+	border-radius: 2px;
+	padding-inline: 1px;
+	background-color: color-mix(in oklab, var(--blue) 18%, transparent);
+	color: var(--ink);
+	font-weight: 400;
+}
+#starlight__search .pagefind-ui__result-inner > .pagefind-ui__result-title:is(:hover, :focus-within),
+#starlight__search .pagefind-ui__result-nested:is(:hover, :focus-within) {
+	outline: none;
+	background: none;
+}
+#starlight__search .pagefind-ui__result-inner > .pagefind-ui__result-title:is(:hover, :focus-within)::before,
+#starlight__search .pagefind-ui__result-nested:is(:hover, :focus-within)::before {
+	content: '\276F';
+	position: absolute;
+	inset-inline-start: calc(var(--marker-x, 1.5rem) - 1.125rem);
+	top: 0.875rem;
+	width: auto;
+	background: none;
+	-webkit-mask: none;
+	mask: none;
+	font: 700 0.65rem/1 var(--mono);
+	color: var(--blue);
+}
+#starlight__search .pagefind-ui__result-title:is(:hover, :focus-within) .pagefind-ui__result-link,
+#starlight__search .pagefind-ui__result-nested:is(:hover, :focus-within) .pagefind-ui__result-link {
+	--pagefind-ui-text: var(--blue);
+}
+#starlight__search .pagefind-ui__button {
+	border: 0;
+	background: none;
+	font: 13px var(--mono);
+	color: var(--blue);
+}
+@media (min-width: 50rem) {
+	site-search dialog {
+		max-width: 38rem;
+		margin-top: 6rem;
+		border-radius: 11px;
+	}
+	site-search .dialog-frame {
+		padding: 0.75rem 1.25rem 1.25rem;
+	}
+}
+
+.mobile-preferences + * summary,
+mobile-starlight-toc summary {
+	border-radius: 2px;
+}
+
 @media (prefers-reduced-motion: reduce) {
-	:is(.theme-toggle, #starlight__sidebar .top-level a) {
-		transition: none;
+	*,
+	*::before,
+	*::after {
+		transition: none !important;
+	}
+}
+
+/* Regions are told apart by surface, not by lines: the sidebar sits on a rail one step off the page, and on the dark page code lifts to the landing's panel navy. */
+.expressive-code {
+	--ec-codeBg: var(--panel);
+	--ec-frm-edBg: var(--panel);
+	--ec-frm-trmBg: var(--panel);
+	--ec-frm-edTabBarBg: var(--panel);
+	--ec-frm-edActTabBg: var(--panel);
+	--ec-brdCol: var(--panel-line);
+}
+@media (min-width: 50rem) {
+	.sidebar-pane {
+		background-color: var(--rail);
+	}
+	:root[data-has-sidebar] header.header {
+		background: linear-gradient(to right, var(--rail) var(--sl-sidebar-width), var(--paper) var(--sl-sidebar-width));
 	}
 }

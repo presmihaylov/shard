@@ -1,8 +1,8 @@
 ---
-const { siteTitle, siteTitleHref } = Astro.locals.starlightRoute;
+const { siteTitle } = Astro.locals.starlightRoute;
 ---
 
-<a href={siteTitleHref} class="site-title">
+<a href="/docs/" class="site-title">
 	<svg class="pixel-logo" viewBox="5 5 54 54" aria-hidden="true"><path fill="currentColor" d="M16.83 6H43.92L58 20.08H22.41L31.07 37.42H6V16.83A10.83 10.83 0 0 1 16.83 6Z"/><path fill="currentColor" d="M47.17 58H20.08L6 43.92H41.59L32.93 26.58H58V47.17A10.83 10.83 0 0 1 47.17 58Z"/></svg>
 	<span class="wordmark" translate="no">{siteTitle}</span>
 	<span class="eyebrow">Docs</span>
