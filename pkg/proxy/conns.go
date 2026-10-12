@@ -8,7 +8,7 @@ import (
 	"sync"
 )
 
-// conns counts the connections each source holds open, over both listeners.
+// conns counts what each source holds open over both listeners: its connections, or its requests.
 type conns struct {
 	limit int
 

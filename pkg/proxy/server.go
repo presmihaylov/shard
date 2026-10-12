@@ -38,12 +38,20 @@ const (
 	idleTimeout = 60 * time.Second
 	// MaxSourceConns bounds the connections one source holds open over both ports, the share the host gives each sandbox too (SHARD-350).
 	MaxSourceConns = 1024
+	// MaxSourceRequests bounds the requests one source holds open, and so the upstream sockets they dial, which an h2 connection multiplexes past MaxSourceConns.
+	MaxSourceRequests = MaxSourceConns
 	// maxHeaderBytes bounds one request's headers, where net/http's default of 1 MiB let a guest write a megabyte of log per request (SHARD-345).
 	maxHeaderBytes = 64 << 10
 	// maxResponseHeaderBytes bounds an upstream's headers as tightly, where the transport's default of 10 MiB times MaxSourceConns could fill the daemon (SHARD-547).
 	maxResponseHeaderBytes = 64 << 10
 	// maxHostLen is the longest DNS name, and so the longest host the proxy judges or prints.
 	maxHostLen = 253
+
+	// guestH2Window and guestH2Frame bound what one h2 connection from a guest holds unread, where net/http's 1 MiB each times MaxSourceConns could fill the daemon.
+	guestH2Window = 256 << 10
+	guestH2Frame  = 16 << 10
+	// upstreamH2Window bounds what an h2 upstream sends ahead of a guest that does not read: h1 leaves that in the kernel, h2 in the daemon.
+	upstreamH2Window = 1 << 20
 )
 
 var (
@@ -116,6 +124,7 @@ type Server struct {
 	held      budget
 	idle      time.Duration
 	conns     *conns
+	requests  *conns
 }
 
 func New(cfg Config) (*Server, error) {
@@ -135,6 +144,7 @@ func New(cfg Config) (*Server, error) {
 		held:      budget{limit: heldBudget, by: map[netip.Addr]int{}},
 		idle:      idleTimeout,
 		conns:     &conns{limit: MaxSourceConns, open: map[netip.Addr]int{}},
+		requests:  &conns{limit: MaxSourceRequests, open: map[netip.Addr]int{}},
 		transport: &http.Transport{
 			// The director resolved the name once and judged that address, so that address is what is dialed.
 			DialContext: func(ctx context.Context, _, _ string) (net.Conn, error) {
@@ -146,8 +156,11 @@ func New(cfg Config) (*Server, error) {
 				return dialer.DialContext(ctx, "tcp", upstream.String())
 			},
 			// A pooled connection would outlive the decision that opened it, so every request dials afresh.
-			DisableKeepAlives:      true,
-			TLSClientConfig:        &tls.Config{MinVersion: tls.VersionTLS12},
+			DisableKeepAlives: true,
+			TLSClientConfig:   &tls.Config{MinVersion: tls.VersionTLS12},
+			// A custom TLS config turns h2 off unless forced; a guest's h2 request goes on as h2 where the origin speaks it (SHARD-797).
+			ForceAttemptHTTP2:      true,
+			HTTP2:                  &http.HTTP2Config{MaxReceiveBufferPerConnection: upstreamH2Window, MaxReceiveBufferPerStream: upstreamH2Window},
 			ResponseHeaderTimeout:  responseHeaderTimeout,
 			MaxResponseHeaderBytes: maxResponseHeaderBytes,
 		},
@@ -175,6 +188,8 @@ func (s *Server) Run(ctx context.Context) error {
 func (s *Server) Serve(ctx context.Context, plain, secure net.Listener) error {
 	tlsConfig := &tls.Config{
 		MinVersion: tls.VersionTLS12,
+		// Chromium sends a streamed request body only over h2 (SHARD-797).
+		NextProtos: []string{"h2", "http/1.1"},
 		GetCertificate: func(hello *tls.ClientHelloInfo) (*tls.Certificate, error) {
 			// Without a name there is nothing to judge, so the handshake is refused.
 			if hello.ServerName == "" {
@@ -191,9 +206,10 @@ func (s *Server) Serve(ctx context.Context, plain, secure net.Listener) error {
 	stopped, stop := context.WithCancel(context.Background())
 	// net/http logs a failed tls handshake per connection, naming the guest after "from".
 	errorLog := s.log.Logger(namedSource)
+	guestH2 := &http.HTTP2Config{MaxReceiveBufferPerConnection: guestH2Window, MaxReceiveBufferPerStream: guestH2Window, MaxReadFrameSize: guestH2Frame}
 	servers := []*http.Server{
 		{Handler: s.handler(stopped, false), ReadHeaderTimeout: readHeaderTimeout, IdleTimeout: s.idle, MaxHeaderBytes: maxHeaderBytes, ErrorLog: errorLog},
-		{Handler: s.handler(stopped, true), ReadHeaderTimeout: readHeaderTimeout, IdleTimeout: s.idle, MaxHeaderBytes: maxHeaderBytes, ErrorLog: errorLog},
+		{Handler: s.handler(stopped, true), ReadHeaderTimeout: readHeaderTimeout, IdleTimeout: s.idle, MaxHeaderBytes: maxHeaderBytes, ErrorLog: errorLog, HTTP2: guestH2},
 	}
 	listeners := []net.Listener{s.capped(plain), tls.NewListener(s.capped(secure), tlsConfig)}
 
@@ -243,6 +259,12 @@ func (s *Server) handle(stopped context.Context, w http.ResponseWriter, r *http.
 
 		return
 	}
+	if !s.requests.take(req.Source) {
+		s.refuse(w, r, http.StatusServiceUnavailable, fmt.Sprintf("this sandbox holds %d requests open, the cap; retry once one ends", s.requests.limit))
+
+		return
+	}
+	defer s.requests.release(req.Source)
 
 	// net/http cancels r.Context() on a half-close, which a fire-and-forget client sends right after its request (SHARD-238).
 	ctx, cancel := context.WithCancel(context.WithoutCancel(r.Context()))
@@ -279,9 +301,13 @@ func (s *Server) handle(stopped context.Context, w http.ResponseWriter, r *http.
 	}
 	defer s.held.give(req.Source, charged)
 
+	// An h2 pool hands its connection to any request for the same host, whatever address that request's decision pinned, so no request shares one.
+	transport := s.transport.Clone()
+	defer transport.CloseIdleConnections()
+
 	sw := &statusWriter{ResponseWriter: w}
 	var reason string
-	s.forward(req, decision.Upstream, &reason).ServeHTTP(sw, out) //nolint:gosec // forwarding the guest's request is the job, and the director pinned where it dials
+	s.forward(req, decision.Upstream, transport, &reason).ServeHTTP(sw, out) //nolint:gosec // forwarding the guest's request is the job, and the director pinned where it dials
 	if reason == "" {
 		s.cfg.Log.Printf("proxy: %s %s %s:%d %d", req.Source, clip(r.Method), req.Host, req.Port, sw.status)
 
@@ -495,11 +521,11 @@ type joinedBody struct {
 func (j *joinedBody) Close() error { return j.closer.Close() }
 
 // forward sends the outbound request, and sets reason when the upstream failed the certificate check.
-func (s *Server) forward(req Request, upstream netip.AddrPort, reason *string) *httputil.ReverseProxy {
+func (s *Server) forward(req Request, upstream netip.AddrPort, transport http.RoundTripper, reason *string) *httputil.ReverseProxy {
 	return &httputil.ReverseProxy{
 		// The outbound request is already built, so the rewrite has nothing left to do.
 		Rewrite:   func(*httputil.ProxyRequest) {},
-		Transport: s.transport,
+		Transport: transport,
 		ErrorLog:  s.log.Logger(func(string) netip.Addr { return req.Source }),
 		// The error can quote the rewritten request, which holds secret values, so the guest and the logs get a fixed reason at most (SHARD-299).
 		ErrorHandler: func(w http.ResponseWriter, out *http.Request, err error) {

@@ -255,6 +255,38 @@ func (h *harness) client() *http.Client {
 	}}
 }
 
+// h2client speaks h2 to the proxy's TLS listener, as a browser does.
+func (h *harness) h2client() *http.Client {
+	pool := x509.NewCertPool()
+	pool.AppendCertsFromPEM(h.ca.CertPEM())
+
+	return &http.Client{Transport: &http.Transport{
+		DialContext: func(ctx context.Context, _, _ string) (net.Conn, error) {
+			return (&net.Dialer{}).DialContext(ctx, "tcp", h.secure.Addr().String())
+		},
+		TLSClientConfig:   &tls.Config{RootCAs: pool, MinVersion: tls.VersionTLS12},
+		ForceAttemptHTTP2: true,
+	}}
+}
+
+// h2Origin points the director at an h2 origin whose leaf the proxy CA signs, which trustProxyCA lets the proxy trust.
+func (h *harness) h2Origin(t *testing.T, handler http.Handler) {
+	t.Helper()
+
+	origin := httptest.NewUnstartedServer(handler)
+	origin.EnableHTTP2 = true
+	origin.TLS = &tls.Config{MinVersion: tls.VersionTLS12, GetCertificate: func(hello *tls.ClientHelloInfo) (*tls.Certificate, error) { return h.ca.Leaf(hello.ServerName) }}
+	origin.StartTLS()
+	t.Cleanup(origin.Close)
+	h.director.upstream = netip.MustParseAddrPort(origin.Listener.Addr().String())
+}
+
+func trustProxyCA(s *Server) {
+	pool := x509.NewCertPool()
+	pool.AppendCertsFromPEM(s.cfg.CA.CertPEM())
+	s.transport.TLSClientConfig.RootCAs = pool
+}
+
 // echoHandler answers with the method, path, host and headers it saw, and the body it read.
 func echoHandler(w http.ResponseWriter, r *http.Request) {
 	body, err := io.ReadAll(r.Body)
@@ -266,6 +298,7 @@ func echoHandler(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("X-Seen-Authorization", r.Header.Get("Authorization"))
 	w.Header().Set("X-Seen-Host", r.Host)
 	w.Header().Set("X-Seen-Length", r.Header.Get("Content-Length"))
+	w.Header().Set("X-Seen-Proto", r.Proto)
 	_, _ = w.Write(body)
 }
 
@@ -618,6 +651,87 @@ func TestProxyNeverEchoesTheRewrittenRequestInA502(t *testing.T) {
 				t.Errorf("the log holds the value:\n%s", log)
 			}
 		})
+	}
+}
+
+// A guest that offers h2 gets it, and so does an origin that speaks it, with the secret put in as over h1 (SHARD-797).
+func TestProxySpeaksH2BothWays(t *testing.T) {
+	h := newHarness(t, http.HandlerFunc(echoHandler), trustProxyCA)
+	h.h2Origin(t, http.HandlerFunc(echoHandler))
+
+	for host, want := range map[string]string{"api.test": "real-TOKEN", "stream.test": "mock-TOKEN"} {
+		t.Run(host, func(t *testing.T) {
+			// A body of unknown length is what a streamed fetch sends.
+			req, err := http.NewRequestWithContext(t.Context(), http.MethodPost, "https://"+host+"/up", io.MultiReader(strings.NewReader("mock-TOKEN")))
+			if err != nil {
+				t.Fatal(err)
+			}
+			req.Header.Set("Authorization", "Bearer mock-TOKEN")
+			resp, err := h.h2client().Do(req)
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer resp.Body.Close()
+			body, err := io.ReadAll(resp.Body)
+			if err != nil {
+				t.Fatal(err)
+			}
+
+			if resp.Proto != "HTTP/2.0" || resp.Header.Get("X-Seen-Proto") != "HTTP/2.0" {
+				t.Errorf("the guest got %s and the origin saw %s, want h2 both ways", resp.Proto, resp.Header.Get("X-Seen-Proto"))
+			}
+			if resp.StatusCode != http.StatusOK || string(body) != want || resp.Header.Get("X-Seen-Authorization") != "Bearer real-TOKEN" {
+				t.Errorf("the origin got %d %s with %q, want %s with the value", resp.StatusCode, body, resp.Header.Get("X-Seen-Authorization"), want)
+			}
+		})
+	}
+}
+
+// One h2 connection carries many requests, so what a sandbox holds open is capped per request, not per connection (SHARD-797).
+func TestProxyCapsTheRequestsOneSourceHoldsOpen(t *testing.T) {
+	arrived, release := make(chan struct{}), make(chan struct{})
+	slow := http.HandlerFunc(func(http.ResponseWriter, *http.Request) {
+		arrived <- struct{}{}
+		<-release
+	})
+	h := newHarness(t, slow, trustProxyCA, func(s *Server) { s.requests.limit = 1 })
+	h.h2Origin(t, slow)
+	client := h.h2client()
+
+	first := make(chan int, 1)
+	go func() {
+		resp, err := client.Get("https://stream.test/first")
+		if err != nil {
+			t.Error(err)
+			first <- 0
+
+			return
+		}
+		resp.Body.Close()
+		first <- resp.StatusCode
+	}()
+	select {
+	case <-arrived:
+	case <-time.After(5 * time.Second):
+		t.Fatal("the first request never reached the origin")
+	}
+
+	resp, err := client.Get("https://stream.test/second")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		t.Fatal(err)
+	}
+	close(release)
+
+	if resp.StatusCode != http.StatusServiceUnavailable || resp.Proto != "HTTP/2.0" || !strings.Contains(string(body), "holds 1 requests open, the cap") {
+		t.Errorf("a request over the cap got %d %s over %s, want 503 over h2", resp.StatusCode, body, resp.Proto)
+	}
+	if got := <-first; got != http.StatusOK {
+		t.Errorf("the request under the cap got %d, want 200", got)
 	}
 }
 
