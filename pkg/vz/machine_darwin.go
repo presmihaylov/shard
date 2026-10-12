@@ -452,13 +452,18 @@ func frames() (guest, host *os.File, err error) {
 	return guest, host, nil
 }
 
+// Automatic and Uncached both hand a virtio guest corrupt reads; Cached is the mode Lima and vfkit settled on (SHARD-795).
+const diskCaching = vz.DiskImageCachingModeCached
+
+// Full synchronization passes a guest flush through to the host; the plain constructor leaves the mode to the framework default (SHARD-396).
+const diskSync = vz.DiskImageSynchronizationModeFull
+
 func disk(vmc *vz.VirtualMachineConfiguration, path string) error {
 	if path == "" {
 		return nil
 	}
 
-	// Full synchronization passes a guest flush through to the host; the plain constructor leaves the mode to the framework default (SHARD-396).
-	attachment, err := vz.NewDiskImageStorageDeviceAttachmentWithCacheAndSync(path, false, vz.DiskImageCachingModeAutomatic, vz.DiskImageSynchronizationModeFull)
+	attachment, err := vz.NewDiskImageStorageDeviceAttachmentWithCacheAndSync(path, false, diskCaching, diskSync)
 	if err != nil {
 		return fmt.Errorf("disk attachment for %s: %w", path, err)
 	}

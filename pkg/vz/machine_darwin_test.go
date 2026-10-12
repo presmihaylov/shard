@@ -8,6 +8,8 @@ import (
 	"sync/atomic"
 	"testing"
 	"time"
+
+	"github.com/Code-Hex/vz/v3"
 )
 
 // recordConn is a net.Conn that only records a Close, for the connect waiter tests.
@@ -122,5 +124,15 @@ func TestTheFramesPairHoldsABurstEitherWay(t *testing.T) {
 				t.Fatalf("frame %d %s: %v", i, end.name, err)
 			}
 		}
+	}
+}
+
+// Automatic caching gave a prod guest zeroed directory blocks, and Uncached corrupts the same way (SHARD-795).
+func TestEveryDiskIsCachedWithFullSync(t *testing.T) {
+	if diskCaching != vz.DiskImageCachingModeCached {
+		t.Fatalf("disk caching mode = %d, want cached (%d)", diskCaching, vz.DiskImageCachingModeCached)
+	}
+	if diskSync != vz.DiskImageSynchronizationModeFull {
+		t.Fatalf("disk synchronization mode = %d, want full (%d)", diskSync, vz.DiskImageSynchronizationModeFull)
 	}
 }
