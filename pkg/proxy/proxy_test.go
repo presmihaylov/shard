@@ -22,6 +22,9 @@ import (
 	"sync"
 	"testing"
 	"time"
+
+	"golang.org/x/net/http2"
+	"golang.org/x/net/http2/hpack"
 )
 
 func TestLoadCAMintsOnceAndSignsALeafPerHost(t *testing.T) {
@@ -255,6 +258,38 @@ func (h *harness) client() *http.Client {
 	}}
 }
 
+// h2client speaks h2 to the proxy's TLS listener, as a browser does.
+func (h *harness) h2client() *http.Client {
+	pool := x509.NewCertPool()
+	pool.AppendCertsFromPEM(h.ca.CertPEM())
+
+	return &http.Client{Transport: &http.Transport{
+		DialContext: func(ctx context.Context, _, _ string) (net.Conn, error) {
+			return (&net.Dialer{}).DialContext(ctx, "tcp", h.secure.Addr().String())
+		},
+		TLSClientConfig:   &tls.Config{RootCAs: pool, MinVersion: tls.VersionTLS12},
+		ForceAttemptHTTP2: true,
+	}}
+}
+
+// h2Origin points the director at an h2 origin whose leaf the proxy CA signs, which trustProxyCA lets the proxy trust.
+func (h *harness) h2Origin(t *testing.T, handler http.Handler) {
+	t.Helper()
+
+	origin := httptest.NewUnstartedServer(handler)
+	origin.EnableHTTP2 = true
+	origin.TLS = &tls.Config{MinVersion: tls.VersionTLS12, GetCertificate: func(hello *tls.ClientHelloInfo) (*tls.Certificate, error) { return h.ca.Leaf(hello.ServerName) }}
+	origin.StartTLS()
+	t.Cleanup(origin.Close)
+	h.director.upstream = netip.MustParseAddrPort(origin.Listener.Addr().String())
+}
+
+func trustProxyCA(s *Server) {
+	pool := x509.NewCertPool()
+	pool.AppendCertsFromPEM(s.cfg.CA.CertPEM())
+	s.transport.TLSClientConfig.RootCAs = pool
+}
+
 // echoHandler answers with the method, path, host and headers it saw, and the body it read.
 func echoHandler(w http.ResponseWriter, r *http.Request) {
 	body, err := io.ReadAll(r.Body)
@@ -266,6 +301,7 @@ func echoHandler(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("X-Seen-Authorization", r.Header.Get("Authorization"))
 	w.Header().Set("X-Seen-Host", r.Host)
 	w.Header().Set("X-Seen-Length", r.Header.Get("Content-Length"))
+	w.Header().Set("X-Seen-Proto", r.Proto)
 	_, _ = w.Write(body)
 }
 
@@ -619,6 +655,215 @@ func TestProxyNeverEchoesTheRewrittenRequestInA502(t *testing.T) {
 			}
 		})
 	}
+}
+
+// A guest that offers h2 gets it, and so does an origin that speaks it, with the secret put in as over h1 (SHARD-797).
+func TestProxySpeaksH2BothWays(t *testing.T) {
+	h := newHarness(t, http.HandlerFunc(echoHandler), trustProxyCA)
+	h.h2Origin(t, http.HandlerFunc(echoHandler))
+
+	for host, want := range map[string]string{"api.test": "real-TOKEN", "stream.test": "mock-TOKEN"} {
+		t.Run(host, func(t *testing.T) {
+			// A body of unknown length is what a streamed fetch sends.
+			req, err := http.NewRequestWithContext(t.Context(), http.MethodPost, "https://"+host+"/up", io.MultiReader(strings.NewReader("mock-TOKEN")))
+			if err != nil {
+				t.Fatal(err)
+			}
+			req.Header.Set("Authorization", "Bearer mock-TOKEN")
+			resp, err := h.h2client().Do(req)
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer resp.Body.Close()
+			body, err := io.ReadAll(resp.Body)
+			if err != nil {
+				t.Fatal(err)
+			}
+
+			if resp.Proto != "HTTP/2.0" || resp.Header.Get("X-Seen-Proto") != "HTTP/2.0" {
+				t.Errorf("the guest got %s and the origin saw %s, want h2 both ways", resp.Proto, resp.Header.Get("X-Seen-Proto"))
+			}
+			if resp.StatusCode != http.StatusOK || string(body) != want || resp.Header.Get("X-Seen-Authorization") != "Bearer real-TOKEN" {
+				t.Errorf("the origin got %d %s with %q, want %s with the value", resp.StatusCode, body, resp.Header.Get("X-Seen-Authorization"), want)
+			}
+		})
+	}
+}
+
+// One h2 connection carries many requests, so what a sandbox holds open is capped per request, not per connection (SHARD-797).
+func TestProxyCapsTheRequestsOneSourceHoldsOpen(t *testing.T) {
+	arrived, release := make(chan struct{}), make(chan struct{})
+	slow := http.HandlerFunc(func(http.ResponseWriter, *http.Request) {
+		arrived <- struct{}{}
+		<-release
+	})
+	h := newHarness(t, slow, trustProxyCA, func(s *Server) { s.requests.limit = 1 })
+	h.h2Origin(t, slow)
+	client := h.h2client()
+
+	first := make(chan int, 1)
+	go func() {
+		resp, err := client.Get("https://stream.test/first")
+		if err != nil {
+			t.Error(err)
+			first <- 0
+
+			return
+		}
+		resp.Body.Close()
+		first <- resp.StatusCode
+	}()
+	select {
+	case <-arrived:
+	case <-time.After(5 * time.Second):
+		t.Fatal("the first request never reached the origin")
+	}
+
+	resp, err := client.Get("https://stream.test/second")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		t.Fatal(err)
+	}
+	close(release)
+
+	if resp.StatusCode != http.StatusServiceUnavailable || resp.Proto != "HTTP/2.0" || !strings.Contains(string(body), "holds 1 requests open, the cap") {
+		t.Errorf("a request over the cap got %d %s over %s, want 503 over h2", resp.StatusCode, body, resp.Proto)
+	}
+	if got := <-first; got != http.StatusOK {
+		t.Errorf("the request under the cap got %d, want 200", got)
+	}
+}
+
+// A guest that grants no window keeps every h2 stream it opens, even a refusal, so one connection holds no more than the cap (SHARD-797).
+func TestProxyCapsTheStreamsAStalledGuestHolds(t *testing.T) {
+	h := newHarness(t, http.HandlerFunc(echoHandler), func(s *Server) { s.h2streams = 2 })
+	framer := h.dialH2(t, "deny.test")
+	if err := framer.WriteSettings(http2.Setting{ID: http2.SettingInitialWindowSize, Val: 0}); err != nil {
+		t.Fatal(err)
+	}
+	for _, id := range []uint32{1, 3, 5} {
+		openStream(t, framer, id, "deny.test")
+	}
+	if got := readFrames(t, framer, "1 403", "3 403", "5 reset"); slices.ContainsFunc(got, func(e string) bool { return strings.HasSuffix(e, " data") }) {
+		t.Errorf("the proxy sent %v to a guest that granted no window, want no data", got)
+	}
+
+	if err := framer.WriteWindowUpdate(1, 1<<20); err != nil {
+		t.Fatal(err)
+	}
+	readFrames(t, framer, "1 end")
+	openStream(t, framer, 7, "deny.test")
+	readFrames(t, framer, "7 403")
+}
+
+// Past its h2 connections a source gets http/1.1, and a closed one gives its share back (SHARD-797).
+func TestProxyCapsTheH2ConnectionsOneSourceHolds(t *testing.T) {
+	h := newHarness(t, http.HandlerFunc(echoHandler), func(s *Server) { s.h2conns.limit = 1 })
+
+	first := h.dialALPN(t, "api.test", "h2", "http/1.1")
+	second := h.dialALPN(t, "api.test", "h2", "http/1.1")
+	if got := []string{first.ConnectionState().NegotiatedProtocol, second.ConnectionState().NegotiatedProtocol}; !slices.Equal(got, []string{"h2", "http/1.1"}) {
+		t.Fatalf("two connections negotiated %q, want h2 then http/1.1", got)
+	}
+	if err := first.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	for deadline := time.Now().Add(5 * time.Second); time.Now().Before(deadline); time.Sleep(10 * time.Millisecond) {
+		conn := h.dialALPN(t, "api.test", "h2", "http/1.1")
+		if conn.ConnectionState().NegotiatedProtocol == "h2" {
+			return
+		}
+		if err := conn.Close(); err != nil {
+			t.Fatal(err)
+		}
+	}
+	t.Fatal("a closed h2 connection never gave its share back")
+}
+
+// dialALPN completes a handshake with the proxy for host, offering protos.
+func (h *harness) dialALPN(t *testing.T, host string, protos ...string) *tls.Conn {
+	t.Helper()
+
+	pool := x509.NewCertPool()
+	pool.AppendCertsFromPEM(h.ca.CertPEM())
+	conn, err := tls.Dial("tcp", h.secure.Addr().String(), &tls.Config{RootCAs: pool, ServerName: host, NextProtos: protos, MinVersion: tls.VersionTLS12})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { conn.Close() })
+
+	return conn
+}
+
+// dialH2 opens an h2 connection to the proxy for host, past the preface, as a raw framer.
+func (h *harness) dialH2(t *testing.T, host string) *http2.Framer {
+	t.Helper()
+
+	conn := h.dialALPN(t, host, "h2")
+	if conn.ConnectionState().NegotiatedProtocol != "h2" {
+		t.Fatalf("negotiated %q, want h2", conn.ConnectionState().NegotiatedProtocol)
+	}
+	if err := conn.SetDeadline(time.Now().Add(10 * time.Second)); err != nil {
+		t.Fatal(err)
+	}
+	write(t, conn, http2.ClientPreface)
+	framer := http2.NewFramer(conn, conn)
+	framer.ReadMetaHeaders = hpack.NewDecoder(4096, nil)
+
+	return framer
+}
+
+func openStream(t *testing.T, framer *http2.Framer, id uint32, host string) {
+	t.Helper()
+
+	var block bytes.Buffer
+	enc := hpack.NewEncoder(&block)
+	for _, field := range []hpack.HeaderField{{Name: ":method", Value: "GET"}, {Name: ":scheme", Value: "https"}, {Name: ":authority", Value: host}, {Name: ":path", Value: "/"}} {
+		if err := enc.WriteField(field); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := framer.WriteHeaders(http2.HeadersFrameParam{StreamID: id, BlockFragment: block.Bytes(), EndStream: true, EndHeaders: true}); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// readFrames reads until it has seen every event in want, each "<stream> <status|data|end|reset>", and returns all it saw.
+func readFrames(t *testing.T, framer *http2.Framer, want ...string) []string {
+	t.Helper()
+
+	var seen []string
+	for slices.ContainsFunc(want, func(w string) bool { return !slices.Contains(seen, w) }) {
+		frame, err := framer.ReadFrame()
+		if err != nil {
+			t.Fatalf("read a frame after %v, want %v: %v", seen, want, err)
+		}
+		id := frame.Header().StreamID
+		switch f := frame.(type) {
+		case *http2.MetaHeadersFrame:
+			seen = append(seen, fmt.Sprintf("%d %s", id, f.PseudoValue("status")))
+		case *http2.DataFrame:
+			seen = append(seen, fmt.Sprintf("%d data", id))
+			if f.StreamEnded() {
+				seen = append(seen, fmt.Sprintf("%d end", id))
+			}
+		case *http2.RSTStreamFrame:
+			seen = append(seen, fmt.Sprintf("%d reset", id))
+		case *http2.SettingsFrame:
+			if !f.IsAck() {
+				if err := framer.WriteSettingsAck(); err != nil {
+					t.Fatal(err)
+				}
+			}
+		}
+	}
+
+	return seen
 }
 
 // A certificate the host refuses names its fault in the 502, the proxy log and the director's record, never the error itself (SHARD-772).
