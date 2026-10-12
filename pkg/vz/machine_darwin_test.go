@@ -8,6 +8,8 @@ import (
 	"sync/atomic"
 	"testing"
 	"time"
+
+	"github.com/Code-Hex/vz/v3"
 )
 
 // recordConn is a net.Conn that only records a Close, for the connect waiter tests.
@@ -122,5 +124,15 @@ func TestTheFramesPairHoldsABurstEitherWay(t *testing.T) {
 				t.Fatalf("frame %d %s: %v", i, end.name, err)
 			}
 		}
+	}
+}
+
+// A cached disk gave a prod guest zeroed directory blocks; uncached with full sync is the pair that holds (SHARD-795).
+func TestEveryDiskIsUncachedWithFullSync(t *testing.T) {
+	if diskCaching != vz.DiskImageCachingModeUncached {
+		t.Fatalf("disk caching mode = %d, want uncached (%d)", diskCaching, vz.DiskImageCachingModeUncached)
+	}
+	if diskSync != vz.DiskImageSynchronizationModeFull {
+		t.Fatalf("disk synchronization mode = %d, want full (%d)", diskSync, vz.DiskImageSynchronizationModeFull)
 	}
 }
