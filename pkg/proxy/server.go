@@ -47,6 +47,9 @@ const (
 	// maxHostLen is the longest DNS name, and so the longest host the proxy judges or prints.
 	maxHostLen = 253
 
+	// guestH2Conns and guestH2Streams bound the h2 streams one source holds open, whose headers net/http keeps while a guest withholds window, as MaxSourceConns does for h1.
+	guestH2Conns   = 32
+	guestH2Streams = MaxSourceConns / guestH2Conns
 	// guestH2Window and guestH2Frame bound what one h2 connection from a guest holds unread, where net/http's 1 MiB each times MaxSourceConns could fill the daemon.
 	guestH2Window = 256 << 10
 	guestH2Frame  = 16 << 10
@@ -125,6 +128,8 @@ type Server struct {
 	idle      time.Duration
 	conns     *conns
 	requests  *conns
+	h2conns   *conns
+	h2streams int
 }
 
 func New(cfg Config) (*Server, error) {
@@ -145,6 +150,8 @@ func New(cfg Config) (*Server, error) {
 		idle:      idleTimeout,
 		conns:     &conns{limit: MaxSourceConns, open: map[netip.Addr]int{}},
 		requests:  &conns{limit: MaxSourceRequests, open: map[netip.Addr]int{}},
+		h2conns:   &conns{limit: guestH2Conns, open: map[netip.Addr]int{}},
+		h2streams: guestH2Streams,
 		transport: &http.Transport{
 			// The director resolved the name once and judged that address, so that address is what is dialed.
 			DialContext: func(ctx context.Context, _, _ string) (net.Conn, error) {
@@ -202,11 +209,20 @@ func (s *Server) Serve(ctx context.Context, plain, secure net.Listener) error {
 			return s.cfg.CA.Leaf(canonicalHost(hello.ServerName))
 		},
 	}
+	h1 := tlsConfig.Clone()
+	h1.NextProtos = []string{"http/1.1"}
+	tlsConfig.GetConfigForClient = func(hello *tls.ClientHelloInfo) (*tls.Config, error) {
+		if s.multiplex(hello) {
+			return tlsConfig, nil
+		}
+
+		return h1, nil
+	}
 
 	stopped, stop := context.WithCancel(context.Background())
 	// net/http logs a failed tls handshake per connection, naming the guest after "from".
 	errorLog := s.log.Logger(namedSource)
-	guestH2 := &http.HTTP2Config{MaxReceiveBufferPerConnection: guestH2Window, MaxReceiveBufferPerStream: guestH2Window, MaxReadFrameSize: guestH2Frame}
+	guestH2 := &http.HTTP2Config{MaxConcurrentStreams: s.h2streams, MaxReceiveBufferPerConnection: guestH2Window, MaxReceiveBufferPerStream: guestH2Window, MaxReadFrameSize: guestH2Frame}
 	servers := []*http.Server{
 		{Handler: s.handler(stopped, false), ReadHeaderTimeout: readHeaderTimeout, IdleTimeout: s.idle, MaxHeaderBytes: maxHeaderBytes, ErrorLog: errorLog},
 		{Handler: s.handler(stopped, true), ReadHeaderTimeout: readHeaderTimeout, IdleTimeout: s.idle, MaxHeaderBytes: maxHeaderBytes, ErrorLog: errorLog, HTTP2: guestH2},

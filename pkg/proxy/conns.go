@@ -1,11 +1,14 @@
 package proxy
 
 import (
+	"crypto/tls"
 	"errors"
 	"fmt"
 	"net"
 	"net/netip"
+	"slices"
 	"sync"
+	"sync/atomic"
 )
 
 // conns counts what each source holds open over both listeners: its connections, or its requests.
@@ -54,7 +57,15 @@ func (l capped) Accept() (net.Conn, error) {
 		}
 		source := sourceOf(conn.RemoteAddr().String())
 		if l.server.conns.take(source) {
-			return &counted{Conn: conn, release: sync.OnceFunc(func() { l.server.conns.release(source) })}, nil
+			c := &counted{Conn: conn, source: source}
+			c.release = sync.OnceFunc(func() {
+				l.server.conns.release(source)
+				if c.multiplexed.Load() {
+					l.server.h2conns.release(source)
+				}
+			})
+
+			return c, nil
 		}
 		l.server.log.Printf(source, "proxy: refused a connection from %s, which holds %d open, the cap", source, l.server.conns.limit)
 		if err := conn.Close(); err != nil {
@@ -63,10 +74,24 @@ func (l capped) Accept() (net.Conn, error) {
 	}
 }
 
-// counted gives its source's share back on the first Close.
+// counted gives its source's shares back on the first Close.
 type counted struct {
 	net.Conn
-	release func()
+	source      netip.Addr
+	multiplexed atomic.Bool
+	release     func()
+}
+
+// multiplex offers h2 to a client that asks for it while its source holds an h2 share left, which the connection then holds.
+func (s *Server) multiplex(hello *tls.ClientHelloInfo) bool {
+	c, ok := hello.Conn.(*counted)
+	if !ok || !slices.Contains(hello.SupportedProtos, "h2") || !s.h2conns.take(c.source) {
+		return false
+	}
+	// Only Serve's own stop closes a connection mid-handshake, and then no share matters.
+	c.multiplexed.Store(true)
+
+	return true
 }
 
 func (c *counted) Close() error {

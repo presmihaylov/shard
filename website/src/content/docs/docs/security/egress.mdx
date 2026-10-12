@@ -219,7 +219,7 @@ sudo launchctl kickstart -k system/shard.daemon
 
 The sandbox needs no change, because it trusts the proxy's certificate and the proxy checks the upstream. A sandbox with neither a policy nor a secret connects to the server directly, so it needs the authority in its own image.
 
-The proxy speaks HTTP/2 over TLS to a client that offers it, and to an upstream that accepts it. Otherwise it speaks HTTP/1.1.
+The proxy speaks HTTP/2 over TLS to a client that offers it, and to an upstream that accepts it. Otherwise it speaks HTTP/1.1. A sandbox gets HTTP/2 on at most 32 connections at once, with at most 32 requests open on each. Past that, a new connection gets HTTP/1.1.
 
 A sandbox can hold at most 1024 connections open to the proxy, and at most 1024 requests, since one HTTP/2 connection carries many. A request past that cap gets a 503. The proxy closes a keep-alive connection after 60 seconds without a request.
 
