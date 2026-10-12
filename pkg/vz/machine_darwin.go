@@ -452,8 +452,8 @@ func frames() (guest, host *os.File, err error) {
 	return guest, host, nil
 }
 
-// A cached disk can hand the guest zeros for blocks the host holds, the framework bug Lima and vfkit also avoid (SHARD-795).
-const diskCaching = vz.DiskImageCachingModeUncached
+// Automatic and Uncached both hand a virtio guest corrupt reads; Cached is the mode Lima and vfkit settled on (SHARD-795).
+const diskCaching = vz.DiskImageCachingModeCached
 
 // Full synchronization passes a guest flush through to the host; the plain constructor leaves the mode to the framework default (SHARD-396).
 const diskSync = vz.DiskImageSynchronizationModeFull

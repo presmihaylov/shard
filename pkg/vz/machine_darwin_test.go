@@ -127,10 +127,10 @@ func TestTheFramesPairHoldsABurstEitherWay(t *testing.T) {
 	}
 }
 
-// A cached disk gave a prod guest zeroed directory blocks; uncached with full sync is the pair that holds (SHARD-795).
-func TestEveryDiskIsUncachedWithFullSync(t *testing.T) {
-	if diskCaching != vz.DiskImageCachingModeUncached {
-		t.Fatalf("disk caching mode = %d, want uncached (%d)", diskCaching, vz.DiskImageCachingModeUncached)
+// Automatic caching gave a prod guest zeroed directory blocks, and Uncached corrupts the same way (SHARD-795).
+func TestEveryDiskIsCachedWithFullSync(t *testing.T) {
+	if diskCaching != vz.DiskImageCachingModeCached {
+		t.Fatalf("disk caching mode = %d, want cached (%d)", diskCaching, vz.DiskImageCachingModeCached)
 	}
 	if diskSync != vz.DiskImageSynchronizationModeFull {
 		t.Fatalf("disk synchronization mode = %d, want full (%d)", diskSync, vz.DiskImageSynchronizationModeFull)
