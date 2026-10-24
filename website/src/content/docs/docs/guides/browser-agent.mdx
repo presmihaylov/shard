@@ -1,28 +1,33 @@
 ---
 title: How to run a browser-use agent in a sandbox?
-description: Build a sandbox with Chromium and browser-use once, then run agents from it that browse only the sites you allow, with a key they never see.
+description: Build a sandbox with Chromium, browser-use and Claude Code once, then run agents from it that browse only the sites you allow, with a key they never see.
 sidebar:
   label: 'Run a browser-use agent'
   order: 1.2
 ---
 
-A [browser-use](https://github.com/browser-use/browser-use) agent drives a real Chromium. In a sandbox, the browser and the agent run away from your machine, and the host decides which sites they reach.
+[browser-use](https://github.com/browser-use/browser-use) drives a real Chromium. Here Claude Code is the agent: it calls browser-use as an MCP server, so there is no agent code to write. In a sandbox, the browser and the agent run away from your machine, and the host decides which sites they reach.
 
 ## Build the base once
 
-Install browser-use and Chromium in a sandbox with no policy, then save its files as a snapshot:
+Install browser-use, Chromium and Claude Code in a sandbox with no policy, then save its files as a snapshot:
 
 ```sh
 shard create --name browser-base --memory 4GiB python:3.12
-shard exec browser-base pip install browser-use playwright
-shard exec browser-base python -m playwright install --with-deps chromium
-shard exec browser-base sh -c 'apt-get update && apt-get install -y libnss3-tools'
+shard exec browser-base sh -c 'apt-get update && apt-get install -y libnss3-tools && useradd -m agent'
+shard exec browser-base pip install "browser-use[cli]"
+shard exec browser-base python -m playwright install-deps chromium
+shard exec --user agent browser-base python -m playwright install chromium
+shard exec --user agent browser-base sh -c 'curl -fsSL https://claude.ai/install.sh | bash'
+shard exec --user agent browser-base /home/agent/.local/bin/claude mcp add -s user browser-use -- browser-use --mcp
 shard stop browser-base
 shard snapshot create --name browser-use browser-base
 shard remove browser-base
 ```
 
 A sandbox with no policy reaches the internet, so the installers can fetch from wherever they need. Every agent then starts from the snapshot and skips the install.
+
+The agent runs as the `agent` user, because Claude Code refuses `--dangerously-skip-permissions` as root.
 
 ## Run an agent
 
@@ -32,7 +37,11 @@ Store your Anthropic key, allow Anthropic's API and Wikipedia with its images, a
 printf '%s' "$ANTHROPIC_API_KEY" | shard secret set --destination api.anthropic.com ANTHROPIC_API_KEY
 shard policy create --allow api.anthropic.com --allow suffix:wikipedia.org --allow suffix:wikimedia.org --deny any browse
 shard create --name browser-use-sbx --memory 4GiB --snapshot browser-use \
-  --secret ANTHROPIC_API_KEY --policy browse --env ANONYMIZED_TELEMETRY=false
+  --user agent --workdir /home/agent \
+  --secret ANTHROPIC_API_KEY --policy browse \
+  --env PATH=/home/agent/.local/bin:/usr/local/bin:/usr/bin:/bin \
+  --env CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC=1 --env DISABLE_AUTOUPDATER=1 \
+  --env ANONYMIZED_TELEMETRY=false --env IN_DOCKER=true
 ```
 
 The host reads HTTPS with its own certificate authority, and Chromium on Linux trusts only its own certificate store. Add the host's certificate to that store with a short script:
@@ -45,38 +54,18 @@ certutil -d sql:$HOME/.pki/nssdb -A -t "C,," -n shard-proxy -i /tmp/shard-proxy-
 ```
 
 ```sh
-shard cp trust-proxy.sh browser-use-sbx:/root/trust-proxy.sh
-shard exec browser-use-sbx sh /root/trust-proxy.sh
+shard cp trust-proxy.sh browser-use-sbx:/home/agent/trust-proxy.sh
+shard exec browser-use-sbx sh /home/agent/trust-proxy.sh
 ```
 
-Write the agent and run it:
-
-```python title="agent.py"
-import asyncio
-
-from browser_use import Agent, Browser, ChatAnthropic
-
-
-async def main():
-    browser = Browser(headless=True, chromium_sandbox=False)
-    agent = Agent(
-        task="Open en.wikipedia.org and find the year the Eiffel Tower opened",
-        llm=ChatAnthropic(model="claude-sonnet-5-5"),
-        browser=browser,
-    )
-    history = await agent.run()
-    print(history.final_result())
-
-
-asyncio.run(main())
-```
+Give Claude Code a task:
 
 ```sh
-shard cp agent.py browser-use-sbx:/root/agent.py
-shard exec browser-use-sbx python /root/agent.py
+shard exec browser-use-sbx claude -p --dangerously-skip-permissions \
+  "Use the browser to open en.wikipedia.org and find the year the Eiffel Tower opened"
 ```
 
-The agent opens Wikipedia, finds the answer and prints it.
+Claude Code opens Wikipedia through browser-use, finds the answer and prints it. To work with it interactively, run `claude` in `shard shell browser-use-sbx` instead.
 
 ## What the sandbox stops
 
@@ -84,9 +73,11 @@ The agent opens Wikipedia, finds the answer and prints it.
 - **The browser reaches only the sites you allow.** A link to any other site fails to resolve. `shard policy logs browser-use-sbx` shows every page it tried, allowed or denied.
 - **Your machine is out of reach.** The browser has no cookies, sessions or files of yours, and nothing private on your network.
 
-`chromium_sandbox=False` turns off Chromium's own sandbox, which refuses to run as root. The shard sandbox is the boundary instead.
+`IN_DOCKER=true` makes browser-use start Chromium without its own sandbox. The shard sandbox is the boundary instead.
 
 To let the agent browse more sites, add them to the policy. Run `shard policy create` again with the same name, and the running sandbox gets the new rules at once. `--allow any` opens the whole internet while the key stays on the host.
+
+See [Run Claude Code in a sandbox](/docs/guides/claude-code/) for more on Claude Code itself.
 
 ## Clean up
 
