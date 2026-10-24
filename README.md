@@ -22,11 +22,11 @@ TypeScript and Python SDKs share one set of verbs.
 
 ##
 
-- <img height="14" src="https://octicons-col.vercel.app/shield-check/1f6aa5">&nbsp;&nbsp;**Pick the walls**: gVisor, Firecracker microVMs, macOS VMs, Sysbox or runc, behind the same commands.
+- <img height="14" src="https://octicons-col.vercel.app/shield-check/1f6aa5">&nbsp;&nbsp;**Pick your isolation**: gVisor, Firecracker microVMs, macOS VMs, Sysbox or runc, behind the same commands.
 - <img height="14" src="https://octicons-col.vercel.app/server/1f6aa5">&nbsp;&nbsp;**Your own hardware**: a Linux server or an Apple silicon Mac. No cloud account needed.
 - <img height="14" src="https://octicons-col.vercel.app/git-branch/1f6aa5">&nbsp;&nbsp;**Pause, resume, fork**: freeze a sandbox with its memory, pick it up later, or copy a running one.
 - <img height="14" src="https://octicons-col.vercel.app/archive/1f6aa5">&nbsp;&nbsp;**Snapshots**: save a stopped sandbox's files and start new sandboxes from them.
-- <img height="14" src="https://octicons-col.vercel.app/key/1f6aa5">&nbsp;&nbsp;**Keys stay on the host**: the sandbox sees a placeholder, and the host puts the real key into HTTPS headers for the destinations you approve.
+- <img height="14" src="https://octicons-col.vercel.app/key/1f6aa5">&nbsp;&nbsp;**Credential brokering**: the sandbox sees a placeholder, and the host puts the real key into HTTPS headers for the destinations you approve.
 - <img height="14" src="https://octicons-col.vercel.app/globe/1f6aa5">&nbsp;&nbsp;**Egress control**: allow and deny rules per sandbox. Private networks, cloud metadata included, are always blocked.
 - <img height="14" src="https://octicons-col.vercel.app/pulse/1f6aa5">&nbsp;&nbsp;**Supervised processes**: `shard run` keeps named processes alive, and the sandbox outlives them all.
 - <img height="14" src="https://octicons-col.vercel.app/plug/1f6aa5">&nbsp;&nbsp;**Ports**: forward a host port to a port inside a sandbox.
