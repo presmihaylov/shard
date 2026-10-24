@@ -29,6 +29,8 @@
 
 <p>Either way, it's the same commands and API, on a Linux server or a Mac Mini.</p>
 
+----
+
 <p>
 <img src=".github/assets/icon-sandbox.svg" width="22" height="28" align="top" alt="">&nbsp;&nbsp;<b>Pick your isolation</b>: gVisor, Firecracker microVMs, macOS VMs, Sysbox or runc, behind the same commands.<br>
 <img src=".github/assets/icon-hardware.svg" width="22" height="28" align="top" alt="">&nbsp;&nbsp;<b>Your own hardware</b>: a Linux server or a Mac Mini. No cloud account needed.<br>
