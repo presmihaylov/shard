@@ -1,6 +1,6 @@
 module github.com/presmihaylov/shard
 
-go 1.26.9
+go 1.26.10
 
 // The website's node_modules may ship .go files, and ./... must never walk them.
 ignore ./website
