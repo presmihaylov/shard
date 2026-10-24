@@ -1,5 +1,5 @@
 <div align="center">
-  <a href="https://useshards.com"><img alt="shard: sandboxes for agents, on your own hardware" src=".github/assets/header.svg" width="100%"></a>
+  <a href="https://useshards.com"><img alt="shard: sandboxes for agents, on your own hardware" src=".github/assets/landing.svg" width="100%"></a>
 
   <br><br>
 
@@ -18,11 +18,11 @@
 
 <br>
 
-<p align="center">
-<b>shard gives each agent an isolated sandbox on a machine you control.</b> Create one from any OCI or Docker image, run commands in it, pause it, snapshot it, or fork it into a copy.
+<p>
+<b>shard runs sandboxes for AI agents on your own hardware.</b> A sandbox is an isolated computer where an agent can install packages, run code and break things without touching anything else. You choose how strong the walls are: lightweight containers for speed, or microVMs when you need a hard boundary. Either way, it's the same commands and API, on a Linux server or a Mac Mini.
 </p>
 
-<p align="center">
+<p>
 <img src=".github/assets/icon-sandbox.svg" width="22" height="22" align="top" alt="">&nbsp;&nbsp;<b>Pick your isolation</b>: gVisor, Firecracker microVMs, macOS VMs, Sysbox or runc, behind the same commands.<br><br>
 <img src=".github/assets/icon-hardware.svg" width="22" height="22" align="top" alt="">&nbsp;&nbsp;<b>Your own hardware</b>: a Linux server or a Mac Mini. No cloud account needed.<br><br>
 <img src=".github/assets/icon-fork.svg" width="22" height="22" align="top" alt="">&nbsp;&nbsp;<b>Pause, resume, fork</b>: freeze a sandbox with its memory, pick it up later, or copy a running one.<br><br>
@@ -36,10 +36,7 @@
 </p>
 
 <p align="center">
-  <picture>
-    <source media="(prefers-color-scheme: dark)" srcset=".github/assets/architecture-dark.svg">
-    <img alt="One machine runs shard and every sandbox; you reach it from the CLI, the SDKs or the API" src=".github/assets/architecture-light.svg" width="100%">
-  </picture>
+  <img alt="One machine runs shard and every sandbox; you reach it from the CLI, the SDKs or the API" src=".github/assets/architecture.svg" width="100%">
 </p>
 
 ## <img height="18" src="https://octicons-col.vercel.app/rocket/2d81be">&nbsp;&nbsp;Getting Started
@@ -89,7 +86,10 @@ pip install useshards   # Python
 
 On Windows, run shard inside WSL 2. An Intel Mac can connect to a remote host, but cannot run sandboxes.
 
-<table width="100%"><tr><td>⚠️ <b>Warning:</b> shard is pre-alpha. Commands, flags, the API and the SDKs can change in any release.</td></tr></table>
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset=".github/assets/box-warning-dark.svg">
+  <img alt="Warning: shard is pre-alpha. Commands, flags, the API and the SDKs can change in any release." src=".github/assets/box-warning-light.svg" width="100%">
+</picture>
 
 ## <img height="18" src="https://octicons-col.vercel.app/terminal/2d81be">&nbsp;&nbsp;CLI
 
@@ -215,9 +215,12 @@ shard inspect web
 shard capabilities
 ```
 
-<table width="100%"><tr><td>💡 <b>Tip:</b> every command takes <code>--help</code>, with its options and an example.</td></tr></table>
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset=".github/assets/box-tip-dark.svg">
+  <img alt="Tip: every command takes --help, with its options and an example." src=".github/assets/box-tip-light.svg" width="100%">
+</picture>
 
-<a href="https://useshards.com/docs/reference/cli/"><img alt="CLI docs" src="https://img.shields.io/badge/CLI_docs-%E2%86%92-2d81be?style=flat-square&labelColor=0a1722"></a>
+**[CLI docs →](https://useshards.com/docs/reference/cli/)**
 
 ## <img height="18" src="https://octicons-col.vercel.app/package/2d81be">&nbsp;&nbsp;SDK
 
@@ -268,7 +271,7 @@ await sandbox.remove({ force: true });
 shard.close();
 ```
 
-<a href="https://useshards.com/docs/sdks/typescript/"><img alt="TypeScript SDK docs" src="https://img.shields.io/badge/TypeScript_SDK_docs-%E2%86%92-2d81be?style=flat-square&labelColor=0a1722"></a>
+**[TypeScript SDK docs →](https://useshards.com/docs/sdks/typescript/)**
 
 ##### Python
 
@@ -289,7 +292,7 @@ with Shard() as shard:
 
 `AsyncShard` has the same verbs for asyncio.
 
-<a href="https://useshards.com/docs/sdks/python/"><img alt="Python SDK docs" src="https://img.shields.io/badge/Python_SDK_docs-%E2%86%92-2d81be?style=flat-square&labelColor=0a1722"></a>
+**[Python SDK docs →](https://useshards.com/docs/sdks/python/)**
 
 ## <img height="18" src="https://octicons-col.vercel.app/book/2d81be">&nbsp;&nbsp;Guides
 
@@ -299,13 +302,13 @@ with Shard() as shard:
 - [Run Docker inside a sandbox](https://useshards.com/docs/guides/docker/)
 - [Connect to a remote host](https://useshards.com/docs/guides/remote/)
 - [Run an agent's code in a sandbox](https://useshards.com/docs/guides/run-agent-code/)
+- [Run a web service in a sandbox](https://useshards.com/docs/guides/web-service/)
 - [Give a sandbox an API key safely](https://useshards.com/docs/guides/api-key/)
 - [Lock down network access](https://useshards.com/docs/guides/network/)
 - [Fork a sandbox to try two paths](https://useshards.com/docs/guides/fork/)
-- [Keep state between commands](https://useshards.com/docs/guides/keep-state/)
 - [Move files in and out](https://useshards.com/docs/guides/files/)
 
-<a href="https://useshards.com/docs"><img alt="All docs" src="https://img.shields.io/badge/All_docs-%E2%86%92-2d81be?style=flat-square&labelColor=0a1722"></a>
+**[All docs →](https://useshards.com/docs)**
 
 ## <img height="18" src="https://octicons-col.vercel.app/git-pull-request/2d81be">&nbsp;&nbsp;Contributing
 
