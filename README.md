@@ -36,10 +36,7 @@
 </p>
 
 <p align="center">
-  <picture>
-    <source media="(prefers-color-scheme: dark)" srcset=".github/assets/architecture-dark.svg">
-    <img alt="One machine runs shard and every sandbox; you reach it from the CLI, the SDKs or the API" src=".github/assets/architecture-light.svg" width="100%">
-  </picture>
+  <img alt="One machine runs shard and every sandbox; you reach it from the CLI, the SDKs or the API" src=".github/assets/architecture.svg" width="100%">
 </p>
 
 ## <img height="18" src="https://octicons-col.vercel.app/rocket/2d81be">&nbsp;&nbsp;Getting Started
