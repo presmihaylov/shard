@@ -6,7 +6,7 @@ sidebar:
   order: 2
 ---
 
-import { Tabs, TabItem } from '@astrojs/starlight/components';
+import { Aside, Tabs, TabItem } from '@astrojs/starlight/components';
 
 Start a web server in a sandbox, forward a host port to it, and call it from the host:
 
@@ -77,13 +77,13 @@ A sandbox runs up to 16 processes, each under its own name.
 
 Without `--restart`, the policy is `unless-stopped`. shard starts the process again after any exit, and again when the sandbox starts, until `shard kill` ends it.
 
-To restart only after a crash, and give up after five tries:
+To restart only after a nonzero exit, and give up after five tries:
 
 ```sh
 shard run web --name site --restart on-failure --restart-retries 5 -- python3 -m http.server 8000 --directory /srv
 ```
 
-A run of a name that has ended replaces it, so this works after `shard kill web site`.
+`--restart-retries` applies to `on-failure` only. A run of a name that has ended replaces it, so this works after `shard kill web site`.
 
 The delay before a restart starts at 1s and doubles after each restart, up to 60s. `--restart-backoff` sets the first delay.
 
@@ -102,6 +102,8 @@ To stop the server and cancel its restarts, while the sandbox keeps running:
 ```sh
 shard kill web site
 ```
+
+A process started with `--restart always` still comes back when the sandbox starts again.
 
 ## Forward a port
 
@@ -135,7 +137,9 @@ lo     127.0.0.1:9000
 eth0   192.0.2.20:9000
 ```
 
-**Caution: a public port is open to every network the host is on.** Anyone who reaches the host can connect to the server in the sandbox, and shard checks nothing on the way. Put a proxy that terminates TLS and checks who calls in front of it, or keep the port on `127.0.0.1`.
+<Aside type="caution">
+A public port is open to every network the host is on. Anyone who reaches the host can connect to the server in the sandbox, and shard checks nothing on the way. Put a proxy that terminates TLS and checks who calls in front of it, or keep the port on `127.0.0.1`.
+</Aside>
 
 Add the same host port again without `--public` to close it to other machines.
 

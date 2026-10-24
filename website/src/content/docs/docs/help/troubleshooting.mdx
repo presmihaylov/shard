@@ -25,19 +25,19 @@ The CLI prefixes returned errors with `shard:`. Setup also prints failures besid
 
 ## The installer
 
-The installer prints `error:` and a reason, and exits with code 1.
+The installer prints `error:` and a reason, and exits with code 1. Two messages are notices instead: the install still succeeded.
 
-**`~/.local/bin is not on your PATH`.** The installer put `shard` in `~/.local/bin`, but your shell does not look there. The installer prints the commands that add it, both for new shells and for the shell you are in. Run them.
+**`~/.local/bin is not on your PATH`.** This is a notice. The installer put `shard` in `~/.local/bin`, but your shell does not look there. The installer prints the commands that add it, both for new shells and for the shell you are in. Run them.
 
 **`has no build for linux-arm64`.** shard ships Linux builds for x86-64 only, and the error lists the builds that the release does have.
 
-**`the GitHub releases API rate limit for this IP address is spent`.** The installer asks the GitHub API for the newest release without a token, and GitHub allows 60 such calls an hour for each IP address. Wait an hour, then run the installer again.
+**`the GitHub releases API rate limit for this IP address is spent`.** The installer asks the GitHub API for the newest release without a token, and GitHub allows 60 such calls an hour for each IP address. The error says when the limit resets. Run the installer again after that.
 
 **`could not reach the GitHub releases API at api.github.com`.** Check the network, and run the installer again.
 
 **`the checksum of ... is ..., and SHA256SUMS ... says ...`.** The download does not match the release, so the installer installed nothing. Run it again.
 
-**On an Intel Mac**, the installer says the Mac can connect to a remote server but cannot host sandboxes. This is a notice, not an error. Run `shard setup` and choose a remote server.
+**`An Intel Mac can connect to a remote shard server. It cannot host sandboxes itself.`** This is also a notice. Run `shard setup` and choose a remote server.
 
 ## Setup
 
@@ -132,7 +132,7 @@ An ordinary daemon restart leaves already running sandboxes alive, and the next 
 
 **`provider sysbox does not support fork on this host; use a server that supports fork`.** shard refuses a verb that the provider cannot do, and it never falls back to a weaker one. `shard capabilities` lists what the server supports. The verb and the provider in the message vary.
 
-**`ran out of memory` in `shard list`.** The sandbox reached its memory ceiling and triggered an OOM kill. gVisor allows headroom for the sentry and throttles before that ceiling. The daemon starts it again on its own with its files: within 5 seconds the first time, then after a wait that starts at 10 seconds and doubles up to 5 minutes while the kills come within 10 minutes of a start. `shard list` counts the kills and shows a start still due, for example `stopped (ran out of memory 3 times, starts again in 20s)`. `shard stop <name>` calls that start off. The bound is fixed when the sandbox is created, so to get more memory, create a new sandbox with a larger `--memory`.
+**`ran out of memory` in `shard list`.** The sandbox went past its memory bound, and the host's OOM killer ended it. On gVisor, a sandbox that uses its whole bound is slowed down first, and only one that keeps growing past it is killed. The daemon starts it again on its own with its files: within 5 seconds the first time, then after a wait that starts at 10 seconds and doubles up to 5 minutes while the kills come within 10 minutes of a start. `shard list` counts the kills and shows a start still due, for example `stopped (ran out of memory 3 times, starts again in 20s)`. `shard stop <name>` calls that start off. The bound is fixed when the sandbox is created, so to get more memory, create a new sandbox with a larger `--memory`.
 
 **`stopped (the sandbox process died)`.** The host or a crash ended the sandbox. `shard start <name>` brings it back.
 

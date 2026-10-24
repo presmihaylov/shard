@@ -5,7 +5,9 @@ sidebar:
   order: 4
 ---
 
-import { Tabs, TabItem } from '@astrojs/starlight/components';
+import { Aside, Tabs, TabItem } from '@astrojs/starlight/components';
+
+The host decides what a sandbox can reach, and code in the sandbox cannot change that.
 
 Let a sandbox reach one host, and see what the host refuses:
 
@@ -77,7 +79,7 @@ The TypeScript and Python examples reach `shard serve` at the address in `SHARD_
 
 `wget` fails because the policy does not allow `example.com`, so the sandbox cannot even look the name up. The log shows a `dns` record that denies `example.com`.
 
-The host decides what a sandbox can reach, not the sandbox itself. A sandbox has no network rules of its own, so code in it cannot change them. The host rewrites its rules on every create, start, resume, fork and policy change.
+A sandbox has no network rules of its own, so there is nothing in it to change. The rules live on the host, and the host rewrites its rules on every create, start, resume, fork and policy change.
 
 ## Without a policy
 
@@ -117,7 +119,7 @@ A leading `*.` matches any depth below the name, but not the name itself. Any ot
 
 Ports are a comma-separated list of numbers and ranges from 1 to 65535, such as `tcp:22,8000-8100`. A rule can name at most 1024 ports. A rule with no protocol matches every protocol, including ping. An address rule with no ports opens every TCP and UDP port, so name the ports when you only want some of them.
 
-**A name rule covers only TCP ports 80 and 443.** The proxy matches the name in each request, and it only speaks HTTP and TLS. `policy create` refuses a name rule on any other port and tells you to use an address instead.
+A name rule covers only TCP ports 80 and 443. The proxy matches the name in each request, and it only speaks HTTP and TLS. `policy create` refuses a name rule on any other port and tells you to use an address instead.
 
 A secret grant does not open any host. The policy must allow a granted host just like any other. Under `deny any`, a granted host is denied, and the value never goes in. See [secrets](/docs/security/secrets/).
 
@@ -173,7 +175,11 @@ A policy that names a host, or that says `allow dns`, opens DNS to the resolver 
 
 One resolver serves every sandbox with a policy on the server. Each sandbox can hold at most 16 UDP questions or TCP connections at once. The resolver processes at most 256 questions at once across the server; an idle TCP connection uses no question slot. A UDP question past the sandbox's limit is dropped and the client asks again, and a TCP connection past it is closed. The per-sandbox limit prevents one sandbox from taking every question slot.
 
-**Caution: a policy with only address rules does not open DNS.** `allow 203.0.113.7` gives the sandbox an address but no way to resolve a name, so a tool that looks up a name fails at the lookup. `shard policy create` prints a note when you store such a policy. It prints the same note when earlier deny rules cover every name that an allow opens, such as `--deny any` before `--allow api.example.com`, because the resolver uses the first rule that matches. Add a name rule for the host, or add `--allow dns`.
+<Aside type="caution">
+A policy with only address rules does not open DNS. `allow 203.0.113.7` gives the sandbox an address but no way to resolve a name, so a tool that looks up a name fails at the lookup. Add a name rule for the host, or add `--allow dns`.
+</Aside>
+
+`shard policy create` prints a note when you store a policy with only address rules. It prints the same note when earlier deny rules cover every name that an allow opens, such as `--deny any` before `--allow api.example.com`, because the resolver uses the first rule that matches.
 
 A rule's id is its position in the list that `shard inspect` prints as `egress`. An edit that adds DNS to a policy puts two implied rules at the front and moves every existing rule down by two, so a log line written before the edit then points at a different rule. Any rule you insert has this effect, including `allow dns`.
 
@@ -183,7 +189,9 @@ A sandbox with a policy or a secret sends its traffic on TCP ports 80 and 443 th
 
 The proxy listens on the bridge gateway, on port `30080` for HTTP and `30443` for TLS. It runs as the `proxy` task of `shard daemon`. It handles only ports 80 and 443, so a secret sent on any other port leaves as the placeholder.
 
-The proxy reads HTTPS using its own certificate authority. shard makes it once per root, in `<root>/proxy/`, with its key at mode `0600`. shard adds that certificate to the file the image already reads, and points `SSL_CERT_FILE`, `REQUESTS_CA_BUNDLE`, `NODE_EXTRA_CA_CERTS` and `CURL_CA_BUNDLE` at that file. curl reads `CURL_CA_BUNDLE` first, so it also overrides a file that the image names for curl, such as `/cacert.pem` in the official curl image. A VM sandbox writes the same file when it starts. Because of this, a create that goes through the proxy, a secret grant and a policy attach refuse an image with no CA bundle, because a file with only the proxy's certificate would make the sandbox trust nothing else. The refusal is a `400` that names the image. Use an image that has `ca-certificates`, such as `node:22-bookworm` instead of `node:22-bookworm-slim`. It also refuses `--env` for those four names. For clients that do not read the file, see [secrets](/docs/security/secrets/).
+The proxy reads HTTPS using its own certificate authority. shard makes it once per root, in `<root>/proxy/`, with its key at mode `0600`. shard adds that certificate to the file the image already reads, and points `SSL_CERT_FILE`, `REQUESTS_CA_BUNDLE`, `NODE_EXTRA_CA_CERTS` and `CURL_CA_BUNDLE` at that file. curl reads `CURL_CA_BUNDLE` first, so it also overrides a file that the image names for curl, such as `/cacert.pem` in the official curl image. A VM sandbox writes the same file when it starts.
+
+A file with only the proxy's certificate would make the sandbox trust nothing else. So a create that goes through the proxy, a secret grant and a policy attach refuse an image with no CA bundle, with a `400` that names the image. Use an image that has `ca-certificates`, such as `node:22-bookworm` instead of `node:22-bookworm-slim`. A create that goes through the proxy also refuses `--env` for those four names. For clients that do not read the file, see [secrets](/docs/security/secrets/).
 
 The proxy resolves each name on the host and connects to the address it judged. It refuses a TLS handshake with no server name, and answers with `400` when the `Host` header differs from that name. It also refuses a host that resolves to one of the server's own addresses, to `0.0.0.0/8`, or to a multicast or broadcast address.
 
@@ -283,7 +291,9 @@ The log has limits:
 - A sandbox keeps at most 16 MiB of log, in two files of 8 MiB each. `shard policy logs` prints the newest 10000 records, and reports on stderr how many it left out. A follow starts from the same newest 10000.
 - A drop that happens while the daemon is down is lost if the kernel log overwrites it first. The daemon keeps its place in the kernel log in `<root>/egress.cursor`, and writes the backlog when it starts, so a restart loses only what the kernel log overwrote.
 
-**Caution: a drop by another firewall on the server is not in the log.** A packet dropped by a rule of your own leaves no record, and the sandbox simply times out.
+<Aside type="caution">
+A drop by another firewall on the server is not in the log. A packet dropped by a rule of your own leaves no record, and the sandbox simply times out.
+</Aside>
 
 ## Other firewalls on the host
 

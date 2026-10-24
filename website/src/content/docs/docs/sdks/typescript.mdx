@@ -82,6 +82,8 @@ Call `shard.close()` when you are done. It releases the pooled connections so th
 | `policy` | The name of the network policy. |
 | `memoryMiB` | The memory bound. Without it, the sandbox takes the snapshot's own bound. From an image, it gets 512 MiB on Firecracker and `vz`, and no bound on gVisor, runc and Sysbox. |
 | `vcpus`, `diskMiB` | The CPU count and the disk size. Without them, the daemon's defaults apply. A sandbox from a snapshot takes the snapshot's disk size. |
+| `swapMiB` | The swap file, which comes out of `diskMiB`. Without it, the sandbox gets 2048 MiB on Firecracker and `vz`. gVisor, runc and Sysbox refuse any value but 0. |
+| `ports` | The host ports to forward from the sandbox's first start, as in [Ports](#ports). |
 
 On Firecracker and `vz`, a `memoryMiB` from 1 to 127 is refused.
 
@@ -176,7 +178,7 @@ await sandbox.ports.remove(9000);
 | `list()` | Returns the sandbox's forwards in host port order. |
 | `remove(hostPort)` | Ends the forward and the connections it carries. |
 
-`shard.ports()` returns the forwards of every sandbox, and `create()` takes `ports: [{ hostPort, guestPort, public }]`. A `Port` has `listening`, `false` while the sandbox is not running or the host refuses the port, `error`, which says why, and `reachableOn`, the addresses of the host a client connects to. A forward survives a stop and a start. See [Reach a port inside a sandbox](/docs/guides/network/#reach-a-port-inside-a-sandbox).
+`shard.ports()` returns the forwards of every sandbox, and `create()` takes `ports: [{ hostPort, guestPort, public }]`. A `Port` holds `listening`, `error` and `reachableOn`. `listening` is `false` while the sandbox is not running or the host refuses the port, and `error` says why. `reachableOn` lists the host addresses a client connects to. A forward survives a stop and a start. See [Reach a port inside a sandbox](/docs/guides/network/#reach-a-port-inside-a-sandbox).
 
 ## Processes
 
@@ -237,7 +239,7 @@ Not every provider supports every verb. `shard.capabilities()` reports which of 
 const { fork } = await shard.capabilities();
 ```
 
-Calling a verb that the provider does not support throws `UnsupportedError`.
+Calling a verb that the provider does not support throws `UnsupportedError`, and its message names the provider and the verb. The server never falls back to a weaker mechanism.
 
 ## Errors
 

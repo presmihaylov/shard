@@ -30,6 +30,8 @@ Claude Code writes the file, runs it, and prints a summary. The last command cop
 - **It reaches two hosts.** The policy allows Anthropic's API and the npm registry, and denies the rest. `shard policy logs claude` shows each request it made.
 - **It touches no file of yours.** It sees the image's files and what you copy in.
 
+The sandbox does not limit what Claude Code does with what it can reach. It spends your Anthropic key on every request, and it can send any file you copy in to an allowed host. Copy in only what the task needs.
+
 Claude Code refuses `--dangerously-skip-permissions` as root, so the sandbox runs commands as the image's `node` user. The install runs as root because it writes to `/usr/local`.
 
 `CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC=1` turns off telemetry and error reports, so the policy needs no host for them.
@@ -44,7 +46,11 @@ shard exec --workdir /home/node/myapp claude claude -p --dangerously-skip-permis
 shard cp claude:/home/node/myapp ./myapp-fixed
 ```
 
-If the agent needs more hosts, such as `github.com` or `pypi.org`, add them to the policy. Run `shard policy create` again with the same name, and the running sandbox gets the new rules at once.
+If the agent needs more hosts, such as `github.com` or `pypi.org`, add them to the policy. Run `shard policy create` again with the same name, and the running sandbox gets the new rules at once. The new rules replace the old ones, so repeat every `--allow` you still need:
+
+```sh
+shard policy create --allow api.anthropic.com --allow registry.npmjs.org --allow github.com --deny any claude
+```
 
 ## Use it interactively
 
@@ -65,7 +71,7 @@ shard exec claude claude -p --dangerously-skip-permissions "Solve it with a loop
 shard exec claude-b claude -p --dangerously-skip-permissions "Solve it with recursion"
 ```
 
-gVisor, Firecracker and vz support `fork`. See [Fork a sandbox to try two paths](/docs/guides/fork/).
+`fork` works on gVisor, Firecracker, and vz on Apple silicon with macOS 14 or later. Sysbox and runc refuse it. See [Fork a sandbox to try two paths](/docs/guides/fork/).
 
 ## Clean up
 

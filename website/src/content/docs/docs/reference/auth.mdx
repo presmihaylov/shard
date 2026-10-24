@@ -77,7 +77,7 @@ Both refusals come from `shard serve` before it opens the socket, so a refused r
 
 A token with no scopes, or with `*`, reaches every route. `GET /v0/version`, `GET /v0/capabilities` and `GET /v0/scopes` answer any valid token, so a client can check which server it talks to before it acts.
 
-A create that names a secret also needs `secret:*`, a create that names a policy also needs `policy:*`, and a create that forwards a port also needs `port:write`. A fork of a sandbox with secret grants or a policy needs the same scopes, because the fork copies them. The daemon refuses the request with `403` before it builds anything:
+A create that names a secret also needs `secret:*`, a create that names a policy also needs `policy:*`, and a create that forwards a port also needs `port:write`. A fork of a sandbox with secret grants or a policy needs the same scopes, because the fork copies them. `shard serve` never reads a request body, so it cannot see what one names. It passes the token's scopes to the daemon in a header, and the daemon refuses the request with `403` before it builds anything:
 
 ```text
 the token does not carry the "secret:*" scope, which a create that names a secret needs; use a token that carries it
@@ -115,7 +115,7 @@ shard tokens mint --name build-agent --duration 24h --scopes sandbox:read,sandbo
 export SHARD_API_KEY=$(shard tokens mint --name ci --duration 24h --scopes sandbox:read | jq -r .token)
 ```
 
-`mint`, `list` and `revoke` run only on the daemon host. They refuse `--remote`, `SHARD_REMOTE` and a saved connection, and none of them talks to the daemon. `shard tokens <verb> --help` lists every option.
+`mint`, `list` and `revoke` run only on the daemon host. They refuse `--remote`, `SHARD_REMOTE` and a saved connection, and none of them talks to the daemon, because the daemon never reads the key or the ledger. `shard tokens <verb> --help` lists every option.
 
 ## List and revoke tokens
 

@@ -100,7 +100,7 @@ Set up one sandbox with what every task needs, and leave it running. Then fork i
 
 ## What the source sees
 
-The source freezes for a moment while shard copies its memory and files. After that it keeps running as before, with the same processes and the same id.
+The source freezes for a moment while shard copies its memory and files, so that the fork gets both from the same instant. After that it keeps running as before, with the same processes and the same id.
 
 On `gvisor`, if the freeze lasts 10 minutes, the fork fails and the source thaws.
 

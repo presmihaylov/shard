@@ -92,7 +92,7 @@ text = sandbox.files.read_text("/srv/input.json")
 	</TabItem>
 </Tabs>
 
-Without an encoding option, `files.read` returns bytes: a `Uint8Array` in TypeScript and `bytes` in Python. These are all the file calls in the SDKs:
+The CLI has no verb that writes or reads a sandbox file directly, so from a shell you write a local file and copy it. Without an encoding option, `files.read` returns bytes: a `Uint8Array` in TypeScript and `bytes` in Python. These are all the file calls in the SDKs:
 
 | TypeScript | Python | What it does |
 | --- | --- | --- |
@@ -110,7 +110,7 @@ A copy into the sandbox runs as a user inside the sandbox. That user is the sand
 
 ## The rules
 
-- **The sandbox must be running.** A copy into or out of a stopped sandbox fails with `sandbox <id> is stopped: start it again with shard start <name>`. On a paused sandbox, it fails with `sandbox <id> is paused: resume it with shard resume <name>`. In both messages, `<name>` is the sandbox's name, or its id when it has none.
+- **The sandbox must be running.** A copy into or out of a stopped sandbox fails with `sandbox <name> is stopped: start it again with shard start <name>`. On a paused sandbox, it fails with `sandbox <name> is paused: resume it with shard resume <name>`. In both messages, `<name>` is the sandbox's name, or its id when it has none.
 - **A write never leaves half a file.** A copy in writes the data under a temporary name in the target directory, syncs it, and then renames it over the old file. If a copy is cut off midway, the old file stays intact.
 - **The daemon sets no size cap.** Copies stream in both directions, and the daemon never holds the whole file. A directory copied out is the exception: `shard cp` and the SDKs refuse one past 64 GiB of file data or 1,048,576 entries.
 - **A file is only bytes.** shard never puts a secret value into a file, even when the file holds a placeholder.

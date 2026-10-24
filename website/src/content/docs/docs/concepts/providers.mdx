@@ -7,7 +7,7 @@ sidebar:
 
 import { Tabs, TabItem } from '@astrojs/starlight/components';
 
-Ask a server which lifecycle commands it supports:
+Not every server can pause, resume or fork a sandbox. That depends on the server's provider, so ask before you build on those commands:
 
 <Tabs syncKey="lang">
 	<TabItem label="CLI">
@@ -134,11 +134,9 @@ The API answers with status `409` and the code `unsupported`. The TypeScript and
 
 shard never falls back to a weaker mechanism. A `pause` on Sysbox fails instead of stopping the sandbox, and the sandbox keeps running. The daemon checks the capability before it touches the sandbox, so a refused command leaves the sandbox as it was.
 
-Check `shard capabilities` before you build on `pause`, `resume` or `fork`.
-
 ## Resource bounds by provider
 
-`--memory`, `--vcpus` and `--disk` bound a sandbox on every provider, and `--swap` adds a swap file on Firecracker and vz, but what each bound does depends on the provider:
+`--memory`, `--vcpus` and `--disk` bound a sandbox on every provider, and `--swap` adds a swap file on Firecracker and vz. What each bound does depends on the provider:
 
 | Bound | gVisor | Firecracker | vz | Sysbox and runc |
 | --- | --- | --- | --- | --- |

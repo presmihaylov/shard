@@ -7,7 +7,7 @@ sidebar:
 
 import { Tabs, TabItem } from '@astrojs/starlight/components';
 
-Ask a server which lifecycle verbs it supports before you call one. On a Sysbox server:
+Ask a server which lifecycle verbs it supports before you call one. A verb the provider lacks fails with an error, so code that pauses or forks can check first and take another path. On a Sysbox server:
 
 <Tabs syncKey="lang">
 	<TabItem label="CLI">
@@ -157,6 +157,6 @@ The message names the provider and the verb. [Errors and exit codes](/docs/refer
 | A root with no records, on Linux, with no `/dev/kvm` or one that does not open | `gvisor` |
 | A root with no records, on macOS | `vz` |
 
-On a root with no records, the daemon never picks `sysbox` or `runc`. To use one of them, name it with `--provider`. `shard info` prints the provider that a new daemon would pick on this host, and the reason. It runs on the daemon host only.
+On a root with no records, the daemon never picks `sysbox` or `runc`: Sysbox is single-tenant, and runc runs a sandbox straight on the host kernel. To use one of them, name it with `--provider`. `shard info` prints the provider that a new daemon would pick on this host, and the reason. It runs on the daemon host only.
 
 A root keeps the provider that made its records, because no other provider can read them. The daemon refuses a `--provider` that names another one before it touches the root, and the error names both providers.

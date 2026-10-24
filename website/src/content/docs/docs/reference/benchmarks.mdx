@@ -5,7 +5,7 @@ sidebar:
   order: 5
 ---
 
-Each number on this page is how long one `shard` command took, from the start of the CLI to its exit, against a daemon on the same machine. To time a command the same way on your host:
+Use these numbers to compare providers and to budget the latency of each step your agent takes. Each one is how long one `shard` command took, from the start of the CLI to its exit, against a daemon on the same machine. To time a command the same way on your host:
 
 ```sh
 shard create --name demo --memory 512MiB alpine:3.20
@@ -31,7 +31,7 @@ The median time in milliseconds over 10 runs of each command:
 | `shard remove --force demo` | 212 | 99 | 512 | 210 | 160 |
 | `shard run --name demo-run --memory 512MiB alpine:3.20 true` | 897 | 305 | 449 | 305 | 756 |
 
-The Linux providers ran on one host and `vz` ran on a Mac, so compare the Linux columns with each other and not with `vz`. Each section below names its machine.
+The Linux providers ran on one host and `vz` ran on a Mac, so compare the Linux columns with each other and not with `vz`. Each section below names its machine. In the full tables, `shard list`, `shard inspect` and `shard secret list` take about 5 ms on the Linux host on every provider.
 
 ## How the numbers were measured
 

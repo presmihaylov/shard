@@ -8,6 +8,8 @@ sidebar:
 
 import { Tabs, TabItem } from '@astrojs/starlight/components';
 
+An agent needs your API key to call its model. If the key sits in the sandbox, anything there that reads the agent's environment reads the key too. shard keeps the key on the host, so the sandbox never holds it.
+
 Store a key on the host, grant it to `api.openai.com`, and look at what the sandbox holds:
 
 <Tabs syncKey="lang">

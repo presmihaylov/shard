@@ -79,7 +79,7 @@ Claude Code opens Wikipedia through browser-use, reads the article and prints `1
 
 The policy logs also show denied calls to Google hosts, such as `accounts.google.com` and `update.googleapis.com`. Chromium makes them in the background, and the pages load without them.
 
-To let the agent browse more sites, add them to the policy. Run `shard policy create` again with the same name, and the running sandbox gets the new rules at once. `--allow any` opens the whole internet while the key stays on the host.
+To let the agent browse more sites, run `shard policy create` again with the same name, and the running sandbox gets the new rules at once. The new rules replace the old ones, so repeat every `--allow` you still need, `api.anthropic.com` included. `--allow any` opens the whole internet while the key stays on the host. Private addresses stay blocked under any policy.
 
 See [Run Claude Code in a sandbox](/docs/guides/claude-code/) for more on Claude Code itself.
 

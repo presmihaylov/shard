@@ -8,6 +8,8 @@ sidebar:
 
 import { Tabs, TabItem } from '@astrojs/starlight/components';
 
+Run Docker inside a sandbox when the work needs to build images or start containers of its own. The nested Docker never sees the host's Docker socket.
+
 This example starts `dockerd` in a sandbox, waits for it, then runs a container inside the sandbox. It works on a Sysbox, vz or Firecracker server:
 
 <Tabs syncKey="lang">
@@ -91,11 +93,11 @@ On a Linux host without `/dev/kvm`, the daemon picks gVisor by default, which ca
 shard setup --local --provider sysbox --start-at-boot=true -y
 ```
 
-Setup never recommends Sysbox. A daemon started without `--provider` keeps Sysbox only for a data directory that already holds Sysbox sandboxes, so name it the first time. Sysbox needs an x86_64 Linux host, root, and a kernel that Sysbox supports. There is no fallback to another provider.
+Setup never recommends Sysbox, because it serves one tenant per host. A daemon started without `--provider` keeps Sysbox only for a data directory that already holds Sysbox sandboxes, so name it the first time. Sysbox needs an x86_64 Linux host, root, and a kernel that Sysbox supports. There is no fallback to another provider.
 
 ## Why dockerd is a process
 
-shard never runs the image's entrypoint script. `shard run` starts `dockerd` directly, finds it on the image's `PATH`, and names the process `dockerd`. PID 1 of the sandbox is shard's own supervisor, and `dockerd` is its child.
+Under Docker, the `docker:27-dind` image starts `dockerd` from its entrypoint. shard never runs an image's `ENTRYPOINT` or `CMD`, so a new sandbox has no `dockerd` until you start one. `shard run` starts `dockerd` directly, finds it on the image's `PATH`, and names the process `dockerd`. PID 1 of the sandbox is shard's own supervisor, and `dockerd` is its child.
 
 A sandbox outlives its processes. If `dockerd` exits, the sandbox stays running and you can still exec into it. The default restart policy, `unless-stopped`, starts `dockerd` again after any exit, and brings it back when the daemon restarts. `shard kill dind dockerd` ends it and cancels its restarts. Only `shard stop` ends the sandbox.
 

@@ -3,6 +3,8 @@ title: What provider should I pick?
 description: Pick the isolation technology for a shard daemon, from Firecracker, gVisor, vz, Sysbox and runc.
 ---
 
+The provider is the technology that isolates each sandbox. A daemon runs one provider, and switching later means removing every sandbox, so pick it before you create any.
+
 Run `shard info` on the machine that will be your sandbox host. It prints the provider that a daemon on this host uses by default, and the reason:
 
 ```sh

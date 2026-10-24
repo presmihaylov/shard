@@ -78,7 +78,7 @@ Both SDKs export the same classes from `useshards`. Every error from the server,
 
 A refusal with any other status, such as 429, is a plain `APIError`.
 
-The text of an `APIError` is `<status> <code>: <message>`. Match on `code` rather than on the text, because the code is stable and the message is written for people.
+The text of an `APIError` is `<status> <code>: <message>`. Match on `code` rather than on the text, because the code is stable and the message is written for people. With `in_use`, `holders` names the sandboxes or snapshots that still hold the resource.
 
 ## Error codes
 

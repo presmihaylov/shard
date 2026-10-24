@@ -5,9 +5,11 @@ sidebar:
   order: 2
 ---
 
-import { Tabs, TabItem } from '@astrojs/starlight/components';
+import { Aside, Tabs, TabItem } from '@astrojs/starlight/components';
 
-Ask a sandbox which kernel it runs on:
+How far a sandbox is from the host depends on the provider: gVisor, Firecracker and vz put a kernel of their own between the sandbox and the host, while Sysbox and runc share the host's kernel.
+
+To see which side of that line a server is on, ask a sandbox which kernel it runs on:
 
 <Tabs syncKey="lang">
 	<TabItem label="CLI">
@@ -103,13 +105,17 @@ Docker runs inside a vz sandbox.
 
 Each sandbox runs in its own Linux user namespace, with its own view of `/proc` and `/sys`. Docker runs inside a Sysbox sandbox. A process in the sandbox is a host process that runs under a host uid other than root. Root in the sandbox has every capability inside its user namespace.
 
-**Caution: Sysbox sandboxes are not isolated from each other.** Every Sysbox sandbox maps to the same host uid range, `0 165536 65536`. A process that escapes one sandbox has the same uid as root in every other sandbox. Run one tenant per Sysbox host.
+<Aside type="caution" title="Sysbox sandboxes are not isolated from each other">
+Every Sysbox sandbox maps to the same host uid range, `0 165536 65536`. A process that escapes one sandbox has the same uid as root in every other sandbox. Run one tenant per Sysbox host.
+</Aside>
 
 shard never picks Sysbox for you. Only `shard daemon --provider sysbox`, or the records that a Sysbox daemon made, can select it.
 
 ## runc
 
-**Caution: runc isolates nothing.** The sandbox runs on the host kernel, with only namespaces and cgroups around it. Root in the sandbox is root on the host. Use runc only for code you trust, or on a host you can afford to lose.
+<Aside type="caution" title="runc isolates nothing">
+The sandbox runs on the host kernel, with only namespaces and cgroups around it. Root in the sandbox is root on the host. Use runc only for code you trust, or on a host you can afford to lose.
+</Aside>
 
 A runc sandbox starts with runc's default capabilities and can never gain more. It runs under Docker's default seccomp profile and, where the host has the AppArmor module enabled, also under Docker's AppArmor profile, loaded as `shard-default`. If the module is enabled but `apparmor_parser` is missing, the daemon refuses the runc provider rather than run sandboxes without a profile.
 

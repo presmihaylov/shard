@@ -130,6 +130,18 @@ server = sandbox.exec(["python", "-m", "http.server", "8000"], background=True)
 
 Later commands in the sandbox reach the server on `localhost:8000`. The server keeps running when the client disconnects and when your process exits. To end it, call `server.kill()` or stop the sandbox. `sandbox.commands.list()` lists the commands the daemon still holds, both running and ended.
 
+## Choose how much to keep
+
+Three verbs set a sandbox aside. They differ in what comes back:
+
+| Verb | Files | Memory and processes | Providers | Outlives the sandbox |
+| --- | --- | --- | --- | --- |
+| `stop`, then `start` | yes | no | all | no |
+| `pause`, then `resume` | yes | yes | `gvisor`, `firecracker`, `vz` | no |
+| `snapshot create` | yes | no | all | yes |
+
+Stop when the files are what matter. Pause when a process holds work in memory that you want back. Take a snapshot when new sandboxes should start from the same files.
+
 ## Stop and start: keep the files
 
 <Tabs syncKey="lang">
@@ -194,7 +206,7 @@ sandbox.resume()
 
 A pause writes the sandbox's memory and files to disk and frees the memory. A resume brings the processes back, and they continue where they left off.
 
-**Caution: a pause ends every `exec` that is running at that moment.** Let your commands finish before you pause. An `exec` on a paused sandbox fails with `sandbox <name> is paused: resume it with shard resume <name>`.
+A pause ends every `exec` that is running at that moment. Let your commands finish before you pause. An `exec` on a paused sandbox fails with `sandbox <name> is paused: resume it with shard resume <name>`.
 
 `pause` and `resume` work on `gvisor`, `firecracker`, and `vz` on Apple silicon with macOS 14 or later. `sysbox` and `runc` refuse them. `shard capabilities` shows what your server supports.
 
@@ -232,10 +244,12 @@ copy = shard.create(snapshot="agent-base", name="agent-2")
 	</TabItem>
 </Tabs>
 
+The source must be stopped, because a snapshot copies the files a stop kept. A snapshot of a running or paused sandbox fails, and the error names the `shard stop` that fixes it.
+
 A snapshot holds files, not memory or processes. A sandbox created from it gets the source's memory and disk bounds unless you set different ones. Only the provider that made the snapshot can create from it, and the image must still be on the host.
 
 ## What ends the state
 
-- **`remove` deletes the sandbox and its files.** To keep the files, take a snapshot first.
-- **A sandbox that goes over its memory bound stops.** Its files are kept, and `shard start` runs it again with them.
-- **A daemon restart leaves every sandbox running.** The daemon loses its record of each command, but the command keeps running in the sandbox.
+- `remove` deletes the sandbox and its files. To keep the files, take a snapshot first.
+- A sandbox that goes over its memory bound stops. Its files are kept, and `shard start` runs it again with them.
+- A daemon restart leaves every sandbox running. The daemon loses its record of each command, but the command keeps running in the sandbox.

@@ -7,6 +7,8 @@ sidebar:
 
 import { Tabs, TabItem } from '@astrojs/starlight/components';
 
+A sandbox keeps its files across a stop, and its memory and processes too across a pause.
+
 Create a sandbox, write a file, stop it, start it again, pause it and resume it:
 
 <Tabs syncKey="lang">
@@ -70,7 +72,13 @@ with Shard() as shard:
 
 The SDK examples connect to the server that `SHARD_REMOTE` names, with the API key in `SHARD_API_KEY`.
 
-The file is still there after the start, because a stop keeps the sandbox's files. Pause and resume need a provider that supports them: gVisor, Firecracker, or macOS Virtualization on Apple silicon with macOS 14 or later. Sysbox and runc refuse them.
+The file is still there after the start, because a stop keeps the sandbox's files. A stop and a pause both free the sandbox's memory, but only a pause brings the processes back:
+
+| | `stop`, then `start` | `pause`, then `resume` |
+| --- | --- | --- |
+| Files | Kept | Kept |
+| Memory and processes | Lost. A process whose restart policy allows it starts again from the beginning. | Saved to disk. The processes carry on where they left off. |
+| Providers | Every provider | gVisor, Firecracker, and macOS Virtualization on Apple silicon with macOS 14 or later. Sysbox and runc refuse them. |
 
 ## The states
 

@@ -6,7 +6,7 @@ sidebar:
   order: 6
 ---
 
-import { Tabs, TabItem } from '@astrojs/starlight/components';
+import { Aside, Tabs, TabItem } from '@astrojs/starlight/components';
 
 Let a sandbox reach `api.openai.com` and nothing else:
 
@@ -123,7 +123,7 @@ A record holds `time`, `source`, `verdict`, `host`, `port`, `address`, `rule`, `
 - `dns`: a lookup.
 - `host`: a packet that the host dropped on any other port.
 
-`rule` is the position of the rule that decided, in the order that `shard inspect agent` lists the rules under `egress`. Some decisions have a name instead: `private` for the drops that every sandbox gets, and `default` when no rule matched.
+`rule` is the position of the rule that decided, in the order that `shard inspect agent` lists the rules under `egress`. Some decisions have a name instead: `private` for the drops that every sandbox gets, `default` when no rule matched, and `none` when the sandbox has no policy.
 
 A denied HTTP or HTTPS request gets a `403` with a one-line JSON body that names the host, the port, the rule and the reason.
 
@@ -233,7 +233,11 @@ lo     127.0.0.1:9000
 eth0   192.0.2.20:9000
 ```
 
-**Caution: a public port is open to every network the host is on.** Anyone who reaches the host can connect to the program in the sandbox, and shard checks nothing on the way. `--public` is the only way to listen beyond `127.0.0.1`, and an address in the port is refused.
+<Aside type="caution">
+A public port is open to every network the host is on. Anyone who reaches the host can connect to the program in the sandbox, and shard checks nothing on the way.
+</Aside>
+
+`--public` is the only way to listen beyond `127.0.0.1`, and an address in the port is refused.
 
 To change a forward, add the same host port again, with another guest port or with `--public` on or off.
 

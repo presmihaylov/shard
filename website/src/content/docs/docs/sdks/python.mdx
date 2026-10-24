@@ -25,7 +25,7 @@ with Shard() as shard:
         sandbox.remove(force=True)
 ```
 
-Replace `https://shard.example.com` with your server URL and `your-api-key` with your API key. Then run `python demo.py`. It prints `0 hello`.
+Replace `https://shard.example.com` with your server URL and `your-api-key` with your API key. Then run `python demo.py`. It prints `0 hello`. The `finally` removes the sandbox even when a command raises, because a sandbox outlives the script that made it.
 
 ## Install
 
@@ -85,6 +85,8 @@ Use `Shard` in a `with` block, or call `shard.close()` when you are done, so it 
 | `policy` | The name of the network policy. |
 | `memory_mib` | The memory bound. Without it, the sandbox takes a snapshot's own bound. From an image, it gets 512 MiB on Firecracker and `vz`, and no bound on gVisor, runc and Sysbox. |
 | `vcpus`, `disk_mib` | The CPU count and the disk size. Without them, the daemon's defaults apply. A sandbox from a snapshot takes the snapshot's disk size. |
+| `swap_mib` | The swap file, which the guest makes on its disk and which counts against `disk_mib`. Without it, a sandbox gets 2048 MiB on Firecracker and `vz`, and none on gVisor, runc and Sysbox, which refuse any swap but 0. |
+| `ports` | Host ports to forward. See [Ports](#ports). |
 
 On Firecracker and `vz`, a `memory_mib` from 1 to 127 is refused.
 
@@ -185,6 +187,8 @@ sandbox.ports.remove(9000)
 `sandbox.run(command)` starts a named process in a running sandbox, under shard's own supervisor, and returns a `Process` as soon as it runs. It takes `name`, `env`, `workdir`, `user` and `restart`:
 
 ```python
+from useshards import Restart
+
 ticker = sandbox.run("for i in 1 2 3; do echo tick $i; done", name="ticker", restart=Restart(policy="no"))
 print(ticker.wait(timeout=60).status.exit)
 print(ticker.logs(), end="")

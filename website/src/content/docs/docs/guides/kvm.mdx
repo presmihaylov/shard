@@ -104,8 +104,9 @@ A sandbox outlives the daemon. After a restart, the daemon picks up each running
 | `--memory` | `0`, the default, means 512 MiB. A bound under 128 MiB is refused, and so is a bound above the host's total memory. |
 | `--vcpus` | The VM's virtual CPUs. `0`, the default, gives one for each host CPU, up to 32. A value above 32, or above the number of host CPUs, is refused. |
 | `--disk` | The size of the writable disk. `0`, the default, means 10240 MiB. A bound under 11 MiB is refused. |
+| `--swap` | A swap file the guest makes on its own disk at each boot. It is 2 GiB by default. `0` means no swap. It comes out of `--disk`, so a swap that is not smaller than the disk is refused. |
 
-A sandbox that goes over its `--memory` stops, and its record says why. Nothing starts it again. As a safety net, the host also bounds the VM process at the sandbox's memory plus 64 MiB, but the guest's kernel always acts first.
+A sandbox past its `--memory` swaps and slows down; it does not end at once. Once the swap is full too, or with `--swap 0`, the sandbox stops, and its record says why. Nothing starts it again. As a safety net, the host also bounds the VM process at the sandbox's memory plus 64 MiB, but the guest's kernel always acts first.
 
 shard refuses a few `--disk` sizes just above a multiple of 128 MiB, because the disk cannot grow to them. The error names the nearest sizes that work.
 
@@ -126,7 +127,7 @@ sudo shard fork --name demo-copy demo
 The source freezes during the copy, then keeps running in the same VM. Two things fail while the copy runs:
 
 - An `exec` that is running during the copy loses its output, but its command keeps running in the sandbox. The CLI fails with an error that names the verb.
-- An `exec` that starts while the source is frozen is refused with `a fork holds the sandbox frozen, and nothing starts in it until that ends: run the command again`. shard does not queue it, so run it again.
+- An `exec` that starts while the source is frozen is refused with `a fork holds the sandbox frozen, and nothing starts in it until that ends: run the command again`. shard does not queue it.
 
 ### Snapshots and a larger disk
 

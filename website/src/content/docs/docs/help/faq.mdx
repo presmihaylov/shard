@@ -81,7 +81,7 @@ Let `shard setup` pick. It recommends Firecracker when it can open `/dev/kvm`, g
 | `firecracker` | Linux with `/dev/kvm` | a microVM | yes | yes |
 | `vz` | Apple silicon, macOS 14 or later | a VM | yes | yes |
 
-Setup never recommends `sysbox` or `runc`. **Sysbox is for one tenant per host. Use runc only for code you trust.** On runc, root in the sandbox is root on the host. The [provider matrix](https://github.com/presmihaylov/shard/blob/main/docs/provider.md) lists every limit.
+Setup never recommends `sysbox` or `runc`. Sysbox is for one tenant per host. Use runc only for code you trust: on runc, root in the sandbox is root on the host. The [provider matrix](https://github.com/presmihaylov/shard/blob/main/docs/provider.md) lists every limit.
 
 ## Can I change the provider later?
 

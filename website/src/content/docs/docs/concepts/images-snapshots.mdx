@@ -7,6 +7,8 @@ sidebar:
 
 import { Tabs, TabItem } from '@astrojs/starlight/components';
 
+Every sandbox starts from an image or from a snapshot. A snapshot lets you set up a sandbox once and start many new ones from its files.
+
 Write a file in a sandbox, save the sandbox as a snapshot, and start a new sandbox from it:
 
 <Tabs syncKey="lang">
@@ -188,7 +190,7 @@ shard create --name web-2 --snapshot web-base
 
 `--snapshot` takes the place of the image. The new sandbox gets its own copy of the files, a new id and a new address, so many sandboxes can start from one snapshot. The create returns the sandbox as `running`, and the record's `snapshot` key names the snapshot.
 
-A create from a snapshot never downloads an image:
+A snapshot records the digest of the image its source ran on, and a create from it needs that exact image. It never downloads one:
 
 - The image must be on the server at the digest the snapshot recorded, or the create fails with `400`. Pull the image again if its tag still points to that digest, or make a new snapshot.
 - Once a pull moves the tag to a new digest, the old snapshot can no longer start. Make a new snapshot from a sandbox on the new image.
@@ -208,6 +210,11 @@ A sandbox made from the snapshot keeps its own files, so nothing stops the remov
 
 ## Snapshot or fork
 
-A snapshot copies the files of a stopped sandbox. It works on every provider, and the new sandbox starts fresh, with no processes.
+Use a snapshot to keep a setup and start from it later. Use a fork to copy a running sandbox mid-task, with its processes still running.
 
-A fork copies the memory and the files of a running sandbox, and the copy continues from the same moment. Fork needs a provider that supports it: gVisor, Firecracker, or vz on Apple silicon with macOS 14 or later. Sysbox and runc refuse it.
+| | Snapshot | Fork |
+| --- | --- | --- |
+| Source | a stopped sandbox | a running sandbox |
+| Copies | the files | the memory and the files |
+| New sandbox | starts with no processes | continues from the same moment |
+| Providers | all | gVisor, Firecracker, and vz on Apple silicon with macOS 14 or later; Sysbox and runc refuse it |

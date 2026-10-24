@@ -95,9 +95,9 @@ shard never falls back to a weaker mechanism.
 ## Secrets and network access
 
 A sandbox never holds a secret's value. It holds a placeholder instead, and the host proxy swaps in
-the real value in the headers of HTTPS requests to the destinations you granted. Without a network
-policy, a sandbox can reach the internet but not private networks. A policy adds ordered allow and
-deny rules.
+the real value in the headers of HTTPS requests to the destinations you granted. Code in the sandbox
+cannot leak a value it never sees. Without a network policy, a sandbox can reach the internet but
+not private networks. A policy adds ordered allow and deny rules.
 
 ## What shard is not
 

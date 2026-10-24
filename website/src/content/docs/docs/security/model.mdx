@@ -7,6 +7,8 @@ sidebar:
 
 import { Tabs, TabItem } from '@astrojs/starlight/components';
 
+shard assumes the code in a sandbox is hostile, and keeps the host, your credentials and your private networks out of its reach.
+
 Give a sandbox an API key that it cannot read, and let it reach only one host:
 
 <Tabs syncKey="lang">
@@ -152,7 +154,7 @@ A sandbox without a policy can reach the internet but nothing private. The host 
 - `127.0.0.0/8` and `100.64.0.0/10`
 - every other sandbox
 
-This floor applies under every policy, and no rule can open it. A policy is an ordered list of rules. The first rule that matches decides, and the host drops traffic that no rule allows.
+These drops are the egress floor. The floor applies under every policy, and no rule can open it. A policy is an ordered list of rules. The first rule that matches decides, and the host drops traffic that no rule allows.
 
 A sandbox with a policy or a secret sends its traffic on TCP ports 80 and 443 through a proxy on the host. The proxy judges each request by host name, and it also refuses a host that resolves to one of the host's own addresses.
 

@@ -116,11 +116,13 @@ If the daemon fails after the WebSocket of a command stream such as `shard exec`
 
 ## Error codes
 
+A later daemon may add a code, so a program must accept one it does not know.
+
 | Code | Status | When |
 | --- | --- | --- |
 | `invalid_request` | 400 | The body does not decode, a field does not validate, a named secret or policy is unknown, an image reference does not parse, or a disk does not fit: the host disk has no room for it, or the image or the snapshot cannot take its bound. Also `shard serve`, when the request line does not parse. |
 | `body_too_large` | 413 | A JSON body over 1 MiB. The daemon stops reading and closes the connection after it answers. |
-| `not_found` | 404 | No sandbox, snapshot, policy, secret, image or exec has the reference, or no route has the path. Also a create, start, resume or fork whose image files are no longer on the host. The message names the image by its digest, and `shard pull` brings it back. |
+| `not_found` | 404 | No sandbox, snapshot, policy, secret, image or exec has the reference, a file path does not exist in the sandbox, the sandbox forwards no such host port, or no route has the path. Also a create, start, resume or fork whose image files are no longer on the host. The message names the image by its digest, and `shard pull` brings it back. |
 | `sandbox_not_running` | 409 | Exec, run, pause or fork on a sandbox that is not running, that the provider no longer holds, or whose provider process does not answer. Also a kill on a paused sandbox, and a process attach that the sandbox stops under. |
 | `sandbox_not_stopped` | 409 | Start on a sandbox that is up. Remove without force on a sandbox that is up or paused. Snapshot create on a sandbox that is not stopped. |
 | `sandbox_not_paused` | 409 | Resume on a sandbox that is not paused. |
@@ -128,7 +130,7 @@ If the daemon fails after the WebSocket of a command stream such as `shard exec`
 | `sandbox_failed` | 409 | Any request except a get or a remove, on a sandbox whose create failed. The message carries the reason, and a remove frees the sandbox. |
 | `no_checkpoint` | 409 | Resume on a paused sandbox that has no saved state to resume. |
 | `unsupported` | 409 | The provider does not support the request, such as a pause on Sysbox. The message names the provider and the request. |
-| `in_use` | 409 | Remove a policy, secret or image that sandboxes hold, remove an image that snapshots hold, or change the placeholder of a secret that sandboxes hold. `holders` lists them. Also a second attach to one exec, without `holders`. |
+| `in_use` | 409 | Remove a policy, secret or image that sandboxes hold, remove an image that snapshots hold, or change the placeholder of a secret that sandboxes hold. `holders` lists them. Also a second attach to one exec, or a port forward whose host port is already bound, without `holders`. |
 | `name_taken` | 409 | A create or fork whose name another sandbox has, a snapshot create whose name another snapshot has, or a run whose name a running process of the sandbox has. |
 | `exec_exited` | 409 | Kill on an exec whose command ended. |
 | `exec_running` | 409 | Delete on an exec whose command still runs. |
