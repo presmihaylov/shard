@@ -275,6 +275,8 @@ with Shard() as shard:
 - [Run Docker inside a sandbox](https://useshards.com/docs/guides/docker/)
 - [Connect to a remote host](https://useshards.com/docs/guides/remote/)
 - [Run an agent's code in a sandbox](https://useshards.com/docs/guides/run-agent-code/)
+- [Run Claude Code in a sandbox](https://useshards.com/docs/guides/claude-code/)
+- [Run a browser-use agent in a sandbox](https://useshards.com/docs/guides/browser-agent/)
 - [Run a web service in a sandbox](https://useshards.com/docs/guides/web-service/)
 - [Give a sandbox an API key safely](https://useshards.com/docs/guides/api-key/)
 - [Lock down network access](https://useshards.com/docs/guides/network/)

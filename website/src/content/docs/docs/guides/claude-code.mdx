@@ -1,0 +1,74 @@
+---
+title: How to run Claude Code in a sandbox?
+description: Install Claude Code in a sandbox, give it an Anthropic key it never sees, and let it work with every permission and no way out.
+sidebar:
+  label: 'Run Claude Code'
+  order: 1.1
+---
+
+Store your Anthropic key on the host, make a sandbox that reaches only Anthropic and npm, and give Claude Code a task:
+
+```sh
+printf '%s' "$ANTHROPIC_API_KEY" | shard secret set --destination api.anthropic.com ANTHROPIC_API_KEY
+shard policy create --allow api.anthropic.com --allow registry.npmjs.org --deny any claude
+shard create --name claude --memory 2GiB --user node --workdir /home/node \
+  --secret ANTHROPIC_API_KEY --policy claude \
+  --env CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC=1 node:22
+shard exec --user root claude npm install -g @anthropic-ai/claude-code
+shard exec claude claude -p --dangerously-skip-permissions \
+  "Write fizzbuzz.js that prints FizzBuzz from 1 to 15, then run it with node"
+shard cp claude:/home/node/fizzbuzz.js ./fizzbuzz.js
+```
+
+Claude Code writes the file, runs it, and prints a summary. The last command copies the file out to your machine.
+
+## Why it is safe to skip permissions
+
+`--dangerously-skip-permissions` lets Claude Code run any command without asking. On your laptop that is a risk. In the sandbox, the worst it can do is break the sandbox:
+
+- **It sees no key.** The sandbox holds `mock-ANTHROPIC_API_KEY`. The host puts the real key into each HTTPS request to `api.anthropic.com`, outside the sandbox. See [Give a sandbox an API key](/docs/guides/api-key/).
+- **It reaches two hosts.** The policy allows Anthropic's API and the npm registry, and denies the rest. `shard policy logs claude` shows each request it made.
+- **It touches no file of yours.** It sees the image's files and what you copy in.
+
+Claude Code refuses `--dangerously-skip-permissions` as root, so the sandbox runs commands as the image's `node` user. The install runs as root because it writes to `/usr/local`.
+
+`CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC=1` turns off telemetry and error reports, so the policy needs no host for them.
+
+## Work on your code
+
+Copy a project in, let Claude Code change it, and copy the result back:
+
+```sh
+shard cp ./myapp claude:/home/node/
+shard exec --workdir /home/node/myapp claude claude -p --dangerously-skip-permissions "Fix the failing tests"
+shard cp claude:/home/node/myapp ./myapp-fixed
+```
+
+If the agent needs more hosts, such as `github.com` or `pypi.org`, add them to the policy. Run `shard policy create` again with the same name, and the running sandbox gets the new rules at once.
+
+## Use it interactively
+
+```sh
+shard shell claude
+claude
+```
+
+On the first start, Claude Code asks whether to use the API key it found in the environment. Say yes: the key it found is the placeholder.
+
+## Try two approaches at once
+
+Fork the sandbox once Claude Code is installed, and give each copy a different prompt:
+
+```sh
+shard fork --name claude-b claude
+shard exec claude claude -p --dangerously-skip-permissions "Solve it with a loop"
+shard exec claude-b claude -p --dangerously-skip-permissions "Solve it with recursion"
+```
+
+gVisor, Firecracker and vz support `fork`. See [Fork a sandbox to try two paths](/docs/guides/fork/).
+
+## Clean up
+
+```sh
+shard remove --force claude
+```
