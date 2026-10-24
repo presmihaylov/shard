@@ -302,10 +302,10 @@ with Shard() as shard:
 - [Run Docker inside a sandbox](https://useshards.com/docs/guides/docker/)
 - [Connect to a remote host](https://useshards.com/docs/guides/remote/)
 - [Run an agent's code in a sandbox](https://useshards.com/docs/guides/run-agent-code/)
+- [Run a web service in a sandbox](https://useshards.com/docs/guides/web-service/)
 - [Give a sandbox an API key safely](https://useshards.com/docs/guides/api-key/)
 - [Lock down network access](https://useshards.com/docs/guides/network/)
 - [Fork a sandbox to try two paths](https://useshards.com/docs/guides/fork/)
-- [Keep state between commands](https://useshards.com/docs/guides/keep-state/)
 - [Move files in and out](https://useshards.com/docs/guides/files/)
 
 **[All docs →](https://useshards.com/docs)**
