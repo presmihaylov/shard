@@ -3,7 +3,7 @@
 
   <br><br>
 
-  <a href="https://github.com/presmihaylov/shard/releases"><img alt="Release" src="https://img.shields.io/github/v/release/presmihaylov/shard?filter=v*&style=for-the-badge&labelColor=0a1722&color=2d81be&label=release"></a>
+  <a href="https://github.com/presmihaylov/shard/releases/latest"><img alt="Release" src="https://img.shields.io/github/v/release/presmihaylov/shard?filter=v*&style=for-the-badge&labelColor=0a1722&color=2d81be&label=release"></a>
   <a href="https://www.npmjs.com/package/useshards"><img alt="npm" src="https://img.shields.io/npm/v/useshards?style=for-the-badge&labelColor=0a1722&color=2d81be&label=npm"></a>
   <a href="https://pypi.org/project/useshards/"><img alt="PyPI" src="https://img.shields.io/pypi/v/useshards?style=for-the-badge&labelColor=0a1722&color=2d81be&label=pypi"></a>
   <a href="LICENSE"><img alt="License" src="https://img.shields.io/github/license/presmihaylov/shard?style=for-the-badge&labelColor=0a1722&color=2d81be"></a>
