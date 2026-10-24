@@ -1,17 +1,19 @@
 <div align="center">
-  <a href="https://useshards.com">
-    <picture>
-      <source media="(prefers-color-scheme: dark)" srcset=".github/assets/logo-dark.svg">
-      <img alt="shard" src=".github/assets/logo-light.svg" width="260">
-    </picture>
-  </a>
+  <a href="https://useshards.com"><img alt="shard: sandboxes for agents, on your own hardware" src=".github/assets/banner.svg" width="100%"></a>
 
-  <p><b>Sandboxes for agents, on your own hardware.</b></p>
+  <br><br>
 
-  <a href="https://github.com/presmihaylov/shard/releases"><img alt="Release" src="https://img.shields.io/github/v/release/presmihaylov/shard?filter=v*&style=for-the-badge&color=1f6aa5&label=release"></a>
-  <a href="https://www.npmjs.com/package/useshards"><img alt="npm" src="https://img.shields.io/npm/v/useshards?style=for-the-badge&color=1f6aa5&label=npm"></a>
-  <a href="https://pypi.org/project/useshards/"><img alt="PyPI" src="https://img.shields.io/pypi/v/useshards?style=for-the-badge&color=1f6aa5&label=pypi"></a>
-  <a href="LICENSE"><img alt="License" src="https://img.shields.io/github/license/presmihaylov/shard?style=for-the-badge&color=1f6aa5"></a>
+  <a href="https://github.com/presmihaylov/shard/releases"><img alt="Release" src="https://img.shields.io/github/v/release/presmihaylov/shard?filter=v*&style=for-the-badge&labelColor=0a1722&color=2d81be&label=release"></a>
+  <a href="https://www.npmjs.com/package/useshards"><img alt="npm" src="https://img.shields.io/npm/v/useshards?style=for-the-badge&labelColor=0a1722&color=2d81be&label=npm"></a>
+  <a href="https://pypi.org/project/useshards/"><img alt="PyPI" src="https://img.shields.io/pypi/v/useshards?style=for-the-badge&labelColor=0a1722&color=2d81be&label=pypi"></a>
+  <a href="LICENSE"><img alt="License" src="https://img.shields.io/github/license/presmihaylov/shard?style=for-the-badge&labelColor=0a1722&color=2d81be"></a>
+
+  <p>
+    <a href="https://useshards.com"><b>Website</b></a> &nbsp;·&nbsp;
+    <a href="https://useshards.com/docs"><b>Docs</b></a> &nbsp;·&nbsp;
+    <a href="https://useshards.com/docs/sdks/typescript/"><b>TypeScript SDK</b></a> &nbsp;·&nbsp;
+    <a href="https://useshards.com/docs/sdks/python/"><b>Python SDK</b></a>
+  </p>
 </div>
 
 <br>
@@ -20,19 +22,68 @@
 run commands in it, pause it, snapshot it, or fork it into a copy. The CLI, the REST API and the
 TypeScript and Python SDKs share one set of verbs.
 
-##
+<table>
+<tr>
+<td width="33%" valign="top">
+<img src=".github/assets/icon-isolation.svg" width="40" height="40" alt=""><br>
+<b>Pick your isolation</b><br>
+gVisor, Firecracker microVMs, macOS VMs, Sysbox or runc, behind the same commands.
+</td>
+<td width="33%" valign="top">
+<img src=".github/assets/icon-hardware.svg" width="40" height="40" alt=""><br>
+<b>Your own hardware</b><br>
+A Linux server or an Apple silicon Mac. No cloud account needed.
+</td>
+<td width="33%" valign="top">
+<img src=".github/assets/icon-fork.svg" width="40" height="40" alt=""><br>
+<b>Pause, resume, fork</b><br>
+Freeze a sandbox with its memory, pick it up later, or copy a running one.
+</td>
+</tr>
+<tr>
+<td width="33%" valign="top">
+<img src=".github/assets/icon-snapshot.svg" width="40" height="40" alt=""><br>
+<b>Snapshots</b><br>
+Save a stopped sandbox's files and start new sandboxes from them.
+</td>
+<td width="33%" valign="top">
+<img src=".github/assets/icon-credentials.svg" width="40" height="40" alt=""><br>
+<b>Credential brokering</b><br>
+The sandbox sees a placeholder, and the host puts the real key into HTTPS headers for the destinations you approve.
+</td>
+<td width="33%" valign="top">
+<img src=".github/assets/icon-egress.svg" width="40" height="40" alt=""><br>
+<b>Egress control</b><br>
+Allow and deny rules per sandbox. Private networks, cloud metadata included, are always blocked.
+</td>
+</tr>
+<tr>
+<td width="33%" valign="top">
+<img src=".github/assets/icon-processes.svg" width="40" height="40" alt=""><br>
+<b>Supervised processes</b><br>
+<code>shard run</code> keeps named processes alive, and the sandbox outlives them all.
+</td>
+<td width="33%" valign="top">
+<img src=".github/assets/icon-ports.svg" width="40" height="40" alt=""><br>
+<b>Ports</b><br>
+Forward a host port to a port inside a sandbox.
+</td>
+<td width="33%" valign="top">
+<img src=".github/assets/icon-api.svg" width="40" height="40" alt=""><br>
+<b>One API</b><br>
+The CLI and the SDKs speak to the same daemon, on this machine or over <code>shard serve</code>.
+</td>
+</tr>
+</table>
 
-- <img height="14" src="https://octicons-col.vercel.app/shield-check/1f6aa5">&nbsp;&nbsp;**Pick your isolation**: gVisor, Firecracker microVMs, macOS VMs, Sysbox or runc, behind the same commands.
-- <img height="14" src="https://octicons-col.vercel.app/server/1f6aa5">&nbsp;&nbsp;**Your own hardware**: a Linux server or an Apple silicon Mac. No cloud account needed.
-- <img height="14" src="https://octicons-col.vercel.app/git-branch/1f6aa5">&nbsp;&nbsp;**Pause, resume, fork**: freeze a sandbox with its memory, pick it up later, or copy a running one.
-- <img height="14" src="https://octicons-col.vercel.app/archive/1f6aa5">&nbsp;&nbsp;**Snapshots**: save a stopped sandbox's files and start new sandboxes from them.
-- <img height="14" src="https://octicons-col.vercel.app/key/1f6aa5">&nbsp;&nbsp;**Credential brokering**: the sandbox sees a placeholder, and the host puts the real key into HTTPS headers for the destinations you approve.
-- <img height="14" src="https://octicons-col.vercel.app/globe/1f6aa5">&nbsp;&nbsp;**Egress control**: allow and deny rules per sandbox. Private networks, cloud metadata included, are always blocked.
-- <img height="14" src="https://octicons-col.vercel.app/pulse/1f6aa5">&nbsp;&nbsp;**Supervised processes**: `shard run` keeps named processes alive, and the sandbox outlives them all.
-- <img height="14" src="https://octicons-col.vercel.app/plug/1f6aa5">&nbsp;&nbsp;**Ports**: forward a host port to a port inside a sandbox.
-- <img height="14" src="https://octicons-col.vercel.app/code/1f6aa5">&nbsp;&nbsp;**One API**: the CLI and the SDKs speak to the same daemon, on this machine or over `shard serve`.
+<p align="center">
+  <picture>
+    <source media="(prefers-color-scheme: dark)" srcset=".github/assets/lifecycle-dark.svg">
+    <img alt="run, stop, snapshot, pause and fork, one command each" src=".github/assets/lifecycle-light.svg" width="100%">
+  </picture>
+</p>
 
-## <img height="18" src="https://octicons-col.vercel.app/rocket/1f6aa5">&nbsp;&nbsp;Getting Started
+## <img height="18" src="https://octicons-col.vercel.app/rocket/2d81be">&nbsp;&nbsp;Getting Started
 
 #### Install the CLI
 
@@ -78,7 +129,7 @@ On a Mac, use `--provider vz`.
 > [!WARNING]
 > shard is pre-alpha. Commands, flags, the API and the SDKs can change in any release.
 
-## <img height="18" src="https://octicons-col.vercel.app/terminal/1f6aa5">&nbsp;&nbsp;CLI
+## <img height="18" src="https://octicons-col.vercel.app/terminal/2d81be">&nbsp;&nbsp;CLI
 
 #### Run a command
 
@@ -158,9 +209,9 @@ decision.
 > [!TIP]
 > Every command takes `--help`, with its options and an example.
 
-<a href="https://useshards.com/docs/reference/cli/"><img alt="CLI docs" src="https://img.shields.io/badge/CLI_docs-%E2%86%92-1f6aa5?style=flat-square"></a>
+<a href="https://useshards.com/docs/reference/cli/"><img alt="CLI docs" src="https://img.shields.io/badge/CLI_docs-%E2%86%92-2d81be?style=flat-square&labelColor=0a1722"></a>
 
-## <img height="18" src="https://octicons-col.vercel.app/package/1f6aa5">&nbsp;&nbsp;SDK
+## <img height="18" src="https://octicons-col.vercel.app/package/2d81be">&nbsp;&nbsp;SDK
 
 The SDKs talk to `shard serve`, the HTTP front that checks an API key and passes each request to the
 daemon. Answer `Yes` to `Set up the HTTP API?` in `shard setup`, then mint a key on the host, with
@@ -216,10 +267,10 @@ with Shard() as shard:
 
 </details>
 
-<a href="https://useshards.com/docs/sdks/typescript/"><img alt="TypeScript SDK docs" src="https://img.shields.io/badge/TypeScript_SDK-%E2%86%92-1f6aa5?style=flat-square"></a>
-<a href="https://useshards.com/docs/sdks/python/"><img alt="Python SDK docs" src="https://img.shields.io/badge/Python_SDK-%E2%86%92-1f6aa5?style=flat-square"></a>
+<a href="https://useshards.com/docs/sdks/typescript/"><img alt="TypeScript SDK docs" src="https://img.shields.io/badge/TypeScript_SDK-%E2%86%92-2d81be?style=flat-square&labelColor=0a1722"></a>
+<a href="https://useshards.com/docs/sdks/python/"><img alt="Python SDK docs" src="https://img.shields.io/badge/Python_SDK-%E2%86%92-2d81be?style=flat-square&labelColor=0a1722"></a>
 
-## <img height="18" src="https://octicons-col.vercel.app/book/1f6aa5">&nbsp;&nbsp;Guides
+## <img height="18" src="https://octicons-col.vercel.app/book/2d81be">&nbsp;&nbsp;Guides
 
 - [Run an agent's code in a sandbox](https://useshards.com/docs/guides/run-agent-code/)
 - [Give a sandbox an API key safely](https://useshards.com/docs/guides/api-key/)
@@ -232,9 +283,9 @@ with Shard() as shard:
 - [Run shard on a Mac](https://useshards.com/docs/guides/mac/)
 - [Run shard on a KVM host](https://useshards.com/docs/guides/kvm/)
 
-<a href="https://useshards.com/docs"><img alt="All docs" src="https://img.shields.io/badge/All_docs-%E2%86%92-1f6aa5?style=flat-square"></a>
+<a href="https://useshards.com/docs"><img alt="All docs" src="https://img.shields.io/badge/All_docs-%E2%86%92-2d81be?style=flat-square&labelColor=0a1722"></a>
 
-## <img height="18" src="https://octicons-col.vercel.app/git-pull-request/1f6aa5">&nbsp;&nbsp;Contributing
+## <img height="18" src="https://octicons-col.vercel.app/git-pull-request/2d81be">&nbsp;&nbsp;Contributing
 
 Read [AGENTS.md](AGENTS.md) for the code layout and contribution rules. Install the `golangci-lint`
 version that [CI](.github/workflows/ci.yml) pins, then run `make check` before each commit. It runs
@@ -242,6 +293,6 @@ the format check, vet, lint, the unit tests, and the e2e script's own tests. Tes
 runtime, namespaces, or KVM carry the `integration` build tag and run on a host that has them. See
 [the release guide](docs/release.md) for the platform checks.
 
-## <img height="18" src="https://octicons-col.vercel.app/law/1f6aa5">&nbsp;&nbsp;License
+## <img height="18" src="https://octicons-col.vercel.app/law/2d81be">&nbsp;&nbsp;License
 
 [Apache-2.0](LICENSE). See [NOTICE](NOTICE) for attribution.
