@@ -1,5 +1,11 @@
 # useshards-python
 
+## 0.1.6
+
+### Patch Changes
+
+- bfd146d: The README covers install, connecting to a server, a quickstart and a link to the docs, which are the reference for every verb.
+
 ## 0.1.5
 
 ### Patch Changes
