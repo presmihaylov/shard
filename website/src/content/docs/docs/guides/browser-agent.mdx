@@ -6,26 +6,26 @@ sidebar:
   order: 1.2
 ---
 
-[browser-use](https://github.com/browser-use/browser-use) drives a real Chromium. Here Claude Code is the agent: it calls browser-use as an MCP server, so there is no agent code to write. In a sandbox, the browser and the agent run away from your machine, and the host decides which sites they reach.
+[browser-use](https://github.com/browser-use/browser-use) gives a coding agent a real Chromium. Here Claude Code is the agent: it drives the browser through the `browser-use` command, so there is no agent code to write. In a sandbox, the browser and the agent run away from your machine, and the host decides which sites they reach.
 
 ## Build the base once
 
-Install browser-use, Chromium and Claude Code in a sandbox with no policy, then save its files as a snapshot:
+Install Chromium, browser-use and Claude Code in a sandbox with no policy, then save its files as a snapshot:
 
 ```sh
-shard create --name browser-base --memory 4GiB python:3.12
-shard exec browser-base sh -c 'apt-get update && apt-get install -y libnss3-tools && useradd -m agent'
-shard exec browser-base pip install "browser-use[cli]"
-shard exec browser-base python -m playwright install-deps chromium
-shard exec --user agent browser-base python -m playwright install chromium
+shard create --name browser-base --memory 2GiB python:3.12
+shard exec browser-base sh -c 'apt-get update -qq && apt-get install -y -qq chromium libnss3-tools && useradd -m agent'
+shard exec browser-base pip install browser-use
 shard exec --user agent browser-base sh -c 'curl -fsSL https://claude.ai/install.sh | bash'
-shard exec --user agent browser-base /home/agent/.local/bin/claude mcp add -s user browser-use -- browser-use --mcp
+shard exec --user agent browser-base sh -c 'mkdir -p ~/.claude/skills/browser-use && browser-use skill > ~/.claude/skills/browser-use/SKILL.md'
 shard stop browser-base
 shard snapshot create --name browser-use browser-base
 shard remove browser-base
 ```
 
 A sandbox with no policy reaches the internet, so the installers can fetch from wherever they need. Every agent then starts from the snapshot and skips the install.
+
+`browser-use skill` prints the instructions that teach Claude Code the `browser-use` command. Saved under `~/.claude/skills`, Claude Code loads them on every start.
 
 The agent runs as the `agent` user, because Claude Code refuses `--dangerously-skip-permissions` as root.
 
@@ -36,12 +36,12 @@ Store your Anthropic key, allow Anthropic's API and Wikipedia with its images, a
 ```sh
 printf '%s' "$ANTHROPIC_API_KEY" | shard secret set --destination api.anthropic.com ANTHROPIC_API_KEY
 shard policy create --allow api.anthropic.com --allow suffix:wikipedia.org --allow suffix:wikimedia.org --deny any browse
-shard create --name browser-use-sbx --memory 4GiB --snapshot browser-use \
+shard create --name browser-use-sbx --memory 2GiB --snapshot browser-use \
   --user agent --workdir /home/agent \
   --secret ANTHROPIC_API_KEY --policy browse \
   --env PATH=/home/agent/.local/bin:/usr/local/bin:/usr/bin:/bin \
   --env CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC=1 --env DISABLE_AUTOUPDATER=1 \
-  --env ANONYMIZED_TELEMETRY=false --env IN_DOCKER=true
+  --env ANONYMIZED_TELEMETRY=false --env BU_CDP_URL=http://127.0.0.1:9222
 ```
 
 The host reads HTTPS with its own certificate authority, and Chromium on Linux trusts only its own certificate store. Add the host's certificate to that store with a short script:
@@ -58,22 +58,26 @@ shard cp trust-proxy.sh browser-use-sbx:/home/agent/trust-proxy.sh
 shard exec browser-use-sbx sh /home/agent/trust-proxy.sh
 ```
 
-Give Claude Code a task:
+Start Chromium as a supervised process, and give Claude Code a task:
 
 ```sh
+shard run browser-use-sbx --name chromium -- chromium --headless --no-sandbox \
+  --remote-debugging-port=9222 --user-data-dir=/home/agent/.chromium about:blank
 shard exec browser-use-sbx claude -p --dangerously-skip-permissions \
-  "Use the browser to open en.wikipedia.org and find the year the Eiffel Tower opened"
+  "Use the browser-use CLI to open en.wikipedia.org and find the year the Eiffel Tower opened"
 ```
 
-Claude Code opens Wikipedia through browser-use, finds the answer and prints it. To work with it interactively, run `claude` in `shard shell browser-use-sbx` instead.
+Claude Code opens Wikipedia through browser-use, reads the article and prints `1889`. `BU_CDP_URL` points browser-use at the Chromium that `shard run` keeps running, so every task reuses one browser. To work with it interactively, run `claude` in `shard shell browser-use-sbx` instead.
 
 ## What the sandbox stops
 
 - **The key stays on the host.** The agent holds `mock-ANTHROPIC_API_KEY`, and the host puts the real key into each request to `api.anthropic.com`. A page that tricks the agent into printing its environment gets only the placeholder. See [Give a sandbox an API key](/docs/guides/api-key/).
-- **The browser reaches only the sites you allow.** A link to any other site fails to resolve. `shard policy logs browser-use-sbx` shows every page it tried, allowed or denied.
+- **The browser reaches only the sites you allow.** A link to any other site fails. `shard policy logs browser-use-sbx` shows every host it tried, allowed or denied.
 - **Your machine is out of reach.** The browser has no cookies, sessions or files of yours, and nothing private on your network.
 
-`IN_DOCKER=true` makes browser-use start Chromium without its own sandbox. The shard sandbox is the boundary instead.
+`--no-sandbox` starts Chromium without its own sandbox, which needs privileges a sandbox does not have. The shard sandbox is the boundary instead.
+
+The policy logs also show denied calls to Google hosts, such as `accounts.google.com` and `update.googleapis.com`. Chromium makes them in the background, and the pages load without them.
 
 To let the agent browse more sites, add them to the policy. Run `shard policy create` again with the same name, and the running sandbox gets the new rules at once. `--allow any` opens the whole internet while the key stays on the host.
 
@@ -84,4 +88,5 @@ See [Run Claude Code in a sandbox](/docs/guides/claude-code/) for more on Claude
 ```sh
 shard remove --force browser-use-sbx
 shard snapshot remove browser-use
+shard policy remove browse
 ```
