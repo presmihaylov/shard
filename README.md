@@ -178,49 +178,13 @@ A snapshot holds files, not memory. It outlives the sandbox it came from.
 #### Secrets and network policy
 
 ```sh
-# Store your GitHub token on the host, usable only for api.github.com
+# Keep the token on the host, usable only for api.github.com
 printf '%s' "$GITHUB_TOKEN" | shard secret set --destination api.github.com GITHUB_TOKEN
-
-# Allow api.github.com and nothing else
 shard policy create --allow api.github.com github-only
-
-# Start a sandbox with the secret and the policy
 shard create --name agent --secret GITHUB_TOKEN --policy github-only alpine:3.20
-
-# The sandbox only ever sees a placeholder
-shard exec agent sh -c 'echo $GITHUB_TOKEN'
-# mock-GITHUB_TOKEN
-
-# Yet an authenticated call to GitHub works: the host swaps in the real token
-shard exec agent sh -c 'wget -qO- --header "Authorization: Bearer $GITHUB_TOKEN" https://api.github.com/repos/torvalds/linux | grep "\"full_name\""'
-#   "full_name": "torvalds/linux",
-
-# Any other destination is blocked
-shard exec agent wget -qO- https://example.com
-# fails: example.com is not in the policy
-
-# See every allow and deny decision
-shard policy logs agent
 ```
 
-The sandbox sees `mock-GITHUB_TOKEN`. In HTTPS request headers to `api.github.com`, the host puts the real value in its place. The policy denies every other destination, and `shard policy logs` shows each decision.
-
-#### Inspect
-
-```sh
-# Start a sandbox to look at
-shard create --name web --memory 512MiB python:3.12
-
-# Every sandbox on this host, one per line, with its state (running, paused, stopped)
-shard list
-
-# Everything about one sandbox: its image, provider, resources, state,
-# forwarded ports, and the secrets and policy attached to it
-shard inspect web
-
-# What this host supports: its providers, and which verbs (pause, fork) each allows
-shard capabilities
-```
+The sandbox sees `mock-GITHUB_TOKEN`. In HTTPS request headers to `api.github.com`, the host swaps in the real value. Every other destination is denied, and `shard policy logs agent` shows each decision.
 
 <picture>
   <source media="(prefers-color-scheme: dark)" srcset=".github/assets/box-tip-dark.svg">
