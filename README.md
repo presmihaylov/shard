@@ -1,5 +1,5 @@
 <div align="center">
-  <a href="https://useshards.com"><img alt="shard: sandboxes for agents, on your own hardware" src=".github/assets/shard-hero.svg" width="100%"></a>
+  <a href="https://useshards.com"><img alt="shard: sandboxes for agents, on your own hardware" src=".github/assets/hero-centered.svg" width="100%"></a>
 
   <br><br>
 
