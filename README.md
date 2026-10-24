@@ -22,59 +22,17 @@
 run commands in it, pause it, snapshot it, or fork it into a copy. The CLI, the REST API and the
 TypeScript and Python SDKs share one set of verbs.
 
-<table>
-<tr>
-<td width="33%" valign="top">
-<img src=".github/assets/icon-isolation.svg" width="40" height="40" alt=""><br>
-<b>Pick your isolation</b><br>
-gVisor, Firecracker microVMs, macOS VMs, Sysbox or runc, behind the same commands.
-</td>
-<td width="33%" valign="top">
-<img src=".github/assets/icon-hardware.svg" width="40" height="40" alt=""><br>
-<b>Your own hardware</b><br>
-A Linux server or an Apple silicon Mac. No cloud account needed.
-</td>
-<td width="33%" valign="top">
-<img src=".github/assets/icon-fork.svg" width="40" height="40" alt=""><br>
-<b>Pause, resume, fork</b><br>
-Freeze a sandbox with its memory, pick it up later, or copy a running one.
-</td>
-</tr>
-<tr>
-<td width="33%" valign="top">
-<img src=".github/assets/icon-snapshot.svg" width="40" height="40" alt=""><br>
-<b>Snapshots</b><br>
-Save a stopped sandbox's files and start new sandboxes from them.
-</td>
-<td width="33%" valign="top">
-<img src=".github/assets/icon-credentials.svg" width="40" height="40" alt=""><br>
-<b>Credential brokering</b><br>
-The sandbox sees a placeholder, and the host puts the real key into HTTPS headers for the destinations you approve.
-</td>
-<td width="33%" valign="top">
-<img src=".github/assets/icon-egress.svg" width="40" height="40" alt=""><br>
-<b>Egress control</b><br>
-Allow and deny rules per sandbox. Private networks, cloud metadata included, are always blocked.
-</td>
-</tr>
-<tr>
-<td width="33%" valign="top">
-<img src=".github/assets/icon-processes.svg" width="40" height="40" alt=""><br>
-<b>Supervised processes</b><br>
-<code>shard run</code> keeps named processes alive, and the sandbox outlives them all.
-</td>
-<td width="33%" valign="top">
-<img src=".github/assets/icon-ports.svg" width="40" height="40" alt=""><br>
-<b>Ports</b><br>
-Forward a host port to a port inside a sandbox.
-</td>
-<td width="33%" valign="top">
-<img src=".github/assets/icon-api.svg" width="40" height="40" alt=""><br>
-<b>One API</b><br>
-The CLI and the SDKs speak to the same daemon, on this machine or over <code>shard serve</code>.
-</td>
-</tr>
-</table>
+<p>
+<img src=".github/assets/icon-isolation.svg" width="22" height="22" align="top" alt="">&nbsp;&nbsp;<b>Pick your isolation</b>: gVisor, Firecracker microVMs, macOS VMs, Sysbox or runc, behind the same commands.<br><br>
+<img src=".github/assets/icon-hardware.svg" width="22" height="22" align="top" alt="">&nbsp;&nbsp;<b>Your own hardware</b>: a Linux server or an Apple silicon Mac. No cloud account needed.<br><br>
+<img src=".github/assets/icon-fork.svg" width="22" height="22" align="top" alt="">&nbsp;&nbsp;<b>Pause, resume, fork</b>: freeze a sandbox with its memory, pick it up later, or copy a running one.<br><br>
+<img src=".github/assets/icon-snapshot.svg" width="22" height="22" align="top" alt="">&nbsp;&nbsp;<b>Snapshots</b>: save a stopped sandbox's files and start new sandboxes from them.<br><br>
+<img src=".github/assets/icon-credentials.svg" width="22" height="22" align="top" alt="">&nbsp;&nbsp;<b>Credential brokering</b>: the sandbox sees a placeholder, and the host puts the real key into HTTPS headers for the destinations you approve.<br><br>
+<img src=".github/assets/icon-egress.svg" width="22" height="22" align="top" alt="">&nbsp;&nbsp;<b>Egress control</b>: allow and deny rules per sandbox. Private networks, cloud metadata included, are always blocked.<br><br>
+<img src=".github/assets/icon-processes.svg" width="22" height="22" align="top" alt="">&nbsp;&nbsp;<b>Supervised processes</b>: <code>shard run</code> keeps named processes alive, and the sandbox outlives them all.<br><br>
+<img src=".github/assets/icon-ports.svg" width="22" height="22" align="top" alt="">&nbsp;&nbsp;<b>Ports</b>: forward a host port to a port inside a sandbox.<br><br>
+<img src=".github/assets/icon-api.svg" width="22" height="22" align="top" alt="">&nbsp;&nbsp;<b>One API</b>: the CLI and the SDKs speak to the same daemon, on this machine or over <code>shard serve</code>.
+</p>
 
 <p align="center">
   <picture>
