@@ -1,35 +1,30 @@
 # useshards
 
-The TypeScript SDK for [shard](https://github.com/presmihaylov/shard), the sandbox manager.
+The TypeScript SDK for [shard](https://github.com/presmihaylov/shard), the sandbox manager. Create
+sandboxes on a shard host, run commands and processes in them, move files, forward ports, and
+snapshot, fork or pause them.
+
+[Docs](https://useshards.com/docs/sdks/typescript/) ·
+[Python SDK](https://github.com/presmihaylov/shard/tree/main/sdks/python) ·
+[Changelog](https://github.com/presmihaylov/shard/blob/main/sdks/typescript/CHANGELOG.md)
+
+## Install
 
 ```sh
 npm install useshards
 ```
 
-To run the code on `main` instead, build it from a checkout of this repository:
-
-```sh
-git clone https://github.com/presmihaylov/shard.git
-cd shard/sdks/typescript
-npm install && npm run build
-```
-
-To use that build in another project, run `npm install /path/to/shard/sdks/typescript` there.
-
-Node 20.3 or later. The one runtime dependency is `openapi-fetch`.
-
 ## Connect
 
-The SDK talks to `shard serve` over `https`, or `http`, which sends the key unencrypted. Mint a key on the host with `shard tokens mint`, then:
+Point the SDK at your shard server and its API key:
 
-```
+```sh
 export SHARD_REMOTE=https://shard.example.com
-export SHARD_API_KEY=<the token>
+export SHARD_API_KEY=<the API key>
 ```
 
-An option beats the environment: `new Shard({ remote, apiKey })`. `caFile` (or `SHARD_CA_FILE`) trusts
-a private CA, and an `http` remote refuses one. Each client on an `http` remote emits one Node warning,
-in the CLI's words.
+Or pass them in code: `new Shard({ remote, apiKey })`. No server yet? [Connect to a remote host](https://useshards.com/docs/guides/remote/) sets one up and
+gives you the key.
 
 ## Quickstart
 
@@ -38,82 +33,22 @@ import { Shard } from "useshards";
 
 const shard = new Shard();
 const sandbox = await shard.create({ image: "docker.io/library/alpine:3" });
-try {
-  const result = await sandbox.exec(["uname", "-sr"]);
-  console.log(result.exitCode, result.stdout);
 
-  await sandbox.files.write("/tmp/hello.txt", "hello\n");
-  console.log((await sandbox.exec("cat /tmp/hello.txt")).stdout);
-} finally {
-  await sandbox.remove({ force: true });
-  shard.close();
-}
+const result = await sandbox.exec(["uname", "-sr"]);
+console.log(result.exitCode, result.stdout);
+
+await sandbox.files.write("/tmp/hello.txt", "hello\n");
+console.log((await sandbox.exec("cat /tmp/hello.txt")).stdout);
+
+await sandbox.remove({ force: true });
+shard.close();
 ```
 
-`examples/quickstart.ts` has it in full, with a background command and a supervised process. Set
-`SHARD_REMOTE` and `SHARD_API_KEY`, then run these commands from `sdks/typescript`:
+## Docs
 
-```sh
-npm install && npm run build
-npx tsx examples/quickstart.ts
-```
-
-## What to know
-
-- **`create()` runs no command.** It returns a running sandbox, or one in state `failed` with
-  `info.failedReason`. Run commands in it with `exec()`.
-- **A sandbox outlives its processes.** `sandbox.run(command, { name, restart })` starts a named
-  process that shard-init supervises and returns a `Process`, whose restart policy defaults to
-  `unless-stopped`. `processes.list()` and `processes.get(name)` find them again; `wait()`, `logs()`,
-  `followLogs()` and `kill()` act on one. When a process exits or is killed, the sandbox stays
-  running, so you can still exec into it. Only `stop()` or `remove()` ends it.
-- **A string command runs under `/bin/sh -c`.** An array runs as it is.
-- **`exec(command, { background: true })` returns a `Command`.** `wait()`, `kill()`, `writeStdin()`,
-  `closeStdin()` and `resize()` act on it. `commands.get(id)` finds it again from another client.
-- **An abort never kills the remote command.** An `AbortSignal` ends only this client's wait and
-  lets go of the stream. The command runs on until it exits or you call `kill()`.
-- **Output may hold only its end.** A result keeps the newest 8 MiB of stdout and stderr together
-  (`outputLimitBytes`, 0 keeps none). `onStdout` and `onStderr` see every chunk as it arrives.
-  `result.lostBytes` is different: it counts output the daemon dropped before any client read it.
-  A process's `logs()` is bounded on the host too, so a long run may hold only its end.
-- **Files stream.** `files.download()` writes to a temporary file and renames it at the end, so a
-  large file never sits in memory. `files.upload()` sends a local file with its length.
-  `uploadDir()` and `downloadDir()` move a whole tree as a tar.
-- **A forward carries a host port to the sandbox's own 127.0.0.1.** `sandbox.ports.add(9000, 8000)`
-  listens on the host's 127.0.0.1:9000, or on every interface with `{ public: true }`. A running sandbox
-  listens at once, any other from its next start. `ports.list()`, `ports.remove(9000)` and
-  `shard.ports()` read and end them, and `create({ ports })` forwards from the first start.
-- **A verb the provider lacks throws `UnsupportedError`.** `shard.capabilities()` says which of the
-  nine lifecycle verbs the daemon's provider supports (create, start, stop, remove, pause, resume,
-  fork, snapshot and port), and whether it gives swap, before you call them.
-
-## Lists
-
-`shard.list()` returns `{ sandboxes, warnings }`. `shard.secrets.list()` returns
-`{ secrets, warnings }`. The warnings name entries the daemon could not read. Both lists collect
-warnings from every page, keeping each exact text once in first-seen order. Check them before you
-treat the result as complete. Other lists return arrays.
-
-## Errors
-
-`ShardError` is the base of every error below, which covers the daemon, the transport and the settings. A bad
-local argument throws the native error instead: an `upload` of a missing file throws `ENOENT`, and
-`create()` with neither an image nor a snapshot throws `TypeError`.
-
-| Error | When |
-|---|---|
-| `ConfigurationError` | A setting is missing or refused. The message never shows the API key, and names a CA file path or the remote when that is what to fix. |
-| `ShardConnectionError` | The daemon is unreachable, or a stream ended before the command did. |
-| `CommandNotStartedError` | The command never ran, as when its binary does not exist. |
-| `APIError` | The daemon refused the request: `AuthenticationError` (401), `PermissionDeniedError` (403), `NotFoundError` (404), `InvalidRequestError` (400, 413), `ConflictError` (409), `UnsupportedError`, `ServerError` (5xx). An exec past the running-exec bound is a plain `APIError` with status 429 and code `exec_limit`. |
-
-`ProtocolError` is an answer the SDK cannot read, `UnknownLengthError` an upload of unknown size or
-one whose source changed size while it was sent, and `UnsafeArchiveError` a `downloadDir` tar entry
-the SDK refuses to land, as one outside the destination, named by `entry` and `reason`. A non-zero
-exit code is not an error. Read `result.exitCode`.
-
-An `APIError` can carry `holders`, the sandbox ids that prevent an operation such as secret removal.
-The property is `undefined` when the error has no holders field.
+[The TypeScript SDK docs](https://useshards.com/docs/sdks/typescript/) cover the rest: sandboxes,
+commands, processes, files, ports, secrets, policies, snapshots and
+[errors](https://useshards.com/docs/sdks/errors/).
 
 ## License
 
