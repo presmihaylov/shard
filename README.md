@@ -20,10 +20,10 @@
 
 <p><b>shard runs sandboxes for AI agents on your own hardware.</b></p>
 
-<p>A sandbox is an isolated computer where an agent can install packages, run code and break things without touching anything else. You choose how strong the walls are:</p>
+<p>A sandbox is an isolated computer where an agent can install packages, run code and break things without touching anything else. You choose the isolation you want based on your needs:</p>
 
 <ul>
-<li><b>Containers</b> for speed</li>
+<li><b>Containers</b> for speed and resource constraints</li>
 <li><b>MicroVMs</b> when you need a hard boundary</li>
 </ul>
 
