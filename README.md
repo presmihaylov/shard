@@ -30,16 +30,16 @@
 <p>Either way, it's the same commands and API, on a Linux server or a Mac Mini.</p>
 
 <p>
-<img src=".github/assets/icon-sandbox.svg" width="22" height="22" align="top" alt="">&nbsp;&nbsp;<b>Pick your isolation</b>: gVisor, Firecracker microVMs, macOS VMs, Sysbox or runc, behind the same commands.<br>
-<img src=".github/assets/icon-hardware.svg" width="22" height="22" align="top" alt="">&nbsp;&nbsp;<b>Your own hardware</b>: a Linux server or a Mac Mini. No cloud account needed.<br>
-<img src=".github/assets/icon-fork.svg" width="22" height="22" align="top" alt="">&nbsp;&nbsp;<b>Pause, resume, fork</b>: freeze a sandbox with its memory, pick it up later, or copy a running one.<br>
-<img src=".github/assets/icon-snapshot.svg" width="22" height="22" align="top" alt="">&nbsp;&nbsp;<b>Snapshots</b>: save a stopped sandbox's files and start new sandboxes from them.<br>
-<img src=".github/assets/icon-credentials.svg" width="22" height="22" align="top" alt="">&nbsp;&nbsp;<b>Credential brokering</b>: the sandbox sees a placeholder, and the host puts the real key into HTTPS headers for the destinations you approve.<br>
-<img src=".github/assets/icon-egress.svg" width="22" height="22" align="top" alt="">&nbsp;&nbsp;<b>Egress control</b>: you pick which hosts a sandbox is allowed to talk to.<br>
-<img src=".github/assets/icon-processes.svg" width="22" height="22" align="top" alt="">&nbsp;&nbsp;<b>Long-running processes</b>: keep services up, with restarts and health checks built in.<br>
-<img src=".github/assets/icon-ports.svg" width="22" height="22" align="top" alt="">&nbsp;&nbsp;<b>Expose ports</b>: running a web server, API or preview app in a sandbox? Map it to a port on the host and it's reachable from the internet.<br>
-<img src=".github/assets/icon-api.svg" width="22" height="22" align="top" alt="">&nbsp;&nbsp;<b>One API</b>: the CLI and the SDKs speak to the same daemon, on this machine or over <code>shard serve</code>.<br>
-<img src=".github/assets/icon-sdks.svg" width="22" height="22" align="top" alt="">&nbsp;&nbsp;<b>SDKs</b>: TypeScript and Python, with the same verbs as the CLI.
+<img src=".github/assets/icon-sandbox.svg" width="22" height="28" align="top" alt="">&nbsp;&nbsp;<b>Pick your isolation</b>: gVisor, Firecracker microVMs, macOS VMs, Sysbox or runc, behind the same commands.<br>
+<img src=".github/assets/icon-hardware.svg" width="22" height="28" align="top" alt="">&nbsp;&nbsp;<b>Your own hardware</b>: a Linux server or a Mac Mini. No cloud account needed.<br>
+<img src=".github/assets/icon-fork.svg" width="22" height="28" align="top" alt="">&nbsp;&nbsp;<b>Pause, resume, fork</b>: freeze a sandbox with its memory, pick it up later, or copy a running one.<br>
+<img src=".github/assets/icon-snapshot.svg" width="22" height="28" align="top" alt="">&nbsp;&nbsp;<b>Snapshots</b>: save a stopped sandbox's files and start new sandboxes from them.<br>
+<img src=".github/assets/icon-credentials.svg" width="22" height="28" align="top" alt="">&nbsp;&nbsp;<b>Credential brokering</b>: the sandbox sees a placeholder, the host puts the real key into HTTPS headers for the destinations you approve.<br>
+<img src=".github/assets/icon-egress.svg" width="22" height="28" align="top" alt="">&nbsp;&nbsp;<b>Egress control</b>: you pick which hosts a sandbox is allowed to talk to.<br>
+<img src=".github/assets/icon-processes.svg" width="22" height="28" align="top" alt="">&nbsp;&nbsp;<b>Long-running processes</b>: keep services up, with restarts and health checks built in.<br>
+<img src=".github/assets/icon-ports.svg" width="22" height="28" align="top" alt="">&nbsp;&nbsp;<b>Expose ports</b>: running a web server, API or preview app in a sandbox? Map it to a port on the host and it's reachable from the internet.<br>
+<img src=".github/assets/icon-api.svg" width="22" height="28" align="top" alt="">&nbsp;&nbsp;<b>One API</b>: the CLI and the SDKs speak to the same daemon, on this machine or over <code>shard serve</code>.<br>
+<img src=".github/assets/icon-sdks.svg" width="22" height="28" align="top" alt="">&nbsp;&nbsp;<b>SDKs</b>: TypeScript and Python, with the same verbs as the CLI.
 </p>
 
 <p align="center">
