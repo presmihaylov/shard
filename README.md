@@ -1,52 +1,291 @@
+<div align="center">
+  <a href="https://useshards.com"><img alt="shard: sandboxes for agents, on your own hardware" src=".github/assets/banner.svg" width="100%"></a>
+
+  <br><br>
+
+  <a href="https://github.com/presmihaylov/shard/releases"><img alt="Release" src="https://img.shields.io/github/v/release/presmihaylov/shard?filter=v*&style=for-the-badge&labelColor=0a1722&color=2d81be&label=release"></a>
+  <a href="https://www.npmjs.com/package/useshards"><img alt="npm" src="https://img.shields.io/npm/v/useshards?style=for-the-badge&labelColor=0a1722&color=2d81be&label=npm"></a>
+  <a href="https://pypi.org/project/useshards/"><img alt="PyPI" src="https://img.shields.io/pypi/v/useshards?style=for-the-badge&labelColor=0a1722&color=2d81be&label=pypi"></a>
+  <a href="LICENSE"><img alt="License" src="https://img.shields.io/github/license/presmihaylov/shard?style=for-the-badge&labelColor=0a1722&color=2d81be"></a>
+
+  <p>
+    <a href="https://useshards.com"><b>Website</b></a> &nbsp;·&nbsp;
+    <a href="https://useshards.com/docs"><b>Docs</b></a> &nbsp;·&nbsp;
+    <a href="https://useshards.com/docs/sdks/typescript/"><b>TypeScript SDK</b></a> &nbsp;·&nbsp;
+    <a href="https://useshards.com/docs/sdks/python/"><b>Python SDK</b></a>
+  </p>
+</div>
+
+<br>
+
+**shard gives each agent an isolated sandbox on a machine you control.** Create one from an OCI image,
+run commands in it, pause it, snapshot it, or fork it into a copy. The CLI, the REST API and the
+TypeScript and Python SDKs share one set of verbs.
+
+<table>
+<tr>
+<td width="33%" valign="top">
+<img src=".github/assets/icon-isolation.svg" width="40" height="40" alt=""><br>
+<b>Pick your isolation</b><br>
+gVisor, Firecracker microVMs, macOS VMs, Sysbox or runc, behind the same commands.
+</td>
+<td width="33%" valign="top">
+<img src=".github/assets/icon-hardware.svg" width="40" height="40" alt=""><br>
+<b>Your own hardware</b><br>
+A Linux server or an Apple silicon Mac. No cloud account needed.
+</td>
+<td width="33%" valign="top">
+<img src=".github/assets/icon-fork.svg" width="40" height="40" alt=""><br>
+<b>Pause, resume, fork</b><br>
+Freeze a sandbox with its memory, pick it up later, or copy a running one.
+</td>
+</tr>
+<tr>
+<td width="33%" valign="top">
+<img src=".github/assets/icon-snapshot.svg" width="40" height="40" alt=""><br>
+<b>Snapshots</b><br>
+Save a stopped sandbox's files and start new sandboxes from them.
+</td>
+<td width="33%" valign="top">
+<img src=".github/assets/icon-credentials.svg" width="40" height="40" alt=""><br>
+<b>Credential brokering</b><br>
+The sandbox sees a placeholder, and the host puts the real key into HTTPS headers for the destinations you approve.
+</td>
+<td width="33%" valign="top">
+<img src=".github/assets/icon-egress.svg" width="40" height="40" alt=""><br>
+<b>Egress control</b><br>
+Allow and deny rules per sandbox. Private networks, cloud metadata included, are always blocked.
+</td>
+</tr>
+<tr>
+<td width="33%" valign="top">
+<img src=".github/assets/icon-processes.svg" width="40" height="40" alt=""><br>
+<b>Supervised processes</b><br>
+<code>shard run</code> keeps named processes alive, and the sandbox outlives them all.
+</td>
+<td width="33%" valign="top">
+<img src=".github/assets/icon-ports.svg" width="40" height="40" alt=""><br>
+<b>Ports</b><br>
+Forward a host port to a port inside a sandbox.
+</td>
+<td width="33%" valign="top">
+<img src=".github/assets/icon-api.svg" width="40" height="40" alt=""><br>
+<b>One API</b><br>
+The CLI and the SDKs speak to the same daemon, on this machine or over <code>shard serve</code>.
+</td>
+</tr>
+</table>
+
 <p align="center">
   <picture>
-    <source media="(prefers-color-scheme: dark)" srcset=".github/assets/logo-dark.svg">
-    <img alt="shard" src=".github/assets/logo-light.svg" width="300">
+    <source media="(prefers-color-scheme: dark)" srcset=".github/assets/lifecycle-dark.svg">
+    <img alt="run, stop, snapshot, pause and fork, one command each" src=".github/assets/lifecycle-light.svg" width="100%">
   </picture>
 </p>
 
-A single-node sandbox manager for Linux and macOS.
+## <img height="18" src="https://octicons-col.vercel.app/rocket/2d81be">&nbsp;&nbsp;Getting Started
 
-shard creates sandboxes from OCI images, runs commands in them, pauses and resumes their processes,
-and forks live sandboxes. One binary is both the CLI and the daemon, and it drives five providers:
-gVisor, Sysbox, runc, Firecracker, and Virtualization.framework.
+#### Install the CLI
 
-## Why shard?
+> ```sh
+> curl -fsSL https://useshards.com/install | sh
+> ```
 
-shard gives an agent a sandbox that outlives its commands. The agent's files stay between commands.
-You can save its memory while it is idle, or fork its current state to try another path. The same
-lifecycle commands work on a Linux server and on an Apple silicon Mac, and the host keeps control of
-secrets and outbound network policy. shard manages one host. It does not schedule a fleet.
+The installer puts `shard` in `~/.local/bin` and needs no root. When `~/.local/bin` is not on your
+`PATH`, it prints the line that adds it.
 
-## Quickstart
+#### Set up the host
 
-Install the CLI, then set up this machine as a sandbox host:
+> ```sh
+> shard setup
+> ```
 
-```sh
-curl -fsSL https://useshards.com/install | sh
-shard setup
+The installer offers to start this wizard for you. It checks the host, recommends a provider, and
+installs the provider's tools and the daemon. Nothing changes until you confirm. Answer `Yes` to start
+shard at boot. To script it:
+
+> ```sh
+> shard setup --local --provider gvisor --start-at-boot=true -y
+> ```
+
+On a Mac, use `--provider vz`.
+
+#### Install an SDK
+
+> ```sh
+> npm install useshards   # TypeScript
+> pip install useshards   # Python
+> ```
+
+> **Requirements**
+>
+> | Host | Providers |
+> | --- | --- |
+> | Linux, x86_64 | gVisor, Sysbox, runc, and Firecracker with `/dev/kvm` |
+> | macOS 14 or later, Apple silicon | vz |
+>
+> On Windows, run shard inside WSL 2. An Intel Mac can connect to a remote host, but cannot run sandboxes.
+
+> [!WARNING]
+> shard is pre-alpha. Commands, flags, the API and the SDKs can change in any release.
+
+## <img height="18" src="https://octicons-col.vercel.app/terminal/2d81be">&nbsp;&nbsp;CLI
+
+#### Run a command
+
+> ```sh
+> sudo shard create --name demo --memory 512MiB alpine:3.20
+> sudo shard exec demo echo hello
+> sudo shard shell demo
+> sudo shard remove --force demo
+> ```
+
+On Linux the daemon's socket belongs to root, so local commands take `sudo`. On a Mac the daemon runs
+as you, so leave it out. The rest of this page leaves `sudo` out.
+
+#### Supervised processes
+
+A sandbox starts with no processes. `shard run` starts a named one, which shard-init supervises and
+restarts when it exits.
+
+> ```sh
+> shard create --name web python:3.12
+> shard run web --name api -- python3 -m http.server 8000
+> shard ps web
+> shard logs web api
+> ```
+
+#### Forward a port
+
+> ```sh
+> shard port add web 9000:8000
+> curl http://127.0.0.1:9000
+> ```
+
+#### Pause, resume and fork
+
+> ```sh
+> shard pause web
+> shard resume web
+> shard fork --name web2 web
+> ```
+
+A fork copies the source's memory and files into a new sandbox, and the source keeps running. gVisor,
+Firecracker and vz support these three verbs. Sysbox and runc refuse them. `shard capabilities` says
+what your host supports.
+
+#### Snapshots
+
+> ```sh
+> shard stop web
+> shard snapshot create --name web-base web
+> shard create --name web3 --snapshot web-base
+> ```
+
+A snapshot holds files, not memory. It outlives the sandbox it came from.
+
+#### Secrets and network policy
+
+> ```sh
+> printf '%s' "$GITHUB_TOKEN" | shard secret set --destination api.github.com GITHUB_TOKEN
+> shard policy create --allow api.github.com github-only
+> shard create --name agent --secret GITHUB_TOKEN --policy github-only alpine:3.20
+> shard exec agent sh -c 'echo $GITHUB_TOKEN'
+> shard policy logs agent
+> ```
+
+The sandbox sees `mock-GITHUB_TOKEN`. In HTTPS request headers to `api.github.com`, the host puts the
+real value in its place. The policy denies every other destination, and `shard policy logs` shows each
+decision.
+
+#### Inspect
+
+> ```sh
+> shard list
+> shard inspect web
+> shard capabilities
+> ```
+
+> [!TIP]
+> Every command takes `--help`, with its options and an example.
+
+<a href="https://useshards.com/docs/reference/cli/"><img alt="CLI docs" src="https://img.shields.io/badge/CLI_docs-%E2%86%92-2d81be?style=flat-square&labelColor=0a1722"></a>
+
+## <img height="18" src="https://octicons-col.vercel.app/package/2d81be">&nbsp;&nbsp;SDK
+
+The SDKs talk to `shard serve`, the HTTP front that checks an API key and passes each request to the
+daemon. Answer `Yes` to `Set up the HTTP API?` in `shard setup`, then mint a key on the host, with
+`sudo` on Linux:
+
+> ```sh
+> shard tokens mint --name my-agent --duration 24h
+> ```
+
+Its `token` field is the API key. On the machine that runs your code:
+
+> ```sh
+> export SHARD_REMOTE=https://shard.example.com
+> export SHARD_API_KEY=<the token>
+> ```
+
+```ts
+import { Shard } from "useshards";
+
+const shard = new Shard();
+const sandbox = await shard.create({ image: "alpine:3.20", name: "demo" });
+try {
+  const result = await sandbox.exec(["echo", "hello"]);
+  console.log(result.exitCode, result.stdout);
+
+  await sandbox.files.write("/tmp/hello.txt", "hello\n");
+  console.log((await sandbox.exec("cat /tmp/hello.txt")).stdout);
+} finally {
+  await sandbox.remove({ force: true });
+  shard.close();
+}
 ```
 
-Create a sandbox, write a file, read it, and remove the sandbox:
+<details>
+<summary><b>Python</b></summary>
 
-```sh
-sudo shard create --name demo --memory 512MiB alpine:3.20
-sudo shard exec demo sh -c 'echo hello from shard > /tmp/hello.txt'
-sudo shard exec demo cat /tmp/hello.txt
-sudo shard remove --force demo
+```python
+from useshards import Shard
+
+with Shard() as shard:
+    sandbox = shard.create("alpine:3.20", name="demo")
+    try:
+        result = sandbox.exec(["echo", "hello"])
+        print(result.exit_code, result.stdout)
+
+        sandbox.files.write("/tmp/hello.txt", "hello\n")
+        print(sandbox.exec("cat /tmp/hello.txt").stdout)
+    finally:
+        sandbox.remove(force=True)
 ```
 
-The third command prints `hello from shard`. On a Mac the daemon runs as your user, so drop `sudo`.
-To open a shell in the sandbox, run `sudo shard shell demo` before you remove it.
+`AsyncShard` has the same verbs for asyncio.
 
-## Documentation
+</details>
 
-The docs live at [useshards.com/docs](https://useshards.com/docs): install and setup, providers, the
-lifecycle, secrets and egress, the TypeScript and Python SDKs, and the CLI and REST API references.
+<a href="https://useshards.com/docs/sdks/typescript/"><img alt="TypeScript SDK docs" src="https://img.shields.io/badge/TypeScript_SDK-%E2%86%92-2d81be?style=flat-square&labelColor=0a1722"></a>
+<a href="https://useshards.com/docs/sdks/python/"><img alt="Python SDK docs" src="https://img.shields.io/badge/Python_SDK-%E2%86%92-2d81be?style=flat-square&labelColor=0a1722"></a>
 
-## Status and contributions
+## <img height="18" src="https://octicons-col.vercel.app/book/2d81be">&nbsp;&nbsp;Guides
 
-**Pre-alpha.** The API, CLI, and SDKs can change without compatibility guarantees.
+- [Run an agent's code in a sandbox](https://useshards.com/docs/guides/run-agent-code/)
+- [Give a sandbox an API key safely](https://useshards.com/docs/guides/api-key/)
+- [Lock down network access](https://useshards.com/docs/guides/network/)
+- [Fork a sandbox to try two paths](https://useshards.com/docs/guides/fork/)
+- [Keep state between commands](https://useshards.com/docs/guides/keep-state/)
+- [Move files in and out](https://useshards.com/docs/guides/files/)
+- [Run Docker inside a sandbox](https://useshards.com/docs/guides/docker/)
+- [Connect to a remote host](https://useshards.com/docs/guides/remote/)
+- [Run shard on a Mac](https://useshards.com/docs/guides/mac/)
+- [Run shard on a KVM host](https://useshards.com/docs/guides/kvm/)
+
+<a href="https://useshards.com/docs"><img alt="All docs" src="https://img.shields.io/badge/All_docs-%E2%86%92-2d81be?style=flat-square&labelColor=0a1722"></a>
+
+## <img height="18" src="https://octicons-col.vercel.app/git-pull-request/2d81be">&nbsp;&nbsp;Contributing
 
 Read [AGENTS.md](AGENTS.md) for the code layout and contribution rules. Install the `golangci-lint`
 version that [CI](.github/workflows/ci.yml) pins, then run `make check` before each commit. It runs
@@ -54,6 +293,6 @@ the format check, vet, lint, the unit tests, and the e2e script's own tests. Tes
 runtime, namespaces, or KVM carry the `integration` build tag and run on a host that has them. See
 [the release guide](docs/release.md) for the platform checks.
 
-## License
+## <img height="18" src="https://octicons-col.vercel.app/law/2d81be">&nbsp;&nbsp;License
 
 [Apache-2.0](LICENSE). See [NOTICE](NOTICE) for attribution.
