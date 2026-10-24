@@ -1,5 +1,5 @@
 <div align="center">
-  <a href="https://useshards.com"><img alt="shard: sandboxes for agents, on your own hardware" src=".github/assets/banner.svg" width="100%"></a>
+  <a href="https://useshards.com"><img alt="shard: sandboxes for agents, on your own hardware" src=".github/assets/header.svg" width="100%"></a>
 
   <br><br>
 
@@ -23,7 +23,7 @@
 </p>
 
 <p align="center">
-<img src=".github/assets/icon-isolation.svg" width="22" height="22" align="top" alt="">&nbsp;&nbsp;<b>Pick your isolation</b>: gVisor, Firecracker microVMs, macOS VMs, Sysbox or runc, behind the same commands.<br><br>
+<img src=".github/assets/icon-sandbox.svg" width="22" height="22" align="top" alt="">&nbsp;&nbsp;<b>Pick your isolation</b>: gVisor, Firecracker microVMs, macOS VMs, Sysbox or runc, behind the same commands.<br><br>
 <img src=".github/assets/icon-hardware.svg" width="22" height="22" align="top" alt="">&nbsp;&nbsp;<b>Your own hardware</b>: a Linux server or a Mac Mini. No cloud account needed.<br><br>
 <img src=".github/assets/icon-fork.svg" width="22" height="22" align="top" alt="">&nbsp;&nbsp;<b>Pause, resume, fork</b>: freeze a sandbox with its memory, pick it up later, or copy a running one.<br><br>
 <img src=".github/assets/icon-snapshot.svg" width="22" height="22" align="top" alt="">&nbsp;&nbsp;<b>Snapshots</b>: save a stopped sandbox's files and start new sandboxes from them.<br><br>
