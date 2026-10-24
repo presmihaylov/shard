@@ -18,9 +18,11 @@
 
 <br>
 
-<p>
-<b>shard runs sandboxes for AI agents on your own hardware.</b> A sandbox is an isolated computer where an agent can install packages, run code and break things without touching anything else. You choose how strong the walls are: lightweight containers for speed, or microVMs when you need a hard boundary. Either way, it's the same commands and API, on a Linux server or a Mac Mini.
-</p>
+<p><b>shard runs sandboxes for AI agents on your own hardware.</b></p>
+
+<p>A sandbox is an isolated computer where an agent can install packages, run code and break things without touching anything else.</p>
+
+<p>You choose how strong the walls are: lightweight containers for speed, or microVMs when you need a hard boundary. Either way, it's the same commands and API, on a Linux server or a Mac Mini.</p>
 
 <p>
 <img src=".github/assets/icon-sandbox.svg" width="22" height="22" align="top" alt="">&nbsp;&nbsp;<b>Pick your isolation</b>: gVisor, Firecracker microVMs, macOS VMs, Sysbox or runc, behind the same commands.<br><br>
