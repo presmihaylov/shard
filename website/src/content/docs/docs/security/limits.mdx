@@ -5,7 +5,7 @@ sidebar:
   order: 5
 ---
 
-import { Tabs, TabItem } from '@astrojs/starlight/components';
+import { Aside, Tabs, TabItem } from '@astrojs/starlight/components';
 
 This page lists what shard does not do. Read it before you put untrusted code on a server.
 
@@ -87,9 +87,13 @@ The API answers with `409` and the code `unsupported`, and the TypeScript and Py
 
 ## Isolation
 
-**Caution: runc isolates nothing.** The sandbox runs on the host kernel with only namespaces and cgroups around it, and root in the sandbox is root on the host. Use runc only for code you trust, or on a host you can afford to lose.
+<Aside type="caution">
+Runc isolates nothing. The sandbox runs on the host kernel with only namespaces and cgroups around it, and root in the sandbox is root on the host. Use runc only for code you trust, or on a host you can afford to lose.
+</Aside>
 
-**Caution: Sysbox sandboxes are isolated from the host, but not from each other.** Every Sysbox sandbox maps to the same host uid range, `0 165536 65536`. A process that escapes one sandbox has the uid of root in every other sandbox. Run one tenant per Sysbox host.
+<Aside type="caution">
+Sysbox sandboxes are isolated from the host, but not from each other. Every Sysbox sandbox maps to the same host uid range, `0 165536 65536`. A process that escapes one sandbox has the uid of root in every other sandbox. Run one tenant per Sysbox host.
+</Aside>
 
 shard never picks Sysbox or runc for you. Only `shard daemon --provider`, or the records that such a daemon made, can select either one.
 
@@ -125,7 +129,9 @@ A sandbox can have four bounds: memory, CPU, processes and disk. On `vz` and `fi
 
 **Disk.** `--disk` bounds everything a sandbox can write. The default is 10240 MiB, and no value turns the bound off. A write that would go past the bound fails with `ENOSPC`, and the sandbox keeps running. On Firecracker and vz, a few sizes are refused, and the error names the nearest sizes that work.
 
-**Caution: on Sysbox, `/var/lib/docker` in the sandbox is outside the disk bound.** Sysbox backs it, and a few other directories, with storage on the host, so the Docker images that the sandbox pulls fill the host's disk rather than the sandbox's.
+<Aside type="caution">
+On Sysbox, `/var/lib/docker` in the sandbox is outside the disk bound. Sysbox backs it, and a few other directories, with storage on the host, so the Docker images that the sandbox pulls fill the host's disk rather than the sandbox's.
+</Aside>
 
 ## Network
 

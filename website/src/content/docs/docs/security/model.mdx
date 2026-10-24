@@ -5,7 +5,7 @@ sidebar:
   order: 1
 ---
 
-import { Tabs, TabItem } from '@astrojs/starlight/components';
+import { Aside, Tabs, TabItem } from '@astrojs/starlight/components';
 
 shard assumes the code in a sandbox is hostile, and keeps the host, your credentials and your private networks out of its reach.
 
@@ -119,9 +119,13 @@ The provider decides how strongly a sandbox is isolated from the host and from o
 | `sysbox` | a Linux user namespace | one |
 | `runc` | namespaces and cgroups only, on the host kernel | trusted code only |
 
-**Caution: Sysbox sandboxes are not isolated from each other.** Every Sysbox sandbox maps to the same host uid range, `0 165536 65536`. A process that escapes one sandbox has the same uid as root in every other sandbox. Run one tenant per Sysbox host.
+<Aside type="caution">
+Sysbox sandboxes are not isolated from each other. Every Sysbox sandbox maps to the same host uid range, `0 165536 65536`. A process that escapes one sandbox has the same uid as root in every other sandbox. Run one tenant per Sysbox host.
+</Aside>
 
-**Caution: runc isolates nothing.** Root in the sandbox is root on the host. Use runc only for code you trust, or on a host you can afford to lose. shard never picks runc or Sysbox for you. Only `--provider` selects one, and a later daemon keeps it on a root that already holds its sandboxes.
+<Aside type="caution">
+Runc isolates nothing. Root in the sandbox is root on the host. Use runc only for code you trust, or on a host you can afford to lose. shard never picks runc or Sysbox for you. Only `--provider` selects one, and a later daemon keeps it on a root that already holds its sandboxes.
+</Aside>
 
 For each provider in detail, see [the provider matrix](https://github.com/presmihaylov/shard/blob/main/docs/provider.md#the-substrates).
 
@@ -131,7 +135,9 @@ A sandbox holds a placeholder for each secret it is granted. The default placeho
 
 A secret is granted to destinations, never to a sandbox alone. `--destination` names each host that the value may be sent to. The host puts the value only into the headers of HTTPS requests to those hosts, and never into the URL or the body. A request to any other host, or over plain HTTP, carries the placeholder.
 
-**Caution: grant a secret only to hosts that never send the credential back.** The host does not read the response, so a granted host that echoes a request header, such as a debug page, returns the real value to the sandbox.
+<Aside type="caution">
+Grant a secret only to hosts that never send the credential back. The host does not read the response, so a granted host that echoes a request header, such as a debug page, returns the real value to the sandbox.
+</Aside>
 
 A grant does not open network access to any host. Only the policy decides what the sandbox can reach, so a sandbox with a policy needs an allow rule for each granted host.
 
@@ -164,7 +170,9 @@ For rules, wildcards and the egress log, see [egress](/docs/security/egress/).
 
 `shard port add` forwards a host port to one port of one sandbox. By default the host listens on `127.0.0.1`, so only programs on the host can connect. With `--public` the host listens on `0.0.0.0`.
 
-**Caution: a public port is open to every network the host is on.** shard does not check who connects. Anyone who reaches the host on that port talks to the program in the sandbox, so forward a port publicly only to a program that checks its own clients. shard leaves the host's firewall as it is, and a firewall that drops the port keeps the forward closed to other machines.
+<Aside type="caution">
+A public port is open to every network the host is on. shard does not check who connects. Anyone who reaches the host on that port talks to the program in the sandbox, so forward a port publicly only to a program that checks its own clients. shard leaves the host's firewall as it is, and a firewall that drops the port keeps the forward closed to other machines.
+</Aside>
 
 A forward changes nothing about the sandbox's own traffic. The egress floor and the policy still decide what the sandbox can reach.
 
@@ -174,13 +182,17 @@ The daemon listens only on a unix socket at `<root>/shard.sock`, which defaults 
 
 The socket has mode `0600`, so only the user the daemon runs as can use it. On Linux that user is root. If the host has a group named `shard`, the daemon hands the socket to that group with mode `0660` when it starts, and members of the group can then use the socket without `sudo`.
 
-**Caution: anyone who can reach the socket holds every right.** A request on the socket carries no token and no scopes. Add a user to the `shard` group only if you trust them with every sandbox and every secret on the host.
+<Aside type="caution">
+Anyone who can reach the socket holds every right. A request on the socket carries no token and no scopes. Add a user to the `shard` group only if you trust them with every sandbox and every secret on the host.
+</Aside>
 
 ## Remote access goes through shard serve
 
 A client on another host reaches the daemon through `shard serve`, a separate process that checks a token on every request and then passes the bytes to the socket. By default it listens on `127.0.0.1:7850` and speaks plain HTTP.
 
-**Caution: put an HTTPS proxy or a tunnel in front of shard serve before any token crosses a network.** Over plain HTTP, the token travels in clear text. `shard serve` logs a line when it starts if its listen address is not loopback.
+<Aside type="caution">
+Put an HTTPS proxy or a tunnel in front of shard serve before any token crosses a network. Over plain HTTP, the token travels in clear text. `shard serve` logs a line when it starts if its listen address is not loopback.
+</Aside>
 
 Mint a token on the server:
 

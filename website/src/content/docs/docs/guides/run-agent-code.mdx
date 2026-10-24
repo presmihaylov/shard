@@ -6,7 +6,7 @@ sidebar:
   order: 1
 ---
 
-import { Tabs, TabItem } from '@astrojs/starlight/components';
+import { Aside, Tabs, TabItem } from '@astrojs/starlight/components';
 
 Code an agent wrote can loop forever, fill memory or call out to the network. Run it in a sandbox, so that it stays off your files and you set its limits.
 
@@ -72,7 +72,9 @@ The TypeScript and Python examples reach `shard serve` at the address in `SHARD_
 
 The code runs in the sandbox, not in your process. It sees the image's files and the file you wrote.
 
-**Caution: the `runc` provider isolates nothing.** Root in a `runc` sandbox is root on the host. Use `runc` only for code you trust.
+<Aside type="caution">
+The `runc` provider isolates nothing. Root in a `runc` sandbox is root on the host. Use `runc` only for code you trust.
+</Aside>
 
 ## Read the result
 
@@ -203,7 +205,9 @@ sandbox = shard.create("python:3.12-slim", memory_mib=1024, vcpus=2, disk_mib=40
 	</TabItem>
 </Tabs>
 
-**Caution: when the memory ceiling triggers an OOM kill, the whole sandbox ends, not only the command.** gVisor allows headroom for the sentry and throttles the sandbox before that ceiling. The record then says `stopped`, with the reason `ran out of memory and the host ended it`, until the daemon starts it again with the files it kept. The first start runs within 5 seconds, and the wait grows up to 5 minutes while the kills repeat. To get more memory, create a new sandbox with a larger bound.
+<Aside type="caution">
+When the memory ceiling triggers an OOM kill, the whole sandbox ends, not only the command. gVisor allows headroom for the sentry and throttles the sandbox before that ceiling. The record then says `stopped`, with the reason `ran out of memory and the host ended it`, until the daemon starts it again with the files it kept. The first start runs within 5 seconds, and the wait grows up to 5 minutes while the kills repeat. To get more memory, create a new sandbox with a larger bound.
+</Aside>
 
 A write past the disk bound fails with `ENOSPC`, and the sandbox keeps running. If you set no disk bound, it is 10 GiB. If you set no memory bound, it is 512 MiB on `vz` and `firecracker`, and there is no bound on the other providers. On `vz` and `firecracker` the sandbox also gets a 2 GiB swap file, which comes out of the disk bound; `--swap 0` turns it off. For details on each bound, see [the provider notes](https://github.com/presmihaylov/shard/blob/main/docs/provider.md#what-a-memory-bound-means).
 

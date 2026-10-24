@@ -6,7 +6,7 @@ sidebar:
   order: 5
 ---
 
-import { Tabs, TabItem } from '@astrojs/starlight/components';
+import { Aside, Tabs, TabItem } from '@astrojs/starlight/components';
 
 An agent needs your API key to call its model. If the key sits in the sandbox, anything there that reads the agent's environment reads the key too. shard keeps the key on the host, so the sandbox never holds it.
 
@@ -72,7 +72,9 @@ The sandbox prints `mock-OPENAI_API_KEY`. That placeholder is all the sandbox ev
 
 As a result, an agent that reads its environment, dumps its memory, or posts everything it finds to another host gives away only the placeholder.
 
-**Caution: grant a key only to hosts that never send it back.** shard does not inspect responses. A granted host that echoes back the headers it received, such as a debug page, returns the real key to the sandbox.
+<Aside type="caution">
+Grant a key only to hosts that never send it back. shard does not inspect responses. A granted host that echoes back the headers it received, such as a debug page, returns the real key to the sandbox.
+</Aside>
 
 ## Keep the key out of your shell
 
