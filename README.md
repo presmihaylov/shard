@@ -87,8 +87,8 @@ pip install useshards   # Python
 On Windows, run shard inside WSL 2. An Intel Mac can connect to a remote host, but cannot run sandboxes.
 
 <picture>
-  <source media="(prefers-color-scheme: dark)" srcset=".github/assets/callout-warning-dark.svg">
-  <img alt="Warning: shard is pre-alpha. Commands, flags, the API and the SDKs can change in any release." src=".github/assets/callout-warning-light.svg" width="100%">
+  <source media="(prefers-color-scheme: dark)" srcset=".github/assets/box-warning-dark.svg">
+  <img alt="Warning: shard is pre-alpha. Commands, flags, the API and the SDKs can change in any release." src=".github/assets/box-warning-light.svg" width="100%">
 </picture>
 
 ## <img height="18" src="https://octicons-col.vercel.app/terminal/2d81be">&nbsp;&nbsp;CLI
@@ -216,8 +216,8 @@ shard capabilities
 ```
 
 <picture>
-  <source media="(prefers-color-scheme: dark)" srcset=".github/assets/callout-tip-dark.svg">
-  <img alt="Tip: every command takes --help, with its options and an example." src=".github/assets/callout-tip-light.svg" width="100%">
+  <source media="(prefers-color-scheme: dark)" srcset=".github/assets/box-tip-dark.svg">
+  <img alt="Tip: every command takes --help, with its options and an example." src=".github/assets/box-tip-light.svg" width="100%">
 </picture>
 
 **[CLI docs →](https://useshards.com/docs/reference/cli/)**
