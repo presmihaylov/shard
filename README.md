@@ -19,7 +19,7 @@
 <br>
 
 <p>
-<b>shard gives each agent an isolated sandbox on a machine you control.</b> Create one from any OCI or Docker image, run commands in it, pause it, snapshot it, or fork it into a copy.
+<b>shard runs sandboxes for AI agents on your own hardware.</b> A sandbox is an isolated computer where an agent can install packages, run code and break things without touching anything else. You choose how strong the walls are: lightweight containers for speed, or microVMs when you need a hard boundary. Either way, it's the same commands and API, on a Linux server or a Mac Mini.
 </p>
 
 <p>
