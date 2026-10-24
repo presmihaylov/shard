@@ -1,5 +1,5 @@
 <div align="center">
-  <a href="https://useshards.com"><img alt="shard: sandboxes for agents, on your own hardware" src=".github/assets/landing.svg" width="100%"></a>
+  <a href="https://useshards.com"><img alt="shard: sandboxes for agents, on your own hardware" src=".github/assets/hero.svg" width="100%"></a>
 
   <br><br>
 
@@ -20,9 +20,14 @@
 
 <p><b>shard runs sandboxes for AI agents on your own hardware.</b></p>
 
-<p>A sandbox is an isolated computer where an agent can install packages, run code and break things without touching anything else.</p>
+<p>A sandbox is an isolated computer where an agent can install packages, run code and break things without touching anything else. You choose how strong the walls are:</p>
 
-<p>You choose how strong the walls are: lightweight containers for speed, or microVMs when you need a hard boundary. Either way, it's the same commands and API, on a Linux server or a Mac Mini.</p>
+<ul>
+<li><b>Containers</b> for speed</li>
+<li><b>MicroVMs</b> when you need a hard boundary</li>
+</ul>
+
+<p>Either way, it's the same commands and API, on a Linux server or a Mac Mini.</p>
 
 <p>
 <img src=".github/assets/icon-sandbox.svg" width="22" height="22" align="top" alt="">&nbsp;&nbsp;<b>Pick your isolation</b>: gVisor, Firecracker microVMs, macOS VMs, Sysbox or runc, behind the same commands.<br><br>
