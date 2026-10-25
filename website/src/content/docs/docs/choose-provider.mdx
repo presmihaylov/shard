@@ -76,7 +76,7 @@ Setup checks the sha256 of every pinned download before it installs it.
 
 - **Linux tools.** Every Linux provider also needs `iproute2`, `nftables` and `e2fsprogs`. Setup installs packages with `apt-get`. On a host without it, setup stops and names the tools to install.
 - **Firecracker version.** Setup keeps an installed `firecracker` of 1.13.0 or newer, and refuses an older one.
-- **Guest kernel.** Firecracker and `vz` download a guest kernel during setup.
+- **Guest kernel.** On Firecracker and `vz`, the daemon downloads a guest kernel the first time it starts.
 - **Firecracker disk.** Firecracker needs `/var/lib/shard` on XFS or Btrfs. On another filesystem it needs 20 GiB free for an XFS image, which it mounts over `/var/lib/shard`, so that directory must be empty.
 - **Sysbox tenants.** Sysbox CE maps every sandbox to the same host user ID range. Two Sysbox sandboxes are isolated from the host, but not from each other.
 - **runc and root.** runc has no user namespace, so root in the sandbox is root on the host.

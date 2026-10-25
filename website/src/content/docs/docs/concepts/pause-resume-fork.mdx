@@ -127,7 +127,7 @@ To keep a pool of warm sandboxes, prepare one sandbox, then fork it once for eac
 - **A stop deletes the checkpoint.** `shard stop` on a paused sandbox ends it, so you can no longer resume it. Its files stay, and `shard start` runs it again from them, with new memory.
 - **A daemon restart keeps the pause.** A paused sandbox stays paused when the daemon restarts, as long as its checkpoint is on disk. If its checkpoint is gone, it becomes `stopped`.
 - **A fork starts with empty logs.** It also does not get the source's port forwards.
-- **A Firecracker fork needs XFS or Btrfs.** The fork shares the sandbox's disk blocks. On any other filesystem, the daemon puts its data directory on an XFS image. See [the data directory](/docs/quickstart/server/#the-data-directory).
+- **A Firecracker fork needs XFS or Btrfs.** The fork shares the sandbox's disk blocks. On any other filesystem, the daemon puts its data directory on an XFS image. See [the data directory](/docs/concepts/data-directory/).
 
 ## Fork or snapshot
 
