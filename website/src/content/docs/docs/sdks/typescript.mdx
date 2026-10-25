@@ -38,11 +38,11 @@ Replace `https://shard.example.com` with your server URL and `your-api-key` with
 npm install useshards
 ```
 
-The package needs Node 20.3 or later. It is an ES module, so load it with `import`. It ships its own type definitions, so the code on this page type-checks in a TypeScript project without changes. Its only runtime dependency is `openapi-fetch`.
+The package needs Node 20.3 or later. It is an ES module, so load it with `import`. It ships its own type definitions, so the code on this page type-checks in a TypeScript project without changes.
 
 ## Connect
 
-The SDK talks to `shard serve` on your server, never to the daemon's local socket, and it ignores the connection that `shard setup` saves. It reads three settings. A non-empty `remote` or `caFile` option takes precedence over its environment variable. An `apiKey` option takes precedence even when it is empty, which the SDK refuses:
+The SDK talks to `shard serve` on your server, never to the daemon's local socket, and it ignores the connection that `shard setup` saves. It reads three settings:
 
 | Option | Variable | Value |
 | --- | --- | --- |
@@ -54,7 +54,10 @@ The SDK talks to `shard serve` on your server, never to the daemon's local socke
 const shard = new Shard({ remote: "https://shard.example.com", apiKey: process.env.MY_SHARD_KEY });
 ```
 
-If a setting is missing or refused, `new Shard()` throws `ConfigurationError`, and the error message never shows the key. An `http` remote works, but it sends the key unencrypted, so Node prints a warning. An `http` remote also refuses a CA file.
+- **Precedence:** a non-empty `remote` or `caFile` option takes precedence over its environment variable. An `apiKey` option takes precedence even when it is empty, which the SDK refuses.
+- **Missing settings:** `new Shard()` throws `ConfigurationError` when a setting is missing or refused, and the error message never shows the key.
+- **Plain `http`:** an `http` remote works, but it sends the key unencrypted, so Node prints a warning. It also refuses a CA file.
+- **Timeout:** each plain request waits up to 60 seconds for the server, and the bound is fixed. A call that waits on the sandbox, such as `create()`, `stop()` or `fork()`, has no bound on the client.
 
 To mint an API key, run this on the server:
 
@@ -178,7 +181,12 @@ await sandbox.ports.remove(9000);
 | `list()` | Returns the sandbox's forwards in host port order. |
 | `remove(hostPort)` | Ends the forward and the connections it carries. |
 
-`shard.ports()` returns the forwards of every sandbox, and `create()` takes `ports: [{ hostPort, guestPort, public }]`. A `Port` holds `listening`, `error` and `reachableOn`. `listening` is `false` while the sandbox is not running or the host refuses the port, and `error` says why. `reachableOn` lists the host addresses a client connects to. A forward survives a stop and a start. See [Reach a port inside a sandbox](/docs/guides/network/#reach-a-port-inside-a-sandbox).
+- **Every sandbox:** `shard.ports()` returns the forwards of every sandbox.
+- **At create:** `create()` takes `ports: [{ hostPort, guestPort, public }]`.
+- **A `Port`:** `listening` is `false` while the sandbox is not running or the host refuses the port, and `error` says why. `reachableOn` lists the host addresses a client connects to.
+- **Stop and start:** a forward survives both.
+
+See [Reach a port inside a sandbox](/docs/guides/network/#reach-a-port-inside-a-sandbox).
 
 ## Processes
 
@@ -198,7 +206,11 @@ A `Process` has `wait()`, `kill()`, `logs()`, `followLogs()` and `inspect()`. It
 - `wait()` returns the `ProcessInfo` once the process ends and its restart policy will not start it again.
 - `kill()` ends the process with `TERM`, or with `KILL` when you pass `{ force: true }`, and cancels its restarts. The sandbox keeps running.
 - `logs()` returns the output of every run of the process. The daemon keeps a bounded log, so for a long run it may hold only the end. `followLogs()` yields the output from the start of the log, then new output as it arrives, and ends when the process ends or the sandbox stops.
-- `restart` is `{ policy, retries, backoff }`. `policy` is `"no"`, `"on-failure"` (after a non-zero exit code or a signal), `"always"` (after any exit, and whenever the sandbox starts) or `"unless-stopped"`, the default. `unless-stopped` is like `always` until `kill()` ends the process, and a daemon restart leaves it down in a sandbox that `stop()` stopped. `retries` caps how many times in a row `on-failure` starts the process again, and `0` or no value means no cap. `backoff` is the first wait in seconds, 1 by default, and each later wait doubles, up to 60 seconds.
+- `restart` is `{ policy, retries, backoff }`:
+  - `policy` is `"no"`, `"on-failure"` (after a non-zero exit code or a signal), `"always"` (after any exit, and whenever the sandbox starts) or `"unless-stopped"`, the default.
+  - `unless-stopped` is like `always` until `kill()` ends the process, and a daemon restart leaves it down in a sandbox that `stop()` stopped.
+  - `retries` caps how many times in a row `on-failure` starts the process again, and `0` or no value means no cap.
+  - `backoff` is the first wait in seconds, 1 by default, and each later wait doubles, up to 60 seconds.
 
 From any client, `sandbox.processes.list()` returns every process of the sandbox as a `ProcessInfo`, in the order they were first run, and `sandbox.processes.get(name)` finds one again. A `ProcessInfo` holds `name`, `command`, `restart`, `killed`, and a `status` with `state`, `restarts`, `exit` and `startedAt`. `state` is `"running"`, `"restarting"`, `"exited"`, `"killed"`, `"gave-up"` or `"stopped"`.
 

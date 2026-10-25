@@ -89,29 +89,22 @@ The example needs a host that runs `gvisor`, `firecracker` or `vz`. The SDKs con
 
 `shard resume` restores a paused sandbox from its checkpoint. Its processes carry on where they left off, and it keeps the same address. shard applies the sandbox's network rules again on each resume.
 
-A pause ends any `exec` that is still running in the sandbox. While the sandbox is paused, `shard exec` runs nothing, exits 1 and prints:
-
-```text
-shard: sandbox demo is paused: resume it with shard resume demo
-```
-
-A paused sandbox stays paused when the daemon restarts, as long as its checkpoint is on disk. If its checkpoint is gone, it becomes `stopped`.
-
-A pause can take up to 10 minutes. A client that disconnects does not cut it short, because the sandbox would not survive a partial checkpoint. If a pause fails, the error says why, and `shard inspect demo` shows the state that shard found.
-
-## Stop a paused sandbox
-
-`shard stop` on a paused sandbox ends it and deletes its checkpoint, so you can no longer resume it. Its files stay. `shard start` runs it again from those files, with new memory.
-
 ## Fork
 
 `shard fork` works on a running sandbox. The source freezes for a moment while shard captures its memory and files, then keeps running. The new sandbox starts from that capture, in the `running` state. The command prints the new sandbox's ID.
 
-The new sandbox has its own ID, its own address and its own files. A write in one sandbox never shows in the other. The new sandbox keeps the source's image, resource limits, granted secrets, network policy and processes, with their restart policies. Its logs start empty, and it does not get the source's port forwards. Give it a name with `--name`.
+The new sandbox has its own ID, its own address and its own files. A write in one sandbox never shows in the other. The new sandbox keeps the source's image, resource limits, granted secrets, network policy and processes, with their restart policies. Give it a name with `--name`.
 
 To keep a pool of warm sandboxes, prepare one sandbox, then fork it once for each sandbox you need. Each fork starts with the processes and the files that the source had.
 
-On Firecracker, a fork shares the sandbox's disk blocks, which needs XFS or Btrfs. On any other filesystem, the daemon puts its data directory on an XFS image. See [the data directory](/docs/quickstart/server/#the-data-directory).
+## Limits to know
+
+- **A pause ends running commands.** Any `exec` still running in the sandbox ends. While the sandbox is paused, `shard exec` runs nothing and fails with `sandbox demo is paused: resume it with shard resume demo`.
+- **A pause can take up to 10 minutes.** A client that disconnects does not cut it short, because the sandbox would not survive a partial checkpoint. If a pause fails, the error says why, and `shard inspect demo` shows the state that shard found.
+- **A stop deletes the checkpoint.** `shard stop` on a paused sandbox ends it, so you can no longer resume it. Its files stay, and `shard start` runs it again from them, with new memory.
+- **A daemon restart keeps the pause.** A paused sandbox stays paused when the daemon restarts, as long as its checkpoint is on disk. If its checkpoint is gone, it becomes `stopped`.
+- **A fork starts with empty logs.** It also does not get the source's port forwards.
+- **A Firecracker fork needs XFS or Btrfs.** The fork shares the sandbox's disk blocks. On any other filesystem, the daemon puts its data directory on an XFS image. See [the data directory](/docs/quickstart/server/#the-data-directory).
 
 ## Fork or snapshot
 
@@ -143,10 +136,6 @@ A sandbox made from a snapshot starts like a new sandbox, with the snapshot's fi
 | `sysbox` | No |
 | `runc` | No |
 
-On a provider that lacks them, each verb fails before it changes anything, and the error names the provider and the verb:
-
-```text
-provider sysbox does not support pause on this host; use a server that supports pause
-```
+On a provider that lacks them, each verb fails before it changes anything, with an error that names the provider and the verb, such as `provider sysbox does not support pause on this host; use a server that supports pause`.
 
 To see what the provider of your server supports, run `shard capabilities`. It lists all nine verbs and swap, and marks each one `true` or `false`.

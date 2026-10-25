@@ -68,7 +68,11 @@ One daemon runs one provider for every sandbox on its host. Every provider suppo
 | `resume` | yes | no | no | Apple silicon with macOS 14 or later | yes |
 | `fork` | yes | no | no | Apple silicon with macOS 14 or later | yes |
 
-`swap` says whether `--swap` can give a sandbox a swap file: yes on vz and Firecracker, no on the rest. `snapshot` is `shard snapshot create`, which copies the files of a stopped sandbox. `fork` copies a sandbox while it runs. `port` is `shard port add`, which forwards a host port into a sandbox. Every provider also supports `exec`, `logs` and `inspect`, which the answer does not list.
+- **`snapshot`:** `shard snapshot create`, which copies the files of a stopped sandbox.
+- **`fork`:** copies a sandbox while it runs.
+- **`port`:** `shard port add`, which forwards a host port into a sandbox.
+- **`swap`:** whether `--swap` can give a sandbox a swap file: yes on vz and Firecracker, no on the rest.
+- **Not listed:** every provider also supports `exec`, `logs` and `inspect`, which the answer does not list.
 
 ## The API
 

@@ -83,9 +83,9 @@ To restart only after a nonzero exit, and give up after five tries:
 shard run web --name site --restart on-failure --restart-retries 5 -- python3 -m http.server 8000 --directory /srv
 ```
 
-`--restart-retries` applies to `on-failure` only. A run of a name that has ended replaces it, so this works after `shard kill web site`.
-
-The delay before a restart starts at 1s and doubles after each restart, up to 60s. `--restart-backoff` sets the first delay.
+- **`--restart-retries` applies to `on-failure` only.**
+- **A run of a name that has ended replaces it.** So this works after `shard kill web site`.
+- **The delay doubles.** It starts at 1s and doubles after each restart, up to 60s. `--restart-backoff` sets the first delay.
 
 ## Watch the process
 
@@ -109,15 +109,18 @@ A process started with `--restart always` still comes back when the sandbox star
 
 `shard port add web 9000:8000` forwards host port 9000 to port 8000 in the sandbox. `shard port add web 8000` uses the same port on both sides.
 
-The host listens on `127.0.0.1` only, so nothing beyond the host reaches the port. Each connection goes to the sandbox's own `127.0.0.1`, so the server must listen there or on every interface.
-
 `shard create --port 9000:8000` forwards the port from the first start, so the create and the forward are one command:
 
 ```sh
 shard create --name web --memory 512MiB --port 9000:8000 python:3.12
 ```
 
-A forward belongs to the sandbox. It survives a stop, a start, a daemon restart and a reboot of the host. The host listens only while the sandbox runs. A fork does not copy the forwards.
+- **Only the host reaches the port.** The host listens on `127.0.0.1` only.
+- **The server must listen on the sandbox's `127.0.0.1`.** Each connection goes there, so the server listens there or on every interface.
+- **A forward belongs to the sandbox.** It survives a stop, a start, a daemon restart and a reboot of the host. The host listens only while the sandbox runs.
+- **A fork does not copy the forwards.**
+
+List the forwards, and remove one:
 
 ```sh
 shard port list

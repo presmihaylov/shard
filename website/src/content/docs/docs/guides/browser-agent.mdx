@@ -75,11 +75,12 @@ Claude Code opens Wikipedia through browser-use, reads the article and prints `1
 - **The browser reaches only the sites you allow.** A link to any other site fails. `shard policy logs browser-use-sbx` shows every host it tried, allowed or denied.
 - **Your machine is out of reach.** The browser has no cookies, sessions or files of yours, and nothing private on your network.
 
-`--no-sandbox` starts Chromium without its own sandbox, which needs privileges a sandbox does not have. The shard sandbox is the boundary instead.
+## Things to know
 
-The policy logs also show denied calls to Google hosts, such as `accounts.google.com` and `update.googleapis.com`. Chromium makes them in the background, and the pages load without them.
-
-To let the agent browse more sites, run `shard policy create` again with the same name, and the running sandbox gets the new rules at once. The new rules replace the old ones, so repeat every `--allow` you still need, `api.anthropic.com` included. `--allow any` opens the whole internet while the key stays on the host. Private addresses stay blocked under any policy.
+- **Chromium runs with `--no-sandbox`.** Its own sandbox needs privileges a shard sandbox does not have, so the shard sandbox is the boundary instead.
+- **Denied Google hosts in the logs are expected.** Chromium calls hosts such as `accounts.google.com` and `update.googleapis.com` in the background, and the pages load without them.
+- **To browse more sites, store the policy again.** Run `shard policy create` with the same name, and the running sandbox gets the new rules at once. The new rules replace the old ones, so repeat every `--allow` you still need, `api.anthropic.com` included.
+- **`--allow any` opens the whole internet.** The key still stays on the host, and private addresses stay blocked under any policy.
 
 See [Run Claude Code in a sandbox](/docs/guides/claude-code/) for more on Claude Code itself.
 

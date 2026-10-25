@@ -108,11 +108,9 @@ Every error from the API has this body:
 
 `error` is the only top-level field.
 
-An `internal` error shows only what is safe to show, which can be as little as `the daemon could not complete the request; the daemon log has the cause`. The full cause stays in the daemon log. The host-only routes, such as the ones behind `shard pull` and `shard image list`, return the whole text.
-
-To read the daemon log, run `journalctl -u shard` for the systemd unit, or open `/var/log/shard/daemon.log` for the Mac LaunchDaemon. A daemon you started with `shard daemon` logs to its own terminal.
-
-If the daemon fails after the WebSocket of a command stream such as `shard exec` opens, the stream reports it as the same `error` object on stream 5.
+- **`internal` errors:** the message shows only what is safe to show, which can be as little as `the daemon could not complete the request; the daemon log has the cause`. The full cause stays in the daemon log. The host-only routes, such as the ones behind `shard pull` and `shard image list`, return the whole text.
+- **The daemon log:** run `journalctl -u shard` for the systemd unit, or open `/var/log/shard/daemon.log` for the Mac LaunchDaemon. A daemon you started with `shard daemon` logs to its own terminal.
+- **Command streams:** if the daemon fails after the WebSocket of a command stream such as `shard exec` opens, the stream reports it as the same `error` object on stream 5.
 
 ## Error codes
 

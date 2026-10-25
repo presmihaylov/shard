@@ -33,13 +33,13 @@ Replace `https://shard.example.com` with your server URL and `your-api-key` with
 pip install useshards
 ```
 
-The package needs Python 3.11 or later and ships with type hints. Its runtime dependencies are HTTPX, attrs and typing-extensions.
+The package needs Python 3.11 or later and ships with type hints.
 
 `Shard` is for blocking code, `AsyncShard` is for asyncio, and both have the same methods. The examples on this page use `Shard`, and [Asyncio](#asyncio) covers the differences.
 
 ## Connect
 
-The SDK talks to `shard serve` on your server, never to the daemon's local socket, and it ignores the connection that `shard setup` saves. It reads three settings. A non-empty `remote` or `ca_file` argument takes precedence over its environment variable. An `api_key` argument other than `None` takes precedence even when it is empty, which the SDK refuses:
+The SDK talks to `shard serve` on your server, never to the daemon's local socket, and it ignores the connection that `shard setup` saves. It reads three settings:
 
 | Argument | Variable | Value |
 | --- | --- | --- |
@@ -55,9 +55,10 @@ from useshards import Shard
 shard = Shard(remote="https://shard.example.com", api_key=os.environ["MY_SHARD_KEY"])
 ```
 
-`Shard()` raises `ConfigurationError` when a setting is missing or refused, and the error message never shows the key. An `http` remote works, but it sends the key unencrypted, so the SDK emits a warning. The SDK also refuses a CA file for an `http` remote.
-
-`timeout=` bounds each plain request, in seconds. The default is 60, and `None` removes the bound. A call that waits on the sandbox, such as `create()`, `stop()` or `fork()`, has no read bound on the client.
+- **Precedence:** a non-empty `remote` or `ca_file` argument takes precedence over its environment variable. An `api_key` argument other than `None` takes precedence even when it is empty, which the SDK refuses.
+- **Missing settings:** `Shard()` raises `ConfigurationError` when a setting is missing or refused, and the error message never shows the key.
+- **Plain `http`:** an `http` remote works, but it sends the key unencrypted, so the SDK emits a warning. It also refuses a CA file.
+- **Timeout:** `timeout=` bounds each plain request, in seconds. The default is 60, and `None` removes the bound. A call that waits on the sandbox, such as `create()`, `stop()` or `fork()`, has no read bound on the client.
 
 Mint an API key on the server:
 
@@ -180,7 +181,12 @@ sandbox.ports.remove(9000)
 | `list()` | Returns the sandbox's forwards in host port order. |
 | `remove(host_port)` | Ends the forward and the connections it carries. |
 
-`shard.ports()` returns the forwards of every sandbox, and `create()` takes `ports=[PortForward(host_port, guest_port, public=False)]`. A `Port` has `listening`, `False` while the sandbox is not running or the host refuses the port, `error`, which says why, and `reachable_on`, the addresses of the host a client connects to. A forward survives a stop and a start. See [Reach a port inside a sandbox](/docs/guides/network/#reach-a-port-inside-a-sandbox).
+- **Every sandbox:** `shard.ports()` returns the forwards of every sandbox.
+- **At create:** `create()` takes `ports=[PortForward(host_port, guest_port, public=False)]`.
+- **A `Port`:** `listening` is `False` while the sandbox is not running or the host refuses the port, and `error` says why. `reachable_on` lists the host addresses a client connects to.
+- **Stop and start:** a forward survives both.
+
+See [Reach a port inside a sandbox](/docs/guides/network/#reach-a-port-inside-a-sandbox).
 
 ## Processes
 
@@ -202,7 +208,11 @@ A `Process` has `wait()`, `kill()`, `logs()`, `follow_logs()` and `inspect()`. I
 - `wait()` returns the `ProcessInfo` once the process ends and its restart policy will not start it again. With `timeout=`, it raises `TimeoutError` when the time runs out, and the process keeps running.
 - `kill()` ends the process with `TERM`, or with `KILL` when you pass `force=True`, and cancels its restarts. The sandbox keeps running.
 - `logs()` returns the output of every run of the process. The daemon keeps a bounded log, so for a long run it may hold only the end. `follow_logs()` yields the output from the start of the log, then new output as it arrives, and it ends when the process ends or the sandbox stops.
-- `restart` is a `Restart(policy, retries=, backoff=)`. `policy` is `"no"`, `"on-failure"` (after a non-zero exit code or a signal), `"always"` (after any exit, and whenever the sandbox starts) or `"unless-stopped"`, the default. `unless-stopped` is like `always` until `kill()` ends the process, and a daemon restart leaves it down in a sandbox that `stop()` stopped. `retries` caps how many times in a row `on-failure` starts the process again, and `0`, the default, means no cap. `backoff` is the first wait in seconds, and it is 1 when you leave it at `0`. Each wait after that doubles, up to 60 seconds.
+- `restart` is a `Restart(policy, retries=, backoff=)`:
+  - `policy` is `"no"`, `"on-failure"` (after a non-zero exit code or a signal), `"always"` (after any exit, and whenever the sandbox starts) or `"unless-stopped"`, the default.
+  - `unless-stopped` is like `always` until `kill()` ends the process, and a daemon restart leaves it down in a sandbox that `stop()` stopped.
+  - `retries` caps how many times in a row `on-failure` starts the process again, and `0`, the default, means no cap.
+  - `backoff` is the first wait in seconds, and it is 1 when you leave it at `0`. Each wait after that doubles, up to 60 seconds.
 
 From any client, `sandbox.processes.list()` returns every process of the sandbox as a `ProcessInfo`, in the order they were first run, and `sandbox.processes.get(name)` finds one again. A `ProcessInfo` holds `name`, `command`, `restart`, `killed`, and a `status` with `state`, `restarts`, `exit` and `started_at`. `state` is `"running"`, `"restarting"`, `"exited"`, `"killed"`, `"gave-up"` or `"stopped"`.
 
@@ -270,7 +280,7 @@ if shard.capabilities().fork:
     copy = sandbox.fork(name="demo-copy")
 ```
 
-A call to a verb that the provider does not support raises `UnsupportedError`.
+A call to a verb that the provider does not support raises `UnsupportedError`, and its message names the provider and the verb. The server never falls back to a weaker mechanism.
 
 ## Errors
 

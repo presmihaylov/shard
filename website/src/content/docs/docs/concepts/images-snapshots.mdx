@@ -91,37 +91,17 @@ A sandbox record stores the digest of the sandbox's image in its `digest` key.
 
 ### Registries
 
-The server downloads only over HTTPS. A download over plain HTTP from a registry on `localhost:<port>`, `127.0.0.1`, `::1`, a `.localhost` name or a private IPv4 address fails with an error that includes:
-
-```text
-refusing plaintext http to <host>: start shard daemon with --insecure-registry <host> to allow it
-```
-
-To allow such a registry, start the daemon with `--insecure-registry <host>`. You can repeat the option for more registries.
-
-The daemon's `--timeout` limits each download, and the default is `30m`. A registry request also fails if the server does not send its response headers within 30 seconds.
-
-When the registry refuses access, `shard create` fails, and the error says so:
-
-```text
-shard: sandbox <name> failed to start: the registry refused access to registry.internal:5000/team/app:1.0; ask the server administrator to check the registry credentials
-```
+- **HTTPS only.** A download over plain HTTP from a registry on `localhost:<port>`, `127.0.0.1`, `::1`, a `.localhost` name or a private IPv4 address fails with `refusing plaintext http to <host>: start shard daemon with --insecure-registry <host> to allow it`. Start the daemon with `--insecure-registry <host>` to allow that registry, and repeat the option for more.
+- **Timeouts.** The daemon's `--timeout` limits each download, `30m` by default. A registry request also fails if the registry sends no response headers within 30 seconds.
+- **Access refused.** When the registry refuses access, `shard create` fails with `the registry refused access to <image>; ask the server administrator to check the registry credentials`.
 
 ### Manage images on the server
 
 `shard pull`, `shard image list`, `shard image remove` and `shard image prune` work only on the server, and they refuse `--remote`, `SHARD_REMOTE` and a saved connection. Through `shard serve`, the API refuses the four image routes with `403`.
 
-`shard image list` prints the columns `REFERENCE`, `DIGEST`, `SIZE` and `CREATED`. If the server cannot read an image, the list shows `unreadable` in its `SIZE` and `CREATED` columns. `--format json` prints the list as JSON.
-
-`shard image remove <image>` deletes an image. If a sandbox or a snapshot uses the image, it refuses with status `409` and the code `in_use`:
-
-```text
-shard: image alpine:3.20 is referenced by sandbox misty-otter-81c0: remove the sandbox first, or pass --force
-```
-
-When a snapshot uses the image, the suggested fix names `shard snapshot remove` instead. `--force` deletes the image anyway. A sandbox that still needs the image then fails to start, resume or fork, and the error tells you to pull the image again.
-
-`shard image prune` deletes every image that no sandbox or snapshot uses, and prints the reference of each image it deletes. A stopped sandbox still uses its image, so prune keeps that image. If the server cannot read a sandbox record, prune deletes nothing and fails, because that sandbox may need an image.
+- **`shard image list`** prints the columns `REFERENCE`, `DIGEST`, `SIZE` and `CREATED`, or JSON with `--format json`. An image the server cannot read shows `unreadable` in its `SIZE` and `CREATED` columns.
+- **`shard image remove <image>`** deletes an image. While a sandbox or a snapshot uses it, the remove fails with `409 in_use`, and the error names that sandbox or snapshot and how to remove it. `--force` deletes the image anyway, and a sandbox that still needs it then fails to start, resume or fork, with an error that says to pull the image again.
+- **`shard image prune`** deletes every image that no sandbox or snapshot uses, and prints each reference it deletes. A stopped sandbox still uses its image. If the server cannot read a sandbox record, prune deletes nothing and fails, because that sandbox may need an image.
 
 ## Snapshots
 
@@ -138,13 +118,11 @@ shard snapshot create --name web-base web
 
 `snapshot create` prints the id of the new snapshot. A snapshot name must be unique among snapshots, but a sandbox can have the same name as a snapshot.
 
-The source sandbox must be `stopped`. For a running or paused sandbox, the command fails with status `409` and the code `sandbox_not_stopped`:
+The command fails when:
 
-```text
-shard: sandbox misty-otter-81c0 is running: stop it first with shard stop misty-otter-81c0: a snapshot copies what a stop kept
-```
-
-If another snapshot already has the name, the command fails with `409` and the code `name_taken`. It fails with `400` if the server no longer holds the source's image. It fails the same way if the server now holds the source's tag at a different digest, because no sandbox could start from that snapshot.
+- **The source is not stopped.** A running or paused sandbox fails with `409 sandbox_not_stopped`, because a snapshot copies what a stop keeps. Stop it first.
+- **The name is taken.** Another snapshot already has the name: `409 name_taken`.
+- **The image is gone.** The server no longer holds the source's image, or now holds the source's tag at a different digest: `400`, because no sandbox could start from that snapshot.
 
 How the copy is made depends on the provider:
 
@@ -156,31 +134,9 @@ How the copy is made depends on the provider:
 
 ### List and inspect snapshots
 
-```text
-$ shard snapshot list
-ID                 NAME       SOURCE             IMAGE                                 SIZE     CREATED
-quiet-heron-4f2a   web-base   misty-otter-81c0   index.docker.io/library/alpine:3.20   1.0 MB   2026-10-04T09:00:00Z
-```
+`shard snapshot list` prints the columns `ID`, `NAME`, `SOURCE`, `IMAGE`, `SIZE` and `CREATED`. `shard snapshot inspect <snapshot>` prints the record as JSON, or as fields with `--format table`.
 
-`shard snapshot inspect <snapshot>` prints the record as JSON, and `--format table` prints it as fields:
-
-```text
-$ shard snapshot inspect --format table web-base
-FIELD         VALUE
-id            quiet-heron-4f2a
-name          web-base
-source        misty-otter-81c0
-source_name   web
-image         index.docker.io/library/alpine:3.20
-digest        sha256:0f1e2d3c4b5a69788796a5b4c3d2e1f00f1e2d3c4b5a69788796a5b4c3d2e1f0
-provider      gvisor
-disk_mib      10240
-memory_mib    512
-size          1048576
-created_at    2026-10-04T09:00:00Z
-```
-
-`source` is the id of the sandbox the snapshot came from. `disk_mib` and `memory_mib` are the bounds that sandbox ran with. `size` is the number of bytes the snapshot takes up on the server. The JSON leaves out `name` and `source_name` when they are empty.
+In the record, `source` is the id of the sandbox the snapshot came from. `disk_mib` and `memory_mib` are the bounds that sandbox ran with. `size` is the number of bytes the snapshot takes up on the server. The JSON leaves out `name` and `source_name` when they are empty.
 
 ### Create a sandbox from a snapshot
 
