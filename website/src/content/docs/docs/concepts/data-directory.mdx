@@ -14,45 +14,43 @@ The data directory is where the daemon keeps everything it manages: the sandboxe
 
 ## What it holds
 
-### Sandboxes
+```text
+/var/lib/shard/
+├── shard.sock          the API socket
+├── daemon.lock         keeps a second daemon off this directory
+├── daemon.pid          the daemon's process ID
+├── auth/               the signing key and token ledger of shard serve
+├── .reserve            64 MiB held back, so a full disk can still free space
+├── sandboxes/<id>/     one per sandbox: its record, logs and runtime files
+├── names/              a link per sandbox name
+├── checkpoints/        the saved memory of each paused sandbox
+├── network/leases/     a file per IP address a sandbox holds
+├── images/
+│   ├── layout/         every pulled image, as an OCI image layout
+│   ├── rootfs/         each image unpacked, once per digest
+│   ├── erofs/          Firecracker: each image as a read-only EROFS file
+│   └── disks/          vz: each image as an ext4 disk
+├── snapshots/<id>/     one per snapshot: its record and the files it copied
+├── snapshot-names/     a link per snapshot name
+├── secrets/            a file per secret, mode 0600
+├── policies/           the network policies
+├── proxy/              the certificate authority of the egress proxy
+├── egress.cursor       where the daemon left off in the kernel log
+├── kernel/             Firecracker and vz: the guest kernel
+├── runsc/              gVisor: the runtime's state per sandbox
+├── runc/               runc: the runtime's state per sandbox
+├── sysbox-runc/        Sysbox: the runtime's state per sandbox
+├── exec/               gVisor, runc and Sysbox: each exec's scratch files
+├── firecracker/        Firecracker: each microVM's files
+├── jail/               Firecracker: the jail each microVM starts in
+└── vz/                 vz: the VM helper and the guest's shard-init
+```
 
-- **`sandboxes/<id>/`**: one directory per sandbox. It holds the record, `sandbox.json`, with the sandbox's name, state, provider, image and bounds, as well as its logs and the files its provider runs it from.
-- **`names/`**: one link per sandbox name, to that sandbox's directory.
-- **`checkpoints/`**: the saved memory of each paused sandbox.
-- **`network/leases/`**: one file per IP address a sandbox holds on the sandbox network.
-
-### Images and snapshots
-
-- **`images/layout/`**: every pulled image, as an OCI image layout.
-- **`images/rootfs/`**: each image unpacked into a directory, one per image digest, so two tags of one image unpack once.
-- **`images/erofs/`**: on Firecracker, each image as a read-only EROFS file that a microVM boots from.
-- **`images/disks/`**: on vz, each image as an ext4 disk that a virtual machine boots from.
-- **`snapshots/<id>/`**: one directory per snapshot, with its record, `snapshot.json`, and the files it copied from the sandbox.
-- **`snapshot-names/`**: one link per snapshot name.
-
-### Secrets and network policies
-
-- **`secrets/`**: one file per secret, with mode `0600`. This is the only place a secret value is written.
-- **`policies/`**: the network policies.
-- **`proxy/`**: the certificate authority of the egress proxy.
-- **`egress.cursor`**: where the daemon left off in the kernel log, so a restart can still log the packets the host dropped while the daemon was down.
-
-### The daemon
-
-- **`shard.sock`**: the API socket.
-- **`daemon.lock`** and **`daemon.pid`**: the lock that keeps one daemon on the directory, and that daemon's process ID.
-- **`auth/`**: the signing key and the token ledger of `shard serve`. On a Mac, also the API key that setup made.
-- **`.reserve`**: 64 MiB held back, so the daemon can start on a full disk and serve the `remove` that frees space.
-
-### The provider
-
-Only the provider in use makes its own paths:
-
-- **`runsc/`, `runc/` and `sysbox-runc/`**: the runtime's state for each sandbox, on gVisor, runc and Sysbox.
-- **`exec/`**: the scratch files of each running `exec`, on gVisor, runc and Sysbox. The daemon clears what an earlier daemon left when it starts.
-- **`firecracker/`** and **`jail/`**: on Firecracker, each microVM's files, and the jail the jailer starts it in.
-- **`vz/`**: on a Mac, the helper that runs each virtual machine, and the guest's `shard-init`. The daemon installs both from its own binary.
-- **`kernel/`**: the guest kernel for Firecracker and vz, which the daemon downloads when it first starts.
+- **Secrets stay in one place.** `secrets/` is the only place a secret value is written.
+- **Only the provider in use makes its own paths.** The daemon downloads `kernel/` when it first starts, and installs `vz/` from its own binary.
+- **Each sandbox and snapshot has a record.** `sandboxes/<id>/sandbox.json` holds a sandbox's name, state, provider, image and bounds, and `snapshots/<id>/snapshot.json` holds a snapshot's.
+- **An image unpacks once per digest,** so two tags of one image unpack once.
+- **A restart catches up.** `egress.cursor` lets a new daemon still log the packets the host dropped while it was down, and a new daemon clears the `exec/` files an earlier one left.
 
 ## Outside the data directory
 
@@ -67,3 +65,5 @@ shard also puts a few things elsewhere on a sandbox host:
 - **`/var/lib/shard.xfs`**: on Firecracker, when the filesystem under `/var/lib/shard` cannot clone files, an XFS image mounted over `/var/lib/shard`, with its line in `/etc/fstab`.
 
 A machine that only connects to a remote server keeps the CLI at `~/.local/bin/shard` and the saved connection in `~/.config/shard/config.json`.
+
+For what `shard setup` installs, step by step, see [What setup does](/docs/install/#what-setup-does).

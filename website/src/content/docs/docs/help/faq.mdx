@@ -15,9 +15,14 @@ shard runs sandboxes for AI agents on hardware you own, a Linux server or an App
 	<TabItem label="CLI">
 
 ```sh
+# Create a sandbox.
 shard create --name demo --memory 512MiB alpine:3.20
+
+# Write a file in it, then read it back. Prints hello from shard.
 shard exec demo sh -c 'echo hello from shard > /tmp/hello.txt'
 shard exec demo cat /tmp/hello.txt
+
+# Remove the sandbox.
 shard remove --force demo
 ```
 
@@ -29,10 +34,15 @@ import { Shard } from "useshards";
 
 const shard = new Shard();
 try {
+  // Create a sandbox.
   const demo = await shard.create({ name: "demo", image: "alpine:3.20", memoryMiB: 512 });
+
+  // Write a file in it, then read it back. Prints hello from shard.
   await demo.exec(["sh", "-c", "echo hello from shard > /tmp/hello.txt"]);
   const result = await demo.exec(["cat", "/tmp/hello.txt"]);
   console.log(result.stdout);
+
+  // Remove the sandbox.
   await demo.remove({ force: true });
 } finally {
   shard.close();
@@ -46,16 +56,23 @@ try {
 from useshards import Shard
 
 with Shard() as shard:
+    # Create a sandbox.
     demo = shard.create("alpine:3.20", name="demo", memory_mib=512)
+
+    # Write a file in it, then read it back. Prints hello from shard.
     demo.exec(["sh", "-c", "echo hello from shard > /tmp/hello.txt"])
     print(demo.exec(["cat", "/tmp/hello.txt"]).stdout)
+
+    # Remove the sandbox.
     demo.remove(force=True)
 ```
 
 	</TabItem>
 </Tabs>
 
-The `cat` command prints `hello from shard`. The file is still there because the sandbox outlives each command. The TypeScript and Python examples reach `shard serve` at `SHARD_REMOTE`, with the API key in `SHARD_API_KEY`. [What is shard?](/docs/) has more.
+The `cat` command prints `hello from shard`. The file is still there because the sandbox outlives each command.
+
+The TypeScript and Python examples reach `shard serve` at `SHARD_REMOTE`, with the API key in `SHARD_API_KEY`. [What is shard?](/docs/) has more.
 
 ## Who is it for?
 
@@ -67,21 +84,13 @@ No. shard manages a single host and does not schedule work across a fleet. Each 
 
 ## Which machines can host sandboxes?
 
-Linux on x86-64, and Apple silicon Macs with macOS 14 or later. An Intel Mac can run the CLI and connect to a remote server. There is no build for Linux on ARM. On Windows, run the installer inside WSL 2. [Supported platforms](/docs/install/#supported-platforms) has the full table.
+Linux on x86-64, and Apple silicon Macs with macOS 14 or later. An Intel Mac can run the CLI and connect to a remote server.
+
+There is no build for Linux on ARM. On Windows, run the installer inside WSL 2. [Supported platforms](/docs/install/#supported-platforms) has the full table.
 
 ## Which provider should I pick?
 
-Let `shard setup` pick. It recommends Firecracker when it can open `/dev/kvm`, gVisor on Linux without it, and `vz` on a Mac.
-
-| Provider | Host | Isolation | Pause, resume, fork | Docker inside |
-| --- | --- | --- | --- | --- |
-| `gvisor` | Linux | a user-space kernel | yes | no |
-| `sysbox` | Linux | a user namespace | no | yes |
-| `runc` | Linux | the host kernel, with no user namespace | no | no |
-| `firecracker` | Linux with `/dev/kvm` | a microVM | yes | yes |
-| `vz` | Apple silicon, macOS 14 or later | a VM | yes | yes |
-
-Setup never recommends `sysbox` or `runc`. Sysbox is for one tenant per host. Use runc only for code you trust: on runc, root in the sandbox is root on the host. [What provider should I pick?](/docs/choose-provider/) compares them and lists every limit.
+Let `shard setup` pick, or see [What provider should I pick?](/docs/choose-provider/), which compares the five and lists every limit.
 
 ## Can I change the provider later?
 
@@ -97,7 +106,7 @@ No. A new sandbox has no processes, and `shard run` starts the command you give 
 
 ## What happens when a process exits?
 
-The sandbox keeps running, and `shard exec` still works in it. The process's restart policy decides whether shard-init starts it again, and `shard ps` shows its state and exit. Only `shard stop` or `shard remove` ends a sandbox, and there is no idle timer.
+The sandbox keeps running, and `shard exec` still works in it. The process's restart policy decides whether shard-init starts it again, and `shard ps` shows its state and exit. Only `shard stop` or `shard remove` ends a sandbox, and there is no idle timer. For restart policies, see [Run a long-running server](/docs/essentials/long-running-server/).
 
 ## Can a sandbox run systemd?
 
@@ -112,37 +121,47 @@ Not as its first process. shard's own supervisor is the first process in every s
 | `fork` | copies a running sandbox, with its memory and files | the copy runs as a new sandbox, and the source keeps running |
 | `snapshot create` | saves the files of a stopped sandbox | `create --snapshot` starts new sandboxes from them |
 
+To learn how a sandbox moves between states, see [Sandboxes and the lifecycle](/docs/concepts/lifecycle/).
+
 ## Does a sandbox need a memory bound?
 
-On `firecracker` and `vz`, a sandbox always has one. A create without `--memory` gets 512 MiB, and a bound under 128 MiB is refused. On the other providers, a sandbox without `--memory` has no memory bound, so set one anyway. shard refuses a bound larger than the host's memory.
+On `firecracker` and `vz`, a sandbox always has one. A create without `--memory` gets 512 MiB, and a bound under 128 MiB is refused.
+
+On the other providers, a sandbox without `--memory` has no memory bound, so set one anyway. shard refuses a bound larger than the host's memory. For every bound, see [Resource bounds by provider](/docs/concepts/providers/#resource-bounds-by-provider).
 
 ## Can a sandbox read my API keys?
 
-No. Store the key on the host and grant it to the hosts that need it. The sandbox holds only a placeholder, and shard puts the real key into the headers of HTTPS requests to those hosts on the host side. The [secrets reference](/docs/security/secrets/) has the rules.
+It depends on how you give it the key. A key you put in the sandbox, as an environment variable or in a file, is readable by anything that runs there.
+
+Store the key as a shard secret instead, and it stays on the host. The sandbox holds only a placeholder, and shard puts the real key into HTTPS requests to the hosts you named. See [Credential brokering](/docs/essentials/credential-brokering/).
 
 ## Can a sandbox reach my private network?
 
-No. Without a policy, a sandbox can reach the internet, but the host drops its traffic to private networks, cloud metadata, loopback and other sandboxes. A policy narrows that down to the hosts you allow. Sandboxes get IPv4 only. The [egress reference](/docs/security/egress/) has every rule.
+No. Without a policy, a sandbox can reach the internet, but the host drops its traffic to private networks, cloud metadata, loopback and other sandboxes. A policy narrows that down to the hosts you allow.
+
+Sandboxes get IPv4 only. The [egress reference](/docs/security/egress/) has every rule.
 
 ## Does a sandbox survive a reboot?
 
-Its files do. A reboot ends its processes, and when the daemon comes back it marks the sandbox as stopped. `shard start <name>` starts it again. Restarting only the daemon does not end any sandbox.
+Its files do. A reboot ends its processes, and when the daemon comes back it marks the sandbox as stopped. `shard start <name>` starts it again.
+
+Restarting only the daemon does not end any sandbox.
 
 ## How do I use shard from another machine?
 
-On the server, mint a token with `shard tokens mint` and run `shard serve` behind an HTTPS proxy. On the other machine, run `shard setup` and choose `Connect to a remote server`, or set `SHARD_REMOTE` and `SHARD_API_KEY`. [How to connect to a remote host?](/docs/guides/remote/) has the details.
+On the server, mint a token with `shard tokens mint` and run `shard serve` behind an HTTPS proxy. On the other machine, run `shard setup` and choose `Connect to a remote server`, or set `SHARD_REMOTE` and `SHARD_API_KEY`. [Mint a token and connect remotely](/docs/essentials/remote-access/) has the details.
 
 ## Which languages have an SDK?
 
-TypeScript, on Node.js 20.3 or later, and Python 3.11 or later. The Python SDK has both a synchronous and an asynchronous client. Install them with `npm install useshards` or `pip install useshards`. Any other language can call the [REST API](/docs/reference/api/), which the [OpenAPI schema](https://github.com/presmihaylov/shard/blob/main/docs/openapi.json) describes.
+TypeScript, on Node.js 20.3 or later, and Python 3.11 or later. The Python SDK has both a synchronous and an asynchronous client.
+
+Install them with `npm install useshards` or `pip install useshards`. Any other language can call the [REST API](/docs/reference/api/), which the [OpenAPI schema](https://github.com/presmihaylov/shard/blob/main/docs/openapi.json) describes.
 
 ## How do I upgrade or uninstall?
 
-On a machine that only connects to a remote server, run the installer again. On a sandbox host, run `shard setup` again, and it offers to check or repair, upgrade, or uninstall. An uninstall refuses to run while any sandbox remains. It keeps your saved data in `/var/lib/shard`, as well as the tools that other programs may share. [Upgrade](/docs/install/#upgrade) and [Uninstall](/docs/install/#uninstall) have the steps.
+On a machine that only connects to a remote server, run the installer again. On a sandbox host, run `shard setup` again, and it offers to check or repair, upgrade, or uninstall.
 
-## Is shard ready for production?
-
-No. shard is pre-alpha, and the API, the CLI and the SDKs can change without any compatibility guarantees.
+An uninstall refuses to run while any sandbox remains. It keeps your saved data in `/var/lib/shard`, as well as the tools that other programs may share. [Upgrade](/docs/install/#upgrade) and [Uninstall](/docs/install/#uninstall) have the steps.
 
 ## What is the license?
 

@@ -74,6 +74,8 @@ One daemon runs one provider for every sandbox on its host. Every provider suppo
 - **`swap`:** whether `--swap` can give a sandbox a swap file: yes on vz and Firecracker, no on the rest.
 - **Not listed:** every provider also supports `exec`, `logs` and `inspect`, which the answer does not list.
 
+For what each provider is and how they differ, see [Providers and capabilities](/docs/concepts/providers/).
+
 ## The API
 
 `GET /v0/capabilities` answers the same ten fields:
@@ -116,6 +118,7 @@ shard refuses the verb. It never falls back to a weaker verb, such as a stop in 
 
 		const shard = new Shard();
 		try {
+		  // Sysbox has no pause, so this throws UnsupportedError.
 		  const sandbox = await shard.get("quiet-heron-3f0a");
 		  await sandbox.pause();
 		} catch (err) {
@@ -132,6 +135,8 @@ shard refuses the verb. It never falls back to a weaker verb, such as a stop in 
 
 		with Shard() as shard:
 		    sandbox = shard.get("quiet-heron-3f0a")
+
+		    # Sysbox has no pause, so this raises UnsupportedError.
 		    try:
 		        sandbox.pause()
 		    except UnsupportedError as err:
@@ -150,17 +155,4 @@ The message names the provider and the verb. [Errors and exit codes](/docs/refer
 
 ## The provider of a host
 
-`shard daemon status` names the provider of the running daemon. `shard daemon --provider <name>` picks one. Without the flag, the daemon picks one from its root, then from the host:
-
-| The root and the host | The provider |
-| --- | --- |
-| A root that holds sandbox records | The provider that made them |
-| A root whose every record cannot be read | None. The daemon refuses to start until `--provider` names one |
-| A root with no records, beside a `<root>.xfs` image | `firecracker` |
-| A root with no records, on Linux, where `/dev/kvm` opens | `firecracker` |
-| A root with no records, on Linux, with no `/dev/kvm` or one that does not open | `gvisor` |
-| A root with no records, on macOS | `vz` |
-
-On a root with no records, the daemon never picks `sysbox` or `runc`: Sysbox is single-tenant, and runc runs a sandbox straight on the host kernel. To use one of them, name it with `--provider`. `shard info` prints the provider that a new daemon would pick on this host, and the reason. It runs on the daemon host only.
-
-A root keeps the provider that made its records, because no other provider can read them. The daemon refuses a `--provider` that names another one before it touches the root, and the error names both providers.
+`shard daemon status` names the provider of the running daemon, and `shard daemon --provider <name>` picks one. For how a daemon started without the flag picks one from its root and the host, see [How a host picks its provider](/docs/concepts/providers/#how-a-host-picks-its-provider).

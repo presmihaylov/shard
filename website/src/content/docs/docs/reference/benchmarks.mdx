@@ -8,8 +8,13 @@ sidebar:
 Use these numbers to compare providers and to budget the latency of each step your agent takes. Each one is how long one `shard` command took, from the start of the CLI to its exit, against a daemon on the same machine. To time a command the same way on your host:
 
 ```sh
+# Create a sandbox.
 shard create --name demo --memory 512MiB alpine:3.20
+
+# Time one exec of a command that does nothing. Prints how long it took.
 time shard exec demo true
+
+# Remove the sandbox.
 shard remove --force demo
 ```
 

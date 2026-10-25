@@ -95,11 +95,6 @@ pip install useshards   # Python
 
 On Windows, run shard inside WSL 2. An Intel Mac can connect to a remote host, but cannot run sandboxes.
 
-<picture>
-  <source media="(prefers-color-scheme: dark)" srcset=".github/assets/box-warning-dark.svg">
-  <img alt="Warning: shard is pre-alpha. Commands, flags, the API and the SDKs can change in any release." src=".github/assets/box-warning-light.svg" width="100%">
-</picture>
-
 ## <img height="18" src="https://octicons-col.vercel.app/terminal/2d81be">&nbsp;&nbsp;CLI
 
 #### Run a command
@@ -267,21 +262,27 @@ with Shard() as shard:
 
 **[Python SDK docs →](https://useshards.com/docs/sdks/python/)**
 
+## <img height="18" src="https://octicons-col.vercel.app/checklist/2d81be">&nbsp;&nbsp;Essentials
+
+1. [Create a sandbox, run commands and move files](https://useshards.com/docs/essentials/run-commands/)
+2. [Stop and start a sandbox](https://useshards.com/docs/essentials/stop-and-start/)
+3. [Snapshot a sandbox and create from it](https://useshards.com/docs/essentials/snapshots/)
+4. [Pause, resume and fork a sandbox](https://useshards.com/docs/essentials/pause-resume-fork/)
+5. [Run a long-running server](https://useshards.com/docs/essentials/long-running-server/)
+6. [Expose a port of a sandbox](https://useshards.com/docs/essentials/expose-a-port/)
+7. [Give a sandbox an API key with credential brokering](https://useshards.com/docs/essentials/credential-brokering/)
+8. [Lock down network access with a policy](https://useshards.com/docs/essentials/network-policy/)
+9. [Mint a token and connect remotely](https://useshards.com/docs/essentials/remote-access/)
+
 ## <img height="18" src="https://octicons-col.vercel.app/book/2d81be">&nbsp;&nbsp;Guides
 
-- [Run shard on a Mac](https://useshards.com/docs/guides/mac/)
-- [Run shard on a Linux server with KVM](https://useshards.com/docs/guides/kvm/)
-- [Run shard on a Linux server without KVM](https://useshards.com/docs/guides/linux/)
-- [Run Docker inside a sandbox](https://useshards.com/docs/guides/docker/)
-- [Connect to a remote host](https://useshards.com/docs/guides/remote/)
 - [Run an agent's code in a sandbox](https://useshards.com/docs/guides/run-agent-code/)
 - [Run Claude Code in a sandbox](https://useshards.com/docs/guides/claude-code/)
 - [Run a browser-use agent in a sandbox](https://useshards.com/docs/guides/browser-agent/)
-- [Run a web service in a sandbox](https://useshards.com/docs/guides/web-service/)
-- [Give a sandbox an API key safely](https://useshards.com/docs/guides/api-key/)
-- [Lock down network access](https://useshards.com/docs/guides/network/)
-- [Fork a sandbox to try two paths](https://useshards.com/docs/guides/fork/)
-- [Move files in and out](https://useshards.com/docs/guides/files/)
+- [Run Docker inside a sandbox](https://useshards.com/docs/guides/docker/)
+- [Run shard on a Mac](https://useshards.com/docs/guides/mac/)
+- [Run shard on a Linux server with KVM](https://useshards.com/docs/guides/kvm/)
+- [Run shard on a Linux server without KVM](https://useshards.com/docs/quickstart/server/)
 
 **[All docs →](https://useshards.com/docs)**
 

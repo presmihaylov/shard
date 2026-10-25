@@ -1,6 +1,7 @@
 ---
 title: Troubleshooting
 description: What to do when the installer, setup, the daemon, a remote server or a sandbox fails, by the error it prints.
+tableOfContents: false
 sidebar:
   order: 1
 ---
@@ -8,7 +9,10 @@ sidebar:
 Start with two commands that show which side is wrong:
 
 ```sh
+# Prints the version of the CLI, then of the daemon or server it reaches.
 shard version
+
+# Prints which verbs the server supports.
 shard capabilities
 ```
 
@@ -21,25 +25,82 @@ shard: cannot connect to the shard daemon at /var/lib/shard/shard.sock: is it se
 
 `shard capabilities` lists the nine lifecycle verbs and swap, and marks each one `true` or `false` for the provider the server runs.
 
-The CLI prefixes returned errors with `shard:`. Setup also prints failures beside the step that failed. Find the line you got in the sections below.
+The CLI prefixes returned errors with `shard:`. The installer prints `error:` and a reason, and exits with code 1. Setup prints a failure beside the step that failed.
 
-## The installer
+Find the line you got below, and open it.
 
-The installer prints `error:` and a reason, and exits with code 1. Two messages are notices instead: the install still succeeded.
+<details>
+<summary>Why does the installer say `~/.local/bin` is not on my PATH?</summary>
 
-**`~/.local/bin is not on your PATH`.** This is a notice. The installer put `shard` in `~/.local/bin`, but your shell does not look there. The installer prints the commands that add it, both for new shells and for the shell you are in. Run them.
+```text
+~/.local/bin is not on your PATH
+```
 
-**`has no build for linux-arm64`.** shard ships Linux builds for x86-64 only, and the error lists the builds that the release does have.
+This is a notice: the install succeeded. The installer put `shard` in `~/.local/bin`, but your shell does not look there.
 
-**`the GitHub releases API rate limit for this IP address is spent`.** The installer asks the GitHub API for the newest release without a token, and GitHub allows 60 such calls an hour for each IP address. The error says when the limit resets. Run the installer again after that.
+The installer prints the commands that add it, both for new shells and for the shell you are in. Run them.
 
-**`could not reach the GitHub releases API at api.github.com`.** Check the network, and run the installer again.
+</details>
 
-**`the checksum of ... is ..., and SHA256SUMS ... says ...`.** The download does not match the release, so the installer installed nothing. Run it again.
+<details>
+<summary>Why does the installer say it has no build for linux-arm64?</summary>
 
-**`An Intel Mac can connect to a remote shard server. It cannot host sandboxes itself.`** This is also a notice. Run `shard setup` and choose a remote server.
+```text
+has no build for linux-arm64
+```
 
-## Setup
+shard ships Linux builds for x86-64 only, and the error lists the builds that the release does have.
+
+</details>
+
+<details>
+<summary>Why does the installer say the GitHub rate limit is spent?</summary>
+
+```text wrap
+the GitHub releases API rate limit for this IP address is spent
+```
+
+The installer asks the GitHub API for the newest release without a token, and GitHub allows 60 such calls an hour for each IP address.
+
+The error says when the limit resets. Run the installer again after that.
+
+</details>
+
+<details>
+<summary>Why can't the installer reach the GitHub releases API?</summary>
+
+```text wrap
+could not reach the GitHub releases API at api.github.com
+```
+
+Check the network, and run the installer again.
+
+</details>
+
+<details>
+<summary>Why does the installer say the checksum does not match?</summary>
+
+```text
+the checksum of ... is ..., and SHA256SUMS ... says ...
+```
+
+The download does not match the release, so the installer installed nothing. Run it again.
+
+</details>
+
+<details>
+<summary>Can an Intel Mac host sandboxes?</summary>
+
+```text wrap
+An Intel Mac can connect to a remote shard server. It cannot host sandboxes itself.
+```
+
+This is a notice: the install succeeded. Run `shard setup` and choose a remote server.
+
+</details>
+
+<details>
+<summary>What happens when a setup step fails?</summary>
 
 Setup stops at the first check or step that fails. It marks that step, says why it failed, and makes no further changes:
 
@@ -51,27 +112,90 @@ Setup stopped. Earlier completed steps remain in place.
 Run shard setup again to retry.
 ```
 
-Every step is safe to run again. Fix the cause and run `shard setup` again, and it picks up where it stopped. If `shard` is not on your `PATH` yet, the last line names the full path of the binary instead. A run without a terminal also repeats its options there.
+Every step is safe to run again. Fix the cause and run `shard setup` again, and it picks up where it stopped.
 
-While a download runs, its step shows how much has arrived. A download fails if it receives no data for 30 seconds, and its line then ends `no data for 30s; setup stops a download that sends nothing for that long`. A slow download that is still making progress runs to the end.
+If `shard` is not on your `PATH` yet, the last line names the full path of the binary instead. A run without a terminal also repeats its options there.
 
 If a check fails before setup changes anything, the output says `No installation changes were made.`
 
-**`Setup needs administrator access, and sudo does not allow this user: ...`.** Setup uses `sudo` for the steps that need root. Ask an administrator to give your user `sudo` access, or run `shard setup` as root.
-
-**`Setup needs administrator access, and sudo needs a password it has no terminal to ask for`.** Run `shard setup` in a terminal, as root, or as a user with passwordless `sudo`.
-
-**Firecracker shows `Requires access to /dev/kvm.`** The host has no hardware virtualization that shard can use, and the line under it says why, for example `This machine does not provide it.` Choose gVisor, or use a host with `/dev/kvm`: bare metal, or a VM with nested virtualization.
-
-**`no terminal to ask ...: pass ...`.** Setup is running without a terminal, as in a script or over `ssh` with no TTY, so a question has no answer. The error names the option that answers the question, and setup never picks one for you. A local run names every missing option in one error. For the API key, the error is `no terminal to read the API key: set SHARD_API_KEY`.
-
-**`setup was cancelled; nothing changed`.** You declined the confirmation, and setup exits with code 1.
-
 [Errors and exit codes](/docs/reference/errors/#shard-setup) lists the codes that a script can check.
 
-## The daemon
+</details>
 
-### `is it running?`
+<details>
+<summary>Why does a setup download stop?</summary>
+
+```text wrap
+no data for 30s; setup stops a download that sends nothing for that long
+```
+
+While a download runs, its step shows how much has arrived. A download fails if it receives no data for 30 seconds, and its line then ends with this text.
+
+A slow download that is still making progress runs to the end.
+
+</details>
+
+<details>
+<summary>Why does setup say sudo does not allow this user?</summary>
+
+```text wrap
+Setup needs administrator access, and sudo does not allow this user: ...
+```
+
+Setup uses `sudo` for the steps that need root. Ask an administrator to give your user `sudo` access, or run `shard setup` as root.
+
+</details>
+
+<details>
+<summary>Why does setup say sudo needs a password it has no terminal to ask for?</summary>
+
+```text wrap
+Setup needs administrator access, and sudo needs a password it has no terminal to ask for
+```
+
+Run `shard setup` in a terminal, as root, or as a user with passwordless `sudo`.
+
+</details>
+
+<details>
+<summary>Why does setup say Firecracker requires access to `/dev/kvm`?</summary>
+
+```text
+Requires access to /dev/kvm.
+```
+
+The host has no hardware virtualization that shard can use, and the line under it says why, for example `This machine does not provide it.`
+
+Choose gVisor, or use a host with `/dev/kvm`: bare metal, or a VM with nested virtualization.
+
+</details>
+
+<details>
+<summary>Why does setup say it has no terminal to ask?</summary>
+
+```text
+no terminal to ask ...: pass ...
+```
+
+Setup is running without a terminal, as in a script or over `ssh` with no TTY, so a question has no answer. The error names the option that answers the question, and setup never picks one for you.
+
+A local run names every missing option in one error. For the API key, the error is `no terminal to read the API key: set SHARD_API_KEY`.
+
+</details>
+
+<details>
+<summary>Why does setup say it was cancelled?</summary>
+
+```text
+setup was cancelled; nothing changed
+```
+
+You declined the confirmation, and setup exits with code 1.
+
+</details>
+
+<details>
+<summary>Why can't a command reach the daemon?</summary>
 
 When a command cannot reach the daemon, its error ends with a question and the command that answers it. How the line ends depends on how this host runs the daemon:
 
@@ -83,30 +207,65 @@ When a command cannot reach the daemon, its error ends with a question and the c
 | `is it running? shard daemon --provider gvisor` | a process you start | the terminal that runs it |
 | `is it set up? shard setup` | nothing yet | |
 
-For the service that setup installed, run `shard setup` and choose `Check or repair the installation`. The repair starts the service if it stopped. It also checks the tools, the files that setup installed and the provider's files in `/var/lib/shard`. It shows each change before making it, and it keeps your settings and your data.
+For the service that setup installed, run `shard setup` and choose `Check or repair the installation`. The repair starts the service if it stopped.
+
+The repair also checks the tools, the files that setup installed and the provider's files in `/var/lib/shard`. It shows each change before making it, and it keeps your settings and your data.
 
 To restart a service yourself:
 
 ```sh
-systemctl restart shard                      # Linux
-launchctl kickstart -k system/shard.daemon   # macOS
+# On Linux.
+systemctl restart shard
+
+# On macOS.
+launchctl kickstart -k system/shard.daemon
 ```
 
 A daemon you started yourself stops when its terminal closes. Start it again in its own terminal.
 
-### `another shard daemon already holds ...`
+</details>
 
-A root can have only one daemon, so a second `shard daemon` on the same root refuses to start. This happens when you start a daemon by hand while the service is already running one. Use the service, or stop it first.
+<details>
+<summary>Why does a daemon say another shard daemon already holds the root?</summary>
 
-### `another shard daemon, over the root ..., already serves this host's sandbox bridge and nft table`
+```text
+another shard daemon already holds ...
+```
 
-Every root on a Linux host shares one sandbox bridge and one nft table, so a host runs one daemon. A daemon on a second root refuses to start while another one runs, and the message names the root of the one that runs. This happens when you start a daemon by hand with `--root` while the service is running. Stop the service with `systemctl stop shard`, or use its root.
+A root can have only one daemon, so a second `shard daemon` on the same root refuses to start.
 
-### `task proxy failed, restart in ...`
+This happens when you start a daemon by hand while the service is already running one. Use the service, or stop it first.
 
-The daemon log repeats this line, and the same line for `dns`, while every `shard create` fails. The host has no `nft`. Setup installs it, so this happens only on a host set up without it. Install the `nftables` package. The next restart of each task succeeds, and the daemon itself needs no restart.
+</details>
 
-### A sandbox is stopped after a reboot
+<details>
+<summary>Why does a daemon say another daemon already serves the sandbox bridge?</summary>
+
+```text wrap
+another shard daemon, over the root ..., already serves this host's sandbox bridge and nft table
+```
+
+Every root on a Linux host shares one sandbox bridge and one nft table, so a host runs one daemon. A daemon on a second root refuses to start while another one runs, and the message names the root of the one that runs.
+
+This happens when you start a daemon by hand with `--root` while the service is running. Stop the service with `systemctl stop shard`, or use its root.
+
+</details>
+
+<details>
+<summary>Why does the daemon log repeat `task proxy failed`?</summary>
+
+```text
+task proxy failed, restart in ...
+```
+
+The daemon log repeats this line, and the same line for `dns`, while every `shard create` fails. The host has no `nft`.
+
+Setup installs `nft`, so this happens only on a host set up without it. Install the `nftables` package. The next restart of each task succeeds, and the daemon itself needs no restart.
+
+</details>
+
+<details>
+<summary>Why is a sandbox stopped after a reboot?</summary>
 
 A reboot ends every sandbox process. When the daemon comes back, it marks each sandbox that was running as stopped. `shard list` leaves stopped sandboxes out but says how many there are:
 
@@ -118,51 +277,185 @@ A reboot ends every sandbox process. When the daemon comes back, it marks each s
 
 An ordinary daemon restart leaves already running sandboxes alive, and the next daemon adopts them. An interrupted create, fork or restore can require cleanup instead.
 
-## Sandboxes
+</details>
 
-**`provider sysbox does not support fork on this host; use a server that supports fork`.** shard refuses a verb that the provider cannot do, and it never falls back to a weaker one. `shard capabilities` lists what the server supports. The verb and the provider in the message vary.
+<details>
+<summary>Why does shard say the provider does not support a verb?</summary>
 
-**`ran out of memory` in `shard list`.** The sandbox went past its memory bound, and the host's OOM killer ended it. On gVisor, a sandbox that uses its whole bound is slowed down first, and only one that keeps growing past it is killed. The daemon starts it again on its own with its files, within 5 seconds. Each time it runs out of memory again within 10 minutes of a start, the next start waits longer, from 10 seconds doubling up to 5 minutes. `shard list` counts the kills and shows a start still due, for example `stopped (ran out of memory 3 times, starts again in 20s)`. `shard stop <name>` calls that start off. The bound is fixed when the sandbox is created, so to get more memory, create a new sandbox with a larger `--memory`.
+```text wrap
+provider sysbox does not support fork on this host; use a server that supports fork
+```
 
-**`stopped (the sandbox process died)`.** The host or a crash ended the sandbox. `shard start <name>` brings it back.
+shard refuses a verb that the provider cannot do, and it never falls back to a weaker one. `shard capabilities` lists what the server supports. The verb and the provider in the message vary.
 
-**`exited` with `7` in `shard ps`.** The process exited with code 7, but the sandbox is still up. A sandbox outlives its processes, so you can still `exec` into it, or `shard run` the process again, until `shard stop` ends it. `shard logs <sandbox> <name>` shows what the process printed.
+</details>
 
-**An outgoing request from the sandbox times out.** A firewall rule of your own on the host can drop the request before shard sees it. shard lets the bridge `shard0` through `ufw` and `firewalld` itself, so look for another rule that drops traffic on `shard0`:
+<details>
+<summary>Why did a sandbox run out of memory?</summary>
+
+```text
+ran out of memory
+```
+
+`shard list` shows this when the sandbox went past its memory bound, and the host's OOM killer ended it. On gVisor, a sandbox that uses its whole bound is slowed down first, and only one that keeps growing past it is killed.
+
+The daemon starts the sandbox again on its own with its files, within 5 seconds. Each time it runs out of memory again within 10 minutes of a start, the next start waits longer, from 10 seconds doubling up to 5 minutes.
+
+`shard list` counts the kills and shows a start still due, for example `stopped (ran out of memory 3 times, starts again in 20s)`. `shard stop <name>` calls that start off.
+
+The bound is fixed when the sandbox is created, so to get more memory, create a new sandbox with a larger `--memory`.
+
+</details>
+
+<details>
+<summary>Why does a sandbox show `stopped (the sandbox process died)`?</summary>
+
+```text
+stopped (the sandbox process died)
+```
+
+The host or a crash ended the sandbox. `shard start <name>` brings it back.
+
+</details>
+
+<details>
+<summary>Why does `shard ps` show a process as exited while the sandbox runs?</summary>
+
+`shard ps` shows `exited` with `7`: the process exited with code 7, but the sandbox is still up. A sandbox outlives its processes, so you can still `exec` into it, or `shard run` the process again, until `shard stop` ends it.
+
+`shard logs <sandbox> <name>` shows what the process printed.
+
+</details>
+
+<details>
+<summary>Why does an outgoing request from a sandbox time out?</summary>
+
+A firewall rule of your own on the host can drop the request before shard sees it. shard lets the bridge `shard0` through `ufw` and `firewalld` itself, so look for another rule that drops traffic on `shard0`:
 
 ```sh
+# Prints the host's iptables rules, then its nftables rules.
 iptables -S
 nft list ruleset
 ```
 
-**A name does not resolve, or a request gets a `403`, in a sandbox with a network policy.** Check the policy and shard's private-address restrictions. `shard policy logs <name>` shows each decision and the rule or restriction that made it. A policy with only address rules needs `--allow dns` before names resolve. The [egress reference](/docs/security/egress/) lists every rule.
+</details>
 
-**An HTTPS client fails on a certificate in a sandbox with a secret.** shard's proxy inserts the key on the host, so it presents its own certificate to the client. Most clients trust it without any change. Java and some Rust builds need an extra step, and a client that pins a certificate cannot use a secret. The [secrets reference](/docs/security/secrets/) has the steps.
+<details>
+<summary>Why does a name not resolve, or a request get a `403`, in a sandbox with a network policy?</summary>
 
-**A request to an internal server gets a `502` that says `the upstream's certificate is signed by an authority the host does not trust`.** In a sandbox with a policy or a secret, the proxy checks the server's certificate against the host's trust store, not the sandbox's. Add the authority that signed it to the host's store, then restart the daemon. The [egress reference](/docs/security/egress/#an-upstream-signed-by-an-internal-authority) has the commands for each system.
+Check the policy and shard's private-address restrictions. `shard policy logs <name>` shows each decision and the rule or restriction that made it.
 
-## A remote server
+A policy with only address rules needs `--allow dns` before names resolve. The [egress reference](/docs/security/egress/) lists every rule.
 
-A client command goes to the server that `--remote` names. Without `--remote` it uses a nonempty `SHARD_REMOTE`, then the saved connection. An explicit `--remote ""` selects the local socket. The API key comes from a nonempty `SHARD_API_KEY`, or from the saved connection when it names the same server.
+</details>
 
-**`cannot connect to the shard server at ...: connection refused; check the URL, and that shard serve or the proxy in front of it runs`.** Nothing answers at that address. The cause in the line can also be `no such host` or `connection timed out`. Check the URL, and check that `shard serve` is running on the server.
+<details>
+<summary>Why does an HTTPS client fail on a certificate in a sandbox with a secret?</summary>
 
-**`the server certificate is not trusted (...); for a private certificate authority, set SHARD_CA_FILE to its PEM file`.** For HTTPS, shard checks the certificate and has no option to skip the check. If a private authority signed the server's certificate, point `SHARD_CA_FILE` at that authority's certificate:
+shard's proxy inserts the key on the host, so it presents its own certificate to the client. Most clients trust it without any change.
+
+Java and some Rust builds need an extra step, and a client that pins a certificate cannot use a secret. [Credential brokering](/docs/essentials/credential-brokering/#if-a-client-does-not-trust-the-proxy) has the steps.
+
+</details>
+
+<details>
+<summary>Why does a request to an internal server get a `502`?</summary>
+
+```text wrap
+the upstream's certificate is signed by an authority the host does not trust
+```
+
+In a sandbox with a policy or a secret, the proxy checks the server's certificate against the host's trust store, not the sandbox's.
+
+Add the authority that signed it to the host's store, then restart the daemon. [Network policy and proxy](/docs/essentials/network-policy/#trust-an-internal-certificate-authority) has the commands for each system.
+
+</details>
+
+<details>
+<summary>Which server and API key does a client use?</summary>
+
+A client command goes to the server that `--remote` names. Without `--remote` it uses a nonempty `SHARD_REMOTE`, then the saved connection. An explicit `--remote ""` selects the local socket.
+
+The API key comes from a nonempty `SHARD_API_KEY`, or from the saved connection when it names the same server.
+
+</details>
+
+<details>
+<summary>Why can't a client connect to the shard server?</summary>
+
+```text wrap
+cannot connect to the shard server at ...: connection refused; check the URL, and that shard serve or the proxy in front of it runs
+```
+
+Nothing answers at that address. The cause in the line can also be `no such host` or `connection timed out`.
+
+Check the URL, and check that `shard serve` is running on the server.
+
+</details>
+
+<details>
+<summary>Why is the server certificate not trusted?</summary>
+
+```text wrap
+the server certificate is not trusted (...); for a private certificate authority, set SHARD_CA_FILE to its PEM file
+```
+
+For HTTPS, shard checks the certificate and has no option to skip the check. If a private authority signed the server's certificate, point `SHARD_CA_FILE` at that authority's certificate:
 
 ```sh
 export SHARD_CA_FILE=/path/to/ca.pem
 ```
 
-**`the server at ... did not accept the API key in SHARD_API_KEY`.** The server refused the key. A key in `SHARD_API_KEY` takes precedence over the saved one, so unset the variable to use the saved key. If the line names the saved key instead, run `shard setup` to replace it.
+</details>
 
-**`the saved API key is for ..., so shard does not send it to ...; set SHARD_API_KEY, or run shard setup`.** You named a server other than the saved one, and shard sends a saved key only to the server it was saved for. Set `SHARD_API_KEY` for this server.
+<details>
+<summary>Why did the server not accept the API key?</summary>
 
-**`the token lacks sandbox:write; use a token with sandbox:write`.** The key works, but its scopes do not cover the command. Ask for a key that has that scope. `shard tokens scopes` lists every scope.
+```text wrap
+the server at ... did not accept the API key in SHARD_API_KEY
+```
 
-**`shard info runs on the daemon host only and cannot reach ...`.** Some commands, such as `shard info` and `shard daemon status`, act only on this machine and refuse a remote server. If you have a saved connection, add `--remote ""` to run one of them here.
+The server refused the key. A key in `SHARD_API_KEY` takes precedence over the saved one, so unset the variable to use the saved key.
 
-## Still stuck
+If the line names the saved key instead, run `shard setup` to replace it.
 
-Read the daemon's log. On Linux, run `journalctl -u shard`. On a Mac, the log is `/var/log/shard/daemon.log`. A daemon you started yourself writes its log to its terminal. When the daemon keeps the cause of an error in its log, the error line says where to look.
+</details>
+
+<details>
+<summary>Why does shard not send the saved API key?</summary>
+
+```text wrap
+the saved API key is for ..., so shard does not send it to ...; set SHARD_API_KEY, or run shard setup
+```
+
+You named a server other than the saved one, and shard sends a saved key only to the server it was saved for. Set `SHARD_API_KEY` for this server.
+
+</details>
+
+<details>
+<summary>Why does a command say the token lacks a scope?</summary>
+
+```text
+the token lacks sandbox:write; use a token with sandbox:write
+```
+
+The key works, but its scopes do not cover the command. Ask for a key that has that scope. `shard tokens scopes` lists every scope, and [Authentication](/docs/reference/auth/#scopes) says what each one allows.
+
+</details>
+
+<details>
+<summary>Why does `shard info` refuse a remote server?</summary>
+
+```text
+shard info runs on the daemon host only and cannot reach ...
+```
+
+Some commands, such as `shard info` and `shard daemon status`, act only on this machine and refuse a remote server. If you have a saved connection, add `--remote ""` to run one of them here.
+
+</details>
+
+**Still stuck?** Read the daemon's log. On Linux, run `journalctl -u shard`. On a Mac, the log is `/var/log/shard/daemon.log`. A daemon you started yourself writes its log to its terminal.
+
+When the daemon keeps the cause of an error in its log, the error line says where to look.
 
 On the daemon host, `shard daemon status` shows the running daemon's version, provider, process and background tasks.

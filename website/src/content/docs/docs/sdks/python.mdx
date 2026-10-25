@@ -8,6 +8,7 @@ sidebar:
 Run a command in a new sandbox from Python:
 
 ```sh
+# Install the SDK, then point it at your server.
 pip install useshards
 export SHARD_REMOTE=https://shard.example.com
 export SHARD_API_KEY='your-api-key'
@@ -17,15 +18,20 @@ export SHARD_API_KEY='your-api-key'
 from useshards import Shard
 
 with Shard() as shard:
+    # Create a sandbox.
     sandbox = shard.create("alpine:3.20", name="demo", memory_mib=512)
     try:
+        # Run a command in it. Prints 0 hello.
         result = sandbox.exec(["echo", "hello"])
         print(result.exit_code, result.stdout.strip())
     finally:
+        # Remove the sandbox.
         sandbox.remove(force=True)
 ```
 
-Replace `https://shard.example.com` with your server URL and `your-api-key` with your API key. Then run `python demo.py`. It prints `0 hello`. The `finally` removes the sandbox even when a command raises, because a sandbox outlives the script that made it.
+Replace `https://shard.example.com` with your server URL and `your-api-key` with your API key. Then run `python demo.py`. It prints `0 hello`.
+
+The `finally` removes the sandbox even when a command raises, because a sandbox outlives the script that made it.
 
 ## Install
 
@@ -72,7 +78,9 @@ Use `Shard` in a `with` block, or call `shard.close()` when you are done, so it 
 
 ## Sandboxes
 
-`shard.create()` makes a sandbox and waits until it is running, which can take minutes while the server pulls the image. The new sandbox runs no command of its own. `create()` returns a `Sandbox` in state `running`. When the create fails, it raises an error, or it returns a `Sandbox` in state `failed` with the reason in `sandbox.info.failed_reason`.
+`shard.create()` makes a sandbox and waits until it is running, which can take minutes while the server pulls the image. The new sandbox runs no command of its own.
+
+`create()` returns a `Sandbox` in state `running`. When the create fails, it raises an error, or it returns a `Sandbox` in state `failed` with the reason in `sandbox.info.failed_reason`.
 
 | Argument | Value |
 | --- | --- |
@@ -112,11 +120,16 @@ A `Sandbox` has these lifecycle methods:
 `sandbox.exec()` runs a command and returns how it ended. A string runs under `/bin/sh -c`, and a list runs as it is, with no shell:
 
 ```python
-result = sandbox.exec("echo $GREETING from $(pwd)", env={"GREETING": "hello"}, workdir="/tmp")
+# A shell command with its own variable and directory. Prints hello from /tmp.
+result = sandbox.exec(
+    "echo $GREETING from $(pwd)", env={"GREETING": "hello"}, workdir="/tmp"
+)
 print(result.stdout)
 ```
 
-The result holds `exit_code`, `signal`, `stdout`, `stderr` and `lost_bytes`. `stdout` and `stderr` are text, and `stdout_bytes` and `stderr_bytes` hold the raw bytes. A non-zero exit code comes back in the result and does not raise. A command that never started, for example because its binary does not exist, raises `CommandNotStartedError`.
+The result holds `exit_code`, `signal`, `stdout`, `stderr` and `lost_bytes`. `stdout` and `stderr` are text, and `stdout_bytes` and `stderr_bytes` hold the raw bytes.
+
+A non-zero exit code comes back in the result and does not raise. A command that never started, for example because its binary does not exist, raises `CommandNotStartedError`.
 
 | Argument | Value |
 | --- | --- |
@@ -132,26 +145,34 @@ The result holds `exit_code`, `signal`, `stdout`, `stderr` and `lost_bytes`. `st
 ### Background commands
 
 ```python
+# Start the command and return at once. Prints the command's ID.
 command = sandbox.exec("sleep 5; echo done", background=True)
 print(command.id)
+
+# Wait up to 60 seconds for it to end.
 result = command.wait(timeout=60)
 ```
 
 A `Command` has `wait()`, `kill()`, `write_stdin()`, `close_stdin()`, `resize(rows, cols)` and `inspect()`. `kill()` sends `"TERM"` by default, and can send `"KILL"` instead. `wait(timeout=...)` raises `TimeoutError` when the command has not ended in time.
 
-The daemon keeps the command after this client lets go of it. `command.disconnect()` leaves the stream while the command keeps running. `command.reconnect()` attaches to it again, and the daemon replays the output it still holds. From any client, `sandbox.commands.list()` lists the commands the daemon holds for the sandbox, and `sandbox.commands.get(id)` finds one again.
+The daemon keeps the command after this client lets go of it. `command.disconnect()` leaves the stream while the command keeps running. `command.reconnect()` attaches to it again, and the daemon replays the output it still holds.
+
+From any client, `sandbox.commands.list()` lists the commands the daemon holds for the sandbox, and `sandbox.commands.get(id)` finds one again.
 
 ### Cancel and output
 
 A cancel never kills the remote command. An asyncio cancel, a timeout or a dropped connection ends only the wait, and the command keeps running until it exits or you call `kill()`.
 
-A result keeps the newest 8 MiB of stdout and stderr combined, so for a long run it may hold only the end of the output. Set `output_limit_bytes` to keep more or less, or `0` to keep none. `on_stdout` and `on_stderr` see every chunk, including the ones past the limit. `lost_bytes` counts something different: the output that the daemon dropped before any client read it.
+A result keeps the newest 8 MiB of stdout and stderr combined, so for a long run it may hold only the end of the output. Set `output_limit_bytes` to keep more or less, or `0` to keep none.
+
+`on_stdout` and `on_stderr` see every chunk, including the ones past the limit. `lost_bytes` counts something different: the output that the daemon dropped before any client read it.
 
 ## Files
 
 The `sandbox.files` methods need a running sandbox:
 
 ```python
+# Write a file, then read it back as text. Prints hello.
 sandbox.files.write("/root/notes.txt", "hello\n")
 print(sandbox.files.read_text("/root/notes.txt"), end="")
 ```
@@ -165,13 +186,20 @@ print(sandbox.files.read_text("/root/notes.txt"), end="")
 | `upload(local, remote)`, `download(remote, local)` | Copy one file in or out without holding it in memory. A download writes a temporary file and renames it at the end. |
 | `upload_dir(local, remote)`, `download_dir(remote, local)` | Copy a whole directory in or out as a tar. |
 
+For `shard cp` and where a copy lands, see [Run commands and move files](/docs/essentials/run-commands/).
+
 ## Ports
 
 `sandbox.ports` forwards a host port to a port on the sandbox's `127.0.0.1`:
 
 ```python
+# Forward host port 9000 to port 8000 in the sandbox.
 forward = sandbox.ports.add(9000, 8000)
+
+# Prints whether the host listens, and the addresses to connect to.
 print(forward.listening, forward.reachable_on)
+
+# End the forward.
 sandbox.ports.remove(9000)
 ```
 
@@ -186,7 +214,7 @@ sandbox.ports.remove(9000)
 - **A `Port`:** `listening` is `False` while the sandbox is not running or the host refuses the port, and `error` says why. `reachable_on` lists the host addresses a client connects to.
 - **Stop and start:** a forward survives both.
 
-See [Reach a port inside a sandbox](/docs/guides/network/#reach-a-port-inside-a-sandbox).
+See [Expose a port of a sandbox](/docs/essentials/expose-a-port/).
 
 ## Processes
 
@@ -195,12 +223,19 @@ See [Reach a port inside a sandbox](/docs/guides/network/#reach-a-port-inside-a-
 ```python
 from useshards import Restart
 
-ticker = sandbox.run("for i in 1 2 3; do echo tick $i; done", name="ticker", restart=Restart(policy="no"))
+# Start a named process that never restarts.
+ticker = sandbox.run(
+    "for i in 1 2 3; do echo tick $i; done", name="ticker", restart=Restart(policy="no")
+)
+
+# Wait up to 60 seconds for it to end. Prints its exit status, then tick 1 to tick 3.
 print(ticker.wait(timeout=60).status.exit)
 print(ticker.logs(), end="")
 ```
 
-When a process exits, its sandbox stays `running`, so you can still run commands in it. Use `sandbox.stop()` or `sandbox.remove()` to end the sandbox. A sandbox runs up to 16 processes. A `run()` of a running name raises `ConflictError` with the code `name_taken`, and a `run()` of an ended name replaces it.
+When a process exits, its sandbox stays `running`, so you can still run commands in it. Use `sandbox.stop()` or `sandbox.remove()` to end the sandbox.
+
+A sandbox runs up to 16 processes. A `run()` of a running name raises `ConflictError` with the code `name_taken`, and a `run()` of an ended name replaces it.
 
 A `Process` has `wait()`, `kill()`, `logs()`, `follow_logs()` and `inspect()`. Its `info` holds the record that the last call on that handle returned.
 
@@ -214,7 +249,11 @@ A `Process` has `wait()`, `kill()`, `logs()`, `follow_logs()` and `inspect()`. I
   - `retries` caps how many times in a row `on-failure` starts the process again, and `0`, the default, means no cap.
   - `backoff` is the first wait in seconds, and it is 1 when you leave it at `0`. Each wait after that doubles, up to 60 seconds.
 
-From any client, `sandbox.processes.list()` returns every process of the sandbox as a `ProcessInfo`, in the order they were first run, and `sandbox.processes.get(name)` finds one again. A `ProcessInfo` holds `name`, `command`, `restart`, `killed`, and a `status` with `state`, `restarts`, `exit` and `started_at`. `state` is `"running"`, `"restarting"`, `"exited"`, `"killed"`, `"gave-up"` or `"stopped"`.
+From any client, `sandbox.processes.list()` returns every process of the sandbox as a `ProcessInfo`, in the order they were first run, and `sandbox.processes.get(name)` finds one again.
+
+A `ProcessInfo` holds `name`, `command`, `restart`, `killed`, and a `status` with `state`, `restarts`, `exit` and `started_at`. `state` is `"running"`, `"restarting"`, `"exited"`, `"killed"`, `"gave-up"` or `"stopped"`.
+
+For a server that keeps running, see [Run a long-running server](/docs/essentials/long-running-server/).
 
 ## Secrets, policies and snapshots
 
@@ -225,9 +264,16 @@ import os
 
 from useshards import PolicyRule
 
-shard.secrets.set("API_TOKEN", value=os.environ["API_TOKEN"], destinations=["api.example.com"])
+# Store the secret on the host for api.example.com only, and allow only that host.
+shard.secrets.set(
+    "API_TOKEN", value=os.environ["API_TOKEN"], destinations=["api.example.com"]
+)
 shard.policies.set("api-only", [PolicyRule("allow", "api.example.com")])
-sandbox = shard.create("alpine:3.20", secrets=["API_TOKEN"], policy="api-only", memory_mib=512)
+
+# Create a sandbox with the secret and the policy.
+sandbox = shard.create(
+    "alpine:3.20", secrets=["API_TOKEN"], policy="api-only", memory_mib=512
+)
 ```
 
 The sandbox never holds the secret value. Its commands see a placeholder, and the server puts the value into the HTTPS request headers sent to `api.example.com`. The SDK never reads a value back.
@@ -246,6 +292,8 @@ The sandbox never holds the secret value. Its commands see a placeholder, and th
 
 A `PolicyRule(action, rule)` takes `"allow"` or `"deny"` and a rule in the form the CLI uses, such as `suffix:example.com tcp:443`. `sandbox.egress_log()` returns the network decisions the daemon holds for a sandbox, and `sandbox.follow_egress_log()` yields the newest decisions the daemon holds, then each new one as it happens.
 
+For the whole flow, see [Credential brokering](/docs/essentials/credential-brokering/).
+
 ## Asyncio
 
 `AsyncShard` takes the same arguments as `Shard`. With none, it reads `SHARD_REMOTE` and `SHARD_API_KEY`. Await its request methods. Its follow methods return async iterators:
@@ -258,11 +306,14 @@ from useshards import AsyncShard
 
 async def main() -> None:
     async with AsyncShard() as shard:
+        # Create a sandbox.
         sandbox = await shard.create("alpine:3.20", memory_mib=512)
         try:
+            # Run three commands at once. Prints their outputs in order, 0 to 2.
             results = await asyncio.gather(*(sandbox.exec(f"echo {n}") for n in range(3)))
             print([r.stdout for r in results])
         finally:
+            # Remove the sandbox.
             await sandbox.remove(force=True)
 
 
@@ -276,11 +327,12 @@ Use `async with`, or call `await shard.aclose()` when you are done. Iterate a pr
 Not every provider supports every verb. `shard.capabilities()` reports which of the nine lifecycle verbs the server supports, with `True` or `False` for each: `create`, `start`, `stop`, `remove`, `pause`, `resume`, `fork`, `snapshot` and `port`. `swap` says whether `swap_mib` above 0 is allowed.
 
 ```python
+# Fork only where the server supports it.
 if shard.capabilities().fork:
     copy = sandbox.fork(name="demo-copy")
 ```
 
-A call to a verb that the provider does not support raises `UnsupportedError`, and its message names the provider and the verb. The server never falls back to a weaker mechanism.
+A call to a verb that the provider does not support raises `UnsupportedError`, and its message names the provider and the verb. The server never falls back to a weaker mechanism. For which provider supports what, see [Providers and capabilities](/docs/concepts/providers/#the-ten-capabilities).
 
 ## Errors
 

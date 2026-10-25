@@ -24,7 +24,7 @@ const svg = (name: string) => `<svg viewBox="0 0 24 24" aria-hidden="true">${ico
 	<Default />
 	{
 		id !== '404' && (
-			<copy-page data-src={`/${id}.md`}>
+			<copy-page data-src={`/${id}.md`} data-pagefind-ignore="all">
 				<div class="copy-page-split">
 					<button type="button" class="copy-page-main" data-copy>
 						<Fragment set:html={svg('copy')} />

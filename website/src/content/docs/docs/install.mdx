@@ -31,7 +31,9 @@ pip install useshards
 </TabItem>
 </Tabs>
 
-The installer puts the CLI at `~/.local/bin/shard`. The installer itself needs no root and changes nothing else on the machine. If a terminal is attached, it then offers to start [`shard setup`](#what-setup-does). Setup is the step that changes the machine: it turns this machine into a sandbox host or connects it to a remote shard server.
+The installer puts the CLI at `~/.local/bin/shard`. The installer itself needs no root and changes nothing else on the machine.
+
+If a terminal is attached, the installer then offers to start [`shard setup`](#what-setup-does). Setup is the step that changes the machine: it turns this machine into a sandbox host or connects it to a remote shard server.
 
 The TypeScript SDK needs Node.js 20.3 or later, and the Python SDK needs Python 3.11 or later. Both talk to a host through `shard serve`.
 
@@ -44,7 +46,11 @@ The TypeScript SDK needs Node.js 20.3 or later, and the Python SDK needs Python 
 | macOS, Intel | No | Yes |
 | Windows | No | Inside WSL 2 |
 
-A Mac needs macOS 14 or later to host sandboxes. On Windows, run the installer inside WSL 2, where it installs the Linux build. The SDKs need only Node.js or Python, so they connect from Windows as well. On another CPU architecture, the installer stops with an error that lists the builds in the release. Under Rosetta, an Apple silicon Mac gets the native arm64 build.
+A Mac needs macOS 14 or later to host sandboxes.
+
+On Windows, run the installer inside WSL 2, where it installs the Linux build. The SDKs need only Node.js or Python, so they connect from Windows as well.
+
+On another CPU architecture, the installer stops with an error that lists the builds in the release. Under Rosetta, an Apple silicon Mac gets the native arm64 build.
 
 ## What the installer does
 
@@ -91,7 +97,9 @@ On a machine that only connects to a remote server, run the installer again. On 
 
 ## Uninstall
 
-On a sandbox host, remove your sandboxes, then run `shard setup` and choose **Uninstall shard**. Setup removes what it installed, leaves [your data](#where-shard-keeps-its-state) in place, and prints the commands that remove the rest. On a machine that only connects to a remote server, choose **Remove this connection** in `shard setup`, then delete `~/.local/bin/shard`.
+On a sandbox host, remove your sandboxes, then run `shard setup` and choose **Uninstall shard**. Setup removes what it installed, leaves [your data](#where-shard-keeps-its-state) in place, and prints the commands that remove the rest.
+
+On a machine that only connects to a remote server, choose **Remove this connection** in `shard setup`, then delete `~/.local/bin/shard`.
 
 ## Where shard keeps its state
 
@@ -100,3 +108,5 @@ On a sandbox host, remove your sandboxes, then run `shard setup` and choose **Un
 - **API key:** `/etc/shard/api-key` on Linux, and `/var/lib/shard/auth/api-key` on a Mac, when setup serves the HTTP API.
 - **Mac logs:** `/var/log/shard`.
 - **Remote client:** the saved connection, in `~/.config/shard/config.json`.
+
+For every path under `/var/lib/shard`, see [the data directory](/docs/concepts/data-directory/).

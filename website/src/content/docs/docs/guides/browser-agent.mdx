@@ -6,18 +6,31 @@ sidebar:
   order: 1.2
 ---
 
-[browser-use](https://github.com/browser-use/browser-use) gives a coding agent a real Chromium. Here Claude Code is the agent: it drives the browser through the `browser-use` command, so there is no agent code to write. In a sandbox, the browser and the agent run away from your machine, and the host decides which sites they reach.
+[browser-use](https://github.com/browser-use/browser-use) gives a coding agent a real Chromium. Here Claude Code is the agent: it drives the browser through the `browser-use` command, so there is no agent code to write.
+
+In a sandbox, the browser and the agent run away from your machine, and the host decides which sites they reach.
 
 ## Build the base once
 
 Install Chromium, browser-use and Claude Code in a sandbox with no policy, then save its files as a snapshot:
 
 ```sh
+# Create a sandbox with no policy, so the installers reach the internet.
 shard create --name browser-base --memory 2GiB python:3.12
-shard exec browser-base sh -c 'apt-get update -qq && apt-get install -y -qq chromium libnss3-tools && useradd -m agent'
+
+# Install Chromium and the NSS tools, and add the agent user.
+shard exec browser-base sh -c 'apt-get update -qq &&
+  apt-get install -y -qq chromium libnss3-tools && useradd -m agent'
+
+# Install browser-use, then Claude Code for the agent user.
 shard exec browser-base pip install browser-use
 shard exec --user agent browser-base sh -c 'curl -fsSL https://claude.ai/install.sh | bash'
-shard exec --user agent browser-base sh -c 'mkdir -p ~/.claude/skills/browser-use && browser-use skill > ~/.claude/skills/browser-use/SKILL.md'
+
+# Save the browser-use skill where Claude Code loads it.
+shard exec --user agent browser-base sh -c 'mkdir -p ~/.claude/skills/browser-use &&
+  browser-use skill > ~/.claude/skills/browser-use/SKILL.md'
+
+# Stop it, save its files as a snapshot, and remove it.
 shard stop browser-base
 shard snapshot create --name browser-use browser-base
 shard remove browser-base
@@ -27,6 +40,8 @@ A sandbox with no policy reaches the internet, so the installers can fetch from 
 
 `browser-use skill` prints the instructions that teach Claude Code the `browser-use` command. Saved under `~/.claude/skills`, Claude Code loads them on every start.
 
+For how a snapshot works, see [Snapshot a sandbox and create from it](/docs/essentials/snapshots/).
+
 The agent runs as the `agent` user, because Claude Code refuses `--dangerously-skip-permissions` as root.
 
 ## Run an agent
@@ -34,8 +49,15 @@ The agent runs as the `agent` user, because Claude Code refuses `--dangerously-s
 Store your Anthropic key, allow Anthropic's API and Wikipedia with its images, and start an agent sandbox from the snapshot:
 
 ```sh
-printf '%s' "$ANTHROPIC_API_KEY" | shard secret set --destination api.anthropic.com ANTHROPIC_API_KEY
-shard policy create --allow api.anthropic.com --allow suffix:wikipedia.org --allow suffix:wikimedia.org --deny any browse
+# Store the Anthropic key on the host, for api.anthropic.com only.
+printf '%s' "$ANTHROPIC_API_KEY" |
+  shard secret set --destination api.anthropic.com ANTHROPIC_API_KEY
+
+# Allow Anthropic's API and Wikipedia with its images, and deny everything else.
+shard policy create --allow api.anthropic.com \
+  --allow suffix:wikipedia.org --allow suffix:wikimedia.org --deny any browse
+
+# Create the agent sandbox from the snapshot, with the key and the policy.
 shard create --name browser-use-sbx --memory 2GiB --snapshot browser-use \
   --user agent --workdir /home/agent \
   --secret ANTHROPIC_API_KEY --policy browse \
@@ -47,13 +69,18 @@ shard create --name browser-use-sbx --memory 2GiB --snapshot browser-use \
 The host reads HTTPS with its own certificate authority, and Chromium on Linux trusts only its own certificate store. Add the host's certificate to that store with a short script:
 
 ```sh title="trust-proxy.sh"
-awk '/-BEGIN CERTIFICATE-/{c=""} {c=c $0 "\n"} END{printf "%s", c}' "$SSL_CERT_FILE" > /tmp/shard-proxy-ca.pem
+# Keep the last certificate in the bundle, which is the proxy's.
+awk '/-BEGIN CERTIFICATE-/{c=""} {c=c $0 "\n"} END{printf "%s", c}' \
+  "$SSL_CERT_FILE" > /tmp/shard-proxy-ca.pem
+
+# Create Chromium's certificate store, and add that certificate to it.
 mkdir -p ~/.pki/nssdb
 certutil -d sql:$HOME/.pki/nssdb -N --empty-password
 certutil -d sql:$HOME/.pki/nssdb -A -t "C,," -n shard-proxy -i /tmp/shard-proxy-ca.pem
 ```
 
 ```sh
+# Copy the script into the sandbox and run it as the agent user.
 shard cp trust-proxy.sh browser-use-sbx:/home/agent/trust-proxy.sh
 shard exec browser-use-sbx sh /home/agent/trust-proxy.sh
 ```
@@ -61,17 +88,22 @@ shard exec browser-use-sbx sh /home/agent/trust-proxy.sh
 Start Chromium as a supervised process, and give Claude Code a task:
 
 ```sh
+# Start Chromium as a named process that shard keeps running.
 shard run browser-use-sbx --name chromium -- chromium --headless --no-sandbox \
   --remote-debugging-port=9222 --user-data-dir=/home/agent/.chromium about:blank
+
+# Give Claude Code a task. Prints 1889.
 shard exec browser-use-sbx claude -p --dangerously-skip-permissions \
   "Use the browser-use CLI to open en.wikipedia.org and find the year the Eiffel Tower opened"
 ```
 
 Claude Code opens Wikipedia through browser-use, reads the article and prints `1889`. `BU_CDP_URL` points browser-use at the Chromium that `shard run` keeps running, so every task reuses one browser. To work with it interactively, run `claude` in `shard shell browser-use-sbx` instead.
 
+For how `shard run` keeps a process going, see [Run a long-running server](/docs/essentials/long-running-server/).
+
 ## What the sandbox stops
 
-- **The key stays on the host.** The agent holds `mock-ANTHROPIC_API_KEY`, and the host puts the real key into each request to `api.anthropic.com`. A page that tricks the agent into printing its environment gets only the placeholder. See [Give a sandbox an API key](/docs/guides/api-key/).
+- **The key stays on the host.** The agent holds `mock-ANTHROPIC_API_KEY`, and the host puts the real key into each request to `api.anthropic.com`. A page that tricks the agent into printing its environment gets only the placeholder. See [Credential brokering](/docs/essentials/credential-brokering/).
 - **The browser reaches only the sites you allow.** A link to any other site fails. `shard policy logs browser-use-sbx` shows every host it tried, allowed or denied.
 - **Your machine is out of reach.** The browser has no cookies, sessions or files of yours, and nothing private on your network.
 
@@ -87,6 +119,7 @@ See [Run Claude Code in a sandbox](/docs/guides/claude-code/) for more on Claude
 ## Clean up
 
 ```sh
+# Remove the sandbox, the snapshot and the policy.
 shard remove --force browser-use-sbx
 shard snapshot remove browser-use
 shard policy remove browse

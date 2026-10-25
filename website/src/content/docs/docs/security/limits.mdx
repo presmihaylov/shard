@@ -5,7 +5,7 @@ sidebar:
   order: 5
 ---
 
-import { Aside, Tabs, TabItem } from '@astrojs/starlight/components';
+import { Tabs, TabItem } from '@astrojs/starlight/components';
 
 This page lists what shard does not do. Read it before you put untrusted code on a server.
 
@@ -15,6 +15,7 @@ What a server can do depends on its provider. Ask it which lifecycle verbs it su
 	<TabItem label="CLI">
 
 ```sh
+# Prints each of the ten capabilities, true or false.
 shard capabilities
 ```
 
@@ -27,6 +28,7 @@ import { Shard } from "useshards";
 const shard = new Shard();
 try {
   const caps = await shard.capabilities();
+  // Prints true true true on gVisor.
   console.log(caps.pause, caps.resume, caps.fork);
 } finally {
   shard.close();
@@ -41,6 +43,7 @@ from useshards import Shard
 
 with Shard() as shard:
     caps = shard.capabilities()
+    # Prints True True True on gVisor.
     print(caps.pause, caps.resume, caps.fork)
 ```
 
@@ -49,49 +52,20 @@ with Shard() as shard:
 
 The TypeScript and Python examples reach `shard serve` at the address in `SHARD_REMOTE`, with the API key in `SHARD_API_KEY`.
 
-## shard refuses, and never downgrades
+## An unsupported command fails, with no fallback
 
-A verb that the provider does not support fails at once, with an error that names the provider and the verb. `shard pause` on a Sysbox server prints:
-
-```text
-shard: provider sysbox does not support pause on this host; use a server that supports pause
-```
-
-The API answers with `409` and the code `unsupported`, and the TypeScript and Python SDKs raise `UnsupportedError`. shard never falls back to a weaker mechanism: a `pause` on Sysbox is refused rather than turned into a stop, and the sandbox keeps running.
-
-| Provider | `pause`, `resume` and `fork` |
-| --- | --- |
-| `gvisor` | yes |
-| `firecracker` | yes |
-| `vz` | on Apple silicon with macOS 14 or later |
-| `sysbox` | no |
-| `runc` | no |
-
-`snapshot create` works on every provider, because it copies files and needs no memory image.
+Sysbox and runc have no `pause`, `resume` or `fork`. There each one fails before it changes anything, and shard never runs a weaker command in its place, such as a stop instead of a pause. For the error and the commands of each provider, see [Providers and capabilities](/docs/concepts/providers/#an-unsupported-command-fails-with-no-fallback).
 
 ## Isolation
 
-<Aside type="caution">
-Runc isolates nothing. The sandbox runs on the host kernel with only namespaces and cgroups around it, and root in the sandbox is root on the host. Use runc only for code you trust, or on a host you can afford to lose.
-</Aside>
+How far a sandbox is from the host depends on the provider. runc isolates nothing, so use it only for code you trust, and Sysbox sandboxes are not isolated from each other, so run one tenant per Sysbox host. For what each provider puts between a sandbox and the host, see [Isolation by provider](/docs/security/isolation/).
 
-<Aside type="caution">
-Sysbox sandboxes are isolated from the host, but not from each other. Every Sysbox sandbox maps to the same host uid range, `0 165536 65536`. A process that escapes one sandbox has the uid of root in every other sandbox. Run one tenant per Sysbox host.
-</Aside>
+Sysbox and runc also have limits of their own:
 
-shard never picks Sysbox or runc for you. Only `shard daemon --provider`, or the records that such a daemon made, can select either one.
-
-On Sysbox and runc, the exit code of a sandbox is what the sandbox reports. The host cannot verify it. On gVisor, a command that `shard exec` runs as root can forge the exit code of a named process, so run code from the sandbox with `--user` set to a non-root user when those exit codes must hold.
-
-Each provider also has limits of its own:
-
-- **gVisor** runs file-heavy work, such as `npm install` or `git clone`, slower than the other providers. Docker does not run inside a gVisor sandbox.
 - **Sysbox** does not give a sandbox a kernel keyring, so the keyring calls `add_key`, `keyctl` and `request_key` fail with `ENOSYS`. On host kernel 6.12.107 with Sysbox 0.7.1, Docker in the sandbox starts, but every container it runs fails to mount `/sys/fs/cgroup`. On kernel 6.12.101 they run.
 - **runc** answers the keyring calls with `EPERM`.
 
 **systemd cannot be a sandbox's PID 1, on any provider.** shard's own supervisor, `shard-init`, is PID 1 in every sandbox, and systemd refuses to manage the system from any other PID. To run systemd, run it inside a Docker container that the sandbox starts.
-
-For each provider in detail, see [isolation](/docs/security/isolation/).
 
 ## Resource bounds
 
@@ -110,17 +84,19 @@ A sandbox can have four bounds: memory, CPU, processes and disk. On `vz` and `fi
 - a bound from 1 to 127 MiB on `vz` and `firecracker`, where 0 or no `--memory` means 512 MiB
 - a bound from 1 to 63 MiB on `gvisor`, where 0 means no bound
 
-**Swap.** On `vz` and `firecracker`, a sandbox gets a swap file of 2 GiB on its own disk unless `--swap` names another size, and `--swap 0` means none. Past its memory bound it swaps instead of ending, and the memory bound still holds the RAM it uses. `create` refuses a swap that is not smaller than `--disk`, and gVisor, Sysbox and runc refuse any swap above 0.
+**Swap.** On `vz` and `firecracker`, a sandbox gets a swap file of 2 GiB on its own disk unless `--swap` names another size, and `--swap 0` means none. Past its memory bound it swaps instead of ending, and the memory bound still holds the RAM it uses.
 
-**CPU.** `--vcpus` accepts a non-negative whole number. On gVisor, Sysbox and runc, `0` sets no CPU-time quota. On Firecracker and `vz`, `0` gives the VM as many CPUs as the host and provider allow; Firecracker uses at most 32, and `vz` follows Virtualization.framework's range. Firecracker refuses a count above 32, and `vz` refuses a count outside its allowed range.
+`create` refuses a swap that is not smaller than `--disk`, and gVisor, Sysbox and runc refuse any swap above 0.
 
-**Processes.** On gVisor, Sysbox and runc, a sandbox can hold at most 4096 processes. No flag changes this bound, so a fork bomb stops well below the host's limit. Firecracker and vz have no process bound, but a fork bomb stays inside the virtual machine and hits its memory bound.
+**CPU.** `create` refuses a `--vcpus` above 32 on Firecracker, and one outside Virtualization.framework's range on `vz`.
 
-**Disk.** `--disk` bounds everything a sandbox can write. The default is 10240 MiB, and no value turns the bound off. A write that would go past the bound fails with `ENOSPC`, and the sandbox keeps running. On Firecracker and vz, a few sizes are refused, and the error names the nearest sizes that work.
+**Processes.** A fork bomb stops at 4096 processes on gVisor, Sysbox and runc, well below the host's limit. On Firecracker and vz it stays inside the virtual machine and hits its memory bound.
 
-<Aside type="caution">
-On Sysbox, `/var/lib/docker` in the sandbox is outside the disk bound. Sysbox backs it, and a few other directories, with storage on the host, so the Docker images that the sandbox pulls fill the host's disk rather than the sandbox's.
-</Aside>
+**Disk.** `--disk` bounds everything a sandbox can write. The default is 10240 MiB, and no value turns the bound off.
+
+A write that would go past the bound fails with `ENOSPC`, and the sandbox keeps running. On Firecracker and vz, a few sizes are refused, and the error names the nearest sizes that work.
+
+For the defaults of each bound on each provider, see [Resource bounds by provider](/docs/concepts/providers/#resource-bounds-by-provider).
 
 ## Network
 
@@ -140,13 +116,15 @@ For policies and the decision log, see [egress](/docs/security/egress/).
 - **A secret does not stop misuse of the key.** A sandbox that can call a granted host can make any call the key allows. Limit what the key can do at the API provider.
 - **On runc, the proxy is the only barrier.** Code that escapes the sandbox can read the secret store just as the host does.
 
-For grants and placeholders, see [secrets](/docs/security/secrets/).
+For how the host guards a secret, see [Secrets](/docs/security/secrets/). To grant one step by step, see [Give a sandbox an API key with credential brokering](/docs/essentials/credential-brokering/).
 
 ## The API
 
 - **The socket grants every right.** A request on the daemon's unix socket carries no token and no scopes, so anyone who can open the socket controls every sandbox and every secret on the server.
 - **`shard serve` speaks plain HTTP.** Put an HTTPS proxy or a tunnel in front of it before a token crosses a network.
 - **A token stays valid until it expires or you revoke it.** A token minted without `--duration` never expires. Nothing rotates the signing key.
+
+For who can reach the socket, see [Who can reach the API](/docs/security/model/#who-can-reach-the-api). For tokens and scopes, see [Authentication](/docs/reference/auth/).
 
 ## One server
 
@@ -158,3 +136,5 @@ A daemon uses one provider for every sandbox on the server. A root stays tied to
 
 - **A gVisor pause that fails partway loses the sandbox.** When a checkpoint begins but does not finish, the sandbox ends and its record says `failed`.
 - **An `exec` that runs across a Firecracker fork loses its stream.** It fails with an error, and its command keeps running in the sandbox with nothing reading its output. An `exec` that starts while the fork holds the sandbox frozen is refused. Run it again when the fork returns.
+
+For the other limits of pause and fork, see [Pause, resume and fork](/docs/concepts/pause-resume-fork/#limits-to-know).

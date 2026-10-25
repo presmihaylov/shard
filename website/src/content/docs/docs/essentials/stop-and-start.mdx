@@ -1,0 +1,118 @@
+---
+title: Stop and start a sandbox
+description: Stop a sandbox to free its memory and keep its files, then start it again later.
+sidebar:
+  label: Stop and start
+  order: 2
+---
+
+import { Tabs, TabItem } from '@astrojs/starlight/components';
+
+You'll stop a sandbox, which ends its processes but keeps its files, and start it again. You need a shard server and a client: see [Create a sandbox, run commands and move files](/docs/essentials/run-commands/).
+
+<Tabs syncKey="lang">
+	<TabItem label="CLI">
+
+```sh
+# Create a sandbox and write a file in it.
+shard create --name agent --memory 512MiB python:3.12
+shard exec agent sh -c 'echo kept > /srv/note.txt'
+
+# Stop it. The list hides it and says 1 stopped sandbox.
+shard stop agent
+shard list
+
+# The --all list shows it as stopped.
+shard list --all
+
+# Start it again. The cat prints kept: the stop kept the file.
+shard start agent
+shard exec agent cat /srv/note.txt
+
+# Remove it.
+shard remove --force agent
+```
+
+	</TabItem>
+	<TabItem label="TypeScript">
+
+```ts
+import { Shard } from "useshards";
+
+const shard = new Shard();
+try {
+  // Create a sandbox and write a file in it.
+  const sandbox = await shard.create({ name: "agent", image: "python:3.12", memoryMiB: 512 });
+  try {
+    await sandbox.files.write("/srv/note.txt", "kept\n");
+
+    // Stop it. Prints stopped.
+    await sandbox.stop();
+    console.log((await sandbox.inspect()).state);
+
+    // Start it again. Prints kept: the stop kept the file.
+    await sandbox.start();
+    console.log((await sandbox.exec(["cat", "/srv/note.txt"])).stdout);
+  } finally {
+    // Remove it.
+    await sandbox.remove({ force: true });
+  }
+} finally {
+  shard.close();
+}
+```
+
+	</TabItem>
+	<TabItem label="Python">
+
+```python
+from useshards import Shard
+
+with Shard() as shard:
+    # Create a sandbox and write a file in it.
+    sandbox = shard.create("python:3.12", name="agent", memory_mib=512)
+    try:
+        sandbox.files.write("/srv/note.txt", "kept\n")
+
+        # Stop it. Prints stopped.
+        sandbox.stop()
+        print(sandbox.inspect().state)
+
+        # Start it again. Prints kept: the stop kept the file.
+        sandbox.start()
+        print(sandbox.exec(["cat", "/srv/note.txt"]).stdout)
+    finally:
+        # Remove it.
+        sandbox.remove(force=True)
+```
+
+	</TabItem>
+</Tabs>
+
+## What a stop keeps
+
+A stopped sandbox uses no memory and no CPU on the host. It keeps:
+
+- Its files, so everything you installed or wrote is still there after `start`.
+- Its name, its ID, its granted secrets and its network policy.
+- Its port forwards, which carry traffic again once it runs.
+
+It loses its memory, its processes and its open connections. `start` boots it fresh from its files.
+
+A process that `shard run` started with the `always` restart policy starts again on `start`, and so does an `unless-stopped` one that `shard kill` did not end. See [Run a long-running server](/docs/essentials/long-running-server/).
+
+## How a stop ends the processes
+
+`stop` sends SIGTERM to every process in the sandbox, waits 30 seconds, then kills what is left.
+
+- The 30 seconds are fixed.
+- `stop` succeeds only once the processes have ended. If the provider still reports a live process 5 seconds later, the stop fails and the state does not change.
+- A `stop` on a sandbox that is still being created cancels the create.
+
+## Remove a stopped sandbox
+
+`shard remove` deletes the sandbox and its files. A stopped sandbox needs no `--force`. A running or paused one does, and the remove stops it first.
+
+To keep the files of a sandbox you remove, make a snapshot of it first: see [Snapshot a sandbox and create from it](/docs/essentials/snapshots/).
+
+Every state and what moves a sandbox between them is in [Sandboxes and the lifecycle](/docs/concepts/lifecycle/).

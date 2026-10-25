@@ -1,0 +1,153 @@
+---
+title: Pause, resume and fork a sandbox
+description: Pause a running sandbox to free its memory, resume it where it left off, and fork it into copies that each go their own way.
+sidebar:
+  label: Pause, resume and fork
+  order: 4
+---
+
+import { Tabs, TabItem } from '@astrojs/starlight/components';
+
+You'll pause a sandbox and resume it, then fork it into two copies and change one of them. You need a server on gVisor, Firecracker or vz, and a client: see [Create a sandbox, run commands and move files](/docs/essentials/run-commands/).
+
+<Tabs syncKey="lang">
+	<TabItem label="CLI">
+
+```sh
+# Create a sandbox and install a package in it.
+shard create --name base --memory 512MiB python:3.12
+shard exec base pip install requests
+
+# Pause it, which saves its memory to disk. The list shows it as paused.
+shard pause base
+shard list
+
+# Resume it. Its processes carry on where they left off.
+shard resume base
+
+# Fork it twice. Each fork prints its ID.
+shard fork --name try-a base
+shard fork --name try-b base
+
+# Change one fork only. The first prints 2.31.0, the second base's version.
+shard exec try-a pip install requests==2.31.0
+shard exec try-a python -c 'import requests; print(requests.__version__)'
+shard exec try-b python -c 'import requests; print(requests.__version__)'
+
+# Remove all three.
+shard remove --force try-a try-b base
+```
+
+	</TabItem>
+	<TabItem label="TypeScript">
+
+```ts
+import { Shard } from "useshards";
+
+const version = ["python", "-c", "import requests; print(requests.__version__)"];
+
+const shard = new Shard();
+try {
+  // Create a sandbox and install a package in it.
+  const base = await shard.create({ name: "base", image: "python:3.12", memoryMiB: 512 });
+  await base.exec(["pip", "install", "requests"]);
+
+  // Pause it, which saves its memory to disk. Prints paused.
+  await base.pause();
+  console.log((await base.inspect()).state);
+
+  // Resume it. Its processes carry on where they left off.
+  await base.resume();
+
+  // Fork it twice.
+  const tryA = await base.fork({ name: "try-a" });
+  const tryB = await base.fork({ name: "try-b" });
+
+  // Change one fork only. Prints 2.31.0, then base's version.
+  await tryA.exec(["pip", "install", "requests==2.31.0"]);
+  console.log((await tryA.exec(version)).stdout);
+  console.log((await tryB.exec(version)).stdout);
+
+  // Remove all three.
+  for (const sandbox of [tryA, tryB, base]) await sandbox.remove({ force: true });
+} finally {
+  shard.close();
+}
+```
+
+	</TabItem>
+	<TabItem label="Python">
+
+```python
+from useshards import Shard
+
+version = ["python", "-c", "import requests; print(requests.__version__)"]
+
+with Shard() as shard:
+    # Create a sandbox and install a package in it.
+    base = shard.create("python:3.12", name="base", memory_mib=512)
+    base.exec(["pip", "install", "requests"])
+
+    # Pause it, which saves its memory to disk. Prints paused.
+    base.pause()
+    print(base.inspect().state)
+
+    # Resume it. Its processes carry on where they left off.
+    base.resume()
+
+    # Fork it twice.
+    try_a = base.fork(name="try-a")
+    try_b = base.fork(name="try-b")
+
+    # Change one fork only. Prints 2.31.0, then base's version.
+    try_a.exec(["pip", "install", "requests==2.31.0"])
+    print(try_a.exec(version).stdout)
+    print(try_b.exec(version).stdout)
+
+    # Remove all three.
+    for sandbox in (try_a, try_b, base):
+        sandbox.remove(force=True)
+```
+
+	</TabItem>
+</Tabs>
+
+## Pause and resume
+
+A paused sandbox uses no memory on the host. It keeps its record, its files and its address, and `resume` carries its processes on from the same instant.
+
+- **A pause ends running commands.** An `exec` still running ends, and a new one fails with `sandbox base is paused: resume it with shard resume base`.
+- **A stop deletes the checkpoint.** `shard stop` on a paused sandbox ends it, so you can no longer resume it. Its files stay, and `shard start` boots it fresh from them.
+
+## What a fork copies
+
+| State | In the fork |
+| --- | --- |
+| Files | yes, as its own copy |
+| Memory, and the processes that ran | yes, from where they left off |
+| The memory, CPU and disk bounds | yes, the source's |
+| Secret grants and the network policy | yes |
+| The ID, the name and the network address | no, the fork gets new ones |
+| Logs and port forwards | no |
+
+A fork takes no bounds of its own, so the `--memory 512MiB` on `base` applies to every fork of it. The copied secret grants are the fork's own: an ungrant or a stop of the source does not change them.
+
+## Keep a sandbox warm for each task
+
+Set up one sandbox with what every task needs, and leave it running. Then fork it once for each new task, so no task waits for the setup.
+
+## What the source sees
+
+The source freezes for a moment while shard copies its memory and files, then keeps running with the same processes and ID.
+
+- **On gVisor, a freeze of 10 minutes fails the fork.** The source then thaws.
+- **On Firecracker and vz, a running `exec` can lose its stream.** The command keeps running in the source, but nothing reads its output.
+- **On Firecracker and vz, an `exec` that starts during the freeze is refused.** The error ends with `a fork holds the sandbox frozen, and nothing starts in it until that ends: run the command again`. Run it again after the fork returns.
+
+## Where it works
+
+- **A running sandbox only.** A fork of a stopped sandbox fails with `sandbox <name> is stopped: fork takes a running sandbox`. To copy one, take a snapshot: see [Snapshot a sandbox and create from it](/docs/essentials/snapshots/).
+- **gVisor, Firecracker and vz.** On Sysbox and runc, `pause`, `resume` and `fork` fail with an error such as `provider sysbox does not support fork on this host`. `shard capabilities` shows what your server supports: see [Providers and capabilities](/docs/concepts/providers/#the-ten-capabilities).
+- **A token needs `sandbox:write`.** A fork also needs `secret:*` when the source has secret grants, and `policy:*` when it has a network policy.
+
+How the checkpoint is kept, and what a daemon restart does to it, is in [Pause, resume and fork](/docs/concepts/pause-resume-fork/).

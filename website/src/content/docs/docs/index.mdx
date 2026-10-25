@@ -17,9 +17,16 @@ Create a sandbox, write a file in it, read the file back, and remove the sandbox
 <TabItem label="CLI">
 
 ```sh
+# Create a sandbox from the alpine image.
 shard create --name demo --memory 512MiB alpine:3.20
+
+# Write a file in it.
 shard exec demo sh -c 'echo hello from shard > /tmp/hello.txt'
+
+# Prints hello from shard.
 shard exec demo cat /tmp/hello.txt
+
+# Remove the sandbox.
 shard remove --force demo
 ```
 
@@ -30,11 +37,21 @@ shard remove --force demo
 import { Shard } from 'useshards';
 
 const shard = new Shard();
-const sandbox = await shard.create({ image: 'alpine:3.20', name: 'demo', memoryMiB: 512 });
+
+// Create a sandbox from the alpine image.
+const sandbox = await shard.create({
+  image: 'alpine:3.20',
+  name: 'demo',
+  memoryMiB: 512,
+});
 try {
+  // Write a file in it.
   await sandbox.files.write('/tmp/hello.txt', 'hello from shard\n');
+
+  // Prints hello from shard.
   console.log((await sandbox.exec('cat /tmp/hello.txt')).stdout);
 } finally {
+  // Remove the sandbox.
   await sandbox.remove({ force: true });
   shard.close();
 }
@@ -47,11 +64,16 @@ try {
 from useshards import Shard
 
 with Shard() as shard:
+    # Create a sandbox from the alpine image.
     sandbox = shard.create("alpine:3.20", name="demo", memory_mib=512)
     try:
+        # Write a file in it.
         sandbox.files.write("/tmp/hello.txt", "hello from shard\n")
+
+        # Prints hello from shard.
         print(sandbox.exec("cat /tmp/hello.txt").stdout)
     finally:
+        # Remove the sandbox.
         sandbox.remove(force=True)
 ```
 
@@ -66,13 +88,17 @@ Each tab prints `hello from shard`.
 
 One machine runs shard and all of its sandboxes. Everything else reaches them through one API: the
 `shard` CLI, the [TypeScript](/docs/sdks/typescript/) and [Python](/docs/sdks/python/) SDKs, or
-your own code over [HTTP](/docs/reference/api/). On that machine the CLI works as soon as setup
+your own code over [HTTP](/docs/reference/api/).
+
+On that machine the CLI works as soon as setup
 ends. Another machine, such as your laptop or a CI job, connects over HTTPS with an API key.
 
 ## What a sandbox is
 
 A sandbox starts from an image, such as `alpine:3.20`, and keeps running until you stop or remove it. `create` starts
-no process in it. `run` starts a named process that shard supervises and can start again, and
+no process in it.
+
+`run` starts a named process that shard supervises and can start again, and
 `exec` runs a one-off command. A process can exit, and the sandbox stays available for `exec`. The
 image's `ENTRYPOINT` and `CMD` never run.
 
@@ -83,6 +109,8 @@ image's `ENTRYPOINT` and `CMD` never run.
 | `fork` | Copies a running sandbox's memory and files into a new sandbox. The source pauses briefly, then continues. |
 | `snapshot create` | Saves a stopped sandbox's files, without its memory. A snapshot outlives its sandbox and can seed new ones. |
 | `remove` | Deletes the sandbox and its files. |
+
+To try each verb step by step, start with [Create a sandbox, run commands and move files](/docs/essentials/run-commands/).
 
 ## Providers
 
@@ -99,6 +127,8 @@ A provider is the isolation technology under every sandbox on a host. One host r
 `shard setup` recommends Firecracker when `/dev/kvm` is usable, gVisor on Linux without it, and
 `vz` on a Mac. A verb that a provider does not support fails with an error that names the provider.
 shard never falls back to a weaker mechanism.
+
+To pick one for your host, see [What provider should I pick?](/docs/choose-provider/).
 
 ## Secrets and network access
 
@@ -118,8 +148,7 @@ details.
 
 ## What shard is not
 
-shard manages one host. It does not schedule sandboxes across a fleet. It is pre-alpha, so
-commands and APIs can change between releases.
+shard manages one host. It does not schedule sandboxes across a fleet.
 
 ## Next steps
 

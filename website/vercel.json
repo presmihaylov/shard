@@ -8,11 +8,113 @@
   "headers": [
     {
       "source": "/install",
-      "headers": [{ "key": "Content-Type", "value": "text/plain; charset=utf-8" }]
+      "headers": [
+        {
+          "key": "Content-Type",
+          "value": "text/plain; charset=utf-8"
+        }
+      ]
     },
     {
       "source": "/(.*)\\.md",
-      "headers": [{ "key": "Content-Type", "value": "text/markdown; charset=utf-8" }]
+      "headers": [
+        {
+          "key": "Content-Type",
+          "value": "text/markdown; charset=utf-8"
+        }
+      ]
+    }
+  ],
+  "redirects": [
+    {
+      "source": "/docs/guides/files",
+      "destination": "/docs/essentials/run-commands/",
+      "permanent": true
+    },
+    {
+      "source": "/docs/guides/files/",
+      "destination": "/docs/essentials/run-commands/",
+      "permanent": true
+    },
+    {
+      "source": "/docs/guides/files.md",
+      "destination": "/docs/essentials/run-commands.md",
+      "permanent": true
+    },
+    {
+      "source": "/docs/guides/fork",
+      "destination": "/docs/essentials/pause-resume-fork/",
+      "permanent": true
+    },
+    {
+      "source": "/docs/guides/fork/",
+      "destination": "/docs/essentials/pause-resume-fork/",
+      "permanent": true
+    },
+    {
+      "source": "/docs/guides/fork.md",
+      "destination": "/docs/essentials/pause-resume-fork.md",
+      "permanent": true
+    },
+    {
+      "source": "/docs/guides/web-service",
+      "destination": "/docs/essentials/long-running-server/",
+      "permanent": true
+    },
+    {
+      "source": "/docs/guides/web-service/",
+      "destination": "/docs/essentials/long-running-server/",
+      "permanent": true
+    },
+    {
+      "source": "/docs/guides/web-service.md",
+      "destination": "/docs/essentials/long-running-server.md",
+      "permanent": true
+    },
+    {
+      "source": "/docs/guides/api-key",
+      "destination": "/docs/essentials/credential-brokering/",
+      "permanent": true
+    },
+    {
+      "source": "/docs/guides/api-key/",
+      "destination": "/docs/essentials/credential-brokering/",
+      "permanent": true
+    },
+    {
+      "source": "/docs/guides/api-key.md",
+      "destination": "/docs/essentials/credential-brokering.md",
+      "permanent": true
+    },
+    {
+      "source": "/docs/guides/network",
+      "destination": "/docs/essentials/network-policy/",
+      "permanent": true
+    },
+    {
+      "source": "/docs/guides/network/",
+      "destination": "/docs/essentials/network-policy/",
+      "permanent": true
+    },
+    {
+      "source": "/docs/guides/network.md",
+      "destination": "/docs/essentials/network-policy.md",
+      "permanent": true
+    },
+    {
+      "source": "/docs/guides/remote",
+      "destination": "/docs/essentials/remote-access/",
+      "permanent": true
+    },
+    {
+      "source": "/docs/guides/remote/",
+      "destination": "/docs/essentials/remote-access/",
+      "permanent": true
+    },
+    {
+      "source": "/docs/guides/remote.md",
+      "destination": "/docs/essentials/remote-access.md",
+      "permanent": true
     }
   ]
 }
