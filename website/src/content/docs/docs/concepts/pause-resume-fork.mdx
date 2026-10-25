@@ -7,7 +7,7 @@ sidebar:
 
 import { TabItem, Tabs } from '@astrojs/starlight/components';
 
-Pause frees a sandbox's memory on the host, and resume carries its processes on where they left off. Fork turns one prepared sandbox into as many as you need, without setting each one up again.
+Pause frees a sandbox's memory on the host, and resume continues its processes from where they left off. Fork turns one prepared sandbox into as many as you need, without setting each one up again.
 
 Pause a sandbox, resume it, then fork it into a second sandbox with files of its own:
 
@@ -124,11 +124,11 @@ For a step-by-step walk-through, see [Pause, resume and fork a sandbox](/docs/es
 
 `shard fork` works on a running sandbox. The source freezes for a moment while shard captures its memory and files, then keeps running.
 
-The new sandbox starts from that capture, in the `running` state. The command prints the new sandbox's ID.
+The new sandbox starts from that capture, in the `running` state. The command prints its ID.
 
-The new sandbox has its own ID, its own address and its own files. A write in one sandbox never shows in the other.
+The fork has its own ID, address and files. A write in one sandbox never shows in the other.
 
-The new sandbox keeps the source's image, resource limits, granted secrets, network policy and processes, with their restart policies. Give it a name with `--name`.
+It keeps the source's image, resource limits, granted secrets, network policy and processes, with their restart policies. Give it a name with `--name`.
 
 To keep a pool of warm sandboxes, prepare one sandbox, then fork it once for each sandbox you need. Each fork starts with the processes and the files that the source had.
 
@@ -139,7 +139,7 @@ To keep a pool of warm sandboxes, prepare one sandbox, then fork it once for eac
 - **A stop deletes the checkpoint.** `shard stop` on a paused sandbox ends it, so you can no longer resume it. Its files stay, and `shard start` runs it again from them, with new memory.
 - **A daemon restart keeps the pause.** A paused sandbox stays paused when the daemon restarts, as long as its checkpoint is on disk. If its checkpoint is gone, it becomes `stopped`.
 - **A fork starts with empty logs.** It also does not get the source's port forwards.
-- **A Firecracker fork needs XFS or Btrfs.** The fork shares the sandbox's disk blocks. On any other filesystem, the daemon puts its data directory on an XFS image. See [the data directory](/docs/concepts/data-directory/).
+- **A Firecracker fork needs XFS or Btrfs.** The fork shares the source's disk blocks. On any other filesystem, the daemon puts its data directory on an XFS image. See [the data directory](/docs/concepts/data-directory/).
 
 ## Fork or snapshot
 
@@ -170,4 +170,4 @@ A sandbox made from a snapshot starts like a new sandbox, with the snapshot's fi
 
 ## Which providers support it
 
-`gvisor`, `firecracker` and `vz` support all three. On Sysbox and runc, each one fails before it changes anything. To see what your server supports, run `shard capabilities`, and for the table by provider, see [Providers and capabilities](/docs/concepts/providers/#the-ten-capabilities).
+`gvisor`, `firecracker` and `vz` support all three. On Sysbox and runc, each one fails before it changes anything. To see what your server supports, run `shard capabilities`. For the table by provider, see [Providers and capabilities](/docs/concepts/providers/#the-ten-capabilities).

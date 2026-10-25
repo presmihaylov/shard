@@ -100,7 +100,7 @@ with Shard() as shard:
 
 A snapshot is a copy of a stopped sandbox's files. It holds no memory and no processes, and it outlives the sandbox it came from.
 
-- **The source must be stopped.** A running or paused sandbox fails with `409 sandbox_not_stopped`, because its memory holds what a copy of its files would miss.
+- **The source must be stopped.** A snapshot of a running or paused sandbox fails with `409 sandbox_not_stopped`, because its memory holds what a copy of its files would miss.
 - **Each create gets its own copy.** Every sandbox made from a snapshot has its own files, ID and address, so many sandboxes can start from one snapshot.
 - **A snapshot names its image.** A create from it needs that image at the same digest on the server, and never downloads one.
 
@@ -114,4 +114,4 @@ A sandbox made from a snapshot starts with no processes. If you leave out `--mem
 
 A snapshot copies files from a stopped sandbox. A fork copies memory, processes and files from a running one, and works only on gVisor, Firecracker and vz. See [Pause, resume and fork a sandbox](/docs/essentials/pause-resume-fork/).
 
-Every snapshot command, and how each provider makes the copy, is in [Images and snapshots](/docs/concepts/images-snapshots/).
+[Images and snapshots](/docs/concepts/images-snapshots/) covers every snapshot command and how each provider makes the copy.

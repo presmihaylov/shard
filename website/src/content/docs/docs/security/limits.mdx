@@ -54,11 +54,11 @@ The TypeScript and Python examples reach `shard serve` at the address in `SHARD_
 
 ## An unsupported command fails, with no fallback
 
-Sysbox and runc have no `pause`, `resume` or `fork`. There each one fails before it changes anything, and shard never runs a weaker command in its place, such as a stop instead of a pause. For the error and the commands of each provider, see [Providers and capabilities](/docs/concepts/providers/#an-unsupported-command-fails-with-no-fallback).
+Sysbox and runc have no `pause`, `resume` or `fork`. On those providers each one fails before it changes anything. shard never runs a weaker command in its place, such as a stop instead of a pause. For the error and the commands of each provider, see [Providers and capabilities](/docs/concepts/providers/#an-unsupported-command-fails-with-no-fallback).
 
 ## Isolation
 
-How far a sandbox is from the host depends on the provider. runc isolates nothing, so use it only for code you trust, and Sysbox sandboxes are not isolated from each other, so run one tenant per Sysbox host. For what each provider puts between a sandbox and the host, see [Isolation by provider](/docs/security/isolation/).
+How far a sandbox is from the host depends on the provider. runc isolates nothing, so use it only for code you trust. Sysbox sandboxes are not isolated from each other, so run one tenant per Sysbox host. For what each provider puts between a sandbox and the host, see [Isolation by provider](/docs/security/isolation/).
 
 Sysbox and runc also have limits of their own:
 
@@ -71,7 +71,7 @@ Sysbox and runc also have limits of their own:
 
 A sandbox can have four bounds: memory, CPU, processes and disk. On `vz` and `firecracker` it also gets a swap file inside its disk.
 
-**Memory.** When a sandbox goes past its `--memory` bound, the whole sandbox ends, not just one process in it, and the daemon starts it again on its own with the files it kept:
+**Memory.** When a sandbox goes past its `--memory` bound, the whole sandbox ends, not just one process in it. The daemon then starts it again on its own, with the files it kept:
 
 - **The record says why.** It says `stopped`, with the reason `ran out of memory and the host ended it`.
 - **The wait grows.** The first start runs within 5 seconds. A sandbox that runs out of memory again within 10 minutes of a start waits 10 seconds for the next one, and the wait doubles up to 5 minutes.
@@ -84,7 +84,7 @@ A sandbox can have four bounds: memory, CPU, processes and disk. On `vz` and `fi
 - a bound from 1 to 127 MiB on `vz` and `firecracker`, where 0 or no `--memory` means 512 MiB
 - a bound from 1 to 63 MiB on `gvisor`, where 0 means no bound
 
-**Swap.** On `vz` and `firecracker`, a sandbox gets a swap file of 2 GiB on its own disk unless `--swap` names another size, and `--swap 0` means none. Past its memory bound it swaps instead of ending, and the memory bound still holds the RAM it uses.
+**Swap.** On `vz` and `firecracker`, a sandbox gets a swap file of 2 GiB on its own disk unless `--swap` names another size, and `--swap 0` means none. Past its memory bound it swaps instead of ending, and the memory bound still caps the RAM it uses.
 
 `create` refuses a swap that is not smaller than `--disk`, and gVisor, Sysbox and runc refuse any swap above 0.
 

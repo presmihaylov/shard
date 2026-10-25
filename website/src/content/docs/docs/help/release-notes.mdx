@@ -34,7 +34,7 @@ The `useshards` SDKs for TypeScript and Python have version numbers of their own
 **New**
 
 - The egress proxy speaks HTTP/2, to a sandbox that offers it over TLS and to an upstream that accepts it. So a streamed `fetch` with `duplex: "half"` now works in a sandbox with a policy or a secret.
-- A sandbox gets HTTP/2 on up to 32 connections at once, each with up to 32 streams. Its further connections use HTTP/1.1.
+- A sandbox gets HTTP/2 on up to 32 connections at once, each with up to 32 streams. Its connections past that use HTTP/1.1.
 - A sandbox holds at most 1024 requests open through the proxy. Past that, a request gets a `503` that says so.
 
 **Fixed**
@@ -56,7 +56,7 @@ The `useshards` SDKs for TypeScript and Python have version numbers of their own
 
 **Fixed**
 
-- Firecracker and vz: the guest has `/dev/fd`, `/dev/stdin`, `/dev/stdout` and `/dev/stderr`. So process substitution in bash, such as `diff <(a) <(b)`, works.
+- Firecracker and vz: the guest has `/dev/fd`, `/dev/stdin`, `/dev/stdout` and `/dev/stderr`. Process substitution in bash, such as `diff <(a) <(b)`, now works.
 - A running sandbox gets them at its next start.
 
 ## v0.1.8
@@ -83,7 +83,7 @@ The `useshards` SDKs for TypeScript and Python have version numbers of their own
 - `shard run --attach` prints the output and exits with the process's exit code, or 128 plus the signal. Ctrl+C detaches and leaves the process running. Exit code 125 means shard itself failed.
 - A sandbox runs up to 16 processes. A process name has up to 32 characters.
 - `shard start` runs the `always` processes again, and the `unless-stopped` ones that `shard kill` did not end.
-- When the daemon starts, it starts each sandbox that holds an `always` process, or an `unless-stopped` one that neither `shard stop` nor `shard kill` ended. So those processes come back after a host reboot.
+- When the daemon starts, it starts each sandbox that holds an `always` process, or an `unless-stopped` one that neither `shard stop` nor `shard kill` ended. As a result, those processes come back after a host reboot.
 
 **Fixed**
 
@@ -96,7 +96,7 @@ The `useshards` SDKs for TypeScript and Python have version numbers of their own
 **New**
 
 - When the host ends a sandbox because it ran out of memory, the daemon starts it again. Before, it stayed stopped until you ran `shard start`.
-- The first start again comes at once. Each further kill in a row waits longer: 10 seconds, doubling up to 5 minutes. A run of 10 minutes starts the count over.
+- The first restart comes at once. After each further kill in a row, the restart waits longer: 10 seconds, doubling up to 5 minutes. A run of 10 minutes starts the count over.
 - `shard stop`, `shard remove` and `shard start` call off a start that is still due. `shard list` shows such a sandbox without `--all`.
 - The sandbox record has an `oom` field: how many times the host killed it, when it last did, and when the next start is due.
 - `shard create --swap SIZE` and `shard run --swap SIZE` set a swap file inside the disk. Firecracker and vz give 2 GiB by default, and the swap must be smaller than the disk. gVisor, runc and Sysbox refuse any `--swap` but `0`.
@@ -105,7 +105,7 @@ The `useshards` SDKs for TypeScript and Python have version numbers of their own
 
 **Fixed**
 
-- vz: when the guest kernel kills the sandbox for its memory, the sandbox reads as killed for its memory, so the daemon starts it again. Before, it read as running with no process, or as stopped with no cause.
+- vz: when the guest kernel kills the sandbox for lack of memory, the sandbox reads as an out-of-memory kill, so the daemon starts it again. Before, it read as running with no process, or as stopped with no cause.
 
 ## v0.1.6
 
@@ -160,7 +160,7 @@ See [Expose a port](/docs/essentials/expose-a-port/).
 
 **Fixed**
 
-- On a host with ufw or firewalld, sandboxes got no DNS, no proxy and no routed traffic. shard now opens its bridge as Docker does, with iptables rules marked `managed-by-shard` and a firewalld zone `shard`, and repairs them within 5 seconds of a `ufw reload`.
+- On a host with ufw or firewalld, sandboxes got no DNS, no proxy and no routed traffic. shard now opens its bridge as Docker does, with iptables rules marked `managed-by-shard` and a firewalld zone `shard`. It repairs them within 5 seconds of a `ufw reload`.
 - If firewalld already has a zone `shard` or a policy `shard-forwarding` that shard did not make, shard leaves it alone and refuses to start a sandbox. The failed reason names the zone or the policy.
 - A second daemon on another root no longer removes the network rules of the first daemon's sandboxes. It refuses to start.
 - Under the `UMask=0077` that setup gives the daemon, `/etc` and the work directory of a sandbox were `0700`. Directories that shard makes in a sandbox are now `0755`, and every exec runs with umask `0022`.
@@ -173,7 +173,7 @@ See [Expose a port](/docs/essentials/expose-a-port/).
 - gVisor: `shard exec -it` and `shard shell` run on a terminal in the guest, so `tty` names it, and Ctrl-C and job control work. On every provider, a terminal exec with no `TERM` gets `TERM=xterm`.
 - gVisor: `shard exec --workdir` with a file exits 126, as on runc and Sysbox. On every provider, a work directory that does not exist exits 126, and the API answers `422`.
 - Sysbox: Docker inside a sandbox no longer fails with `permission denied` on its cgroups after a gVisor or Firecracker daemon made `/sys/fs/cgroup/shard` with mode `0750`.
-- An exec with no `--user` no longer waits 20 seconds when a process in the sandbox replaces `/etc/passwd` with a fifo, on gVisor. On runc and Sysbox it still can.
+- On gVisor, an exec with no `--user` no longer waits 20 seconds when a process in the sandbox replaces `/etc/passwd` with a fifo. On runc and Sysbox it still can.
 - When no address is free, a create says `no free address left` and how to free one. Before, it said only that the daemon log had the cause. A failed create also names its network cause.
 - A create, `secret grant` or `policy attach` on an image with no CA bundle answers `400 invalid_request` that says to use an image with `ca-certificates`, not a `500`.
 - A disk that the provider refuses at create, fork or pause is a `400 invalid_request` that names `--disk` and the fix, not a `500`.
@@ -198,7 +198,7 @@ See [Expose a port](/docs/essentials/expose-a-port/).
 - Setup: on Linux, it finds a Firecracker disk image in `/var/lib/shard`. When the data belongs to another provider, setup, repair and upgrade stop and print the commands that keep or delete it.
 - Setup: the tool download shows its progress for `runsc`, `firecracker` and `sysbox`.
 - Setup: a local setup ends with `shard <version> is set up.`, and a repair with `shard <version> is repaired.`.
-- Uninstall: the note ends with the commands that delete the saved data, and on Linux cleans up a leftover `/etc/fstab` line.
+- Uninstall: the note ends with the commands that delete the saved data. On Linux, uninstall also cleans up a leftover `/etc/fstab` line.
 - When the daemon does not answer on a host where setup installed a service, the error says `is the background service running? shard setup repairs it`.
 - Errors name the fix as a command or a flag, and a hint starts with `sudo` when you ran the CLI with `sudo`. The `shard tokens` help and `SHARD_API_KEY` say API key instead of API token.
 - `shard snapshot create` on a sandbox whose image is gone names `shard pull <image>`.

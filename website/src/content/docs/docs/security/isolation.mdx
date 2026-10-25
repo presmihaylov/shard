@@ -96,7 +96,7 @@ To see the provider of a server, run `shard info` or `shard daemon status` on th
 
 ## gVisor
 
-gVisor puts a kernel that runs in user space, called the sentry, between the sandbox and the host kernel. The sandbox starts with runc's default capabilities and can never gain more, and the sentry enforces those capabilities.
+gVisor puts a kernel that runs in user space, called the sentry, between the sandbox and the host kernel. The sandbox starts with runc's default capabilities and can never gain more. The sentry enforces those capabilities.
 
 gVisor is the default on a Linux host without `/dev/kvm`, and many tenants can share one host. The trade-off is speed: file-heavy work such as `npm install` or `git clone` runs slower than on the other providers. Docker does not run inside a gVisor sandbox.
 

@@ -11,7 +11,7 @@ shard assumes the code in a sandbox is hostile, and keeps the host, your credent
 
 ## What shard protects
 
-shard treats the code in a sandbox as untrusted. That code might be an agent, a tool that a prompt injection took over, or a package nobody has read. It can read its own environment, dump its memory, and send every byte it finds to anywhere it can reach.
+shard treats the code in a sandbox as untrusted. That code might be an agent, a tool that a prompt injection took over, or a package nobody has read. It can read its own environment, dump its memory, and send what it finds to any host it can reach.
 
 Four boundaries separate that code from what you want to protect:
 
@@ -24,15 +24,15 @@ Four boundaries separate that code from what you want to protect:
 
 ## Isolation depends on the provider
 
-The provider decides how strongly a sandbox is isolated from the host and from other sandboxes. gVisor, Firecracker and vz put a kernel of their own between the sandbox and the host, and many tenants can share one host. Sysbox shares the host's kernel and suits one tenant per host, and runc isolates nothing, so use it only for code you trust.
+The provider decides how strongly a sandbox is isolated from the host and from other sandboxes. gVisor, Firecracker and vz put a kernel of their own between the sandbox and the host, and many tenants can share one host. Sysbox shares the host's kernel and suits one tenant per host. runc isolates nothing, so use it only for code you trust.
 
 For what each provider puts between a sandbox and the host, see [Isolation by provider](/docs/security/isolation/).
 
 ## Secrets never enter the sandbox
 
-A sandbox gets a placeholder for each secret, never the value. The value stays on the host, and the proxy on the host puts it into the headers of HTTPS requests to the hosts the secret is granted to, and nowhere else.
+A sandbox gets a placeholder for each secret, never the value. The value stays on the host. The proxy there puts it only into the headers of HTTPS requests to the hosts the secret is granted to.
 
-A network policy is enforced on the host too, outside the sandbox, so code in the sandbox cannot change it.
+The host enforces the network policy too, outside the sandbox, so code in the sandbox cannot change it.
 
 Give a sandbox an API key that it cannot read, and let it reach only `api.openai.com`:
 

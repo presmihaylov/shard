@@ -43,12 +43,13 @@ The daemon never chooses Sysbox or runc for you. It runs one of them only when `
 
 ## The ten capabilities
 
-Every provider supports `create`, `start`, `stop`, `remove`, `snapshot` and `port`, as well as `exec`, `logs` and `inspect`. Three commands, `pause`, `resume` and `fork`, are optional, because the provider has to save a running sandbox's memory to support them.
+Every provider supports `create`, `start`, `stop`, `remove`, `snapshot` and `port`, as well as `exec`, `logs` and `inspect`. Three commands, `pause`, `resume` and `fork`, are optional, because the provider has to save a running sandbox's memory to support them. The tenth, `swap`, says whether `--swap` can give a sandbox a swap file.
 
 | Command | gVisor | Firecracker | vz | Sysbox | runc |
 | --- | --- | --- | --- | --- | --- |
 | `create`, `start`, `stop`, `remove`, `snapshot`, `port` | yes | yes | yes | yes | yes |
 | `pause`, `resume`, `fork` | yes | yes | yes | no | no |
+| `swap` | no | yes | yes | no | no |
 
 Ask a server what it supports before you build on `pause`, `resume` or `fork`:
 
@@ -117,13 +118,13 @@ The API answers with status `409` and the code `unsupported`. The TypeScript and
 | `--swap` | refused above 0 | default 2 GiB, inside `--disk` | default 2 GiB, inside `--disk` | refused above 0 |
 | Processes | at most 4096 | no bound | no bound | at most 4096 |
 
-**Memory.** When a sandbox goes past its memory bound, the whole sandbox ends, not just one process in it. It becomes `stopped` with the reason `ran out of memory and the host ended it`, and the daemon then starts it again on its own.
+**Memory.** When a sandbox goes past its memory bound, the whole sandbox ends rather than one process in it. It becomes `stopped` with the reason `ran out of memory and the host ended it`, and the daemon then starts it again on its own.
 
 On gVisor, the sandbox slows down when it reaches the bound and ends only once it is a little above it. `create` refuses a bound above the host's total memory.
 
 **CPU.** `--vcpus` accepts a non-negative whole number. On gVisor, Sysbox and runc, `0` sets no CPU-time quota.
 
-On Firecracker and `vz`, `0` gives the VM as many CPUs as the host and provider allow; Firecracker uses at most 32, and `vz` follows Virtualization.framework's range. Firecracker refuses a count above 32, and `vz` refuses a count outside its allowed range.
+On Firecracker and `vz`, `0` gives the VM as many CPUs as the host and provider allow. Firecracker uses at most 32, and `vz` follows Virtualization.framework's range. Firecracker refuses a count above 32, and `vz` refuses a count outside its allowed range.
 
 **Disk.** The bound covers everything the sandbox writes. A write past it fails with `ENOSPC`, but the sandbox keeps running.
 

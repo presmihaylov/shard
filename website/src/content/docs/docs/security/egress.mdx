@@ -107,7 +107,7 @@ with Shard() as shard:
 
 The TypeScript and Python examples reach `shard serve` at the address in `SHARD_REMOTE`, with the API key in `SHARD_API_KEY`.
 
-A sandbox has no network rules of its own, so there is nothing in it to change. The rules live on the host, and the host rewrites its rules on every create, start, resume, fork and policy change.
+A sandbox has no network rules of its own, so there is nothing in it to change. The rules live on the host, and the host rewrites its rules on every create, start, resume, fork, remove, grant and policy change.
 
 To write a policy, attach it and read its log, see [Network policy and proxy](/docs/essentials/network-policy/).
 
@@ -122,15 +122,15 @@ A sandbox created without `--policy` can reach the internet but nothing private.
 
 This floor also applies under every policy. The host checks it before any policy rule, so no rule can open it. `policy create` refuses a rule that names `private`.
 
-Nothing outside can open a connection into a sandbox: the host drops any new connection toward a sandbox before it checks any policy.
+Nothing outside can open a connection into a sandbox unless `shard port add` forwards a host port to it: the host drops any other new connection toward a sandbox before it checks any policy.
 
 ## How the host enforces a policy
 
 A policy is an ordered list of rules. The first rule that matches decides, and the host drops any traffic that no rule allows.
 
-- **Addresses and ports are judged by the host firewall.** netfilter on Linux, and the daemon's own network stack on a Mac.
-- **Names are judged by the proxy and the resolver.** A name rule covers only TCP ports 80 and 443, where the proxy reads the name in each request. Many hosts can share one CDN address, and a name rule still opens only its own name.
-- **A secret grant opens no host.** The policy must allow a granted host just like any other. Under `deny any`, a granted host is denied, and the value never goes in. See [secrets](/docs/security/secrets/).
+- **The host firewall judges addresses and ports.** That is netfilter on Linux, and the daemon's own network stack on a Mac.
+- **The proxy and the resolver judge names.** A name rule covers only TCP ports 80 and 443, where the proxy reads the name in each request. Many hosts can share one CDN address, and a name rule still opens only its own name.
+- **A secret grant opens no host.** The policy must allow a granted host like any other. Under `deny any`, a granted host is denied, and the value never goes in. See [secrets](/docs/security/secrets/).
 
 ## DNS under a policy
 
@@ -142,7 +142,7 @@ A secret does not open DNS. A sandbox with no policy uses public DNS directly, w
 
 ## The egress proxy
 
-A sandbox with a policy or a secret sends its traffic on TCP ports 80 and 443 through a proxy on the host. The proxy judges each request by host name, using the same rules, then resolves the name on the host and connects to the address it judged.
+A sandbox with a policy or a secret sends its traffic on TCP ports 80 and 443 through a proxy on the host. The proxy judges each request by host name against the same rules. It then resolves the name on the host and connects to the address it judged.
 
 The host still decides every other port. A sandbox with neither a policy nor a secret never goes through the proxy.
 
@@ -152,7 +152,7 @@ The proxy listens on the bridge gateway, on port `30080` for HTTP and `30443` fo
 - **It checks each upstream against the host's trust store,** never the sandbox's, so code in the sandbox cannot make the proxy trust a server.
 - **It needs a server name.** It refuses a TLS handshake with no server name, and answers with `400` when the `Host` header differs from that name.
 - **It refuses local addresses.** It refuses a host that resolves to one of the server's own addresses, to `0.0.0.0/8`, or to a multicast or broadcast address.
-- **It caps each sandbox.** At most 1024 connections and 1024 requests open at once, and 32 MiB of buffered request data, so one sandbox cannot starve the others.
+- **It caps each sandbox.** A sandbox can have at most 1024 connections and 1024 requests open at once, and 32 MiB of buffered request data, so one sandbox cannot starve the others.
 - **It never logs a value.** The proxy writes one line to the daemon log for each request, and that line never holds a header value, a body or a secret.
 
 ## Names resolve on the host
@@ -174,7 +174,7 @@ The log has limits:
 - **A daemon restart can lose drops.** A drop that happens while the daemon is down is lost if the kernel log overwrites it first.
 
 <Aside type="caution">
-A drop by another firewall on the server is not in the log. A packet dropped by a rule of your own leaves no record, and the sandbox simply times out.
+A drop by another firewall on the server is not in the log. When a rule of your own drops a packet, nothing records it, and the sandbox times out.
 </Aside>
 
 To read the log and what each record means, see [Network policy and proxy](/docs/essentials/network-policy/#read-the-decisions).
@@ -189,7 +189,7 @@ A sandbox gets one IPv4 address and no IPv6 route. The host drops every IPv6 pac
 
 - **iptables, which `ufw` uses.** When `INPUT` or `FORWARD` in the `filter` table holds a rule, or has a policy other than `ACCEPT`, the daemon adds rules with the comment `managed-by-shard`.
 
-  In `INPUT` they accept only the resolver and the proxy ports on the bridge address. In `FORWARD` they accept the traffic out of the bridge and its replies. The daemon checks them every 5 seconds, so it puts back rules that a `ufw reload` flushed within 5 seconds.
+  In `INPUT` they accept only the resolver and the proxy ports on the bridge address. In `FORWARD` they accept the traffic out of the bridge and its replies. The daemon checks them every 5 seconds, so rules that a `ufw reload` flushed come back within 5 seconds.
 - **`firewalld`.** The daemon puts the bridge in a zone named `shard` with the target `ACCEPT`. On `firewalld` 1.0 or later, it also adds a policy named `shard-forwarding` that accepts traffic from that zone to any zone. Both have the description `managed-by-shard` and are permanent, so they come back after a reload.
 
   If a zone `shard` or a policy `shard-forwarding` already exists without that description, the daemon refuses to start a sandbox and changes neither. Rename yours, or remove it if nothing uses it.

@@ -7,9 +7,9 @@ sidebar:
 
 import { LinkCard, TabItem, Tabs } from '@astrojs/starlight/components';
 
-shard runs sandboxes for AI agents on hardware you own. A sandbox is an isolated Linux environment
-where an agent can run code, install packages and use the network, kept apart from the machine it
-runs on. You host shard yourself, on a Linux server or an Apple silicon Mac, with no cloud account.
+shard runs sandboxes for AI agents on hardware you own. A sandbox is an isolated Linux environment,
+kept apart from the machine it runs on. An agent can run code, install packages and use the network
+in it. You host shard yourself, on a Linux server or an Apple silicon Mac, and need no cloud account.
 
 Create a sandbox, write a file in it, read the file back, and remove the sandbox:
 
@@ -99,7 +99,7 @@ A sandbox starts from an image, such as `alpine:3.20`, and keeps running until y
 no process in it.
 
 `run` starts a named process that shard supervises and can start again, and
-`exec` runs a one-off command. A process can exit, and the sandbox stays available for `exec`. The
+`exec` runs a one-off command. When a process exits, the sandbox stays available for `exec`. The
 image's `ENTRYPOINT` and `CMD` never run.
 
 | Verb | What it does |

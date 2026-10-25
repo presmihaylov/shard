@@ -8,7 +8,7 @@ sidebar:
 
 import { Aside, Tabs, TabItem } from '@astrojs/starlight/components';
 
-Code an agent wrote can loop forever, fill memory or call out to the network. Run it in a sandbox, so that it stays off your files and you set its limits.
+Code an agent wrote can loop forever, fill memory or call out to the network. Run it in a sandbox to keep it away from your files and under limits you set.
 
 Write the agent's code into a fresh sandbox, run it, and read what it printed:
 
@@ -102,7 +102,7 @@ The `runc` provider isolates nothing. Root in a `runc` sandbox is root on the ho
 | `stdout`, `stderr` | `stdout`, `stderr` | the newest output |
 | `lostBytes` | `lost_bytes` | output the daemon dropped before any client read it |
 
-- **A nonzero exit code is a result, not an error.** The SDK call succeeds, and you read the failure from `exitCode` or `exit_code`.
+- **A nonzero exit code is not an error.** The SDK call succeeds, and you read the failure from `exitCode` or `exit_code`.
 - **A signal shows in the exit code.** A command ended by a signal reports 128 plus the signal number, so `KILL` gives `137`.
 - **The result keeps the newest 8 MiB.** That is stdout and stderr combined. Set `outputLimitBytes` (`output_limit_bytes`) to keep more or less, or pass `onStdout` and `onStderr` (`on_stdout` and `on_stderr`) to get every chunk as it arrives.
 
@@ -193,7 +193,7 @@ except TimeoutError:
 	</TabItem>
 </Tabs>
 
-- **CLI:** it has no time bound of its own, so the example uses `timeout` from the image. That sends TERM after 30 seconds and KILL five seconds later if the command still runs, and reports `124` after the TERM, or `137` if KILL was needed.
+- **CLI:** it has no time bound of its own, so the example uses `timeout` from the image. That sends TERM after 30 seconds, and KILL five seconds later if the command still runs. It reports `124` after the TERM, or `137` if KILL was needed.
 - **SDKs:** they start the command in the background and send KILL when the wait times out. A command killed that way reports `137`, and a command that finishes first keeps its own exit code.
 
 ## Bound the memory, CPU and disk
@@ -233,7 +233,7 @@ sandbox = shard.create("python:3.12-slim", memory_mib=1024, vcpus=2, disk_mib=40
 </Tabs>
 
 <Aside type="caution">
-When the host ends a sandbox for its memory, the whole sandbox ends, not only the command, and the daemon starts it again with the files it kept. On `vz` and `firecracker` it swaps first, and ends only once the swap is full too. To get more memory, create a new sandbox with a larger bound. See [Known limits](/docs/security/limits/#resource-bounds).
+When the host ends a sandbox for its memory, the whole sandbox ends, not only the command. The daemon then starts it again with the files it kept. On `vz` and `firecracker` it swaps first, and ends only once the swap is full too. To get more memory, create a new sandbox with a larger bound. See [Known limits](/docs/security/limits/#resource-bounds).
 </Aside>
 
 - **Disk:** 10 GiB if you set no bound. A write past it fails with `ENOSPC`, and the sandbox keeps running.
