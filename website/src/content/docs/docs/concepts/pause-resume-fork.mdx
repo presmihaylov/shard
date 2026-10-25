@@ -1,6 +1,8 @@
 ---
 title: Pause, resume and fork
 description: Save a running sandbox to disk and continue it later, or start a new sandbox from its memory and files.
+sidebar:
+  order: 6
 ---
 
 import { TabItem, Tabs } from '@astrojs/starlight/components';
@@ -13,13 +15,22 @@ Pause a sandbox, resume it, then fork it into a second sandbox with files of its
 <TabItem label="CLI">
 
 ```sh
+# Create a sandbox and write a file in it.
 shard create --name demo --memory 512MiB alpine:3.20
 shard exec demo sh -c 'echo before > /root/state.txt'
+
+# Pause it, which frees its memory on the host, and resume it.
 shard pause demo
 shard resume demo
+
+# Fork it, and change the file in the fork only.
 shard fork --name demo-copy demo
 shard exec demo-copy sh -c 'echo copy > /root/state.txt'
+
+# The cat prints before: the fork has its own files.
 shard exec demo cat /root/state.txt
+
+# Remove both sandboxes.
 shard remove --force demo-copy
 shard remove --force demo
 ```
@@ -34,13 +45,19 @@ const shard = new Shard();
 try {
   const sandbox = await shard.create({ image: "alpine:3.20", name: "demo", memoryMiB: 512 });
   try {
+    // Write a file in the sandbox.
     await sandbox.files.write("/root/state.txt", "before\n");
+
+    // Pause it, which frees its memory on the host, and resume it.
     await sandbox.pause();
     await sandbox.resume();
 
+    // Fork it, and change the file in the fork only.
     const copy = await sandbox.fork({ name: "demo-copy" });
     try {
       await copy.files.write("/root/state.txt", "copy\n");
+
+      // Prints before: the fork has its own files.
       process.stdout.write((await sandbox.exec("cat /root/state.txt")).stdout);
     } finally {
       await copy.remove({ force: true });
@@ -62,13 +79,19 @@ from useshards import Shard
 with Shard() as shard:
     sandbox = shard.create("alpine:3.20", name="demo", memory_mib=512)
     try:
+        # Write a file in the sandbox.
         sandbox.files.write("/root/state.txt", "before\n")
+
+        # Pause it, which frees its memory on the host, and resume it.
         sandbox.pause()
         sandbox.resume()
 
+        # Fork it, and change the file in the fork only.
         copy = sandbox.fork(name="demo-copy")
         try:
             copy.files.write("/root/state.txt", "copy\n")
+
+            # Prints before: the fork has its own files.
             print(sandbox.exec("cat /root/state.txt").stdout, end="")
         finally:
             copy.remove(force=True)
@@ -81,7 +104,7 @@ with Shard() as shard:
 
 Each version prints `before`, because the write in `demo-copy` changed only its own files.
 
-The example needs a host that runs `gvisor`, `firecracker` or `vz`. The SDKs connect to `shard serve` at the URL in `SHARD_REMOTE`, with the key in `SHARD_API_KEY`.
+The example needs a host that runs `gvisor`, `firecracker` or `vz`.
 
 ## Pause and resume
 
@@ -104,7 +127,7 @@ To keep a pool of warm sandboxes, prepare one sandbox, then fork it once for eac
 - **A stop deletes the checkpoint.** `shard stop` on a paused sandbox ends it, so you can no longer resume it. Its files stay, and `shard start` runs it again from them, with new memory.
 - **A daemon restart keeps the pause.** A paused sandbox stays paused when the daemon restarts, as long as its checkpoint is on disk. If its checkpoint is gone, it becomes `stopped`.
 - **A fork starts with empty logs.** It also does not get the source's port forwards.
-- **A Firecracker fork needs XFS or Btrfs.** The fork shares the sandbox's disk blocks. On any other filesystem, the daemon puts its data directory on an XFS image. See [the data directory](/docs/quickstart/server/#the-data-directory).
+- **A Firecracker fork needs XFS or Btrfs.** The fork shares the sandbox's disk blocks. On any other filesystem, the daemon puts its data directory on an XFS image. See [the data directory](/docs/concepts/data-directory/).
 
 ## Fork or snapshot
 
@@ -119,8 +142,11 @@ A snapshot also copies a sandbox, but only its files:
 | Providers | `gvisor`, `firecracker`, `vz` | Every provider |
 
 ```sh
+# Stop the sandbox, then copy its files into a snapshot.
 shard stop demo
 shard snapshot create --name demo-files demo
+
+# Create a new sandbox from the snapshot's files.
 shard create --name demo-from-files --memory 512MiB --snapshot demo-files
 ```
 

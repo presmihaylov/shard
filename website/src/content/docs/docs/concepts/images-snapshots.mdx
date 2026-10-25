@@ -2,7 +2,7 @@
 title: Images and snapshots
 description: How a server downloads and keeps images, and how a snapshot saves the files of a stopped sandbox for new sandboxes.
 sidebar:
-  order: 3
+  order: 5
 ---
 
 import { Tabs, TabItem } from '@astrojs/starlight/components';
@@ -15,12 +15,19 @@ Write a file in a sandbox, save the sandbox as a snapshot, and start a new sandb
 	<TabItem label="CLI">
 
 ```sh
+# Create a sandbox and write a file in it.
 shard create --name web --memory 512MiB alpine:3.20
 shard exec web sh -c 'echo ready > /root/state.txt'
+
+# Stop it, and save its files as the snapshot web-base.
 shard stop web
 shard snapshot create --name web-base web
+
+# Create a new sandbox from the snapshot. The cat prints ready.
 shard create --name web-2 --snapshot web-base
 shard exec web-2 cat /root/state.txt
+
+# Remove both sandboxes and the snapshot.
 shard remove --force web-2
 shard remove web
 shard snapshot remove web-base
@@ -34,12 +41,19 @@ import { Shard } from "useshards";
 
 const shard = new Shard();
 try {
+  // Create a sandbox and write a file in it.
   const web = await shard.create({ name: "web", image: "alpine:3.20", memoryMiB: 512 });
   await web.exec(["sh", "-c", "echo ready > /root/state.txt"]);
+
+  // Stop it, and save its files as the snapshot web-base.
   await web.stop();
   const snapshot = await shard.snapshots.create(web, { name: "web-base" });
+
+  // Create a new sandbox from the snapshot. Prints ready.
   const copy = await shard.create({ name: "web-2", snapshot: snapshot.id });
   console.log((await copy.exec(["cat", "/root/state.txt"])).stdout);
+
+  // Remove both sandboxes and the snapshot.
   await copy.remove({ force: true });
   await web.remove();
   await shard.snapshots.remove(snapshot.id);
@@ -55,12 +69,19 @@ try {
 from useshards import Shard
 
 with Shard() as shard:
+    # Create a sandbox and write a file in it.
     web = shard.create("alpine:3.20", name="web", memory_mib=512)
     web.exec(["sh", "-c", "echo ready > /root/state.txt"])
+
+    # Stop it, and save its files as the snapshot web-base.
     web.stop()
     snapshot = shard.snapshots.create(web, name="web-base")
+
+    # Create a new sandbox from the snapshot. Prints ready.
     copy = shard.create(snapshot=snapshot.id, name="web-2")
     print(copy.exec(["cat", "/root/state.txt"]).stdout)
+
+    # Remove both sandboxes and the snapshot.
     copy.remove(force=True)
     web.remove()
     shard.snapshots.remove(snapshot.id)
@@ -68,8 +89,6 @@ with Shard() as shard:
 
 	</TabItem>
 </Tabs>
-
-The TypeScript and Python examples reach `shard serve` at the address in `SHARD_REMOTE`, with the API key in `SHARD_API_KEY`.
 
 `web-2` starts with the file that `web` wrote, because a snapshot copies the files that a stop keeps. Snapshots work on every provider.
 
@@ -163,14 +182,3 @@ shard snapshot remove web-base
 ```
 
 A sandbox made from the snapshot keeps its own files, so nothing stops the remove. A snapshot counts as a user of its image, so `shard image remove` refuses that image and `shard image prune` keeps it.
-
-## Snapshot or fork
-
-Use a snapshot to keep a setup and start from it later. Use a fork to copy a running sandbox mid-task, with its processes still running.
-
-| | Snapshot | Fork |
-| --- | --- | --- |
-| Source | a stopped sandbox | a running sandbox |
-| Copies | the files | the memory and the files |
-| New sandbox | starts with no processes | continues from the same moment |
-| Providers | all | gVisor, Firecracker, and vz on Apple silicon with macOS 14 or later; Sysbox and runc refuse it |

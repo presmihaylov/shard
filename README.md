@@ -20,7 +20,7 @@
 
 <p><b>shard runs sandboxes for AI agents on your own hardware.</b></p>
 
-   <p></p>You choose the isolation you want based on your needs:</p>
+<p>You choose the isolation you want based on your needs:</p>
 
 <ul>
 <li><b>Containers</b> for speed and resource constraints</li>
