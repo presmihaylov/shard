@@ -142,8 +142,11 @@ A snapshot also copies a sandbox, but only its files:
 | Providers | `gvisor`, `firecracker`, `vz` | Every provider |
 
 ```sh
+# Stop the sandbox, then copy its files into a snapshot.
 shard stop demo
 shard snapshot create --name demo-files demo
+
+# Create a new sandbox from the snapshot's files.
 shard create --name demo-from-files --memory 512MiB --snapshot demo-files
 ```
 
