@@ -81,7 +81,3 @@ The CLI picks the daemon in this order:
 For a remote connection, the CLI uses `SHARD_API_KEY` first. Otherwise, it uses the saved key only when the selected URL names the saved server. An explicit `--remote ""` selects the local socket and ignores the saved connection.
 
 The SDKs use a remote URL and API key from constructor options or the environment variables `SHARD_REMOTE` and `SHARD_API_KEY`. They ignore the saved connection and always go through `shard serve`.
-
-## Isolation and the network
-
-The provider sets how strongly each sandbox is isolated from the host. Each sandbox gets its own address. The host, not the sandbox, holds the network rules, and it writes them again on every create, start, resume, fork and policy change. A sandbox never holds a secret value. Its commands see a placeholder, and the egress proxy puts the value into the HTTPS request headers only on the way to a destination that the secret is granted to.
