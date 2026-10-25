@@ -2,7 +2,7 @@
 title: Providers and capabilities
 description: What a provider is, how a host picks one, and which lifecycle commands each provider supports.
 sidebar:
-  order: 2
+  order: 3
 ---
 
 import { Tabs, TabItem } from '@astrojs/starlight/components';
@@ -17,7 +17,7 @@ A provider is the mechanism that runs and isolates each sandbox. shard has five:
 | `sysbox` | a Linux container with its own user namespace | Linux, one tenant per host |
 | `runc` | a plain Linux container on the host kernel, with no user namespace | Linux, trusted code only |
 
-A daemon runs one provider, and every sandbox on that host runs on it. Each sandbox record names the provider that created it. A data directory that already holds records refuses any other provider, because that provider cannot read those sandboxes.
+A daemon runs one provider, and every sandbox on that host runs on it. Each sandbox record names the provider that created it. A [data directory](/docs/concepts/data-directory/) that already holds records refuses any other provider, because that provider cannot read those sandboxes.
 
 To compare the providers for your workload, see [What provider should I pick?](/docs/choose-provider/).
 
@@ -46,11 +46,6 @@ Every provider supports `create`, `start`, `stop`, `remove`, `snapshot` and `por
 | --- | --- | --- | --- | --- | --- |
 | `create`, `start`, `stop`, `remove`, `snapshot`, `port` | yes | yes | yes | yes | yes |
 | `pause`, `resume`, `fork` | yes | yes | yes | no | no |
-
-- **Sysbox and runc** support none of the three. `sysbox-runc` has no checkpoint support, and shard does not drive a checkpoint on runc.
-- **vz** needs macOS 14 or later on Apple silicon for all three, and a daemon on an older Mac refuses them.
-- **`snapshot`** works on every provider, because it copies the files of a stopped sandbox and does not need its memory.
-- **`swap`** is not a command. It says whether `--swap` can give a sandbox a swap file, which only Firecracker and vz can.
 
 Ask a server what it supports before you build on `pause`, `resume` or `fork`:
 
@@ -95,6 +90,46 @@ with Shard() as shard:
 
 `shard capabilities` marks each of the ten `true` or `false`, and `--format json` prints the same ten keys as JSON. The answer depends only on the server's provider, not on your API key's scopes or the state of your sandboxes.
 
+## How each command works
+
+gVisor, Sysbox and runc run each sandbox as a container on the host. Firecracker and vz boot a virtual machine for it. A command does the same thing on every provider, by different means on the host.
+
+### create
+
+`create` pulls the image, gives the sandbox an address on the sandbox network, builds its filesystem and starts it, with `shard-init` as PID 1. On gVisor, Sysbox and runc, each image is unpacked once into the [data directory](/docs/concepts/data-directory/), and every sandbox mounts it read-only as the lower layer of an overlayfs. The sandbox's writes go to the upper layer, on a disk of its own: a sparse ext4 file, sized by `--disk` and mounted over a loop device. On Firecracker, the microVM boots from the image as a read-only EROFS disk, with a second, writable ext4 disk for its writes, and runs inside a jail with its own user and cgroup. On vz, the daemon clones the image's ext4 disk, which APFS does without copying a block, and grows the clone to `--disk`.
+
+### start
+
+`start` runs a stopped sandbox again, from the files its stop kept. On gVisor, Sysbox and runc, the daemon mounts the sandbox's disk and overlay again and creates the container afresh, in a new cgroup. On Firecracker and vz, the virtual machine boots again from the same disks. The sandbox keeps its address, and its processes start from scratch.
+
+### stop
+
+`stop` sends SIGTERM to the sandbox's processes, waits up to 30 seconds, then kills what is left. On gVisor, Sysbox and runc, the daemon then unmounts the overlay and the disk. On Firecracker and vz, `shard-init` passes the SIGTERM on and powers the virtual machine off. The writable layer stays on the host, and so do the record and the address. A stop also deletes the checkpoint of a paused sandbox.
+
+### remove
+
+`remove` closes the sandbox's host ports, removes its container or virtual machine, and frees its address on the sandbox network. Then it deletes the sandbox's record, its disk and any checkpoint, and rewrites the host's network rules. A running or paused sandbox needs `--force`.
+
+### snapshot
+
+`snapshot create` copies the writable layer of a stopped sandbox into the data directory. On gVisor, Sysbox and runc, it copies the overlay's upper layer file by file, with the deletions it records. On Firecracker, it reflinks the writable disk, so the snapshot shares the disk's blocks until either one changes. On vz, it clones the disk the same way on APFS. A snapshot holds no copy of the image: `create --snapshot` lays the files over the same image again, so that image must still be on the host, at the same digest.
+
+### port
+
+`port` opens a listener in the daemon, on `127.0.0.1`, or on every interface with `--public`. The daemon carries each connection to the port on the sandbox's loopback: on gVisor through `runsc port-forward`, on Sysbox and runc from inside the sandbox's network namespace, and on Firecracker and vz over a vsock stream to `shard-init`.
+
+### pause
+
+`pause` saves a running sandbox's memory to a checkpoint in the data directory, then ends its processes, so the sandbox holds no memory on the host. On gVisor, `runsc checkpoint` writes the memory of the sandbox's kernel and processes, and the writable layer stays where it is. On Firecracker, `shard-init` freezes the guest's filesystem, Firecracker pauses the microVM and writes its state and memory to files, and the writable disk is reflinked beside them. On vz, Virtualization.framework saves the machine state, and the disk is cloned beside it.
+
+### resume
+
+`resume` restores a paused sandbox from its checkpoint, at the same address, and applies its network rules again. On gVisor, `runsc restore` loads the memory over the remounted layer. On Firecracker, a new jailed Firecracker process loads the snapshot, and the guest's random number generator gets a new seed, so no two restores of one checkpoint draw the same numbers. On vz, the cloned disk goes back in place, and the virtual machine restores from the saved state.
+
+### fork
+
+`fork` captures a running sandbox and restores the capture as a new sandbox. The source freezes only for the capture, then runs on. On gVisor, `runsc checkpoint --leave-running` saves the memory, and the writable layer is copied onto the new sandbox's own disk. On Firecracker and vz, the daemon snapshots the virtual machine as a pause does, reflinks or clones its disk, and restores the copy with a new address. The new sandbox gets its own record and address, and its logs start empty.
+
 ## Refuse, never downgrade
 
 A command that the provider does not support fails immediately, with an error that names the provider and the command:
@@ -104,8 +139,6 @@ shard: provider sysbox does not support pause on this host; use a server that su
 ```
 
 The API answers with status `409` and the code `unsupported`. The TypeScript and Python SDKs throw `UnsupportedError`.
-
-shard never falls back to a weaker mechanism. A `pause` on Sysbox fails instead of stopping the sandbox, and the sandbox keeps running. The daemon checks the capability before it touches the sandbox, so a refused command leaves the sandbox as it was.
 
 ## Resource bounds by provider
 

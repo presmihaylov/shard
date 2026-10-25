@@ -15,14 +15,20 @@ Create a sandbox, write a file, stop it, start it again, pause it and resume it:
 	<TabItem label="CLI">
 
 ```sh
+# Create a sandbox and write a file in it.
 shard create --name demo --memory 512MiB alpine:3.20
 shard exec demo sh -c 'echo hello > /root/hello.txt'
+
+# Stop it and start it. The cat prints hello: the stop kept the file.
 shard stop demo
 shard start demo
-# Prints hello: the stop kept the file.
 shard exec demo cat /root/hello.txt
+
+# Pause it and resume it. Its processes carry on where they left off.
 shard pause demo
 shard resume demo
+
+# Remove it.
 shard remove --force demo
 ```
 
@@ -35,15 +41,20 @@ import { Shard } from "useshards";
 const shard = new Shard();
 const sandbox = await shard.create({ name: "demo", image: "docker.io/library/alpine:3", memoryMiB: 512 });
 try {
+  // Write a file in the sandbox.
   await sandbox.exec(["sh", "-c", "echo hello > /root/hello.txt"]);
+
+  // Stop it and start it. Prints hello: the stop kept the file.
   await sandbox.stop();
   await sandbox.start();
-  // Prints hello: the stop kept the file.
   console.log((await sandbox.exec(["cat", "/root/hello.txt"])).stdout);
+
+  // Pause it and resume it. Prints running.
   await sandbox.pause();
   await sandbox.resume();
-  console.log((await sandbox.inspect()).state); // running
+  console.log((await sandbox.inspect()).state);
 } finally {
+  // Remove it.
   await sandbox.remove({ force: true });
   shard.close();
 }
@@ -58,15 +69,20 @@ from useshards import Shard
 with Shard() as shard:
     sandbox = shard.create("docker.io/library/alpine:3", name="demo", memory_mib=512)
     try:
+        # Write a file in the sandbox.
         sandbox.exec(["sh", "-c", "echo hello > /root/hello.txt"])
+
+        # Stop it and start it. Prints hello: the stop kept the file.
         sandbox.stop()
         sandbox.start()
-        # Prints hello: the stop kept the file.
         print(sandbox.exec(["cat", "/root/hello.txt"]).stdout)
+
+        # Pause it and resume it. Prints running.
         sandbox.pause()
         sandbox.resume()
-        print(sandbox.inspect().state)  # running
+        print(sandbox.inspect().state)
     finally:
+        # Remove it.
         sandbox.remove(force=True)
 ```
 

@@ -1,6 +1,8 @@
 ---
 title: Architecture
 description: How the shard CLI, the SDKs, shard serve, the daemon, the provider and shard-init fit together on one host.
+sidebar:
+  order: 4
 ---
 
 A daemon on the host owns every sandbox. The CLI and the SDKs are its clients: the CLI on the host reaches it over a unix socket, and a CLI or SDK on another machine reaches it through `shard serve`.
@@ -16,11 +18,7 @@ A few commands work without a daemon: `shard setup`, `shard daemon` itself, `sha
 
 ## The parts
 
-```text
-shard CLI on the host ─────── unix socket ───────┐
-                                                 ├──> shard daemon ──> provider ──> sandbox
-CLI or SDK elsewhere ── TLS proxy ── shard serve ┘                                  └ shard-init, PID 1
-```
+![The shard CLI on the host reaches the daemon over its unix socket. A CLI or SDK elsewhere goes through your TLS proxy to shard serve, which passes the bytes to the same socket. The daemon runs each sandbox through its provider.](../../../../assets/architecture-parts.svg)
 
 | Part | What it does |
 | --- | --- |
@@ -59,11 +57,7 @@ A failed task restarts after a backoff of up to one minute.
 
 ## A sandbox outlives the daemon
 
-Sandboxes that already run normally survive a daemon restart. On startup, the daemon checks their records against the provider before it serves any request. A create, fork or restore that the restart interrupted can instead end as `failed` or `stopped`. A record that says `running` with no process behind it usually becomes `stopped`, with the reason `daemon restarted and found no process`. When the provider reports an OOM kill or a supervisor failure, the record keeps that specific reason. The daemon then starts a sandbox that ran out of memory again, as it does while it is up.
-
-Then the `autostart` task starts each stopped sandbox that holds an `always` process, or an `unless-stopped` one that neither `shard stop` nor `shard kill` ended, and runs those processes again. In a sandbox that still runs, it starts any such process that the guest no longer runs. This is how sandboxes come back after a host reboot.
-
-An `exec` session does not outlive the daemon. A restart disconnects every client and discards the daemon's output buffer and command handle. A command that already started can continue inside the sandbox, but the client cannot reconnect to that handle.
+Sandboxes that already run normally survive a daemon restart.
 
 A sandbox also outlives its processes. When one exits, the sandbox stays `running`, and `shard ps` shows the exit. `shard stop` ends the sandbox without deleting its files. A forced remove, a host shutdown or a runtime failure can also end it.
 

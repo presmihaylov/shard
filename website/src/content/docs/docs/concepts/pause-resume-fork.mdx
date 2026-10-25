@@ -1,6 +1,8 @@
 ---
 title: Pause, resume and fork
 description: Save a running sandbox to disk and continue it later, or start a new sandbox from its memory and files.
+sidebar:
+  order: 6
 ---
 
 import { TabItem, Tabs } from '@astrojs/starlight/components';
@@ -13,14 +15,22 @@ Pause a sandbox, resume it, then fork it into a second sandbox with files of its
 <TabItem label="CLI">
 
 ```sh
+# Create a sandbox and write a file in it.
 shard create --name demo --memory 512MiB alpine:3.20
 shard exec demo sh -c 'echo before > /root/state.txt'
+
+# Pause it, which frees its memory on the host, and resume it.
 shard pause demo
 shard resume demo
+
+# Fork it, and change the file in the fork only.
 shard fork --name demo-copy demo
 shard exec demo-copy sh -c 'echo copy > /root/state.txt'
-# Prints before: the fork has its own files.
+
+# The cat prints before: the fork has its own files.
 shard exec demo cat /root/state.txt
+
+# Remove both sandboxes.
 shard remove --force demo-copy
 shard remove --force demo
 ```
@@ -35,13 +45,18 @@ const shard = new Shard();
 try {
   const sandbox = await shard.create({ image: "alpine:3.20", name: "demo", memoryMiB: 512 });
   try {
+    // Write a file in the sandbox.
     await sandbox.files.write("/root/state.txt", "before\n");
+
+    // Pause it, which frees its memory on the host, and resume it.
     await sandbox.pause();
     await sandbox.resume();
 
+    // Fork it, and change the file in the fork only.
     const copy = await sandbox.fork({ name: "demo-copy" });
     try {
       await copy.files.write("/root/state.txt", "copy\n");
+
       // Prints before: the fork has its own files.
       process.stdout.write((await sandbox.exec("cat /root/state.txt")).stdout);
     } finally {
@@ -64,13 +79,18 @@ from useshards import Shard
 with Shard() as shard:
     sandbox = shard.create("alpine:3.20", name="demo", memory_mib=512)
     try:
+        # Write a file in the sandbox.
         sandbox.files.write("/root/state.txt", "before\n")
+
+        # Pause it, which frees its memory on the host, and resume it.
         sandbox.pause()
         sandbox.resume()
 
+        # Fork it, and change the file in the fork only.
         copy = sandbox.fork(name="demo-copy")
         try:
             copy.files.write("/root/state.txt", "copy\n")
+
             # Prints before: the fork has its own files.
             print(sandbox.exec("cat /root/state.txt").stdout, end="")
         finally:
