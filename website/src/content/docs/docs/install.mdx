@@ -31,20 +31,9 @@ pip install useshards
 </TabItem>
 </Tabs>
 
-The installer puts the CLI at `~/.local/bin/shard`. The installer itself needs no root and changes nothing else on the machine. If a terminal is attached, it then offers to start `shard setup`. Setup is the step that changes the machine: it turns this machine into a sandbox host or connects it to a remote shard server.
+The installer puts the CLI at `~/.local/bin/shard`. The installer itself needs no root and changes nothing else on the machine. If a terminal is attached, it then offers to start [`shard setup`](#what-setup-does). Setup is the step that changes the machine: it turns this machine into a sandbox host or connects it to a remote shard server.
 
 The TypeScript SDK needs Node.js 20.3 or later, and the Python SDK needs Python 3.11 or later. Both talk to a host through `shard serve`.
-
-## What the installer does
-
-1. Detects the operating system and the CPU architecture.
-2. Asks the GitHub releases API for the newest stable shard release, a `vX.Y.Z` tag that is neither a draft nor a prerelease, and prints that version.
-3. Downloads this platform's binary and the release's `SHA256SUMS` from that same release into a temporary directory.
-4. Verifies the binary's checksum, and stops if it does not match.
-5. Checks that the new binary reports the expected version, then moves it over `~/.local/bin/shard`.
-6. Prints the install path and, if `~/.local/bin` is not on `PATH`, the line that adds it for new shells and the `export` that adds it to the current one. Under fish, it prints one `fish_add_path` line instead.
-
-An existing `shard` stays in place until the installer has downloaded and verified the new binary. On a failure or an interrupt, the installer removes its temporary files and leaves the old binary as it was.
 
 ## Supported platforms
 
@@ -57,6 +46,45 @@ An existing `shard` stays in place until the installer has downloaded and verifi
 
 A Mac needs macOS 14 or later to host sandboxes. On Windows, run the installer inside WSL 2, where it installs the Linux build. The SDKs need only Node.js or Python, so they connect from Windows as well. On another CPU architecture, the installer stops with an error that lists the builds in the release. Under Rosetta, an Apple silicon Mac gets the native arm64 build.
 
+## What the installer does
+
+1. Detects the operating system and the CPU architecture.
+2. Asks the GitHub releases API for the newest stable shard release, a `vX.Y.Z` tag that is neither a draft nor a prerelease, and prints that version.
+3. Downloads this platform's binary and the release's `SHA256SUMS` from that same release into a temporary directory.
+4. Verifies the binary's checksum, and stops if it does not match.
+5. Checks that the new binary reports the expected version, then moves it over `~/.local/bin/shard`.
+6. Prints the install path and, if `~/.local/bin` is not on `PATH`, the line that adds it for new shells and the `export` that adds it to the current one. Under fish, it prints one `fish_add_path` line instead.
+7. Asks whether to start [`shard setup`](#what-setup-does) now. Without a terminal, as in a script or a CI job, it prints `shard setup` for you to run later.
+
+An existing `shard` stays in place until the installer has downloaded and verified the new binary. On a failure or an interrupt, the installer removes its temporary files and leaves the old binary as it was.
+
+## What setup does
+
+`shard setup` first asks how you want to use shard: run sandboxes on this machine, or connect to a remote server. Every question has a flag, so a script can answer them all; [Quickstart: server](/docs/quickstart/server/#script-it) lists them.
+
+### Run sandboxes on this machine
+
+1. Asks which provider isolates your sandboxes, and recommends one this machine can run. [What provider should I pick?](/docs/choose-provider/) compares them.
+2. Asks whether to start shard at boot and, if so, whether to also serve the HTTP API for other machines.
+3. Checks the machine: the operating system and CPU, the provider's requirements, administrator access, the install paths, disk space, download access and any earlier installation. A failed check names what is in the way and changes nothing.
+4. On Firecracker, when the filesystem cannot clone files, asks how much disk to reserve for sandboxes.
+5. Lists every change it will make and asks you to confirm. Nothing changes before this, and setup asks for administrator access here.
+6. Downloads the provider's tools from pinned releases, checks the sha256 of each, and installs them, with the Linux packages from `apt-get`. It keeps a tool the machine already has, and `vz` needs none.
+7. Installs `shard`, and on Linux `shard-init`, in `/usr/local/bin`.
+8. Creates the data directory, `/var/lib/shard`.
+9. With start at boot, installs the systemd or launchd service, starts the daemon and waits until it answers. On Firecracker and `vz`, that first start downloads the guest kernel.
+10. With the HTTP API, creates the `shard` account and an API key, installs the `shard serve` service, starts the service and checks that it answers.
+
+If a step fails, setup stops and keeps the steps before it. Run `shard setup` again to pick up from there.
+
+When this machine already runs shard, setup opens a menu instead of these steps: check or repair the installation, [upgrade](#upgrade), set up the HTTP API, or [uninstall](#uninstall).
+
+### Connect to a remote server
+
+1. Asks for the server's URL and an API key.
+2. Checks that it reaches the server, that the key works, and what the server's provider supports.
+3. Asks whether to save the connection in `~/.config/shard/config.json`. It installs nothing.
+
 ## Upgrade
 
 On a machine that only connects to a remote server, run the installer again. On a sandbox host, run `shard setup` and choose **Upgrade shard**: setup replaces the CLI and the daemon with the newest release and restarts the daemon, and your sandboxes keep running.
@@ -67,4 +95,8 @@ On a sandbox host, remove your sandboxes, then run `shard setup` and choose **Un
 
 ## Where shard keeps its state
 
-A sandbox host keeps its sandboxes, images, snapshots, secrets and network policies in `/var/lib/shard`. On Linux, when the disk under it cannot clone files, that directory is a mount of the disk image `/var/lib/shard.xfs`. On a Mac, the daemon logs to `/var/log/shard`. A remote client keeps its saved connection in `~/.config/shard/config.json`.
+- **Sandbox host:** `/var/lib/shard` holds the sandboxes, images, snapshots, secrets and network policies.
+- **Firecracker disk image:** when the filesystem under `/var/lib/shard` cannot clone files, that directory is a mount of `/var/lib/shard.xfs`.
+- **API key:** `/etc/shard/api-key` on Linux, and `/var/lib/shard/auth/api-key` on a Mac, when setup serves the HTTP API.
+- **Mac logs:** `/var/log/shard`.
+- **Remote client:** the saved connection, in `~/.config/shard/config.json`.
