@@ -25,6 +25,7 @@ export const ogImageUrl = (id: string) => `${SITE}/og/${id}.png`;
 // The sidebar groups, in sidebar order; a page joins the first group whose prefix its id starts with.
 const GROUPS: [label: string, prefixes: string[]][] = [
 	['Get started', ['docs/install', 'docs/quickstart/', 'docs/choose-provider']],
+	['Essentials', ['docs/essentials/']],
 	['Concepts', ['docs/concepts/']],
 	['Security', ['docs/security/']],
 	['Guides', ['docs/guides/']],

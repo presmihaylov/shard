@@ -9,14 +9,27 @@ sidebar:
 Store your Anthropic key on the host, make a sandbox that reaches only Anthropic and npm, and give Claude Code a task:
 
 ```sh
-printf '%s' "$ANTHROPIC_API_KEY" | shard secret set --destination api.anthropic.com ANTHROPIC_API_KEY
-shard policy create --allow api.anthropic.com --allow registry.npmjs.org --deny any claude
+# Store the Anthropic key on the host, for api.anthropic.com only.
+printf '%s' "$ANTHROPIC_API_KEY" |
+  shard secret set --destination api.anthropic.com ANTHROPIC_API_KEY
+
+# Allow Anthropic's API and the npm registry, and deny everything else.
+shard policy create --allow api.anthropic.com --allow registry.npmjs.org \
+  --deny any claude
+
+# Create a sandbox that runs as node, with the key's placeholder and the policy.
 shard create --name claude --memory 2GiB --user node --workdir /home/node \
   --secret ANTHROPIC_API_KEY --policy claude \
   --env CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC=1 node:22
+
+# Install Claude Code as root, because it writes to /usr/local.
 shard exec --user root claude npm install -g @anthropic-ai/claude-code
+
+# Give it a task. Prints Claude Code's summary of what it did.
 shard exec claude claude -p --dangerously-skip-permissions \
   "Write fizzbuzz.js that prints FizzBuzz from 1 to 15, then run it with node"
+
+# Copy the file it wrote out to your machine.
 shard cp claude:/home/node/fizzbuzz.js ./fizzbuzz.js
 ```
 
@@ -26,7 +39,7 @@ Claude Code writes the file, runs it, and prints a summary. The last command cop
 
 `--dangerously-skip-permissions` lets Claude Code run any command without asking. On your laptop that is a risk. In the sandbox, the worst it can do is break the sandbox:
 
-- **It sees no key.** The sandbox holds `mock-ANTHROPIC_API_KEY`. The host puts the real key into each HTTPS request to `api.anthropic.com`, outside the sandbox. See [Give a sandbox an API key](/docs/guides/api-key/).
+- **It sees no key.** The sandbox holds `mock-ANTHROPIC_API_KEY`. The host puts the real key into each HTTPS request to `api.anthropic.com`, outside the sandbox. See [Credential brokering](/docs/essentials/credential-brokering/).
 - **It reaches two hosts.** The policy allows Anthropic's API and the npm registry, and denies the rest. `shard policy logs claude` shows each request it made.
 - **It touches no file of yours.** It sees the image's files and what you copy in.
 
@@ -41,21 +54,34 @@ Claude Code refuses `--dangerously-skip-permissions` as root, so the sandbox run
 Copy a project in, let Claude Code change it, and copy the result back:
 
 ```sh
+# Copy the project in. It lands in /home/node/myapp.
 shard cp ./myapp claude:/home/node/
-shard exec --workdir /home/node/myapp claude claude -p --dangerously-skip-permissions "Fix the failing tests"
+
+# Let Claude Code work on it.
+shard exec --workdir /home/node/myapp claude \
+  claude -p --dangerously-skip-permissions "Fix the failing tests"
+
+# Copy the changed project out.
 shard cp claude:/home/node/myapp ./myapp-fixed
 ```
 
 If the agent needs more hosts, such as `github.com` or `pypi.org`, add them to the policy. Run `shard policy create` again with the same name, and the running sandbox gets the new rules at once. The new rules replace the old ones, so repeat every `--allow` you still need:
 
 ```sh
-shard policy create --allow api.anthropic.com --allow registry.npmjs.org --allow github.com --deny any claude
+# Store the policy again under the same name, with github.com added.
+shard policy create --allow api.anthropic.com --allow registry.npmjs.org \
+  --allow github.com --deny any claude
 ```
+
+For how a policy works, see [Network policy and proxy](/docs/essentials/network-policy/).
 
 ## Use it interactively
 
 ```sh
+# Open a shell in the sandbox.
 shard shell claude
+
+# In that shell, start Claude Code.
 claude
 ```
 
@@ -66,16 +92,20 @@ On the first start, Claude Code asks whether to use the API key it found in the 
 Fork the sandbox once Claude Code is installed, and give each copy a different prompt:
 
 ```sh
+# Fork the sandbox, with Claude Code already installed.
 shard fork --name claude-b claude
+
+# Give each copy its own prompt.
 shard exec claude claude -p --dangerously-skip-permissions "Solve it with a loop"
 shard exec claude-b claude -p --dangerously-skip-permissions "Solve it with recursion"
 ```
 
-`fork` works on gVisor, Firecracker, and vz on Apple silicon with macOS 14 or later. Sysbox and runc refuse it. See [Fork a sandbox to try two paths](/docs/guides/fork/).
+`fork` works on gVisor, Firecracker, and vz on Apple silicon with macOS 14 or later. Sysbox and runc refuse it. See [Pause, resume and fork a sandbox](/docs/essentials/pause-resume-fork/).
 
 ## Clean up
 
 ```sh
+# Remove both sandboxes, then the policy.
 shard remove --force claude claude-b
 shard policy remove claude
 ```

@@ -12,8 +12,11 @@ Two environment variables point a client at a shard server on another host:
 <Tabs syncKey="lang">
 	<TabItem label="CLI">
 		```sh
+		# Point the CLI at the server, with the token as the API key.
 		export SHARD_REMOTE=https://shard.example.com
 		export SHARD_API_KEY=<the token that shard tokens mint printed>
+
+		# Prints the sandboxes on that server.
 		shard list
 		```
 	</TabItem>
@@ -24,6 +27,7 @@ Two environment variables point a client at a shard server on another host:
 		// Reads SHARD_REMOTE and SHARD_API_KEY.
 		const shard = new Shard();
 		try {
+		  // Prints the ID of each sandbox on the server.
 		  const { sandboxes } = await shard.list();
 		  for (const sandbox of sandboxes) console.log(sandbox.id);
 		} finally {
@@ -37,6 +41,7 @@ Two environment variables point a client at a shard server on another host:
 
 		# Reads SHARD_REMOTE and SHARD_API_KEY.
 		with Shard() as shard:
+		    # Prints the ID of each sandbox on the server.
 		    for sandbox in shard.list().sandboxes:
 		        print(sandbox.id)
 		```
@@ -66,6 +71,8 @@ shard: --remote needs an API key: set SHARD_API_KEY, or save one with shard setu
 ```sh
 shard --remote "" list
 ```
+
+To set up a server and save a connection to it, see [Mint a token and connect remotely](/docs/essentials/remote-access/).
 
 ## Environment variables
 
@@ -136,18 +143,25 @@ The daemon keeps its state under its root, `/var/lib/shard` by default. One daem
 
 The main paths under the root:
 
-| Path | What it holds |
-| --- | --- |
-| `shard.sock` | The API socket. When the host has a `shard` group, the socket is `0660` for that group and the root is `0710`, so the group can reach the socket and read nothing else. Otherwise the socket is `0600`, so only its owner can open it. |
-| `daemon.lock` | The lock that keeps one daemon on the root. |
-| `daemon.pid` | The daemon's pid, for log rotation. The lock, not this file, says whether a daemon is up. |
-| `sandboxes/` | One directory for each sandbox, with its record and its logs. |
-| `snapshots/`, `checkpoints/` | Saved snapshots, and the saved state of paused sandboxes. |
-| `images/` | The pulled images. |
-| `secrets/`, `policies/` | The secret and policy stores. |
-| `auth/` | The signing key and the token ledger of `shard serve`. See [Authentication](/docs/reference/auth/#the-signing-key-and-the-ledger). |
-| `proxy/` | The certificate authority of the egress proxy. |
-| `kernel/` | The guest kernel for Firecracker and vz, fetched on first use. |
-| `.reserve` | 64 MiB kept in reserve, so the daemon can start on a full disk and serve the `remove` that frees space. |
+```text
+/var/lib/shard/
+├── shard.sock     the API socket
+├── daemon.lock    keeps one daemon on this root
+├── daemon.pid     the daemon's pid, for log rotation
+├── sandboxes/     one directory per sandbox: its record and its logs
+├── snapshots/     saved snapshots
+├── checkpoints/   the saved memory of paused sandboxes
+├── images/        the pulled images
+├── secrets/       the secret store
+├── policies/      the network policies
+├── auth/          the signing key and token ledger of shard serve
+├── proxy/         the certificate authority of the egress proxy
+├── kernel/        the guest kernel for Firecracker and vz
+└── .reserve       64 MiB held back, so a full disk can still free space
+```
+
+When the host has a `shard` group, `shard.sock` is `0660` for that group and the root is `0710`, so the group can reach the socket and read nothing else. Otherwise the socket is `0600`, and only its owner can open it.
+
+The lock, not `daemon.pid`, says whether a daemon is up. For `auth/`, see [Authentication](/docs/reference/auth/#the-signing-key-and-the-ledger).
 
 On Firecracker, the root must be on a filesystem that clones a file by sharing its blocks: XFS with `reflink=1`, or Btrfs. A Firecracker daemon probes the root when it starts. When the root cannot clone, the daemon makes an XFS image beside it at `<root>.xfs`, mounts it over the root, and adds an `/etc/fstab` line for it. No other provider needs this.

@@ -36,6 +36,7 @@ const files = (/** @type {string} */ directory) => {
 };
 const sidebar = [
 	{ label: 'Get started', items: [...pages('docs', 'docs/install'), ...dir('docs/quickstart'), ...pages('docs/choose-provider')] },
+	{ label: 'Essentials', items: dir('docs/essentials') },
 	{ label: 'Concepts', items: dir('docs/concepts') },
 	{ label: 'Security', items: dir('docs/security') },
 	{ label: 'Guides', items: dir('docs/guides') },
@@ -103,6 +104,7 @@ export default defineConfig({
 			],
 			components: {
 				PageTitle: './src/components/starlight/PageTitle.astro',
+				Search: './src/components/starlight/Search.astro',
 				SiteTitle: './src/components/starlight/SiteTitle.astro',
 				SocialIcons: './src/components/starlight/SocialIcons.astro',
 				ThemeSelect: './src/components/starlight/ThemeSelect.astro',

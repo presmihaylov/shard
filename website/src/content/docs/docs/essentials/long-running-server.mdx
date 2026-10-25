@@ -1,0 +1,149 @@
+---
+title: Run a long-running server in a sandbox
+description: Start a server as a named background process, watch it, read its logs, and choose how it restarts.
+sidebar:
+  label: Run a long-running server
+  order: 5
+---
+
+import { Tabs, TabItem } from '@astrojs/starlight/components';
+
+You'll start a web server as a named process that keeps running in the background, check on it, read its logs and stop it. You need a shard server and a client: see [Create a sandbox, run commands and move files](/docs/essentials/run-commands/).
+
+<Tabs syncKey="lang">
+	<TabItem label="CLI">
+
+```sh
+# Create a sandbox and write a page for the server.
+shard create --name web --memory 512MiB python:3.12
+shard exec web sh -c 'echo "hello from shard" > /srv/index.html'
+
+# Start the server as a named process. Prints site and returns.
+shard run web --name site -- python3 -u -m http.server 8000 --directory /srv
+
+# List the processes. Prints site, running, with the policy unless-stopped.
+shard ps web
+
+# Fetch the page inside the sandbox. Prints hello from shard.
+shard exec web curl -s --retry 5 --retry-connrefused 127.0.0.1:8000
+
+# Read the server's output. Prints the Serving line and the GET request.
+shard logs web site
+
+# Stop the server. The sandbox keeps running, and ps prints site as killed.
+shard kill web site
+shard ps web
+
+# Remove the sandbox.
+shard remove --force web
+```
+
+	</TabItem>
+	<TabItem label="TypeScript">
+
+```ts
+import { Shard } from "useshards";
+
+const server = ["python3", "-u", "-m", "http.server", "8000", "--directory", "/srv"];
+const fetchPage = ["curl", "-s", "--retry", "5", "--retry-connrefused", "127.0.0.1:8000"];
+
+const shard = new Shard();
+try {
+  // Create a sandbox and write a page for the server.
+  const web = await shard.create({ name: "web", image: "python:3.12", memoryMiB: 512 });
+  await web.files.write("/srv/index.html", "hello from shard\n");
+
+  // Start the server as a named process. Prints running.
+  const site = await web.run(server, { name: "site" });
+  console.log((await site.inspect()).status.state);
+
+  // Fetch the page inside the sandbox. Prints hello from shard.
+  console.log((await web.exec(fetchPage)).stdout);
+
+  // Read the server's output. Prints the Serving line and the GET request.
+  console.log(await site.logs());
+
+  // Stop the server. The sandbox keeps running. Prints killed.
+  console.log((await site.kill()).status.state);
+
+  // Remove the sandbox.
+  await web.remove({ force: true });
+} finally {
+  shard.close();
+}
+```
+
+	</TabItem>
+	<TabItem label="Python">
+
+```python
+from useshards import Shard
+
+server = ["python3", "-u", "-m", "http.server", "8000", "--directory", "/srv"]
+fetch_page = ["curl", "-s", "--retry", "5", "--retry-connrefused", "127.0.0.1:8000"]
+
+with Shard() as shard:
+    # Create a sandbox and write a page for the server.
+    web = shard.create("python:3.12", name="web", memory_mib=512)
+    web.files.write("/srv/index.html", "hello from shard\n")
+
+    # Start the server as a named process. Prints running.
+    site = web.run(server, name="site")
+    print(site.inspect().status.state)
+
+    # Fetch the page inside the sandbox. Prints hello from shard.
+    print(web.exec(fetch_page).stdout)
+
+    # Read the server's output. Prints the Serving line and the GET request.
+    print(site.logs())
+
+    # Stop the server. The sandbox keeps running. Prints killed.
+    print(site.kill().status.state)
+
+    # Remove the sandbox.
+    web.remove(force=True)
+```
+
+	</TabItem>
+</Tabs>
+
+`-u` keeps Python's output unbuffered, so each line reaches the logs as it is written.
+
+## Why `run` and not `exec`
+
+`exec` runs a command and waits for it. `run` starts a named process that shard's supervisor keeps in the background, so it suits a server.
+
+| | `exec` | `run` |
+| --- | --- | --- |
+| Waits for the command | yes | no, it returns once the process starts |
+| Has a name | no | yes, `site` here |
+| Restarts after an exit | no | by its restart policy |
+| Keeps its output | no, it streams it | yes, `logs` reads it |
+
+A sandbox runs up to 16 processes, each under its own name. When one exits, the sandbox stays `running`.
+
+## Restarts
+
+Without `--restart`, the policy is `unless-stopped`: shard starts the process again after any exit, and again when the sandbox starts, until `kill` ends it.
+
+To restart only after a nonzero exit, and give up after five tries:
+
+```sh
+shard run web --name site --restart on-failure --restart-retries 5 \
+  -- python3 -u -m http.server 8000 --directory /srv
+```
+
+- **`--restart-retries` applies to `on-failure` only.**
+- **The delay doubles.** It starts at 1 second and doubles after each restart, up to 60 seconds. `--restart-backoff` sets the first delay.
+- **A run of a name that has ended replaces it.** So the same `run` works again after `shard kill web site`.
+- **`always` comes back on every start.** A process with `--restart always` starts again when the sandbox starts, even after a `kill`.
+
+## Watch the process
+
+`shard ps` shows each process with its state, its restarts and its last exit code.
+
+`shard logs` prints the output of every run of the process, restarts included. `shard logs web site -f` keeps printing new output until the process ends or the sandbox stops.
+
+To reach the server from outside the sandbox, forward a port to it: see [Expose a port](/docs/essentials/expose-a-port/).
+
+How a process and its sandbox relate is in [Architecture](/docs/concepts/architecture/#a-sandbox-outlives-the-daemon).

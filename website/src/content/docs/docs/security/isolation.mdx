@@ -15,8 +15,13 @@ To see which side of that line a server is on, ask a sandbox which kernel it run
 	<TabItem label="CLI">
 
 ```sh
+# Create a small sandbox.
 shard create --name probe --memory 512MiB alpine:3.20
+
+# Prints the kernel the sandbox runs on.
 shard exec probe uname -r
+
+# Remove the sandbox.
 shard remove --force probe
 ```
 
@@ -28,8 +33,17 @@ import { Shard } from "useshards";
 
 const shard = new Shard();
 try {
-  const probe = await shard.create({ name: "probe", image: "alpine:3.20", memoryMiB: 512 });
+  // Create a small sandbox.
+  const probe = await shard.create({
+    name: "probe",
+    image: "alpine:3.20",
+    memoryMiB: 512,
+  });
+
+  // Prints the kernel the sandbox runs on.
   console.log((await probe.exec(["uname", "-r"])).stdout);
+
+  // Remove the sandbox.
   await probe.remove({ force: true });
 } finally {
   shard.close();
@@ -43,8 +57,13 @@ try {
 from useshards import Shard
 
 with Shard() as shard:
+    # Create a small sandbox.
     probe = shard.create("alpine:3.20", name="probe", memory_mib=512)
+
+    # Prints the kernel the sandbox runs on.
     print(probe.exec(["uname", "-r"]).stdout)
+
+    # Remove the sandbox.
     probe.remove(force=True)
 ```
 
@@ -53,7 +72,11 @@ with Shard() as shard:
 
 The TypeScript and Python examples reach `shard serve` at the address in `SHARD_REMOTE`, with the API key in `SHARD_API_KEY`.
 
-Compare the answer with `uname -r` on the server. On gVisor, the sandbox reports gVisor's own kernel version. On Firecracker and vz, it reports the kernel that shard boots in each virtual machine. On Sysbox and runc, it reports the server's kernel, because the sandbox runs on that kernel.
+Compare the answer with `uname -r` on the server:
+
+- On gVisor, the sandbox reports gVisor's own kernel version.
+- On Firecracker and vz, it reports the kernel that shard boots in each virtual machine.
+- On Sysbox and runc, it reports the server's kernel, because the sandbox runs on that kernel.
 
 ## The five providers
 
@@ -69,11 +92,7 @@ The provider is the boundary between a sandbox and the host. A server runs one p
 
 The exit code is the `EXIT` that `shard ps` reports for each process. On Sysbox and runc, the sandbox itself reports it, so the host cannot verify it.
 
-<Aside type="caution" title="A root exec on gVisor can forge an exit code">
-On gVisor, only a root process that shard's exec started can start or stop a named process, and a process the sandbox started cannot, whatever its user. A root `shard exec` can therefore stop a named process and start another under the same name, with an exit code it chooses. If its command is code the sandbox can change, such as a script or a binary in its filesystem, the sandbox can forge the exit code. Pass `--user` with a non-root user to `shard exec` when the exit codes must hold. shard-init checks a caller just after it connects, so a sandbox process that exits and whose pid a root exec takes in that instant also gets through.
-</Aside>
-
-To see the provider of a server, run `shard info` or `shard daemon status` on the server.
+To see the provider of a server, run `shard info` or `shard daemon status` on the server. For how a server picks its provider, see [Providers and capabilities](/docs/concepts/providers/).
 
 ## gVisor
 
@@ -93,7 +112,7 @@ The daemon starts every virtual machine process through Firecracker's `jailer` a
 
 When the sandbox has a network device, the virtual machine process joins the sandbox's network namespace instead of the host's. Processes inside the virtual machine are not host processes, so a fork bomb stays inside the virtual machine and runs into its memory bound.
 
-Docker runs inside a Firecracker sandbox.
+Docker runs inside a Firecracker sandbox. To set up a host for it, see [How to run shard on a KVM host?](/docs/guides/kvm/).
 
 ## vz
 
@@ -101,11 +120,13 @@ Each sandbox is a virtual machine on Apple's Virtualization framework, with its 
 
 The virtual machine has no network bridge. Its only network device connects to a network stack inside the daemon, which judges every flow with the same rules as the Linux host. A sandbox never sees another sandbox's traffic.
 
-Docker runs inside a vz sandbox.
+Docker runs inside a vz sandbox. To set up a Mac for it, see [How to run shard on a Mac?](/docs/guides/mac/).
 
 ## Sysbox
 
-Each sandbox runs in its own Linux user namespace, with its own view of `/proc` and `/sys`. Docker runs inside a Sysbox sandbox. A process in the sandbox is a host process that runs under a host uid other than root. Root in the sandbox has every capability inside its user namespace.
+Each sandbox runs in its own Linux user namespace, with its own view of `/proc` and `/sys`. Docker runs inside a Sysbox sandbox; see [How to run Docker inside a sandbox?](/docs/guides/docker/).
+
+A process in the sandbox is a host process that runs under a host uid other than root. Root in the sandbox has every capability inside its user namespace.
 
 <Aside type="caution" title="Sysbox sandboxes are not isolated from each other">
 Every Sysbox sandbox maps to the same host uid range, `0 165536 65536`. A process that escapes one sandbox has the same uid as root in every other sandbox. Run one tenant per Sysbox host.
@@ -119,7 +140,9 @@ shard never picks Sysbox for you. Only `shard daemon --provider sysbox`, or the 
 The sandbox runs on the host kernel, with only namespaces and cgroups around it. Root in the sandbox is root on the host. Use runc only for code you trust, or on a host you can afford to lose.
 </Aside>
 
-A runc sandbox starts with runc's default capabilities and can never gain more. It runs under Docker's default seccomp profile and, where the host has the AppArmor module enabled, also under Docker's AppArmor profile, loaded as `shard-default`. If the module is enabled but `apparmor_parser` is missing, the daemon refuses the runc provider rather than run sandboxes without a profile.
+A runc sandbox starts with runc's default capabilities and can never gain more. It runs under Docker's default seccomp profile and, where the host has the AppArmor module enabled, also under Docker's AppArmor profile, loaded as `shard-default`.
+
+If the module is enabled but `apparmor_parser` is missing, the daemon refuses the runc provider rather than run sandboxes without a profile.
 
 shard never picks runc for you. Only `shard daemon --provider runc`, or the records that a runc daemon made, can select it.
 

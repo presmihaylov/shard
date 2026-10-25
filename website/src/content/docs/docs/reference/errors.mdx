@@ -12,8 +12,11 @@ A refusal carries a code for a program to match and a message for a person to re
 <Tabs syncKey="lang">
 	<TabItem label="CLI">
 		```sh
+		# Pause a stopped sandbox. Prints:
 		shard pause quiet-heron-3f0a
 		# shard: sandbox quiet-heron-3f0a is stopped: pause takes a running sandbox
+
+		# Prints the exit code:
 		echo $?
 		# 1
 		```
@@ -24,6 +27,7 @@ A refusal carries a code for a program to match and a message for a person to re
 
 		const shard = new Shard();
 		try {
+		  // The sandbox is stopped, so pause throws ConflictError.
 		  const sandbox = await shard.get("quiet-heron-3f0a");
 		  await sandbox.pause();
 		} catch (err) {
@@ -40,6 +44,8 @@ A refusal carries a code for a program to match and a message for a person to re
 
 		with Shard() as shard:
 		    sandbox = shard.get("quiet-heron-3f0a")
+
+		    # The sandbox is stopped, so pause raises ConflictError.
 		    try:
 		        sandbox.pause()
 		    except ConflictError as err:
@@ -51,14 +57,15 @@ A refusal carries a code for a program to match and a message for a person to re
 The API returns the same refusal as an HTTP status and a JSON body:
 
 ```sh
-curl --unix-socket /var/lib/shard/shard.sock -X POST http://localhost/v0/sandboxes/quiet-heron-3f0a/pause
+curl --unix-socket /var/lib/shard/shard.sock \
+  -X POST http://localhost/v0/sandboxes/quiet-heron-3f0a/pause
 ```
 
 ```json
 {"error":{"code":"sandbox_not_running","message":"sandbox quiet-heron-3f0a is stopped: pause takes a running sandbox"}}
 ```
 
-Match on the code, never on the message. The message is for a person to read.
+Match on the code, never on the message. The message is for a person to read. For the error classes of the SDKs, see [Errors and timeouts](/docs/sdks/errors/).
 
 ## Exit codes
 

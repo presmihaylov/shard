@@ -19,8 +19,11 @@ Give the `token` field to the client:
 <Tabs syncKey="lang">
 	<TabItem label="CLI">
 		```sh
+		# Point the CLI at the server, with the token as the API key.
 		export SHARD_REMOTE=https://shard.example.com
 		export SHARD_API_KEY=<the token field>
+
+		# Prints the sandboxes on that server.
 		shard list
 		```
 	</TabItem>
@@ -31,6 +34,7 @@ Give the `token` field to the client:
 		// Reads SHARD_API_KEY.
 		const shard = new Shard({ remote: "https://shard.example.com" });
 		try {
+		  // Prints the ID of each sandbox on the server.
 		  const { sandboxes } = await shard.list();
 		  for (const sandbox of sandboxes) console.log(sandbox.id);
 		} finally {
@@ -44,6 +48,7 @@ Give the `token` field to the client:
 
 		# Reads SHARD_API_KEY.
 		with Shard(remote="https://shard.example.com") as shard:
+		    # Prints the ID of each sandbox on the server.
 		    for sandbox in shard.list().sandboxes:
 		        print(sandbox.id)
 		```
@@ -95,7 +100,8 @@ the token does not carry the "secret:*" scope, which a create that names a secre
 ## Mint a token
 
 ```sh
-shard tokens mint --name build-agent --duration 24h --scopes sandbox:read,sandbox:write,exec
+shard tokens mint --name build-agent --duration 24h \
+  --scopes sandbox:read,sandbox:write,exec
 ```
 
 - `--name` is required. It names the owner or the purpose of the token, and it is the name that `shard serve` logs.
@@ -106,10 +112,14 @@ shard tokens mint --name build-agent --duration 24h --scopes sandbox:read,sandbo
 `mint` refuses a scope that `shard tokens scopes` does not list, and records nothing. Every token gets a random 128-bit id, and `mint` records it in the ledger before it prints the token. A client takes the `token` field as its API key:
 
 ```sh
-export SHARD_API_KEY=$(shard tokens mint --name ci --duration 24h --scopes sandbox:read | jq -r .token)
+export SHARD_API_KEY=$(
+  shard tokens mint --name ci --duration 24h --scopes sandbox:read | jq -r .token
+)
 ```
 
 `mint`, `list` and `revoke` run only on the daemon host. They refuse `--remote`, `SHARD_REMOTE` and a saved connection, and none of them talks to the daemon, because the daemon never reads the key or the ledger. `shard tokens <verb> --help` lists every option.
+
+For the whole setup, from `shard serve` to a client, see [Mint a token and connect remotely](/docs/essentials/remote-access/).
 
 ## List and revoke tokens
 
@@ -118,8 +128,11 @@ export SHARD_API_KEY=$(shard tokens mint --name ci --duration 24h --scopes sandb
 Revoke one token by its id, or every token of one name:
 
 ```sh
+# Revoke one token by its id. Prints:
 shard tokens revoke 9f2c4e1a7b3d5f60a1b2c3d4e5f60718
 # revoked token 9f2c4e1a7b3d5f60a1b2c3d4e5f60718
+
+# Revoke every token named ci. Prints:
 shard tokens revoke --name ci
 # revoked 1 token(s) named ci
 ```

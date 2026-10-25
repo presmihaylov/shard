@@ -56,7 +56,9 @@ Setup recommends the first of `vz`, `firecracker` and `gvisor` that runs on the 
 | Tenants on one host | Many | Many | Many | One | One, and only code you trust |
 | `pause`, `resume`, `fork` | Yes | Yes | Yes | No | No |
 
-A verb that the provider does not support fails with an error that names the provider and the verb, for example `provider sysbox does not support pause on this host; use a server that supports pause`. shard never falls back to a weaker mechanism. `shard capabilities` lists all nine verbs and swap, and says whether the provider of the server you are connected to supports each one.
+A verb that the provider does not support fails with an error that names the provider and the verb, for example `provider sysbox does not support pause on this host; use a server that supports pause`. shard never falls back to a weaker mechanism.
+
+`shard capabilities` lists all nine verbs and swap, and says whether the provider of the server you are connected to supports each one. For how a host picks its provider and what each one supports, see [Providers and capabilities](/docs/concepts/providers/).
 
 ## What setup installs
 
@@ -82,6 +84,8 @@ Setup checks the sha256 of every pinned download before it installs it.
 - **runc and root.** runc has no user namespace, so root in the sandbox is root on the host.
 - **No `--provider`.** A daemon started without it picks `sysbox` or `runc` only when that provider made the sandboxes already under its root.
 
+For every limit of every provider, see [Known limits](/docs/security/limits/).
+
 ## Change the provider later
 
 A host runs one provider, and only that provider can read its sandboxes. Setup has no option to change it, and the daemon refuses a different `--provider`. To change it, start the host over:
@@ -90,6 +94,8 @@ A host runs one provider, and only that provider can read its sandboxes. Setup h
 2. Run `shard setup` and choose **Uninstall shard**. It removes the daemon and keeps the data in `/var/lib/shard`.
 3. Delete that data with the commands the uninstall note prints. This deletes the snapshots, images, secrets and network policies of the host.
 4. Run `shard setup` again and pick the new provider.
-5. If you installed [`shard serve`](/docs/guides/remote/) by hand, start it again with `systemctl start shard-serve`.
+5. If you installed [`shard serve`](/docs/essentials/remote-access/) by hand, start it again with `systemctl start shard-serve`.
 
 If a step is missing, setup's checks name what is still in the way and change nothing.
+
+For what separates a sandbox from the host on each provider, see [isolation by provider](/docs/security/isolation/).

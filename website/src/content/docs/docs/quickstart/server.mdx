@@ -20,8 +20,13 @@ shard setup --local --provider gvisor --start-at-boot=true -y
 Then create a sandbox, run a command in it, and remove it:
 
 ```sh
+# Create a sandbox from the alpine image.
 shard create --name demo --memory 512MiB alpine:3.20
+
+# Prints hello.
 shard exec demo echo hello
+
+# Remove the sandbox.
 shard remove --force demo
 ```
 
@@ -69,7 +74,13 @@ On a Mac, run `shard daemon --provider vz`. Closing the terminal ends the daemon
 
 The daemon keeps its state in `/var/lib/shard`: the sandbox records, the images, the secrets and the policies. Setup never asks for another directory.
 
-Firecracker copies a disk for each fork and snapshot. That needs a filesystem that clones a file by sharing its blocks: XFS or Btrfs. On any other filesystem, the daemon makes an XFS image at `/var/lib/shard.xfs` and mounts it over `/var/lib/shard`. Setup asks how much space to reserve for it, and offers half the available space, up to 100 GiB. The daemon reserves the whole size when it first starts. Setup refuses Firecracker there when that filesystem has less than 20 GiB free, or when `/var/lib/shard` already holds files. [Firecracker on KVM](/docs/guides/kvm/#the-data-directory) has the details.
+Firecracker copies a disk for each fork and snapshot. That needs a filesystem that clones a file by sharing its blocks: XFS or Btrfs.
+
+On any other filesystem, the daemon makes an XFS image at `/var/lib/shard.xfs` and mounts it over `/var/lib/shard`. Setup asks how much space to reserve for it, and offers half the available space, up to 100 GiB. The daemon reserves the whole size when it first starts.
+
+Setup refuses Firecracker there when that filesystem has less than 20 GiB free, or when `/var/lib/shard` already holds files. [Firecracker on KVM](/docs/guides/kvm/#the-data-directory) has the details.
+
+For every path under `/var/lib/shard`, see [the data directory](/docs/concepts/data-directory/).
 
 ## Script it
 
@@ -89,5 +100,6 @@ shard setup --local --provider firecracker --start-at-boot=true -y
 ## Next steps
 
 - [Quickstart: client](/docs/quickstart/client/): connect to this server from another machine.
+- [Create a sandbox, run commands and move files](/docs/essentials/run-commands/): the first of the Essentials.
 - [Sandboxes and the lifecycle](/docs/concepts/lifecycle/): what a sandbox is, and what each command does to it.
 - [Upgrade](/docs/install/#upgrade) or [uninstall](/docs/install/#uninstall) shard with `shard setup`.

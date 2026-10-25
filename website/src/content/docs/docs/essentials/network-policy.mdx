@@ -1,0 +1,402 @@
+---
+title: Lock down network access with a policy
+description: Let a sandbox reach only the hosts it needs, and read every connection the host allowed or denied.
+sidebar:
+  label: Network policy and proxy
+  order: 8
+---
+
+import { Tabs, TabItem } from '@astrojs/starlight/components';
+
+You'll let a sandbox reach `api.openai.com` and nothing else, then read the log of what it tried. The host enforces the policy from outside the sandbox, so nothing inside can change it.
+
+You need a shard server and a client: see [Create a sandbox, run commands and move files](/docs/essentials/run-commands/).
+
+<Tabs syncKey="lang">
+	<TabItem label="CLI">
+
+```sh
+# Make a policy that allows api.openai.com and denies everything else.
+shard policy create --allow api.openai.com --deny any locked
+
+# Create a sandbox under the policy.
+shard create --name agent --memory 512MiB --policy locked python:3.12
+
+# Call the allowed host. Prints 401: the request got through, with no key.
+shard exec agent curl -s -o /dev/null -w '%{http_code}\n' \
+  https://api.openai.com/v1/models
+
+# Call another host. Prints curl: (6) Could not resolve host: example.com.
+shard exec agent curl -sS https://example.com
+
+# Print the decisions, one JSON record each, allowed and denied.
+shard policy logs agent
+
+# Remove the sandbox, then the policy.
+shard remove --force agent
+shard policy remove locked
+```
+
+	</TabItem>
+	<TabItem label="TypeScript">
+
+```ts
+import { Shard } from "useshards";
+
+const shard = new Shard();
+try {
+  // Make a policy that allows api.openai.com and denies everything else.
+  await shard.policies.set("locked", [
+    { action: "allow", rule: "api.openai.com" },
+    { action: "deny", rule: "any" },
+  ]);
+
+  // Create a sandbox under the policy.
+  const agent = await shard.create({
+    name: "agent",
+    image: "python:3.12",
+    memoryMiB: 512,
+    policy: "locked",
+  });
+
+  // Call the allowed host. Prints 401: the request got through, with no key.
+  const allowed = await agent.exec(
+    ["curl", "-s", "-o", "/dev/null", "-w", "%{http_code}", "https://api.openai.com/v1/models"],
+  );
+  console.log(allowed.stdout);
+
+  // Call another host. Prints 6 and Could not resolve host: example.com.
+  const denied = await agent.exec(["curl", "-sS", "https://example.com"]);
+  console.log(denied.exitCode, denied.stderr);
+
+  // Print the decisions, allowed and denied.
+  for (const d of await agent.egressLog()) {
+    console.log(d.source, d.verdict, d.host, d.ruleText);
+  }
+
+  // Remove the sandbox, then the policy.
+  await agent.remove({ force: true });
+  await shard.policies.remove("locked");
+} finally {
+  shard.close();
+}
+```
+
+	</TabItem>
+	<TabItem label="Python">
+
+```python
+from useshards import PolicyRule, Shard
+
+with Shard() as shard:
+    # Make a policy that allows api.openai.com and denies everything else.
+    shard.policies.set(
+        "locked",
+        [
+            PolicyRule(action="allow", rule="api.openai.com"),
+            PolicyRule(action="deny", rule="any"),
+        ],
+    )
+
+    # Create a sandbox under the policy.
+    agent = shard.create("python:3.12", name="agent", memory_mib=512, policy="locked")
+
+    # Call the allowed host. Prints 401: the request got through, with no key.
+    allowed = agent.exec(
+        ["curl", "-s", "-o", "/dev/null", "-w", "%{http_code}", "https://api.openai.com/v1/models"]
+    )
+    print(allowed.stdout)
+
+    # Call another host. Prints 6 and Could not resolve host: example.com.
+    denied = agent.exec(["curl", "-sS", "https://example.com"])
+    print(denied.exit_code, denied.stderr)
+
+    # Print the decisions, allowed and denied.
+    for d in agent.egress_log():
+        print(d.source, d.verdict, d.host, d.rule_text)
+
+    # Remove the sandbox, then the policy.
+    agent.remove(force=True)
+    shard.policies.remove("locked")
+```
+
+	</TabItem>
+</Tabs>
+
+The call to `example.com` fails before it starts, because the sandbox cannot even resolve the name.
+
+To send a key to the allowed host, add credential brokering: see [Credential brokering](/docs/essentials/credential-brokering/).
+
+## Without a policy
+
+A sandbox with no policy reaches the internet but nothing private: the host drops its traffic to private networks, the cloud metadata address and other sandboxes. Those drops apply under every policy too, and no rule opens them. See [the egress floor](/docs/security/egress/#without-a-policy).
+
+## Write the rules
+
+A policy is a name and an ordered list of at most 256 rules. The first rule that matches decides, and traffic that no rule allows is denied.
+
+The name can have up to 64 lowercase letters, digits and hyphens, and starts with a letter or a digit.
+
+A rule is a destination, then an optional protocol and ports: `<destination> [tcp|udp[:<ports>]]`.
+
+| Destination | Example | What it matches |
+| --- | --- | --- |
+| A name | `api.example.com` | that host, on `tcp` 80 and 443 |
+| Every name under a domain | `*.example.com` | each host under `example.com`, but not `example.com` |
+| A domain and every name under it | `suffix:example.com` | `example.com`, and each host under it |
+| An address or a range | `203.0.113.7`, `203.0.113.0/24` | the address, or the range, on every port |
+| Everything | `any` | every destination |
+| DNS | `dns` | lookups through shard's resolver, in an allow rule only |
+
+For example, allow one API by name and one database range on its port, and deny the rest:
+
+```sh
+shard policy create \
+  --allow api.openai.com \
+  --allow "203.0.113.0/24 tcp:5432" \
+  --deny any \
+  app
+```
+
+- **Wildcards.** A leading `*.` matches any depth below the name, but not the name itself. Any other `*` stands for one whole label, so `www.*.com` matches any one label there. `*` alone matches every host, and a `*` inside a label, such as `api*.example.com`, is refused.
+- **Letter case.** Names match in any letter case, with or without a trailing dot.
+- **Ports.** Numbers and ranges from 1 to 65535, separated by commas, such as `tcp:22,8000-8100`, with at most 1024 ports in a rule. A rule with no protocol matches every protocol, ping too, and an address rule with no ports opens every TCP and UDP port.
+- **A name rule covers only HTTP and HTTPS.** The proxy matches the name in each request on ports 80 and 443. `policy create` refuses a name rule on any other port: use an address, such as `--allow "203.0.113.7 tcp:5432"`.
+- **A secret grant opens no host.** Allow a granted host in the policy like any other. See [Credential brokering](/docs/essentials/credential-brokering/#with-a-network-policy).
+
+## Names need DNS
+
+A sandbox with a policy looks up names only through shard's resolver on the host. The resolver answers only the names the policy allows, which is why `example.com` did not resolve above.
+
+A name rule opens the lookups it needs. A policy with only address rules opens none, so a tool that looks up a name fails at the lookup. Add `--allow dns` when the sandbox must resolve names:
+
+```sh
+# Allow one database by address, and name lookups.
+shard policy create --allow "203.0.113.7 tcp:5432" --allow dns db-only
+```
+
+`shard policy create` prints a note when a policy opens no lookups, or when an earlier deny covers every name that a later allow opens, such as `--deny any` before `--allow api.example.com`.
+
+`shard inspect` prints the DNS rules that a policy adds for you in `egress`, marked `implied`. The mark is `dns`, or `dns-rule` when the policy says `allow dns`.
+
+## Read the decisions
+
+`shard policy logs agent` prints each decision as one JSON record, oldest first. Add `--follow` to keep printing new ones as they happen:
+
+```sh
+# Print every decision so far, then each new one, until Ctrl-C.
+shard policy logs --follow agent
+```
+
+In the SDKs, `egressLog()` and `egress_log()` return the same records, and `followEgressLog()` and `follow_egress_log()` stream them. `shard policy logs` prints the newest 10000 records, and says on stderr how many it left out. A follow starts from the same newest 10000.
+
+The daemon writes the log to `<root>/sandboxes/<id>/egress.jsonl`. `--follow` prints a new record within about a second, and ends on Ctrl-C or when the sandbox stops or is removed, with the reason on stderr. If the log renames a file away before the follow reads it, the follow fails and says to follow again.
+
+A record holds `time`, `source`, `verdict`, `host`, `port`, `address`, `rule`, `rule_text` and `reason`. It never holds a header, a body or a secret.
+
+`source` says what made the decision:
+
+| `source` | One record for |
+| --- | --- |
+| `proxy` | each HTTP or HTTPS request, allowed or denied |
+| `dns` | each lookup, with the name in `host` and no port or address |
+| `host` | each packet the host dropped on any other port |
+
+`rule` is the id of the policy rule that decided, and `rule_text` is that rule as `shard policy show` prints it. When no rule of the policy decided, `rule` says why:
+
+| `rule` | Why |
+| --- | --- |
+| `private` | the destination is private, and the floor drops it under every policy |
+| `default` | no rule of the policy matched |
+| `none` | the sandbox has no policy, so the request is allowed |
+| `missing` | the policy does not exist, so everything is dropped |
+| `local` | the destination is one of the server's own addresses, `0.0.0.0/8`, or a multicast or broadcast address |
+| `ipv6` | an IPv6 packet |
+| `resolve` | the proxy could not resolve the host |
+| `limit` | the sandbox has 1024 connections open to the proxy. On a Mac, also when it has 1024 flows open, or the stack has no room for another. |
+| `certificate` | the upstream's certificate failed the check on the host, so the proxy never sent the request |
+| `stack`, `redirect`, `unapplied` | on a Mac, a flow that the daemon's network stack could not judge yet, or does not forward |
+
+A request through the proxy can also fail with one of these statuses:
+
+| Status | When |
+| --- | --- |
+| `403` | the policy denies the request. The JSON body names the host, the port, the rule and the reason. |
+| `502` | the host does not resolve, or the upstream fails its certificate check or the connection. When the host does not resolve or its certificate fails, the body names the host and the reason, such as `no such host`, `the lookup failed` or why the certificate failed. When the connection fails, it says only `the request to the upstream failed`. It never holds the upstream error. |
+| `503` | the sandbox has too many requests open, or more than 32 MiB of request data buffered. |
+
+## Attach a policy to a sandbox that exists
+
+A sandbox takes a new policy only while it is stopped. Stop it, attach the policy, and start it again:
+
+<Tabs syncKey="lang">
+	<TabItem label="CLI">
+
+```sh
+# Stop the sandbox.
+shard stop agent
+
+# Attach the policy. This replaces any policy the sandbox had.
+shard policy attach agent locked
+
+# Start it again, under the policy.
+shard start agent
+```
+
+	</TabItem>
+	<TabItem label="TypeScript">
+
+```ts
+// Stop the sandbox.
+await agent.stop();
+
+// Attach the policy. This replaces any policy the sandbox had.
+await shard.policies.attach(agent, "locked");
+
+// Start it again, under the policy.
+await agent.start();
+```
+
+	</TabItem>
+	<TabItem label="Python">
+
+```python
+# Stop the sandbox.
+agent.stop()
+
+# Attach the policy. This replaces any policy the sandbox had.
+shard.policies.attach(agent, "locked")
+
+# Start it again, under the policy.
+agent.start()
+```
+
+	</TabItem>
+</Tabs>
+
+- **One policy per sandbox.** Attaching the policy a sandbox already has changes nothing.
+- **A running or paused sandbox is refused** with `stop it first`, and so is a policy that does not exist. Either refusal changes nothing.
+- **An attach installs the proxy's certificate** in the sandbox, as a secret grant does.
+- **`shard policy detach agent`** takes the policy off a stopped sandbox. A sandbox that still holds a secret stays behind the proxy.
+
+## Change a policy
+
+Store the policy again under the same name. The new rules replace all the old ones, and every sandbox with the policy enforces them at once, running or paused, with no restart:
+
+<Tabs syncKey="lang">
+	<TabItem label="CLI">
+
+```sh
+# Replace the rules of locked: allow GitHub's API too.
+shard policy create \
+  --allow api.openai.com \
+  --allow api.github.com \
+  --deny any \
+  locked
+
+# Prints the rules, and the sandboxes that hold the policy.
+shard policy show locked
+```
+
+	</TabItem>
+	<TabItem label="TypeScript">
+
+```ts
+// Replace the rules of locked: allow GitHub's API too.
+await shard.policies.set("locked", [
+  { action: "allow", rule: "api.openai.com" },
+  { action: "allow", rule: "api.github.com" },
+  { action: "deny", rule: "any" },
+]);
+
+// Prints the sandboxes that hold the policy.
+console.log((await shard.policies.get("locked")).holders);
+```
+
+	</TabItem>
+	<TabItem label="Python">
+
+```python
+# Replace the rules of locked: allow GitHub's API too.
+shard.policies.set(
+    "locked",
+    [
+        PolicyRule(action="allow", rule="api.openai.com"),
+        PolicyRule(action="allow", rule="api.github.com"),
+        PolicyRule(action="deny", rule="any"),
+    ],
+)
+
+# Prints the sandboxes that hold the policy.
+print(shard.policies.get("locked").holders)
+```
+
+	</TabItem>
+</Tabs>
+
+A connection that is already open stays open, but its next request through the proxy gets the new rules.
+
+- **`shard policy list`** lists the policy names.
+- **`shard policy remove`** deletes a policy, and refuses while a sandbox holds it.
+- **`shard list`** shows each sandbox's policy in its `POLICY` column, or a dash when it has none.
+- **`shard policy show`** leaves out `holders` when no sandbox holds the policy.
+
+A host name in a rule resolves to its addresses each time the host applies the rules: on a create, start, resume, fork or remove of any sandbox, a secret grant or ungrant, or a policy change, and on a daemon restart. To pick up a host's new addresses sooner, store the policy again.
+
+## Trust an internal certificate authority
+
+The proxy checks each server's certificate against the host's trust store, not the sandbox's. A server signed by an internal or self-signed authority therefore gets a `502`, with a `certificate` record in the log, until the host trusts that authority.
+
+Add the authority's certificate to the host's store, then restart the daemon, which reads the store when it starts:
+
+<Tabs>
+	<TabItem label="Debian or Ubuntu">
+
+```sh
+# Add the certificate to the host's store.
+cp internal-ca.crt /usr/local/share/ca-certificates/internal-ca.crt
+update-ca-certificates
+
+# Restart the daemon so it reads the store again.
+systemctl restart shard
+```
+
+	</TabItem>
+	<TabItem label="Fedora or RHEL">
+
+```sh
+# Add the certificate to the host's store.
+cp internal-ca.crt /etc/pki/ca-trust/source/anchors/internal-ca.crt
+update-ca-trust
+
+# Restart the daemon so it reads the store again.
+systemctl restart shard
+```
+
+	</TabItem>
+	<TabItem label="macOS">
+
+```sh
+# Add the certificate to the system keychain.
+security add-trusted-cert -d -r trustRoot \
+  -k /Library/Keychains/System.keychain internal-ca.crt
+
+# Restart the daemon so it reads the store again.
+launchctl kickstart -k system/shard.daemon
+```
+
+	</TabItem>
+</Tabs>
+
+The sandbox needs no change. A sandbox with neither a policy nor a secret skips the proxy, so it needs the authority in its own image.
+
+## Limits
+
+- **The image needs a CA bundle.** A create, a secret grant or a policy attach that puts a sandbox behind the proxy refuses an image with no CA bundle, with a `400` that names the image. Use an image with `ca-certificates`, such as `node:22-bookworm` rather than `node:22-bookworm-slim`.
+- **The proxy owns four variables.** A sandbox behind the proxy refuses `--env` for `SSL_CERT_FILE`, `REQUESTS_CA_BUNDLE`, `NODE_EXTRA_CA_CERTS` and `CURL_CA_BUNDLE`, which point at the proxy's certificate.
+- **Connections are capped.** A sandbox can hold 1024 connections and 1024 requests open to the proxy, and a request past that gets a `503`. It gets HTTP/2 on at most 32 connections at once, with at most 32 requests open on each, and HTTP/1.1 after that. The proxy closes a keep-alive connection after 60 seconds without a request.
+- **Lookups are capped.** A sandbox can have 16 UDP questions or TCP connections open at once at the resolver, which takes at most 256 questions at once across the server. A UDP question past that is dropped, and the client asks again. A TCP connection past it is closed.
+- **Adding DNS renumbers the rules.** A rule's id is its place in the list that `shard inspect` prints. A change that adds DNS puts two implied rules first and moves every other rule down by two, so a log record from before the change points at a different rule.
+- **Your own firewall rules leave no record.** A drop by a rule of your own on the host is not in the log, so the sandbox just sees a timeout.
+
+How a policy and a secret work together is in [Secrets and network policies](/docs/concepts/secrets-and-policies/#how-a-network-policy-works). To see how the host enforces a policy, and what the floor, the proxy and the resolver guarantee, see [Network egress](/docs/security/egress/).

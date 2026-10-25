@@ -16,9 +16,14 @@ This example starts `dockerd` in a sandbox, waits for it, then runs a container 
 	<TabItem label="CLI">
 
 ```sh
+# Create a sandbox from the Docker-in-Docker image.
 shard create --name dind --memory 512MiB docker:27-dind
+
+# Start dockerd as a named process, and wait until it answers.
 shard run dind -- dockerd
 until shard exec dind docker info >/dev/null 2>&1; do sleep 1; done
+
+# Run a container inside the sandbox. Prints hello from a nested container.
 shard exec dind docker run --rm alpine:3.20 echo hello from a nested container
 ```
 
@@ -29,16 +34,23 @@ shard exec dind docker run --rm alpine:3.20 echo hello from a nested container
 import { Shard } from "useshards";
 
 const shard = new Shard();
+// Create a sandbox from the Docker-in-Docker image.
 const sandbox = await shard.create({ image: "docker:27-dind", name: "dind", memoryMiB: 512 });
 try {
+  // Start dockerd as a named process, and wait up to 30 seconds for it to answer.
   await sandbox.run(["dockerd"]);
   const ready = await sandbox.exec(
     "for i in $(seq 30); do docker info >/dev/null 2>&1 && exit 0; sleep 1; done; exit 1",
   );
   if (ready.exitCode !== 0) throw new Error("dockerd did not answer");
-  const hello = await sandbox.exec(["docker", "run", "--rm", "alpine:3.20", "echo", "hello from a nested container"]);
+
+  // Run a container inside the sandbox. Prints hello from a nested container.
+  const hello = await sandbox.exec([
+    "docker", "run", "--rm", "alpine:3.20", "echo", "hello from a nested container",
+  ]);
   console.log(hello.stdout);
 } finally {
+  // Remove the sandbox.
   await sandbox.remove({ force: true });
   shard.close();
 }
@@ -51,17 +63,24 @@ try {
 from useshards import Shard
 
 with Shard() as shard:
+    # Create a sandbox from the Docker-in-Docker image.
     sandbox = shard.create("docker:27-dind", name="dind", memory_mib=512)
     try:
+        # Start dockerd as a named process, and wait up to 30 seconds for it to answer.
         sandbox.run(["dockerd"])
         ready = sandbox.exec(
             "for i in $(seq 30); do docker info >/dev/null 2>&1 && exit 0; sleep 1; done; exit 1"
         )
         if ready.exit_code != 0:
             raise RuntimeError("dockerd did not answer")
-        hello = sandbox.exec(["docker", "run", "--rm", "alpine:3.20", "echo", "hello from a nested container"])
+
+        # Run a container inside the sandbox. Prints hello from a nested container.
+        hello = sandbox.exec(
+            ["docker", "run", "--rm", "alpine:3.20", "echo", "hello from a nested container"]
+        )
         print(hello.stdout)
     finally:
+        # Remove the sandbox.
         sandbox.remove(force=True)
 ```
 
@@ -75,6 +94,7 @@ The SDK examples connect to the server that `SHARD_REMOTE` names, with the API k
 The SDK examples remove the sandbox when they finish. After the CLI example, `dockerd` keeps running in the background. Use `docker build` and `docker run` inside the sandbox as you would on any host. When you are done, stop and remove the sandbox:
 
 ```sh
+# Stop the sandbox, which ends dockerd and every container, then remove it.
 shard stop dind
 shard remove dind
 ```
@@ -99,9 +119,13 @@ shard setup --local --provider sysbox --start-at-boot=true -y
 
 ## Why dockerd is a process
 
-Under Docker, the `docker:27-dind` image starts `dockerd` from its entrypoint. shard never runs an image's `ENTRYPOINT` or `CMD`, so a new sandbox has no `dockerd` until you start one. `shard run` starts `dockerd` directly, finds it on the image's `PATH`, and names the process `dockerd`. PID 1 of the sandbox is shard's own supervisor, and `dockerd` is its child.
+Under Docker, the `docker:27-dind` image starts `dockerd` from its entrypoint. shard never runs an image's `ENTRYPOINT` or `CMD`, so a new sandbox has no `dockerd` until you start one.
 
-A sandbox outlives its processes. If `dockerd` exits, the sandbox stays running and you can still exec into it. The default restart policy, `unless-stopped`, starts `dockerd` again after any exit, and brings it back when the daemon restarts. `shard kill dind dockerd` ends it and cancels its restarts. Only `shard stop` ends the sandbox.
+`shard run` starts `dockerd` directly, finds it on the image's `PATH`, and names the process `dockerd`. PID 1 of the sandbox is shard's own supervisor, and `dockerd` is its child.
+
+A sandbox outlives its processes. If `dockerd` exits, the sandbox stays running and you can still exec into it.
+
+The default restart policy, `unless-stopped`, starts `dockerd` again after any exit, and brings it back when the daemon restarts. `shard kill dind dockerd` ends it and cancels its restarts. Only `shard stop` ends the sandbox. For more on named processes, see [Run a long-running server](/docs/essentials/long-running-server/).
 
 ## What the sandbox bounds
 
@@ -117,7 +141,6 @@ Each provider adds limits of its own.
 
 - **One tenant per host.** Sysbox CE maps every sandbox to the same host user range. Two Sysbox sandboxes are isolated from the host, but not from each other. Do not put the sandboxes of two customers on one Sysbox host.
 - **No pause, resume or fork.** shard refuses these verbs on Sysbox. `shard snapshot create` still works on a stopped sandbox.
-- **The disk bound does not cover Docker's data.** Sysbox keeps `/var/lib/docker` on the host, outside the `--disk` bound of the sandbox. Nested images and container layers fill the host disk, not the sandbox disk.
 - **4096 processes.** Every sandbox can hold at most 4096 processes, including the ones in nested containers. You cannot change this bound.
 - **Kernel 6.12.107 breaks nested containers.** With Sysbox 0.7.1 on that kernel, `dockerd` starts, but every container it runs fails with:
 

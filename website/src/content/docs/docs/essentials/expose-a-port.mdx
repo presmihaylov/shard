@@ -1,0 +1,147 @@
+---
+title: Expose a port of a sandbox
+description: Forward a host port to a server inside a sandbox, list and remove the forward, and open it to other machines.
+sidebar:
+  label: Expose a port
+  order: 6
+---
+
+import { Aside, Tabs, TabItem } from '@astrojs/starlight/components';
+
+You'll start a web server in a sandbox and reach it from the host through a forwarded port. You need a shard server and a client: see [Create a sandbox, run commands and move files](/docs/essentials/run-commands/).
+
+<Tabs syncKey="lang">
+	<TabItem label="CLI">
+
+```sh
+# Create a sandbox and start a web server in it on port 8000.
+shard create --name web --memory 512MiB python:3.12
+shard exec web sh -c 'echo "hello from shard" > /srv/index.html'
+shard run web --name site -- python3 -u -m http.server 8000 --directory /srv
+
+# Forward host port 9000 to it. Prints where it listens: lo 127.0.0.1:9000.
+shard port add web 9000:8000
+
+# Fetch the page from the host. Prints hello from shard.
+curl -s http://127.0.0.1:9000/
+
+# List the forwards. Prints web, 9000, 8000, private and the address.
+shard port list web
+
+# Remove the forward. Prints 9000.
+shard port remove web 9000
+
+# Remove the sandbox.
+shard remove --force web
+```
+
+	</TabItem>
+	<TabItem label="TypeScript">
+
+```ts
+import { Shard } from "useshards";
+
+const server = ["python3", "-u", "-m", "http.server", "8000", "--directory", "/srv"];
+
+const shard = new Shard();
+try {
+  // Create a sandbox and start a web server in it on port 8000.
+  const web = await shard.create({ name: "web", image: "python:3.12", memoryMiB: 512 });
+  await web.files.write("/srv/index.html", "hello from shard\n");
+  await web.run(server, { name: "site" });
+
+  // Forward host port 9000 to it. Prints true and the address on the server.
+  const forward = await web.ports.add(9000, 8000);
+  console.log(forward.listening, forward.reachableOn);
+
+  // On the server, curl -s http://127.0.0.1:9000/ prints hello from shard.
+
+  // List the forwards of every sandbox, then remove this one.
+  console.log(await shard.ports());
+  await web.ports.remove(9000);
+
+  // Remove the sandbox.
+  await web.remove({ force: true });
+} finally {
+  shard.close();
+}
+```
+
+	</TabItem>
+	<TabItem label="Python">
+
+```python
+from useshards import Shard
+
+server = ["python3", "-u", "-m", "http.server", "8000", "--directory", "/srv"]
+
+with Shard() as shard:
+    # Create a sandbox and start a web server in it on port 8000.
+    web = shard.create("python:3.12", name="web", memory_mib=512)
+    web.files.write("/srv/index.html", "hello from shard\n")
+    web.run(server, name="site")
+
+    # Forward host port 9000 to it. Prints True and the address on the server.
+    forward = web.ports.add(9000, 8000)
+    print(forward.listening, forward.reachable_on)
+
+    # On the server, curl -s http://127.0.0.1:9000/ prints hello from shard.
+
+    # List the forwards of every sandbox, then remove this one.
+    print(shard.ports())
+    web.ports.remove(9000)
+
+    # Remove the sandbox.
+    web.remove(force=True)
+```
+
+	</TabItem>
+</Tabs>
+
+The forward listens on the server, so the TypeScript and Python programs print where it listens, and the fetch runs on the server.
+
+## Choose the ports
+
+`shard port add web 9000:8000` forwards host port 9000 to port 8000 in the sandbox. `shard port add web 8000` uses 8000 on both sides.
+
+`shard create --port 9000:8000` forwards the port from the first start, so you skip the separate `port add`.
+
+To change a forward, add the same host port again with another guest port, or with `--public` turned on or off.
+
+## How a forward behaves
+
+- **Only the host reaches it.** The host listens on `127.0.0.1`, unless you add `--public`.
+- **The program must listen on the sandbox's `127.0.0.1`.** Each connection goes there, so the program listens there or on every interface.
+- **A forward belongs to the sandbox.** It survives a stop, a start, a daemon restart and a reboot of the host.
+- **It listens only while the sandbox runs.** A pause or a stop closes the open connections.
+- **A fork does not copy the forwards.** Add them to the fork yourself.
+- **A host port belongs to one sandbox at a time.** A second sandbox that asks for it gets `409` with the code `in_use`.
+- **A port another program holds waits.** If a program on the host holds the port when the sandbox starts, `shard port list` shows why the port does not listen, and the daemon tries again every second.
+- **TCP over IPv4 only.**
+
+## Open it to other machines
+
+`--public` makes the host listen on `0.0.0.0`, and the command prints each address the port is reachable on:
+
+```sh
+shard port add web 9000:8000 --public
+```
+
+```text
+lo     127.0.0.1:9000
+eth0   192.0.2.20:9000
+```
+
+<Aside type="caution">
+A public port is open to every network the host is on. Anyone who reaches the host can connect to the program in the sandbox, and shard checks nothing on the way.
+</Aside>
+
+To close it again, add the same host port without `--public`.
+
+For what a public port exposes, see [Security model](/docs/security/model/#forwarded-ports).
+
+## Through `shard serve`
+
+A token needs `port:read` to list the forwards, and `port:write` to add or remove one. See [Mint a token and connect remotely](/docs/essentials/remote-access/).
+
+How the host carries each connection is in [Architecture](/docs/concepts/architecture/#the-daemon).

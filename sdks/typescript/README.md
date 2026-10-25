@@ -23,7 +23,7 @@ export SHARD_REMOTE=https://shard.example.com
 export SHARD_API_KEY=<the API key>
 ```
 
-Or pass them in code: `new Shard({ remote, apiKey })`. No server yet? [Connect to a remote host](https://useshards.com/docs/guides/remote/) sets one up and
+Or pass them in code: `new Shard({ remote, apiKey })`. No server yet? [Connect remotely](https://useshards.com/docs/essentials/remote-access/) sets one up and
 gives you the key.
 
 ## Quickstart

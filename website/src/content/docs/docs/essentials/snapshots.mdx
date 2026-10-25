@@ -1,0 +1,117 @@
+---
+title: Snapshot a sandbox and create from it
+description: Set up a sandbox once, save its files as a snapshot, and start new sandboxes from that snapshot.
+sidebar:
+  label: Snapshot and recreate
+  order: 3
+---
+
+import { Tabs, TabItem } from '@astrojs/starlight/components';
+
+You'll install a package in a sandbox, save its files as a snapshot, and start a new sandbox from it with the package already there. You need a shard server and a client: see [Create a sandbox, run commands and move files](/docs/essentials/run-commands/).
+
+<Tabs syncKey="lang">
+	<TabItem label="CLI">
+
+```sh
+# Create a sandbox and install a package in it.
+shard create --name base --memory 512MiB python:3.12
+shard exec base pip install requests
+
+# Stop it, then copy its files into a snapshot. Prints the snapshot's ID.
+shard stop base
+shard snapshot create --name py-requests base
+
+# List your snapshots. Prints py-requests, its source and its size.
+shard snapshot list
+
+# Create a sandbox from the snapshot. Prints the version of requests.
+shard create --name worker --memory 512MiB --snapshot py-requests
+shard exec worker python -c 'import requests; print(requests.__version__)'
+
+# Remove both sandboxes, then the snapshot.
+shard remove --force worker
+shard remove base
+shard snapshot remove py-requests
+```
+
+	</TabItem>
+	<TabItem label="TypeScript">
+
+```ts
+import { Shard } from "useshards";
+
+const shard = new Shard();
+try {
+  // Create a sandbox and install a package in it.
+  const base = await shard.create({ name: "base", image: "python:3.12", memoryMiB: 512 });
+  await base.exec(["pip", "install", "requests"]);
+
+  // Stop it, then copy its files into a snapshot. Prints the snapshot's ID.
+  await base.stop();
+  const snapshot = await shard.snapshots.create(base, { name: "py-requests" });
+  console.log(snapshot.id);
+
+  // Create a sandbox from the snapshot. Prints the version of requests.
+  const worker = await shard.create({ name: "worker", snapshot: "py-requests", memoryMiB: 512 });
+  const check = await worker.exec(["python", "-c", "import requests; print(requests.__version__)"]);
+  console.log(check.stdout);
+
+  // Remove both sandboxes, then the snapshot.
+  await worker.remove({ force: true });
+  await base.remove();
+  await shard.snapshots.remove("py-requests");
+} finally {
+  shard.close();
+}
+```
+
+	</TabItem>
+	<TabItem label="Python">
+
+```python
+from useshards import Shard
+
+with Shard() as shard:
+    # Create a sandbox and install a package in it.
+    base = shard.create("python:3.12", name="base", memory_mib=512)
+    base.exec(["pip", "install", "requests"])
+
+    # Stop it, then copy its files into a snapshot. Prints the snapshot's ID.
+    base.stop()
+    snapshot = shard.snapshots.create(base, name="py-requests")
+    print(snapshot.id)
+
+    # Create a sandbox from the snapshot. Prints the version of requests.
+    worker = shard.create(snapshot="py-requests", name="worker", memory_mib=512)
+    check = worker.exec(["python", "-c", "import requests; print(requests.__version__)"])
+    print(check.stdout)
+
+    # Remove both sandboxes, then the snapshot.
+    worker.remove(force=True)
+    base.remove()
+    shard.snapshots.remove("py-requests")
+```
+
+	</TabItem>
+</Tabs>
+
+## What a snapshot holds
+
+A snapshot is a copy of a stopped sandbox's files. It holds no memory and no processes, and it outlives the sandbox it came from.
+
+- **The source must be stopped.** A running or paused sandbox fails with `409 sandbox_not_stopped`, because its memory holds what a copy of its files would miss.
+- **Each create gets its own copy.** Every sandbox made from a snapshot has its own files, ID and address, so many sandboxes can start from one snapshot.
+- **A snapshot names its image.** A create from it needs that image at the same digest on the server, and never downloads one.
+
+## What to pass again
+
+A snapshot does not hold secrets or a network policy. Pass `--secret` and `--policy` to each create from it, as you would for an image. See [Credential brokering](/docs/essentials/credential-brokering/) and [Network policy and proxy](/docs/essentials/network-policy/).
+
+A sandbox made from a snapshot starts with no processes. If you leave out `--memory` or `--disk`, it gets the bounds its source ran with.
+
+## Snapshot or fork
+
+A snapshot copies files from a stopped sandbox. A fork copies memory, processes and files from a running one, and works only on gVisor, Firecracker and vz. See [Pause, resume and fork a sandbox](/docs/essentials/pause-resume-fork/).
+
+Every snapshot command, and how each provider makes the copy, is in [Images and snapshots](/docs/concepts/images-snapshots/).

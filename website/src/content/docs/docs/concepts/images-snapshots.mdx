@@ -126,12 +126,17 @@ A sandbox record stores the digest of the sandbox's image in its `digest` key.
 
 A snapshot is a copy of the files of a stopped sandbox, without its memory or its processes. It has an id and an optional name, and it is kept when you remove the sandbox it came from.
 
+To make one and create from it step by step, see [Snapshot a sandbox and create from it](/docs/essentials/snapshots/).
+
 Unlike the image commands, the snapshot commands work from any client, including the SDKs.
 
 ### Make a snapshot
 
 ```sh
+# Stop the sandbox, because a snapshot copies what a stop keeps.
 shard stop web
+
+# Prints the id of the new snapshot.
 shard snapshot create --name web-base web
 ```
 
@@ -155,7 +160,9 @@ How the copy is made depends on the provider:
 
 `shard snapshot list` prints the columns `ID`, `NAME`, `SOURCE`, `IMAGE`, `SIZE` and `CREATED`. `shard snapshot inspect <snapshot>` prints the record as JSON, or as fields with `--format table`.
 
-In the record, `source` is the id of the sandbox the snapshot came from. `disk_mib` and `memory_mib` are the bounds that sandbox ran with. `size` is the number of bytes the snapshot takes up on the server. The JSON leaves out `name` and `source_name` when they are empty.
+In the record, `source` is the id of the sandbox the snapshot came from. `disk_mib` and `memory_mib` are the bounds that sandbox ran with.
+
+`size` is the number of bytes the snapshot takes up on the server. The JSON leaves out `name` and `source_name` when they are empty.
 
 ### Create a sandbox from a snapshot
 

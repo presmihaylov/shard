@@ -43,7 +43,12 @@ import { Shard } from "useshards";
 
 const shard = new Shard();
 try {
-  const sandbox = await shard.create({ image: "alpine:3.20", name: "demo", memoryMiB: 512 });
+  // Create a sandbox.
+  const sandbox = await shard.create({
+    image: "alpine:3.20",
+    name: "demo",
+    memoryMiB: 512,
+  });
   try {
     // Write a file in the sandbox.
     await sandbox.files.write("/root/state.txt", "before\n");
@@ -77,6 +82,7 @@ try {
 from useshards import Shard
 
 with Shard() as shard:
+    # Create a sandbox.
     sandbox = shard.create("alpine:3.20", name="demo", memory_mib=512)
     try:
         # Write a file in the sandbox.
@@ -106,6 +112,8 @@ Each version prints `before`, because the write in `demo-copy` changed only its 
 
 The example needs a host that runs `gvisor`, `firecracker` or `vz`.
 
+For a step-by-step walk-through, see [Pause, resume and fork a sandbox](/docs/essentials/pause-resume-fork/).
+
 ## Pause and resume
 
 `shard pause` saves a running sandbox's memory and files to a checkpoint on disk, then ends its processes. A paused sandbox uses no memory on the host. Its state is `paused`, and it keeps its record, its files and its address.
@@ -114,9 +122,13 @@ The example needs a host that runs `gvisor`, `firecracker` or `vz`.
 
 ## Fork
 
-`shard fork` works on a running sandbox. The source freezes for a moment while shard captures its memory and files, then keeps running. The new sandbox starts from that capture, in the `running` state. The command prints the new sandbox's ID.
+`shard fork` works on a running sandbox. The source freezes for a moment while shard captures its memory and files, then keeps running.
 
-The new sandbox has its own ID, its own address and its own files. A write in one sandbox never shows in the other. The new sandbox keeps the source's image, resource limits, granted secrets, network policy and processes, with their restart policies. Give it a name with `--name`.
+The new sandbox starts from that capture, in the `running` state. The command prints the new sandbox's ID.
+
+The new sandbox has its own ID, its own address and its own files. A write in one sandbox never shows in the other.
+
+The new sandbox keeps the source's image, resource limits, granted secrets, network policy and processes, with their restart policies. Give it a name with `--name`.
 
 To keep a pool of warm sandboxes, prepare one sandbox, then fork it once for each sandbox you need. Each fork starts with the processes and the files that the source had.
 
@@ -148,20 +160,14 @@ shard snapshot create --name demo-files demo
 
 # Create a new sandbox from the snapshot's files.
 shard create --name demo-from-files --memory 512MiB --snapshot demo-files
+
+# Remove the new sandbox and the snapshot.
+shard remove --force demo-from-files
+shard snapshot remove demo-files
 ```
 
-A sandbox made from a snapshot starts like a new sandbox, with the snapshot's files and none of the source's memory.
+A sandbox made from a snapshot starts like a new sandbox, with the snapshot's files and none of the source's memory. For more on snapshots, see [Images and snapshots](/docs/concepts/images-snapshots/#snapshots).
 
 ## Which providers support it
 
-| Provider | `pause`, `resume`, `fork` |
-| --- | --- |
-| `gvisor` | Yes |
-| `firecracker` | Yes |
-| `vz` | Yes, on Apple silicon with macOS 14 or later |
-| `sysbox` | No |
-| `runc` | No |
-
-On a provider that lacks them, each verb fails before it changes anything, with an error that names the provider and the verb, such as `provider sysbox does not support pause on this host; use a server that supports pause`.
-
-To see what the provider of your server supports, run `shard capabilities`. It lists all nine verbs and swap, and marks each one `true` or `false`.
+`gvisor`, `firecracker` and `vz` support all three. On Sysbox and runc, each one fails before it changes anything. To see what your server supports, run `shard capabilities`, and for the table by provider, see [Providers and capabilities](/docs/concepts/providers/#the-ten-capabilities).

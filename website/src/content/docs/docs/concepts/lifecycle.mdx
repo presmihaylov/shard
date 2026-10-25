@@ -39,7 +39,13 @@ shard remove --force demo
 import { Shard } from "useshards";
 
 const shard = new Shard();
-const sandbox = await shard.create({ name: "demo", image: "docker.io/library/alpine:3", memoryMiB: 512 });
+
+// Create a sandbox.
+const sandbox = await shard.create({
+  name: "demo",
+  image: "docker.io/library/alpine:3",
+  memoryMiB: 512,
+});
 try {
   // Write a file in the sandbox.
   await sandbox.exec(["sh", "-c", "echo hello > /root/hello.txt"]);
@@ -67,6 +73,7 @@ try {
 from useshards import Shard
 
 with Shard() as shard:
+    # Create a sandbox.
     sandbox = shard.create("docker.io/library/alpine:3", name="demo", memory_mib=512)
     try:
         # Write a file in the sandbox.
@@ -119,6 +126,8 @@ A sandbox is always in one of seven states.
 
 A new sandbox has no processes. Only shard's own supervisor runs in it. `shard run` starts a named process in it, and `exec` runs a one-off command.
 
+To create one and run commands in it, see [Create a sandbox, run commands and move files](/docs/essentials/run-commands/).
+
 ### `stop`
 
 `stop` sends SIGTERM to the sandbox's processes, gives them 30 seconds to exit, then kills them. The files stay on disk.
@@ -132,6 +141,8 @@ A new sandbox has no processes. Only shard's own supervisor runs in it. `shard r
 `start` runs a `stopped` sandbox again, with the files the stop kept. Memory, processes and open sockets were lost at the stop.
 
 A process with the `always` restart policy starts again from the beginning, and so does an `unless-stopped` one that `shard kill` did not end.
+
+To stop and start a sandbox step by step, see [Stop and start a sandbox](/docs/essentials/stop-and-start/).
 
 ### `pause`
 
@@ -150,11 +161,15 @@ A `pause` ends any `exec` that is still running. An `exec` on a paused sandbox f
 - Fork works only on a `running` sandbox, and on the same providers as pause.
 - On gVisor the copy has a 10-minute limit. Past it, the fork fails and shard tries to resume the source.
 
+To pause, resume and fork step by step, see [Pause, resume and fork a sandbox](/docs/essentials/pause-resume-fork/).
+
 ### `snapshot create`
 
 `snapshot create` copies the files of a `stopped` sandbox, and the sandbox stays `stopped`. A snapshot is not a sandbox and has no state.
 
 On a running or paused sandbox it fails with `409 sandbox_not_stopped`, because such a sandbox holds memory that a copy of its files would miss.
+
+To make a snapshot and create from it, see [Snapshot a sandbox and create from it](/docs/essentials/snapshots/).
 
 ### `remove`
 
@@ -176,9 +191,13 @@ A sandbox becomes `failed` when:
 
 ## unresponsive
 
-On macOS Virtualization and Firecracker, each sandbox is a virtual machine process on the host. The daemon checks that this process answers, within 5 seconds on macOS Virtualization and within 4 seconds on Firecracker. If the process stays silent for that whole time, the sandbox becomes `unresponsive`. A host under heavy load can cause that, and so can a SIGSTOP.
+On macOS Virtualization and Firecracker, each sandbox is a virtual machine process on the host. The daemon checks that this process answers, within 5 seconds on macOS Virtualization and within 4 seconds on Firecracker.
 
-shard does not end an `unresponsive` sandbox because it is silent. The process can come back with the same virtual machine, and when it answers, the sandbox is `running` again. Until then, `exec`, `start` and `pause` refuse it, and `exec` says `wait for it to answer, or end it with shard stop <id>`. `stop` and `remove --force` give it one more second to answer, then kill it.
+If the process stays silent for that whole time, the sandbox becomes `unresponsive`. A host under heavy load can cause that, and so can a SIGSTOP.
+
+shard does not end an `unresponsive` sandbox because it is silent. The process can come back with the same virtual machine, and when it answers, the sandbox is `running` again.
+
+Until then, `exec`, `start` and `pause` refuse it, and `exec` says `wait for it to answer, or end it with shard stop <id>`. `stop` and `remove --force` give it one more second to answer, then kill it.
 
 If the process dies, the sandbox becomes `stopped`. If a `pause` wrote its checkpoint before the process died, the sandbox becomes `paused` with that checkpoint instead.
 

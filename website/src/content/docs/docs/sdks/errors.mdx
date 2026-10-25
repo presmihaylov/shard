@@ -17,8 +17,10 @@ import { NotFoundError, Shard } from "useshards";
 
 const shard = new Shard();
 try {
+  // Look up a sandbox that does not exist.
   await shard.get("no-such-sandbox");
 } catch (err) {
+  // Prints 404 not_found.
   if (!(err instanceof NotFoundError)) throw err;
   console.log(err.status, err.code);
 } finally {
@@ -34,8 +36,10 @@ from useshards import NotFoundError, Shard
 
 with Shard() as shard:
     try:
+        # Look up a sandbox that does not exist.
         shard.get("no-such-sandbox")
     except NotFoundError as e:
+        # Prints 404 not_found.
         print(e.status, e.code)
 ```
 
@@ -100,7 +104,9 @@ A bad argument fails on the client, before any request is sent, with the languag
 
 ## Client timeouts
 
-Each request waits up to 60 seconds for the server. If the server sends nothing for that long, the call raises `ShardConnectionError` with the text `<method> <path>: the daemon did not answer in time`. In Python, `Shard(timeout=...)` sets this bound in seconds, and `timeout=None` removes it. In TypeScript the bound is fixed.
+Each request waits up to 60 seconds for the server. If the server sends nothing for that long, the call raises `ShardConnectionError` with the text `<method> <path>: the daemon did not answer in time`.
+
+In Python, `Shard(timeout=...)` sets this bound in seconds, and `timeout=None` removes it. In TypeScript the bound is fixed.
 
 Calls that wait on the sandbox have no bound, because they take as long as the sandbox needs:
 

@@ -1,24 +1,38 @@
 ---
-title: How to connect to a remote host?
+title: Mint a token and connect remotely
 description: Put shard serve and an HTTPS proxy in front of a daemon, mint an API token, and drive the sandboxes of that host from another machine.
 sidebar:
-  label: 'Connect to a remote host'
-  order: 8
+  label: Connect remotely
+  order: 9
 ---
 
 import { Tabs, TabItem } from '@astrojs/starlight/components';
 
-Connect to a shard server with its URL and an API token, then use it as if it ran on this machine:
+You'll mint a token on a shard server, connect to it from another machine, and run a sandbox there as if it ran locally.
+
+You need shell access to a server that `shard setup` set up: see [Quickstart: server](/docs/quickstart/server/). Steps 2 and 3 below add the HTTP API and HTTPS, if the server has neither yet.
 
 <Tabs syncKey="lang">
 	<TabItem label="CLI">
 
 ```sh
-export SHARD_API_KEY=<the token field that shard tokens mint printed>
+# On the server: mint a token for this client.
+# Prints JSON, and its token field is the client's API key.
+shard tokens mint --name laptop --duration 720h \
+  --scopes sandbox:read,sandbox:write,sandbox:delete,exec \
+  --signing-key-file /etc/shard/serve.secret
+
+# On the client: set the key, then check and save the connection.
+export SHARD_API_KEY=<the token field>
 shard setup --remote https://shard.example.com --save -y
+
+# Every command now goes to the server. The exec prints hello.
 shard create --name demo --memory 512MiB alpine:3.20
 shard exec demo echo hello
 shard remove --force demo
+
+# On the server: revoke the token. Prints revoked 1 token(s) named laptop.
+shard tokens revoke --name laptop --signing-key-file /etc/shard/serve.secret
 ```
 
 	</TabItem>
@@ -27,12 +41,21 @@ shard remove --force demo
 ```ts
 import { Shard } from "useshards";
 
-// Reads SHARD_API_KEY.
+// Mint the token on the server first, as in the CLI tab.
+// Reads the token from SHARD_API_KEY.
 const shard = new Shard({ remote: "https://shard.example.com" });
 try {
-  const sandbox = await shard.create({ name: "demo", image: "alpine:3.20", memoryMiB: 512 });
-  const result = await sandbox.exec(["echo", "hello"]);
-  console.log(result.stdout);
+  // Create a sandbox on the server.
+  const sandbox = await shard.create({
+    name: "demo",
+    image: "alpine:3.20",
+    memoryMiB: 512,
+  });
+
+  // Prints hello.
+  console.log((await sandbox.exec(["echo", "hello"])).stdout);
+
+  // Remove it.
   await sandbox.remove({ force: true });
 } finally {
   shard.close();
@@ -45,18 +68,25 @@ try {
 ```python
 from useshards import Shard
 
-# Reads SHARD_API_KEY.
+# Mint the token on the server first, as in the CLI tab.
+# Reads the token from SHARD_API_KEY.
 with Shard(remote="https://shard.example.com") as shard:
+    # Create a sandbox on the server.
     sandbox = shard.create("alpine:3.20", name="demo", memory_mib=512)
-    result = sandbox.exec(["echo", "hello"])
-    print(result.stdout)
+
+    # Prints hello.
+    print(sandbox.exec(["echo", "hello"]).stdout)
+
+    # Remove it.
     sandbox.remove(force=True)
 ```
 
 	</TabItem>
 </Tabs>
 
-`shard setup --remote` checks that it can reach the server, that the server accepts the key, and which verbs the server supports. With `--save`, it saves the connection, so later commands need no variables.
+On a Mac server, leave out `--signing-key-file`: the token commands and `shard serve` both use the default key.
+
+`shard setup --remote` checks that it can reach the server, that the server accepts the key, and which commands the server supports. With `--save`, it saves the connection, so later commands need no variables.
 
 The server needs three things before a client can connect: a daemon, `shard serve`, and an HTTPS proxy or a tunnel in front of it. The steps below set them up on a Linux host with systemd.
 
@@ -192,7 +222,10 @@ Setup writes the server URL and the key to `~/.config/shard/config.json` by defa
 List the tokens, then revoke one by its ID, or every token of a name:
 
 ```sh
+# Prints each token's ID, name, issue time, expiry, scopes and status.
 shard tokens list --signing-key-file /etc/shard/serve.secret
+
+# Revoke every token named laptop.
 shard tokens revoke --name laptop --signing-key-file /etc/shard/serve.secret
 ```
 
@@ -207,3 +240,5 @@ On a machine with a saved connection, add `--remote ""` to send one command to t
 ```sh
 shard --remote "" list
 ```
+
+For how a request travels from a client to the daemon, see [Architecture](/docs/concepts/architecture/#remote-access). For the socket's permissions, see [Security model](/docs/security/model/#who-can-reach-the-api).
