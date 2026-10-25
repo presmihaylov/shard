@@ -41,7 +41,7 @@ Claude Code writes the file, runs it, and prints a summary. The last command cop
 
 - **It sees no key.** The sandbox holds `mock-ANTHROPIC_API_KEY`. The host puts the real key into each HTTPS request to `api.anthropic.com`, outside the sandbox. See [Credential brokering](/docs/essentials/credential-brokering/).
 - **It reaches two hosts.** The policy allows Anthropic's API and the npm registry, and denies the rest. `shard policy logs claude` shows each request it made.
-- **It touches no file of yours.** It sees the image's files and what you copy in.
+- **It cannot touch your files.** It sees the image's files and what you copy in.
 
 The sandbox does not limit what Claude Code does with what it can reach. It spends your Anthropic key on every request, and it can send any file you copy in to an allowed host. Copy in only what the task needs.
 

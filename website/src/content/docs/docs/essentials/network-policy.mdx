@@ -160,7 +160,7 @@ shard policy create \
 
 - **Wildcards.** A leading `*.` matches any depth below the name, but not the name itself. Any other `*` stands for one whole label, so `www.*.com` matches any one label there. `*` alone matches every host, and a `*` inside a label, such as `api*.example.com`, is refused.
 - **Letter case.** Names match in any letter case, with or without a trailing dot.
-- **Ports.** Numbers and ranges from 1 to 65535, separated by commas, such as `tcp:22,8000-8100`, with at most 1024 ports in a rule. A rule with no protocol matches every protocol, ping too, and an address rule with no ports opens every TCP and UDP port.
+- **Ports.** Numbers and ranges from 1 to 65535, separated by commas, such as `tcp:22,8000-8100`, with at most 1024 ports in a rule. A rule with no protocol matches every protocol, including ping. An address rule with no ports opens every TCP and UDP port.
 - **A name rule covers only HTTP and HTTPS.** The proxy matches the name in each request on ports 80 and 443. `policy create` refuses a name rule on any other port: use an address, such as `--allow "203.0.113.7 tcp:5432"`.
 - **A secret grant opens no host.** Allow a granted host in the policy like any other. See [Credential brokering](/docs/essentials/credential-brokering/#with-a-network-policy).
 
@@ -281,7 +281,7 @@ agent.start()
 
 ## Change a policy
 
-Store the policy again under the same name. The new rules replace all the old ones, and every sandbox with the policy enforces them at once, running or paused, with no restart:
+Store the policy again under the same name. The new rules replace all the old ones. Every sandbox with the policy enforces them at once, running or paused, without a restart:
 
 <Tabs syncKey="lang">
 	<TabItem label="CLI">
@@ -345,7 +345,7 @@ A host name in a rule resolves to its addresses each time the host applies the r
 
 ## Trust an internal certificate authority
 
-The proxy checks each server's certificate against the host's trust store, not the sandbox's. A server signed by an internal or self-signed authority therefore gets a `502`, with a `certificate` record in the log, until the host trusts that authority.
+The proxy checks each server's certificate against the host's trust store, not the sandbox's. A request to a server signed by an internal or self-signed authority therefore gets a `502`, with a `certificate` record in the log, until the host trusts that authority.
 
 Add the authority's certificate to the host's store, then restart the daemon, which reads the store when it starts:
 
@@ -397,6 +397,6 @@ The sandbox needs no change. A sandbox with neither a policy nor a secret skips 
 - **Connections are capped.** A sandbox can hold 1024 connections and 1024 requests open to the proxy, and a request past that gets a `503`. It gets HTTP/2 on at most 32 connections at once, with at most 32 requests open on each, and HTTP/1.1 after that. The proxy closes a keep-alive connection after 60 seconds without a request.
 - **Lookups are capped.** A sandbox can have 16 UDP questions or TCP connections open at once at the resolver, which takes at most 256 questions at once across the server. A UDP question past that is dropped, and the client asks again. A TCP connection past it is closed.
 - **Adding DNS renumbers the rules.** A rule's id is its place in the list that `shard inspect` prints. A change that adds DNS puts two implied rules first and moves every other rule down by two, so a log record from before the change points at a different rule.
-- **Your own firewall rules leave no record.** A drop by a rule of your own on the host is not in the log, so the sandbox just sees a timeout.
+- **Your own firewall rules leave no record.** A drop by a rule of your own on the host is not in the log. The sandbox sees only a timeout.
 
-How a policy and a secret work together is in [Secrets and network policies](/docs/concepts/secrets-and-policies/#how-a-network-policy-works). To see how the host enforces a policy, and what the floor, the proxy and the resolver guarantee, see [Network egress](/docs/security/egress/).
+[Secrets and network policies](/docs/concepts/secrets-and-policies/#how-a-network-policy-works) explains how a policy and a secret work together. To see how the host enforces a policy, and what the floor, the proxy and the resolver guarantee, see [Network egress](/docs/security/egress/).

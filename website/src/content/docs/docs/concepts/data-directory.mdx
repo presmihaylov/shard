@@ -7,7 +7,7 @@ sidebar:
 
 The data directory is where the daemon keeps everything it manages: the sandboxes, the images, the snapshots, the secrets and the network policies. It is `/var/lib/shard`, and `shard setup` creates it. To use another directory, start the daemon with `shard --root <dir> daemon` and pass the same `--root` to every command.
 
-- **The daemon is its only writer.** Every command goes to the daemon, and the daemon changes the files. Nothing else writes there.
+- **The daemon is its only writer.** Every command goes to the daemon, which changes the files. Nothing else writes there.
 - **One daemon per data directory.** The daemon holds a lock on `daemon.lock`, so a second daemon on the same directory refuses to start.
 - **One provider per data directory.** Each sandbox record names the provider that made it. A daemon refuses to start on a data directory that holds another provider's sandboxes, because it cannot run them.
 - **Commands find the daemon through it.** A command on the host connects to the socket `shard.sock` in the data directory.

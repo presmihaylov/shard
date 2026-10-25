@@ -98,7 +98,7 @@ with Shard() as shard:
 	</TabItem>
 </Tabs>
 
-The forward listens on the server, so the TypeScript and Python programs print where it listens, and the fetch runs on the server.
+The forward listens on the server. The TypeScript and Python programs print where it listens, and you run the fetch on the server.
 
 ## Choose the ports
 
@@ -116,8 +116,8 @@ To change a forward, add the same host port again with another guest port, or wi
 - **It listens only while the sandbox runs.** A pause or a stop closes the open connections.
 - **A fork does not copy the forwards.** Add them to the fork yourself.
 - **A host port belongs to one sandbox at a time.** A second sandbox that asks for it gets `409` with the code `in_use`.
-- **A port another program holds waits.** If a program on the host holds the port when the sandbox starts, `shard port list` shows why the port does not listen, and the daemon tries again every second.
-- **TCP over IPv4 only.**
+- **A forward waits for a port another program holds.** If a program on the host holds the port when the sandbox starts, `shard port list` shows why the port does not listen, and the daemon tries again every second.
+- **A forward carries TCP over IPv4 only.**
 
 ## Open it to other machines
 
@@ -144,4 +144,4 @@ For what a public port exposes, see [Security model](/docs/security/model/#forwa
 
 A token needs `port:read` to list the forwards, and `port:write` to add or remove one. See [Mint a token and connect remotely](/docs/essentials/remote-access/).
 
-How the host carries each connection is in [Architecture](/docs/concepts/architecture/#the-daemon).
+[Architecture](/docs/concepts/architecture/#the-daemon) describes how the host carries each connection.

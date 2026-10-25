@@ -11,7 +11,7 @@ Install shard:
 curl -fsSL https://useshards.com/install | sh
 ```
 
-The installer then offers to start `shard setup`, a wizard that asks how to set up this machine. Or skip the wizard, and set up a Linux host with gVisor in one command:
+The installer then offers to start `shard setup`, a wizard that asks how to set up this machine. To skip the wizard, set up a Linux host with gVisor in one command:
 
 ```sh
 shard setup --local --provider gvisor --start-at-boot=true -y
@@ -62,7 +62,7 @@ A sandbox outlives the daemon. When the daemon stops or restarts, every sandbox 
 
 ## Run the daemon yourself
 
-Otherwise, setup installs the provider's tools and the data directory, but no service. Start the daemon in a terminal of its own, and run your commands in another one:
+Without start at boot, setup installs the provider's tools and the data directory, but no service. Start the daemon in a terminal of its own, and run your commands in another one:
 
 ```sh
 shard daemon --provider gvisor
@@ -84,7 +84,7 @@ For every path under `/var/lib/shard`, see [the data directory](/docs/concepts/d
 
 ## Script it
 
-Each question of the wizard has an option, so a script sets up a host without one:
+Each wizard question has an option, so a script can set up a host without the wizard:
 
 ```sh
 shard setup --local --provider firecracker --start-at-boot=true -y

@@ -61,7 +61,7 @@ from useshards import Shard
 shard = Shard(remote="https://shard.example.com", api_key=os.environ["MY_SHARD_KEY"])
 ```
 
-- **Precedence:** a non-empty `remote` or `ca_file` argument takes precedence over its environment variable. An `api_key` argument other than `None` takes precedence even when it is empty, which the SDK refuses.
+- **Precedence:** a non-empty `remote` or `ca_file` argument takes precedence over its environment variable. An `api_key` argument other than `None` takes precedence even when it is empty, and the SDK refuses an empty key.
 - **Missing settings:** `Shard()` raises `ConfigurationError` when a setting is missing or refused, and the error message never shows the key.
 - **Plain `http`:** an `http` remote works, but it sends the key unencrypted, so the SDK emits a warning. It also refuses a CA file.
 - **Timeout:** `timeout=` bounds each plain request, in seconds. The default is 60, and `None` removes the bound. A call that waits on the sandbox, such as `create()`, `stop()` or `fork()`, has no read bound on the client.
@@ -94,7 +94,7 @@ Use `Shard` in a `with` block, or call `shard.close()` when you are done, so it 
 | `policy` | The name of the network policy. |
 | `memory_mib` | The memory bound. Without it, the sandbox takes a snapshot's own bound. From an image, it gets 512 MiB on Firecracker and `vz`, and no bound on gVisor, runc and Sysbox. |
 | `vcpus`, `disk_mib` | The CPU count and the disk size. Without them, the daemon's defaults apply. A sandbox from a snapshot takes the snapshot's disk size. |
-| `swap_mib` | The swap file, which the guest makes on its disk and which counts against `disk_mib`. Without it, a sandbox gets 2048 MiB on Firecracker and `vz`, and none on gVisor, runc and Sysbox, which refuse any swap but 0. |
+| `swap_mib` | The swap file, which the guest makes on its disk and which counts against `disk_mib`. Without it, a sandbox gets 2048 MiB on Firecracker and `vz`, and none on gVisor, runc and Sysbox. Those three refuse any swap but 0. |
 | `ports` | Host ports to forward. See [Ports](#ports). |
 
 On Firecracker and `vz`, a `memory_mib` from 1 to 127 is refused.

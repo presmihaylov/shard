@@ -10,7 +10,7 @@ import { Tabs, TabItem } from '@astrojs/starlight/components';
 
 You'll mint a token on a shard server, connect to it from another machine, and run a sandbox there as if it ran locally.
 
-You need shell access to a server that `shard setup` set up: see [Quickstart: server](/docs/quickstart/server/). Steps 2 and 3 below add the HTTP API and HTTPS, if the server has neither yet.
+You need shell access to a server you set up with `shard setup`: see [Quickstart: server](/docs/quickstart/server/). Steps 2 and 3 below add the HTTP API and HTTPS, if the server has neither yet.
 
 <Tabs syncKey="lang">
 	<TabItem label="CLI">
@@ -108,7 +108,7 @@ The daemon serves its API on a unix socket on the host, never on TCP. This step 
 shard setup --local --provider gvisor --http-api=true -y
 ```
 
-On a host that setup already set up, this changes only the HTTP API. On a new host, it sets up the daemon too, so step 1 is optional. Without `-y`, setup asks **Set up the HTTP API?** after the daemon startup question.
+On a host where setup already ran, this changes only the HTTP API. On a new host, it sets up the daemon too, so step 1 is optional. Without `-y`, setup asks **Set up the HTTP API?** after the daemon startup question.
 
 Setup then:
 
@@ -179,7 +179,7 @@ Clients on the same tailnet use `https://<host>.<tailnet>.ts.net`.
 	</TabItem>
 </Tabs>
 
-`shard serve` sees every client as one source: the proxy. It holds at most 32 connections from one source that have not yet shown a valid token, so this bound applies to all clients together. Rate-limit floods at the proxy.
+`shard serve` sees every client as one source: the proxy. It holds at most 32 connections from one source that have not yet shown a valid token, so all clients share this limit. Rate-limit floods at the proxy.
 
 ## 4. Mint a token
 
@@ -229,7 +229,7 @@ shard tokens list --signing-key-file /etc/shard/serve.secret
 shard tokens revoke --name laptop --signing-key-file /etc/shard/serve.secret
 ```
 
-`shard serve` refuses a revoked token on the next request, with no restart. It also closes any open stream that uses that token, such as `shard exec`, `shard shell` or `shard logs -f`, within a second. The command and its sandbox keep running.
+`shard serve` refuses a revoked token on the next request, and needs no restart. It also closes any open stream that uses that token, such as `shard exec`, `shard shell` or `shard logs -f`, within a second. The command and its sandbox keep running.
 
 ## Commands that run on the server only
 

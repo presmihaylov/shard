@@ -65,7 +65,7 @@ Both SDKs export the same classes from `useshards`. Every error from the server,
 | `ProtocolError` | The server sent an answer the SDK cannot read. | |
 | `CommandNotStartedError` | The command never ran. | TS `exitCode`, `reason`. Python `exit_code`, `reason`. |
 | `APIError` | The server refused the request. | `status`, `code`, `holders`, and the daemon's message: TS `detail`, Python `message`. |
-| `UnknownLengthError` | The size of an upload is not known before it starts, for example because the file is not a regular file, or the file changed size during the upload. In Python, pass `size=` to `files.write()` when you write a stream. | |
+| `UnknownLengthError` | The size of an upload is not known before it starts, for example because the file is not a regular file, or the source changed size while it was sent. In Python, pass `size=` to `files.write()` when you write a stream. | |
 | `UnsafeArchiveError` | A directory download refused an entry, such as one that would land outside the target directory. | `entry`, `reason` |
 
 `APIError` has one subclass for each kind of refusal:
@@ -155,7 +155,7 @@ The daemon has its own bounds, which apply to every client:
 | Error | Retry |
 | --- | --- |
 | `exec_limit` | Yes, once a running command exits. |
-| `timeout` | Yes, once the provider has time again. |
+| `timeout` | Yes, once the provider is free again. |
 | `ShardConnectionError` | Read the state first. The error does not tell you whether the server did the work, so call `get()` or `inspect()` before you repeat a call that changes something. |
 | `ServerError` with `internal` | Only after you fix the cause, which the daemon's log shows. |
 | Any other `APIError` | No. Change the request or the state first. |

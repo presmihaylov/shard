@@ -7,7 +7,7 @@ sidebar:
 
 import { Tabs, TabItem } from '@astrojs/starlight/components';
 
-A sandbox keeps its files across a stop, and its memory and processes too across a pause.
+A sandbox keeps its files across a stop. Across a pause, it keeps its memory and processes too.
 
 Create a sandbox, write a file, stop it, start it again, pause it and resume it:
 
@@ -195,7 +195,7 @@ On macOS Virtualization and Firecracker, each sandbox is a virtual machine proce
 
 If the process stays silent for that whole time, the sandbox becomes `unresponsive`. A host under heavy load can cause that, and so can a SIGSTOP.
 
-shard does not end an `unresponsive` sandbox because it is silent. The process can come back with the same virtual machine, and when it answers, the sandbox is `running` again.
+Silence alone does not make shard end an `unresponsive` sandbox. The process can come back with the same virtual machine, and when it answers, the sandbox is `running` again.
 
 Until then, `exec`, `start` and `pause` refuse it, and `exec` says `wait for it to answer, or end it with shard stop <id>`. `stop` and `remove --force` give it one more second to answer, then kill it.
 

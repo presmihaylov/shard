@@ -113,13 +113,13 @@ A VM that does not answer within 4 seconds shows as `unresponsive` and keeps run
 | `--disk` | The size of the writable disk. `0`, the default, means 10240 MiB. A bound under 11 MiB is refused. |
 | `--swap` | A swap file the guest makes on its own disk at each boot. It is 2 GiB by default. `0` means no swap. It comes out of `--disk`, so a swap that is not smaller than the disk is refused. |
 
-A sandbox past its `--memory` swaps and slows down; it does not end at once. Once the swap is full too, or with `--swap 0`, the sandbox stops, its record says why, and the daemon starts it again. See [Known limits](/docs/security/limits/#resource-bounds).
+A sandbox past its `--memory` swaps and slows down instead of ending at once. Once the swap is full too, or with `--swap 0`, the sandbox stops, its record says why, and the daemon starts it again. See [Known limits](/docs/security/limits/#resource-bounds).
 
 As a safety net, the host also bounds the VM process at the sandbox's memory plus 64 MiB, but the guest's kernel always acts first.
 
 shard refuses a few `--disk` sizes just above a multiple of 128 MiB, because the disk cannot grow to them. The error names the nearest sizes that work.
 
-There is no process bound. A process in the guest is a process inside the VM, so a fork bomb stays there and hits the VM's memory.
+There is no process bound. Every process in the guest runs inside the VM, so a fork bomb stays there and hits the VM's memory.
 
 ## Pause, resume and fork
 
@@ -177,7 +177,7 @@ SHARD_KERNEL=/path/to/vmlinux-amd64 SHARD_KERNEL_SHA256=<its sha256> \
 
 Set both variables. With only one, the daemon fails when it prepares Firecracker, with `SHARD_KERNEL and SHARD_KERNEL_SHA256 must be set together`.
 
-The daemon still checks the hash, and refuses a file that does not match with `kernel checksum mismatch`. This is for kernel development only.
+The daemon still checks the hash, and refuses a file that does not match with `kernel checksum mismatch`. The override is for kernel development only.
 
 ## When something fails
 

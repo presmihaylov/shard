@@ -139,7 +139,7 @@ A later daemon may add a code, so a program must accept one it does not know.
 | `name_taken` | 409 | A create or fork whose name another sandbox has, a snapshot create whose name another snapshot has, or a run whose name a running process of the sandbox has. |
 | `exec_exited` | 409 | Kill on an exec whose command ended. |
 | `exec_running` | 409 | Delete on an exec whose command still runs. |
-| `exec_limit` | 429 | An exec while the sandbox runs 32 execs, or the daemon runs 256 across all sandboxes. shard stops no running exec to make room, so try again after one exits. |
+| `exec_limit` | 429 | An exec while the sandbox runs 32 execs, or the daemon runs 256 across all sandboxes. shard does not stop a running exec to make room, so try again after one exits. |
 | `no_process` | 404 | A get, kill, logs or attach of a process name the sandbox does not have. |
 | `process_limit` | 409 | A run while all 16 processes of the sandbox still run. A run of an ended name takes that entry's place. |
 | `unauthorized` | 401 | `shard serve`, when the request has no valid API token. |

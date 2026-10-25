@@ -45,7 +45,7 @@ The Linux providers ran on one host and `vz` ran on a Mac, so compare the Linux 
 - The sandbox commands ran on one sandbox, in the order of the tables. `create` starts it. `pause`, `resume`, `fork` and `policy logs` find it running. `secret grant`, `secret ungrant`, `policy attach`, `policy detach` and `snapshot create` find it stopped. `start` runs it again, and `remove --force` removes it while it runs. `fork` and `create --snapshot` each made a second sandbox, which the script then removed outside the timing.
 - `shard pull alpine:3.20` finds the image already cached. `shard pull busybox:1.36` pulls an image that the previous round removed, so its time depends on the network.
 - A command that the provider does not support shows "not supported".
-- The script did not time `shard daemon` and `shard serve`, which run until you stop them, the interactive `shard setup`, or `logs -f`, `policy logs -f` and `exec -it`, which follow or attach.
+- The script did not time `shard daemon` or `shard serve`, which run until you stop them. It also skipped the interactive `shard setup`, and `logs -f`, `policy logs -f` and `exec -it`, which follow or attach.
 
 ## Linux host
 

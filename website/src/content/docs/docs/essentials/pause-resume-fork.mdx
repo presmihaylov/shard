@@ -114,7 +114,7 @@ with Shard() as shard:
 
 ## Pause and resume
 
-A paused sandbox uses no memory on the host. It keeps its record, its files and its address, and `resume` carries its processes on from the same instant.
+A paused sandbox uses no memory on the host. It keeps its record, its files and its address, and `resume` continues its processes from the instant they paused.
 
 - **A pause ends running commands.** An `exec` still running ends, and a new one fails with `sandbox base is paused: resume it with shard resume base`.
 - **A stop deletes the checkpoint.** `shard stop` on a paused sandbox ends it, so you can no longer resume it. Its files stay, and `shard start` boots it fresh from them.
@@ -150,4 +150,4 @@ The source freezes for a moment while shard copies its memory and files, then ke
 - **gVisor, Firecracker and vz.** On Sysbox and runc, `pause`, `resume` and `fork` fail with an error such as `provider sysbox does not support fork on this host`. `shard capabilities` shows what your server supports: see [Providers and capabilities](/docs/concepts/providers/#the-ten-capabilities).
 - **A token needs `sandbox:write`.** A fork also needs `secret:*` when the source has secret grants, and `policy:*` when it has a network policy.
 
-How the checkpoint is kept, and what a daemon restart does to it, is in [Pause, resume and fork](/docs/concepts/pause-resume-fork/).
+[Pause, resume and fork](/docs/concepts/pause-resume-fork/) explains how shard keeps the checkpoint and what a daemon restart does to it.

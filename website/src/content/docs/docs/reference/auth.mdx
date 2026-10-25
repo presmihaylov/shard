@@ -78,9 +78,9 @@ Both refusals come from `shard serve` before it opens the socket, so a refused r
 | `policy:*` | Manage policies and attach them to sandboxes | Every policies route, and attach and detach on a sandbox |
 | `port:read` | View the host ports forwarded into sandboxes | List the forwards of every sandbox or of one |
 | `port:write` | Forward host ports into sandboxes, publicly too, and remove the forwards | Add, change and remove a forward |
-| `*` | All available permissions | Every route above |
+| `*` | Every permission | Every route above |
 
-A token with no scopes, or with `*`, reaches every route. `GET /v0/version`, `GET /v0/capabilities` and `GET /v0/scopes` answer any valid token, so a client can check which server it talks to before it acts.
+A token with no scopes, or with `*`, reaches every route except the host-only ones. `GET /v0/version`, `GET /v0/capabilities` and `GET /v0/scopes` answer any valid token, so a client can check which server it talks to before it acts.
 
 Some requests need a second scope for what they name:
 
@@ -117,7 +117,7 @@ export SHARD_API_KEY=$(
 )
 ```
 
-`mint`, `list` and `revoke` run only on the daemon host. They refuse `--remote`, `SHARD_REMOTE` and a saved connection, and none of them talks to the daemon, because the daemon never reads the key or the ledger. `shard tokens <verb> --help` lists every option.
+`mint`, `list` and `revoke` run only on the daemon host. They refuse `--remote`, `SHARD_REMOTE` and a saved connection. None of them talks to the daemon, because the daemon never reads the key or the ledger. `shard tokens <verb> --help` lists every option.
 
 For the whole setup, from `shard serve` to a client, see [Mint a token and connect remotely](/docs/essentials/remote-access/).
 
@@ -137,7 +137,7 @@ shard tokens revoke --name ci
 # revoked 1 token(s) named ci
 ```
 
-- **Next request:** a revoke takes effect on the next request, with no restart.
+- **Next request:** a revoke takes effect on the next request, without a restart.
 - **Open connections:** `shard serve` checks the ledger once a second for each open connection, such as an exec session or a log follow, and closes the connection when its token is revoked. A token with an `exp` closes its connections when it expires.
 - **The sandbox keeps running:** a close only detaches the client. The command in the sandbox keeps running, and so does the sandbox.
 
@@ -170,7 +170,7 @@ The daemon never reads the key or the ledger.
 - **No key:** a remote client with no key refuses to start before it connects, and the error names `SHARD_API_KEY`.
 - **A saved key:** the CLI sends it only to the remote it was saved for.
 
-When `shard serve` refuses the key with `401`, the CLI prints which key it sent and how to replace it, never the key itself:
+When `shard serve` refuses the key with `401`, the CLI never prints the key itself. It prints which key it sent and how to replace it:
 
 ```text
 shard: the server at https://shard.example.com did not accept the API key in SHARD_API_KEY; set SHARD_API_KEY to a valid key, or ask the server administrator for a new one

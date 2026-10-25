@@ -76,7 +76,7 @@ The TypeScript and Python examples reach `shard serve` at `SHARD_REMOTE`, with t
 
 ## Who is it for?
 
-It is for anyone who gives an agent a place to run code. The agent's files are kept between its commands, and you can save its memory while it is idle or fork it to try another path. The secrets and the network policy stay on the host, outside the sandbox.
+It is for anyone who gives an agent a place to run code. shard keeps the agent's files between its commands, and you can save its memory while it is idle or fork it to try another path. The secrets and the network policy stay on the host, outside the sandbox.
 
 ## Does shard run sandboxes across many machines?
 
@@ -127,11 +127,11 @@ To learn how a sandbox moves between states, see [Sandboxes and the lifecycle](/
 
 On `firecracker` and `vz`, a sandbox always has one. A create without `--memory` gets 512 MiB, and a bound under 128 MiB is refused.
 
-On the other providers, a sandbox without `--memory` has no memory bound, so set one anyway. shard refuses a bound larger than the host's memory. For every bound, see [Resource bounds by provider](/docs/concepts/providers/#resource-bounds-by-provider).
+On the other providers, a sandbox without `--memory` has no memory bound, so set one yourself. shard refuses a bound larger than the host's memory. For every bound, see [Resource bounds by provider](/docs/concepts/providers/#resource-bounds-by-provider).
 
 ## Can a sandbox read my API keys?
 
-It depends on how you give it the key. A key you put in the sandbox, as an environment variable or in a file, is readable by anything that runs there.
+It depends on how you give it the key. Anything that runs in the sandbox can read a key you put there, as an environment variable or in a file.
 
 Store the key as a shard secret instead, and it stays on the host. The sandbox holds only a placeholder, and shard puts the real key into HTTPS requests to the hosts you named. See [Credential brokering](/docs/essentials/credential-brokering/).
 
