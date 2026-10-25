@@ -128,10 +128,6 @@ No. Without a policy, a sandbox can reach the internet, but the host drops its t
 
 Its files do. A reboot ends its processes, and when the daemon comes back it marks the sandbox as stopped. `shard start <name>` starts it again. Restarting only the daemon does not end any sandbox.
 
-## Why do local commands need sudo on Linux?
-
-On the default Linux install, the daemon socket belongs to root, so local commands need `sudo`. An administrator can grant access to the `shard` group instead. On a Mac the daemon runs as your user, and local commands need no `sudo`.
-
 ## How do I use shard from another machine?
 
 On the server, mint a token with `shard tokens mint` and run `shard serve` behind an HTTPS proxy. On the other machine, run `shard setup` and choose `Connect to a remote server`, or set `SHARD_REMOTE` and `SHARD_API_KEY`. [How to connect to a remote host?](/docs/guides/remote/) has the details.

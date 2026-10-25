@@ -56,10 +56,10 @@ const shard = new Shard({ remote: "https://shard.example.com", apiKey: process.e
 
 If a setting is missing or refused, `new Shard()` throws `ConfigurationError`, and the error message never shows the key. An `http` remote works, but it sends the key unencrypted, so Node prints a warning. An `http` remote also refuses a CA file.
 
-To mint an API key, run this on the server, with `sudo` on Linux:
+To mint an API key, run this on the server:
 
 ```sh
-sudo shard tokens mint --name build-agent --duration 24h
+shard tokens mint --name build-agent --duration 24h
 ```
 
 The command prints a JSON record, and its `token` value is the API key. Without `--scopes`, the key can do everything.

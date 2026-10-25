@@ -180,7 +180,7 @@ A forward changes nothing about the sandbox's own traffic. The egress floor and 
 
 The daemon listens only on a unix socket at `<root>/shard.sock`, which defaults to `/var/lib/shard/shard.sock`. It never serves its API on TCP. The only TCP ports it opens are the egress proxy and resolver on the sandbox gateway, and the host ports that an operator forwards with `shard port add`. A forwarded port carries bytes to one port of one sandbox, and never reaches the API.
 
-The socket has mode `0600`, so only the user the daemon runs as can use it. On Linux that user is root. If the host has a group named `shard`, the daemon hands the socket to that group with mode `0660` when it starts, and members of the group can then use the socket without `sudo`.
+The socket has mode `0600`, so only the user the daemon runs as can use it. On Linux that user is root. If the host has a group named `shard`, the daemon hands the socket to that group with mode `0660` when it starts, and members of the group can then use the socket.
 
 <Aside type="caution">
 Anyone who can reach the socket holds every right. A request on the socket carries no token and no scopes. Add a user to the `shard` group only if you trust them with every sandbox and every secret on the host.

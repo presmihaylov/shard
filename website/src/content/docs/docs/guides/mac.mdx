@@ -26,7 +26,7 @@ If `~/.local/bin` is not on your `PATH`, the installer prints the line that adds
 
 A binary that a browser downloaded carries the quarantine flag, and macOS refuses to run it. `xattr -d com.apple.quarantine shard` clears the flag. `curl` does not set it.
 
-Each sandbox is a Linux micro VM with a kernel of its own. shard drives Apple's Virtualization.framework directly, so you do not need Docker or Homebrew. The daemon runs as your user, and every shard command runs without `sudo`.
+Each sandbox is a Linux micro VM with a kernel of its own. shard drives Apple's Virtualization.framework directly, so you do not need Docker or Homebrew. The daemon runs as your user.
 
 ## What you need
 
@@ -38,7 +38,7 @@ An Intel Mac cannot host sandboxes. See [A Mac that cannot host sandboxes](#a-ma
 
 ## What setup does
 
-`shard setup --local --provider vz` asks for administrator access when a step needs it. Run it as your user, not with `sudo`. It:
+`shard setup --local --provider vz` asks for administrator access when a step needs it. It:
 
 1. Installs `shard` in `/usr/local/bin`.
 2. Creates the data directory `/var/lib/shard` and the log directory `/var/log/shard`, both owned by you.
@@ -58,9 +58,9 @@ launchd keeps the daemon up under the label `system/shard.daemon`:
 | Task | Command |
 | --- | --- |
 | Check it | `launchctl print system/shard.daemon` |
-| Restart it | `sudo launchctl kickstart -k system/shard.daemon` |
-| Stop it | `sudo launchctl bootout system/shard.daemon` |
-| Start it again | `sudo launchctl bootstrap system /Library/LaunchDaemons/shard.daemon.plist` |
+| Restart it | `launchctl kickstart -k system/shard.daemon` |
+| Stop it | `launchctl bootout system/shard.daemon` |
+| Start it again | `launchctl bootstrap system /Library/LaunchDaemons/shard.daemon.plist` |
 | Read its log | `/var/log/shard/daemon.log` |
 
 launchd starts the daemon at boot, and starts it again one second after a crash. After a clean exit, the daemon stays down.
@@ -84,7 +84,7 @@ The daemon stays in the foreground. Run your commands in a second terminal. When
 
 Only one daemon can use a data directory. A second daemon on `/var/lib/shard` refuses to start, so stop the LaunchDaemon before you run one in a terminal.
 
-To use another data directory, pass `--root <dir>` to the daemon and to every command. On a Mac, the path can be at most 58 bytes, because each VM's socket lives under it. A directory that your user owns needs no `sudo`.
+To use another data directory, pass `--root <dir>` to the daemon and to every command. On a Mac, the path can be at most 58 bytes, because each VM's socket lives under it.
 
 ## Use the SDKs on a Mac
 

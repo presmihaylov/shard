@@ -17,7 +17,7 @@ provider   firecracker
 reason     /dev/kvm opens
 ```
 
-`shard info` inspects the host, not the daemon, so it works before setup. On a Linux host that is already set up, run it with `sudo`, because `/var/lib/shard` belongs to root and other users cannot read it.
+`shard info` inspects the host, not the daemon, so it works before setup.
 
 `shard setup` asks which provider to use, and the cursor starts on the one it recommends. To skip the question, pass the provider:
 
@@ -35,7 +35,15 @@ shard setup --local --provider gvisor --start-at-boot=true -y
 | Linux, one tenant, and the workload runs Docker inside the sandbox | `sysbox` |
 | Linux, one tenant, and you trust the code | `runc` |
 
-Setup recommends the first of `vz`, `firecracker` and `gvisor` that runs on the host. It never recommends `sysbox` or `runc`. A daemon started with no `--provider` picks either of them only when that provider made the sandboxes already under its root.
+Setup recommends the first of `vz`, `firecracker` and `gvisor` that runs on the host. It never recommends `sysbox` or `runc`.
+
+## What each provider does
+
+- **`firecracker`**: each sandbox is a microVM with a Linux kernel of its own, on KVM. Use it on any Linux host where `/dev/kvm` opens.
+- **`gvisor`**: a kernel in user space, `runsc`, answers the sandbox's system calls, so they never reach the host kernel. Use it on Linux without KVM, such as a cloud VM without nested virtualization.
+- **`vz`**: each sandbox is a Linux VM, through Apple's Virtualization.framework. Use it on an Apple silicon Mac.
+- **`sysbox`**: a container on the host kernel, with a user namespace and its own `/proc` and `/sys`, so Docker runs inside it. Use it when the workload needs Docker and the host serves one tenant.
+- **`runc`**: a plain container on the host kernel, with no user namespace. Use it only for code you trust, on a host with one tenant.
 
 ## Compare the providers
 
@@ -62,18 +70,26 @@ Setup installs what the provider needs, unless the host already has it where the
 | `runc` | The `runc` package, and `apparmor` when the kernel enforces AppArmor |
 | `vz` | Nothing. It uses `codesign`, which ships with macOS. |
 
-Every Linux provider also needs `iproute2`, `nftables` and `e2fsprogs`. Setup installs packages with `apt-get`. On a host without it, setup stops and names the tools to install. Setup checks the sha256 of every pinned download before it installs it. It keeps an installed `firecracker` of 1.13.0 or newer, and refuses an older one.
+Setup checks the sha256 of every pinned download before it installs it.
 
-Firecracker and `vz` also download a guest kernel. Firecracker needs `/var/lib/shard` on XFS or Btrfs. On another filesystem it needs 20 GiB free for an XFS image, which it mounts over `/var/lib/shard`, so that directory must be empty.
+## Limits to know before you pick
 
-## Sysbox and runc share more with the host
-
-Sysbox CE maps every sandbox to the same host user ID range. Two Sysbox sandboxes are isolated from the host, but not from each other. Run one tenant per Sysbox host.
-
-runc runs sandboxes on the host kernel with no user namespace, so root in the sandbox is root on the host. Use it only for code you trust, on a host with one tenant.
+- **Linux tools.** Every Linux provider also needs `iproute2`, `nftables` and `e2fsprogs`. Setup installs packages with `apt-get`. On a host without it, setup stops and names the tools to install.
+- **Firecracker version.** Setup keeps an installed `firecracker` of 1.13.0 or newer, and refuses an older one.
+- **Guest kernel.** Firecracker and `vz` download a guest kernel during setup.
+- **Firecracker disk.** Firecracker needs `/var/lib/shard` on XFS or Btrfs. On another filesystem it needs 20 GiB free for an XFS image, which it mounts over `/var/lib/shard`, so that directory must be empty.
+- **Sysbox tenants.** Sysbox CE maps every sandbox to the same host user ID range. Two Sysbox sandboxes are isolated from the host, but not from each other.
+- **runc and root.** runc has no user namespace, so root in the sandbox is root on the host.
+- **No `--provider`.** A daemon started without it picks `sysbox` or `runc` only when that provider made the sandboxes already under its root.
 
 ## Change the provider later
 
-One daemon runs one provider, and every sandbox in its data directory uses that provider. The data directory keeps the provider that made its sandboxes, because no other provider can read them. The daemon refuses a `--provider` that names a different one, and the error names both. On a host that is already set up, `shard setup` shows the menu for the existing installation, and that menu has no option to change the provider.
+A host runs one provider, and only that provider can read its sandboxes. Setup has no option to change it, and the daemon refuses a different `--provider`. To change it, start the host over:
 
-To move a host to another provider, remove its sandboxes, run `shard setup` and choose **Uninstall shard**. Then run `shard setup` again and pick the new provider. Its checks name anything that is still in the way. If `/var/lib/shard` still holds data of the old provider, the checks name that provider and refuse the new one. To keep the data, choose the old provider. To delete it, run the commands that the checks print: they remove the sandboxes through a daemon of the old provider, then delete the data. On a Firecracker host, also run the commands that the uninstall note prints for `/var/lib/shard.xfs`, because that image still names Firecracker. If the host serves the API with [`shard serve`](/docs/guides/remote/), uninstall keeps its unit and the new setup does not start it, so run `sudo systemctl start shard-serve` after the setup.
+1. Remove every sandbox. List them with `shard list --all`, and remove each with `shard remove --force <name>`.
+2. Run `shard setup` and choose **Uninstall shard**. It removes the daemon and keeps the data in `/var/lib/shard`.
+3. Delete that data with the commands the uninstall note prints. This deletes the snapshots, images, secrets and network policies of the host.
+4. Run `shard setup` again and pick the new provider.
+5. If you installed [`shard serve`](/docs/guides/remote/) by hand, start it again with `systemctl start shard-serve`.
+
+If a step is missing, setup's checks name what is still in the way and change nothing.

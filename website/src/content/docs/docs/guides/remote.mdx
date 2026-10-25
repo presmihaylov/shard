@@ -87,7 +87,7 @@ The HTTP API listens on `127.0.0.1:7850` by default, which accepts connections o
 The API key lives in `/etc/shard/api-key`, which only root can read. Setup shows the file, never the key:
 
 ```sh
-sudo cat /etc/shard/api-key
+cat /etc/shard/api-key
 ```
 
 A repeated setup keeps the key. Pass `--replace-api-key` to replace it, which cuts off every client that uses the old key. On a Mac, the key is `/var/lib/shard/auth/api-key` and the service is the LaunchDaemon `/Library/LaunchDaemons/shard.serve.plist`.
@@ -97,17 +97,17 @@ A repeated setup keeps the key. Pass `--replace-api-key` to replace it, which cu
 The same service, without setup. Each release ships a systemd unit for it:
 
 ```sh
-sudo groupadd --system shard
-sudo useradd --system --no-create-home --shell /usr/sbin/nologin --gid shard shard
-sudo systemctl restart shard
-sudo install -d -m2750 -o root -g shard /etc/shard
-sudo sh -c 'umask 077; openssl rand -hex 32 > /etc/shard/serve.secret'
-sudo chown root:shard /etc/shard/serve.secret
-sudo chmod 0640 /etc/shard/serve.secret
+groupadd --system shard
+useradd --system --no-create-home --shell /usr/sbin/nologin --gid shard shard
+systemctl restart shard
+install -d -m2750 -o root -g shard /etc/shard
+(umask 077; openssl rand -hex 32 > /etc/shard/serve.secret)
+chown root:shard /etc/shard/serve.secret
+chmod 0640 /etc/shard/serve.secret
 curl -fsSLO https://github.com/presmihaylov/shard/releases/latest/download/shard-serve.service
-sudo install -m0644 shard-serve.service /etc/systemd/system/shard-serve.service
-sudo systemctl daemon-reload
-sudo systemctl enable --now shard-serve
+install -m0644 shard-serve.service /etc/systemd/system/shard-serve.service
+systemctl daemon-reload
+systemctl enable --now shard-serve
 ```
 
 The daemon gives its socket to the `shard` group only when it starts, so the commands restart it once after they create the group. The unit runs as the `shard` user and group, and reads the token signing key from `/etc/shard/serve.secret`. It starts after the daemon, stops with it, and starts again with it. Uninstall keeps this unit, because setup did not install it.
@@ -168,7 +168,7 @@ Clients on the same tailnet use `https://<host>.<tailnet>.ts.net`.
 Mint one token for each client, on the server:
 
 ```sh
-sudo shard tokens mint --name laptop --duration 720h \
+shard tokens mint --name laptop --duration 720h \
   --scopes sandbox:read,sandbox:write,sandbox:delete,exec \
   --signing-key-file /etc/shard/serve.secret
 ```
@@ -202,8 +202,8 @@ An `http` URL works too, but nothing encrypts the key or the requests. Use it on
 List the tokens, then revoke one by its ID, or every token of a name:
 
 ```sh
-sudo shard tokens list --signing-key-file /etc/shard/serve.secret
-sudo shard tokens revoke --name laptop --signing-key-file /etc/shard/serve.secret
+shard tokens list --signing-key-file /etc/shard/serve.secret
+shard tokens revoke --name laptop --signing-key-file /etc/shard/serve.secret
 ```
 
 `shard serve` refuses a revoked token on the next request, with no restart. It also closes any open stream that uses that token, such as `shard exec`, `shard shell` or `shard logs -f`, within a second. The command and its sandbox keep running.

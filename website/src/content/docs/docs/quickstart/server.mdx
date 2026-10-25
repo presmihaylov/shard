@@ -20,14 +20,14 @@ shard setup --local --provider gvisor --start-at-boot=true -y
 Then create a sandbox, run a command in it, and remove it:
 
 ```sh
-sudo shard create --name demo --memory 512MiB alpine:3.20
-sudo shard exec demo echo hello
-sudo shard remove --force demo
+shard create --name demo --memory 512MiB alpine:3.20
+shard exec demo echo hello
+shard remove --force demo
 ```
 
-To open a shell in the sandbox, run `sudo shard shell demo` before you remove it.
+To open a shell in the sandbox, run `shard shell demo` before you remove it.
 
-On a Mac, use `--provider vz` and leave out `sudo`.
+On a Mac, use `--provider vz`.
 
 ## What you need
 
@@ -36,7 +36,7 @@ On a Mac, use `--provider vz` and leave out `sudo`.
 | Linux, x86_64 | `firecracker` (needs `/dev/kvm`), `gvisor`, `sysbox`, `runc` | systemd |
 | macOS 14 or later, Apple silicon | `vz` | launchd |
 
-Setup runs as you and uses `sudo` for the steps that need root. An Intel Mac cannot host sandboxes, but it can connect to a remote server.
+Setup runs as you and asks for administrator access when a step needs it. An Intel Mac cannot host sandboxes, but it can connect to a remote server.
 
 ## Start at boot
 
@@ -46,25 +46,24 @@ When shard starts at boot, setup installs a service and checks that the daemon a
 | --- | --- | --- |
 | Service file | `/etc/systemd/system/shard.service` | `/Library/LaunchDaemons/shard.daemon.plist` |
 | Check it | `systemctl status shard` | `launchctl print system/shard.daemon` |
-| Logs | `sudo journalctl -u shard` | `/var/log/shard/daemon.log` |
+| Logs | `journalctl -u shard` | `/var/log/shard/daemon.log` |
 | Daemon runs as | root | your user |
-| Local commands | with `sudo` | without `sudo` |
 
-Both services restart the daemon one second after a crash, and leave it stopped after a clean exit. On Linux the API socket belongs to root, so local commands run with `sudo`. On a Mac the daemon runs as you and owns its data, so it needs no root.
+Both services restart the daemon one second after a crash, and leave it stopped after a clean exit.
 
 A sandbox outlives the daemon. When the daemon stops or restarts, every sandbox keeps running, and the next daemon takes them back.
 
-`shard daemon status`, with `sudo` on Linux, shows the version, the provider, the process details and the background tasks of the running daemon.
+`shard daemon status` shows the version, the provider, the process details and the background tasks of the running daemon.
 
 ## Run the daemon yourself
 
 Otherwise, setup installs the provider's tools and the data directory, but no service. Start the daemon in a terminal of its own, and run your commands in another one:
 
 ```sh
-sudo shard daemon --provider gvisor
+shard daemon --provider gvisor
 ```
 
-On a Mac, run `shard daemon --provider vz` without `sudo`. Closing the terminal ends the daemon. The sandboxes keep running until a daemon takes them back.
+On a Mac, run `shard daemon --provider vz`. Closing the terminal ends the daemon. The sandboxes keep running until a daemon takes them back.
 
 ## The data directory
 

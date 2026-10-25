@@ -59,10 +59,10 @@ shard = Shard(remote="https://shard.example.com", api_key=os.environ["MY_SHARD_K
 
 `timeout=` bounds each plain request, in seconds. The default is 60, and `None` removes the bound. A call that waits on the sandbox, such as `create()`, `stop()` or `fork()`, has no read bound on the client.
 
-Mint an API key on the server, with `sudo` on Linux:
+Mint an API key on the server:
 
 ```sh
-sudo shard tokens mint --name build-agent --duration 24h
+shard tokens mint --name build-agent --duration 24h
 ```
 
 The command prints a JSON record, and its `token` value is the API key. Without `--scopes`, the key can do everything.
