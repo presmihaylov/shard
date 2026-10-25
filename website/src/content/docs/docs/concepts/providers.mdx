@@ -7,53 +7,6 @@ sidebar:
 
 import { Tabs, TabItem } from '@astrojs/starlight/components';
 
-Not every server can pause, resume or fork a sandbox. That depends on the server's provider, so ask before you build on those commands:
-
-<Tabs syncKey="lang">
-	<TabItem label="CLI">
-
-```sh
-# Prints each of the ten capabilities, true or false.
-shard capabilities
-```
-
-	</TabItem>
-	<TabItem label="TypeScript">
-
-```ts
-import { Shard } from "useshards";
-
-const shard = new Shard();
-try {
-  const caps = await shard.capabilities();
-  // Prints true true true on gVisor.
-  console.log(caps.pause, caps.resume, caps.fork);
-} finally {
-  shard.close();
-}
-```
-
-	</TabItem>
-	<TabItem label="Python">
-
-```python
-from useshards import Shard
-
-with Shard() as shard:
-    caps = shard.capabilities()
-    # Prints True True True on gVisor.
-    print(caps.pause, caps.resume, caps.fork)
-```
-
-	</TabItem>
-</Tabs>
-
-The TypeScript and Python examples reach `shard serve` at the address in `SHARD_REMOTE`, with the API key in `SHARD_API_KEY`.
-
-`shard capabilities` marks each of [the ten capabilities](#the-ten-capabilities) `true` or `false`, and `--format json` prints the same ten keys as JSON. The answer depends only on the server's provider. Your API key's scopes and the state of your sandboxes do not affect it.
-
-## What a provider is
-
 A provider is the mechanism that runs and isolates each sandbox. shard has five:
 
 | Provider | Each sandbox is | Host |
@@ -98,6 +51,49 @@ Every provider supports `create`, `start`, `stop`, `remove`, `snapshot` and `por
 - **vz** needs macOS 14 or later on Apple silicon for all three, and a daemon on an older Mac refuses them.
 - **`snapshot`** works on every provider, because it copies the files of a stopped sandbox and does not need its memory.
 - **`swap`** is not a command. It says whether `--swap` can give a sandbox a swap file, which only Firecracker and vz can.
+
+Ask a server what it supports before you build on `pause`, `resume` or `fork`:
+
+<Tabs syncKey="lang">
+	<TabItem label="CLI">
+
+```sh
+# Prints each of the ten capabilities, true or false.
+shard capabilities
+```
+
+	</TabItem>
+	<TabItem label="TypeScript">
+
+```ts
+import { Shard } from "useshards";
+
+const shard = new Shard();
+try {
+  const caps = await shard.capabilities();
+  // Prints true true true on gVisor.
+  console.log(caps.pause, caps.resume, caps.fork);
+} finally {
+  shard.close();
+}
+```
+
+	</TabItem>
+	<TabItem label="Python">
+
+```python
+from useshards import Shard
+
+with Shard() as shard:
+    caps = shard.capabilities()
+    # Prints True True True on gVisor.
+    print(caps.pause, caps.resume, caps.fork)
+```
+
+	</TabItem>
+</Tabs>
+
+`shard capabilities` marks each of the ten `true` or `false`, and `--format json` prints the same ten keys as JSON. The answer depends only on the server's provider, not on your API key's scopes or the state of your sandboxes.
 
 ## Refuse, never downgrade
 
