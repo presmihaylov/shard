@@ -67,7 +67,7 @@ If a check fails before setup changes anything, the output says `No installation
 
 **`setup was cancelled; nothing changed`.** You declined the confirmation, and setup exits with code 1.
 
-[Setup exit codes](/docs/install/#setup-exit-codes) lists the codes that a script can check.
+[Errors and exit codes](/docs/reference/errors/#shard-setup) lists the codes that a script can check.
 
 ## The daemon
 
@@ -114,7 +114,7 @@ Every root on a Linux host shares one sandbox bridge and one nft table, so a hos
 
 ### `task proxy failed, restart in ...`
 
-The daemon log repeats this line, and the same line for `dns`, while every `shard create` fails. The host has no `nft`. Setup installs it, so this happens after an [install by hand](/docs/install/#install-by-hand). Install the `nftables` package. The next restart of each task succeeds, and the daemon itself needs no restart.
+The daemon log repeats this line, and the same line for `dns`, while every `shard create` fails. The host has no `nft`. Setup installs it, so this happens only on a host set up without it. Install the `nftables` package. The next restart of each task succeeds, and the daemon itself needs no restart.
 
 ### A sandbox is stopped after a reboot
 

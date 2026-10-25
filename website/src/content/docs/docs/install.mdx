@@ -53,86 +53,18 @@ An existing `shard` stays in place until the installer has downloaded and verifi
 | Linux, x86_64 | Yes | Yes |
 | macOS, Apple silicon | Yes | Yes |
 | macOS, Intel | No | Yes |
+| Windows | No | Inside WSL 2 |
 
-A Mac needs macOS 14 or later to host sandboxes. On another CPU architecture, the installer stops with an error that lists the builds in the release. On another operating system, it stops with an error that names the system. On Windows, run it inside WSL 2. Under Rosetta, an Apple silicon Mac gets the native arm64 build.
-
-## Set up later
-
-Without a terminal, for example in CI or under `ssh host 'curl ... | sh'`, the installer skips the prompt and prints:
-
-```text
-Set up shard later:
-  shard setup
-
-For automated setup:
-  shard setup --help
-```
-
-## Setup exit codes
-
-`shard setup` ends with one of these codes, so a script can tell the outcomes apart:
-
-| Code | When |
-| --- | --- |
-| 0 | Setup finished, or there was nothing to do |
-| 1 | A check or a step failed, setup refused an option, you declined the confirmation, or setup found a manual installation, which it does not change |
-| 130 | You left setup with Ctrl+C. The steps done so far stay in place |
-
-## Install by hand
-
-Setup is the usual way to make a Linux host. To install one without it, first install the host tools and your provider's runtime. Every Linux provider runs `ip`, `nft` and `mkfs.ext4`, from the packages `iproute2`, `nftables` and `e2fsprogs`. The runtime is `runsc` for gVisor, `sysbox-runc` for Sysbox, or `runc`. Firecracker needs more tools, so set it up with [`shard setup`](/docs/guides/kvm/).
-
-The unit starts `shard daemon` with no `--provider`. On a fresh root, the daemon then runs Firecracker when `/dev/kvm` opens, and gVisor when it does not. To pick the provider, add `--provider gvisor`, `--provider sysbox` or `--provider runc` to `ExecStart` in `/etc/systemd/system/shard.service`, after the `install` lines and before `systemctl daemon-reload`. As root:
-
-```sh
-base=https://github.com/presmihaylov/shard/releases/latest/download
-for f in shard-linux-amd64 shard-init-linux-amd64 shard.service SHA256SUMS; do curl -fsSLO "$base/$f"; done
-sha256sum --ignore-missing -c SHA256SUMS
-install -m0755 shard-linux-amd64 /usr/local/bin/shard
-install -m0755 shard-init-linux-amd64 /usr/local/bin/shard-init
-install -m0644 shard.service /etc/systemd/system/shard.service
-systemctl daemon-reload
-systemctl enable --now shard
-```
-
-Without `nft`, the daemon still starts, but every `shard create` fails and the `proxy` and `dns` tasks restart in a loop. Install `nftables` and the next restart of those tasks succeeds, with no restart of the daemon. The daemon looks for the guest supervisor at `/usr/local/bin/shard-init`. To keep it somewhere else, set `SHARD_INIT_PATH` in the unit's environment.
+A Mac needs macOS 14 or later to host sandboxes. On Windows, run the installer inside WSL 2, where it installs the Linux build. The SDKs need only Node.js or Python, so they connect from Windows as well. On another CPU architecture, the installer stops with an error that lists the builds in the release. Under Rosetta, an Apple silicon Mac gets the native arm64 build.
 
 ## Upgrade
 
-On a machine that only connects to a remote server, run the installer again. It finds the newest release each time and replaces `~/.local/bin/shard` in place.
-
-On a sandbox host, run `shard setup`, choose **Run sandboxes on this machine**, then **Upgrade shard**. The daemon runs the copy that setup installed in `/usr/local/bin`, so the installer alone does not upgrade it. Setup downloads and verifies the new release before it replaces anything. It replaces `/usr/local/bin/shard`, `/usr/local/bin/shard-init` on Linux, and the `shard` you ran it from, and keeps the provider. If the installed version is already the newest, setup says so and changes nothing.
-
-Setup tells you before it restarts the daemon. A running background service restarts on the new version, and the upgrade waits until the daemon answers. Your sandboxes keep running while the daemon restarts. Open `shard exec` and `shard shell` sessions disconnect, and their commands keep running. If you start the daemon yourself, restart `shard daemon` after the upgrade.
+On a machine that only connects to a remote server, run the installer again. On a sandbox host, run `shard setup` and choose **Upgrade shard**: setup replaces the CLI and the daemon with the newest release and restarts the daemon, and your sandboxes keep running.
 
 ## Uninstall
 
-On a sandbox host, remove your sandboxes first. Then run `shard setup`, choose **Run sandboxes on this machine**, then **Uninstall shard**. If any sandbox is left, uninstall refuses and prints the commands that list and remove sandboxes.
+On a sandbox host, remove your sandboxes, then run `shard setup` and choose **Uninstall shard**. Setup removes what it installed, leaves [your data](#where-shard-keeps-its-state) in place, and prints the commands that remove the rest. On a machine that only connects to a remote server, choose **Remove this connection** in `shard setup`, then delete `~/.local/bin/shard`.
 
-Uninstall stops and removes the background service and the files that setup installed. On Linux it also removes the network bridge, its firewall tables and the rules that let it through `ufw` or `firewalld`, but only when the bridge has no port and nothing listens on the proxy ports.
+## Where shard keeps its state
 
-Uninstall keeps your data and any tool that other software may also use. The closing note names each thing that stays, with the command that removes it:
-
-- the data in `/var/lib/shard`
-- on Linux, the `/var/lib/shard.xfs` disk image, its lock file and its `/etc/fstab` line
-- on a Mac, the daemon logs in `/var/log/shard`
-- each shared tool that setup installed
-- every `shard` command that is left
-
-The command that removes the `/etc/fstab` line ends with `systemctl daemon-reload`, so systemd also drops the mount it made from that line. If the disk image is gone but its `/etc/fstab` line stays, the note says so, because that line would fail its mount at every boot.
-
-Uninstall never turns IP forwarding off, since other software may rely on it. On Linux, if the bridge stays, the note says so. Otherwise, if forwarding is on, the note prints the command that turns it off.
-
-On a machine that only connects to a remote server, run `shard setup`. If a connection is saved, the first screen names the server: choose **Remove this connection**. Then remove the CLI:
-
-```sh
-rm ~/.local/bin/shard
-```
-
-## Output
-
-The banner uses color when standard output is a terminal. Set `NO_COLOR` to turn the color off. The installer takes no options.
-
-## Troubleshooting
-
-The installer makes one unauthenticated call to the GitHub API, which allows 60 calls an hour for each IP address. When you reach that limit, the installer stops with an error that says so and names the time the limit resets. Run it again after that time. `shard setup` fetches its files through the release download URLs, which do not count toward this limit. It calls the API only to find the latest release for an upgrade, and that error names the reset time too. The installer never falls back to a fixed version.
+A sandbox host keeps its sandboxes, images, snapshots, secrets and network policies in `/var/lib/shard`. On Linux, when the disk under it cannot clone files, that directory is a mount of the disk image `/var/lib/shard.xfs`. On a Mac, the daemon logs to `/var/log/shard`. A remote client keeps its saved connection in `~/.config/shard/config.json`.
