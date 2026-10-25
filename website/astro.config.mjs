@@ -102,6 +102,7 @@ export default defineConfig({
 				'./src/styles/docs.css',
 			],
 			components: {
+				PageTitle: './src/components/starlight/PageTitle.astro',
 				SiteTitle: './src/components/starlight/SiteTitle.astro',
 				SocialIcons: './src/components/starlight/SocialIcons.astro',
 				ThemeSelect: './src/components/starlight/ThemeSelect.astro',

@@ -1,0 +1,106 @@
+---
+import Default from '@astrojs/starlight/components/PageTitle.astro';
+import { markdownUrl } from '../../seo';
+
+const { id } = Astro.locals.starlightRoute;
+const ask = (base: string) => `${base}${encodeURIComponent(`Read ${markdownUrl(id)} so I can ask questions about it.`)}`;
+const links = [
+	{ title: 'View as Markdown', note: 'View this page as plain text', href: `/${id}.md`, icon: 'markdown' },
+	{ title: 'Open in ChatGPT', note: 'Ask ChatGPT about this page', href: ask('https://chatgpt.com/?hints=search&q='), icon: 'chatgpt' },
+	{ title: 'Open in Claude', note: 'Ask Claude about this page', href: ask('https://claude.ai/new?q='), icon: 'claude' },
+];
+const icons: Record<string, string> = {
+	copy: '<rect width="14" height="14" x="8" y="8" rx="2"/><path d="M4 16c-1.1 0-2-.9-2-2V4c0-1.1.9-2 2-2h10c1.1 0 2 .9 2 2"/>',
+	markdown: '<path d="M15 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V7Z"/><path d="M14 2v4a2 2 0 0 0 2 2h4"/><path d="M10 9H8"/><path d="M16 13H8"/><path d="M16 17H8"/>',
+	chatgpt: '<path d="m21.64 3.64-1.28-1.28a1.21 1.21 0 0 0-1.72 0L2.36 18.64a1.21 1.21 0 0 0 0 1.72l1.28 1.28a1.2 1.2 0 0 0 1.72 0L21.64 5.36a1.2 1.2 0 0 0 0-1.72"/><path d="m14 7 3 3"/><path d="M5 6v4"/><path d="M19 14v4"/><path d="M10 2v2"/><path d="M7 8H3"/><path d="M21 16h-4"/><path d="M11 3H9"/>',
+	claude: '<path d="M12 3v6M12 15v6M3 12h6M15 12h6M5.6 5.6l4.3 4.3M14.1 14.1l4.3 4.3M18.4 5.6l-4.3 4.3M9.9 14.1l-4.3 4.3"/>',
+	external: '<path d="M7 7h10v10"/><path d="M7 17 17 7"/>',
+	chevron: '<path d="m6 9 6 6 6-6"/>',
+};
+const svg = (name: string) => `<svg viewBox="0 0 24 24" aria-hidden="true">${icons[name]}</svg>`;
+---
+
+<div class="page-title">
+	<Default />
+	{
+		id !== '404' && (
+			<copy-page data-src={`/${id}.md`}>
+				<div class="copy-page-split">
+					<button type="button" class="copy-page-main" data-copy>
+						<Fragment set:html={svg('copy')} />
+						<span data-label>Copy page</span>
+					</button>
+					<button type="button" class="copy-page-toggle" aria-expanded="false" aria-controls="copy-page-menu" aria-label="More ways to read this page">
+						<Fragment set:html={svg('chevron')} />
+					</button>
+				</div>
+				<div class="copy-page-menu" id="copy-page-menu" hidden>
+					<button type="button" data-copy>
+						<Fragment set:html={svg('copy')} />
+						<span><b>Copy page</b><small>Copy page as Markdown for LLMs</small></span>
+					</button>
+					{links.map((link) => (
+						<a href={link.href} target="_blank" rel="noopener">
+							<Fragment set:html={svg(link.icon)} />
+							<span>
+								<b>
+									{link.title}
+									<Fragment set:html={svg('external')} />
+								</b>
+								<small>{link.note}</small>
+							</span>
+						</a>
+					))}
+				</div>
+			</copy-page>
+		)
+	}
+</div>
+
+<script>
+	class CopyPage extends HTMLElement {
+		connectedCallback() {
+			const menu = this.querySelector<HTMLElement>('.copy-page-menu');
+			const toggle = this.querySelector<HTMLButtonElement>('.copy-page-toggle');
+			const label = this.querySelector<HTMLElement>('[data-label]');
+			const src = this.dataset.src;
+			if (!menu || !toggle || !label || !src) return;
+
+			const show = (open: boolean) => {
+				menu.hidden = !open;
+				toggle.setAttribute('aria-expanded', String(open));
+			};
+			toggle.addEventListener('click', () => show(toggle.getAttribute('aria-expanded') !== 'true'));
+			menu.addEventListener('click', (event) => {
+				if (event.target instanceof Element && event.target.closest('a, button')) show(false);
+			});
+			document.addEventListener('click', (event) => {
+				if (event.target instanceof Node && !this.contains(event.target)) show(false);
+			});
+			this.addEventListener('keydown', (event) => {
+				if (event.key !== 'Escape' || toggle.getAttribute('aria-expanded') !== 'true') return;
+				show(false);
+				toggle.focus();
+			});
+
+			const flash = (text: string) => {
+				label.textContent = text;
+				setTimeout(() => (label.textContent = 'Copy page'), 2000);
+			};
+			for (const button of this.querySelectorAll('[data-copy]')) {
+				button.addEventListener('click', () => {
+					// Safari drops the click's clipboard permission across an await, so the clipboard is handed the pending text.
+					const text = fetch(src).then(async (response) => {
+						if (!response.ok) throw new Error(`fetch ${src}: ${response.status}`);
+						return new Blob([await response.text()], { type: 'text/plain' });
+					});
+					navigator.clipboard
+						.write([new ClipboardItem({ 'text/plain': text })])
+						.then(() => flash('Copied'))
+						.catch(() => flash('Copy failed'));
+				});
+			}
+		}
+	}
+	customElements.define('copy-page', CopyPage);
+</script>
