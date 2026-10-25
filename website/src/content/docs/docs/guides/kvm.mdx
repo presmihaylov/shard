@@ -33,16 +33,10 @@ Each sandbox is a Firecracker microVM. It boots a Linux kernel that shard ships,
 
 Setup installs the rest: Firecracker and its jailer, `erofs-utils`, `xfsprogs`, `e2fsprogs`, `iproute2` and `nftables`. It installs the packages with `apt-get`. On a host without `apt-get`, install them yourself, then run setup.
 
-To check a host before you set it up, run `shard setup` with no options. The wizard marks Firecracker unavailable on a host without `/dev/kvm`, and says why. Once shard is installed, `shard info` prints the provider that a daemon would pick on this host, and the reason:
+To check a host before you set it up, run `shard setup` with no options. The wizard marks Firecracker unavailable on a host without `/dev/kvm`, and says why. Once shard is installed, `shard info` prints the provider that a daemon would pick on this host, and the reason, such as `/dev/kvm opens`:
 
 ```sh
 shard info
-```
-
-```text
-FIELD      VALUE
-provider   firecracker
-reason     /dev/kvm opens
 ```
 
 On a host where `/dev/kvm` does not open, `shard info` prints `gvisor` and says why. Setup refuses Firecracker on such a host, and never picks another provider for you.
@@ -68,17 +62,20 @@ The daemon prepares Firecracker the first time it needs it. It checks the versio
 
 `pause`, `fork` and a create from a snapshot copy a sandbox's disk and memory files. To keep those copies fast, Firecracker needs a filesystem that clones a file by sharing its blocks: XFS or Btrfs.
 
-On any other filesystem, the daemon makes an XFS image at `/var/lib/shard.xfs` when it first starts. The daemon mounts it over `/var/lib/shard` and adds a line to `/etc/fstab`, so the mount comes back after a reboot.
+On any other filesystem, the daemon makes an XFS image at `/var/lib/shard.xfs` when it first starts. It mounts the image over `/var/lib/shard` and adds a line to `/etc/fstab`, so the mount comes back after a reboot. Setup shows the total, used and available space of that filesystem, and asks how much space shard should reserve.
 
-Setup shows the total, used and available space of that filesystem, and asks how much space shard should reserve. The default is half the available space, at most 100 GiB. The answer takes the units of `shard create --disk`: KiB, MiB, GiB, KB, MB or GB. The image takes the whole size at once, when the daemon first starts, so the host cannot use that space for anything else. Each sandbox has a 10 GiB disk limit by default, and `shard create --disk` sets a smaller one.
+- **The default size:** half the available space, at most 100 GiB. The answer takes the units of `shard create --disk`: KiB, MiB, GiB, KB, MB or GB.
+- **The space is taken at once:** the image takes the whole size when the daemon first starts, so the host cannot use that space for anything else. Each sandbox has a 10 GiB disk limit by default, and `shard create --disk` sets a smaller one.
+- **What setup needs:** an empty `/var/lib/shard`, and 20 GiB free on that filesystem, because the image is at least 10 GiB and shard keeps 10 GiB of the filesystem free for the host. Setup checks the size before it changes anything, and checks the space again just before the daemon starts.
+- **No resize:** setup shows the size of an existing image and never resizes it. To change it, uninstall shard, remove the image, and run setup again.
 
-The image is at least 10 GiB, and shard keeps 10 GiB of the filesystem free for the host. That is why setup needs 20 GiB free there, and an empty `/var/lib/shard`. Setup checks the size before it changes anything, and checks the space again just before the daemon starts. A script passes the size with `--storage-size`:
+A script passes the size with `--storage-size`:
 
 ```sh
 shard setup --local --provider firecracker --start-at-boot=true --storage-size 50GiB -y
 ```
 
-Without a terminal and without `--storage-size`, setup takes the default and prints it. On XFS or Btrfs, and with every other provider, setup refuses `--storage-size`, because nothing reserves space there. Setup shows the size of an existing image and never resizes it. To change it, uninstall shard, remove the image, and run setup again.
+Without a terminal and without `--storage-size`, setup takes the default and prints it. On XFS or Btrfs, and with every other provider, setup refuses `--storage-size`, because nothing reserves space there.
 
 The jailer makes `/dev/kvm` in each VM's jail under `/var/lib/shard` and starts the VM from there. So `/var/lib/shard` must not be on a mount with `nodev` or `noexec`.
 

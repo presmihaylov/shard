@@ -220,7 +220,7 @@ with Shard() as shard:
 	</TabItem>
 </Tabs>
 
-`shard port add web 8000` forwards host port 8000 to port 8000 in the sandbox, and `9000:8000` forwards host port 9000 to it. The host listens on `127.0.0.1` only, so nothing beyond the host reaches the port. Each connection goes to the sandbox's own `127.0.0.1`, so the program must listen there or on every interface.
+`shard port add web 8000` forwards host port 8000 to port 8000 in the sandbox, and `9000:8000` forwards host port 9000 to it.
 
 `--public` makes the host listen on `0.0.0.0` instead, and the command prints each address of the host that the port is now reachable on:
 
@@ -237,15 +237,13 @@ eth0   192.0.2.20:9000
 A public port is open to every network the host is on. Anyone who reaches the host can connect to the program in the sandbox, and shard checks nothing on the way.
 </Aside>
 
-`--public` is the only way to listen beyond `127.0.0.1`, and an address in the port is refused.
-
-To change a forward, add the same host port again, with another guest port or with `--public` on or off.
-
-A forward belongs to the sandbox. It survives a stop, a start, a daemon restart and a reboot of the host. The host listens only while the sandbox runs, and a pause or a stop closes the connections that are open. `shard create --port 9000:8000` forwards a port from the first start. A fork does not copy the forwards.
-
-A host port belongs to one sandbox at a time, and a second sandbox that asks for it gets `409` with the code `in_use`. If another program on the host holds the port while the sandbox starts, `shard port list` shows why the port does not listen, and the daemon tries it again every second.
-
-Through `shard serve`, listing the forwards needs the scope `port:read`, and adding or removing one needs `port:write`.
+- **Without `--public`, only the host reaches the port.** The host listens on `127.0.0.1`. `--public` is the only way to listen beyond it, and an address in the port is refused.
+- **The program must listen on the sandbox's `127.0.0.1`.** Each connection goes there, so the program listens there or on every interface.
+- **Add the same host port again to change a forward.** Give it another guest port, or turn `--public` on or off.
+- **A forward belongs to the sandbox.** It survives a stop, a start, a daemon restart and a reboot of the host. The host listens only while the sandbox runs, and a pause or a stop closes the connections that are open.
+- **`shard create --port 9000:8000` forwards a port from the first start.** A fork does not copy the forwards.
+- **A host port belongs to one sandbox at a time.** A second sandbox that asks for it gets `409` with the code `in_use`. If another program on the host holds the port while the sandbox starts, `shard port list` shows why the port does not listen, and the daemon tries it again every second.
+- **Through `shard serve`, forwards need the `port` scopes.** Listing them needs `port:read`, and adding or removing one needs `port:write`.
 
 ## Limits
 

@@ -78,39 +78,24 @@ The daemon serves its API on a unix socket on the host, never on TCP. This step 
 shard setup --local --provider gvisor --http-api=true -y
 ```
 
-On a host that setup already set up, this changes only the HTTP API, the **Set up the HTTP API** row of the existing installation. On a new host, it sets up the daemon too, so step 1 is optional. Without `-y`, setup asks **Set up the HTTP API?** after the daemon startup question.
+On a host that setup already set up, this changes only the HTTP API. On a new host, it sets up the daemon too, so step 1 is optional. Without `-y`, setup asks **Set up the HTTP API?** after the daemon startup question.
 
-Setup checks the address, the port, the permissions and the service manager before it changes anything, and shows the configuration first. Then it creates the `shard` account, the token signing key and an API key, and starts the service. The service starts at boot after the daemon, stops with it, and starts again with it. API requests fail while the daemon is stopped. Last, setup sends an authenticated request to prove the API works.
+Setup then:
 
-The HTTP API listens on `127.0.0.1:7850` by default, which accepts connections only from the host. Pass `--listen` with a VPN address, such as `--listen 100.64.0.5:7850`, to permit direct access through that private network.
+1. Checks the address, the port, the permissions and the service manager, and shows the configuration. Nothing changes before this.
+2. Creates the `shard` account, the token signing key in `/etc/shard/serve.secret`, and an API key.
+3. Starts the service. It starts at boot after the daemon, stops with it, and starts again with it. API requests fail while the daemon is stopped.
+4. Sends an authenticated request to prove the API works.
 
-The API key lives in `/etc/shard/api-key`, which only root can read. Setup shows the file, never the key:
+- **The address:** `127.0.0.1:7850` by default, which accepts connections only from the host. Pass `--listen` with a VPN address, such as `--listen 100.64.0.5:7850`, to permit direct access through that private network.
+- **The API key:** in `/etc/shard/api-key`, which only root can read. Setup shows the file, never the key. A repeated setup keeps the key, and `--replace-api-key` replaces it, which cuts off every client that uses the old key.
+- **On a Mac:** the key is `/var/lib/shard/auth/api-key`, and the service is the LaunchDaemon `/Library/LaunchDaemons/shard.serve.plist`.
+
+Read the key on the server:
 
 ```sh
 cat /etc/shard/api-key
 ```
-
-A repeated setup keeps the key. Pass `--replace-api-key` to replace it, which cuts off every client that uses the old key. On a Mac, the key is `/var/lib/shard/auth/api-key` and the service is the LaunchDaemon `/Library/LaunchDaemons/shard.serve.plist`.
-
-### By hand
-
-The same service, without setup. Each release ships a systemd unit for it:
-
-```sh
-groupadd --system shard
-useradd --system --no-create-home --shell /usr/sbin/nologin --gid shard shard
-systemctl restart shard
-install -d -m2750 -o root -g shard /etc/shard
-(umask 077; openssl rand -hex 32 > /etc/shard/serve.secret)
-chown root:shard /etc/shard/serve.secret
-chmod 0640 /etc/shard/serve.secret
-curl -fsSLO https://github.com/presmihaylov/shard/releases/latest/download/shard-serve.service
-install -m0644 shard-serve.service /etc/systemd/system/shard-serve.service
-systemctl daemon-reload
-systemctl enable --now shard-serve
-```
-
-The daemon gives its socket to the `shard` group only when it starts, so the commands restart it once after they create the group. The unit runs as the `shard` user and group, and reads the token signing key from `/etc/shard/serve.secret`. It starts after the daemon, stops with it, and starts again with it. Uninstall keeps this unit, because setup did not install it.
 
 ## 3. Put HTTPS in front
 
@@ -120,7 +105,10 @@ The daemon gives its socket to the `shard` group only when it starts, so the com
 ssh -N -L 7850:127.0.0.1:7850 <user>@<server>
 ```
 
-For more clients, put a proxy or a tunnel in front of it that gives clients an `https` URL on port 443. The proxy must pass WebSocket upgrades through and must not buffer responses. Otherwise `shard exec`, `shard shell` and `shard logs -f` stall. It must not log the `Authorization` header, because that header carries the token.
+For more clients, put a proxy or a tunnel in front of it that gives clients an `https` URL on port 443. The proxy must:
+
+- **Pass WebSocket upgrades through, and not buffer responses.** Otherwise `shard exec`, `shard shell` and `shard logs -f` stall.
+- **Not log the `Authorization` header.** That header carries the token.
 
 <Tabs>
 	<TabItem label="Caddy">
@@ -191,11 +179,13 @@ Set the key in `SHARD_API_KEY`, never as a command argument. Then save the conne
 shard setup --remote https://shard.example.com --save -y
 ```
 
-Setup writes the server URL and the key to `~/.config/shard/config.json` by default, and only your user can read the file. To connect without saving anything, set `SHARD_REMOTE` and `SHARD_API_KEY` instead. The SDKs read the same two variables, or take `remote` and `apiKey` (`remote=` and `api_key=` in Python). They never read the saved connection.
+Setup writes the server URL and the key to `~/.config/shard/config.json` by default, and only your user can read the file.
 
-If a private CA signed the server's certificate, set `SHARD_CA_FILE` to that CA's certificate. shard always verifies the certificate, and has no option to skip it. [Environment and config](/docs/reference/config/) describes `SHARD_REMOTE`, `SHARD_API_KEY` and `SHARD_CA_FILE`.
+- **To connect without saving anything,** set `SHARD_REMOTE` and `SHARD_API_KEY` instead. The SDKs read the same two variables, or take `remote` and `apiKey` (`remote=` and `api_key=` in Python). They never read the saved connection.
+- **If a private CA signed the server's certificate,** set `SHARD_CA_FILE` to that CA's certificate. shard always verifies the certificate, and has no option to skip it.
+- **An `http` URL works too,** but nothing encrypts the key or the requests. Use it only on localhost or through an encrypted VPN. Each command then prints a warning to stderr.
 
-An `http` URL works too, but nothing encrypts the key or the requests. Use it only on localhost or through an encrypted VPN. Each command then prints a warning to stderr.
+[Environment and config](/docs/reference/config/) describes `SHARD_REMOTE`, `SHARD_API_KEY` and `SHARD_CA_FILE`.
 
 ## Revoke a token
 

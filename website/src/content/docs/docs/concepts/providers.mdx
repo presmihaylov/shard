@@ -47,23 +47,7 @@ with Shard() as shard:
 
 The TypeScript and Python examples reach `shard serve` at the address in `SHARD_REMOTE`, with the API key in `SHARD_API_KEY`.
 
-On a server that runs Sysbox or runc, the CLI prints:
-
-```text
-CAPABILITY   SUPPORTED
-create       true
-start        true
-stop         true
-remove       true
-pause        false
-resume       false
-fork         false
-snapshot     true
-port         true
-swap         false
-```
-
-The answer depends only on the server's provider. Your API key's scopes and the state of your sandboxes do not affect it. `shard capabilities --format json` prints the same ten keys as JSON.
+`shard capabilities` marks each of [the ten capabilities](#the-ten-capabilities) `true` or `false`, and `--format json` prints the same ten keys as JSON. The answer depends only on the server's provider. Your API key's scopes and the state of your sandboxes do not affect it.
 
 ## What a provider is
 
@@ -75,15 +59,15 @@ A provider is the mechanism that runs and isolates each sandbox. shard has five:
 | `firecracker` | a microVM | Linux with `/dev/kvm` |
 | `vz` | a virtual machine on Apple's Virtualization framework | Apple silicon Mac, macOS 14 or later |
 | `sysbox` | a Linux container with its own user namespace | Linux, one tenant per host |
-| `runc` | a plain Linux container on the host kernel, with no isolation | Linux, trusted code only |
+| `runc` | a plain Linux container on the host kernel, with no user namespace | Linux, trusted code only |
 
 A daemon runs one provider, and every sandbox on that host runs on it. Each sandbox record names the provider that created it. A data directory that already holds records refuses any other provider, because that provider cannot read those sandboxes.
 
-To compare the providers for your workload, see [the provider matrix](https://github.com/presmihaylov/shard/blob/main/docs/provider.md#the-substrates).
+To compare the providers for your workload, see [What provider should I pick?](/docs/choose-provider/).
 
 ## How a host picks its provider
 
-`shard setup` asks which provider to use, and on Linux the service it installs starts the daemon with `--provider`. A daemon started without `--provider` picks one itself. It looks at the data directory first and at the host second:
+`shard setup` asks which provider to use, and on Linux the service it installs starts the daemon with `--provider`. Only a daemon started without `--provider` picks one itself. It looks at the data directory first and at the host second:
 
 | The data directory and the host | Provider | Reason |
 | --- | --- | --- |
@@ -96,16 +80,7 @@ To compare the providers for your workload, see [the provider matrix](https://gi
 
 The daemon never chooses Sysbox or runc for you. It runs one of them only when `--provider` names it, or when the data directory already holds records that this provider made.
 
-`shard info` prints the provider and the reason. It does not need a running daemon, so it shows what a daemon started now without `--provider` would run:
-
-```text
-$ shard info
-FIELD      VALUE
-provider   firecracker
-reason     /dev/kvm opens
-```
-
-`shard daemon status` shows the provider of the daemon that is already running. The two differ when that daemon was started with `--provider`. Both commands run only on the server.
+`shard info` prints the provider and the reason from this table. It does not need a running daemon, so it shows what a daemon started now without `--provider` would run. `shard daemon status` shows the provider of the daemon that is already running. The two differ when that daemon was started with `--provider`. Both commands run only on the server.
 
 ## The ten capabilities
 
@@ -116,11 +91,10 @@ Every provider supports `create`, `start`, `stop`, `remove`, `snapshot` and `por
 | `create`, `start`, `stop`, `remove`, `snapshot`, `port` | yes | yes | yes | yes | yes |
 | `pause`, `resume`, `fork` | yes | yes | yes | no | no |
 
-Sysbox supports none of the three, because `sysbox-runc` has no checkpoint support. shard does not drive a checkpoint on runc either. On `vz`, all three need macOS 14 or later on Apple silicon, and a daemon on an older Mac refuses them.
-
-`snapshot` works on every provider, because it copies the files of a stopped sandbox and does not need its memory.
-
-`swap` is not a command. It says whether `--swap` can give a sandbox a swap file, which only Firecracker and vz can.
+- **Sysbox and runc** support none of the three. `sysbox-runc` has no checkpoint support, and shard does not drive a checkpoint on runc.
+- **vz** needs macOS 14 or later on Apple silicon for all three, and a daemon on an older Mac refuses them.
+- **`snapshot`** works on every provider, because it copies the files of a stopped sandbox and does not need its memory.
+- **`swap`** is not a command. It says whether `--swap` can give a sandbox a swap file, which only Firecracker and vz can.
 
 ## Refuse, never downgrade
 

@@ -69,7 +69,9 @@ The provider is the boundary between a sandbox and the host. A server runs one p
 
 The exit code is the `EXIT` that `shard ps` reports for each process. On Sysbox and runc, the sandbox itself reports it, so the host cannot verify it.
 
-On gVisor, only a root process that shard's exec started can start or stop a named process. A process that the sandbox started cannot, whatever its user. That includes the command of your own `shard exec` when it runs as root: while it runs, it can stop a named process and start another under the same name, with an exit code it chooses. If that command is code the sandbox can change, such as a script or a binary in its filesystem, the sandbox can forge the exit code. Pass `--user` with a non-root user to `shard exec` when the exit codes must hold. shard-init checks a caller just after it connects, so a sandbox process that exits and whose pid a root exec takes in that instant also gets through.
+<Aside type="caution" title="A root exec on gVisor can forge an exit code">
+On gVisor, only a root process that shard's exec started can start or stop a named process, and a process the sandbox started cannot, whatever its user. A root `shard exec` can therefore stop a named process and start another under the same name, with an exit code it chooses. If its command is code the sandbox can change, such as a script or a binary in its filesystem, the sandbox can forge the exit code. Pass `--user` with a non-root user to `shard exec` when the exit codes must hold. shard-init checks a caller just after it connects, so a sandbox process that exits and whose pid a root exec takes in that instant also gets through.
+</Aside>
 
 To see the provider of a server, run `shard info` or `shard daemon status` on the server.
 
@@ -123,10 +125,10 @@ shard never picks runc for you. Only `shard daemon --provider runc`, or the reco
 
 ## What every provider shares
 
-- shard's own supervisor, shard-init, is PID 1 in every sandbox, and every named process and every exec runs as its child.
-- The host decides the network. Each sandbox has its own address and can send traffic only from it. The host drops traffic to private networks and to other sandboxes, and the rules live on the host, never in the sandbox. See [egress](/docs/security/egress/).
-- On gVisor, Sysbox and runc, each host cgroup has a limit of 4096 processes and threads. This is not a limit of 4096 guest processes on gVisor: see [gVisor's resource model](https://gvisor.dev/docs/architecture_guide/resources/). Guest processes on Firecracker and vz stay inside the virtual machine.
-- When the memory ceiling triggers an OOM kill, shard ends the sandbox as a whole, then starts it again after a wait that grows while the kills repeat. gVisor allows extra memory for the sentry and throttles the sandbox before that ceiling. Set bounds that leave room for the host and other sandboxes.
+- **shard-init is PID 1.** shard's own supervisor is PID 1 in every sandbox, and every named process and every exec runs as its child.
+- **The host decides the network.** Each sandbox has its own address and can send traffic only from it. The host drops traffic to private networks and to other sandboxes, and the rules live on the host, never in the sandbox. See [egress](/docs/security/egress/).
+- **A process limit on gVisor, Sysbox and runc.** Each host cgroup has a limit of 4096 processes and threads. This is not a limit of 4096 guest processes on gVisor: see [gVisor's resource model](https://gvisor.dev/docs/architecture_guide/resources/). Guest processes on Firecracker and vz stay inside the virtual machine.
+- **Out of memory ends the whole sandbox.** When the memory ceiling triggers an OOM kill, shard ends the sandbox as a whole, then starts it again after a wait that grows while the kills repeat. gVisor allows extra memory for the sentry and throttles the sandbox before that ceiling. Set bounds that leave room for the host and other sandboxes.
 
 ## Which provider for which code
 
@@ -137,4 +139,4 @@ shard never picks runc for you. Only `shard daemon --provider runc`, or the reco
 | untrusted, on a Mac | `vz` |
 | your own, and it needs native speed | `runc` |
 
-For every difference between the providers, see [the provider matrix](https://github.com/presmihaylov/shard/blob/main/docs/provider.md#the-substrates).
+To compare the providers and pick one, see [What provider should I pick?](/docs/choose-provider/).

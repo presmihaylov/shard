@@ -9,7 +9,7 @@ import { Tabs, TabItem } from '@astrojs/starlight/components';
 
 ## What is shard?
 
-shard is a sandbox manager for a single host. One binary is both the CLI and the daemon. It creates sandboxes from OCI images and keeps each one running between commands:
+shard runs sandboxes for AI agents on hardware you own, a Linux server or an Apple silicon Mac. A sandbox is an isolated Linux environment, and it keeps running between commands:
 
 <Tabs syncKey="lang">
 	<TabItem label="CLI">
@@ -55,7 +55,7 @@ with Shard() as shard:
 	</TabItem>
 </Tabs>
 
-The last command prints `hello from shard`. The file is still there because the sandbox outlives each command. The TypeScript and Python examples reach `shard serve` at `SHARD_REMOTE`, with the API key in `SHARD_API_KEY`.
+The `cat` command prints `hello from shard`. The file is still there because the sandbox outlives each command. The TypeScript and Python examples reach `shard serve` at `SHARD_REMOTE`, with the API key in `SHARD_API_KEY`. [What is shard?](/docs/) has more.
 
 ## Who is it for?
 
@@ -77,11 +77,11 @@ Let `shard setup` pick. It recommends Firecracker when it can open `/dev/kvm`, g
 | --- | --- | --- | --- | --- |
 | `gvisor` | Linux | a user-space kernel | yes | no |
 | `sysbox` | Linux | a user namespace | no | yes |
-| `runc` | Linux | none: the host kernel | no | no |
+| `runc` | Linux | the host kernel, with no user namespace | no | no |
 | `firecracker` | Linux with `/dev/kvm` | a microVM | yes | yes |
 | `vz` | Apple silicon, macOS 14 or later | a VM | yes | yes |
 
-Setup never recommends `sysbox` or `runc`. Sysbox is for one tenant per host. Use runc only for code you trust: on runc, root in the sandbox is root on the host. The [provider matrix](https://github.com/presmihaylov/shard/blob/main/docs/provider.md) lists every limit.
+Setup never recommends `sysbox` or `runc`. Sysbox is for one tenant per host. Use runc only for code you trust: on runc, root in the sandbox is root on the host. [What provider should I pick?](/docs/choose-provider/) compares them and lists every limit.
 
 ## Can I change the provider later?
 
@@ -134,11 +134,11 @@ On the server, mint a token with `shard tokens mint` and run `shard serve` behin
 
 ## Which languages have an SDK?
 
-TypeScript, on Node.js 20.3 or later, and Python 3.11 or later. The Python SDK has both a synchronous and an asynchronous client. Install them with `npm install useshards` or `pip install useshards`. Any other language can call the REST API, which the [OpenAPI schema](https://github.com/presmihaylov/shard/blob/main/docs/openapi.json) describes.
+TypeScript, on Node.js 20.3 or later, and Python 3.11 or later. The Python SDK has both a synchronous and an asynchronous client. Install them with `npm install useshards` or `pip install useshards`. Any other language can call the [REST API](/docs/reference/api/), which the [OpenAPI schema](https://github.com/presmihaylov/shard/blob/main/docs/openapi.json) describes.
 
 ## How do I upgrade or uninstall?
 
-Run the installer again to get the newest CLI. On a host that setup prepared, run `shard setup` again, and it offers to check or repair, upgrade, or uninstall. An uninstall refuses to run while any sandbox remains. It keeps your saved data in `/var/lib/shard`, as well as the tools that other programs may share.
+On a machine that only connects to a remote server, run the installer again. On a sandbox host, run `shard setup` again, and it offers to check or repair, upgrade, or uninstall. An uninstall refuses to run while any sandbox remains. It keeps your saved data in `/var/lib/shard`, as well as the tools that other programs may share. [Upgrade](/docs/install/#upgrade) and [Uninstall](/docs/install/#uninstall) have the steps.
 
 ## Is shard ready for production?
 

@@ -127,7 +127,7 @@ Sysbox sandboxes are not isolated from each other. Every Sysbox sandbox maps to 
 Runc isolates nothing. Root in the sandbox is root on the host. Use runc only for code you trust, or on a host you can afford to lose. shard never picks runc or Sysbox for you. Only `--provider` selects one, and a later daemon keeps it on a root that already holds its sandboxes.
 </Aside>
 
-For each provider in detail, see [the provider matrix](https://github.com/presmihaylov/shard/blob/main/docs/provider.md#the-substrates).
+For each provider in detail, see [isolation](/docs/security/isolation/).
 
 ## Secrets never enter the sandbox
 
@@ -139,13 +139,10 @@ A secret is granted to destinations, never to a sandbox alone. `--destination` n
 Grant a secret only to hosts that never send the credential back. The host does not read the response, so a granted host that echoes a request header, such as a debug page, returns the real value to the sandbox.
 </Aside>
 
-A grant does not open network access to any host. Only the policy decides what the sandbox can reach, so a sandbox with a policy needs an allow rule for each granted host.
-
-The proxy does not stop misuse of the key. A sandbox that may call `api.openai.com` with the key can make any call that the key allows. Limit the key at the API provider, because shard only keeps the key out of the sandbox.
-
-Pass the value to `shard secret set` on stdin or at its hidden prompt. Never pass it as a command argument, because command arguments show up in the process list.
-
-On runc, the proxy is the only thing between the sandbox and the value, and code that escapes the sandbox can read the secret store just as the host can.
+- **A grant opens no host.** Only the policy decides what the sandbox can reach, so a sandbox with a policy needs an allow rule for each granted host.
+- **The key can still be misused.** A sandbox that may call `api.openai.com` with the key can make any call that the key allows. Limit the key at the API provider, because shard only keeps the key out of the sandbox.
+- **Pass the value on stdin.** Give it to `shard secret set` on stdin or at its hidden prompt, never as a command argument, because command arguments show up in the process list.
+- **On runc, the proxy is the only barrier.** Code that escapes the sandbox can read the secret store just as the host can.
 
 For grants, rotation and the placeholder rules, see [secrets](/docs/security/secrets/).
 
@@ -200,13 +197,15 @@ Mint a token on the server:
 shard tokens mint --name ci --duration 24h --scopes sandbox:read,sandbox:write,exec
 ```
 
+- **A token without `--duration` never expires.**
+- **Mint on the server.** `shard tokens mint` never works over the API.
+- **One signing key.** The first run of `shard tokens mint` or `shard serve` creates `<root>/auth/signing-key`, with mode `0600`. shard never rotates that key.
+
 The client sends the token as `SHARD_API_KEY`. `shard serve` answers `401` with the code `unauthorized`, before the request reaches the daemon, when a token:
 
 - is signed with another key or another algorithm than HS256
 - has expired
 - has been revoked, or is not in the token ledger on the server
-
-A token minted without `--duration` never expires. `shard tokens mint` works only on the server and never over the API. The first run of `shard tokens mint` or `shard serve` creates the signing key, `<root>/auth/signing-key`, with mode `0600`. shard never rotates that key.
 
 A token's scopes limit which routes it can reach:
 

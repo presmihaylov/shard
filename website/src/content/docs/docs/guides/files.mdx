@@ -119,19 +119,4 @@ A copy into the sandbox runs as a user inside the sandbox. That user is the sand
 
 ## Over the API
 
-Every route is under `/v0/sandboxes/{id}`, where `{id}` is the id or the name of the sandbox. An error has the body `{"error":{"code":"<code>","message":"<message>"}}`, except on a `HEAD`, which has no body.
-
-| Route | Body | Answer |
-| --- | --- | --- |
-| `PUT /files?path=&mode=&user=&parents=` | the file, streamed | `204` |
-| `GET /files?path=` | | `200`, the file, streamed |
-| `HEAD /files?path=` | | `200`, with the stat as JSON in `X-Shard-Stat` |
-| `GET /ls?path=` | | `200`, `{"entries": [...]}` |
-| `POST /mkdir` | `{"path", "mode", "parents", "user"}` | `204` |
-| `DELETE /files?path=&recursive=` | | `204` |
-| `PUT /archive?path=&user=` | a tar, streamed | `204` |
-| `GET /archive?path=` | | `200`, a tar, streamed |
-
-`PUT /files` needs a `Content-Length` header with the number of file bytes. Its `mode` query and the `mode` in a mkdir body are octal strings, such as `"644"` and `"755"`.
-
-A stat contains `type`, `size`, `mode`, `uid`, `gid` and `mtime`. The possible errors are `not_found`, `invalid_request` (for a relative path, a bad tar, a tar entry that lands outside `path`, or a path the guest refuses, such as one the user may not write), `sandbox_not_running`, `sandbox_failed` (for a sandbox whose create failed) and `internal`.
+Every file route is under `/v0/sandboxes/{id}`, where `{id}` is the id or the name of the sandbox. The [REST API reference](/docs/reference/api/files/) lists each route with its body and answers.

@@ -49,22 +49,6 @@ with Shard() as shard:
 
 The TypeScript and Python examples reach `shard serve` at the address in `SHARD_REMOTE`, with the API key in `SHARD_API_KEY`.
 
-On a Sysbox or runc server, the answer is:
-
-```text
-CAPABILITY   SUPPORTED
-create       true
-start        true
-stop         true
-remove       true
-pause        false
-resume       false
-fork         false
-snapshot     true
-port         true
-swap         false
-```
-
 ## shard refuses, and never downgrades
 
 A verb that the provider does not support fails at once, with an error that names the provider and the verb. `shard pause` on a Sysbox server prints:
@@ -107,13 +91,18 @@ Each provider also has limits of its own:
 
 **systemd cannot be a sandbox's PID 1, on any provider.** shard's own supervisor, `shard-init`, is PID 1 in every sandbox, and systemd refuses to manage the system from any other PID. To run systemd, run it inside a Docker container that the sandbox starts.
 
-For each provider in detail, see [the provider matrix](https://github.com/presmihaylov/shard/blob/main/docs/provider.md#the-substrates).
+For each provider in detail, see [isolation](/docs/security/isolation/).
 
 ## Resource bounds
 
 A sandbox can have four bounds: memory, CPU, processes and disk. On `vz` and `firecracker` it also gets a swap file inside its disk.
 
-**Memory.** When a sandbox goes past its `--memory` bound, the whole sandbox ends, not just one process in it. The record then says `stopped`, with the reason `ran out of memory and the host ended it`, and the daemon starts the sandbox again on its own with the files it kept. The first start runs within 5 seconds. A sandbox that runs out of memory again within 10 minutes of a start waits 10 seconds for the next one, and the wait doubles up to 5 minutes. A `stop` or a `remove` calls off a start that is still due. On gVisor, the sandbox slows down at 32 MiB over its bound and ends at 64 MiB over it. The host counts gVisor's own memory against the same bound.
+**Memory.** When a sandbox goes past its `--memory` bound, the whole sandbox ends, not just one process in it, and the daemon starts it again on its own with the files it kept:
+
+- **The record says why.** It says `stopped`, with the reason `ran out of memory and the host ended it`.
+- **The wait grows.** The first start runs within 5 seconds. A sandbox that runs out of memory again within 10 minutes of a start waits 10 seconds for the next one, and the wait doubles up to 5 minutes.
+- **A stop cancels it.** A `stop` or a `remove` calls off a start that is still due.
+- **gVisor has headroom.** The sandbox slows down at 32 MiB over its bound and ends at 64 MiB over it. The host counts gVisor's own memory against the same bound.
 
 `create` refuses these bounds:
 
