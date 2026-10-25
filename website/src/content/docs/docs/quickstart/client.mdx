@@ -113,7 +113,7 @@ The CLI sends the saved key only to the server you saved it for. `--remote ""` r
 
 ## Commands that run on the server only
 
-A few commands act on the daemon's own host, so they refuse a remote: `pull`, `image list`, `image remove`, `image prune`, `info`, `daemon status`, `tokens mint`, `tokens list` and `tokens revoke`. Run them on the server. On a machine with a saved connection, add `--remote ""` to use this host instead.
+A few commands act on the daemon's own host, so they refuse a remote: `pull`, `image list`, `image remove`, `image prune`, `info`, `daemon status`, `tokens mint`, `tokens list` and `tokens revoke`. Run them on the server.
 
 You do not need to `pull` before `shard create`. The server fetches a missing image itself.
 

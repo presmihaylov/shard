@@ -5,10 +5,15 @@ sidebar:
   order: 3
 ---
 
-Install shard, then set up this machine to run sandboxes:
+Install shard:
 
 ```sh
 curl -fsSL https://useshards.com/install | sh
+```
+
+The installer then offers to start `shard setup`, a wizard that asks how to set up this machine. Or skip the wizard, and set up a Linux host with gVisor in one command:
+
+```sh
 shard setup --local --provider gvisor --start-at-boot=true -y
 ```
 
@@ -22,7 +27,7 @@ sudo shard remove --force demo
 
 To open a shell in the sandbox, run `sudo shard shell demo` before you remove it.
 
-Those commands set up a Linux host with gVisor. On a Mac, use `--provider vz` and leave out `sudo`. When `~/.local/bin` is not on your `PATH`, the installer prints the line that adds it.
+On a Mac, use `--provider vz` and leave out `sudo`.
 
 ## What you need
 
@@ -33,43 +38,9 @@ Those commands set up a Linux host with gVisor. On a Mac, use `--provider vz` an
 
 Setup runs as you and uses `sudo` for the steps that need root. An Intel Mac cannot host sandboxes, but it can connect to a remote server.
 
-## Run the wizard
-
-Run `shard setup` with no options, or answer `Y` when the installer asks `Start the setup wizard?`. The wizard asks five things:
-
-1. **How do you want to use shard?** Choose `Run sandboxes on this machine`.
-2. **Choose how shard isolates your sandboxes:** The wizard lists all five providers. It marks each provider this host cannot run as unavailable and says why. It recommends macOS Virtualization on a supported Mac, Firecracker on Linux with `/dev/kvm`, and gVisor on other Linux hosts.
-3. **Start shard automatically when this machine starts?** `Yes (recommended)` installs a service that starts the daemon at boot and restarts it after a crash.
-4. **Set up the HTTP API?** `No`, the default, keeps the API on this machine. `Yes` asks for a listen address, then runs `shard serve` as a background service with an API key. The wizard asks only after `Yes` to automatic startup. See [How to connect to a remote host?](/docs/guides/remote/).
-5. **Continue?** Setup first checks the host and shows every change. Nothing changes until you answer.
-
-Before it asks to continue, setup checks the operating system, the provider's requirements, administrator access, the install paths, disk space, download access, any earlier installation and the service manager. A failed check changes nothing. When a provider fails its own checks, setup asks you to choose another provider or exit. It never swaps one in for you.
-
-On a fresh Linux host with gVisor, the review looks like this:
-
-```text
-Ready to set up shard
-
-Provider:          gVisor
-Automatic startup: Yes
-HTTP API:          No
-
-Setup will:
-  Install the tools required by gVisor: runsc.
-  Install shard and shard-init in /usr/local/bin.
-  Create shard's data directory.
-  Configure and start a systemd service.
-
-Administrator access is required.
-
-Continue? [Y/n]
-```
-
-Setup then runs each step and ends with the commands to try next. If a step fails, setup says why and stops. Every step is safe to run again, so a second `shard setup` picks up where the first stopped.
-
 ## Start at boot
 
-With `Yes`, setup installs a service and checks that the daemon answers before it reports success.
+When shard starts at boot, setup installs a service and checks that the daemon answers before it reports success.
 
 | | Linux | macOS |
 | --- | --- | --- |
@@ -87,7 +58,7 @@ A sandbox outlives the daemon. When the daemon stops or restarts, every sandbox 
 
 ## Run the daemon yourself
 
-With `No`, setup installs the provider's tools and the data directory, but no service. Start the daemon in a terminal of its own, and run your commands in another one:
+Otherwise, setup installs the provider's tools and the data directory, but no service. Start the daemon in a terminal of its own, and run your commands in another one:
 
 ```sh
 sudo shard daemon --provider gvisor
@@ -103,25 +74,21 @@ Firecracker copies a disk for each fork and snapshot. That needs a filesystem th
 
 ## Script it
 
-Each question has a matching option, so a script runs the same checks as the wizard:
+Each question of the wizard has an option, so a script sets up a host without one:
 
 ```sh
 shard setup --local --provider firecracker --start-at-boot=true -y
 ```
 
-`--provider` and `--start-at-boot` also answer the first question, so a run with either one needs no `--local`.
-
-`--http-api=true` sets up the HTTP API, and `--listen` names its address. Without `--http-api`, a run with no terminal leaves the HTTP API off, as the wizard's default does. Without a terminal, every other question needs its option, except the storage size below. A local run with options missing fails before any check runs, and names them all at once:
-
-```text
-no terminal to choose a provider, choose whether shard starts at boot and confirm the changes: pass --provider, --start-at-boot and -y
-```
-
-Firecracker without XFS or Btrfs reserves storage. Without a terminal, setup takes the default size, half the available space and at most 100 GiB, and prints it, unless `--storage-size` sets one. Every other provider refuses `--storage-size`.
-
-`-y` answers only the confirmation and skips no check. `shard setup --help` lists every option and the exit codes.
+- `--local`: run sandboxes on this machine. `--provider` and `--start-at-boot` imply it.
+- `--provider <name>`: `firecracker`, `gvisor`, `sysbox`, `runc` or `vz`.
+- `--start-at-boot <true|false>`: install a service that starts the daemon at boot.
+- `--http-api <true|false>`: also run the HTTP API as a background service, on the address `--listen` names. Off by default.
+- `--storage-size <size>`: Firecracker only, the space to reserve for sandbox disks when the filesystem is not XFS or Btrfs.
+- `-y`: apply the changes without asking.
 
 ## Next steps
 
-- Setup exposes the API only when you choose the HTTP API. It then runs `shard serve`, a separate process that checks a bearer token and passes each request to the daemon. To reach the daemon from other machines, see [How to connect to a remote host?](/docs/guides/remote/).
-- To check, repair, upgrade or uninstall shard, run `shard setup` again on the same host. See [Install](/docs/install/).
+- [Quickstart: client](/docs/quickstart/client/): connect to this server from another machine.
+- [Sandboxes and the lifecycle](/docs/concepts/lifecycle/): what a sandbox is, and what each command does to it.
+- [Upgrade](/docs/install/#upgrade) or [uninstall](/docs/install/#uninstall) shard with `shard setup`.
