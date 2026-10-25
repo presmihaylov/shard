@@ -105,10 +105,10 @@ On Windows, run shard inside WSL 2. An Intel Mac can connect to a remote host, b
 #### Run a command
 
 ```sh
-sudo shard create --name demo --memory 512MiB alpine:3.20
-sudo shard exec demo echo hello
-sudo shard shell demo
-sudo shard remove --force demo
+shard create --name demo --memory 512MiB alpine:3.20
+shard exec demo echo hello
+shard shell demo
+shard remove --force demo
 ```
 
 #### Supervised processes

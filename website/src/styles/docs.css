@@ -94,6 +94,125 @@ h1#_top {
 	letter-spacing: -0.03em;
 }
 
+/* Copy page sits beside the title; in a narrow column it drops below it, so its menu opens from the left. */
+.page-title {
+	container-type: inline-size;
+	display: flex;
+	flex-wrap: wrap;
+	align-items: flex-start;
+	justify-content: space-between;
+	gap: 1rem 1.5rem;
+	margin-top: 1rem;
+}
+.page-title h1#_top {
+	flex: 1 1 20rem;
+	margin: 0;
+}
+copy-page {
+	position: relative;
+	flex: none;
+	margin-top: 0.5rem;
+}
+.copy-page-split {
+	display: flex;
+	height: 32px;
+	border: 1px solid var(--line-strong);
+	border-radius: 2px;
+	background: var(--surface);
+}
+.copy-page-split button,
+.copy-page-menu :is(a, button) {
+	border: 0;
+	background: none;
+	color: var(--muted);
+	cursor: pointer;
+	transition: color 0.2s, background-color 0.2s;
+}
+.copy-page-split button {
+	display: inline-flex;
+	align-items: center;
+	gap: 8px;
+	padding: 0 10px;
+	font: 13px var(--mono);
+}
+.copy-page-split button:hover,
+.copy-page-toggle[aria-expanded='true'] {
+	color: var(--ink);
+	background: var(--soft);
+}
+.copy-page-split .copy-page-toggle {
+	border-inline-start: 1px solid var(--line-strong);
+}
+copy-page svg {
+	flex: none;
+	width: 15px;
+	height: 15px;
+	fill: none;
+	stroke: currentColor;
+	stroke-width: 2;
+	stroke-linecap: round;
+	stroke-linejoin: round;
+}
+.copy-page-toggle[aria-expanded='true'] svg {
+	transform: rotate(180deg);
+}
+.copy-page-menu {
+	position: absolute;
+	inset-inline-end: 0;
+	top: calc(100% + 6px);
+	z-index: 10;
+	width: 18rem;
+	padding: 6px;
+	border: 1px solid var(--line-strong);
+	border-radius: 2px;
+	background: var(--surface);
+	box-shadow: 0 12px 32px rgb(0 0 0 / 0.28);
+}
+@container (max-width: 32rem) {
+	.page-title h1#_top {
+		flex-basis: 100%;
+	}
+	.copy-page-menu {
+		inset-inline: 0 auto;
+	}
+}
+.copy-page-menu :is(a, button) {
+	display: flex;
+	gap: 12px;
+	width: 100%;
+	padding: 10px;
+	border-radius: 2px;
+	text-align: start;
+	text-decoration: none;
+}
+.copy-page-menu :is(a, button):hover {
+	background: var(--soft);
+	color: var(--ink);
+}
+.copy-page-menu > * > svg {
+	margin-top: 3px;
+}
+.copy-page-menu span {
+	display: grid;
+	gap: 2px;
+}
+.copy-page-menu b {
+	display: inline-flex;
+	align-items: center;
+	gap: 6px;
+	font: 500 var(--sl-text-sm) var(--body);
+	color: var(--ink);
+}
+.copy-page-menu b svg {
+	width: 12px;
+	height: 12px;
+	color: var(--muted);
+}
+.copy-page-menu small {
+	font-size: var(--sl-text-xs);
+	color: var(--muted);
+}
+
 /* Header: the landing nav's mark, wordmark and GitHub key. */
 .site-title {
 	display: flex;

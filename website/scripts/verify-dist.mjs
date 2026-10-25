@@ -31,6 +31,7 @@ const requiredFiles = [
 	'sitemap-index.xml',
 	'llms.txt',
 	'llms-full.txt',
+	'docs/llms.txt',
 	'docs.md',
 	'docs/install.md',
 	'favicon.ico',

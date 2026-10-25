@@ -79,7 +79,7 @@ Replace `https://shard.example.com` with the URL of your server and `your-api-ke
 
 You need a server that runs `shard serve`. The daemon itself never serves its API on the network. `shard serve` is a separate process that checks an API key and passes each request to the daemon, usually behind an HTTPS proxy. See [How to connect to a remote host?](/docs/guides/remote/).
 
-You also need an API key from that server. Mint one on the server, with `sudo` on Linux:
+You also need an API key from that server. Mint one on the server:
 
 ```sh
 shard tokens mint --name build-agent --duration 24h
@@ -113,7 +113,7 @@ The CLI sends the saved key only to the server you saved it for. `--remote ""` r
 
 ## Commands that run on the server only
 
-A few commands act on the daemon's own host, so they refuse a remote: `pull`, `image list`, `image remove`, `image prune`, `info`, `daemon status`, `tokens mint`, `tokens list` and `tokens revoke`. Run them on the server. On a machine with a saved connection, add `--remote ""` to use this host instead.
+A few commands act on the daemon's own host, so they refuse a remote: `pull`, `image list`, `image remove`, `image prune`, `info`, `daemon status`, `tokens mint`, `tokens list` and `tokens revoke`. Run them on the server.
 
 You do not need to `pull` before `shard create`. The server fetches a missing image itself.
 
@@ -150,5 +150,8 @@ For HTTPS, the CLI and both SDKs always verify the server's certificate, and no 
 
 ## Next steps
 
-- The [TypeScript README](https://github.com/presmihaylov/shard/blob/main/sdks/typescript/README.md) and the [Python README](https://github.com/presmihaylov/shard/blob/main/sdks/python/README.md) cover background commands, files and errors.
-- To check, replace or remove the saved connection, run `shard setup` again. Its first screen names the saved server.
+- [What provider should I pick?](/docs/choose-provider/): the isolation under the sandboxes of your server.
+- [Sandboxes and the lifecycle](/docs/concepts/lifecycle/): what each command does to a sandbox.
+- [Security model](/docs/security/model/): what shard protects, and who can reach the API.
+- [Run an agent's code in a sandbox](/docs/guides/run-agent-code/): the first guide to follow.
+- [TypeScript](/docs/sdks/typescript/) and [Python](/docs/sdks/python/): everything the SDKs do.

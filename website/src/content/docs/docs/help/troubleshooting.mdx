@@ -67,7 +67,7 @@ If a check fails before setup changes anything, the output says `No installation
 
 **`setup was cancelled; nothing changed`.** You declined the confirmation, and setup exits with code 1.
 
-[Setup exit codes](/docs/install/#setup-exit-codes) lists the codes that a script can check.
+[Errors and exit codes](/docs/reference/errors/#shard-setup) lists the codes that a script can check.
 
 ## The daemon
 
@@ -77,10 +77,10 @@ When a command cannot reach the daemon, its error ends with a question and the c
 
 | The line ends with | The daemon runs as | Its log |
 | --- | --- | --- |
-| `is the background service running? shard setup repairs it` | the service that `shard setup` installed | `sudo journalctl -u shard`, or `/var/log/shard/daemon.log` on a Mac |
-| `is it running? systemctl status shard` | a systemd service you installed by hand | `sudo journalctl -u shard` |
+| `is the background service running? shard setup repairs it` | the service that `shard setup` installed | `journalctl -u shard`, or `/var/log/shard/daemon.log` on a Mac |
+| `is it running? systemctl status shard` | a systemd service you installed by hand | `journalctl -u shard` |
 | `is it running? launchctl print system/shard.daemon` | a launchd service you installed by hand on a Mac | `/var/log/shard/daemon.log` |
-| `is it running? sudo shard daemon --provider gvisor` | a process you start | the terminal that runs it |
+| `is it running? shard daemon --provider gvisor` | a process you start | the terminal that runs it |
 | `is it set up? shard setup` | nothing yet | |
 
 For the service that setup installed, run `shard setup` and choose `Check or repair the installation`. The repair starts the service if it stopped. It also checks the tools, the files that setup installed and the provider's files in `/var/lib/shard`. It shows each change before making it, and it keeps your settings and your data.
@@ -88,21 +88,11 @@ For the service that setup installed, run `shard setup` and choose `Check or rep
 To restart a service yourself:
 
 ```sh
-sudo systemctl restart shard                      # Linux
-sudo launchctl kickstart -k system/shard.daemon   # macOS
+systemctl restart shard                      # Linux
+launchctl kickstart -k system/shard.daemon   # macOS
 ```
 
 A daemon you started yourself stops when its terminal closes. Start it again in its own terminal.
-
-### `permission denied; run the command again with sudo`
-
-On Linux the API socket belongs to root, so run local commands with `sudo`:
-
-```sh
-sudo shard list
-```
-
-On a Mac the daemon runs as your user, so local sandbox commands need no `sudo`. Setup and service commands can still need administrator access.
 
 ### `another shard daemon already holds ...`
 
@@ -110,11 +100,11 @@ A root can have only one daemon, so a second `shard daemon` on the same root ref
 
 ### `another shard daemon, over the root ..., already serves this host's sandbox bridge and nft table`
 
-Every root on a Linux host shares one sandbox bridge and one nft table, so a host runs one daemon. A daemon on a second root refuses to start while another one runs, and the message names the root of the one that runs. This happens when you start a daemon by hand with `--root` while the service is running. Stop the service with `sudo systemctl stop shard`, or use its root.
+Every root on a Linux host shares one sandbox bridge and one nft table, so a host runs one daemon. A daemon on a second root refuses to start while another one runs, and the message names the root of the one that runs. This happens when you start a daemon by hand with `--root` while the service is running. Stop the service with `systemctl stop shard`, or use its root.
 
 ### `task proxy failed, restart in ...`
 
-The daemon log repeats this line, and the same line for `dns`, while every `shard create` fails. The host has no `nft`. Setup installs it, so this happens after an [install by hand](/docs/install/#install-by-hand). Install the `nftables` package. The next restart of each task succeeds, and the daemon itself needs no restart.
+The daemon log repeats this line, and the same line for `dns`, while every `shard create` fails. The host has no `nft`. Setup installs it, so this happens only on a host set up without it. Install the `nftables` package. The next restart of each task succeeds, and the daemon itself needs no restart.
 
 ### A sandbox is stopped after a reboot
 
@@ -141,8 +131,8 @@ An ordinary daemon restart leaves already running sandboxes alive, and the next 
 **An outgoing request from the sandbox times out.** A firewall rule of your own on the host can drop the request before shard sees it. shard lets the bridge `shard0` through `ufw` and `firewalld` itself, so look for another rule that drops traffic on `shard0`:
 
 ```sh
-sudo iptables -S
-sudo nft list ruleset
+iptables -S
+nft list ruleset
 ```
 
 **A name does not resolve, or a request gets a `403`, in a sandbox with a network policy.** Check the policy and shard's private-address restrictions. `shard policy logs <name>` shows each decision and the rule or restriction that made it. A policy with only address rules needs `--allow dns` before names resolve. The [egress reference](/docs/security/egress/) lists every rule.
@@ -173,6 +163,6 @@ export SHARD_CA_FILE=/path/to/ca.pem
 
 ## Still stuck
 
-Read the daemon's log. On Linux, run `sudo journalctl -u shard`. On a Mac, the log is `/var/log/shard/daemon.log`. A daemon you started yourself writes its log to its terminal. When the daemon keeps the cause of an error in its log, the error line says where to look.
+Read the daemon's log. On Linux, run `journalctl -u shard`. On a Mac, the log is `/var/log/shard/daemon.log`. A daemon you started yourself writes its log to its terminal. When the daemon keeps the cause of an error in its log, the error line says where to look.
 
-On the daemon host, `shard daemon status` (with `sudo` on Linux) shows the running daemon's version, provider, process and background tasks.
+On the daemon host, `shard daemon status` shows the running daemon's version, provider, process and background tasks.

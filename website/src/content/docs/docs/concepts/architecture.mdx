@@ -6,10 +6,10 @@ description: How the shard CLI, the SDKs, shard serve, the daemon, the provider 
 Almost every shard command is a request to one daemon on the host. The exceptions are `shard setup`, `shard daemon` itself, `shard serve`, `shard info`, and the `shard tokens` commands that mint, list and revoke tokens. Help and `--version` also work without a daemon. The CLI sends each local request over a unix socket, and you can send the same request yourself:
 
 ```sh
-sudo curl --unix-socket /var/lib/shard/shard.sock http://localhost/v0/version
+curl --unix-socket /var/lib/shard/shard.sock http://localhost/v0/version
 ```
 
-On a Mac, leave out `sudo`. `shard daemon status` shows the version, the provider, the process details and the background tasks of the daemon that answers.
+`shard daemon status` shows the version, the provider, the process details and the background tasks of the daemon that answers.
 
 ## The parts
 

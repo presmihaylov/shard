@@ -11,18 +11,18 @@ On a Linux x86_64 host with `/dev/kvm`, install shard, set it up with Firecracke
 ```sh
 curl -fsSL https://useshards.com/install | sh
 shard setup --local --provider firecracker --start-at-boot=true -y
-sudo shard create --name demo --memory 512MiB python:3.12
-sudo shard run demo --restart no --attach -- python -c 'print(1)'
-sudo shard logs demo
-sudo shard exec demo uname -r
-sudo shard pause demo
-sudo shard resume demo
-sudo shard remove --force demo
+shard create --name demo --memory 512MiB python:3.12
+shard run demo --restart no --attach -- python -c 'print(1)'
+shard logs demo
+shard exec demo uname -r
+shard pause demo
+shard resume demo
+shard remove --force demo
 ```
 
 If `~/.local/bin` is not on your `PATH`, the installer prints the line that adds it.
 
-Each sandbox is a Firecracker microVM. It boots a Linux kernel that shard ships, never the host's kernel, so `uname -r` prints the version of shard's kernel. Every lifecycle verb works on Firecracker, including `pause`, `resume` and `fork`. The daemon runs as root, so you run local commands with `sudo`.
+Each sandbox is a Firecracker microVM. It boots a Linux kernel that shard ships, never the host's kernel, so `uname -r` prints the version of shard's kernel. Every lifecycle verb works on Firecracker, including `pause`, `resume` and `fork`.
 
 ## What you need
 
@@ -36,7 +36,7 @@ Setup installs the rest: Firecracker and its jailer, `erofs-utils`, `xfsprogs`, 
 To check a host before you set it up, run `shard setup` with no options. The wizard marks Firecracker unavailable on a host without `/dev/kvm`, and says why. Once shard is installed, `shard info` prints the provider that a daemon would pick on this host, and the reason:
 
 ```sh
-sudo shard info
+shard info
 ```
 
 ```text
@@ -49,7 +49,7 @@ On a host where `/dev/kvm` does not open, `shard info` prints `gvisor` and says 
 
 ## What setup does
 
-`shard setup --local --provider firecracker` runs as your user and uses `sudo` for the steps that need root. It:
+`shard setup --local --provider firecracker` runs as your user and asks for administrator access when a step needs it. It:
 
 1. Installs the tools that Firecracker needs. When they are absent, it downloads Firecracker 1.17.0 and its jailer into `/usr/local/bin`. It keeps an existing `firecracker` of 1.13.0 or newer, and refuses an older one.
 2. Installs `shard` and `shard-init` in `/usr/local/bin`.
@@ -121,7 +121,7 @@ There is no process bound. A process in the guest is a process inside the VM, so
 `shard fork` copies a running sandbox, memory included:
 
 ```sh
-sudo shard fork --name demo-copy demo
+shard fork --name demo-copy demo
 ```
 
 The source freezes during the copy, then keeps running in the same VM. Two things fail while the copy runs:
@@ -134,9 +134,9 @@ The source freezes during the copy, then keeps running in the same VM. Two thing
 `shard snapshot create` saves the files of a stopped sandbox. A sandbox created from it can take a larger `--disk`, and the guest sees the larger disk. A smaller `--disk` is refused.
 
 ```sh
-sudo shard stop web
-sudo shard snapshot create --name web-base web
-sudo shard create --name web-big --memory 512MiB --disk 20GiB --snapshot web-base
+shard stop web
+shard snapshot create --name web-base web
+shard create --name web-big --memory 512MiB --disk 20GiB --snapshot web-base
 ```
 
 The disk grows only from a clean stop, where the command exited before the grace period ran out. A sandbox that `shard stop` had to kill leaves a disk that cannot grow. To fix it, start the sandbox, let its command exit or end it from `shard exec`, then stop the sandbox and take a new snapshot.
@@ -147,10 +147,10 @@ Each shard version pins one Linux kernel, and every build of that kernel is the 
 
 The daemon downloads the kernel from its own release on GitHub, such as `kernel-6.12.110-3`, when it first needs it. It keeps it in `/var/lib/shard/kernel/<tag>/vmlinux-amd64` and checks it against the SHA-256 that shard was built with. If a file fails the check, for example because a crash cut it short, the daemon downloads it again. A shard upgrade that ships a new kernel downloads it the same way.
 
-To boot a kernel you built yourself, stop the service with `sudo systemctl stop shard`, then give the daemon the kernel's path and its SHA-256:
+To boot a kernel you built yourself, stop the service with `systemctl stop shard`, then give the daemon the kernel's path and its SHA-256:
 
 ```sh
-sudo env SHARD_KERNEL=/path/to/vmlinux-amd64 SHARD_KERNEL_SHA256=<its sha256> shard daemon --provider firecracker
+SHARD_KERNEL=/path/to/vmlinux-amd64 SHARD_KERNEL_SHA256=<its sha256> shard daemon --provider firecracker
 ```
 
 Set both variables. With only one, the daemon fails when it prepares Firecracker, with `SHARD_KERNEL and SHARD_KERNEL_SHA256 must be set together`. The daemon still checks the hash, and refuses a file that does not match with `kernel checksum mismatch`. This is for kernel development only.
@@ -163,4 +163,4 @@ Set both variables. With only one, the daemon fails when it prepares Firecracker
 - **`Firecracker mounts an XFS image over /var/lib/shard, so it must be empty on a filesystem that cannot clone a disk.`** Move the files in `/var/lib/shard` aside, then run setup again.
 - **`shard needs 1.13.0 or newer`.** An older `firecracker` is on the host. Remove it so setup installs one, or replace it.
 - **`Firecracker cannot run its jailer under /var/lib/shard.`** Its filesystem is mounted with `nodev` or `noexec`. Remount it without those options.
-- **The daemon does not start.** Read its log with `sudo journalctl -u shard`.
+- **The daemon does not start.** Read its log with `journalctl -u shard`.

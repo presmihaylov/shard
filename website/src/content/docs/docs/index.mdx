@@ -1,24 +1,26 @@
 ---
 title: What is shard?
-description: shard runs isolated sandboxes on one Linux server or Apple silicon Mac that you own.
+description: shard runs sandboxes for AI agents on hardware you own, a Linux server or an Apple silicon Mac, and you reach them from the CLI, the SDKs or the API.
 sidebar:
   label: What is shard?
 ---
 
 import { LinkCard, TabItem, Tabs } from '@astrojs/starlight/components';
 
-shard runs isolated sandboxes on one host that you own: a Linux server or an Apple silicon Mac.
-One binary is both the CLI and the daemon. This example creates a sandbox from an OCI image, writes
-a file in it, reads the file back, and removes the sandbox:
+shard runs sandboxes for AI agents on hardware you own. A sandbox is an isolated Linux environment
+where an agent can run code, install packages and use the network, kept apart from the machine it
+runs on. You host shard yourself, on a Linux server or an Apple silicon Mac, with no cloud account.
+
+Create a sandbox, write a file in it, read the file back, and remove the sandbox:
 
 <Tabs syncKey="lang">
 <TabItem label="CLI">
 
 ```sh
-sudo shard create --name demo --memory 512MiB alpine:3.20
-sudo shard exec demo sh -c 'echo hello from shard > /tmp/hello.txt'
-sudo shard exec demo cat /tmp/hello.txt
-sudo shard remove --force demo
+shard create --name demo --memory 512MiB alpine:3.20
+shard exec demo sh -c 'echo hello from shard > /tmp/hello.txt'
+shard exec demo cat /tmp/hello.txt
+shard remove --force demo
 ```
 
 </TabItem>
@@ -56,14 +58,20 @@ with Shard() as shard:
 </TabItem>
 </Tabs>
 
-Each tab prints `hello from shard`. After `shard setup`, the CLI talks to the daemon on this host.
-On Linux the daemon's socket belongs to root, so the commands run with `sudo`. On a Mac, drop
-`sudo`. The SDKs reach a host over HTTPS through `shard serve`. They read the server URL from
-`SHARD_REMOTE`, and `SHARD_API_KEY` holds a token from `shard tokens mint`.
+Each tab prints `hello from shard`.
+
+## How you connect to it
+
+![One machine runs shard and every sandbox; you reach it from the CLI, the SDKs or the API](../../../assets/architecture.svg)
+
+One machine runs shard and all of its sandboxes. Everything else reaches them through one API: the
+`shard` CLI, the [TypeScript](/docs/sdks/typescript/) and [Python](/docs/sdks/python/) SDKs, or
+your own code over [HTTP](/docs/reference/api/). On that machine the CLI works as soon as setup
+ends. Another machine, such as your laptop or a CI job, connects over HTTPS with an API key.
 
 ## What a sandbox is
 
-A sandbox starts from an OCI image and keeps running until you stop or remove it. `create` starts
+A sandbox starts from an image, such as `alpine:3.20`, and keeps running until you stop or remove it. `create` starts
 no process in it. `run` starts a named process that shard supervises and can start again, and
 `exec` runs a one-off command. A process can exit, and the sandbox stays available for `exec`. The
 image's `ENTRYPOINT` and `CMD` never run.
@@ -94,10 +102,19 @@ shard never falls back to a weaker mechanism.
 
 ## Secrets and network access
 
-A sandbox never holds a secret's value. It holds a placeholder instead, and the host proxy swaps in
-the real value in the headers of HTTPS requests to the destinations you granted. Code in the sandbox
-cannot leak a value it never sees. Without a network policy, a sandbox can reach the internet but
-not private networks. A policy adds ordered allow and deny rules.
+The host decides what each sandbox can reach and which keys it can use:
+
+- **Network egress control.** A policy lists the destinations a sandbox may reach, and the host
+  drops the rest. Private networks and cloud metadata are always blocked.
+- **Credential brokering.** You store a key on the host and grant it to a destination. The sandbox
+  gets a placeholder, and the host puts the real key into HTTPS requests to that destination, in
+  flight. Code in the sandbox never sees the key, so it cannot leak it.
+
+![The sandbox holds a placeholder for API_TOKEN. The host adds the real key to its request to api.example.com, and stops its requests to 169.254.169.254 and paste.example.com.](../../../assets/secrets-egress.svg)
+
+You can still pass a key into a sandbox yourself, with `--env`, but then the code in it can read
+the key. [Secrets](/docs/security/secrets/) and [Network egress](/docs/security/egress/) have the
+details.
 
 ## What shard is not
 

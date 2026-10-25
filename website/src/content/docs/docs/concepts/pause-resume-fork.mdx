@@ -13,15 +13,15 @@ Pause a sandbox, resume it, then fork it into a second sandbox with files of its
 <TabItem label="CLI">
 
 ```sh
-sudo shard create --name demo --memory 512MiB alpine:3.20
-sudo shard exec demo sh -c 'echo before > /root/state.txt'
-sudo shard pause demo
-sudo shard resume demo
-sudo shard fork --name demo-copy demo
-sudo shard exec demo-copy sh -c 'echo copy > /root/state.txt'
-sudo shard exec demo cat /root/state.txt
-sudo shard remove --force demo-copy
-sudo shard remove --force demo
+shard create --name demo --memory 512MiB alpine:3.20
+shard exec demo sh -c 'echo before > /root/state.txt'
+shard pause demo
+shard resume demo
+shard fork --name demo-copy demo
+shard exec demo-copy sh -c 'echo copy > /root/state.txt'
+shard exec demo cat /root/state.txt
+shard remove --force demo-copy
+shard remove --force demo
 ```
 
 </TabItem>
@@ -81,7 +81,7 @@ with Shard() as shard:
 
 Each version prints `before`, because the write in `demo-copy` changed only its own files.
 
-The example needs a host that runs `gvisor`, `firecracker` or `vz`. On a Mac, leave out `sudo`. The SDKs connect to `shard serve` at the URL in `SHARD_REMOTE`, with the key in `SHARD_API_KEY`.
+The example needs a host that runs `gvisor`, `firecracker` or `vz`. The SDKs connect to `shard serve` at the URL in `SHARD_REMOTE`, with the key in `SHARD_API_KEY`.
 
 ## Pause and resume
 
@@ -92,7 +92,7 @@ The example needs a host that runs `gvisor`, `firecracker` or `vz`. On a Mac, le
 A pause ends any `exec` that is still running in the sandbox. While the sandbox is paused, `shard exec` runs nothing, exits 1 and prints:
 
 ```text
-shard: sandbox demo is paused: resume it with sudo shard resume demo
+shard: sandbox demo is paused: resume it with shard resume demo
 ```
 
 A paused sandbox stays paused when the daemon restarts, as long as its checkpoint is on disk. If its checkpoint is gone, it becomes `stopped`.
@@ -126,9 +126,9 @@ A snapshot also copies a sandbox, but only its files:
 | Providers | `gvisor`, `firecracker`, `vz` | Every provider |
 
 ```sh
-sudo shard stop demo
-sudo shard snapshot create --name demo-files demo
-sudo shard create --name demo-from-files --memory 512MiB --snapshot demo-files
+shard stop demo
+shard snapshot create --name demo-files demo
+shard create --name demo-from-files --memory 512MiB --snapshot demo-files
 ```
 
 A sandbox made from a snapshot starts like a new sandbox, with the snapshot's files and none of the source's memory.
