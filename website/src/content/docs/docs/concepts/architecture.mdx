@@ -8,6 +8,7 @@ A daemon on the host owns every sandbox. The CLI and the SDKs are its clients: t
 Almost every shard command is a request to the daemon, and you can send the same request yourself:
 
 ```sh
+# Prints the daemon's version and API version as JSON.
 curl --unix-socket /var/lib/shard/shard.sock http://localhost/v0/version
 ```
 

@@ -13,6 +13,7 @@ Not every server can pause, resume or fork a sandbox. That depends on the server
 	<TabItem label="CLI">
 
 ```sh
+# Prints each of the ten capabilities, true or false.
 shard capabilities
 ```
 
@@ -25,6 +26,7 @@ import { Shard } from "useshards";
 const shard = new Shard();
 try {
   const caps = await shard.capabilities();
+  // Prints true true true on gVisor.
   console.log(caps.pause, caps.resume, caps.fork);
 } finally {
   shard.close();
@@ -39,6 +41,7 @@ from useshards import Shard
 
 with Shard() as shard:
     caps = shard.capabilities()
+    # Prints True True True on gVisor.
     print(caps.pause, caps.resume, caps.fork)
 ```
 

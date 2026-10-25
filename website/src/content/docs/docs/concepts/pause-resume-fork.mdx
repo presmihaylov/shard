@@ -19,6 +19,7 @@ shard pause demo
 shard resume demo
 shard fork --name demo-copy demo
 shard exec demo-copy sh -c 'echo copy > /root/state.txt'
+# Prints before: the fork has its own files.
 shard exec demo cat /root/state.txt
 shard remove --force demo-copy
 shard remove --force demo
@@ -41,6 +42,7 @@ try {
     const copy = await sandbox.fork({ name: "demo-copy" });
     try {
       await copy.files.write("/root/state.txt", "copy\n");
+      // Prints before: the fork has its own files.
       process.stdout.write((await sandbox.exec("cat /root/state.txt")).stdout);
     } finally {
       await copy.remove({ force: true });
@@ -69,6 +71,7 @@ with Shard() as shard:
         copy = sandbox.fork(name="demo-copy")
         try:
             copy.files.write("/root/state.txt", "copy\n")
+            # Prints before: the fork has its own files.
             print(sandbox.exec("cat /root/state.txt").stdout, end="")
         finally:
             copy.remove(force=True)

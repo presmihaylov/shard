@@ -20,6 +20,7 @@ shard exec web sh -c 'echo ready > /root/state.txt'
 shard stop web
 shard snapshot create --name web-base web
 shard create --name web-2 --snapshot web-base
+# Prints ready, from the snapshot.
 shard exec web-2 cat /root/state.txt
 shard remove --force web-2
 shard remove web
@@ -39,6 +40,7 @@ try {
   await web.stop();
   const snapshot = await shard.snapshots.create(web, { name: "web-base" });
   const copy = await shard.create({ name: "web-2", snapshot: snapshot.id });
+  // Prints ready, from the snapshot.
   console.log((await copy.exec(["cat", "/root/state.txt"])).stdout);
   await copy.remove({ force: true });
   await web.remove();
@@ -60,6 +62,7 @@ with Shard() as shard:
     web.stop()
     snapshot = shard.snapshots.create(web, name="web-base")
     copy = shard.create(snapshot=snapshot.id, name="web-2")
+    # Prints ready, from the snapshot.
     print(copy.exec(["cat", "/root/state.txt"]).stdout)
     copy.remove(force=True)
     web.remove()
