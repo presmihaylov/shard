@@ -5,7 +5,7 @@ sandboxes on a shard host, run commands and processes in them, move files, forwa
 snapshot, fork or pause them. `Shard` is for blocking code and `AsyncShard` is for asyncio. Both
 have the same verbs.
 
-[Docs](https://useshards.com/docs/sdks/python/) ·
+[Docs](https://useshards.com/docs/reference/sdks/) ·
 [TypeScript SDK](https://github.com/presmihaylov/shard/tree/main/sdks/typescript) ·
 [Changelog](https://github.com/presmihaylov/shard/blob/main/sdks/python/CHANGELOG.md)
 
@@ -46,9 +46,9 @@ with Shard() as shard:
 
 ## Docs
 
-[The Python SDK docs](https://useshards.com/docs/sdks/python/) cover the rest: sandboxes, commands,
+[The SDK reference](https://useshards.com/docs/reference/sdks/) covers the rest: sandboxes, commands,
 processes, files, ports, secrets, policies, snapshots, asyncio and
-[errors](https://useshards.com/docs/sdks/errors/).
+[errors](https://useshards.com/docs/reference/sdks/errors/).
 
 ## License
 

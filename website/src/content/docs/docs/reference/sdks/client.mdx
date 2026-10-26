@@ -1,0 +1,231 @@
+---
+title: Client
+description: The SDK client that connects to a shard server, and its methods for the server itself, in TypeScript and Python.
+sidebar:
+  order: 2
+---
+
+import { TabItem, Tabs } from '@astrojs/starlight/components';
+
+## Shard
+
+Connect to `shard serve` on a server.
+
+<Tabs syncKey="lang">
+<TabItem label="TypeScript">
+
+```ts
+new Shard(options?: { remote?: string; apiKey?: string; caFile?: string })
+```
+
+</TabItem>
+<TabItem label="Python">
+
+```python
+Shard(remote=None, api_key=None, *, ca_file=None, timeout=60)
+AsyncShard(remote=None, api_key=None, *, ca_file=None, timeout=60)
+```
+
+</TabItem>
+</Tabs>
+
+**Examples**
+
+<Tabs syncKey="lang">
+<TabItem label="TypeScript">
+
+```ts
+import { Shard } from "useshards";
+
+const shard = new Shard();
+const other = new Shard({ remote: "https://shard.example.com", apiKey: process.env.MY_SHARD_KEY });
+```
+
+</TabItem>
+<TabItem label="Python">
+
+```python
+import os
+
+from useshards import Shard
+
+shard = Shard()
+other = Shard(remote="https://shard.example.com", api_key=os.environ["MY_SHARD_KEY"])
+```
+
+</TabItem>
+</Tabs>
+
+**Options**
+
+| TypeScript | Python | Variable | Description |
+| --- | --- | --- | --- |
+| `remote` | `remote` | `SHARD_REMOTE` | URL of `shard serve`, such as `https://shard.example.com`, with only a scheme, a host and a port |
+| `apiKey` | `api_key` | `SHARD_API_KEY` | API key |
+| `caFile` | `ca_file` | `SHARD_CA_FILE` | PEM file of the CA that signed the server's certificate, for an `https` remote only |
+| | `timeout` | | seconds each plain request waits for the server; 60 by default, `None` removes the bound |
+
+Each option left out is read from its environment variable. The SDK talks to `shard serve` on your server, never to the daemon's local socket, and it ignores the connection that `shard setup` saves.
+
+**Precedence**
+
+A non-empty `remote` or `caFile` option takes precedence over its environment variable. An API key option takes precedence even when it is empty, and the SDK refuses an empty key. In Python, an `api_key` of `None` counts as left out.
+
+**Missing settings**
+
+The constructor raises `ConfigurationError` when a setting is missing or refused, and the error message never shows the key.
+
+**Remote**
+
+A URL with no port takes 443 for `https` and 80 for `http`. An `http` remote works, but it sends the key unencrypted, so the SDK emits a warning. It also refuses a CA file. Without a CA file, TypeScript uses [Node's default trusted CAs](https://nodejs.org/api/tls.html#tlsgetcacertificatestype).
+
+**Timeout**
+
+In TypeScript, each plain request waits up to 60 seconds for the server, and the bound is fixed. A call that waits on the sandbox, such as `create`, `stop` or `fork`, has no bound on the client. See [Errors and timeouts](/docs/reference/sdks/errors/#client-timeouts).
+
+**API key**
+
+To mint an API key, run this on the server:
+
+```sh
+shard tokens mint --name build-agent --duration 24h
+```
+
+The command prints a JSON record, and its `token` value is the API key. Without `--scopes`, the key can do everything.
+
+## shard.close
+
+Release the pooled connections, so the process can exit.
+
+<Tabs syncKey="lang">
+<TabItem label="TypeScript">
+
+```ts
+shard.close(): void
+```
+
+</TabItem>
+<TabItem label="Python">
+
+```python
+shard.close() -> None
+await shard.aclose()  # AsyncShard
+```
+
+</TabItem>
+</Tabs>
+
+**Examples**
+
+<Tabs syncKey="lang">
+<TabItem label="TypeScript">
+
+```ts
+const shard = new Shard();
+try {
+  console.log((await shard.version()).version);
+} finally {
+  shard.close();
+}
+```
+
+</TabItem>
+<TabItem label="Python">
+
+```python
+with Shard() as shard:
+    print(shard.version().version)
+```
+
+</TabItem>
+</Tabs>
+
+In Python, a `with` block closes the client at its end, and `async with` does the same for `AsyncShard`.
+
+## shard.version
+
+Return the versions of the daemon and its API.
+
+<Tabs syncKey="lang">
+<TabItem label="TypeScript">
+
+```ts
+shard.version(): Promise<{ version: string; apiVersion: string }>
+```
+
+</TabItem>
+<TabItem label="Python">
+
+```python
+shard.version() -> Version  # Version(version, api_version)
+```
+
+</TabItem>
+</Tabs>
+
+**Examples**
+
+<Tabs syncKey="lang">
+<TabItem label="TypeScript">
+
+```ts
+const { version, apiVersion } = await shard.version();
+```
+
+</TabItem>
+<TabItem label="Python">
+
+```python
+v = shard.version()
+print(v.version, v.api_version)
+```
+
+</TabItem>
+</Tabs>
+
+## shard.capabilities
+
+Report which lifecycle verbs the server's provider supports.
+
+<Tabs syncKey="lang">
+<TabItem label="TypeScript">
+
+```ts
+shard.capabilities(): Promise<Capabilities>
+```
+
+</TabItem>
+<TabItem label="Python">
+
+```python
+shard.capabilities() -> Capabilities
+```
+
+</TabItem>
+</Tabs>
+
+**Examples**
+
+<Tabs syncKey="lang">
+<TabItem label="TypeScript">
+
+```ts
+if ((await shard.capabilities()).fork) {
+  const copy = await sandbox.fork({ name: "demo-copy" });
+}
+```
+
+</TabItem>
+<TabItem label="Python">
+
+```python
+if shard.capabilities().fork:
+    copy = sandbox.fork(name="demo-copy")
+```
+
+</TabItem>
+</Tabs>
+
+The result holds `true` or `false` for each of the nine lifecycle verbs: `create`, `start`, `stop`, `remove`, `pause`, `resume`, `fork`, `snapshot` and `port`. `swap` says whether a swap size above 0 is allowed.
+
+Calling a verb that the provider does not support raises `UnsupportedError`, and its message names the provider and the verb. The server never falls back to a weaker mechanism. For which provider supports what, see [Providers and capabilities](/docs/concepts/providers/#the-ten-capabilities).

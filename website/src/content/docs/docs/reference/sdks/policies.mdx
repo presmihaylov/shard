@@ -1,0 +1,375 @@
+---
+title: Network policies
+description: The SDK methods that store network policies, attach them to sandboxes and read their decisions, in TypeScript and Python.
+sidebar:
+  order: 10
+---
+
+import { TabItem, Tabs } from '@astrojs/starlight/components';
+
+## shard.policies.set
+
+Store a network policy, or replace all of its rules.
+
+<Tabs syncKey="lang">
+<TabItem label="TypeScript">
+
+```ts
+shard.policies.set(name: string, rules: PolicyRule[]): Promise<Policy>
+```
+
+</TabItem>
+<TabItem label="Python">
+
+```python
+shard.policies.set(name, rules) -> Policy
+```
+
+</TabItem>
+</Tabs>
+
+**Examples**
+
+<Tabs syncKey="lang">
+<TabItem label="TypeScript">
+
+```ts
+await shard.policies.set("api-only", [{ action: "allow", rule: "api.example.com" }]);
+await shard.policies.set("ssh-only", [{ action: "allow", rule: "203.0.113.0/24 tcp:22" }]);
+```
+
+</TabItem>
+<TabItem label="Python">
+
+```python
+from useshards import PolicyRule
+
+shard.policies.set("api-only", [PolicyRule("allow", "api.example.com")])
+shard.policies.set("ssh-only", [PolicyRule("allow", "203.0.113.0/24 tcp:22")])
+```
+
+</TabItem>
+</Tabs>
+
+**Arguments**
+
+| Argument | Description |
+| --- | --- |
+| `name` | policy name; up to 64 lower-case letters, digits and hyphens, starting with a letter or a digit |
+| `rules` | `{ action, rule }` in TypeScript, `PolicyRule(action, rule)` in Python; `action` is `allow` or `deny` |
+
+Rules apply in the order given. The first match decides access. Traffic that no rule allows is denied. A sandbox that holds the policy enforces the new rules.
+
+A rule takes the form `shard policy create` uses: a destination with an optional protocol and ports, such as `suffix:example.com tcp:443`. See [Rules](/docs/reference/cli/policies/#shard-policy-create) in the CLI reference.
+
+## shard.policies.get
+
+Return a policy and the sandboxes that use it.
+
+<Tabs syncKey="lang">
+<TabItem label="TypeScript">
+
+```ts
+shard.policies.get(name: string): Promise<Policy>
+```
+
+</TabItem>
+<TabItem label="Python">
+
+```python
+shard.policies.get(name) -> Policy
+```
+
+</TabItem>
+</Tabs>
+
+**Examples**
+
+<Tabs syncKey="lang">
+<TabItem label="TypeScript">
+
+```ts
+const { rules, holders } = await shard.policies.get("api-only");
+```
+
+</TabItem>
+<TabItem label="Python">
+
+```python
+policy = shard.policies.get("api-only")
+print(policy.rules, policy.holders)
+```
+
+</TabItem>
+</Tabs>
+
+A `Policy` holds `name`, `rules`, `holders` (the sandboxes it is attached to) and `dns` (`open` or `closed`, whether the rules let the sandbox resolve names).
+
+## shard.policies.list
+
+List network policies.
+
+<Tabs syncKey="lang">
+<TabItem label="TypeScript">
+
+```ts
+shard.policies.list(): Promise<Policy[]>
+```
+
+</TabItem>
+<TabItem label="Python">
+
+```python
+shard.policies.list() -> list[Policy]
+```
+
+</TabItem>
+</Tabs>
+
+**Examples**
+
+<Tabs syncKey="lang">
+<TabItem label="TypeScript">
+
+```ts
+for (const policy of await shard.policies.list()) console.log(policy.name, policy.rules.length);
+```
+
+</TabItem>
+<TabItem label="Python">
+
+```python
+for policy in shard.policies.list():
+    print(policy.name, len(policy.rules))
+```
+
+</TabItem>
+</Tabs>
+
+A listed policy leaves `holders` and `dns` null. Use [`get`](#shardpoliciesget) for them.
+
+## shard.policies.remove
+
+Delete an unused network policy.
+
+<Tabs syncKey="lang">
+<TabItem label="TypeScript">
+
+```ts
+shard.policies.remove(name: string): Promise<void>
+```
+
+</TabItem>
+<TabItem label="Python">
+
+```python
+shard.policies.remove(name) -> None
+```
+
+</TabItem>
+</Tabs>
+
+**Examples**
+
+<Tabs syncKey="lang">
+<TabItem label="TypeScript">
+
+```ts
+await shard.policies.remove("api-only");
+```
+
+</TabItem>
+<TabItem label="Python">
+
+```python
+shard.policies.remove("api-only")
+```
+
+</TabItem>
+</Tabs>
+
+Detach the policy from its sandboxes before removal.
+
+## shard.policies.attach
+
+Assign a network policy to a sandbox.
+
+<Tabs syncKey="lang">
+<TabItem label="TypeScript">
+
+```ts
+shard.policies.attach(sandbox: SandboxRef, name: string): Promise<SandboxInfo>
+```
+
+</TabItem>
+<TabItem label="Python">
+
+```python
+shard.policies.attach(sandbox, name) -> SandboxInfo
+```
+
+</TabItem>
+</Tabs>
+
+**Examples**
+
+<Tabs syncKey="lang">
+<TabItem label="TypeScript">
+
+```ts
+await web.stop();
+await shard.policies.attach(web, "api-only");
+await web.start();
+```
+
+</TabItem>
+<TabItem label="Python">
+
+```python
+web.stop()
+shard.policies.attach(web, "api-only")
+web.start()
+```
+
+</TabItem>
+</Tabs>
+
+**Arguments**
+
+| Argument | Description |
+| --- | --- |
+| `sandbox` | a `Sandbox`, or its ID, ID prefix or name |
+| `name` | policy name |
+
+The sandbox must be created or stopped. The policy replaces any policy already assigned to the sandbox. To assign one at create time, pass `policy` to [`shard.create`](/docs/reference/sdks/sandboxes/#shardcreate).
+
+## shard.policies.detach
+
+Remove a sandbox's network policy.
+
+<Tabs syncKey="lang">
+<TabItem label="TypeScript">
+
+```ts
+shard.policies.detach(sandbox: SandboxRef): Promise<SandboxInfo>
+```
+
+</TabItem>
+<TabItem label="Python">
+
+```python
+shard.policies.detach(sandbox) -> SandboxInfo
+```
+
+</TabItem>
+</Tabs>
+
+**Examples**
+
+<Tabs syncKey="lang">
+<TabItem label="TypeScript">
+
+```ts
+await shard.policies.detach(web);
+```
+
+</TabItem>
+<TabItem label="Python">
+
+```python
+shard.policies.detach(web)
+```
+
+</TabItem>
+</Tabs>
+
+The sandbox must be created or stopped. Secret access remains unchanged. Without a policy, the sandbox can access the internet but not private networks.
+
+## sandbox.egressLog / egress_log
+
+Return the network decisions the daemon holds for a sandbox, oldest first.
+
+<Tabs syncKey="lang">
+<TabItem label="TypeScript">
+
+```ts
+sandbox.egressLog(): Promise<EgressDecision[]>
+```
+
+</TabItem>
+<TabItem label="Python">
+
+```python
+sandbox.egress_log() -> list[EgressDecision]
+```
+
+</TabItem>
+</Tabs>
+
+**Examples**
+
+<Tabs syncKey="lang">
+<TabItem label="TypeScript">
+
+```ts
+for (const d of await sandbox.egressLog()) console.log(d.verdict, d.host, d.port, d.ruleText);
+```
+
+</TabItem>
+<TabItem label="Python">
+
+```python
+for d in sandbox.egress_log():
+    print(d.verdict, d.host, d.port, d.rule_text)
+```
+
+</TabItem>
+</Tabs>
+
+An `EgressDecision` holds `time`, `source` (`proxy`, `host` or `dns`), `verdict` (`allow` or `deny`), `host`, `port`, `address`, `reason`, the ID of the rule that decided it in `rule` (or why none did, as `default`), and that rule as the CLI spells it (`ruleText`, or `rule_text` in Python).
+
+## sandbox.followEgressLog / follow_egress_log
+
+Stream network decisions as they happen.
+
+<Tabs syncKey="lang">
+<TabItem label="TypeScript">
+
+```ts
+sandbox.followEgressLog(options?: { signal?: AbortSignal }): AsyncGenerator<EgressDecision>
+```
+
+</TabItem>
+<TabItem label="Python">
+
+```python
+sandbox.follow_egress_log() -> Follow[EgressDecision]
+```
+
+</TabItem>
+</Tabs>
+
+**Examples**
+
+<Tabs syncKey="lang">
+<TabItem label="TypeScript">
+
+```ts
+for await (const d of sandbox.followEgressLog()) console.log(d.verdict, d.host);
+```
+
+</TabItem>
+<TabItem label="Python">
+
+```python
+with sandbox.follow_egress_log() as follow:
+    for d in follow:
+        print(d.verdict, d.host)
+```
+
+</TabItem>
+</Tabs>
+
+The stream yields the newest decisions the daemon holds, then each new one as it happens, and ends when the sandbox stops. In TypeScript, an abort ends it. In Python, closing it ends it, and `AsyncShard` iterates it with `async for`.
+
+For the whole flow, see [Credential brokering](/docs/essentials/credential-brokering/).

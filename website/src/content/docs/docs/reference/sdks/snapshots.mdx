@@ -1,0 +1,205 @@
+---
+title: Snapshots
+description: The SDK methods that save a stopped sandbox's files as a snapshot and manage snapshots, in TypeScript and Python.
+sidebar:
+  order: 8
+---
+
+import { TabItem, Tabs } from '@astrojs/starlight/components';
+
+## shard.snapshots.create
+
+Save a stopped sandbox's files as a snapshot.
+
+<Tabs syncKey="lang">
+<TabItem label="TypeScript">
+
+```ts
+shard.snapshots.create(sandbox: SandboxRef, options?: { name?: string }): Promise<Snapshot>
+```
+
+</TabItem>
+<TabItem label="Python">
+
+```python
+shard.snapshots.create(sandbox, *, name=None) -> Snapshot
+```
+
+</TabItem>
+</Tabs>
+
+**Examples**
+
+<Tabs syncKey="lang">
+<TabItem label="TypeScript">
+
+```ts
+await web.stop();
+const base = await shard.snapshots.create(web, { name: "web-base" });
+const copy = await shard.create({ snapshot: "web-base", name: "web-2" });
+```
+
+</TabItem>
+<TabItem label="Python">
+
+```python
+web.stop()
+base = shard.snapshots.create(web, name="web-base")
+copy = shard.create(snapshot="web-base", name="web-2")
+```
+
+</TabItem>
+</Tabs>
+
+**Arguments**
+
+| Argument | Description |
+| --- | --- |
+| `sandbox` | source sandbox, as a `Sandbox` or its ID, ID prefix or name |
+
+**Options**
+
+| TypeScript | Python | Description |
+| --- | --- | --- |
+| `name` | `name` | snapshot name to use instead of its ID |
+
+Stop the sandbox first. Snapshots contain files, not memory or process state. They remain available after the source sandbox is removed. A provider without snapshots raises `UnsupportedError`.
+
+To start a sandbox from one, pass `snapshot` to [`shard.create`](/docs/reference/sdks/sandboxes/#shardcreate). The rules for that create are in the [CLI reference](/docs/reference/cli/snapshots/#create-a-sandbox-from-a-snapshot).
+
+## shard.snapshots.list
+
+List snapshots.
+
+<Tabs syncKey="lang">
+<TabItem label="TypeScript">
+
+```ts
+shard.snapshots.list(): Promise<Snapshot[]>
+```
+
+</TabItem>
+<TabItem label="Python">
+
+```python
+shard.snapshots.list() -> list[Snapshot]
+```
+
+</TabItem>
+</Tabs>
+
+**Examples**
+
+<Tabs syncKey="lang">
+<TabItem label="TypeScript">
+
+```ts
+for (const snapshot of await shard.snapshots.list()) console.log(snapshot.name, snapshot.image, snapshot.size);
+```
+
+</TabItem>
+<TabItem label="Python">
+
+```python
+for snapshot in shard.snapshots.list():
+    print(snapshot.name, snapshot.image, snapshot.size)
+```
+
+</TabItem>
+</Tabs>
+
+## shard.snapshots.inspect
+
+Return one snapshot.
+
+<Tabs syncKey="lang">
+<TabItem label="TypeScript">
+
+```ts
+shard.snapshots.inspect(ref: string): Promise<Snapshot>
+```
+
+</TabItem>
+<TabItem label="Python">
+
+```python
+shard.snapshots.inspect(ref) -> Snapshot
+```
+
+</TabItem>
+</Tabs>
+
+**Examples**
+
+<Tabs syncKey="lang">
+<TabItem label="TypeScript">
+
+```ts
+const base = await shard.snapshots.inspect("web-base");
+```
+
+</TabItem>
+<TabItem label="Python">
+
+```python
+base = shard.snapshots.inspect("web-base")
+```
+
+</TabItem>
+</Tabs>
+
+**Arguments**
+
+| Argument | Description |
+| --- | --- |
+| `ref` | snapshot ID or name |
+
+A `Snapshot` holds `id`, `name`, the source sandbox's ID and name, `image`, `digest`, `provider`, the disk and memory bounds the source ran under, `size`, the bytes it takes on the host, and the creation time.
+
+## shard.snapshots.remove
+
+Delete a snapshot and its files.
+
+<Tabs syncKey="lang">
+<TabItem label="TypeScript">
+
+```ts
+shard.snapshots.remove(ref: string): Promise<void>
+```
+
+</TabItem>
+<TabItem label="Python">
+
+```python
+shard.snapshots.remove(ref) -> None
+```
+
+</TabItem>
+</Tabs>
+
+**Examples**
+
+<Tabs syncKey="lang">
+<TabItem label="TypeScript">
+
+```ts
+await shard.snapshots.remove("web-base");
+```
+
+</TabItem>
+<TabItem label="Python">
+
+```python
+shard.snapshots.remove("web-base")
+```
+
+</TabItem>
+</Tabs>
+
+**Arguments**
+
+| Argument | Description |
+| --- | --- |
+| `ref` | snapshot ID or name |
+
+Sandboxes created from the snapshot keep their own files.

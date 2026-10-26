@@ -1,0 +1,483 @@
+---
+title: Files
+description: The SDK methods that read, write and copy files in a running sandbox, in TypeScript and Python.
+sidebar:
+  order: 6
+---
+
+import { TabItem, Tabs } from '@astrojs/starlight/components';
+
+## sandbox.files.write
+
+Write text or bytes to a file in a running sandbox.
+
+<Tabs syncKey="lang">
+<TabItem label="TypeScript">
+
+```ts
+sandbox.files.write(path: string, data: string | Uint8Array, options?: WriteOptions): Promise<void>
+```
+
+</TabItem>
+<TabItem label="Python">
+
+```python
+sandbox.files.write(path, data, *, size=None, mode=None, parents=False, user=None) -> None
+```
+
+</TabItem>
+</Tabs>
+
+**Examples**
+
+<Tabs syncKey="lang">
+<TabItem label="TypeScript">
+
+```ts
+await sandbox.files.write("/root/notes.txt", "hello\n");
+await sandbox.files.write("/srv/app/run.sh", "#!/bin/sh\necho up\n", { mode: 0o755, parents: true });
+```
+
+</TabItem>
+<TabItem label="Python">
+
+```python
+sandbox.files.write("/root/notes.txt", "hello\n")
+sandbox.files.write("/srv/app/run.sh", "#!/bin/sh\necho up\n", mode=0o755, parents=True)
+with open("data.bin", "rb") as f:
+    sandbox.files.write("/root/data.bin", f)
+```
+
+</TabItem>
+</Tabs>
+
+**Arguments**
+
+| Argument | Description |
+| --- | --- |
+| `path` | absolute path in the sandbox |
+| `data` | a string or bytes; in Python also a binary file or stream |
+
+**Options**
+
+| TypeScript | Python | Description |
+| --- | --- | --- |
+| `mode` | `mode` | permission bits, such as `0o644` |
+| `parents` | `parents` | make the missing parent directories |
+| `user` | `user` | user name or uid in the sandbox that owns the file |
+| | `size` | length of a stream whose length is not known up front |
+
+In Python, a seekable file is written from where it stands to its end. A stream that cannot seek needs `size`, or the call raises `UnknownLengthError`, and a `size` that does not match the data raises `ValueError`.
+
+## sandbox.files.read
+
+Read a file in a running sandbox.
+
+<Tabs syncKey="lang">
+<TabItem label="TypeScript">
+
+```ts
+sandbox.files.read(path: string): Promise<Uint8Array>
+sandbox.files.read(path: string, options: { encoding: "utf8" }): Promise<string>
+```
+
+</TabItem>
+<TabItem label="Python">
+
+```python
+sandbox.files.read(path) -> bytes
+sandbox.files.read_text(path, encoding="utf-8") -> str
+```
+
+</TabItem>
+</Tabs>
+
+**Examples**
+
+<Tabs syncKey="lang">
+<TabItem label="TypeScript">
+
+```ts
+const bytes = await sandbox.files.read("/root/data.bin");
+const text = await sandbox.files.read("/root/notes.txt", { encoding: "utf8" });
+```
+
+</TabItem>
+<TabItem label="Python">
+
+```python
+data = sandbox.files.read("/root/data.bin")
+text = sandbox.files.read_text("/root/notes.txt")
+```
+
+</TabItem>
+</Tabs>
+
+The whole file is held in memory. For a large file, use [`download`](#sandboxfilesdownload).
+
+## sandbox.files.stat
+
+Return the type, size, mode, owner and modification time of a path in a running sandbox.
+
+<Tabs syncKey="lang">
+<TabItem label="TypeScript">
+
+```ts
+sandbox.files.stat(path: string): Promise<FileInfo>
+```
+
+</TabItem>
+<TabItem label="Python">
+
+```python
+sandbox.files.stat(path) -> FileInfo
+```
+
+</TabItem>
+</Tabs>
+
+**Examples**
+
+<Tabs syncKey="lang">
+<TabItem label="TypeScript">
+
+```ts
+const info = await sandbox.files.stat("/root/notes.txt");
+console.log(info.type, info.size, info.mode.toString(8));
+```
+
+</TabItem>
+<TabItem label="Python">
+
+```python
+info = sandbox.files.stat("/root/notes.txt")
+print(info.type, info.size, oct(info.mode))
+```
+
+</TabItem>
+</Tabs>
+
+A `FileInfo` holds `type` (`file`, `dir`, `symlink` or `other`), `size`, `mode`, `uid`, `gid` and `mtime`. `mode` holds the permission bits with setuid, setgid and sticky.
+
+## sandbox.files.list
+
+List the entries of a directory in a running sandbox.
+
+<Tabs syncKey="lang">
+<TabItem label="TypeScript">
+
+```ts
+sandbox.files.list(path: string): Promise<FileEntry[]>
+```
+
+</TabItem>
+<TabItem label="Python">
+
+```python
+sandbox.files.list(path) -> list[FileEntry]
+```
+
+</TabItem>
+</Tabs>
+
+**Examples**
+
+<Tabs syncKey="lang">
+<TabItem label="TypeScript">
+
+```ts
+for (const entry of await sandbox.files.list("/root")) console.log(entry.name, entry.type);
+```
+
+</TabItem>
+<TabItem label="Python">
+
+```python
+for entry in sandbox.files.list("/root"):
+    print(entry.name, entry.type)
+```
+
+</TabItem>
+</Tabs>
+
+Each entry is a [`FileInfo`](#sandboxfilesstat) with a `name`. A symlink's entry describes the link itself, never what it points to.
+
+## sandbox.files.mkdir
+
+Make a directory in a running sandbox.
+
+<Tabs syncKey="lang">
+<TabItem label="TypeScript">
+
+```ts
+sandbox.files.mkdir(path: string, options?: WriteOptions): Promise<void>
+```
+
+</TabItem>
+<TabItem label="Python">
+
+```python
+sandbox.files.mkdir(path, *, mode=None, parents=False, user=None) -> None
+```
+
+</TabItem>
+</Tabs>
+
+**Examples**
+
+<Tabs syncKey="lang">
+<TabItem label="TypeScript">
+
+```ts
+await sandbox.files.mkdir("/srv/app/data", { parents: true });
+```
+
+</TabItem>
+<TabItem label="Python">
+
+```python
+sandbox.files.mkdir("/srv/app/data", parents=True)
+```
+
+</TabItem>
+</Tabs>
+
+**Options**
+
+| TypeScript | Python | Description |
+| --- | --- | --- |
+| `mode` | `mode` | permission bits, such as `0o755` |
+| `parents` | `parents` | make the missing parent directories too |
+| `user` | `user` | user name or uid in the sandbox that owns the directory |
+
+## sandbox.files.remove
+
+Delete a path in a running sandbox.
+
+<Tabs syncKey="lang">
+<TabItem label="TypeScript">
+
+```ts
+sandbox.files.remove(path: string, options?: { recursive?: boolean }): Promise<void>
+```
+
+</TabItem>
+<TabItem label="Python">
+
+```python
+sandbox.files.remove(path, *, recursive=False) -> None
+```
+
+</TabItem>
+</Tabs>
+
+**Examples**
+
+<Tabs syncKey="lang">
+<TabItem label="TypeScript">
+
+```ts
+await sandbox.files.remove("/root/notes.txt");
+await sandbox.files.remove("/srv/app", { recursive: true });
+```
+
+</TabItem>
+<TabItem label="Python">
+
+```python
+sandbox.files.remove("/root/notes.txt")
+sandbox.files.remove("/srv/app", recursive=True)
+```
+
+</TabItem>
+</Tabs>
+
+**Options**
+
+| TypeScript | Python | Description |
+| --- | --- | --- |
+| `recursive` | `recursive` | delete a directory and everything under it |
+
+## sandbox.files.upload
+
+Copy a local file into a running sandbox without holding it in memory.
+
+<Tabs syncKey="lang">
+<TabItem label="TypeScript">
+
+```ts
+sandbox.files.upload(local: string, remote: string, options?: WriteOptions): Promise<void>
+```
+
+</TabItem>
+<TabItem label="Python">
+
+```python
+sandbox.files.upload(local, remote, *, mode=None, parents=False, user=None) -> None
+```
+
+</TabItem>
+</Tabs>
+
+**Examples**
+
+<Tabs syncKey="lang">
+<TabItem label="TypeScript">
+
+```ts
+await sandbox.files.upload("./dist/app.tar.gz", "/srv/app.tar.gz");
+```
+
+</TabItem>
+<TabItem label="Python">
+
+```python
+sandbox.files.upload("./dist/app.tar.gz", "/srv/app.tar.gz")
+```
+
+</TabItem>
+</Tabs>
+
+**Options**
+
+| TypeScript | Python | Description |
+| --- | --- | --- |
+| `mode` | `mode` | permission bits; the local file's own by default |
+| `parents` | `parents` | make the missing parent directories |
+| `user` | `user` | user name or uid in the sandbox that owns the file |
+
+The local path must be a regular file, or the call raises `UnknownLengthError`.
+
+## sandbox.files.download
+
+Copy a file out of a running sandbox into a local file, without holding it in memory.
+
+<Tabs syncKey="lang">
+<TabItem label="TypeScript">
+
+```ts
+sandbox.files.download(remote: string, local: string): Promise<void>
+```
+
+</TabItem>
+<TabItem label="Python">
+
+```python
+sandbox.files.download(remote, local) -> None
+```
+
+</TabItem>
+</Tabs>
+
+**Examples**
+
+<Tabs syncKey="lang">
+<TabItem label="TypeScript">
+
+```ts
+await sandbox.files.download("/tmp/results.json", "./results.json");
+```
+
+</TabItem>
+<TabItem label="Python">
+
+```python
+sandbox.files.download("/tmp/results.json", "./results.json")
+```
+
+</TabItem>
+</Tabs>
+
+The download writes a temporary file next to the local path and renames it at the end, so a cut never leaves half a file. The local file takes the sandbox file's permission bits.
+
+## sandbox.files.uploadDir / upload_dir
+
+Copy a local directory into a running sandbox, as a tar archive.
+
+<Tabs syncKey="lang">
+<TabItem label="TypeScript">
+
+```ts
+sandbox.files.uploadDir(local: string, remote: string, options?: { user?: string }): Promise<void>
+```
+
+</TabItem>
+<TabItem label="Python">
+
+```python
+sandbox.files.upload_dir(local, remote, *, user=None) -> None
+```
+
+</TabItem>
+</Tabs>
+
+**Examples**
+
+<Tabs syncKey="lang">
+<TabItem label="TypeScript">
+
+```ts
+await sandbox.files.uploadDir("./app", "/srv/app");
+```
+
+</TabItem>
+<TabItem label="Python">
+
+```python
+sandbox.files.upload_dir("./app", "/srv/app")
+```
+
+</TabItem>
+</Tabs>
+
+**Options**
+
+| TypeScript | Python | Description |
+| --- | --- | --- |
+| `user` | `user` | user name or uid in the sandbox that owns what the copy makes |
+
+`remote` names the directory itself, not its parent.
+
+## sandbox.files.downloadDir / download_dir
+
+Copy a directory out of a running sandbox into a local directory.
+
+<Tabs syncKey="lang">
+<TabItem label="TypeScript">
+
+```ts
+sandbox.files.downloadDir(remote: string, local: string): Promise<void>
+```
+
+</TabItem>
+<TabItem label="Python">
+
+```python
+sandbox.files.download_dir(remote, local) -> None
+```
+
+</TabItem>
+</Tabs>
+
+**Examples**
+
+<Tabs syncKey="lang">
+<TabItem label="TypeScript">
+
+```ts
+await sandbox.files.downloadDir("/srv/app/out", "./out");
+```
+
+</TabItem>
+<TabItem label="Python">
+
+```python
+sandbox.files.download_dir("/srv/app/out", "./out")
+```
+
+</TabItem>
+</Tabs>
+
+The whole archive arrives before the unpack starts, so a cut never lands half a tree. A local directory the call makes takes the sandbox directory's permission bits, and one that already exists keeps its own.
+
+For `shard cp` and where a copy lands, see [Run commands and move files](/docs/essentials/run-commands/).

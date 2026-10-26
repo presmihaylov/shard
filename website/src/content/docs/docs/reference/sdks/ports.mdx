@@ -1,0 +1,197 @@
+---
+title: Ports
+description: The SDK methods that forward host ports to ports inside sandboxes, in TypeScript and Python.
+sidebar:
+  order: 7
+---
+
+import { TabItem, Tabs } from '@astrojs/starlight/components';
+
+## sandbox.ports.add
+
+Forward a host port to a port on the sandbox's 127.0.0.1, or change the forward it has.
+
+<Tabs syncKey="lang">
+<TabItem label="TypeScript">
+
+```ts
+sandbox.ports.add(hostPort: number, guestPort: number, options?: { public?: boolean }): Promise<Port>
+```
+
+</TabItem>
+<TabItem label="Python">
+
+```python
+sandbox.ports.add(host_port, guest_port, *, public=False) -> Port
+```
+
+</TabItem>
+</Tabs>
+
+**Examples**
+
+<Tabs syncKey="lang">
+<TabItem label="TypeScript">
+
+```ts
+const forward = await sandbox.ports.add(9000, 8000);
+console.log(forward.listening, forward.reachableOn);
+await sandbox.ports.add(9000, 8000, { public: true });
+```
+
+</TabItem>
+<TabItem label="Python">
+
+```python
+forward = sandbox.ports.add(9000, 8000)
+print(forward.listening, forward.reachable_on)
+sandbox.ports.add(9000, 8000, public=True)
+```
+
+</TabItem>
+</Tabs>
+
+**Arguments**
+
+| TypeScript | Python | Description |
+| --- | --- | --- |
+| `hostPort` | `host_port` | port on the host |
+| `guestPort` | `guest_port` | port the program in the sandbox listens on, on 127.0.0.1 |
+
+**Options**
+
+| TypeScript | Python | Description |
+| --- | --- | --- |
+| `public` | `public` | listen on 0.0.0.0, every interface of the host, not 127.0.0.1 |
+
+A running sandbox takes the forward at once; any other from its next start. The forward survives a stop and a start. To forward ports from the first start, pass `ports` to [`shard.create`](/docs/reference/sdks/sandboxes/#shardcreate).
+
+Add the same host port again to change its guest port or its visibility. `public` is the only way to listen beyond this host; it opens the port to every network the host is on.
+
+**The result**
+
+A `Port` holds the sandbox ID and name, the host and guest ports, `public`, `address`, `listening`, `error` and the addresses a client reaches it on (`reachableOn`, or `reachable_on` in Python). `listening` is false while the sandbox is not running or the host refuses the port, and `error` says why.
+
+## sandbox.ports.list
+
+List the forwards of a sandbox, in host port order.
+
+<Tabs syncKey="lang">
+<TabItem label="TypeScript">
+
+```ts
+sandbox.ports.list(): Promise<Port[]>
+```
+
+</TabItem>
+<TabItem label="Python">
+
+```python
+sandbox.ports.list() -> list[Port]
+```
+
+</TabItem>
+</Tabs>
+
+**Examples**
+
+<Tabs syncKey="lang">
+<TabItem label="TypeScript">
+
+```ts
+for (const port of await sandbox.ports.list()) console.log(port.hostPort, port.guestPort, port.listening);
+```
+
+</TabItem>
+<TabItem label="Python">
+
+```python
+for port in sandbox.ports.list():
+    print(port.host_port, port.guest_port, port.listening)
+```
+
+</TabItem>
+</Tabs>
+
+## sandbox.ports.remove
+
+End a forward and the connections it carries.
+
+<Tabs syncKey="lang">
+<TabItem label="TypeScript">
+
+```ts
+sandbox.ports.remove(hostPort: number): Promise<void>
+```
+
+</TabItem>
+<TabItem label="Python">
+
+```python
+sandbox.ports.remove(host_port) -> None
+```
+
+</TabItem>
+</Tabs>
+
+**Examples**
+
+<Tabs syncKey="lang">
+<TabItem label="TypeScript">
+
+```ts
+await sandbox.ports.remove(9000);
+```
+
+</TabItem>
+<TabItem label="Python">
+
+```python
+sandbox.ports.remove(9000)
+```
+
+</TabItem>
+</Tabs>
+
+## shard.ports
+
+List the forwards of every sandbox, in host port order.
+
+<Tabs syncKey="lang">
+<TabItem label="TypeScript">
+
+```ts
+shard.ports(): Promise<Port[]>
+```
+
+</TabItem>
+<TabItem label="Python">
+
+```python
+shard.ports() -> list[Port]
+```
+
+</TabItem>
+</Tabs>
+
+**Examples**
+
+<Tabs syncKey="lang">
+<TabItem label="TypeScript">
+
+```ts
+for (const port of await shard.ports()) console.log(port.sandboxName, port.hostPort);
+```
+
+</TabItem>
+<TabItem label="Python">
+
+```python
+for port in shard.ports():
+    print(port.sandbox_name, port.host_port)
+```
+
+</TabItem>
+</Tabs>
+
+For the whole flow, see [Expose a port of a sandbox](/docs/essentials/expose-a-port/).
