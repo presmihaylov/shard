@@ -4,7 +4,7 @@ The TypeScript SDK for [shard](https://github.com/presmihaylov/shard), the sandb
 sandboxes on a shard host, run commands and processes in them, move files, forward ports, and
 snapshot, fork or pause them.
 
-[Docs](https://useshards.com/docs/sdks/typescript/) ·
+[Docs](https://useshards.com/docs/reference/sdks/) ·
 [Python SDK](https://github.com/presmihaylov/shard/tree/main/sdks/python) ·
 [Changelog](https://github.com/presmihaylov/shard/blob/main/sdks/typescript/CHANGELOG.md)
 
@@ -46,9 +46,9 @@ shard.close();
 
 ## Docs
 
-[The TypeScript SDK docs](https://useshards.com/docs/sdks/typescript/) cover the rest: sandboxes,
+[The SDK reference](https://useshards.com/docs/reference/sdks/) covers the rest: sandboxes,
 commands, processes, files, ports, secrets, policies, snapshots and
-[errors](https://useshards.com/docs/sdks/errors/).
+[errors](https://useshards.com/docs/reference/sdks/errors/).
 
 ## License
 

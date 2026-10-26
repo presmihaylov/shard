@@ -1,0 +1,239 @@
+---
+title: Overview
+description: The TypeScript and Python SDKs for a shard server, with install, connection settings, every method and asyncio.
+sidebar:
+  order: 1
+---
+
+import { TabItem, Tabs } from '@astrojs/starlight/components';
+
+Drive sandboxes on a shard server from code. Both SDKs are named `useshards`, have the same methods and talk to `shard serve` on your server.
+
+<Tabs syncKey="lang">
+<TabItem label="TypeScript">
+
+```sh
+npm install useshards
+```
+
+The package needs Node 20.3 or later. It is an ES module, so load it with `import`, and it ships its own type definitions.
+
+</TabItem>
+<TabItem label="Python">
+
+```sh
+pip install useshards
+```
+
+The package needs Python 3.11 or later and ships with type hints. `Shard` is for blocking code and `AsyncShard` is for asyncio. The examples in this reference use `Shard`, and [Asyncio](#asyncio) covers the differences.
+
+</TabItem>
+</Tabs>
+
+**Get started**
+
+```sh
+export SHARD_REMOTE=https://shard.example.com
+export SHARD_API_KEY='your-api-key'
+```
+
+<Tabs syncKey="lang">
+<TabItem label="TypeScript">
+
+```js title="demo.mjs"
+import { Shard } from "useshards";
+
+const shard = new Shard();
+try {
+  // Create a sandbox.
+  const sandbox = await shard.create({ image: "alpine:3.20", name: "demo", memoryMiB: 512 });
+  try {
+    // Run a command in it. Prints 0 hello.
+    const result = await sandbox.exec(["echo", "hello"]);
+    console.log(result.exitCode, result.stdout.trim());
+  } finally {
+    // Remove the sandbox.
+    await sandbox.remove({ force: true });
+  }
+} finally {
+  shard.close();
+}
+```
+
+Run it with `node demo.mjs`.
+
+</TabItem>
+<TabItem label="Python">
+
+```python title="demo.py"
+from useshards import Shard
+
+with Shard() as shard:
+    # Create a sandbox.
+    sandbox = shard.create("alpine:3.20", name="demo", memory_mib=512)
+    try:
+        # Run a command in it. Prints 0 hello.
+        result = sandbox.exec(["echo", "hello"])
+        print(result.exit_code, result.stdout.strip())
+    finally:
+        # Remove the sandbox.
+        sandbox.remove(force=True)
+```
+
+Run it with `python demo.py`.
+
+</TabItem>
+</Tabs>
+
+Replace `https://shard.example.com` with your server URL and `your-api-key` with your API key. The script prints `0 hello`. Its `finally` removes the sandbox even when a command fails, because a sandbox outlives the script that made it.
+
+## Methods
+
+**Client**
+
+| Method | Description |
+| --- | --- |
+| [`Shard`](/docs/reference/sdks/client/#shard) | connect to `shard serve` on a server |
+| [`shard.close`](/docs/reference/sdks/client/#shardclose) | release the pooled connections, so the process can exit |
+| [`shard.version`](/docs/reference/sdks/client/#shardversion) | return the versions of the daemon and its API |
+| [`shard.capabilities`](/docs/reference/sdks/client/#shardcapabilities) | report which lifecycle verbs the server's provider supports |
+
+**Sandboxes**
+
+| Method | Description |
+| --- | --- |
+| [`shard.create`](/docs/reference/sdks/sandboxes/#shardcreate) | create a sandbox and wait until it is running |
+| [`shard.get`](/docs/reference/sdks/sandboxes/#shardget) | find a sandbox by ID, ID prefix or name |
+| [`shard.list`](/docs/reference/sdks/sandboxes/#shardlist) | list active sandboxes |
+| [`sandbox.inspect`](/docs/reference/sdks/sandboxes/#sandboxinspect) | read the sandbox's record again |
+| [`sandbox.stop`](/docs/reference/sdks/sandboxes/#sandboxstop) | stop the sandbox and preserve its files |
+| [`sandbox.start`](/docs/reference/sdks/sandboxes/#sandboxstart) | start a stopped sandbox with its saved files |
+| [`sandbox.pause`](/docs/reference/sdks/sandboxes/#sandboxpause) | suspend the sandbox and save its state |
+| [`sandbox.resume`](/docs/reference/sdks/sandboxes/#sandboxresume) | resume a paused sandbox from its saved state |
+| [`sandbox.fork`](/docs/reference/sdks/sandboxes/#sandboxfork) | create a sandbox from a running sandbox's memory and files |
+| [`sandbox.remove`](/docs/reference/sdks/sandboxes/#sandboxremove) | remove the sandbox and its files |
+
+**Commands**
+
+| Method | Description |
+| --- | --- |
+| [`sandbox.exec`](/docs/reference/sdks/commands/#sandboxexec) | execute a command in a running sandbox and return how it ended |
+| [`command.wait`](/docs/reference/sdks/commands/#commandwait) | wait for a background command to end and return how it ended |
+| [`command.kill`](/docs/reference/sdks/commands/#commandkill) | send a signal to a background command |
+| [`command.writeStdin` / `write_stdin`](/docs/reference/sdks/commands/#commandwritestdin--write_stdin) | send input to a background command |
+| [`command.closeStdin` / `close_stdin`](/docs/reference/sdks/commands/#commandclosestdin--close_stdin) | end the command's input |
+| [`command.resize`](/docs/reference/sdks/commands/#commandresize) | change the terminal size of a command that runs on a terminal |
+| [`command.inspect`](/docs/reference/sdks/commands/#commandinspect) | read the command's record from the daemon |
+| [`command.disconnect`](/docs/reference/sdks/commands/#commanddisconnect) | close the command's stream and leave the command running |
+| [`command.reconnect`](/docs/reference/sdks/commands/#commandreconnect) | attach to the command again |
+| [`sandbox.commands.list`](/docs/reference/sdks/commands/#sandboxcommandslist) | list the commands of a sandbox, running or ended |
+| [`sandbox.commands.get`](/docs/reference/sdks/commands/#sandboxcommandsget) | find a command by ID and return a handle to it |
+
+**Processes**
+
+| Method | Description |
+| --- | --- |
+| [`sandbox.run`](/docs/reference/sdks/processes/#sandboxrun) | start a supervised process in a running sandbox |
+| [`process.wait`](/docs/reference/sdks/processes/#processwait) | wait until the process ends and will not restart |
+| [`process.kill`](/docs/reference/sdks/processes/#processkill) | stop the process and cancel its restarts |
+| [`process.logs`](/docs/reference/sdks/processes/#processlogs) | return the output of every run of the process |
+| [`process.followLogs` / `follow_logs`](/docs/reference/sdks/processes/#processfollowlogs--follow_logs) | stream the log from its start, then new output as it arrives |
+| [`process.inspect`](/docs/reference/sdks/processes/#processinspect) | read the process's record from the daemon |
+| [`sandbox.processes.list`](/docs/reference/sdks/processes/#sandboxprocesseslist) | list the processes of a sandbox, in the order they were first run |
+| [`sandbox.processes.get`](/docs/reference/sdks/processes/#sandboxprocessesget) | find a process by name and return a handle to it |
+
+**Files**
+
+| Method | Description |
+| --- | --- |
+| [`sandbox.files.write`](/docs/reference/sdks/files/#sandboxfileswrite) | write text or bytes to a file in a running sandbox |
+| [`sandbox.files.read`](/docs/reference/sdks/files/#sandboxfilesread) | read a file in a running sandbox |
+| [`sandbox.files.stat`](/docs/reference/sdks/files/#sandboxfilesstat) | return the type, size, mode, owner and modification time of a path |
+| [`sandbox.files.list`](/docs/reference/sdks/files/#sandboxfileslist) | list the entries of a directory in a running sandbox |
+| [`sandbox.files.mkdir`](/docs/reference/sdks/files/#sandboxfilesmkdir) | make a directory in a running sandbox |
+| [`sandbox.files.remove`](/docs/reference/sdks/files/#sandboxfilesremove) | delete a path in a running sandbox |
+| [`sandbox.files.upload`](/docs/reference/sdks/files/#sandboxfilesupload) | copy a local file into a running sandbox |
+| [`sandbox.files.download`](/docs/reference/sdks/files/#sandboxfilesdownload) | copy a file out of a running sandbox into a local file |
+| [`sandbox.files.uploadDir` / `upload_dir`](/docs/reference/sdks/files/#sandboxfilesuploaddir--upload_dir) | copy a local directory into a running sandbox, as a tar archive |
+| [`sandbox.files.downloadDir` / `download_dir`](/docs/reference/sdks/files/#sandboxfilesdownloaddir--download_dir) | copy a directory out of a running sandbox into a local directory |
+
+**Ports**
+
+| Method | Description |
+| --- | --- |
+| [`sandbox.ports.add`](/docs/reference/sdks/ports/#sandboxportsadd) | forward a host port to a port on the sandbox's 127.0.0.1, or change the forward it has |
+| [`sandbox.ports.list`](/docs/reference/sdks/ports/#sandboxportslist) | list the forwards of a sandbox, in host port order |
+| [`sandbox.ports.remove`](/docs/reference/sdks/ports/#sandboxportsremove) | end a forward and the connections it carries |
+| [`shard.ports`](/docs/reference/sdks/ports/#shardports) | list the forwards of every sandbox, in host port order |
+
+**Snapshots**
+
+| Method | Description |
+| --- | --- |
+| [`shard.snapshots.create`](/docs/reference/sdks/snapshots/#shardsnapshotscreate) | save a stopped sandbox's files as a snapshot |
+| [`shard.snapshots.list`](/docs/reference/sdks/snapshots/#shardsnapshotslist) | list snapshots |
+| [`shard.snapshots.inspect`](/docs/reference/sdks/snapshots/#shardsnapshotsinspect) | return one snapshot |
+| [`shard.snapshots.remove`](/docs/reference/sdks/snapshots/#shardsnapshotsremove) | delete a snapshot and its files |
+
+**Secrets**
+
+| Method | Description |
+| --- | --- |
+| [`shard.secrets.set`](/docs/reference/sdks/secrets/#shardsecretsset) | store a secret, or replace its value |
+| [`shard.secrets.list`](/docs/reference/sdks/secrets/#shardsecretslist) | list secrets without their values |
+| [`shard.secrets.remove`](/docs/reference/sdks/secrets/#shardsecretsremove) | delete a stored secret |
+| [`shard.secrets.grant`](/docs/reference/sdks/secrets/#shardsecretsgrant) | let a sandbox use a stored secret |
+| [`shard.secrets.ungrant`](/docs/reference/sdks/secrets/#shardsecretsungrant) | remove a sandbox's access to a secret |
+
+**Network policies**
+
+| Method | Description |
+| --- | --- |
+| [`shard.policies.set`](/docs/reference/sdks/policies/#shardpoliciesset) | store a network policy, or replace all of its rules |
+| [`shard.policies.get`](/docs/reference/sdks/policies/#shardpoliciesget) | return a policy and the sandboxes that use it |
+| [`shard.policies.list`](/docs/reference/sdks/policies/#shardpolicieslist) | list network policies |
+| [`shard.policies.remove`](/docs/reference/sdks/policies/#shardpoliciesremove) | delete an unused network policy |
+| [`shard.policies.attach`](/docs/reference/sdks/policies/#shardpoliciesattach) | assign a network policy to a sandbox |
+| [`shard.policies.detach`](/docs/reference/sdks/policies/#shardpoliciesdetach) | remove a sandbox's network policy |
+| [`sandbox.egressLog` / `egress_log`](/docs/reference/sdks/policies/#sandboxegresslog--egress_log) | return the network decisions the daemon holds for a sandbox, oldest first |
+| [`sandbox.followEgressLog` / `follow_egress_log`](/docs/reference/sdks/policies/#sandboxfollowegresslog--follow_egress_log) | stream network decisions as they happen |
+
+For the errors each method raises, the client timeouts and when to retry, see [Errors and timeouts](/docs/reference/sdks/errors/).
+
+## Environment variables
+
+| Variable | Description |
+| --- | --- |
+| `SHARD_REMOTE` | URL of `shard serve`, read when the client gets no `remote` |
+| `SHARD_API_KEY` | API key, read when the client gets no API key |
+| `SHARD_CA_FILE` | PEM file of the CA that signed the server's certificate, read when the client gets no CA file |
+
+The SDKs never read the connection that `shard setup` saves. See [`Shard`](/docs/reference/sdks/client/#shard) for the precedence rules.
+
+## Asyncio
+
+`AsyncShard` takes the same arguments as `Shard`, and with none it reads the same environment variables. Await its request methods:
+
+```python
+import asyncio
+
+from useshards import AsyncShard
+
+
+async def main() -> None:
+    async with AsyncShard() as shard:
+        # Create a sandbox.
+        sandbox = await shard.create("alpine:3.20", memory_mib=512)
+        try:
+            # Run three commands at once. Prints their outputs in order, 0 to 2.
+            results = await asyncio.gather(*(sandbox.exec(f"echo {n}") for n in range(3)))
+            print([r.stdout for r in results])
+        finally:
+            # Remove the sandbox.
+            await sandbox.remove(force=True)
+
+
+asyncio.run(main())
+```
+
+Use `async with`, or call `await shard.aclose()` when you are done. Iterate `follow_logs()` and `follow_egress_log()` with `async for`. Cancelling the task ends the wait but not the command.

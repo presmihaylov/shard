@@ -24,7 +24,7 @@ const group = (/** @type {string} */ label, /** @type {string} */ directory) => 
 	return items.length > 0 ? [{ label, collapsed: true, items }] : [];
 };
 const order = (/** @type {URL} */ file) => Number(/^[ \t]+order:[ \t]*(-?\d+)/m.exec(readFileSync(file, 'utf8').split(/^---$/m)[1] ?? '')?.[1] ?? Infinity);
-// The top-level reference pages share their group with the CLI and REST API sub-groups, so they are listed here by sidebar.order.
+// The top-level reference pages share their group with the CLI, SDK and REST API sub-groups, so they are listed here by sidebar.order.
 const files = (/** @type {string} */ directory) => {
 	const path = new URL(`${directory}/`, docs);
 	if (!existsSync(path)) return [];
@@ -40,8 +40,7 @@ const sidebar = [
 	{ label: 'Concepts', items: dir('docs/concepts') },
 	{ label: 'Security', items: dir('docs/security') },
 	{ label: 'Guides', items: dir('docs/guides') },
-	{ label: 'SDKs', items: dir('docs/sdks') },
-	{ label: 'Reference', items: [...group('CLI', 'docs/reference/cli'), ...group('REST API', 'docs/reference/api'), ...files('docs/reference')] },
+	{ label: 'Reference', items: [...group('CLI', 'docs/reference/cli'), ...group('SDKs', 'docs/reference/sdks'), ...group('REST API', 'docs/reference/api'), ...files('docs/reference')] },
 	{ label: 'Help', items: dir('docs/help') },
 ].filter((entry) => entry.items.length > 0);
 

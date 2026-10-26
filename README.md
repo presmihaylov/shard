@@ -11,8 +11,8 @@
   <p>
     <a href="https://useshards.com"><b>Website</b></a> &nbsp;·&nbsp;
     <a href="https://useshards.com/docs"><b>Docs</b></a> &nbsp;·&nbsp;
-    <a href="https://useshards.com/docs/sdks/typescript/"><b>TypeScript SDK</b></a> &nbsp;·&nbsp;
-    <a href="https://useshards.com/docs/sdks/python/"><b>Python SDK</b></a>
+    <a href="https://useshards.com/docs/reference/sdks/"><b>TypeScript SDK</b></a> &nbsp;·&nbsp;
+    <a href="https://useshards.com/docs/reference/sdks/"><b>Python SDK</b></a>
   </p>
 </div>
 
@@ -239,7 +239,7 @@ await sandbox.remove({ force: true });
 shard.close();
 ```
 
-**[TypeScript SDK docs →](https://useshards.com/docs/sdks/typescript/)**
+**[TypeScript SDK docs →](https://useshards.com/docs/reference/sdks/)**
 
 ##### Python
 
@@ -260,7 +260,7 @@ with Shard() as shard:
 
 `AsyncShard` has the same verbs for asyncio.
 
-**[Python SDK docs →](https://useshards.com/docs/sdks/python/)**
+**[Python SDK docs →](https://useshards.com/docs/reference/sdks/)**
 
 ## <img height="18" src="https://octicons-col.vercel.app/checklist/2d81be">&nbsp;&nbsp;Essentials
 

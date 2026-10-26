@@ -1,0 +1,547 @@
+---
+title: Commands
+description: The SDK methods that run commands in a sandbox and drive a command in the background, in TypeScript and Python.
+sidebar:
+  order: 4
+---
+
+import { TabItem, Tabs } from '@astrojs/starlight/components';
+
+## sandbox.exec
+
+Execute a command in a running sandbox and return how it ended.
+
+<Tabs syncKey="lang">
+<TabItem label="TypeScript">
+
+```ts
+sandbox.exec(command: string | string[], options?: ExecOptions): Promise<ExecResult>
+sandbox.exec(command: string | string[], options: ExecOptions & { background: true }): Promise<Command>
+```
+
+</TabItem>
+<TabItem label="Python">
+
+```python
+sandbox.exec(command, *, background=False, stdin=None, env=None, workdir=None, user=None,
+             tty=False, output_limit_bytes=8388608, on_stdout=None, on_stderr=None)
+    -> CommandResult | Command
+```
+
+</TabItem>
+</Tabs>
+
+**Examples**
+
+<Tabs syncKey="lang">
+<TabItem label="TypeScript">
+
+```ts
+const result = await sandbox.exec(["echo", "hello"]);
+const shell = await sandbox.exec("echo $GREETING from $(pwd)", { env: { GREETING: "hello" }, workdir: "/tmp" });
+const sum = await sandbox.exec("wc -l", { stdin: "one\ntwo\n" });
+const command = await sandbox.exec("sleep 5; echo done", { background: true });
+```
+
+</TabItem>
+<TabItem label="Python">
+
+```python
+result = sandbox.exec(["echo", "hello"])
+shell = sandbox.exec("echo $GREETING from $(pwd)", env={"GREETING": "hello"}, workdir="/tmp")
+count = sandbox.exec("wc -l", stdin="one\ntwo\n")
+command = sandbox.exec("sleep 5; echo done", background=True)
+```
+
+</TabItem>
+</Tabs>
+
+**Arguments**
+
+| Argument | Description |
+| --- | --- |
+| `command` | a string runs under `/bin/sh -c`; an array or list runs as it is, with no shell |
+
+**Options**
+
+| TypeScript | Python | Description |
+| --- | --- | --- |
+| `env` | `env` | variables added to the sandbox's environment for this command |
+| `workdir` | `workdir` | working directory |
+| `user` | `user` | user name or uid in the sandbox |
+| `stdin` | `stdin` | text or bytes the command reads, after which its input ends; `true` keeps the input open for `writeStdin` |
+| `tty` | `tty` | run on a terminal: `{ rows, cols }` in TypeScript, `True` or `TerminalSize(rows, cols)` in Python; all output arrives as stdout |
+| `signal` | | an `AbortSignal` that ends this client's wait |
+| `onStdout`, `onStderr` | `on_stdout`, `on_stderr` | called with each chunk of output, as bytes, as it arrives |
+| `outputLimitBytes` | `output_limit_bytes` | how many of the newest bytes of stdout and stderr together the result keeps; 8 MiB by default, 0 keeps none |
+| `background` | `background` | return a [`Command`](#commandwait) as soon as the command is running |
+
+**Result**
+
+The result holds `exitCode`, `signal`, `stdout`, `stderr` and `lostBytes` (`exit_code`, `signal`, `stdout`, `stderr` and `lost_bytes` in Python). Python also has `stdout_bytes` and `stderr_bytes` with the raw bytes.
+
+A non-zero exit code comes back in the result and raises nothing. When a signal ends a command, every provider reports the exit code as 128 plus the signal's number, such as 137 for `KILL`. A command that never started, for example because its binary does not exist, raises `CommandNotStartedError`.
+
+**Output**
+
+A result keeps the newest 8 MiB of stdout and stderr together, so the result of a long run may hold only the end of its output. The callbacks still see every chunk, including the ones past the limit. `lostBytes` counts something else: the output the daemon dropped before any client read it.
+
+**Ending the wait**
+
+An abort, an asyncio cancel, a Python `timeout` or a dropped connection ends only this client's wait and releases the stream. The command keeps running until it exits or until [`command.kill`](#commandkill).
+
+**Input**
+
+In Python, a foreground command takes its whole input as text or bytes, and a background command takes a bool: `True` keeps the input open for `write_stdin`. Any other mix raises `TypeError`.
+
+In TypeScript, `sandbox.commands.run()` and `sandbox.commands.start()` do the same as `exec()` without and with `background: true`.
+
+## command.wait
+
+Wait for a background command to end and return how it ended.
+
+<Tabs syncKey="lang">
+<TabItem label="TypeScript">
+
+```ts
+command.wait(options?: { signal?: AbortSignal }): Promise<ExecResult>
+```
+
+</TabItem>
+<TabItem label="Python">
+
+```python
+command.wait(timeout=None) -> CommandResult
+```
+
+</TabItem>
+</Tabs>
+
+**Examples**
+
+<Tabs syncKey="lang">
+<TabItem label="TypeScript">
+
+```ts
+const result = await command.wait();
+const bounded = await command.wait({ signal: AbortSignal.timeout(30_000) });
+```
+
+</TabItem>
+<TabItem label="Python">
+
+```python
+result = command.wait()
+bounded = command.wait(timeout=30)
+```
+
+</TabItem>
+</Tabs>
+
+**Options**
+
+| TypeScript | Python | Description |
+| --- | --- | --- |
+| `signal` | | an `AbortSignal` that ends the wait with the signal's reason |
+| | `timeout` | seconds to wait before raising the built-in `TimeoutError` |
+
+Ending the wait never ends the command.
+
+## command.kill
+
+Send a signal to a background command.
+
+<Tabs syncKey="lang">
+<TabItem label="TypeScript">
+
+```ts
+command.kill(signal?: string): Promise<void>
+```
+
+</TabItem>
+<TabItem label="Python">
+
+```python
+command.kill(signal="TERM") -> None
+```
+
+</TabItem>
+</Tabs>
+
+**Examples**
+
+<Tabs syncKey="lang">
+<TabItem label="TypeScript">
+
+```ts
+await command.kill();
+await command.kill("KILL");
+```
+
+</TabItem>
+<TabItem label="Python">
+
+```python
+command.kill()
+command.kill("KILL")
+```
+
+</TabItem>
+</Tabs>
+
+**Arguments**
+
+| Argument | Description |
+| --- | --- |
+| `signal` | `TERM` by default, or `KILL`; the daemon refuses any other signal |
+
+## command.writeStdin / write_stdin
+
+Send input to a background command.
+
+<Tabs syncKey="lang">
+<TabItem label="TypeScript">
+
+```ts
+command.writeStdin(data: string | Uint8Array): Promise<void>
+```
+
+</TabItem>
+<TabItem label="Python">
+
+```python
+command.write_stdin(data) -> None  # data: str or bytes
+```
+
+</TabItem>
+</Tabs>
+
+**Examples**
+
+<Tabs syncKey="lang">
+<TabItem label="TypeScript">
+
+```ts
+const cat = await sandbox.exec("cat", { background: true, stdin: true });
+await cat.writeStdin("hello\n");
+await cat.closeStdin();
+```
+
+</TabItem>
+<TabItem label="Python">
+
+```python
+cat = sandbox.exec("cat", background=True, stdin=True)
+cat.write_stdin("hello\n")
+cat.close_stdin()
+```
+
+</TabItem>
+</Tabs>
+
+The command must start with `stdin` set to true.
+
+## command.closeStdin / close_stdin
+
+End the command's input, so a command that reads to the end of its input can finish.
+
+<Tabs syncKey="lang">
+<TabItem label="TypeScript">
+
+```ts
+command.closeStdin(): Promise<void>
+```
+
+</TabItem>
+<TabItem label="Python">
+
+```python
+command.close_stdin() -> None
+```
+
+</TabItem>
+</Tabs>
+
+**Examples**
+
+<Tabs syncKey="lang">
+<TabItem label="TypeScript">
+
+```ts
+await command.closeStdin();
+```
+
+</TabItem>
+<TabItem label="Python">
+
+```python
+command.close_stdin()
+```
+
+</TabItem>
+</Tabs>
+
+## command.resize
+
+Change the terminal size of a command that runs on a terminal.
+
+<Tabs syncKey="lang">
+<TabItem label="TypeScript">
+
+```ts
+command.resize(rows: number, cols: number): Promise<void>
+```
+
+</TabItem>
+<TabItem label="Python">
+
+```python
+command.resize(rows, cols) -> None
+```
+
+</TabItem>
+</Tabs>
+
+**Examples**
+
+<Tabs syncKey="lang">
+<TabItem label="TypeScript">
+
+```ts
+const top = await sandbox.exec("top", { background: true, tty: { rows: 24, cols: 80 } });
+await top.resize(40, 120);
+```
+
+</TabItem>
+<TabItem label="Python">
+
+```python
+top = sandbox.exec("top", background=True, tty=TerminalSize(24, 80))
+top.resize(40, 120)
+```
+
+</TabItem>
+</Tabs>
+
+## command.inspect
+
+Read the command's record from the daemon.
+
+<Tabs syncKey="lang">
+<TabItem label="TypeScript">
+
+```ts
+command.inspect(): Promise<CommandInfo>
+```
+
+</TabItem>
+<TabItem label="Python">
+
+```python
+command.inspect() -> CommandInfo
+```
+
+</TabItem>
+</Tabs>
+
+**Examples**
+
+<Tabs syncKey="lang">
+<TabItem label="TypeScript">
+
+```ts
+const { state, exitCode } = await command.inspect();
+```
+
+</TabItem>
+<TabItem label="Python">
+
+```python
+info = command.inspect()
+print(info.state, info.exit_code)
+```
+
+</TabItem>
+</Tabs>
+
+A `CommandInfo` holds `id`, the sandbox ID, `command`, `state` (`running` or `exited`), the exit code, `signal`, the start and exit times, and the lost bytes. The exit code is null while the command runs.
+
+## command.disconnect
+
+Close the command's stream and leave the command running.
+
+<Tabs syncKey="lang">
+<TabItem label="TypeScript">
+
+```ts
+command.disconnect(): void
+```
+
+</TabItem>
+<TabItem label="Python">
+
+```python
+command.disconnect() -> None
+```
+
+</TabItem>
+</Tabs>
+
+**Examples**
+
+<Tabs syncKey="lang">
+<TabItem label="TypeScript">
+
+```ts
+command.disconnect();
+```
+
+</TabItem>
+<TabItem label="Python">
+
+```python
+command.disconnect()
+```
+
+</TabItem>
+</Tabs>
+
+The daemon keeps the command after this client lets go of it. `wait` or [`reconnect`](#commandreconnect) attaches again.
+
+## command.reconnect
+
+Attach to the command again.
+
+<Tabs syncKey="lang">
+<TabItem label="TypeScript">
+
+```ts
+command.reconnect(options?: { signal?: AbortSignal }): Promise<void>
+```
+
+</TabItem>
+<TabItem label="Python">
+
+```python
+command.reconnect() -> None
+```
+
+</TabItem>
+</Tabs>
+
+**Examples**
+
+<Tabs syncKey="lang">
+<TabItem label="TypeScript">
+
+```ts
+await command.reconnect();
+const result = await command.wait();
+```
+
+</TabItem>
+<TabItem label="Python">
+
+```python
+command.reconnect()
+result = command.wait()
+```
+
+</TabItem>
+</Tabs>
+
+The daemon replays the output it still holds, so the result and the callbacks start over.
+
+## sandbox.commands.list
+
+List the commands the daemon holds for the sandbox, running or ended.
+
+<Tabs syncKey="lang">
+<TabItem label="TypeScript">
+
+```ts
+sandbox.commands.list(): Promise<CommandInfo[]>
+```
+
+</TabItem>
+<TabItem label="Python">
+
+```python
+sandbox.commands.list() -> list[CommandInfo]
+```
+
+</TabItem>
+</Tabs>
+
+**Examples**
+
+<Tabs syncKey="lang">
+<TabItem label="TypeScript">
+
+```ts
+for (const info of await sandbox.commands.list()) console.log(info.id, info.state);
+```
+
+</TabItem>
+<TabItem label="Python">
+
+```python
+for info in sandbox.commands.list():
+    print(info.id, info.state)
+```
+
+</TabItem>
+</Tabs>
+
+The list includes the commands any client started.
+
+## sandbox.commands.get
+
+Find a command by ID, from any client, and return a handle to it.
+
+<Tabs syncKey="lang">
+<TabItem label="TypeScript">
+
+```ts
+sandbox.commands.get(id: string, options?: OutputOptions): Promise<Command>
+```
+
+</TabItem>
+<TabItem label="Python">
+
+```python
+sandbox.commands.get(id, *, output_limit_bytes=8388608, on_stdout=None, on_stderr=None) -> Command
+```
+
+</TabItem>
+</Tabs>
+
+**Examples**
+
+<Tabs syncKey="lang">
+<TabItem label="TypeScript">
+
+```ts
+const command = await sandbox.commands.get(id, { onStdout: (chunk) => process.stdout.write(chunk) });
+const result = await command.wait();
+```
+
+</TabItem>
+<TabItem label="Python">
+
+```python
+command = sandbox.commands.get(id, on_stdout=sys.stdout.buffer.write)
+result = command.wait()
+```
+
+</TabItem>
+</Tabs>
+
+**Options**
+
+| TypeScript | Python | Description |
+| --- | --- | --- |
+| `onStdout`, `onStderr` | `on_stdout`, `on_stderr` | called with each chunk of output as it arrives |
+| `outputLimitBytes` | `output_limit_bytes` | how many of the newest bytes the result keeps |
+
+The handle attaches on `wait`, so the callbacks see the output the daemon replays.

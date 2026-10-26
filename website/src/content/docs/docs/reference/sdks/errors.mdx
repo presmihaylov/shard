@@ -2,7 +2,7 @@
 title: Errors and timeouts
 description: The errors the TypeScript and Python SDKs raise, the code the daemon gives each refusal, and the time limits on the client and the server.
 sidebar:
-  order: 3
+  order: 11
 ---
 
 import { TabItem, Tabs } from '@astrojs/starlight/components';
@@ -50,7 +50,7 @@ Both versions print `404 not_found`.
 
 ## A failed command is not an error
 
-A command that exits with a non-zero code is a result. `exec()` reports the exit code, the signal and the output, and raises nothing. When a signal ends a command, every provider reports the exit code as 128 plus the signal's number, such as 137 for `KILL`.
+A command that exits with a non-zero code is a result. [`exec()`](/docs/reference/sdks/commands/#sandboxexec) reports the exit code, the signal and the output, and raises nothing. When a signal ends a command, every provider reports the exit code as 128 plus the signal's number, such as 137 for `KILL`.
 
 A command that never started is an error: `CommandNotStartedError`. Its exit code is 127 when the command does not exist and 126 when it cannot run, the same codes a shell uses.
 

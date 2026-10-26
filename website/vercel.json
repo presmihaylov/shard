@@ -115,6 +115,51 @@
       "source": "/docs/guides/remote.md",
       "destination": "/docs/essentials/remote-access.md",
       "permanent": true
+    },
+    {
+      "source": "/docs/sdks/typescript",
+      "destination": "/docs/reference/sdks/",
+      "permanent": true
+    },
+    {
+      "source": "/docs/sdks/typescript/",
+      "destination": "/docs/reference/sdks/",
+      "permanent": true
+    },
+    {
+      "source": "/docs/sdks/typescript.md",
+      "destination": "/docs/reference/sdks.md",
+      "permanent": true
+    },
+    {
+      "source": "/docs/sdks/python",
+      "destination": "/docs/reference/sdks/",
+      "permanent": true
+    },
+    {
+      "source": "/docs/sdks/python/",
+      "destination": "/docs/reference/sdks/",
+      "permanent": true
+    },
+    {
+      "source": "/docs/sdks/python.md",
+      "destination": "/docs/reference/sdks.md",
+      "permanent": true
+    },
+    {
+      "source": "/docs/sdks/errors",
+      "destination": "/docs/reference/sdks/errors/",
+      "permanent": true
+    },
+    {
+      "source": "/docs/sdks/errors/",
+      "destination": "/docs/reference/sdks/errors/",
+      "permanent": true
+    },
+    {
+      "source": "/docs/sdks/errors.md",
+      "destination": "/docs/reference/sdks/errors.md",
+      "permanent": true
     }
   ]
 }

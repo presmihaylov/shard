@@ -1,0 +1,406 @@
+---
+title: Processes
+description: The SDK methods that start and manage the named, supervised processes of a sandbox, in TypeScript and Python.
+sidebar:
+  order: 5
+---
+
+import { TabItem, Tabs } from '@astrojs/starlight/components';
+
+## sandbox.run
+
+Start a supervised process in a running sandbox.
+
+<Tabs syncKey="lang">
+<TabItem label="TypeScript">
+
+```ts
+sandbox.run(command: string | string[], options?: RunOptions): Promise<Process>
+```
+
+</TabItem>
+<TabItem label="Python">
+
+```python
+sandbox.run(command, *, name=None, env=None, workdir=None, user=None, restart=None) -> Process
+```
+
+</TabItem>
+</Tabs>
+
+**Examples**
+
+<Tabs syncKey="lang">
+<TabItem label="TypeScript">
+
+```ts
+const api = await sandbox.run("python -m http.server", { name: "api" });
+const db = await sandbox.run(["pg_ctlcluster", "16", "main", "start", "--foreground"], {
+  name: "db",
+  restart: { policy: "on-failure", retries: 5 },
+});
+const once = await sandbox.run("python script.py", { restart: { policy: "no" } });
+```
+
+</TabItem>
+<TabItem label="Python">
+
+```python
+from useshards import Restart
+
+api = sandbox.run("python -m http.server", name="api")
+db = sandbox.run(
+    ["pg_ctlcluster", "16", "main", "start", "--foreground"],
+    name="db",
+    restart=Restart("on-failure", retries=5),
+)
+once = sandbox.run("python script.py", restart=Restart("no"))
+```
+
+</TabItem>
+</Tabs>
+
+**Arguments**
+
+| Argument | Description |
+| --- | --- |
+| `command` | a string runs under `/bin/sh -c`; an array or list runs as it is, with no shell |
+
+**Options**
+
+| TypeScript | Python | Description |
+| --- | --- | --- |
+| `name` | `name` | process name; the base name of the program by default |
+| `env` | `env` | variables added to the sandbox's environment for this process |
+| `workdir` | `workdir` | working directory |
+| `user` | `user` | user name or uid in the sandbox |
+| `restart` | `restart` | when the process starts again: `{ policy, retries, backoff }`, or `Restart(policy, retries=0, backoff=0)` |
+
+The call returns as soon as the process runs. When a process exits, its sandbox stays `running`, so you can still run commands in it. Use [`sandbox.stop`](/docs/reference/sdks/sandboxes/#sandboxstop) or [`sandbox.remove`](/docs/reference/sdks/sandboxes/#sandboxremove) to end the sandbox.
+
+**Restarts**
+
+- `policy` is `no`, `on-failure` (after a non-zero exit code or a signal), `always` (after any exit, and whenever the sandbox starts) or `unless-stopped`, the default.
+- `unless-stopped` is like `always` until [`process.kill`](#processkill) ends the process. A daemon restart leaves it down in a sandbox that `stop` stopped.
+- `retries` caps how many times in a row `on-failure` starts the process again. `0` or no value means no cap.
+- `backoff` is the first wait in seconds, 1 by default or when 0. Each later wait doubles, up to 60 seconds.
+
+**Names**
+
+Use up to 32 lowercase letters, digits, `.`, `_` and `-`. A sandbox runs up to 16 processes. A `run` of a running name raises `ConflictError` with the code `name_taken`, and a `run` of an ended name replaces it.
+
+## process.wait
+
+Wait until the process ends and its restart policy will not start it again.
+
+<Tabs syncKey="lang">
+<TabItem label="TypeScript">
+
+```ts
+process.wait(options?: { signal?: AbortSignal }): Promise<ProcessInfo>
+```
+
+</TabItem>
+<TabItem label="Python">
+
+```python
+process.wait(timeout=None) -> ProcessInfo
+```
+
+</TabItem>
+</Tabs>
+
+**Examples**
+
+<Tabs syncKey="lang">
+<TabItem label="TypeScript">
+
+```ts
+const info = await once.wait();
+console.log(info.status.state, info.status.exit);
+```
+
+</TabItem>
+<TabItem label="Python">
+
+```python
+info = once.wait(timeout=60)
+print(info.status.state, info.status.exit)
+```
+
+</TabItem>
+</Tabs>
+
+**Options**
+
+| TypeScript | Python | Description |
+| --- | --- | --- |
+| `signal` | | an `AbortSignal` that ends the wait with the signal's reason |
+| | `timeout` | seconds to wait before raising the built-in `TimeoutError` |
+
+Ending the wait never ends the process.
+
+## process.kill
+
+Stop the process and cancel its restarts.
+
+<Tabs syncKey="lang">
+<TabItem label="TypeScript">
+
+```ts
+process.kill(options?: { force?: boolean }): Promise<ProcessInfo>
+```
+
+</TabItem>
+<TabItem label="Python">
+
+```python
+process.kill(*, force=False) -> ProcessInfo
+```
+
+</TabItem>
+</Tabs>
+
+**Examples**
+
+<Tabs syncKey="lang">
+<TabItem label="TypeScript">
+
+```ts
+await api.kill();
+await api.kill({ force: true });
+```
+
+</TabItem>
+<TabItem label="Python">
+
+```python
+api.kill()
+api.kill(force=True)
+```
+
+</TabItem>
+</Tabs>
+
+**Options**
+
+| TypeScript | Python | Description |
+| --- | --- | --- |
+| `force` | `force` | send `KILL` instead of `TERM` |
+
+The sandbox keeps running.
+
+## process.logs
+
+Return the output of every run of the process.
+
+<Tabs syncKey="lang">
+<TabItem label="TypeScript">
+
+```ts
+process.logs(): Promise<string>
+```
+
+</TabItem>
+<TabItem label="Python">
+
+```python
+process.logs() -> str
+```
+
+</TabItem>
+</Tabs>
+
+**Examples**
+
+<Tabs syncKey="lang">
+<TabItem label="TypeScript">
+
+```ts
+console.log(await api.logs());
+```
+
+</TabItem>
+<TabItem label="Python">
+
+```python
+print(api.logs(), end="")
+```
+
+</TabItem>
+</Tabs>
+
+The daemon keeps a bounded log, so for a long run it may hold only the end.
+
+## process.followLogs / follow_logs
+
+Stream the log from its start, then new output as it arrives.
+
+<Tabs syncKey="lang">
+<TabItem label="TypeScript">
+
+```ts
+process.followLogs(options?: { signal?: AbortSignal }): AsyncGenerator<Uint8Array>
+```
+
+</TabItem>
+<TabItem label="Python">
+
+```python
+process.follow_logs() -> Follow[bytes]
+```
+
+</TabItem>
+</Tabs>
+
+**Examples**
+
+<Tabs syncKey="lang">
+<TabItem label="TypeScript">
+
+```ts
+for await (const chunk of api.followLogs()) process.stdout.write(chunk);
+```
+
+</TabItem>
+<TabItem label="Python">
+
+```python
+with api.follow_logs() as follow:
+    for chunk in follow:
+        sys.stdout.buffer.write(chunk)
+```
+
+</TabItem>
+</Tabs>
+
+The stream ends when the process ends or the sandbox stops. In TypeScript, an abort ends it with the signal's reason. In Python, closing it ends it, and `AsyncShard` iterates it with `async for`.
+
+## process.inspect
+
+Read the process's record from the daemon.
+
+<Tabs syncKey="lang">
+<TabItem label="TypeScript">
+
+```ts
+process.inspect(): Promise<ProcessInfo>
+```
+
+</TabItem>
+<TabItem label="Python">
+
+```python
+process.inspect() -> ProcessInfo
+```
+
+</TabItem>
+</Tabs>
+
+**Examples**
+
+<Tabs syncKey="lang">
+<TabItem label="TypeScript">
+
+```ts
+const { status } = await api.inspect();
+console.log(status.state, status.restarts);
+```
+
+</TabItem>
+<TabItem label="Python">
+
+```python
+status = api.inspect().status
+print(status.state, status.restarts)
+```
+
+</TabItem>
+</Tabs>
+
+A `ProcessInfo` holds `name`, `command`, `env`, `workdir`, `user`, `restart`, `killed`, and a `status` with `state`, `restarts`, `exit` and the start time. `state` is `running`, `restarting`, `exited`, `killed`, `gave-up` or `stopped`. `process.info` holds the record that the last call on that handle returned.
+
+## sandbox.processes.list
+
+List the processes of a sandbox, in the order they were first run.
+
+<Tabs syncKey="lang">
+<TabItem label="TypeScript">
+
+```ts
+sandbox.processes.list(): Promise<ProcessInfo[]>
+```
+
+</TabItem>
+<TabItem label="Python">
+
+```python
+sandbox.processes.list() -> list[ProcessInfo]
+```
+
+</TabItem>
+</Tabs>
+
+**Examples**
+
+<Tabs syncKey="lang">
+<TabItem label="TypeScript">
+
+```ts
+for (const info of await sandbox.processes.list()) console.log(info.name, info.status.state);
+```
+
+</TabItem>
+<TabItem label="Python">
+
+```python
+for info in sandbox.processes.list():
+    print(info.name, info.status.state)
+```
+
+</TabItem>
+</Tabs>
+
+The list includes the processes any client ran.
+
+## sandbox.processes.get
+
+Find a process by name and return a handle to it.
+
+<Tabs syncKey="lang">
+<TabItem label="TypeScript">
+
+```ts
+sandbox.processes.get(name: string): Promise<Process>
+```
+
+</TabItem>
+<TabItem label="Python">
+
+```python
+sandbox.processes.get(name) -> Process
+```
+
+</TabItem>
+</Tabs>
+
+**Examples**
+
+<Tabs syncKey="lang">
+<TabItem label="TypeScript">
+
+```ts
+const api = await sandbox.processes.get("api");
+```
+
+</TabItem>
+<TabItem label="Python">
+
+```python
+api = sandbox.processes.get("api")
+```
+
+</TabItem>
+</Tabs>
+
+For a server that keeps running, see [Run a long-running server](/docs/essentials/long-running-server/).

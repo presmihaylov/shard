@@ -29,8 +29,8 @@ const GROUPS: [label: string, prefixes: string[]][] = [
 	['Concepts', ['docs/concepts/']],
 	['Security', ['docs/security/']],
 	['Guides', ['docs/guides/']],
-	['SDKs', ['docs/sdks/']],
 	['CLI reference', ['docs/reference/cli']],
+	['SDK reference', ['docs/reference/sdks']],
 	['REST API reference', ['docs/reference/api']],
 	['Reference', ['docs/reference/']],
 	['Help', ['docs/help/']],
@@ -64,7 +64,7 @@ export const pageTitles = async () => {
 };
 
 // A breadcrumb names an index page by its sidebar group, since its own title is "Overview".
-const CRUMBS: Record<string, string> = { docs: 'Docs', 'docs/reference/cli': 'CLI', 'docs/reference/api': 'REST API' };
+const CRUMBS: Record<string, string> = { docs: 'Docs', 'docs/reference/cli': 'CLI', 'docs/reference/sdks': 'SDKs', 'docs/reference/api': 'REST API' };
 
 export const breadcrumbs = (id: string, title: string, ids: Set<string>) => {
 	const parts = id.split('/');

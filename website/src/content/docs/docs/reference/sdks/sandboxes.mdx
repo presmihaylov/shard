@@ -1,0 +1,491 @@
+---
+title: Sandboxes
+description: The SDK methods that create, find and manage sandboxes, in TypeScript and Python.
+sidebar:
+  order: 3
+---
+
+import { TabItem, Tabs } from '@astrojs/starlight/components';
+
+## shard.create
+
+Create a sandbox and wait until it is running.
+
+<Tabs syncKey="lang">
+<TabItem label="TypeScript">
+
+```ts
+shard.create(options?: CreateOptions): Promise<Sandbox>
+```
+
+</TabItem>
+<TabItem label="Python">
+
+```python
+shard.create(image=None, *, snapshot=None, name=None, env=None, workdir=None, user=None,
+             secrets=None, policy=None, memory_mib=None, vcpus=None, disk_mib=None,
+             swap_mib=None, ports=None) -> Sandbox
+```
+
+</TabItem>
+</Tabs>
+
+**Examples**
+
+<Tabs syncKey="lang">
+<TabItem label="TypeScript">
+
+```ts
+const web = await shard.create({ image: "python:3.12", name: "web", memoryMiB: 512 });
+const copy = await shard.create({ snapshot: "web-files", name: "web-copy" });
+const worker = await shard.create({ image: "python:3.12", secrets: ["API_TOKEN"], policy: "api-only" });
+```
+
+</TabItem>
+<TabItem label="Python">
+
+```python
+web = shard.create("python:3.12", name="web", memory_mib=512)
+copy = shard.create(snapshot="web-files", name="web-copy")
+worker = shard.create("python:3.12", secrets=["API_TOKEN"], policy="api-only")
+```
+
+</TabItem>
+</Tabs>
+
+**Options**
+
+| TypeScript | Python | Description |
+| --- | --- | --- |
+| `image` | `image` | image to use, such as `alpine:3.20`; the first positional argument in Python |
+| `snapshot` | `snapshot` | snapshot ID or name to start from instead of an image |
+| `name` | `name` | sandbox name to use instead of its ID |
+| `env` | `env` | environment every command in the sandbox starts with |
+| `workdir` | `workdir` | default directory for commands |
+| `user` | `user` | default user for commands, as a name or uid such as `nobody` or `1000` |
+| `secrets` | `secrets` | names of the stored secrets the sandbox may use |
+| `policy` | `policy` | outbound network policy |
+| `memoryMiB` | `memory_mib` | memory limit; a snapshot's own limit, or else 512 MiB on Firecracker and vz and none on gVisor, runc and Sysbox |
+| `vcpus` | `vcpus` | CPU count; the daemon's default when left out |
+| `diskMiB` | `disk_mib` | disk limit; the daemon's default, or a snapshot's own disk size |
+| `swapMiB` | `swap_mib` | swap file inside the disk limit; 2048 MiB by default on Firecracker and vz |
+| `ports` | `ports` | host ports to forward from the first start, as `{ hostPort, guestPort, public }` or `PortForward(host_port, guest_port, public=False)` |
+
+Give an image or a snapshot, not both. The call can take minutes while the server pulls the image. It returns a sandbox in state `running`. When the create fails, it raises an error, or it returns a sandbox in state `failed` with the reason in `info.failedReason` (`info.failed_reason` in Python).
+
+The sandbox starts with no processes. Use [`sandbox.run`](/docs/reference/sdks/processes/#sandboxrun) to start a supervised process in it, or [`sandbox.exec`](/docs/reference/sdks/commands/#sandboxexec) for a one-off command. The sandbox stays active until stopped.
+
+**Secrets**
+
+Store a secret with [`shard.secrets.set`](/docs/reference/sdks/secrets/#shardsecretsset), then name it in `secrets`. Commands receive `$NAME` with a placeholder instead of the secret value. In HTTPS request headers sent to the secret's destinations, the server replaces the placeholder with the value. The value stays outside the sandbox.
+
+**Network access**
+
+Without a policy, the sandbox can access the internet but not private networks.
+
+**Resource limits**
+
+On Firecracker and vz, a memory limit from 1 to 127 MiB is refused. gVisor, runc and Sysbox refuse any swap but 0.
+
+## shard.get
+
+Find a sandbox by ID, ID prefix or name.
+
+<Tabs syncKey="lang">
+<TabItem label="TypeScript">
+
+```ts
+shard.get(ref: string): Promise<Sandbox>
+```
+
+</TabItem>
+<TabItem label="Python">
+
+```python
+shard.get(ref) -> Sandbox
+```
+
+</TabItem>
+</Tabs>
+
+**Examples**
+
+<Tabs syncKey="lang">
+<TabItem label="TypeScript">
+
+```ts
+const web = await shard.get("web");
+```
+
+</TabItem>
+<TabItem label="Python">
+
+```python
+web = shard.get("web")
+```
+
+</TabItem>
+</Tabs>
+
+A sandbox that does not exist raises `NotFoundError`.
+
+## shard.list
+
+List active sandboxes.
+
+<Tabs syncKey="lang">
+<TabItem label="TypeScript">
+
+```ts
+shard.list(options?: { all?: boolean }): Promise<{ sandboxes: Sandbox[]; warnings: string[] }>
+```
+
+</TabItem>
+<TabItem label="Python">
+
+```python
+shard.list(*, all=False) -> SandboxList  # SandboxList(sandboxes, warnings)
+```
+
+</TabItem>
+</Tabs>
+
+**Examples**
+
+<Tabs syncKey="lang">
+<TabItem label="TypeScript">
+
+```ts
+const { sandboxes, warnings } = await shard.list({ all: true });
+for (const sandbox of sandboxes) console.log(sandbox.name, sandbox.info.state);
+```
+
+</TabItem>
+<TabItem label="Python">
+
+```python
+listed = shard.list(all=True)
+for sandbox in listed.sandboxes:
+    print(sandbox.name, sandbox.info.state)
+```
+
+</TabItem>
+</Tabs>
+
+**Options**
+
+| TypeScript | Python | Description |
+| --- | --- | --- |
+| `all` | `all` | include stopped sandboxes |
+
+The warnings name entries the daemon could not read, so check them before you treat the list as complete.
+
+## sandbox.inspect
+
+Read the sandbox's record again.
+
+<Tabs syncKey="lang">
+<TabItem label="TypeScript">
+
+```ts
+sandbox.inspect(): Promise<SandboxInfo>
+```
+
+</TabItem>
+<TabItem label="Python">
+
+```python
+sandbox.inspect() -> SandboxInfo
+```
+
+</TabItem>
+</Tabs>
+
+**Examples**
+
+<Tabs syncKey="lang">
+<TabItem label="TypeScript">
+
+```ts
+const info = await sandbox.inspect();
+console.log(info.state, info.resources.memoryMiB);
+```
+
+</TabItem>
+<TabItem label="Python">
+
+```python
+info = sandbox.inspect()
+print(info.state, info.resources.memory_mib)
+```
+
+</TabItem>
+</Tabs>
+
+`sandbox.info` holds the record that the last call on that handle returned, and `sandbox.id` and `sandbox.name` read from it.
+
+## sandbox.stop
+
+Stop the sandbox and preserve its files.
+
+<Tabs syncKey="lang">
+<TabItem label="TypeScript">
+
+```ts
+sandbox.stop(): Promise<void>
+```
+
+</TabItem>
+<TabItem label="Python">
+
+```python
+sandbox.stop() -> None
+```
+
+</TabItem>
+</Tabs>
+
+**Examples**
+
+<Tabs syncKey="lang">
+<TabItem label="TypeScript">
+
+```ts
+await sandbox.stop();
+```
+
+</TabItem>
+<TabItem label="Python">
+
+```python
+sandbox.stop()
+```
+
+</TabItem>
+</Tabs>
+
+Each process has up to 30 seconds to exit before it is terminated. Files remain available, but memory and process state are lost.
+
+Use [`sandbox.start`](#sandboxstart) to start the sandbox again. Use [`shard.snapshots.create`](/docs/reference/sdks/snapshots/#shardsnapshotscreate) to save its files as a snapshot.
+
+## sandbox.start
+
+Start a stopped sandbox with its saved files.
+
+<Tabs syncKey="lang">
+<TabItem label="TypeScript">
+
+```ts
+sandbox.start(): Promise<void>
+```
+
+</TabItem>
+<TabItem label="Python">
+
+```python
+sandbox.start() -> None
+```
+
+</TabItem>
+</Tabs>
+
+**Examples**
+
+<Tabs syncKey="lang">
+<TabItem label="TypeScript">
+
+```ts
+await sandbox.start();
+```
+
+</TabItem>
+<TabItem label="Python">
+
+```python
+sandbox.start()
+```
+
+</TabItem>
+</Tabs>
+
+Processes with the `always` or `unless-stopped` restart policy start again, except those killed.
+
+## sandbox.pause
+
+Suspend the sandbox and save its state.
+
+<Tabs syncKey="lang">
+<TabItem label="TypeScript">
+
+```ts
+sandbox.pause(): Promise<void>
+```
+
+</TabItem>
+<TabItem label="Python">
+
+```python
+sandbox.pause() -> None
+```
+
+</TabItem>
+</Tabs>
+
+**Examples**
+
+<Tabs syncKey="lang">
+<TabItem label="TypeScript">
+
+```ts
+await sandbox.pause();
+```
+
+</TabItem>
+<TabItem label="Python">
+
+```python
+sandbox.pause()
+```
+
+</TabItem>
+</Tabs>
+
+Memory and files are saved so its processes can continue after resume. The sandbox must be running. A provider without pause raises `UnsupportedError`.
+
+## sandbox.resume
+
+Resume a paused sandbox from its saved state.
+
+<Tabs syncKey="lang">
+<TabItem label="TypeScript">
+
+```ts
+sandbox.resume(): Promise<void>
+```
+
+</TabItem>
+<TabItem label="Python">
+
+```python
+sandbox.resume() -> None
+```
+
+</TabItem>
+</Tabs>
+
+**Examples**
+
+<Tabs syncKey="lang">
+<TabItem label="TypeScript">
+
+```ts
+await sandbox.resume();
+```
+
+</TabItem>
+<TabItem label="Python">
+
+```python
+sandbox.resume()
+```
+
+</TabItem>
+</Tabs>
+
+Processes continue from where they paused.
+
+## sandbox.fork
+
+Create a sandbox from a running sandbox's memory and files.
+
+<Tabs syncKey="lang">
+<TabItem label="TypeScript">
+
+```ts
+sandbox.fork(options?: { name?: string }): Promise<Sandbox>
+```
+
+</TabItem>
+<TabItem label="Python">
+
+```python
+sandbox.fork(*, name=None) -> Sandbox
+```
+
+</TabItem>
+</Tabs>
+
+**Examples**
+
+<Tabs syncKey="lang">
+<TabItem label="TypeScript">
+
+```ts
+const copy = await sandbox.fork({ name: "web-copy" });
+```
+
+</TabItem>
+<TabItem label="Python">
+
+```python
+copy = sandbox.fork(name="web-copy")
+```
+
+</TabItem>
+</Tabs>
+
+**Options**
+
+| TypeScript | Python | Description |
+| --- | --- | --- |
+| `name` | `name` | name for the new sandbox |
+
+The source briefly pauses, then continues running. The new sandbox starts from the captured state, runs, and has independent files. A provider without fork raises `UnsupportedError`.
+
+## sandbox.remove
+
+Remove the sandbox and its files.
+
+<Tabs syncKey="lang">
+<TabItem label="TypeScript">
+
+```ts
+sandbox.remove(options?: { force?: boolean }): Promise<void>
+```
+
+</TabItem>
+<TabItem label="Python">
+
+```python
+sandbox.remove(*, force=False) -> None
+```
+
+</TabItem>
+</Tabs>
+
+**Examples**
+
+<Tabs syncKey="lang">
+<TabItem label="TypeScript">
+
+```ts
+await sandbox.remove({ force: true });
+```
+
+</TabItem>
+<TabItem label="Python">
+
+```python
+sandbox.remove(force=True)
+```
+
+</TabItem>
+</Tabs>
+
+**Options**
+
+| TypeScript | Python | Description |
+| --- | --- | --- |
+| `force` | `force` | stop a running or paused sandbox first |
+
+Stop a running or paused sandbox before removal, or pass `force`.
