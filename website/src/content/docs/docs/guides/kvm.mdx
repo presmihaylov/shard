@@ -164,7 +164,7 @@ Each shard version pins one Linux kernel, and every build of that kernel is the 
 
 The kernel builds in what a sandbox needs: virtio devices, ext4, overlay and EROFS, cgroups, namespaces and seccomp. It also builds in the bridge, netfilter, NAT and nf_tables, so Docker runs inside a sandbox.
 
-The daemon downloads the kernel from its own release on GitHub, such as `kernel-6.12.110-3`, when it first needs it. It keeps it in `/var/lib/shard/kernel/<tag>/vmlinux-amd64` and checks it against the SHA-256 that shard was built with.
+The daemon downloads the kernel from its own release on GitHub, such as `kernel-6.12.115-1`, when it first needs it. It keeps it in `/var/lib/shard/kernel/<tag>/vmlinux-amd64` and checks it against the SHA-256 that shard was built with.
 
 If a file fails the check, for example because a crash cut it short, the daemon downloads it again. A shard upgrade that ships a new kernel downloads it the same way.
 

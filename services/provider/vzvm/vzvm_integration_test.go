@@ -39,6 +39,7 @@ import (
 	"github.com/presmihaylov/shard/pkg/vzshim"
 	"github.com/presmihaylov/shard/services/bundle"
 	"github.com/presmihaylov/shard/services/image"
+	"github.com/presmihaylov/shard/services/kernel"
 	"github.com/presmihaylov/shard/services/provider/conformance"
 	"github.com/presmihaylov/shard/services/provider/vzvm"
 	"github.com/presmihaylov/shard/services/supervisor"
@@ -512,6 +513,56 @@ func TestPorts(t *testing.T) {
 		NewSpec:  h.newSpec,
 		Shell:    func(script string) []string { return []string{"/bin/sh", "-c", script} },
 	})
+}
+
+// The guest boots the pinned kernel without MPTCP, and drops a SYN that carries IPv4 options before its stack parses them (CVE-2026-98432).
+func TestAGuestBootsThePinnedKernelAndDropsIPOptions(t *testing.T) {
+	h := newVMHarness(t)
+
+	spec := h.newSpec(t)
+	if err := h.provider.Create(t.Context(), spec); err != nil {
+		t.Fatal(err)
+	}
+	if err := h.provider.Start(t.Context(), spec.ID); err != nil {
+		t.Fatal(err)
+	}
+
+	if got := execIn(t, h, spec.ID, "uname -r"); got != kernel.Version {
+		t.Fatalf("the guest runs %s, want the pinned %s", got, kernel.Version)
+	}
+	if got := execIn(t, h, spec.ID, "[ -e /proc/sys/net/mptcp ] && echo present || echo absent"); got != "absent" {
+		t.Fatalf("the guest's MPTCP sysctls are %s, want absent", got)
+	}
+
+	probe := filepath.Join(t.TempDir(), "ipoptions")
+	build := exec.Command("go", "build", "-o", probe, "./testdata/ipoptions")
+	build.Env = append(os.Environ(), "CGO_ENABLED=0", "GOOS=linux", "GOARCH=arm64")
+	if out, err := build.CombinedOutput(); err != nil {
+		t.Fatalf("build the probe: %v: %s", err, out)
+	}
+	body, err := os.Open(probe)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer body.Close()
+	info, err := body.Stat()
+	if err != nil {
+		t.Fatal(err)
+	}
+	conn, err := supervisor.OpenFiles(t.Context(), func(ctx context.Context, exec models.ExecSpec) (models.ExitStatus, error) {
+		return h.provider.Exec(ctx, spec.ID, exec)
+	}, "root")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := errors.Join(supervisor.Put(conn, supervisor.FileHeader{Path: "/ipoptions", Size: info.Size(), Mode: 0o755}, body), conn.Close()); err != nil {
+		t.Fatalf("put the probe: %v", err)
+	}
+
+	got := execIn(t, h, spec.ID, "/ipoptions")
+	if !regexp.MustCompile(`(?m)^plain: connected\noptions: .*i/o timeout$`).MatchString(got) {
+		t.Fatalf("the probe said %q, want the plain dial connected and the one with options timed out", got)
+	}
 }
 
 // A guest's request to an outside address on 80 lands on the redirected port, Host header intact, and the stack drops the rest and says so.

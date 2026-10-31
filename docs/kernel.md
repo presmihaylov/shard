@@ -18,6 +18,11 @@ Hypervisor at its `ch-6.12.8` tag, which hypeman boots on Virtualization.framewo
 `olddefconfig` carries them forward to the pinned release. A change to either file means a new
 `Build`.
 
+Both configs leave MPTCP out. At every boot, `shard-init` adds an nftables rule at the raw
+prerouting hook that drops IPv4 TCP packets carrying IP options, before the guest stack parses them.
+No real traffic sets them, and CVE-2026-98432 reached the kernel through them (SHARD-810). A unit
+test pins both config lines, and a vz test proves the drop.
+
 ## How it is built
 
 ```
@@ -54,7 +59,7 @@ changed `SHARD_KERNEL` file is refused with `kernel checksum mismatch`. The daem
 provider and its kernel path for later boots, without another hash check.
 
 A sandbox record names the kernel its guest booted in `kernel`, by release tag, for example
-`kernel-6.12.110-3`. A create and a start after a stop record the kernel they boot. A resume or a
+`kernel-6.12.115-1`. A create and a start after a stop record the kernel they boot. A resume or a
 fork keeps the tag it had, because it runs a memory image of that kernel. A container substrate
 leaves `kernel` empty.
 

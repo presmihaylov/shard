@@ -198,6 +198,9 @@ func confine() (*os.File, error) {
 	if err := upLoopback(); err != nil {
 		return nil, err
 	}
+	if err := dropIPOptions(); err != nil {
+		return nil, err
+	}
 
 	return remountCgroup()
 }
