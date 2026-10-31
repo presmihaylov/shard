@@ -18,10 +18,10 @@ import (
 )
 
 // Version is the Linux release packaging/kernel builds; packaging/kernel/version.mk must say the same.
-const Version = "6.12.110"
+const Version = "6.12.115"
 
 // Build counts the shard builds of that release, so a config change ships without a kernel bump.
-const Build = 3
+const Build = 1
 
 // ErrChecksum marks a kernel file whose bytes do not hash to the value shard was built with.
 var ErrChecksum = errors.New("kernel checksum mismatch")

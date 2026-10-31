@@ -54,7 +54,7 @@ changed `SHARD_KERNEL` file is refused with `kernel checksum mismatch`. The daem
 provider and its kernel path for later boots, without another hash check.
 
 A sandbox record names the kernel its guest booted in `kernel`, by release tag, for example
-`kernel-6.12.110-3`. A create and a start after a stop record the kernel they boot. A resume or a
+`kernel-6.12.115-1`. A create and a start after a stop record the kernel they boot. A resume or a
 fork keeps the tag it had, because it runs a memory image of that kernel. A container substrate
 leaves `kernel` empty.
 
