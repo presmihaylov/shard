@@ -17,6 +17,15 @@ To upgrade the CLI, run the installer again. To upgrade a host that setup prepar
 
 The `useshards` SDKs for TypeScript and Python have version numbers of their own. Each release below names the SDK version that came with it.
 
+## v0.1.13
+
+31 October 2026. [Full notes](https://github.com/presmihaylov/shard/releases/tag/v0.1.13).
+
+**Fixed**
+
+- A VM sandbox boots Linux 6.12.115 (`kernel-6.12.115-1`), which fixes CVE-2026-98432, a use-after-free on IPv4 TCP options. A running sandbox moves to it at its next stop and start. A resume or a fork keeps the kernel it had.
+- In every VM sandbox, `shard-init` drops IPv4 TCP packets that carry IP options before the guest kernel parses them. No real traffic sets them. MPTCP stays out of the guest kernel.
+
 ## v0.1.12
 
 24 October 2026. [Full notes](https://github.com/presmihaylov/shard/releases/tag/v0.1.12).

@@ -18,6 +18,11 @@ Hypervisor at its `ch-6.12.8` tag, which hypeman boots on Virtualization.framewo
 `olddefconfig` carries them forward to the pinned release. A change to either file means a new
 `Build`.
 
+Both configs leave MPTCP out. At every boot, `shard-init` adds an nftables rule at the raw
+prerouting hook that drops IPv4 TCP packets carrying IP options, before the guest stack parses them.
+No real traffic sets them, and CVE-2026-98432 reached the kernel through them (SHARD-810). A unit
+test pins both config lines, and a vz test proves the drop.
+
 ## How it is built
 
 ```
