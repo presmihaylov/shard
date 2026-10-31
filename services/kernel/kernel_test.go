@@ -41,14 +41,19 @@ func TestVersionMatchesPackaging(t *testing.T) {
 // TestConfigsLeaveMPTCPOutAndBuildNFTablesIn pins what CVE-2026-98432 leans on: no MPTCP, and the nf_tables the guest drops IP options with.
 func TestConfigsLeaveMPTCPOutAndBuildNFTablesIn(t *testing.T) {
 	for _, arch := range []string{"arm64", "amd64"} {
-		config, err := os.ReadFile(filepath.Join("..", "..", "packaging", "kernel", "config-"+arch))
-		if err != nil {
-			t.Fatal(err)
-		}
-		for _, line := range []string{"# CONFIG_MPTCP is not set", "CONFIG_NF_TABLES=y", "CONFIG_NF_TABLES_IPV4=y"} {
-			if !regexp.MustCompile(`(?m)^` + regexp.QuoteMeta(line) + `$`).Match(config) {
-				t.Errorf("config-%s lacks %q", arch, line)
-			}
+		checkConfigHas(t, arch, "# CONFIG_MPTCP is not set", "CONFIG_NF_TABLES=y", "CONFIG_NF_TABLES_IPV4=y")
+	}
+}
+
+func checkConfigHas(t *testing.T, arch string, lines ...string) {
+	t.Helper()
+	config, err := os.ReadFile(filepath.Join("..", "..", "packaging", "kernel", "config-"+arch))
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, line := range lines {
+		if !regexp.MustCompile(`(?m)^` + regexp.QuoteMeta(line) + `$`).Match(config) {
+			t.Errorf("config-%s lacks %q", arch, line)
 		}
 	}
 }
