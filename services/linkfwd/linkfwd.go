@@ -57,6 +57,8 @@ type Forwarder struct {
 	// mu guards flows. Changed holds it across its record read, so a dial either registered first or reads the new links.
 	mu    sync.Mutex
 	flows map[*flow]struct{}
+	// sessions are the port 22 flows' ssh servers, which Serve waits out.
+	sessions sync.WaitGroup
 }
 
 // flow is one carried connection; conn is nil while its dial is in flight, and closed tells that dial to give up.
@@ -144,13 +146,13 @@ func (f *Forwarder) open(ctx context.Context, target string, port uint16) (net.C
 	}
 
 	client, server := net.Pipe()
-	// The session outlives the dial: it ends when the guest closes its end, or the ssh server gives up.
+	// The session outlives the dial: it ends when the flow closes its end, or the ssh server gives up.
 	serveCtx := context.WithoutCancel(ctx)
-	go func() {
+	f.sessions.Go(func() {
 		if err := f.ssh.Serve(serveCtx, server, sshd.Options{Sandbox: id, Explain: f.explain}); err != nil {
 			f.report(fmt.Sprintf("link: ssh into sandbox %s: %v", id, err))
 		}
-	}()
+	})
 
 	return client, nil
 }

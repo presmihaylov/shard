@@ -57,10 +57,11 @@ func TestLinkHostsGiveANameWithAnUnderscoreItsDNSSpelling(t *testing.T) {
 	}
 }
 
-// guestFiles serves each guest's /etc/hosts as shard-init would, and keeps the user every exec ran as.
+// guestFiles serves each guest's /etc/hosts as shard-init would, and keeps the user every exec ran as and how many writes it took.
 type guestFiles struct {
-	hosts map[string]string
-	users []string
+	hosts  map[string]string
+	users  []string
+	writes int
 }
 
 func (g *guestFiles) serve(t *testing.T, p *fakeProvider) func(models.ExecSpec) (models.ExitStatus, error) {
@@ -75,6 +76,7 @@ func (g *guestFiles) serve(t *testing.T, p *fakeProvider) func(models.ExecSpec) 
 				return err
 			}
 			g.hosts[p.execID] = string(body)
+			g.writes++
 
 			return supervisor.WriteMessage(spec.Stdout, supervisor.FileReply{Stat: &models.FileStat{Type: models.FileRegular, Size: header.Size}})
 		}
@@ -184,8 +186,9 @@ func TestRemoveOfATargetTakesItsLineOutOfEveryRunningSource(t *testing.T) {
 	}
 }
 
-func TestAHostsWriteThatFailsKeepsTheLink(t *testing.T) {
-	h, _ := runningLinkHost(t, []string{"agent1", "my_db"}, "agent1")
+func TestAHostsWriteThatFailsKeepsTheLinkAndARetryWritesIt(t *testing.T) {
+	h, g := runningLinkHost(t, []string{"agent1", "my_db"}, "agent1")
+	files := h.provider.serve
 	h.provider.serve = guest(t, refuse(""))
 
 	_, err := h.svc.AddLink(t.Context(), "agent1", "my_db")
@@ -194,19 +197,32 @@ func TestAHostsWriteThatFailsKeepsTheLink(t *testing.T) {
 		t.Fatalf("link = %v, want the hosts write's failure", err)
 	}
 	if got := h.links(t, "agent1"); len(got) != 1 {
-		t.Errorf("agent1 holds %+v, want the link the seam serves", got)
+		t.Fatalf("agent1 holds %+v, want the link the seam serves", got)
+	}
+
+	h.provider.serve = files
+	if _, err := h.svc.AddLink(t.Context(), "agent1", "my_db"); err != nil {
+		t.Fatalf("retry the link: %v", err)
+	}
+	if got := g.hosts[h.ids["agent1"]]; got != linkedHosts {
+		t.Errorf("after the retry agent1's hosts = %q, want %q", got, linkedHosts)
 	}
 }
 
+// upVerbs bring agent1 up from the state each names, the two ways a guest comes back holding the lines it had.
+type upVerb struct {
+	name  string
+	state models.State
+	verb  func(*sandbox.Service, *testing.T) (models.Sandbox, error)
+}
+
+var upVerbs = []upVerb{
+	{"start", models.StateStopped, func(s *sandbox.Service, t *testing.T) (models.Sandbox, error) { return s.Start(t.Context(), "agent1") }},
+	{"resume", models.StatePaused, func(s *sandbox.Service, t *testing.T) (models.Sandbox, error) { return s.Resume(t.Context(), "agent1") }},
+}
+
 func TestStartAndResumeWriteTheLinksTheGuestMissed(t *testing.T) {
-	for _, tc := range []struct {
-		name  string
-		state models.State
-		verb  func(*sandbox.Service, *testing.T) (models.Sandbox, error)
-	}{
-		{"start", models.StateStopped, func(s *sandbox.Service, t *testing.T) (models.Sandbox, error) { return s.Start(t.Context(), "agent1") }},
-		{"resume", models.StatePaused, func(s *sandbox.Service, t *testing.T) (models.Sandbox, error) { return s.Resume(t.Context(), "agent1") }},
-	} {
+	for _, tc := range upVerbs {
 		t.Run(tc.name, func(t *testing.T) {
 			h, g := runningLinkHost(t, []string{"agent1", "my_db"})
 			h.link(t, "agent1", "my_db")
@@ -239,15 +255,66 @@ func TestAStartWhoseHostsWriteFailsRunsOnAndReportsIt(t *testing.T) {
 	}
 }
 
-func TestAStartWithNoLinksExecsNothing(t *testing.T) {
+// linkDrop takes agent1's link to my_db away while agent1 is down.
+type linkDrop struct {
+	name string
+	drop func(*testing.T, linkHost) error
+}
+
+func TestStartAndResumeTakeOutTheLineOfTheLastLinkDroppedWhileDown(t *testing.T) {
+	drops := []linkDrop{
+		{"unlink", func(t *testing.T, h linkHost) error { return h.svc.RemoveLink(t.Context(), "agent1", "my_db") }},
+		{"remove the target", func(t *testing.T, h linkHost) error {
+			// One status answers for every sandbox: my_db is down as the remove asks, and agent1 is up as its start asks.
+			live := h.provider.status
+			h.provider.status = models.Status{Exists: true, State: models.StateStopped}
+			defer func() { h.provider.status = live }()
+
+			return h.svc.Remove(t.Context(), "my_db", false)
+		}},
+	}
+	for _, up := range upVerbs {
+		for _, d := range drops {
+			t.Run(up.name+" after "+d.name, func(t *testing.T) { dropWhileDown(t, up, d) })
+		}
+	}
+}
+
+// dropWhileDown drops agent1's last link while it is down, brings it up, and wants the guest's own lines back.
+func dropWhileDown(t *testing.T, up upVerb, d linkDrop) {
+	t.Helper()
+	h, g := runningLinkHost(t, []string{"agent1", "my_db"}, "agent1")
+	h.link(t, "agent1", "my_db")
+	h.setState(t, "agent1", up.state)
+
+	if err := d.drop(t, h); err != nil {
+		t.Fatalf("%s: %v", d.name, err)
+	}
+	if got := g.hosts[h.ids["agent1"]]; got != linkedHosts {
+		t.Fatalf("while down agent1's hosts = %q, want the lines it went down with %q", got, linkedHosts)
+	}
+	if _, err := up.verb(h.svc, t); err != nil {
+		t.Fatalf("%s: %v", up.name, err)
+	}
+
+	if got := g.hosts[h.ids["agent1"]]; got != guestHosts {
+		t.Errorf("after the %s agent1's hosts = %q, want the guest's own %q", up.name, got, guestHosts)
+	}
+}
+
+func TestAStartWithNoLinksLeavesAHostsFileWithNoBlockUnwritten(t *testing.T) {
 	h, g := runningLinkHost(t, []string{"agent1"})
+	g.hosts[h.ids["agent1"]] = guestHosts
 
 	if _, err := h.svc.Start(t.Context(), "agent1"); err != nil {
 		t.Fatalf("start: %v", err)
 	}
 
-	if len(g.users) != 0 {
-		t.Errorf("the start ran %d execs, want none for a sandbox with no links", len(g.users))
+	if got := g.hosts[h.ids["agent1"]]; got != guestHosts || g.writes != 0 {
+		t.Errorf("after the start agent1's hosts = %q after %d writes, want the guest's own %q and no write", got, g.writes, guestHosts)
+	}
+	if len(*h.reports) != 0 {
+		t.Errorf("the service reported %q, want nothing", *h.reports)
 	}
 }
 

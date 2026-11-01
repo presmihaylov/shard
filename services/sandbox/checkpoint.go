@@ -283,8 +283,8 @@ func (s *Service) Resume(ctx context.Context, ref string) (models.Sandbox, error
 	if err := s.openPorts(id); err != nil {
 		return models.Sandbox{}, err
 	}
-	// The links may have changed while it was paused, and the restored guest holds the lines it had then.
-	s.hostsAtStart(ctx, id)
+	// The links may have changed while it was paused, the last one too, and the restored guest holds the lines it had then.
+	s.hostsReported(ctx, id)
 
 	return s.record(id)
 }
