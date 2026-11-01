@@ -1003,7 +1003,8 @@ ssh_steps() {
 	track_sandbox "${id}"
 	expect "$(shard_ssh e2e-ssh -- hostname)" "e2e-ssh" "shard ssh ran hostname in the sandbox"
 	code=0
-	shard_ssh e2e-ssh -- /bin/sh -c 'exit 7' || code=$?
+	# ssh joins its arguments into the one string the guest's sh -c runs, as OpenSSH does, so the script goes as one word.
+	shard_ssh e2e-ssh -- 'exit 7' || code=$?
 	expect "${code}" "7" "shard ssh exits with the command's own code"
 	expect "$(ssh_env shard ssh --user nobody e2e-ssh -F /dev/null -o BatchMode=yes -- id -un)" "nobody" "--user picks the guest user"
 	expect "$(printf 'piped\n' | shard_ssh e2e-ssh -- cat)" "piped" "stdin reaches the command, and its end ends the command"
