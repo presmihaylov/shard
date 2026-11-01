@@ -38,6 +38,7 @@ type fakeExec struct {
 type fakeSandboxes struct {
 	command   command
 	createErr error
+	attachErr error
 	dial      func(port uint16) (net.Conn, error)
 
 	mu       sync.Mutex
@@ -68,6 +69,14 @@ func (f *fakeSandboxes) CreateExec(_ context.Context, _ string, req sandbox.Exec
 func (f *fakeSandboxes) Attach(ctx context.Context, _, execID string, streams sandbox.Streams) (sandbox.Attached, error) {
 	f.attached.Add(1)
 	defer f.attached.Add(-1)
+	// A sandbox removed between the create and the attach takes the exec with it.
+	if f.attachErr != nil {
+		f.mu.Lock()
+		f.execs = slices.DeleteFunc(f.execs, func(e *fakeExec) bool { return e.id == execID })
+		f.mu.Unlock()
+
+		return sandbox.Attached{}, f.attachErr
+	}
 	e, err := f.exec(execID)
 	if err != nil {
 		return sandbox.Attached{}, err
@@ -204,6 +213,28 @@ func (f *fakeSandboxes) only(t *testing.T) *fakeExec {
 	}
 
 	return f.execs[0]
+}
+
+// loopbackPair is one TCP connection over loopback, both ends, so a half close is real.
+func loopbackPair(t *testing.T) (net.Conn, net.Conn) {
+	t.Helper()
+	l, err := net.Listen("tcp4", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer l.Close()
+	dialed, err := net.Dial("tcp4", l.Addr().String())
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { dialed.Close() })
+	accepted, err := l.Accept()
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { accepted.Close() })
+
+	return dialed, accepted
 }
 
 // served is one ssh connection to a Server over loopback TCP, since net.Pipe deadlocks on the version exchange.
