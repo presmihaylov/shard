@@ -18,6 +18,9 @@ import (
 // dialBudget is a host port forward's own bound on the reach into the sandbox.
 const dialBudget = 15 * time.Second
 
+// drainBudget bounds how long a closed channel's last bytes may wait on a guest that stopped reading.
+var drainBudget = 10 * time.Second
+
 // loopback is every name of the sandbox's own loopback a -L may target; nothing else is reachable through it.
 var loopback = map[string]bool{"localhost": true, "127.0.0.1": true, "::1": true}
 
@@ -84,6 +87,7 @@ func (c *connection) forward(ch ssh.NewChannel, port uint16) {
 			return
 		case <-in.eof:
 		case <-c.ctx.Done():
+		case <-time.After(drainBudget):
 		}
 		// Nothing the guest sends can reach the client now, so a guest that holds its side open must not hold the forward.
 		if err := quiet(upstream.Close()); err != nil {
