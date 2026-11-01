@@ -573,7 +573,7 @@ class Gate:
         self.sweep_files(box)
         self.sweep_grants(box, sid)
         self.sweep_ports(box)
-        self.sweep_processes()
+        self.sweep_processes(sid)
         self.sweep_errors(box)
         if self.sweep("DELETE", f"{box}?force=true").status < 300:
             self.sandboxes.remove(sid)
@@ -654,13 +654,14 @@ class Gate:
             self.sweep("GET", path)
         self.sweep("DELETE", forward)
 
-    def sweep_processes(self) -> None:
-        made = {"image": self.image, "name": f"gate-proc-{self.tag}"}
+    def sweep_processes(self, linked: str) -> None:
+        made = {"image": self.image, "name": f"gate-proc-{self.tag}", "links": [linked]}
         created = self.sweep("POST", "/v0/sandboxes?wait=true", made)
         expect(created.status == 201, f"the process sandbox's create answered {created.status}")
         sid = str(created.json()["id"])
         self.sandboxes.append(sid)
         box = f"/v0/sandboxes/{sid}"
+        self.sweep_links(box, linked)
         run = self.sweep("POST", f"{box}/processes", {"name": "sleeper", "command": ["sleep", "300"]})
         expect(run.status == 201, f"the run of a process answered {run.status}")
         proc = f"{box}/processes/sleeper"
@@ -684,6 +685,14 @@ class Gate:
         self.sweep("DELETE", f"/v0/snapshots/{ref}")
         if self.sweep("DELETE", f"{box}?force=true").status < 300:
             self.sandboxes.remove(sid)
+
+    def sweep_links(self, box: str, linked: str) -> None:
+        """The link the create made, read, put again, taken back and put once more, so the fork that follows clones it."""
+        link = f"{box}/links/{linked}"
+        self.sweep("GET", f"{box}/links")
+        self.sweep("PUT", link)
+        self.sweep("DELETE", link)
+        self.sweep("PUT", link)
 
     def sweep_errors(self, box: str) -> None:
         """The refusals and errors a client meets, each of which could carry the host's detail in its message."""
