@@ -223,6 +223,31 @@ func TestAnUnknownUserIsRefusedOnStderrWithANonZeroExit(t *testing.T) {
 	}
 }
 
+func TestAnAttachRefusedWithInputQueuedEndsTheSession(t *testing.T) {
+	fake := &fakeSandboxes{attachErr: models.NotFound(nil, "sandbox web1 not found")}
+	s := serve(t, fake, "root")
+
+	session, err := s.client.NewSession()
+	if err != nil {
+		t.Fatal(err)
+	}
+	stdin, err := session.StdinPipe()
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Sent before the exec, so the input is queued when the attach refuses.
+	write(t, stdin, "queued\n")
+	err = session.Run("cat")
+	if exit, ok := errors.AsType[*ssh.ExitError](err); !ok || exit.ExitStatus() != refusedExitCode {
+		t.Fatalf("Run = %v, want exit %d", err, refusedExitCode)
+	}
+
+	if err := s.client.Close(); err != nil {
+		t.Fatal(err)
+	}
+	s.wait(t)
+}
+
 func TestACommandThatDidNotStartExitsWithItsOwnCode(t *testing.T) {
 	fake := &fakeSandboxes{createErr: &models.CommandNotStartedError{Sandbox: "web1", Command: "sh", Reason: "no such file", Code: 127}}
 	s := serve(t, fake, "root")
@@ -324,6 +349,39 @@ func TestAForwardToTheSandboxsLoopbackReachesTheSandboxsPort(t *testing.T) {
 			}
 		})
 	}
+}
+
+func TestAForwardEndsWhenItsClientClosesThoughTheGuestHoldsItsSideOpen(t *testing.T) {
+	before := runtime.NumGoroutine()
+	guests := make(chan net.Conn, 1)
+	fake := &fakeSandboxes{dial: func(uint16) (net.Conn, error) {
+		conn, guest := loopbackPair(t)
+		guests <- guest
+
+		return conn, nil
+	}}
+	s := serve(t, fake, "root")
+
+	conn, err := s.client.Dial("tcp", "localhost:9222")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := conn.Write([]byte("ping")); err != nil {
+		t.Fatal(err)
+	}
+	if err := conn.Close(); err != nil {
+		t.Fatal(err)
+	}
+	got, err := io.ReadAll(<-guests)
+	if err != nil || string(got) != "ping" {
+		t.Fatalf("guest read %q, %v; want ping then the end", got, err)
+	}
+
+	if err := s.client.Close(); err != nil {
+		t.Fatal(err)
+	}
+	s.wait(t)
+	settles(t, before)
 }
 
 func TestAForwardToAnyOtherHostIsRefusedWithoutADial(t *testing.T) {
