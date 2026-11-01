@@ -316,32 +316,19 @@ func TestConcurrentLinksNeverGiveTwoTargetsOneAddress(t *testing.T) {
 	var wg sync.WaitGroup
 	errs := make(chan error, n*n)
 	for i := range n {
-		for j := range n {
-			wg.Go(func() {
-				if _, err := h.svc.AddLink(t.Context(), fmt.Sprintf("agent%d", i), fmt.Sprintf("web%d", (i+j)%n)); err != nil {
-					errs <- err
-				}
-			})
-		}
+		linkEvery(t, h, &wg, errs, i, n)
 	}
 	wg.Wait()
 	close(errs)
 	for err := range errs {
-		t.Fatalf("a concurrent link: %v", err)
+		if err != nil {
+			t.Fatalf("a concurrent link: %v", err)
+		}
 	}
 
 	byTarget := map[string]netip.Addr{}
 	for i := range n {
-		links := h.links(t, fmt.Sprintf("agent%d", i))
-		if len(links) != n {
-			t.Fatalf("agent%d holds %d links, want %d", i, len(links), n)
-		}
-		for _, l := range links {
-			if seen, ok := byTarget[l.TargetID]; ok && seen != l.Address {
-				t.Errorf("%s is at %s and at %s, want one address", l.Target, seen, l.Address)
-			}
-			byTarget[l.TargetID] = l.Address
-		}
+		oneAddressEach(t, h.links(t, fmt.Sprintf("agent%d", i)), n, byTarget)
 	}
 	addresses := map[netip.Addr]bool{}
 	for _, a := range byTarget {
@@ -349,6 +336,73 @@ func TestConcurrentLinksNeverGiveTwoTargetsOneAddress(t *testing.T) {
 	}
 	if len(addresses) != n || !addresses[addr("10.86.0.1")] || !addresses[addr(fmt.Sprintf("10.86.0.%d", n))] {
 		t.Errorf("the targets hold %v, want %d addresses from 10.86.0.1 up", byTarget, n)
+	}
+}
+
+// linkEvery links agent i to every web sandbox at once, each from its own goroutine, in an order of its own.
+func linkEvery(t *testing.T, h linkHost, wg *sync.WaitGroup, errs chan<- error, i, n int) {
+	for j := range n {
+		wg.Go(func() {
+			_, err := h.svc.AddLink(t.Context(), fmt.Sprintf("agent%d", i), fmt.Sprintf("web%d", (i+j)%n))
+			errs <- err
+		})
+	}
+}
+
+// oneAddressEach checks one source holds n links, each at the address every other source sees its target at.
+func oneAddressEach(t *testing.T, links []models.Link, n int, byTarget map[string]netip.Addr) {
+	t.Helper()
+	if len(links) != n {
+		t.Fatalf("a source holds %d links, want %d", len(links), n)
+	}
+	for _, l := range links {
+		if seen, ok := byTarget[l.TargetID]; ok && seen != l.Address {
+			t.Errorf("%s is at %s and at %s, want one address", l.Target, seen, l.Address)
+		}
+		byTarget[l.TargetID] = l.Address
+	}
+}
+
+// racingRepo deletes a source's record on the first list without the target, as a remove of that source does between the list and the update.
+type racingRepo struct {
+	*sandboxstate.Repository
+	target, source string
+	once           sync.Once
+	err            error
+}
+
+func (r *racingRepo) List() ([]models.Sandbox, error) {
+	sandboxes, err := r.Repository.List()
+	if err != nil || slices.ContainsFunc(sandboxes, func(sb models.Sandbox) bool { return sb.ID == r.target }) {
+		return sandboxes, err
+	}
+	r.once.Do(func() { r.err = r.Delete(r.source) })
+
+	return sandboxes, nil
+}
+
+func TestRemoveOfATargetDropsEveryLinkThoughASourceIsRemovedBesideIt(t *testing.T) {
+	h := newLinkHost(t, "agent1", "agent2", "web1")
+	h.link(t, "agent1", "web1")
+	h.link(t, "agent2", "web1")
+	before := len(h.heard.told())
+	race := &racingRepo{Repository: h.repo, target: h.ids["web1"], source: h.ids["agent1"]}
+	svc, _ := newService(t, &recorder{}, stopped(), func(cfg *sandbox.Config) {
+		cfg.Repo, cfg.Links = race, h.heard
+	})
+
+	if err := svc.Remove(t.Context(), "web1", false); err != nil {
+		t.Fatalf("remove: %v", err)
+	}
+	if _, err := h.repo.Get(h.ids["agent1"]); race.err != nil || !errors.Is(err, sandboxstate.ErrNotFound) {
+		t.Fatalf("agent1 = %v after the racing remove (%v), want it gone", err, race.err)
+	}
+
+	if got := h.links(t, "agent2"); len(got) != 0 {
+		t.Errorf("agent2 holds %+v, want no link to a sandbox that is gone", got)
+	}
+	if got := h.heard.told()[before:]; !slices.Equal(got, []string{h.ids["agent2"]}) {
+		t.Errorf("the seam heard %v, want only agent2 %s", got, h.ids["agent2"])
 	}
 }
 
