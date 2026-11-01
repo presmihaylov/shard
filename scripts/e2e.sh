@@ -995,7 +995,7 @@ tunnel_answer() {
 # ssh_steps drive shard ssh against a sandbox with no sshd: a command, scp, a -L to its loopback, the refusals, and the ssh scope (SHARD-811).
 # shellcheck disable=SC2120 # only e2e-fc.sh passes create flags
 ssh_steps() {
-	local id cfg code out pid token
+	local id cfg code out pid ssh_token exec_token
 
 	step "shard ssh runs a command in a sandbox that has no sshd"
 	SSH_DIR=$(mktemp -d /tmp/shard-e2e-ssh.XXXXXX)
@@ -1054,20 +1054,21 @@ ssh_steps() {
 	chmod 0600 "${SSH_DIR}/signing-key"
 	SERVE_PIDS="${SERVE_PIDS} $(start_serve "${SHARD_ROOT}" "${SERVE_PORT}" "${SSH_DIR}/serve.log" --signing-key-file "${SSH_DIR}/signing-key")" ||
 		fail "the front did not come up: $(cat "${SSH_DIR}/serve.log")"
-	token=$("${PREFIX}/shard" tokens mint --name shard-e2e-ssh --scopes ssh --signing-key-file "${SSH_DIR}/signing-key" | jq -r .token) ||
+	ssh_token=$("${PREFIX}/shard" tokens mint --name shard-e2e-ssh --scopes ssh --signing-key-file "${SSH_DIR}/signing-key" | jq -r .token) ||
 		fail "tokens mint did not print an ssh token"
-	out=$(SHARD_API_KEY="${token}" ssh_env "${PREFIX}/shard" --remote "http://127.0.0.1:${SERVE_PORT}" ssh e2e-ssh -F /dev/null -o BatchMode=yes -- hostname 2>/dev/null) ||
+	out=$(SHARD_API_KEY="${ssh_token}" ssh_env "${PREFIX}/shard" --remote "http://127.0.0.1:${SERVE_PORT}" ssh e2e-ssh -F /dev/null -o BatchMode=yes -- hostname 2>/dev/null) ||
 		fail "shard ssh over the front with an ssh token failed"
 	expect "${out}" "e2e-ssh" "an ssh token reaches the sandbox through the front"
-	token=$("${PREFIX}/shard" tokens mint --name shard-e2e-exec --scopes sandbox:read,exec --signing-key-file "${SSH_DIR}/signing-key" | jq -r .token) ||
+	exec_token=$("${PREFIX}/shard" tokens mint --name shard-e2e-exec --scopes sandbox:read,exec --signing-key-file "${SSH_DIR}/signing-key" | jq -r .token) ||
 		fail "tokens mint did not print an exec token"
 	code=0
-	out=$(SHARD_API_KEY="${token}" ssh_env "${PREFIX}/shard" --remote "http://127.0.0.1:${SERVE_PORT}" ssh e2e-ssh -F /dev/null -o BatchMode=yes -- hostname 2>&1) || code=$?
+	out=$(SHARD_API_KEY="${exec_token}" ssh_env "${PREFIX}/shard" --remote "http://127.0.0.1:${SERVE_PORT}" ssh e2e-ssh -F /dev/null -o BatchMode=yes -- hostname 2>&1) || code=$?
 	[ "${code}" != "0" ] || fail "an exec-only token ran ssh through the front"
 	grep -q "the token lacks ssh" <<<"${out}" || fail "the exec-only refusal did not name the ssh scope: ${out}"
 	say "an exec-only token is refused ssh, by the scope's name"
-	grep -q "${token}" "${SSH_DIR}/serve.log" "${DAEMON_LOG}" && fail "a log holds the exec token value"
 	stop_serve
+	grep -qF -e "${ssh_token}" -e "${exec_token}" "${SSH_DIR}/serve.log" "${DAEMON_LOG}" && fail "a log holds a token value"
+	say "neither log holds the ssh or the exec token"
 
 	step "remove the ssh sandbox"
 	drop_sandbox "${id}"
@@ -1135,6 +1136,12 @@ link_steps() {
 	expect "$(hosts_address "${agent}" e2e_db)" "${db_addr}" "/etc/hosts names e2e_db with no restart"
 	expect "$(hosts_address "${agent}" e2e-db)" "${db_addr}" "/etc/hosts gives e2e_db the DNS-safe alias e2e-db"
 	expect "$(link_reply "${agent}" e2e-db "${GUEST_PORT}" alias)" "e2e_db:alias" "the alias reaches the second target"
+
+	step "a link address answers its own source only"
+	expect "$(link_reply "${agent}" "${addr}" "${GUEST_PORT}" by-ip)" "e2e-web:by-ip" "the source reaches e2e-web by the link address itself"
+	expect "$(no_reply "${db}" "${addr}" stray)" "" "e2e_db, which links nothing, gets no answer from the same live address"
+
+	step "link remove takes the line and the address away"
 	shard link remove e2e-agent e2e_db >/dev/null
 	expect "$(hosts_address "${agent}" e2e_db)" "" "link remove took the line out of /etc/hosts"
 	expect "$(no_reply "${agent}" "${db_addr}" gone)" "" "the removed link's address answers no more"
