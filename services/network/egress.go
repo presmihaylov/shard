@@ -118,7 +118,7 @@ func mustPrefixes(cidrs []string) []netip.Prefix {
 }
 
 // ruleset is the whole host policy in two tables replaced in one transaction: inet judges routed traffic, bridge judges frames between sandbox ports.
-func (s *Service) ruleset(chains []Chain, leases []netip.Addr) string {
+func (s *Service) ruleset(chains []Chain, links []Linked, leases []netip.Addr) string {
 	var b strings.Builder
 
 	fmt.Fprintf(&b, "table %[1]s %[2]s\ndelete table %[1]s %[2]s\n", tableFamily, tableName)
@@ -131,6 +131,13 @@ func (s *Service) ruleset(chains []Chain, leases []netip.Addr) string {
 
 	// A fronted sandbox's web ports land on the proxy, which is the one thing on the host a sandbox may reach.
 	fmt.Fprintf(&b, "\tchain prerouting {\n\t\ttype nat hook prerouting priority dstnat; policy accept;\n")
+	// A link comes first, so a fronted sandbox's flow to a link's 80 or 443 reaches the forwarder and not the proxy.
+	for _, link := range links {
+		if len(link.Targets) == 0 {
+			continue
+		}
+		fmt.Fprintf(&b, "\t\tiifname %q ip saddr %s ip daddr { %s } meta l4proto tcp dnat ip to %s:%d\n", s.cfg.Bridge, link.Source, joinAddrs(link.Targets), s.gateway, LinkPort)
+	}
 	for _, chain := range chains {
 		fmt.Fprintf(&b, "\t\tiifname %q ip saddr %s tcp dport 80 dnat ip to %s:%d\n", s.cfg.Bridge, chain.Address, s.gateway, proxy.PlainPort)
 		fmt.Fprintf(&b, "\t\tiifname %q ip saddr %s tcp dport 443 dnat ip to %s:%d\n", s.cfg.Bridge, chain.Address, s.gateway, proxy.TLSPort)
@@ -145,6 +152,15 @@ func (s *Service) ruleset(chains []Chain, leases []netip.Addr) string {
 
 	fmt.Fprintf(&b, "\tchain input {\n\t\ttype filter hook input priority filter; policy accept;\n")
 	fmt.Fprintf(&b, "\t\tiifname %q ct state established,related accept\n", s.cfg.Bridge)
+	// Only a flow the link rule above turned here gets in, so a sandbox with no link never reaches the forwarder.
+	for _, link := range links {
+		if len(link.Targets) == 0 {
+			continue
+		}
+		linked := fmt.Sprintf("iifname %q ip saddr %s ip daddr %s tcp dport %d ct status dnat", s.cfg.Bridge, link.Source, s.gateway, LinkPort)
+		over := fmt.Sprintf("%s ct count over %d", linked, maxLinkConns)
+		fmt.Fprintf(&b, "\t\t%s %s\n\t\t%s drop\n\t\t%s accept\n", over, logStatement(RuleLimit), over, linked)
+	}
 	for _, chain := range chains {
 		proxied := fmt.Sprintf("iifname %q ip saddr %s ip daddr %s tcp dport { %d, %d }", s.cfg.Bridge, chain.Address, s.gateway, proxy.PlainPort, proxy.TLSPort)
 		// Each rule counts only its own sandbox's connections, so one sandbox past its share never refuses another (SHARD-350).
