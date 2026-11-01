@@ -45,6 +45,8 @@ FRONT_TLS_PORT=${FRONT_TLS_PORT:-12378}
 # The host port the port steps forward, and the guest port of the listener behind it (SHARD-789).
 FORWARD_PORT=${FORWARD_PORT:-12379}
 GUEST_PORT=8000
+# The host port an ssh -L binds in the ssh steps (SHARD-811).
+TUNNEL_PORT=${TUNNEL_PORT:-12380}
 
 # The root the run must never delete, and the name every sandbox veth on the host starts with.
 PRODUCTION_ROOT="/var/lib/shard"
@@ -88,6 +90,9 @@ SERVE_LOG=""
 # The second front sits over a root no daemon owns, which is how a refusal is proved to dial nothing.
 LONE_ROOT=""
 LONE_LOG=""
+# The ssh steps keep their client config, host key pin and signing key here, and their ssh clients by pid.
+SSH_DIR=""
+SSH_PIDS=""
 REPORTED=0
 # The two ports the daemon's proxy listens on, as pkg/proxy declares them.
 PROXY_PLAIN_PORT=30080
@@ -719,11 +724,12 @@ teardown() {
 		free_sandbox "${id}"
 	done
 
+	stop_ssh
 	stop_serve
 	stop_daemon || echo "teardown: the socket ${SHARD_ROOT}/shard.sock outlived the daemon" >&2
 	stop_echo
 	wipe_root
-	rm -rf "${ECHO_DIR:-/nonexistent}" "${SERVE_DIR:-/nonexistent}" "${LONE_ROOT:-/nonexistent}"
+	rm -rf "${ECHO_DIR:-/nonexistent}" "${SERVE_DIR:-/nonexistent}" "${LONE_ROOT:-/nonexistent}" "${SSH_DIR:-/nonexistent}"
 	rm -f "${DAEMON_LOG:-/nonexistent}" "${SERVE_LOG:-/nonexistent}" "${LONE_LOG:-/nonexistent}"
 }
 
@@ -953,6 +959,119 @@ port_steps() {
 	drop_sandbox "${id}"
 	port_reply 127.0.0.1 "${FORWARD_PORT}" removed >/dev/null 2>&1 && fail "host port ${FORWARD_PORT} answered after its sandbox was removed"
 	say "the remove shut host port ${FORWARD_PORT}"
+}
+
+# ssh_env runs a client with the ssh steps' own config home, so the host key pin never lands in root's home.
+ssh_env() { XDG_CONFIG_HOME="${SSH_DIR}" "$@"; }
+
+# shard_ssh is shard ssh over the socket; -F /dev/null keeps the host's own ssh config out of the run.
+shard_ssh() {
+	local id="$1"
+	shift
+	ssh_env shard ssh "${id}" -F /dev/null -o BatchMode=yes "$@"
+}
+
+# stop_ssh ends every ssh client the ssh steps left running, by pid.
+stop_ssh() {
+	local pid
+	# shellcheck disable=SC2086 # the pid list is meant to split
+	for pid in ${SSH_PIDS}; do
+		kill "${pid}" >/dev/null 2>&1 || true
+		wait "${pid}" >/dev/null 2>&1 || true
+	done
+	SSH_PIDS=""
+}
+
+# tunnel_answer sends one line through the ssh -L port and prints the answer, retrying while ssh sets the listener up.
+tunnel_answer() {
+	local reply=""
+	for _ in $(seq 1 50); do
+		reply=$(port_reply 127.0.0.1 "${TUNNEL_PORT}" "$1") && [ -n "${reply}" ] && break
+		sleep 0.2
+	done
+	printf '%s\n' "${reply}"
+}
+
+# ssh_steps drive shard ssh against a sandbox with no sshd: a command, scp, a -L to its loopback, the refusals, and the ssh scope (SHARD-811).
+# shellcheck disable=SC2120 # only e2e-fc.sh passes create flags
+ssh_steps() {
+	local id cfg code out pid token
+
+	step "shard ssh runs a command in a sandbox that has no sshd"
+	SSH_DIR=$(mktemp -d /tmp/shard-e2e-ssh.XXXXXX)
+	id=$(shard create "$@" --name e2e-ssh "${IMAGE}")
+	track_sandbox "${id}"
+	expect "$(shard_ssh e2e-ssh -- hostname)" "e2e-ssh" "shard ssh ran hostname in the sandbox"
+	code=0
+	shard_ssh e2e-ssh -- /bin/sh -c 'exit 7' || code=$?
+	expect "${code}" "7" "shard ssh exits with the command's own code"
+	expect "$(ssh_env shard ssh --user nobody e2e-ssh -F /dev/null -o BatchMode=yes -- id -un)" "nobody" "--user picks the guest user"
+	expect "$(printf 'piped\n' | shard_ssh e2e-ssh -- cat)" "piped" "stdin reaches the command, and its end ends the command"
+	[ -n "$(find "${SSH_DIR}/shard/ssh" -name 'known_hosts-local-*' -size +0)" ] || fail "shard ssh pinned no host key under ${SSH_DIR}"
+	say "the daemon's host key is pinned in the run's own config home"
+
+	step "scp copies a file in and out through the sftp subsystem"
+	cfg="${SSH_DIR}/ssh_config"
+	ssh_env shard ssh-config >"${cfg}" || fail "ssh-config printed nothing"
+	grep -q '^Host \*\.shard$' "${cfg}" || fail "ssh-config printed no Host *.shard block: $(cat "${cfg}")"
+	printf 'over-sftp\n' >"${SSH_DIR}/up"
+	ssh_env scp -q -F "${cfg}" -o BatchMode=yes "${SSH_DIR}/up" e2e-ssh.shard:/root/up || fail "scp did not copy a file into the sandbox"
+	expect_exec_in "${id}" "over-sftp" "the file scp sent is in the sandbox" /bin/cat /root/up
+	ssh_env scp -q -F "${cfg}" -o BatchMode=yes e2e-ssh.shard:/root/up "${SSH_DIR}/down" || fail "scp did not copy the file back out"
+	expect "$(cat "${SSH_DIR}/down")" "over-sftp" "scp read the file back out"
+
+	step "ssh -L reaches a listener on the sandbox's own 127.0.0.1"
+	shard run e2e-ssh --name listener -- /bin/sh -c "exec nc -lk -p ${GUEST_PORT} -s 127.0.0.1 -e /bin/sh -c 'read line; echo guest:\$line'" >/dev/null
+	ssh_env ssh -F "${cfg}" -o BatchMode=yes -o ExitOnForwardFailure=yes -N -L "127.0.0.1:${TUNNEL_PORT}:localhost:${GUEST_PORT}" e2e-ssh.shard &
+	pid=$!
+	SSH_PIDS="${SSH_PIDS} ${pid}"
+	expect "$(tunnel_answer tunnel)" "guest:tunnel" "the -L carried a line to the guest's loopback and the answer back"
+	stop_ssh
+
+	step "ssh refuses a -L past the sandbox and a -R"
+	ssh_env ssh -F "${cfg}" -o BatchMode=yes -N -L "127.0.0.1:${TUNNEL_PORT}:1.1.1.1:80" e2e-ssh.shard 2>"${SSH_DIR}/beyond.err" &
+	pid=$!
+	SSH_PIDS="${SSH_PIDS} ${pid}"
+	for _ in $(seq 1 50); do
+		[ -n "$(ss -Hltn "sport = :${TUNNEL_PORT}")" ] && break
+		sleep 0.2
+	done
+	port_reply 127.0.0.1 "${TUNNEL_PORT}" beyond >/dev/null 2>&1 && fail "a -L to 1.1.1.1:80 answered"
+	stop_ssh
+	grep -q "administratively prohibited: shard forwards only to the sandbox's own loopback, not to 1.1.1.1" "${SSH_DIR}/beyond.err" ||
+		fail "ssh did not report the refusal of a -L to 1.1.1.1: $(cat "${SSH_DIR}/beyond.err")"
+	say "a -L to 1.1.1.1:80 is refused by name"
+	code=0
+	out=$(ssh_env timeout 20 ssh -F "${cfg}" -o BatchMode=yes -o ExitOnForwardFailure=yes -N -R "127.0.0.1:${TUNNEL_PORT}:127.0.0.1:1" e2e-ssh.shard 2>&1) || code=$?
+	expect "${code}" "255" "ssh -R ends with ssh's own failure code"
+	grep -q "remote port forwarding failed" <<<"${out}" || fail "ssh -R did not report the refusal: ${out}"
+	say "a -R is refused"
+
+	step "the front lets an ssh token in and refuses an exec-only one"
+	openssl rand -hex 32 >"${SSH_DIR}/signing-key"
+	chmod 0600 "${SSH_DIR}/signing-key"
+	SERVE_PIDS="${SERVE_PIDS} $(start_serve "${SHARD_ROOT}" "${SERVE_PORT}" "${SSH_DIR}/serve.log" --signing-key-file "${SSH_DIR}/signing-key")" ||
+		fail "the front did not come up: $(cat "${SSH_DIR}/serve.log")"
+	token=$("${PREFIX}/shard" tokens mint --name shard-e2e-ssh --scopes ssh --signing-key-file "${SSH_DIR}/signing-key" | jq -r .token) ||
+		fail "tokens mint did not print an ssh token"
+	out=$(SHARD_API_KEY="${token}" ssh_env "${PREFIX}/shard" --remote "http://127.0.0.1:${SERVE_PORT}" ssh e2e-ssh -F /dev/null -o BatchMode=yes -- hostname 2>/dev/null) ||
+		fail "shard ssh over the front with an ssh token failed"
+	expect "${out}" "e2e-ssh" "an ssh token reaches the sandbox through the front"
+	token=$("${PREFIX}/shard" tokens mint --name shard-e2e-exec --scopes sandbox:read,exec --signing-key-file "${SSH_DIR}/signing-key" | jq -r .token) ||
+		fail "tokens mint did not print an exec token"
+	code=0
+	out=$(SHARD_API_KEY="${token}" ssh_env "${PREFIX}/shard" --remote "http://127.0.0.1:${SERVE_PORT}" ssh e2e-ssh -F /dev/null -o BatchMode=yes -- hostname 2>&1) || code=$?
+	[ "${code}" != "0" ] || fail "an exec-only token ran ssh through the front"
+	grep -q "the token lacks ssh" <<<"${out}" || fail "the exec-only refusal did not name the ssh scope: ${out}"
+	say "an exec-only token is refused ssh, by the scope's name"
+	grep -q "${token}" "${SSH_DIR}/serve.log" "${DAEMON_LOG}" && fail "a log holds the exec token value"
+	stop_serve
+
+	step "remove the ssh sandbox"
+	drop_sandbox "${id}"
+	rm -rf "${SSH_DIR}"
+	SSH_DIR=""
+	say "the sandbox and the run's ssh home are gone"
 }
 
 # E2E_LIB_ONLY lets the self-test source the helpers above without driving a sandbox.
@@ -2282,6 +2401,7 @@ oom_restart_steps
 disk_bound_steps
 stop_grace_steps
 port_steps
+ssh_steps
 
 # checkpoint_refusals prove a provider without checkpoints refuses each verb by name and leaves the sandbox running.
 checkpoint_refusals() {
