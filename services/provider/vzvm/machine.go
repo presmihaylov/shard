@@ -649,7 +649,7 @@ func (p *Provider) linkOf(client *vz.Client, r record) (*netstack.Link, error) {
 }
 
 // readdress gives the guest the address the record names, so a fresh boot and a restored fork both take it.
-func (m *machine) readdress(ctx context.Context, r record) error {
+func (m *machine) readdress(ctx context.Context, r record, hosts []models.Host) error {
 	if r.Address == "" {
 		return nil
 	}
@@ -659,7 +659,7 @@ func (m *machine) readdress(ctx context.Context, r record) error {
 	}
 	address := supervisor.Address{
 		Interface: "eth0", IP: prefix.Addr().String(), Prefix: prefix.Bits(), Gateway: r.Gateway,
-		Nameservers: r.Nameservers, Hostname: r.Hostname,
+		Nameservers: r.Nameservers, Hostname: r.Hostname, Hosts: hosts,
 	}
 	if err := m.control.Load().Readdress(ctx, address); err != nil {
 		return fmt.Errorf("sandbox %s: address the guest: %w", m.id, err)

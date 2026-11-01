@@ -250,8 +250,7 @@ class Port:
 
 @attrs.frozen
 class Link:
-    """A sandbox another reaches by name, at the address every sandbox that links it shares; target is its name,
-    or its id when it has none."""
+    """A linked sandbox and its shared address; target is its name, or its ID when unnamed."""
 
     target: str
     target_id: str

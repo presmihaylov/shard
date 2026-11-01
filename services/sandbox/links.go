@@ -43,6 +43,9 @@ func (s *Service) AddLink(ctx context.Context, ref, target string) (models.Link,
 	if err := s.linksChanged(ctx, id); err != nil {
 		return models.Link{}, s.refusedLink(id, link, err)
 	}
+	if err := s.hostsChanged(ctx, id); err != nil {
+		return models.Link{}, fmt.Errorf("the link to %s is on the record, but %w", link.Target, err)
+	}
 
 	return link, nil
 }
@@ -98,7 +101,7 @@ func (s *Service) RemoveLink(ctx context.Context, ref, target string) error {
 	if err := s.unlink(id, link.TargetID); err != nil {
 		return err
 	}
-	if err := s.linksChanged(ctx, id); err != nil {
+	if err := errors.Join(s.linksChanged(ctx, id), s.hostsChanged(ctx, id)); err != nil {
 		return fmt.Errorf("the link to %s is off the record, but %w", link.Target, err)
 	}
 
@@ -262,7 +265,12 @@ func (s *Service) dropLinksTo(id string) ([]string, error) {
 		if !slices.ContainsFunc(sb.Links, func(l models.Link) bool { return l.TargetID == id }) {
 			continue
 		}
-		if err := s.dropLink(sb.ID, id); err != nil {
+		err := s.dropLink(sb.ID, id)
+		// A remove of the source beside this one took its record, and its links with it.
+		if errors.Is(err, sandboxstate.ErrNotFound) {
+			continue
+		}
+		if err != nil {
 			return sources, fmt.Errorf("drop the link to %s from sandbox %s: %w", id, nameOf(sb.ID, sb), err)
 		}
 		sources = append(sources, sb.ID)

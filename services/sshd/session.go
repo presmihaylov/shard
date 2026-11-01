@@ -223,6 +223,12 @@ func (s *session) exec(argv []string, tty bool) ending {
 	s.track(created.ID, size)
 
 	in, feed := io.Pipe()
+	// An attach refused before it takes stdin never stops it, and feed would wait in a write forever.
+	defer func() {
+		if err := in.Close(); err != nil {
+			s.report("close the command's input", err)
+		}
+	}()
 	s.work.Go(func() { s.feed(feed) })
 
 	streams := sandbox.Streams{Stdin: in, StopStdin: in.Close, Stdout: s.ch, Stderr: s.ch.Stderr(), Detach: s.hangUp}

@@ -12,8 +12,10 @@ import (
 	"runtime"
 	"slices"
 	"strings"
+	"sync"
 	"syscall"
 	"testing"
+	"time"
 
 	"github.com/pkg/sftp"
 	"golang.org/x/crypto/ssh"
@@ -223,6 +225,31 @@ func TestAnUnknownUserIsRefusedOnStderrWithANonZeroExit(t *testing.T) {
 	}
 }
 
+func TestAnAttachRefusedWithInputQueuedEndsTheSession(t *testing.T) {
+	fake := &fakeSandboxes{attachErr: models.NotFound(nil, "sandbox web1 not found")}
+	s := serve(t, fake, "root")
+
+	session, err := s.client.NewSession()
+	if err != nil {
+		t.Fatal(err)
+	}
+	stdin, err := session.StdinPipe()
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Sent before the exec, so the input is queued when the attach refuses.
+	write(t, stdin, "queued\n")
+	err = session.Run("cat")
+	if exit, ok := errors.AsType[*ssh.ExitError](err); !ok || exit.ExitStatus() != refusedExitCode {
+		t.Fatalf("Run = %v, want exit %d", err, refusedExitCode)
+	}
+
+	if err := s.client.Close(); err != nil {
+		t.Fatal(err)
+	}
+	s.wait(t)
+}
+
 func TestACommandThatDidNotStartExitsWithItsOwnCode(t *testing.T) {
 	fake := &fakeSandboxes{createErr: &models.CommandNotStartedError{Sandbox: "web1", Command: "sh", Reason: "no such file", Code: 127}}
 	s := serve(t, fake, "root")
@@ -323,6 +350,88 @@ func TestAForwardToTheSandboxsLoopbackReachesTheSandboxsPort(t *testing.T) {
 				t.Errorf("dialed %v, want 9222", got)
 			}
 		})
+	}
+}
+
+func TestAForwardEndsWhenItsClientClosesThoughTheGuestHoldsItsSideOpen(t *testing.T) {
+	before := runtime.NumGoroutine()
+	guests := make(chan net.Conn, 1)
+	fake := &fakeSandboxes{dial: func(uint16) (net.Conn, error) {
+		conn, guest := loopbackPair(t)
+		guests <- guest
+
+		return conn, nil
+	}}
+	s := serve(t, fake, "root")
+
+	conn, err := s.client.Dial("tcp", "localhost:9222")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := conn.Write([]byte("ping")); err != nil {
+		t.Fatal(err)
+	}
+	if err := conn.Close(); err != nil {
+		t.Fatal(err)
+	}
+	got, err := io.ReadAll(<-guests)
+	if err != nil || string(got) != "ping" {
+		t.Fatalf("guest read %q, %v; want ping then the end", got, err)
+	}
+
+	if err := s.client.Close(); err != nil {
+		t.Fatal(err)
+	}
+	s.wait(t)
+	settles(t, before)
+}
+
+// closeWatch is a guest port that says when the forward closed it.
+type closeWatch struct {
+	*net.TCPConn
+	closed chan struct{}
+	once   sync.Once
+}
+
+func (c *closeWatch) Close() error {
+	c.once.Do(func() { close(c.closed) })
+
+	return c.TCPConn.Close()
+}
+
+func TestAClosedForwardStopsWaitingOnAGuestThatStoppedReading(t *testing.T) {
+	budget := drainBudget
+	t.Cleanup(func() { drainBudget = budget })
+	drainBudget = 100 * time.Millisecond
+	upstream := make(chan *closeWatch, 1)
+	fake := &fakeSandboxes{dial: func(uint16) (net.Conn, error) {
+		conn, guest := loopbackPair(t)
+		// Small buffers on both ends, so the queued bytes cannot all leave the forward while the guest reads none.
+		if err := errors.Join(conn.(*net.TCPConn).SetWriteBuffer(4096), guest.(*net.TCPConn).SetReadBuffer(4096)); err != nil {
+			return nil, err
+		}
+		watched := &closeWatch{TCPConn: conn.(*net.TCPConn), closed: make(chan struct{})}
+		upstream <- watched
+
+		return watched, nil
+	}}
+	s := serve(t, fake, "root")
+
+	conn, err := s.client.Dial("tcp", "localhost:9222")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := conn.Write(bytes.Repeat([]byte("x"), 1<<20)); err != nil {
+		t.Fatal(err)
+	}
+	if err := conn.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	select {
+	case <-(<-upstream).closed:
+	case <-time.After(5 * time.Second):
+		t.Fatal("the forward still holds the guest's port though its channel closed")
 	}
 }
 
