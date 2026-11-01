@@ -74,7 +74,7 @@ Both refusals come from `shard serve` before it opens the socket, so a refused r
 | `sandbox:write` | Create sandboxes, change their state and create snapshots | Create, start, stop, pause, resume and fork a sandbox, remove a link, create a snapshot |
 | `sandbox:delete` | Remove sandboxes and snapshots | Remove a sandbox, remove a snapshot |
 | `exec` | Run commands and access sandbox files | Every exec route, run and kill a process, and every files, ls, mkdir and archive route |
-| `ssh` | Open ssh sessions into sandboxes and link them: shell, files and -L, as strong as exec | Add a link |
+| `ssh` | Open ssh sessions into sandboxes and link them: shell, files and `-L`, as strong as `exec` | Open an ssh connection into a sandbox, add a link |
 | `secret:*` | Manage secrets and secret grants | Every secrets route, and grant and ungrant on a sandbox |
 | `policy:*` | Manage policies and attach them to sandboxes | Every policies route, and attach and detach on a sandbox |
 | `port:read` | View the host ports forwarded into sandboxes | List the forwards of every sandbox or of one |

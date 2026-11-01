@@ -672,6 +672,26 @@ func TestOnlyAnSSHTokenAddsALink(t *testing.T) {
 	}
 }
 
+// An ssh connection is a shell, files and -L at once, so exec alone does not open one.
+func TestOnlyAnSSHTokenOpensAnSSHConnection(t *testing.T) {
+	up := fakeDaemon(t)
+	env := newTokenEnv(t)
+	address := front(t, up.root, env.secret)
+
+	for name, c := range map[string]struct {
+		scope  string
+		status int
+	}{
+		"exec": {models.ScopeExec, http.StatusForbidden},
+		"ssh":  {models.ScopeSSH, http.StatusOK},
+	} {
+		token := mintScoped(t, env, name, c.scope)
+		if resp := askRoute(t, address, token, http.MethodGet, "/v0/sandboxes/s1/ssh"); resp.StatusCode != c.status { //nolint:bodyclose // askRoute closes the body in a cleanup
+			t.Errorf("an %s token got %d on GET /v0/sandboxes/s1/ssh, want %d", name, resp.StatusCode, c.status)
+		}
+	}
+}
+
 // A token with no scopes and a token with a "*" scope both reach a write route.
 func TestAFullTokenReachesAWriteRoute(t *testing.T) {
 	up := fakeDaemon(t)
@@ -812,7 +832,7 @@ func realDaemon(t *testing.T) liveDaemon {
 
 	d := liveDaemon{root: root, process: countingProcess{calls: &atomic.Int64{}}, dispatched: make(chan string, 8), hungUp: make(chan struct{})}
 	hangUp := sync.OnceFunc(func() { close(d.hungUp) })
-	mux := api.NewHandler("v-test", d.process, nil, nil, nil, nil, nil, nil, io.Discard)
+	mux := api.NewHandler("v-test", d.process, nil, nil, nil, nil, nil, nil, nil, io.Discard)
 	server := &http.Server{
 		ReadHeaderTimeout: time.Second,
 		Handler: http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {

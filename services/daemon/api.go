@@ -29,6 +29,7 @@ import (
 	"github.com/presmihaylov/shard/services/network"
 	"github.com/presmihaylov/shard/services/provider/vzvm"
 	"github.com/presmihaylov/shard/services/sandbox"
+	"github.com/presmihaylov/shard/services/sshd"
 	"github.com/presmihaylov/shard/services/supervisor"
 )
 
@@ -261,9 +262,16 @@ func (t apiTask) Run(ctx context.Context) error {
 	if group != "" {
 		owner = "group " + group
 	}
-	log.New(cfg.Out, "", log.LstdFlags).Printf("api listening on %s, mode %04o, %s", filepath.Join(cfg.Root, api.SocketFile), mode, owner)
+	logger := log.New(cfg.Out, "", log.LstdFlags)
+	logger.Printf("api listening on %s, mode %04o, %s", filepath.Join(cfg.Root, api.SocketFile), mode, owner)
 
-	handler := api.NewHandler(cfg.Version, t.process, repo, enforcer, t.lifecycle, stores, decisions, t.deps.redact, cfg.Out)
+	signer, err := sshd.LoadHostKey(cfg.Root)
+	if err != nil {
+		return err
+	}
+	ssh := sshd.New(signer, t.lifecycle, func(msg string) { logger.Print(msg) })
+
+	handler := api.NewHandler(cfg.Version, t.process, repo, enforcer, t.lifecycle, stores, decisions, ssh, t.deps.redact, cfg.Out)
 
 	return api.Serve(ctx, listener, handler)
 }
@@ -703,6 +711,24 @@ func (l *lifecycle) ResizeExec(ctx context.Context, ref, execID string, size san
 	}
 
 	return svc.ResizeExec(ctx, ref, execID, size)
+}
+
+func (l *lifecycle) ReadyForSSH(ctx context.Context, ref string) (string, error) {
+	svc, err := l.service()
+	if err != nil {
+		return "", err
+	}
+
+	return svc.ReadyForSSH(ctx, ref)
+}
+
+func (l *lifecycle) DialPort(ctx context.Context, ref string, port uint16) (net.Conn, error) {
+	svc, err := l.service()
+	if err != nil {
+		return nil, err
+	}
+
+	return svc.DialPort(ctx, ref, port)
 }
 
 func (l *lifecycle) StatFile(ctx context.Context, ref, path string) (models.FileStat, error) {

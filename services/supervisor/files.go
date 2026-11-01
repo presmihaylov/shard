@@ -16,6 +16,9 @@ const InitPath = "/.shard/init"
 // FilesMode is shard-init's one argument for a files operation, which it serves over its stdin and stdout.
 const FilesMode = "files"
 
+// SFTPMode is shard-init's one argument for an sftp server over its stdin and stdout, as the user the exec runs as.
+const SFTPMode = "sftp"
+
 // The operations a files exec carries, one per exec: the header names it, the reply ends it.
 const (
 	OpStat   = "stat"
