@@ -63,6 +63,8 @@ func (s *Service) hole() hostfw.Hole {
 			{Chain: "INPUT", Match: []string{"-d", gateway, "-i", bridge, "-p", "udp", "-m", "udp", "--dport", port}},
 			{Chain: "INPUT", Match: []string{"-d", gateway, "-i", bridge, "-p", "tcp", "-m", "tcp", "--dport", port}},
 			{Chain: "INPUT", Match: []string{"-d", gateway, "-i", bridge, "-p", "tcp", "-m", "multiport", "--dports", fmt.Sprintf("%d,%d", proxy.PlainPort, proxy.TLSPort)}},
+			// Its own rule, not a third multiport port, so a host that holds the older rule gets this one added beside it.
+			{Chain: "INPUT", Match: []string{"-d", gateway, "-i", bridge, "-p", "tcp", "-m", "tcp", "--dport", strconv.Itoa(LinkPort)}},
 			{Chain: "FORWARD", Match: []string{"-i", bridge}},
 			{Chain: "FORWARD", Match: []string{"-o", bridge, "-m", "conntrack", "--ctstate", "RELATED,ESTABLISHED"}},
 		},
