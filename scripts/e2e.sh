@@ -1074,6 +1074,96 @@ ssh_steps() {
 	say "the sandbox and the run's ssh home are gone"
 }
 
+# hosts_address prints the address /etc/hosts in a sandbox gives a name, and nothing when it has no line for it.
+hosts_address() { shard exec "$1" /bin/sh -c "awk -v n='$2' '{ for (i = 2; i <= NF; i++) if (\$i == n) { print \$1; exit } }' /etc/hosts"; }
+
+# link_reply sends one line from a sandbox to a name and port and prints the answer, retrying while a guest listener comes up.
+link_reply() {
+	local reply=""
+	for _ in $(seq 1 50); do
+		reply=$(shard exec "$1" /bin/sh -c "echo '$4' | nc -w 3 '$2' '$3'" 2>/dev/null) && [ -n "${reply}" ] && break
+		sleep 0.2
+	done
+	printf '%s\n' "${reply}"
+}
+
+# web_listener starts the answer on the target's own 127.0.0.1, which only a link or a forward can reach.
+web_listener() {
+	shard run "$1" --name listener -- /bin/sh -c "exec nc -lk -p ${GUEST_PORT} -s 127.0.0.1 -e /bin/sh -c 'read line; echo $1:\$line'" >/dev/null
+}
+
+# link_steps link one sandbox to others and drive each link: /etc/hosts, a port, ssh, one way, add and remove, fork, the target stopped and removed (SHARD-811).
+# shellcheck disable=SC2120 # only e2e-fc.sh passes create flags
+link_steps() {
+	local web db agent addr db_addr fork code
+
+	step "a sandbox created with --link reaches a port on its target by name"
+	web=$(shard create "$@" --name e2e-web "${IMAGE}")
+	track_sandbox "${web}"
+	web_listener e2e-web
+	agent=$(shard create "$@" --name e2e-agent --link e2e-web "${IMAGE}")
+	track_sandbox "${agent}"
+	addr=$(shard link list --format json e2e-agent | jq -r '.[] | select(.target == "e2e-web") | .address')
+	[[ "${addr}" == 10.86.* ]] || fail "the link to e2e-web got address '${addr}', want one in 10.86.0.0/16"
+	has_line "^e2e-web +${addr}$" <<<"$(shard link list e2e-agent)" || fail "link list does not show the link: $(shard link list e2e-agent)"
+	say "the link to e2e-web is on ${addr}, and link list shows it"
+	expect "$(hosts_address "${agent}" e2e-web)" "${addr}" "/etc/hosts in the source names e2e-web at the link address"
+	expect "$(link_reply "${agent}" e2e-web "${GUEST_PORT}" hello)" "e2e-web:hello" "a listener on the target's 127.0.0.1 answers through the link"
+
+	step "ssh through the link reaches the target with no sshd in it"
+	shard exec "${agent}" /bin/sh -c 'apk add --no-cache openssh-client >/dev/null' || fail "the source could not install an ssh client"
+	expect_exec_in "${agent}" "e2e-web" "ssh over the link ran hostname in the target" \
+		ssh -o BatchMode=yes -o StrictHostKeyChecking=accept-new root@e2e-web hostname
+	expect_exec_in "${agent}" "nobody" "the ssh user picks the target's user" \
+		ssh -o BatchMode=yes -o StrictHostKeyChecking=accept-new nobody@e2e-web id -un
+
+	step "a link is one way"
+	expect "$(hosts_address "${web}" e2e-agent)" "" "the target's /etc/hosts has no line for the source"
+	expect "$(shard link list --format json e2e-web)" "[]" "the target links nothing"
+
+	step "link add on a running source updates /etc/hosts, and a _ name gets a - alias"
+	db=$(shard create "$@" --name e2e_db "${IMAGE}")
+	track_sandbox "${db}"
+	web_listener e2e_db
+	db_addr=$(shard link add e2e-agent e2e_db | awk '$1 == "e2e_db" { print $2 }')
+	[[ "${db_addr}" == 10.86.* ]] && [ "${db_addr}" != "${addr}" ] || fail "the link to e2e_db got '${db_addr}', want its own 10.86.0.0/16 address beside ${addr}"
+	expect "$(hosts_address "${agent}" e2e_db)" "${db_addr}" "/etc/hosts names e2e_db with no restart"
+	expect "$(hosts_address "${agent}" e2e-db)" "${db_addr}" "/etc/hosts gives e2e_db the DNS-safe alias e2e-db"
+	expect "$(link_reply "${agent}" e2e-db "${GUEST_PORT}" alias)" "e2e_db:alias" "the alias reaches the second target"
+	shard link remove e2e-agent e2e_db >/dev/null
+	expect "$(hosts_address "${agent}" e2e_db)" "" "link remove took the line out of /etc/hosts"
+	code=0
+	shard exec "${agent}" /bin/sh -c "echo gone | nc -w 3 ${db_addr} ${GUEST_PORT}" >/dev/null 2>&1 || code=$?
+	[ "${code}" != "0" ] || fail "${db_addr} still answered once its link was removed"
+	say "the removed link's address answers no more"
+	drop_sandbox "${db}"
+
+	if [ "$(status_field fork)" = "true" ]; then
+		step "a fork of the source keeps its links"
+		fork=$(shard fork --name e2e-agent-fork e2e-agent)
+		track_sandbox "${fork}"
+		has_line "^e2e-web +${addr}$" <<<"$(shard link list e2e-agent-fork)" || fail "the fork lost the link: $(shard link list e2e-agent-fork)"
+		expect "$(link_reply "${fork}" e2e-web "${GUEST_PORT}" forked)" "e2e-web:forked" "the fork reaches the target through its link"
+		drop_sandbox "${fork}"
+	fi
+
+	step "a stopped target keeps the link, and refuses the connection"
+	shard stop e2e-web >/dev/null
+	has_line "^e2e-web +${addr}$" <<<"$(shard link list e2e-agent)" || fail "the stop dropped the link: $(shard link list e2e-agent)"
+	code=0
+	shard exec "${agent}" /bin/sh -c "echo stopped | nc -w 3 e2e-web ${GUEST_PORT}" >/dev/null 2>&1 || code=$?
+	[ "${code}" != "0" ] || fail "the stopped target answered through the link"
+	say "the link stays, and the stopped target answers nothing"
+	shard start e2e-web >/dev/null
+	expect "$(link_reply "${agent}" e2e-web "${GUEST_PORT}" back)" "e2e-web:back" "the started target answers on the same link"
+
+	step "removing the target drops the link"
+	drop_sandbox "${web}"
+	expect "$(shard link list --format json e2e-agent)" "[]" "the source holds no link to a removed target"
+	expect "$(hosts_address "${agent}" e2e-web)" "" "/etc/hosts in the source lost the line"
+	drop_sandbox "${agent}"
+}
+
 # E2E_LIB_ONLY lets the self-test source the helpers above without driving a sandbox.
 if [ -n "${E2E_LIB_ONLY:-}" ]; then
 	return 0
@@ -2402,6 +2492,7 @@ disk_bound_steps
 stop_grace_steps
 port_steps
 ssh_steps
+link_steps
 
 # checkpoint_refusals prove a provider without checkpoints refuses each verb by name and leaves the sandbox running.
 checkpoint_refusals() {
