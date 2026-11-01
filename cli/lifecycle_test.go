@@ -19,6 +19,7 @@ import (
 	"github.com/presmihaylov/shard/services/image"
 	"github.com/presmihaylov/shard/services/sandboxstate"
 	"github.com/presmihaylov/shard/services/secret"
+	"github.com/presmihaylov/shard/services/supervisor"
 )
 
 // recorder is the shared log of what the fakes were asked to do and in which order.
@@ -367,6 +368,10 @@ func (f *fakeLifecycleProvider) Exec(_ context.Context, id string, spec models.E
 
 	if f.serve != nil {
 		return f.serve(spec)
+	}
+	// A files exec no test serves finds no file, which is what the hosts refresh of every start reads.
+	if slices.Equal(spec.Argv, []string{supervisor.InitPath, supervisor.FilesMode}) {
+		return models.ExitStatus{}, supervisor.WriteMessage(spec.Stdout, supervisor.FileReply{Error: "no such file", Code: supervisor.FileNotFound})
 	}
 
 	if f.execErr != nil {

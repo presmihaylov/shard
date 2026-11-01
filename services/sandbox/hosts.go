@@ -48,17 +48,7 @@ func validHostname(name string) bool {
 	return !strings.ContainsFunc(name, func(c rune) bool { return (c < 'a' || c > 'z') && (c < '0' || c > '9') && c != '-' })
 }
 
-// hostsAtStart writes the lines of a sandbox that just came up; one that holds no link skips the exec, so a start without links costs nothing more.
-func (s *Service) hostsAtStart(ctx context.Context, id string) {
-	sb, err := s.cfg.Repo.Get(id)
-	if err != nil || len(sb.Links) == 0 {
-		return
-	}
-
-	s.hostsReported(ctx, id)
-}
-
-// hostsReported is hostsChanged for a verb whose own work stands without the lines: a guest that refuses them is reported, and the next link change writes them again.
+// hostsReported is hostsChanged for a verb whose own work stands without the lines: a guest that refuses them is reported, and the next link change or start writes them again.
 func (s *Service) hostsReported(ctx context.Context, ids ...string) {
 	if err := s.hostsChanged(ctx, ids...); err != nil {
 		s.report(err.Error())
