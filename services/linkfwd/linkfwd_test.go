@@ -129,6 +129,14 @@ func (s *fakeSandboxes) DialPort(ctx context.Context, ref string, port uint16) (
 	return client, nil
 }
 
+// dials counts the target ends handed out; a flow is tracked before its dial, so a test that reads a peer waits on this.
+func (s *fakeSandboxes) dials() int {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	return len(s.peers)
+}
+
 func (s *fakeSandboxes) peer(i int) net.Conn {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -480,7 +488,7 @@ func TestServeCarriesAGuestFlowAndResetsARefusedOne(t *testing.T) {
 	if _, err := guest.Write([]byte("hi")); err != nil {
 		t.Fatal(err)
 	}
-	for h.flows() == 0 {
+	for h.sandboxes.dials() == 0 {
 		time.Sleep(time.Millisecond)
 	}
 	got := make([]byte, 2)
@@ -489,16 +497,8 @@ func TestServeCarriesAGuestFlowAndResetsARefusedOne(t *testing.T) {
 	}
 
 	dst.Store(netip.AddrPortFrom(cacheLink, 5432))
-	refused, err := net.Dial("tcp", l.Addr().String())
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer refused.Close()
-	if err := refused.SetReadDeadline(time.Now().Add(2 * time.Second)); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := refused.Read(make([]byte, 1)); !errors.Is(err, syscall.ECONNRESET) {
-		t.Errorf("a flow to no link read %v, want a reset", err)
+	if err := refusal(l.Addr().String()); !errors.Is(err, syscall.ECONNRESET) {
+		t.Errorf("a flow to no link ended with %v, want a reset", err)
 	}
 	select {
 	case line := <-h.reports:
@@ -510,6 +510,21 @@ func TestServeCarriesAGuestFlowAndResetsARefusedOne(t *testing.T) {
 	if err := <-served; err != nil {
 		t.Errorf("Serve = %v, want nil once ctx ended", err)
 	}
+}
+
+// refusal is how a flow to addr ends; on loopback the reset can beat the dial's own check, so the dial's error counts too.
+func refusal(addr string) error {
+	conn, err := net.Dial("tcp", addr)
+	if err != nil {
+		return err
+	}
+	defer conn.Close()
+	if err := conn.SetReadDeadline(time.Now().Add(2 * time.Second)); err != nil {
+		return err
+	}
+	_, err = conn.Read(make([]byte, 1))
+
+	return err
 }
 
 // Shutdown ends the flows a guest still holds open, a port 22 session among them, before Serve returns.
