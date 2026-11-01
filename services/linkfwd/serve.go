@@ -53,9 +53,8 @@ func (f *Forwarder) accept(ctx context.Context, l net.Listener, carriers *sync.W
 
 // carry reaches the target for one guest connection; the guest's handshake is done already, so a refusal is a reset.
 func (f *Forwarder) carry(ctx context.Context, guest net.Conn) {
-	// The splice closes the target end once the guest's is gone, even where the target's half already ended.
-	stop := context.AfterFunc(ctx, func() { _ = guest.Close() })
-	defer stop()
+	stopGuest := context.AfterFunc(ctx, func() { _ = guest.Close() })
+	defer stopGuest()
 
 	source, dst, err := f.addresses(guest)
 	if err != nil {
@@ -71,6 +70,9 @@ func (f *Forwarder) carry(ctx context.Context, guest net.Conn) {
 
 		return
 	}
+	// After the guest's half close the splice reads only the target, which closing the guest cannot wake.
+	stopHost := context.AfterFunc(ctx, func() { _ = host.Close() })
+	defer stopHost()
 
 	if err := splice.Conns(guest, host); err != nil {
 		f.report(fmt.Sprintf("link: from %s to %s broke: %v", source, dst, err))

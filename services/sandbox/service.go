@@ -1219,7 +1219,8 @@ func (s *Service) startWithin(ctx context.Context, id string) error {
 	if err := RecordRunning(ctx, s.cfg.Repo, s.cfg.Provider, id, false); err != nil {
 		return err
 	}
-	s.hostsAtStart(ctx, id)
+	// Even with no link left: one dropped while it was down left its line in the guest's writable layer.
+	s.hostsReported(ctx, id)
 
 	return nil
 }
