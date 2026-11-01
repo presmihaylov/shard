@@ -31,7 +31,7 @@ func TestTheJudgeRulesLikeTheEgressChain(t *testing.T) {
 		{ID: "mail", Action: models.ActionAllow, Protocol: "tcp", Prefixes: []netip.Prefix{netip.MustParsePrefix("203.0.113.0/24")}},
 		{ID: "ntp", Action: models.ActionAllow, Protocol: "udp", Ports: []int{123}, Prefixes: []netip.Prefix{netip.MustParsePrefix("0.0.0.0/0")}},
 		{ID: "unresolved", Action: models.ActionAllow},
-	}}, {Address: otherGuest}})
+	}}, {Address: otherGuest}}, nil)
 
 	for _, tc := range []struct {
 		name string
@@ -81,7 +81,7 @@ func TestTheJudgeRulesLikeTheEgressChain(t *testing.T) {
 	j.Local.read = time.Time{}
 
 	// An apply replaces every chain, so a policy detached leaves the guest with the floor alone.
-	j.Apply(nil)
+	j.Apply(nil, nil)
 	if got := j.Judge(flow(judgedGuest, "tcp", "203.0.113.7:25")); got != (netstack.Verdict{Allow: true, Rule: RuleNone}) {
 		t.Errorf("after the policy went: %+v", got)
 	}
@@ -94,7 +94,7 @@ func TestTheZeroJudgeRefusesUntilTheFirstApply(t *testing.T) {
 	if got := j.Judge(f); got != (netstack.Verdict{Rule: RuleUnapplied}) {
 		t.Fatalf("before the first apply: %+v", got)
 	}
-	j.Apply(nil)
+	j.Apply(nil, nil)
 	if got := j.Judge(f); got != (netstack.Verdict{Allow: true, Rule: RuleNone}) {
 		t.Fatalf("after an apply with no chain: %+v", got)
 	}
@@ -147,13 +147,13 @@ func TestTheJudgeFrontsAGuestWithAChainAlone(t *testing.T) {
 	if j.Fronted(judgedGuest) {
 		t.Error("a guest is fronted before the first apply")
 	}
-	j.Apply([]Chain{{Address: judgedGuest, Policy: true}, {Address: otherGuest}})
+	j.Apply([]Chain{{Address: judgedGuest, Policy: true}, {Address: otherGuest}}, nil)
 	for guest, want := range map[netip.Addr]bool{judgedGuest: true, otherGuest: true, netip.MustParseAddr("10.200.0.4"): false} {
 		if got := j.Fronted(guest); got != want {
 			t.Errorf("%s fronted %v, want %v", guest, got, want)
 		}
 	}
-	j.Apply(nil)
+	j.Apply(nil, nil)
 	if j.Fronted(judgedGuest) {
 		t.Error("a guest stays fronted after its chain went")
 	}
@@ -238,5 +238,69 @@ func TestAddressesFailOnlyTheHeldSandbox(t *testing.T) {
 	var got *HeldChains
 	if err := a.ReapplyAll(t.Context()); !errors.As(err, &got) {
 		t.Errorf("ReapplyAll with no report = %v, want the held error", err)
+	}
+}
+
+// An apply gives a guest its own links alone and the next apply takes them away, while the judge itself still keeps the floor.
+func TestTheJudgeHoldsTheLinksOfTheLastApply(t *testing.T) {
+	var j Judge
+	target := netip.MustParseAddr("10.86.0.2")
+	if j.Linked(judgedGuest, target) {
+		t.Error("a link before the first apply")
+	}
+	j.Apply(nil, []Linked{{Source: judgedGuest, Targets: []netip.Addr{target}}})
+	for _, tc := range []struct {
+		guest, dst netip.Addr
+		want       bool
+	}{
+		{judgedGuest, target, true},
+		{otherGuest, target, false},
+		{judgedGuest, netip.MustParseAddr("10.86.0.3"), false},
+	} {
+		if got := j.Linked(tc.guest, tc.dst); got != tc.want {
+			t.Errorf("%s linked to %s = %v, want %v", tc.guest, tc.dst, got, tc.want)
+		}
+	}
+	// The stack hands a link flow on before it asks, so what reaches the judge is no link: UDP, or another guest's.
+	if got := j.Judge(flow(judgedGuest, "udp", "10.86.0.2:53")); got != (netstack.Verdict{Rule: RulePrivate}) {
+		t.Errorf("udp to a link address: %+v, want the floor", got)
+	}
+	j.Apply(nil, nil)
+	if j.Linked(judgedGuest, target) {
+		t.Error("a link outlived the apply that dropped it")
+	}
+}
+
+// Addresses read the links on every apply, with no egress source too, and a link source that fails fails the apply.
+func TestAddressesApplyTheLinksToTheJudge(t *testing.T) {
+	source := netip.MustParseAddr("10.200.0.2")
+	target := netip.MustParseAddr("10.86.0.2")
+	links := &fakeLinks{linked: []Linked{{Source: source, Targets: []netip.Addr{target}}}}
+	a, err := NewAddresses(Config{Root: t.TempDir(), Subnet: netip.MustParsePrefix("10.200.0.0/29"), Links: links})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if a.Linked(source, target) {
+		t.Fatal("a link before the first apply")
+	}
+	if err := a.ReapplyAll(t.Context()); err != nil {
+		t.Fatal(err)
+	}
+	if !a.Linked(source, target) {
+		t.Fatal("the apply did not give the source its link")
+	}
+
+	links.linked = nil
+	if err := a.Reapply(t.Context(), "sb-1"); err != nil {
+		t.Fatal(err)
+	}
+	if a.Linked(source, target) {
+		t.Fatal("the link outlived the apply that dropped it")
+	}
+
+	links.err = errors.New("records unreadable")
+	if err := a.ReapplyAll(t.Context()); !errors.Is(err, links.err) {
+		t.Fatalf("a failed link read = %v, want its cause", err)
 	}
 }

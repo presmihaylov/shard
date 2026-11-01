@@ -15,18 +15,37 @@ type Judge struct {
 	mu      sync.RWMutex
 	applied bool
 	chains  map[netip.Addr]Chain
+	// links holds each guest's link addresses, which the stack hands to the forwarder before it asks the judge.
+	links map[netip.Addr]map[netip.Addr]bool
 }
 
-// Apply replaces every chain at once, the way the host ruleset is replaced in one transaction.
-func (j *Judge) Apply(chains []Chain) {
+// Apply replaces every chain and link at once, the way the host ruleset is replaced in one transaction.
+func (j *Judge) Apply(chains []Chain, links []Linked) {
 	byAddress := make(map[netip.Addr]Chain, len(chains))
 	for _, chain := range chains {
 		byAddress[chain.Address] = chain
+	}
+	bySource := make(map[netip.Addr]map[netip.Addr]bool, len(links))
+	for _, l := range links {
+		targets := make(map[netip.Addr]bool, len(l.Targets))
+		for _, target := range l.Targets {
+			targets[target] = true
+		}
+		bySource[l.Source] = targets
 	}
 	j.mu.Lock()
 	defer j.mu.Unlock()
 	j.applied = true
 	j.chains = byAddress
+	j.links = bySource
+}
+
+// Linked says the last apply gave the guest a link to dst, which the floor would otherwise refuse.
+func (j *Judge) Linked(guest, dst netip.Addr) bool {
+	j.mu.RLock()
+	defer j.mu.RUnlock()
+
+	return j.links[guest][dst]
 }
 
 // Judge rules on one flow by the guest's address; a guest without a policy reaches everything but the floor, like a sandbox on Linux.

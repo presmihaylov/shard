@@ -7,8 +7,10 @@ import (
 	"errors"
 	"io"
 	"net"
+	"net/netip"
 	"os"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"testing"
 	"time"
@@ -540,5 +542,24 @@ func TestExecReportsASignalledCommandByItsCodeAlone(t *testing.T) {
 	}
 	if exit != (models.ExitStatus{Code: 143}) {
 		t.Errorf("exec = %+v, want code 143 and signal 0, as runsc and runc exec report", exit)
+	}
+}
+
+func TestReaddressCarriesTheHosts(t *testing.T) {
+	sent := supervisor.Message{Kind: supervisor.KindReaddress, Address: &supervisor.Address{
+		IP:    "10.200.0.2",
+		Hosts: []models.Host{{Address: netip.MustParseAddr("10.200.0.3"), Names: []string{"my_db", "my-db"}}},
+	}}
+	var buf bytes.Buffer
+	if err := supervisor.WriteMessage(&buf, sent); err != nil {
+		t.Fatal(err)
+	}
+
+	var got supervisor.Message
+	if err := supervisor.ReadMessage(bufio.NewReader(&buf), &got); err != nil {
+		t.Fatal(err)
+	}
+	if got.Address == nil || !reflect.DeepEqual(got.Address.Hosts, sent.Address.Hosts) {
+		t.Fatalf("hosts = %+v, want %+v", got.Address, sent.Address.Hosts)
 	}
 }

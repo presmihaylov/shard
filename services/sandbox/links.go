@@ -43,6 +43,9 @@ func (s *Service) AddLink(ctx context.Context, ref, target string) (models.Link,
 	if err := s.linksChanged(ctx, id); err != nil {
 		return models.Link{}, s.refusedLink(id, link, err)
 	}
+	if err := s.hostsChanged(ctx, id); err != nil {
+		return models.Link{}, fmt.Errorf("the link to %s is on the record, but %w", link.Target, err)
+	}
 
 	return link, nil
 }
@@ -98,7 +101,7 @@ func (s *Service) RemoveLink(ctx context.Context, ref, target string) error {
 	if err := s.unlink(id, link.TargetID); err != nil {
 		return err
 	}
-	if err := s.linksChanged(ctx, id); err != nil {
+	if err := errors.Join(s.linksChanged(ctx, id), s.hostsChanged(ctx, id)); err != nil {
 		return fmt.Errorf("the link to %s is off the record, but %w", link.Target, err)
 	}
 
