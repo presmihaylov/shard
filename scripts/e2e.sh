@@ -1023,14 +1023,15 @@ ssh_steps() {
 
 	step "ssh -L reaches a listener on the sandbox's own 127.0.0.1"
 	shard run e2e-ssh --name listener -- /bin/sh -c "exec nc -lk -p ${GUEST_PORT} -s 127.0.0.1 -e /bin/sh -c 'read line; echo guest:\$line'" >/dev/null
-	ssh_env ssh -F "${cfg}" -o BatchMode=yes -o ExitOnForwardFailure=yes -N -L "127.0.0.1:${TUNNEL_PORT}:localhost:${GUEST_PORT}" e2e-ssh.shard &
+	# A background ssh goes bare, not through the ssh_env function, so $! is its own pid and stop_ssh ends it rather than a subshell.
+	XDG_CONFIG_HOME="${SSH_DIR}" ssh -F "${cfg}" -o BatchMode=yes -o ExitOnForwardFailure=yes -N -L "127.0.0.1:${TUNNEL_PORT}:localhost:${GUEST_PORT}" e2e-ssh.shard &
 	pid=$!
 	SSH_PIDS="${SSH_PIDS} ${pid}"
 	expect "$(tunnel_answer tunnel)" "guest:tunnel" "the -L carried a line to the guest's loopback and the answer back"
 	stop_ssh
 
 	step "ssh refuses a -L past the sandbox and a -R"
-	ssh_env ssh -F "${cfg}" -o BatchMode=yes -N -L "127.0.0.1:${TUNNEL_PORT}:1.1.1.1:80" e2e-ssh.shard 2>"${SSH_DIR}/beyond.err" &
+	XDG_CONFIG_HOME="${SSH_DIR}" ssh -F "${cfg}" -o BatchMode=yes -N -L "127.0.0.1:${TUNNEL_PORT}:1.1.1.1:80" e2e-ssh.shard 2>"${SSH_DIR}/beyond.err" &
 	pid=$!
 	SSH_PIDS="${SSH_PIDS} ${pid}"
 	for _ in $(seq 1 50); do
