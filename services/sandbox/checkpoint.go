@@ -319,6 +319,7 @@ func (s *Service) Fork(ctx context.Context, ref string, req CopyRequest) (sb mod
 		Policy:     src.Policy,
 		Processes:  slices.Clone(src.Processes),
 		Kernel:     src.Kernel,
+		Links:      slices.Clone(src.Links),
 	})
 	defer claim.unlock()
 
@@ -420,20 +421,26 @@ func (s *Service) claimCopy(ctx context.Context, td *Teardown, req CopyRequest, 
 	from.State = models.StateCreated
 	from.CreatedAt = time.Now().UTC()
 
-	copied, err := s.cfg.Repo.Create(from)
+	copied, err := s.createCopy(from)
 	if err != nil {
 		return claim, err
 	}
 	claim.id = copied.ID
 
-	td.Push(func(context.Context) error {
+	// A link made to the copy while it came up goes with it.
+	td.Push(func(ctx context.Context) error {
 		err := s.cfg.Repo.Delete(claim.id)
 		// An rm that took the copy's lock first already deleted the record this step gives back (SHARD-582).
 		if errors.Is(err, sandboxstate.ErrNotFound) {
 			return nil
 		}
+		if err != nil {
+			return err
+		}
 
-		return err
+		linked, err := s.dropLinksTo(claim.id)
+
+		return errors.Join(err, s.linksChanged(ctx, linked...))
 	})
 
 	// The id exists now, so a stop or an rm can name it: they wait here until the copy is done.
@@ -476,6 +483,11 @@ func (s *Service) claimCopy(ctx context.Context, td *Teardown, req CopyRequest, 
 	// The rules are keyed by the address, which the record holds only now, so the host learns it before the guest runs.
 	if egress.Fronted(from) {
 		if err := s.cfg.Network.Reapply(ctx, claim.id); err != nil {
+			return claim, err
+		}
+	}
+	if len(copied.Links) != 0 {
+		if err := s.linksChanged(ctx, claim.id); err != nil {
 			return claim, err
 		}
 	}

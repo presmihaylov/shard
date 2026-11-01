@@ -30,6 +30,10 @@ export function portRecord(fields: Record<string, unknown> = {}): Record<string,
   };
 }
 
+export function linkRecord(fields: Record<string, unknown> = {}): Record<string, unknown> {
+  return { target: "db1", target_id: "sb_2", address: "10.86.0.1", ...fields };
+}
+
 export function processRecord(fields: Record<string, unknown> = {}): Record<string, unknown> {
   return {
     name: "web",

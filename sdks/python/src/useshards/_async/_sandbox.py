@@ -1,4 +1,4 @@
-"""One sandbox and what runs in it: its commands, the processes a run started, its files and its ports."""
+"""One sandbox and what runs in it: its commands, the processes a run started, its files, its ports and its links."""
 
 from __future__ import annotations
 
@@ -9,6 +9,7 @@ from typing import Literal, overload
 from .._capture import DEFAULT_OUTPUT_LIMIT
 from .._generated import models
 from .._generated.api.exec_ import get_exec, list_execs
+from .._generated.api.links import list_links, put_link, remove_link
 from .._generated.api.ports import list_sandbox_ports, put_port, remove_port
 from .._generated.api.sandboxes import (
     fork_sandbox,
@@ -25,6 +26,7 @@ from .._types import (
     CommandInfo,
     CommandResult,
     EgressDecision,
+    Link,
     OutputCallback,
     Port,
     Restart,
@@ -32,6 +34,7 @@ from .._types import (
     TerminalSize,
     command_info,
     egress_decision,
+    link,
     port,
     sandbox_info,
 )
@@ -53,6 +56,7 @@ class AsyncSandbox:
         self.processes = AsyncProcesses(transport, info.id)
         self.files = AsyncFiles(transport, info.id)
         self.ports = AsyncPorts(transport, info.id)
+        self.links = AsyncLinks(transport, info.id)
 
     def __repr__(self) -> str:
         return f"{type(self).__name__}(id={self.id!r}, name={self.name!r}, state={self.info.state!r})"
@@ -289,4 +293,32 @@ class AsyncPorts:
         """End the forward on host_port, and the connections it carries."""
         await self._transport.send(
             lambda: remove_port.asyncio_detailed(self._sandbox, host_port, client=self._transport.api)
+        )
+
+
+class AsyncLinks:
+    """The sandboxes one sandbox links; a link outlives a stop of either end and goes when its target is removed."""
+
+    def __init__(self, transport: AsyncTransport, sandbox: str) -> None:
+        self._transport = transport
+        self._sandbox = sandbox
+
+    async def add(self, target: str) -> Link:
+        """Link target, a sandbox id or name, or return the link the sandbox already holds to it."""
+        record = await self._transport.answer(
+            models.Link, lambda: put_link.asyncio_detailed(self._sandbox, target, client=self._transport.api)
+        )
+        return link(record)
+
+    async def list(self) -> builtins.list[Link]:
+        """Return the sandbox's links in the order they were added."""
+        page = await self._transport.answer(
+            models.LinksResponse, lambda: list_links.asyncio_detailed(self._sandbox, client=self._transport.api)
+        )
+        return [link(record) for record in page.links]
+
+    async def remove(self, target: str) -> None:
+        """Drop the link to target; its address is free again once no sandbox links target."""
+        await self._transport.send(
+            lambda: remove_link.asyncio_detailed(self._sandbox, target, client=self._transport.api)
         )

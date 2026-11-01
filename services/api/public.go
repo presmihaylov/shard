@@ -30,6 +30,7 @@ type Sandbox struct {
 	Secrets       []string             `json:"secrets,omitempty"`
 	Policy        string               `json:"policy,omitempty"`
 	Ports         []models.PortForward `json:"ports,omitempty"`
+	Links         []models.Link        `json:"links,omitempty"`
 	StartedAt     time.Time            `json:"started_at,omitzero"`
 	CreatedAt     time.Time            `json:"created_at"`
 }
@@ -78,6 +79,7 @@ func PublicSandbox(sb models.Sandbox) Sandbox {
 		Secrets:       sb.Secrets,
 		Policy:        sb.Policy,
 		Ports:         sb.Ports,
+		Links:         sb.Links,
 		StartedAt:     sb.StartedAt,
 		CreatedAt:     sb.CreatedAt,
 	}

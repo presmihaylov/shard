@@ -64,7 +64,7 @@ func (s *Service) AddPort(ctx context.Context, ref string, hostPort uint16, req 
 		return models.Port{}, err
 	}
 
-	id, sb, unlock, err := s.holdForPorts(ctx, ref)
+	id, sb, unlock, err := s.holdUnfailed(ctx, ref)
 	if err != nil {
 		return models.Port{}, err
 	}
@@ -126,7 +126,7 @@ func portRefused(err error) error {
 
 // RemovePort ends the forward on one host port of the sandbox, the connections it carries included.
 func (s *Service) RemovePort(ctx context.Context, ref string, hostPort uint16) error {
-	id, sb, unlock, err := s.holdForPorts(ctx, ref)
+	id, sb, unlock, err := s.holdUnfailed(ctx, ref)
 	if err != nil {
 		return err
 	}
@@ -277,7 +277,8 @@ func (s *Service) portUnclaimed(id string, hostPort uint16) error {
 	return nil
 }
 
-func (s *Service) holdForPorts(ctx context.Context, ref string) (string, models.Sandbox, func(), error) {
+// holdUnfailed takes the sandbox's lock and reads it, refusing one that failed, for a verb that changes what the record names.
+func (s *Service) holdUnfailed(ctx context.Context, ref string) (string, models.Sandbox, func(), error) {
 	id, err := s.cfg.Repo.Resolve(ref)
 	if err != nil {
 		return "", models.Sandbox{}, nil, err

@@ -125,9 +125,9 @@ A later daemon may add a code, so a program must accept one it does not know.
 
 | Code | Status | When |
 | --- | --- | --- |
-| `invalid_request` | 400 | The body does not decode, a field does not validate, a named secret or policy is unknown, an image reference does not parse, or a disk does not fit: the host disk has no room for it, or the image or the snapshot cannot take its bound. Also `shard serve`, when the request line does not parse. |
+| `invalid_request` | 400 | The body does not decode, a field does not validate, a named secret or policy is unknown, a link names its own sandbox or one that does not exist, an image reference does not parse, or a disk does not fit: the host disk has no room for it, or the image or the snapshot cannot take its bound. Also `shard serve`, when the request line does not parse. |
 | `body_too_large` | 413 | A JSON body over 1 MiB. The daemon stops reading and closes the connection after it answers. |
-| `not_found` | 404 | No sandbox, snapshot, policy, secret, image or exec has the reference, a file path does not exist in the sandbox, the sandbox forwards no such host port, or no route has the path. Also a create, start, resume or fork whose image files are no longer on the host. The message names the image by its digest, and `shard pull` brings it back. |
+| `not_found` | 404 | No sandbox, snapshot, policy, secret, image or exec has the reference, a file path does not exist in the sandbox, the sandbox forwards no such host port, the sandbox holds no link to the target, or no route has the path. Also a create, start, resume or fork whose image files are no longer on the host. The message names the image by its digest, and `shard pull` brings it back. |
 | `sandbox_not_running` | 409 | Exec, run, pause or fork on a sandbox that is not running, that the provider no longer holds, or whose provider process does not answer. Also a kill on a paused sandbox, and a process attach that the sandbox stops under. |
 | `sandbox_not_stopped` | 409 | Start on a sandbox that is up. Remove without force on a sandbox that is up or paused. Snapshot create on a sandbox that is not stopped. |
 | `sandbox_not_paused` | 409 | Resume on a sandbox that is not paused. |
@@ -143,7 +143,7 @@ A later daemon may add a code, so a program must accept one it does not know.
 | `no_process` | 404 | A get, kill, logs or attach of a process name the sandbox does not have. |
 | `process_limit` | 409 | A run while all 16 processes of the sandbox still run. A run of an ended name takes that entry's place. |
 | `unauthorized` | 401 | `shard serve`, when the request has no valid API token. |
-| `forbidden` | 403 | `shard serve`, when the token is valid but its scopes do not cover the route, or when no scope reaches the route, such as an unknown path or a host-only route. Also a create that names, or a fork that copies, a secret without the `secret:*` scope or a policy without the `policy:*` scope, and a create that forwards a port without the `port:write` scope. |
+| `forbidden` | 403 | `shard serve`, when the token is valid but its scopes do not cover the route, or when no scope reaches the route, such as an unknown path or a host-only route. Also a create that names, or a fork that copies, a secret without the `secret:*` scope or a policy without the `policy:*` scope, a create that forwards a port without the `port:write` scope, and a create that names, or a fork that copies, a link without the `ssh` scope. |
 | `timeout` | 504 | A start that the provider did not finish in 60 s, a stop, remove or restart whose provider status call did not answer in time, or an exec that the provider did not start in 20 s. Try again once the runtime is free. |
 | `command_not_started` | 422 | An exec or a run whose command never started: it does not exist, it cannot run, or its interpreter does not exist. The message names the command and the reason. `exit_code` is 127 or 126. |
 | `internal` | 500 | Any other failure. The daemon log has the cause. Also `shard serve`, with status 502, when the daemon does not answer on its socket. |

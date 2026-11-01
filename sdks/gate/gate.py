@@ -60,7 +60,7 @@ HOST_PATHS = (
     "serve.tokens",
 )
 # A host field may appear only in an object every key of which one of these schemas declares.
-PUBLIC_USES = {"address": ("EgressDecision", "Port", "HostAddress"), "path": ("MkdirRequest",)}
+PUBLIC_USES = {"address": ("EgressDecision", "Port", "HostAddress", "Link"), "path": ("MkdirRequest",)}
 NDJSON = "application/x-ndjson"
 # A provider may refuse these verbs, so their suite lines may skip; every other check must pass.
 MAY_SKIP = {"lifecycle.pause_resume", "lifecycle.fork", "lifecycle.unsupported_named"}

@@ -249,6 +249,16 @@ class Port:
 
 
 @attrs.frozen
+class Link:
+    """A sandbox another reaches by name, at the address every sandbox that links it shares; target is its name,
+    or its id when it has none."""
+
+    target: str
+    target_id: str
+    address: str
+
+
+@attrs.frozen
 class SandboxInfo:
     """One sandbox as the daemon holds it, with its processes in run order; kernel is None on a container substrate."""
 
@@ -269,6 +279,7 @@ class SandboxInfo:
     secrets: tuple[str, ...]
     policy: str | None
     ports: tuple[PortForward, ...]
+    links: tuple[Link, ...]
     started_at: datetime.datetime | None
     created_at: datetime.datetime
 
@@ -406,6 +417,7 @@ def sandbox_info(record: models.Sandbox | models.Inspection) -> SandboxInfo:
             PortForward(host_port=each.host_port, guest_port=each.guest_port, public=each.public or False)
             for each in record.ports or ()
         ),
+        links=tuple(link(each) for each in record.links or ()),
         started_at=_time_or_none(record.started_at),
         created_at=record.created_at,
     )
@@ -480,6 +492,10 @@ def port(record: models.Port) -> Port:
         error=record.error or None,
         reachable_on=tuple(HostAddress(interface=on.interface, address=on.address) for on in record.reachable_on),
     )
+
+
+def link(record: models.Link) -> Link:
+    return Link(target=record.target, target_id=record.target_id, address=record.address)
 
 
 def egress_decision(record: models.EgressDecision) -> EgressDecision:
