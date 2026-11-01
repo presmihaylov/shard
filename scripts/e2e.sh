@@ -1087,6 +1087,9 @@ link_reply() {
 	printf '%s\n' "${reply}"
 }
 
+# no_reply is what one line to a link name or address on GUEST_PORT brought back, once; a refusal is a reset after the connect, so the answer tells and the status does not.
+no_reply() { shard exec "$1" /bin/sh -c "echo '$3' | nc -w 3 '$2' '${GUEST_PORT}'" 2>/dev/null || true; }
+
 # web_listener starts the answer on the target's own 127.0.0.1, which only a link or a forward can reach.
 web_listener() {
 	shard run "$1" --name listener -- /bin/sh -c "exec nc -lk -p ${GUEST_PORT} -s 127.0.0.1 -e /bin/sh -c 'read line; echo $1:\$line'" >/dev/null
@@ -1095,7 +1098,7 @@ web_listener() {
 # link_steps link one sandbox to others and drive each link: /etc/hosts, a port, ssh, one way, add and remove, fork, the target stopped and removed (SHARD-811).
 # shellcheck disable=SC2120 # only e2e-fc.sh passes create flags
 link_steps() {
-	local web db agent addr db_addr fork code
+	local web db agent addr db_addr fork
 
 	step "a sandbox created with --link reaches a port on its target by name"
 	web=$(shard create "$@" --name e2e-web "${IMAGE}")
@@ -1132,10 +1135,7 @@ link_steps() {
 	expect "$(link_reply "${agent}" e2e-db "${GUEST_PORT}" alias)" "e2e_db:alias" "the alias reaches the second target"
 	shard link remove e2e-agent e2e_db >/dev/null
 	expect "$(hosts_address "${agent}" e2e_db)" "" "link remove took the line out of /etc/hosts"
-	code=0
-	shard exec "${agent}" /bin/sh -c "echo gone | nc -w 3 ${db_addr} ${GUEST_PORT}" >/dev/null 2>&1 || code=$?
-	[ "${code}" != "0" ] || fail "${db_addr} still answered once its link was removed"
-	say "the removed link's address answers no more"
+	expect "$(no_reply "${agent}" "${db_addr}" gone)" "" "the removed link's address answers no more"
 	drop_sandbox "${db}"
 
 	if [ "$(status_field fork)" = "true" ]; then
@@ -1150,10 +1150,7 @@ link_steps() {
 	step "a stopped target keeps the link, and refuses the connection"
 	shard stop e2e-web >/dev/null
 	has_line "^e2e-web +${addr}$" <<<"$(shard link list e2e-agent)" || fail "the stop dropped the link: $(shard link list e2e-agent)"
-	code=0
-	shard exec "${agent}" /bin/sh -c "echo stopped | nc -w 3 e2e-web ${GUEST_PORT}" >/dev/null 2>&1 || code=$?
-	[ "${code}" != "0" ] || fail "the stopped target answered through the link"
-	say "the link stays, and the stopped target answers nothing"
+	expect "$(no_reply "${agent}" e2e-web stopped)" "" "the link stays, and the stopped target answers nothing"
 	shard start e2e-web >/dev/null
 	expect "$(link_reply "${agent}" e2e-web "${GUEST_PORT}" back)" "e2e-web:back" "the started target answers on the same link"
 
