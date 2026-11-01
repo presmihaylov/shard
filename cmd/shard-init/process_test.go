@@ -516,8 +516,8 @@ func TestStopProcessOfNoLiveProcessAnswersAtOnce(t *testing.T) {
 	}
 }
 
-// A sandbox stop TERMs every process's group and waits for every reap; it reports nothing, since the host records the stop.
-func TestASandboxStopWaitsForEveryProcess(t *testing.T) {
+// A sandbox stop TERMs every process's group, waits for every reap and reports each exit, which the host reads only after the stop (SHARD-812).
+func TestASandboxStopWaitsForEveryProcessAndReportsItsExit(t *testing.T) {
 	g, report := startGuest(t)
 
 	pidFile := filepath.Join(t.TempDir(), "forked")
@@ -525,7 +525,6 @@ func TestASandboxStopWaitsForEveryProcess(t *testing.T) {
 	mustRun(t, g, named("stubborn", "ignoreterm"))
 	waitFor(t, 5*time.Second, "stubborn to ignore TERM", func() bool { return report.log(t, "stubborn") == "ready\n" })
 	forked := forkedPIDs(t, pidFile, 1)[0]
-	before := len(report.of("tree")) + len(report.of("stubborn"))
 
 	g.stopSignals <- syscall.SIGTERM
 	waitFor(t, 10*time.Second, fmt.Sprintf("the sleep tree forked, pid %d, to end", forked), func() bool { return gone(forked) })
@@ -536,8 +535,12 @@ func TestASandboxStopWaitsForEveryProcess(t *testing.T) {
 	if ended, err := g.awaitEnd(10 * time.Second); !ended || err != nil {
 		t.Fatalf("the guest did not end once every process was reaped: ended %t, %v", ended, err)
 	}
-	if after := len(report.of("tree")) + len(report.of("stubborn")); after != before {
-		t.Errorf("the stop reported %d statuses, want none", after-before)
+	for name, sig := range map[string]int{"tree": int(syscall.SIGTERM), "stubborn": int(syscall.SIGKILL)} {
+		reports := report.of(name)
+		last := reports[len(reports)-1]
+		if last.State != models.ProcessStopped || last.Exit == nil || last.Exit.Signal != sig {
+			t.Errorf("%s ends as %+v, want stopped by signal %d", name, last.ProcessStatus, sig)
+		}
 	}
 }
 

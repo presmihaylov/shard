@@ -29,7 +29,7 @@ const (
 	ProcessKilled ProcessState = "killed"
 	// ProcessGaveUp is an on-failure process that spent its retries.
 	ProcessGaveUp ProcessState = "gave-up"
-	// ProcessStopped is a process the sandbox stopped under; only the host says it, never shard-init.
+	// ProcessStopped is a process the sandbox stopped under; the host says it of any the guest did not report ended.
 	ProcessStopped ProcessState = "stopped"
 )
 
