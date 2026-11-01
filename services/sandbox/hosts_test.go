@@ -210,11 +210,13 @@ func TestAHostsWriteThatFailsKeepsTheLinkAndARetryWritesIt(t *testing.T) {
 }
 
 // upVerbs bring agent1 up from the state each names, the two ways a guest comes back holding the lines it had.
-var upVerbs = []struct {
+type upVerb struct {
 	name  string
 	state models.State
 	verb  func(*sandbox.Service, *testing.T) (models.Sandbox, error)
-}{
+}
+
+var upVerbs = []upVerb{
 	{"start", models.StateStopped, func(s *sandbox.Service, t *testing.T) (models.Sandbox, error) { return s.Start(t.Context(), "agent1") }},
 	{"resume", models.StatePaused, func(s *sandbox.Service, t *testing.T) (models.Sandbox, error) { return s.Resume(t.Context(), "agent1") }},
 }
@@ -253,11 +255,14 @@ func TestAStartWhoseHostsWriteFailsRunsOnAndReportsIt(t *testing.T) {
 	}
 }
 
+// linkDrop takes agent1's link to my_db away while agent1 is down.
+type linkDrop struct {
+	name string
+	drop func(*testing.T, linkHost) error
+}
+
 func TestStartAndResumeTakeOutTheLineOfTheLastLinkDroppedWhileDown(t *testing.T) {
-	drops := []struct {
-		name string
-		drop func(*testing.T, linkHost) error
-	}{
+	drops := []linkDrop{
 		{"unlink", func(t *testing.T, h linkHost) error { return h.svc.RemoveLink(t.Context(), "agent1", "my_db") }},
 		{"remove the target", func(t *testing.T, h linkHost) error {
 			// One status answers for every sandbox: my_db is down as the remove asks, and agent1 is up as its start asks.
@@ -270,26 +275,30 @@ func TestStartAndResumeTakeOutTheLineOfTheLastLinkDroppedWhileDown(t *testing.T)
 	}
 	for _, up := range upVerbs {
 		for _, d := range drops {
-			t.Run(up.name+" after "+d.name, func(t *testing.T) {
-				h, g := runningLinkHost(t, []string{"agent1", "my_db"}, "agent1")
-				h.link(t, "agent1", "my_db")
-				h.setState(t, "agent1", up.state)
-
-				if err := d.drop(t, h); err != nil {
-					t.Fatalf("%s: %v", d.name, err)
-				}
-				if got := g.hosts[h.ids["agent1"]]; got != linkedHosts {
-					t.Fatalf("while down agent1's hosts = %q, want the lines it went down with %q", got, linkedHosts)
-				}
-				if _, err := up.verb(h.svc, t); err != nil {
-					t.Fatalf("%s: %v", up.name, err)
-				}
-
-				if got := g.hosts[h.ids["agent1"]]; got != guestHosts {
-					t.Errorf("after the %s agent1's hosts = %q, want the guest's own %q", up.name, got, guestHosts)
-				}
-			})
+			t.Run(up.name+" after "+d.name, func(t *testing.T) { dropWhileDown(t, up, d) })
 		}
+	}
+}
+
+// dropWhileDown drops agent1's last link while it is down, brings it up, and wants the guest's own lines back.
+func dropWhileDown(t *testing.T, up upVerb, d linkDrop) {
+	t.Helper()
+	h, g := runningLinkHost(t, []string{"agent1", "my_db"}, "agent1")
+	h.link(t, "agent1", "my_db")
+	h.setState(t, "agent1", up.state)
+
+	if err := d.drop(t, h); err != nil {
+		t.Fatalf("%s: %v", d.name, err)
+	}
+	if got := g.hosts[h.ids["agent1"]]; got != linkedHosts {
+		t.Fatalf("while down agent1's hosts = %q, want the lines it went down with %q", got, linkedHosts)
+	}
+	if _, err := up.verb(h.svc, t); err != nil {
+		t.Fatalf("%s: %v", up.name, err)
+	}
+
+	if got := g.hosts[h.ids["agent1"]]; got != guestHosts {
+		t.Errorf("after the %s agent1's hosts = %q, want the guest's own %q", up.name, got, guestHosts)
 	}
 }
 
