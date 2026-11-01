@@ -752,35 +752,7 @@ func TestAnInterceptedFlowSkipsTheRedirectAndTheJudge(t *testing.T) {
 	ctx, cancel := context.WithTimeout(t.Context(), 5*time.Second)
 	defer cancel()
 	for _, port := range []uint16{443, 5432} {
-		dst := netip.AddrPortFrom(intercepted, port)
-		conn, err := guest.dialTCP(ctx, dst)
-		if err != nil {
-			t.Fatal(err)
-		}
-		if err := conn.SetDeadline(time.Now().Add(5 * time.Second)); err != nil {
-			t.Fatal(err)
-		}
-		if _, err := conn.Write([]byte("ping")); err != nil {
-			t.Fatal(err)
-		}
-		buf := make([]byte, 4)
-		if _, err := io.ReadFull(conn, buf); err != nil || string(buf) != "ping" {
-			t.Fatalf("read %q, %v from %s", buf, err, dst)
-		}
-		if during := counted(host, host.linkOf(guestA)); during != 2 {
-			t.Errorf("an intercepted flow counts %d on the link and the stack together, want 2", during)
-		}
-		if err := conn.Close(); err != nil {
-			t.Fatal(err)
-		}
-		select {
-		case got := <-seen:
-			if got != dst {
-				t.Errorf("intercepted %s, want %s", got, dst)
-			}
-		default:
-			t.Fatalf("the flow to %s never reached Intercept", dst)
-		}
+		echoIntercepted(ctx, t, host, guest, netip.AddrPortFrom(intercepted, port), seen)
 	}
 	if n := judged.Load(); n != 0 {
 		t.Errorf("the judge ruled on %d intercepted flows", n)
@@ -792,6 +764,39 @@ func TestAnInterceptedFlowSkipsTheRedirectAndTheJudge(t *testing.T) {
 	case got := <-drops:
 		t.Fatalf("an intercepted flow was reported as a drop: %+v", got)
 	default:
+	}
+}
+
+// echoIntercepted sends a ping on a flow to dst, checks the echo and the flow's count while it is open, and that Intercept saw dst.
+func echoIntercepted(ctx context.Context, t *testing.T, host, guest *Stack, dst netip.AddrPort, seen <-chan netip.AddrPort) {
+	t.Helper()
+	conn, err := guest.dialTCP(ctx, dst)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := conn.SetDeadline(time.Now().Add(5 * time.Second)); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := conn.Write([]byte("ping")); err != nil {
+		t.Fatal(err)
+	}
+	buf := make([]byte, 4)
+	if _, err := io.ReadFull(conn, buf); err != nil || string(buf) != "ping" {
+		t.Fatalf("read %q, %v from %s", buf, err, dst)
+	}
+	if during := counted(host, host.linkOf(guestA)); during != 2 {
+		t.Errorf("an intercepted flow counts %d on the link and the stack together, want 2", during)
+	}
+	if err := conn.Close(); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case got := <-seen:
+		if got != dst {
+			t.Errorf("intercepted %s, want %s", got, dst)
+		}
+	default:
+		t.Fatalf("the flow to %s never reached Intercept", dst)
 	}
 }
 
@@ -902,17 +907,61 @@ func TestAPipeClosedUnderAnInterceptedFlowIsNoFault(t *testing.T) {
 	if _, err := conn.Write([]byte("late")); err != nil {
 		t.Fatal(err)
 	}
+	flowsEndWithoutFault(t, host, link)
+}
 
+// The guest closing a flow onto a pipe, which cannot half-close, closes the pipe too and gives the flow's place back.
+func TestAGuestClosingAnInterceptedPipeEndsIt(t *testing.T) {
+	var judged atomic.Int32
+	ended := make(chan error, 1)
+	host, _, _ := interceptingA(t, &judged, func(context.Context, netip.Addr, netip.AddrPort) (net.Conn, error) {
+		client, server := net.Pipe()
+		go func() {
+			_, err := io.Copy(io.Discard, server)
+			ended <- err
+		}()
+
+		return client, nil
+	})
+	guest := attach(t, host, guestA)
+	link := host.linkOf(guestA)
+
+	ctx, cancel := context.WithTimeout(t.Context(), 5*time.Second)
+	defer cancel()
+	conn, err := guest.dialTCP(ctx, netip.AddrPortFrom(intercepted, 22))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := conn.Write([]byte("ping")); err != nil {
+		t.Fatal(err)
+	}
+	if err := conn.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	select {
+	case err := <-ended:
+		if err != nil {
+			t.Fatalf("the pipe ended with %v, want its end", err)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("the pipe never saw the guest's close")
+	}
+	flowsEndWithoutFault(t, host, link)
+}
+
+// flowsEndWithoutFault waits for the link to track no flow and checks that none left a fault behind.
+func flowsEndWithoutFault(t *testing.T, host *Stack, link *Link) {
+	t.Helper()
 	deadline := time.Now().Add(5 * time.Second)
 	for {
 		host.mu.Lock()
 		left, fault := len(link.flows), link.flowErr
 		host.mu.Unlock()
+		if left == 0 && fault != nil {
+			t.Fatalf("an ended flow was kept as the link's fault: %v", fault)
+		}
 		if left == 0 {
-			if fault != nil {
-				t.Fatalf("the closed pipe was kept as the link's fault: %v", fault)
-			}
-
 			return
 		}
 		if time.Now().After(deadline) {

@@ -162,10 +162,15 @@ func (l *Link) spliceTCP(r *tcp.ForwarderRequest, flow Flow, dial func(context.C
 		defer wg.Done()
 		_, err := io.Copy(dst, src)
 		copyErrs[i] = quietOr(err)
-		// A half-close carries one side's end to the other, so a request whose writer is done still gets its answer.
-		if cw, ok := dst.(interface{ CloseWrite() error }); ok {
-			copyErrs[i] = errors.Join(copyErrs[i], quietOr(cw.CloseWrite()))
+		cw, ok := dst.(interface{ CloseWrite() error })
+		if !ok {
+			// A side that cannot half-close, as the ssh server's pipe, ends the flow whole, or the other copy never wakes.
+			copyErrs[i] = errors.Join(copyErrs[i], closeQuietly(dst), closeQuietly(src))
+
+			return
 		}
+		// A half-close carries one side's end to the other, so a request whose writer is done still gets its answer.
+		copyErrs[i] = errors.Join(copyErrs[i], quietOr(cw.CloseWrite()))
 	}
 	wg.Add(2)
 	go half(0, host, guest)
