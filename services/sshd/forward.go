@@ -18,6 +18,9 @@ import (
 // dialBudget is a host port forward's own bound on the reach into the sandbox.
 const dialBudget = 15 * time.Second
 
+// drainBudget bounds how long a closed channel's last bytes may wait on a guest that stopped reading.
+var drainBudget = 10 * time.Second
+
 // loopback is every name of the sandbox's own loopback a -L may target; nothing else is reachable through it.
 var loopback = map[string]bool{"localhost": true, "127.0.0.1": true, "::1": true}
 
@@ -73,13 +76,47 @@ func (c *connection) forward(ch ssh.NewChannel, port uint16) {
 
 		return
 	}
-	var discard sync.WaitGroup
-	discard.Go(func() { ssh.DiscardRequests(reqs) })
-	defer discard.Wait()
+	in := &drained{Channel: channel, eof: make(chan struct{})}
+	spliced := make(chan struct{})
+	var teardown sync.WaitGroup
+	teardown.Go(func() {
+		// The requests end once the channel closes, by the client or with the connection.
+		ssh.DiscardRequests(reqs)
+		select {
+		case <-spliced:
+			return
+		case <-in.eof:
+		case <-c.ctx.Done():
+		case <-time.After(drainBudget):
+		}
+		// Nothing the guest sends can reach the client now, so a guest that holds its side open must not hold the forward.
+		if err := quiet(upstream.Close()); err != nil {
+			c.srv.report(fmt.Sprintf("ssh: sandbox %s: close a forward to port %d: %v", c.opts.Sandbox, port, err))
+		}
+	})
 
-	if err := splice.Conns(channel, upstream); err != nil {
+	err = splice.Conns(in, upstream)
+	close(spliced)
+	teardown.Wait()
+	if err != nil {
 		c.srv.report(fmt.Sprintf("ssh: sandbox %s: a forward to port %d broke: %v", c.opts.Sandbox, port, err))
 	}
+}
+
+// drained is a forward's channel that says when the client's side ended, after io.Copy wrote every byte before it upstream.
+type drained struct {
+	ssh.Channel
+	eof  chan struct{}
+	once sync.Once
+}
+
+func (d *drained) Read(p []byte) (int, error) {
+	n, err := d.Channel.Read(p)
+	if err != nil {
+		d.once.Do(func() { close(d.eof) })
+	}
+
+	return n, err
 }
 
 // unreached says why a dial into the sandbox failed, as a host port forward words it.
