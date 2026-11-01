@@ -17,6 +17,7 @@ type Addresses struct {
 	subnet  netip.Prefix
 	gateway netip.Addr
 	egress  EgressSource
+	links   LinkSource
 	report  func(format string, v ...any)
 	judge   Judge
 	// ensure serializes compile and apply, so an older snapshot never lands after a newer one; the host Service has the same lock.
@@ -35,7 +36,7 @@ func NewAddresses(cfg Config) (*Addresses, error) {
 		return nil, err
 	}
 
-	return &Addresses{pool: p, subnet: cfg.Subnet, gateway: gateway, egress: cfg.Egress, report: cfg.Report}, nil
+	return &Addresses{pool: p, subnet: cfg.Subnet, gateway: gateway, egress: cfg.Egress, links: cfg.Links, report: cfg.Report}, nil
 }
 
 // Gateway is the one address the stack answers for.
@@ -46,6 +47,9 @@ func (a *Addresses) Judge(f netstack.Flow) netstack.Verdict { return a.judge.Jud
 
 // Fronted is what the stack asks before it redirects a guest's 80 and 443 onto the proxy.
 func (a *Addresses) Fronted(guest netip.Addr) bool { return a.judge.Fronted(guest) }
+
+// Linked is what the stack asks before the redirect and the judge, as the host dnats a link flow ahead of both.
+func (a *Addresses) Linked(guest, dst netip.Addr) bool { return a.judge.Linked(guest, dst) }
 
 // Allocate leases an address, or answers the one the sandbox holds; the resolver is the gateway, since nothing else is reachable.
 func (a *Addresses) Allocate(ctx context.Context, id string) (models.NetworkSpec, error) {
@@ -94,8 +98,12 @@ func (a *Addresses) ReapplyAll(ctx context.Context) error {
 func (a *Addresses) apply(ctx context.Context) error {
 	a.ensure.Lock()
 	defer a.ensure.Unlock()
+	links, err := readLinks(ctx, a.links, a.subnet)
+	if err != nil {
+		return err
+	}
 	if a.egress == nil {
-		a.judge.Apply(nil)
+		a.judge.Apply(nil, links)
 
 		return nil
 	}
@@ -103,7 +111,7 @@ func (a *Addresses) apply(ctx context.Context) error {
 	if err != nil {
 		return fmt.Errorf("compile the egress chains: %w", err)
 	}
-	a.judge.Apply(chains)
+	a.judge.Apply(chains, links)
 	if held != nil {
 		return held
 	}

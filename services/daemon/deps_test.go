@@ -11,8 +11,10 @@ import (
 	"sync"
 	"testing"
 
+	"github.com/presmihaylov/shard/models"
 	"github.com/presmihaylov/shard/pkg/netstack"
 	"github.com/presmihaylov/shard/pkg/vzshim"
+	"github.com/presmihaylov/shard/services/linkfwd"
 	"github.com/presmihaylov/shard/services/network"
 )
 
@@ -191,6 +193,52 @@ func TestAVZDaemonLeasesAddressesAndFrontsOnTheStack(t *testing.T) {
 	}
 	if v := d.addressesSvc.Judge(netstack.Flow{Guest: guest, Protocol: "tcp", Destination: netip.MustParseAddrPort("203.0.113.7:22")}); !v.Allow || v.Rule != network.RuleNone {
 		t.Errorf("a public destination without a policy judged %+v", v)
+	}
+}
+
+// A vz daemon's pool reads the links from the records, and a link change reaches the stack through the same reapply as on Linux.
+func TestAVZDaemonHandsTheStackTheLinksTheRecordsHold(t *testing.T) {
+	if runtime.GOOS != "darwin" {
+		t.Skip("vz is a darwin provider")
+	}
+	d := &deps{cfg: Config{Root: t.TempDir(), Provider: "vz"}}
+	repo, err := d.repo()
+	if err != nil {
+		t.Fatal(err)
+	}
+	target := netip.MustParseAddr("10.86.0.2")
+	sb, err := repo.Create(models.Sandbox{Image: "alpine", State: models.StateRunning, Links: []models.Link{{Target: "db", TargetID: "sb-db", Address: target}}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	hostNet, err := d.net()
+	if err != nil {
+		t.Fatal(err)
+	}
+	spec, err := hostNet.Allocate(t.Context(), sb.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := repo.Update(sb.ID, func(sb *models.Sandbox) error { sb.Address = spec.Address; return nil }); err != nil {
+		t.Fatal(err)
+	}
+	if err := hostNet.ReapplyAll(t.Context()); err != nil {
+		t.Fatal(err)
+	}
+	source := spec.Address.Addr()
+	if !d.addressesSvc.Linked(source, target) {
+		t.Fatal("the pool did not take the link the record holds")
+	}
+
+	if err := repo.Update(sb.ID, func(sb *models.Sandbox) error { sb.Links = nil; return nil }); err != nil {
+		t.Fatal(err)
+	}
+	changes := linkChanges{net: hostNet, flows: linkfwd.New(linkRecords{deps: d}, nil, nil, func(string) {})}
+	if err := changes.Changed(t.Context(), sb.ID); err != nil {
+		t.Fatal(err)
+	}
+	if d.addressesSvc.Linked(source, target) {
+		t.Error("an unlink did not reach the stack")
 	}
 }
 

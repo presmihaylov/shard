@@ -49,12 +49,8 @@ func (f *Forwarder) carry(ctx context.Context, guest net.Conn) {
 		return
 	}
 
-	host, err := f.Dial(ctx, source, dst)
+	host, err := f.Intercept(ctx, source, dst)
 	if err != nil {
-		// A guest that retries until its target is up would fill the log with the ordinary refusals.
-		if !refused(err) {
-			f.report(fmt.Sprintf("link: from %s: %v", source, err))
-		}
 		f.reset(guest)
 
 		return
@@ -63,6 +59,17 @@ func (f *Forwarder) carry(ctx context.Context, guest net.Conn) {
 	if err := splice.Conns(guest, host); err != nil {
 		f.report(fmt.Sprintf("link: from %s to %s broke: %v", source, dst, err))
 	}
+}
+
+// Intercept is Dial for a caller that answers the guest's refusal itself, so the report gets what else broke.
+func (f *Forwarder) Intercept(ctx context.Context, source netip.Addr, dst netip.AddrPort) (net.Conn, error) {
+	host, err := f.Dial(ctx, source, dst)
+	// A guest that retries until its target is up would fill the log with the ordinary refusals.
+	if err != nil && !refused(err) {
+		f.report(fmt.Sprintf("link: from %s: %v", source, err))
+	}
+
+	return host, err
 }
 
 // addresses are the guest that dialed and the link address it dialed, before the dnat.

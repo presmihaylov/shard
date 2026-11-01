@@ -285,7 +285,11 @@ func (d *deps) addressesLocked() (*network.Addresses, error) {
 	if err != nil {
 		return nil, err
 	}
-	svc, err := network.NewAddresses(network.Config{Root: d.cfg.Root, Egress: source, Report: d.logger().Printf})
+	repo, err := d.repoLocked()
+	if err != nil {
+		return nil, err
+	}
+	svc, err := network.NewAddresses(network.Config{Root: d.cfg.Root, Egress: source, Links: linkfwd.Routes{Records: repo}, Report: d.logger().Printf})
 	if err != nil {
 		return nil, err
 	}
@@ -319,14 +323,16 @@ func (d *deps) stackLocked() (*netstack.Stack, error) {
 	}
 	logger := log.New(d.cfg.Out, "", log.LstdFlags)
 	drops := &stackDrops{tailer: egress.NewTailer(d.cfg.Root, d.egressLogLocked(repo), repo, rules, d.unreadableLogLocked(), logger), gateway: gateway, out: logger}
-	// The host chains dnat a fronted guest's 80 and 443 onto the proxy, and the stack does the same with its own table; every other flow is judged by the same chains.
+	// The host chains dnat a link flow to the forwarder ahead of a fronted guest's 80 and 443 onto the proxy, and the stack does the same; every other flow is judged by the same chains.
 	stack, err := netstack.New(netstack.Config{
-		Address:    gateway,
-		Redirects:  map[uint16]uint16{80: proxy.PlainPort, 443: proxy.TLSPort},
-		Redirected: addresses.Fronted,
-		Drops:      drops.report,
-		Overflow:   drops.overflow,
-		Judge:      addresses.Judge,
+		Address:     gateway,
+		Redirects:   map[uint16]uint16{80: proxy.PlainPort, 443: proxy.TLSPort},
+		Redirected:  addresses.Fronted,
+		Drops:       drops.report,
+		Overflow:    drops.overflow,
+		Judge:       addresses.Judge,
+		Intercepted: addresses.Linked,
+		Intercept:   d.links.Intercept,
 	})
 	if err != nil {
 		return nil, err
