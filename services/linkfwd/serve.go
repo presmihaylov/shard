@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"net"
 	"net/netip"
+	"sync"
 	"syscall"
 	"time"
 
@@ -16,8 +17,19 @@ import (
 // acceptBackoff spaces the accepts after one the host refused, as for a full fd table, so the loop does not spin.
 const acceptBackoff = 100 * time.Millisecond
 
-// Serve carries every connection l accepts, which the host rules dnat'd from a link address, until ctx ends.
+// Serve carries every connection l accepts, which the host rules dnat'd from a link address, until ctx ends; it then ends every flow and waits out its carriers and ssh sessions.
 func (f *Forwarder) Serve(ctx context.Context, l net.Listener) error {
+	ctx, cancel := context.WithCancel(ctx)
+	var carriers sync.WaitGroup
+	err := f.accept(ctx, l, &carriers)
+	cancel()
+	carriers.Wait()
+	f.sessions.Wait()
+
+	return err
+}
+
+func (f *Forwarder) accept(ctx context.Context, l net.Listener, carriers *sync.WaitGroup) error {
 	stop := context.AfterFunc(ctx, func() { _ = l.Close() })
 	defer stop()
 
@@ -35,12 +47,15 @@ func (f *Forwarder) Serve(ctx context.Context, l net.Listener) error {
 
 			continue
 		}
-		go f.carry(ctx, conn)
+		carriers.Go(func() { f.carry(ctx, conn) })
 	}
 }
 
 // carry reaches the target for one guest connection; the guest's handshake is done already, so a refusal is a reset.
 func (f *Forwarder) carry(ctx context.Context, guest net.Conn) {
+	stopGuest := context.AfterFunc(ctx, func() { _ = guest.Close() })
+	defer stopGuest()
+
 	source, dst, err := f.addresses(guest)
 	if err != nil {
 		f.report(fmt.Sprintf("link: %v", err))
@@ -59,6 +74,9 @@ func (f *Forwarder) carry(ctx context.Context, guest net.Conn) {
 
 		return
 	}
+	// After the guest's half close the splice reads only the target, which closing the guest cannot wake.
+	stopHost := context.AfterFunc(ctx, func() { _ = host.Close() })
+	defer stopHost()
 
 	if err := splice.Conns(guest, host); err != nil {
 		f.report(fmt.Sprintf("link: from %s to %s broke: %v", source, dst, err))

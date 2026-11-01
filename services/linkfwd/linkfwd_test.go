@@ -82,6 +82,8 @@ type fakeSandboxes struct {
 	peers   []net.Conn
 	// hold, when set, keeps a dial in flight until it is closed.
 	hold chan struct{}
+	// pair, when set, makes each dial's two ends in place of a pipe.
+	pair func() (net.Conn, net.Conn)
 }
 
 func (s *fakeSandboxes) refusal(ref string) error {
@@ -117,7 +119,11 @@ func (s *fakeSandboxes) DialPort(ctx context.Context, ref string, port uint16) (
 		return nil, err
 	}
 	s.dialed = append(s.dialed, fmt.Sprintf("%s:%d", ref, port))
-	client, server := net.Pipe()
+	pair := s.pair
+	if pair == nil {
+		pair = net.Pipe
+	}
+	client, server := pair()
 	s.peers = append(s.peers, server)
 
 	return client, nil
@@ -132,12 +138,20 @@ func (s *fakeSandboxes) peer(i int) net.Conn {
 
 type fakeSSH struct {
 	served chan sshd.Options
+	// left, when set, keeps each session until its connection ends and then says so.
+	left chan struct{}
 }
 
 func (s fakeSSH) Serve(_ context.Context, conn net.Conn, opts sshd.Options) error {
 	s.served <- opts
+	if s.left == nil {
+		return conn.Close()
+	}
 
-	return conn.Close()
+	_, err := io.Copy(io.Discard, conn)
+	s.left <- struct{}{}
+
+	return errors.Join(err, conn.Close())
 }
 
 type harness struct {
@@ -495,5 +509,151 @@ func TestServeCarriesAGuestFlowAndResetsARefusedOne(t *testing.T) {
 	cancel()
 	if err := <-served; err != nil {
 		t.Errorf("Serve = %v, want nil once ctx ended", err)
+	}
+}
+
+// Shutdown ends the flows a guest still holds open, a port 22 session among them, before Serve returns.
+func TestServeEndsItsFlowsAndWaitsForThemOnceCtxEnds(t *testing.T) {
+	loopback := netip.MustParseAddr("127.0.0.1")
+	source := agent(link("db", dbLink))
+	source.Address = netip.PrefixFrom(loopback, 8)
+	h := newHarness(t, source)
+	h.ssh.left = make(chan struct{}, 1)
+	h.f.ssh = h.ssh
+	var dst atomic.Value
+	dst.Store(netip.AddrPortFrom(dbLink, 5432))
+	h.f.original = func(net.Conn) (netip.AddrPort, error) { return dst.Load().(netip.AddrPort), nil }
+
+	l, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithCancel(t.Context())
+	served := make(chan error, 1)
+	go func() { served <- h.f.Serve(ctx, l) }()
+
+	guest, err := net.Dial("tcp", l.Addr().String())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer guest.Close()
+	for h.flows() == 0 {
+		time.Sleep(time.Millisecond)
+	}
+	dst.Store(netip.AddrPortFrom(dbLink, SSHPort))
+	shell, err := net.Dial("tcp", l.Addr().String())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer shell.Close()
+	<-h.ssh.served
+	for h.flows() < 2 {
+		time.Sleep(time.Millisecond)
+	}
+
+	cancel()
+	if err := <-served; err != nil {
+		t.Errorf("Serve = %v, want nil once ctx ended", err)
+	}
+	if !ended(h.sandboxes.peer(0)) {
+		t.Error("the target's end stayed open after Serve returned")
+	}
+	select {
+	case <-h.ssh.left:
+	default:
+		t.Error("Serve returned before the ssh session ended")
+	}
+	if n := h.flows(); n != 0 {
+		t.Errorf("%d flows tracked after Serve returned, want none", n)
+	}
+	if err := guest.SetReadDeadline(time.Now().Add(2 * time.Second)); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := guest.Read(make([]byte, 1)); !errors.Is(err, io.EOF) {
+		t.Errorf("the guest read %v, want EOF once Serve ended its flow", err)
+	}
+}
+
+// halfStream says when the splice half closes it; pass is whether the FIN goes on, as on TCP and not on gVisor's port stream.
+type halfStream struct {
+	*net.TCPConn
+	pass bool
+	half chan struct{}
+}
+
+func (s halfStream) CloseWrite() error {
+	defer close(s.half)
+	if !s.pass {
+		return nil
+	}
+
+	return s.TCPConn.CloseWrite()
+}
+
+// tcpPair is a loopback connection's two ends.
+func tcpPair(t *testing.T) (*net.TCPConn, net.Conn) {
+	t.Helper()
+	l, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer l.Close()
+	client, err := net.DialTCP("tcp", nil, net.TCPAddrFromAddrPort(netip.MustParseAddrPort(l.Addr().String())))
+	if err != nil {
+		t.Fatal(err)
+	}
+	server, err := l.Accept()
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = errors.Join(client.Close(), server.Close()) })
+
+	return client, server
+}
+
+// After the guest's half close the splice waits only on the target, so shutdown must close a silent target too.
+func TestServeEndsAHalfClosedFlowToASilentTarget(t *testing.T) {
+	for _, pass := range []bool{true, false} {
+		t.Run(fmt.Sprintf("fin passed %v", pass), func(t *testing.T) {
+			loopback := netip.MustParseAddr("127.0.0.1")
+			source := agent(link("db", dbLink))
+			source.Address = netip.PrefixFrom(loopback, 8)
+			h := newHarness(t, source)
+			client, server := tcpPair(t)
+			stream := halfStream{TCPConn: client, pass: pass, half: make(chan struct{})}
+			h.sandboxes.pair = func() (net.Conn, net.Conn) { return stream, server }
+			h.f.original = func(net.Conn) (netip.AddrPort, error) { return netip.AddrPortFrom(dbLink, 5432), nil }
+
+			l, err := net.Listen("tcp", "127.0.0.1:0")
+			if err != nil {
+				t.Fatal(err)
+			}
+			ctx, cancel := context.WithCancel(t.Context())
+			served := make(chan error, 1)
+			go func() { served <- h.f.Serve(ctx, l) }()
+
+			guest, err := net.DialTCP("tcp", nil, net.TCPAddrFromAddrPort(netip.MustParseAddrPort(l.Addr().String())))
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer guest.Close()
+			if err := guest.CloseWrite(); err != nil {
+				t.Fatal(err)
+			}
+			<-stream.half
+
+			cancel()
+			select {
+			case err := <-served:
+				if err != nil {
+					t.Errorf("Serve = %v, want nil once ctx ended", err)
+				}
+			case <-time.After(5 * time.Second):
+				t.Fatal("Serve still waits on a half-closed flow to a silent target")
+			}
+			if n := h.flows(); n != 0 {
+				t.Errorf("%d flows tracked after Serve returned, want none", n)
+			}
+		})
 	}
 }
