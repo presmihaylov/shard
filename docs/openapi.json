@@ -3945,6 +3945,51 @@
         "x-shard-scope": "secret:*"
       }
     },
+    "/v0/sandboxes/{id}/ssh": {
+      "get": {
+        "operationId": "open-ssh",
+        "parameters": [
+          {
+            "description": "The sandbox id or name.",
+            "in": "path",
+            "name": "id",
+            "required": true,
+            "schema": {
+              "description": "The sandbox id or name.",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "101": {
+            "description": "A WebSocket whose binary messages carry one ssh connection, byte for byte. The ssh user is the Unix user commands run as; the token was the check, so ssh asks for no key or password.",
+            "headers": {
+              "Shard-SSH-Host-Key": {
+                "description": "The daemon's ssh host key as an authorized_keys line, the same for every sandbox, which the client pins before it speaks ssh.",
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "default": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Error"
+          }
+        },
+        "summary": "Open an ssh connection into a running sandbox",
+        "tags": [
+          "exec"
+        ],
+        "x-shard-scope": "ssh"
+      }
+    },
     "/v0/sandboxes/{id}/start": {
       "post": {
         "operationId": "start-sandbox",

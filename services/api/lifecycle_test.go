@@ -114,6 +114,9 @@ type fakeLifecycle struct {
 	hostPort uint16
 	port     sandbox.PortRequest
 	ports    []models.Port
+
+	// sshID is the id an ssh route's reference resolves to.
+	sshID string
 }
 
 func (f *fakeLifecycle) StatFile(_ context.Context, ref, path string) (models.FileStat, error) {
@@ -504,6 +507,12 @@ func (f *fakeLifecycle) ResizeExec(_ context.Context, ref, execID string, size s
 	f.ref, f.resizedExec, f.size = ref, execID, size
 
 	return f.err
+}
+
+func (f *fakeLifecycle) ReadyForSSH(_ context.Context, ref string) (string, error) {
+	f.ref = ref
+
+	return f.sshID, f.err
 }
 
 func (f *fakeLifecycle) Run(_ context.Context, ref string, req sandbox.RunRequest) (models.Process, error) {
@@ -948,7 +957,7 @@ func TestAFailedStartIsLoggedOnlyWhenTheSubstrateBrokeIt(t *testing.T) {
 		s := seed(t)
 		s.verbs.err = c.err
 		var out bytes.Buffer
-		handler := api.NewHandler("v-test", fakeProcess{}, s.repo, nil, s.verbs, s.stores, s.egress, nil, &out)
+		handler := api.NewHandler("v-test", fakeProcess{}, s.repo, nil, s.verbs, s.stores, s.egress, nil, nil, &out)
 
 		w := httptest.NewRecorder()
 		handler.ServeHTTP(w, httptest.NewRequestWithContext(t.Context(), http.MethodPost, "/v0/sandboxes/web/start", nil))
@@ -970,7 +979,7 @@ func TestTheLogLineOfABrokenStartCarriesNoSecretValue(t *testing.T) {
 		return strings.ReplaceAll(text, "sk_live_synthetic_0001", "<secret API_KEY>")
 	}
 	var out bytes.Buffer
-	handler := api.NewHandler("v-test", fakeProcess{}, s.repo, nil, s.verbs, s.stores, s.egress, redact, &out)
+	handler := api.NewHandler("v-test", fakeProcess{}, s.repo, nil, s.verbs, s.stores, s.egress, nil, redact, &out)
 
 	w := httptest.NewRecorder()
 	handler.ServeHTTP(w, httptest.NewRequestWithContext(t.Context(), http.MethodPost, "/v0/sandboxes/web/start", nil))

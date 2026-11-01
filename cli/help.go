@@ -98,7 +98,7 @@ var verbGroups = []struct {
 	title string
 	verbs []string
 }{
-	{"Sandboxes", []string{"create", "run", "exec", "shell", "list", "ps", "logs", "kill", "inspect", "stop", "start", "remove", "prune", "pause", "resume", "fork", "cp", "port"}},
+	{"Sandboxes", []string{"create", "run", "exec", "shell", "ssh", "ssh-config", "ssh-proxy", "list", "ps", "logs", "kill", "inspect", "stop", "start", "remove", "prune", "pause", "resume", "fork", "cp", "port"}},
 	{"Images, snapshots, secrets and network policies", []string{"pull", "image", "snapshot", "secret", "policy"}},
 	{"Host and access", []string{"capabilities", "daemon", "info", "serve", "setup", "tokens", "version"}},
 }
@@ -271,6 +271,47 @@ var helps = map[string]verbHelp{
 			"The exit code is the shell's exit code.",
 		)},
 		examples: []string{"shard shell web", "shard shell --workdir /app web", "shard shell --user root web"},
+	},
+	"ssh": {
+		usage:   []string{"ssh [OPTIONS] SANDBOX [SSH-OPTION...] [-- COMMAND [ARGS...]]"},
+		summary: "connect to a running sandbox with ssh",
+		args: []row{
+			sandboxArg,
+			{"SSH-OPTION", "option for ssh, such as -L 9222:localhost:9222"},
+			{"COMMAND", "command to run instead of a shell"},
+			argsArg,
+		},
+		flags: []flagHelp{{"--user <user>", "user to log in as", "root"}},
+		notes: []note{
+			para(
+				"Runs the ssh on your PATH with the options 'shard ssh-config' prints.",
+				"Options for ssh go after the sandbox, and a command after --.",
+				"-L reaches ports on the sandbox's 127.0.0.1 only.",
+				"Agent forwarding, X11 and -R are refused.",
+				"ssh asks for no password or key: access to the API is the check.",
+				"The exit code is ssh's exit code.",
+			),
+		},
+		examples: []string{"shard ssh web1", "shard ssh web1 -- pg_dump app", "shard ssh web1 -L 9222:localhost:9222", "shard ssh --user app web1"},
+	},
+	"ssh-config": {
+		usage:   []string{"ssh-config"},
+		summary: "print the ssh config that reaches sandboxes as SANDBOX.shard",
+		notes: []note{para(
+			"Every host that ends in .shard connects to that sandbox, as root by default.",
+			"Use it with -F in ssh, scp or rsync, or add it to ~/.ssh/config.",
+			"It reaches the daemon this command reaches, with a known_hosts file of its own.",
+		)},
+		examples: []string{"scp -F <(shard ssh-config) a.txt web1.shard:/tmp/", "shard ssh-config >> ~/.ssh/config"},
+	},
+	"ssh-proxy": {
+		usage:   []string{"ssh-proxy SANDBOX.shard"},
+		summary: "carry one ssh connection into a sandbox, as ssh's ProxyCommand",
+		args:    []row{{"SANDBOX.shard", "sandbox ID or name, with the .shard that ssh's %n keeps"}},
+		notes: []note{para(
+			"ssh runs it, from the config 'shard ssh-config' prints.",
+			"It pins the daemon's host key, then relays until either side ends.",
+		)},
 	},
 	"list": {
 		usage:   []string{"list [OPTIONS]"},
