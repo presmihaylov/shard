@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { ConflictError, InvalidRequestError, NotFoundError, UnsupportedError, type Sandbox } from "useshards";
+import { ConflictError, NotFoundError, UnsupportedError, type Sandbox } from "useshards";
 import { rejects, skip, type Check } from "../harness.js";
 
 /** optional runs a verb a provider may refuse by name, and skips the check when it does. */
@@ -25,14 +25,6 @@ async function others(sandbox: Sandbox): Promise<string[]> {
     .slice(1)
     .filter((line) => line.length > 0 && !line.startsWith("[") && line !== "ps -o args")
     .filter((line) => !/^(\S*\/)?(shard-)?init\b/.test(line));
-}
-
-/** diskKiB is the size of the root filesystem in KiB, as df reports it. */
-async function diskKiB(sandbox: Sandbox): Promise<number> {
-  const result = await sandbox.exec("df -Pk / | tail -1");
-  assert.equal(result.exitCode, 0, result.stderr);
-
-  return Number(result.stdout.trim().split(/\s+/)[1]);
 }
 
 /** agrees runs a verb and proves the capabilities said whether the server would refuse it. */
@@ -89,31 +81,6 @@ export const checks: Check[] = [
       await sandbox.start();
       assert.equal((await sandbox.inspect()).state, "running");
       assert.equal((await sandbox.exec("cat /root/kept")).stdout, "kept\n", "a start keeps the root a stop left");
-    },
-  },
-  {
-    name: "lifecycle.resize",
-    run: async (ctx) => {
-      const capabilities = await ctx.shard.capabilities();
-      const sandbox = await ctx.create({ memoryMiB: 256 });
-      await sandbox.exec("echo kept > /root/kept");
-      const before = await diskKiB(sandbox);
-      await rejects(ConflictError, () => sandbox.resize({ memoryMiB: 512 }));
-      await sandbox.stop();
-      await sandbox.resize({ memoryMiB: 512, vcpus: 1 });
-      assert.equal(sandbox.info.resources.memoryMiB, 512);
-      assert.equal(sandbox.info.resources.vcpus, 1);
-      const disk = sandbox.info.resources.diskMiB;
-      await rejects(InvalidRequestError, () => sandbox.resize({ diskMiB: disk - 128 }));
-      await agrees("disk grow", capabilities.diskGrow, () => sandbox.resize({ diskMiB: disk + 1024 }));
-      await sandbox.start();
-      assert.equal((await sandbox.inspect()).resources.memoryMiB, 512, "the start runs under the new bound");
-      assert.equal((await sandbox.exec("cat /root/kept")).stdout, "kept\n", "a resize keeps the files");
-      if (capabilities.diskGrow) {
-        // The ext4 keeps some of the new GiB for its own metadata.
-        const grown = (await diskKiB(sandbox)) - before;
-        assert.ok(grown > 900 * 1024, `the root grew by ${grown} KiB, want about 1 GiB`);
-      }
     },
   },
   {
@@ -189,8 +156,8 @@ export const checks: Check[] = [
     name: "lifecycle.capabilities",
     run: async (ctx) => {
       const capabilities = await ctx.shard.capabilities();
-      assert.deepEqual(Object.keys(capabilities).sort(), ["create", "diskGrow", "fork", "pause", "port", "remove", "resize", "resume", "snapshot", "start", "stop", "swap"]);
-      for (const verb of ["create", "start", "stop", "remove", "resize", "port"] as const) {
+      assert.deepEqual(Object.keys(capabilities).sort(), ["create", "fork", "pause", "port", "remove", "resume", "snapshot", "start", "stop", "swap"]);
+      for (const verb of ["create", "start", "stop", "remove", "port"] as const) {
         assert.equal(capabilities[verb], true, `every provider can ${verb}`);
       }
       assert.equal(capabilities.resume, capabilities.pause, "pause and resume come as a pair");

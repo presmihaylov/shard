@@ -68,13 +68,6 @@ test("a create forwards its ports, private unless it says public", async () => {
   assert.equal(JSON.parse(sent("POST", "/v0/sandboxes", 1).body).ports, undefined);
 });
 
-test("a create sends its links, and none when it names none", async () => {
-  await shard.create({ image: "alpine", links: ["db1", "sb_3"] });
-  assert.deepEqual(JSON.parse(sent("POST", "/v0/sandboxes").body).links, ["db1", "sb_3"]);
-  await shard.create({ image: "alpine", links: [] });
-  assert.equal(JSON.parse(sent("POST", "/v0/sandboxes", 1).body).links, undefined);
-});
-
 test("ports reads every page of every sandbox's forwards", async () => {
   routes.set("GET /v0/ports", (request) => {
     if (request.url.searchParams.get("cursor") === "9000") {
@@ -235,15 +228,14 @@ test("printing a client, a sandbox or an attached command never shows the API ke
 
 test("version and capabilities read the daemon's records", async () => {
   routes.set("GET /v0/version", () => ({ status: 200, json: { version: "0.9.0", api_version: "v0" } }));
-  const verbs = { create: true, start: true, stop: true, remove: true, pause: false, resume: false, fork: false, snapshot: true, resize: true, port: true, swap: false, disk_grow: true };
+  const verbs = { create: true, start: true, stop: true, remove: true, pause: false, resume: false, fork: false, snapshot: true, port: true, swap: false };
   routes.set("GET /v0/capabilities", () => ({ status: 200, json: verbs }));
   assert.deepEqual(await shard.version(), { version: "0.9.0", apiVersion: "v0" });
-  const { disk_grow: diskGrow, ...rest } = verbs;
-  assert.deepEqual(await shard.capabilities(), { ...rest, diskGrow });
+  assert.deepEqual(await shard.capabilities(), verbs);
 });
 
 test("a capability that is not a boolean is a protocol error", async () => {
-  const verbs = { create: true, start: true, stop: true, remove: true, pause: true, resume: true, fork: true, snapshot: "yes", resize: true, swap: true, disk_grow: true };
+  const verbs = { create: true, start: true, stop: true, remove: true, pause: true, resume: true, fork: true, snapshot: "yes", swap: true };
   routes.set("GET /v0/capabilities", () => ({ status: 200, json: verbs }));
   await assert.rejects(shard.capabilities(), ProtocolError);
 });

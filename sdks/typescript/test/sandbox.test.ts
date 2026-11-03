@@ -1,13 +1,13 @@
 import assert from "node:assert/strict";
 import { afterEach, beforeEach, test } from "node:test";
-import { APIError, CommandNotStartedError, ConflictError, InvalidRequestError, NotFoundError, PermissionDeniedError, ProtocolError, ServerError, ShardConnectionError, UnsupportedError } from "../src/errors.js";
+import { APIError, CommandNotStartedError, ConflictError, NotFoundError, PermissionDeniedError, ProtocolError, ServerError, ShardConnectionError, UnsupportedError } from "../src/errors.js";
 import { opClose } from "../src/frames.js";
 import { Process } from "../src/process.js";
 import { processInfo, sandboxInfo } from "../src/records.js";
 import { Sandbox } from "../src/sandbox.js";
 import { Transport } from "../src/transport.js";
 import { FakeDaemon, type Answer, type Request } from "./helpers/daemon.js";
-import { linkRecord, portRecord, processRecord, sandboxRecord } from "./helpers/records.js";
+import { portRecord, processRecord, sandboxRecord } from "./helpers/records.js";
 
 let daemon: FakeDaemon;
 let transport: Transport;
@@ -59,14 +59,6 @@ test("each lifecycle verb keeps the handle's info current", async () => {
   assert.equal(sandbox.info.state, "running");
   assert.equal((await sandbox.inspect()).state, "paused");
   assert.equal(sandbox.info.state, "paused");
-});
-
-test("a resize sends only the bounds it names and keeps the handle's info current", async () => {
-  const resources = { memory_mib: 1024, vcpus: 2, disk_mib: 1024, swap_mib: 0 };
-  routes.set("POST /v0/sandboxes/sb_1/resize", () => ({ status: 200, json: sandboxRecord({ state: "stopped", resources }) }));
-  await sandbox.resize({ memoryMiB: 1024, vcpus: 2 });
-  assert.deepEqual(JSON.parse(sent("POST", "/v0/sandboxes/sb_1/resize").body), { resources: { memory_mib: 1024, vcpus: 2 } });
-  assert.deepEqual(sandbox.info.resources, { memoryMiB: 1024, vcpus: 2, diskMiB: 1024, swapMiB: 0 });
 });
 
 test("info carries the memory kills and the start again the daemon owes", async () => {
@@ -146,40 +138,6 @@ test("a port refusal throws the error of its code", async () => {
   }
   routes.set("DELETE /v0/sandboxes/sb_1/ports/9000", () => ({ status: 404, json: { error: { code: "not_found", message: "sandbox web forwards no host port 9000" } } }));
   await assert.rejects(sandbox.ports.remove(9000), NotFoundError);
-});
-
-test("a link add puts the target on the route and answers the link", async () => {
-  routes.set("PUT /v0/sandboxes/sb_1/links/db1", () => ({ status: 200, json: linkRecord() }));
-  assert.deepEqual(await sandbox.links.add("db1"), { target: "db1", targetId: "sb_2", address: "10.86.0.1" });
-  sent("PUT", "/v0/sandboxes/sb_1/links/db1");
-});
-
-test("a link list answers the sandbox's links, and a remove names the target", async () => {
-  routes.set("GET /v0/sandboxes/sb_1/links", () => ({ status: 200, json: { links: [linkRecord(), linkRecord({ target: "cache", target_id: "sb_3", address: "10.86.0.2" })] } }));
-  routes.set("DELETE /v0/sandboxes/sb_1/links/db1", () => ({ status: 204 }));
-  assert.deepEqual(
-    (await sandbox.links.list()).map((each) => [each.target, each.address]),
-    [
-      ["db1", "10.86.0.1"],
-      ["cache", "10.86.0.2"],
-    ],
-  );
-  await sandbox.links.remove("db1");
-  sent("DELETE", "/v0/sandboxes/sb_1/links/db1");
-});
-
-test("a link refusal throws the error of its code", async () => {
-  const refusals: [number, string, new (...args: never[]) => Error][] = [
-    [400, "invalid_request", InvalidRequestError],
-    [403, "forbidden", PermissionDeniedError],
-    [409, "sandbox_failed", ConflictError],
-  ];
-  for (const [status, code, kind] of refusals) {
-    routes.set("PUT /v0/sandboxes/sb_1/links/db1", () => ({ status, json: { error: { code, message: `refused as ${code}` } } }));
-    await assert.rejects(sandbox.links.add("db1"), (err: unknown) => err instanceof kind && err.message.includes(`refused as ${code}`));
-  }
-  routes.set("DELETE /v0/sandboxes/sb_1/links/db1", () => ({ status: 404, json: { error: { code: "not_found", message: "sandbox web holds no link to db1" } } }));
-  await assert.rejects(sandbox.links.remove("db1"), NotFoundError);
 });
 
 test("logs answer the process's output as text", async () => {

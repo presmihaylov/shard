@@ -11,10 +11,8 @@ import (
 	"github.com/presmihaylov/shard/pkg/netns"
 )
 
-// Capabilities: no checkpoint verb, a port forward, which dials from the host into the network namespace the daemon made, and a disk grow.
-func (p *Provider) Capabilities() models.Capabilities {
-	return models.Capabilities{Port: true, DiskGrow: true}
-}
+// Capabilities: no checkpoint verb, and a port forward, which dials from the host into the network namespace the daemon made.
+func (p *Provider) Capabilities() models.Capabilities { return models.Capabilities{Port: true} }
 
 // DialPort opens one connection to port on the sandbox's loopback, from a host thread inside its network namespace.
 func (p *Provider) DialPort(ctx context.Context, id string, port uint16) (net.Conn, error) {

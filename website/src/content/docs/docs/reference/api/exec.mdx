@@ -85,28 +85,6 @@ Each route answers an error with the [Error](/docs/reference/api/#error) body, u
 | 3 | [ExitMessage](#exitmessage) |
 | 5 | [FailureMessage](#failuremessage) |
 
-## Open an ssh connection into a running sandbox
-
-`GET /v0/sandboxes/{id}/ssh` · scope `ssh`
-
-**Parameters**
-
-| Name | In | Type | Required | Description |
-| --- | --- | --- | --- | --- |
-| `id` | path | string | yes | The sandbox id or name. |
-
-**Responses**
-
-| Status | Body | Description |
-| --- | --- | --- |
-| 101 | WebSocket | A WebSocket whose binary messages carry one ssh connection, byte for byte. The ssh user is the Unix user commands run as; the token was the check, so ssh asks for no key or password. |
-
-**Response headers**
-
-| Header | Status | Type | Description |
-| --- | --- | --- | --- |
-| `Shard-SSH-Host-Key` | 101 | string | The daemon's ssh host key as an authorized\_keys line, the same for every sandbox, which the client pins before it speaks ssh. |
-
 ## Send a signal to a running exec
 
 `POST /v0/sandboxes/{id}/exec/{exec}/kill` · scope `exec`

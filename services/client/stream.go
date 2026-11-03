@@ -177,19 +177,8 @@ func (c *Client) DeleteExec(ctx context.Context, ref, execID string) error {
 	return nil
 }
 
-// open dials one streaming route of the daemon's framed messages.
+// open dials one streaming route. A refusal comes before the 101, as the status and the body any call gets.
 func (c *Client) open(ctx context.Context, path, what string) (*websocket.Conn, error) {
-	conn, _, err := c.upgrade(ctx, path, what)
-	if err != nil {
-		return nil, err
-	}
-	conn.SetReadLimit(api.MaxPayload + 1)
-
-	return conn, nil
-}
-
-// upgrade dials one WebSocket route and answers the headers of its 101. A refusal comes before the 101, as the status and the body any call gets.
-func (c *Client) upgrade(ctx context.Context, path, what string) (*websocket.Conn, http.Header, error) {
 	options := &websocket.DialOptions{HTTPClient: c.http, HTTPHeader: http.Header{}}
 	c.authorize(options.HTTPHeader)
 
@@ -200,21 +189,23 @@ func (c *Client) upgrade(ctx context.Context, path, what string) (*websocket.Con
 
 	var connect *ConnectError
 	if errors.As(err, &connect) {
-		return nil, nil, connect
+		return nil, connect
 	}
 	if err != nil && resp != nil {
 		answer, readErr := io.ReadAll(resp.Body)
 		if readErr != nil {
-			return nil, nil, fmt.Errorf("read the refusal of %s: %w", what, readErr)
+			return nil, fmt.Errorf("read the refusal of %s: %w", what, readErr)
 		}
 
-		return nil, nil, c.decodeError(resp.StatusCode, answer)
+		return nil, c.decodeError(resp.StatusCode, answer)
 	}
 	if err != nil {
-		return nil, nil, fmt.Errorf("open %s on %s: %w", what, c.target, unquoted(err))
+		return nil, fmt.Errorf("open %s on %s: %w", what, c.target, unquoted(err))
 	}
 
-	return conn, resp.Header, nil
+	conn.SetReadLimit(api.MaxPayload + 1)
+
+	return conn, nil
 }
 
 // closeStream ends a session both sides are done with; one the library closed reports nothing, and a dropped one is only let go, as nobody reads a close.

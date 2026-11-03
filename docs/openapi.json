@@ -7,9 +7,6 @@
           "create": {
             "type": "boolean"
           },
-          "disk_grow": {
-            "type": "boolean"
-          },
           "fork": {
             "type": "boolean"
           },
@@ -20,9 +17,6 @@
             "type": "boolean"
           },
           "remove": {
-            "type": "boolean"
-          },
-          "resize": {
             "type": "boolean"
           },
           "resume": {
@@ -91,13 +85,6 @@
           "image": {
             "description": "The image to create from. A create names exactly one of image and snapshot.",
             "type": "string"
-          },
-          "links": {
-            "description": "The sandboxes, by id or name, the new sandbox links, as link add would link them.",
-            "items": {
-              "type": "string"
-            },
-            "type": "array"
           },
           "name": {
             "type": "string"
@@ -685,12 +672,6 @@
           "kernel": {
             "type": "string"
           },
-          "links": {
-            "items": {
-              "$ref": "#/components/schemas/Link"
-            },
-            "type": "array"
-          },
           "name": {
             "type": "string"
           },
@@ -765,45 +746,6 @@
             "type": "string"
           }
         },
-        "type": "object"
-      },
-      "Link": {
-        "additionalProperties": false,
-        "properties": {
-          "address": {
-            "description": "The address the source reaches the target on, from 10.86.0.0/16 and shared by every link to that target.",
-            "format": "ip",
-            "type": "string"
-          },
-          "target": {
-            "description": "The sandbox the link reaches, by its name, or by its id when it has none.",
-            "type": "string"
-          },
-          "target_id": {
-            "description": "The id of the sandbox the link reaches.",
-            "type": "string"
-          }
-        },
-        "required": [
-          "target",
-          "target_id",
-          "address"
-        ],
-        "type": "object"
-      },
-      "LinksResponse": {
-        "additionalProperties": false,
-        "properties": {
-          "links": {
-            "items": {
-              "$ref": "#/components/schemas/Link"
-            },
-            "type": "array"
-          }
-        },
-        "required": [
-          "links"
-        ],
         "type": "object"
       },
       "MkdirRequest": {
@@ -1177,51 +1119,6 @@
         ],
         "type": "object"
       },
-      "ResizeRequest": {
-        "additionalProperties": false,
-        "properties": {
-          "resources": {
-            "$ref": "#/components/schemas/ResizeResources"
-          }
-        },
-        "required": [
-          "resources"
-        ],
-        "type": "object"
-      },
-      "ResizeResources": {
-        "additionalProperties": false,
-        "properties": {
-          "disk_mib": {
-            "description": "The disk bound in MiB, which only grows, and only on a provider whose capabilities say disk_grow. 0 is 10240.",
-            "format": "int64",
-            "maximum": 16777088,
-            "minimum": 0,
-            "type": "integer"
-          },
-          "memory_mib": {
-            "description": "The memory bound in MiB. 0 is 512 on the firecracker and vz providers, and no bound on gvisor, runc and sysbox.",
-            "format": "int64",
-            "maximum": 16777216,
-            "minimum": 0,
-            "type": "integer"
-          },
-          "swap_mib": {
-            "description": "The swap file in MiB, which counts against disk_mib. 0 is none; gvisor, runc and sysbox refuse any other.",
-            "format": "int64",
-            "maximum": 16777088,
-            "minimum": 0,
-            "type": "integer"
-          },
-          "vcpus": {
-            "description": "The vCPU bound. 0 is every CPU of the host.",
-            "format": "int64",
-            "minimum": 0,
-            "type": "integer"
-          }
-        },
-        "type": "object"
-      },
       "ResourceRequest": {
         "additionalProperties": false,
         "properties": {
@@ -1426,12 +1323,6 @@
           },
           "kernel": {
             "type": "string"
-          },
-          "links": {
-            "items": {
-              "$ref": "#/components/schemas/Link"
-            },
-            "type": "array"
           },
           "name": {
             "type": "string"
@@ -2117,7 +2008,7 @@
         "x-shard-scope": "sandbox:read"
       },
       "post": {
-        "description": "A create that names secrets also needs the secret:* scope, one that names a policy needs policy:*, one that forwards ports needs port:write, and one that links sandboxes needs ssh; without it the answer is 403 forbidden.",
+        "description": "A create that names secrets also needs the secret:* scope, one that names a policy needs policy:*, and one that forwards ports needs port:write; without it the answer is 403 forbidden.",
         "operationId": "create-sandbox",
         "parameters": [
           {
@@ -3135,150 +3026,6 @@
         "x-shard-scope": "sandbox:write"
       }
     },
-    "/v0/sandboxes/{id}/links": {
-      "get": {
-        "operationId": "list-links",
-        "parameters": [
-          {
-            "description": "The sandbox id or name.",
-            "in": "path",
-            "name": "id",
-            "required": true,
-            "schema": {
-              "description": "The sandbox id or name.",
-              "type": "string"
-            }
-          }
-        ],
-        "responses": {
-          "200": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/LinksResponse"
-                }
-              }
-            },
-            "description": "OK"
-          },
-          "default": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/Error"
-                }
-              }
-            },
-            "description": "Error"
-          }
-        },
-        "summary": "List the sandboxes a sandbox links",
-        "tags": [
-          "links"
-        ],
-        "x-shard-scope": "sandbox:read"
-      }
-    },
-    "/v0/sandboxes/{id}/links/{target}": {
-      "delete": {
-        "operationId": "remove-link",
-        "parameters": [
-          {
-            "description": "The sandbox id or name.",
-            "in": "path",
-            "name": "id",
-            "required": true,
-            "schema": {
-              "description": "The sandbox id or name.",
-              "type": "string"
-            }
-          },
-          {
-            "description": "The id or name of the sandbox the link reaches.",
-            "in": "path",
-            "name": "target",
-            "required": true,
-            "schema": {
-              "description": "The id or name of the sandbox the link reaches.",
-              "type": "string"
-            }
-          }
-        ],
-        "responses": {
-          "204": {
-            "description": "No Content"
-          },
-          "default": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/Error"
-                }
-              }
-            },
-            "description": "Error"
-          }
-        },
-        "summary": "Remove the link to a sandbox",
-        "tags": [
-          "links"
-        ],
-        "x-shard-scope": "sandbox:write"
-      },
-      "put": {
-        "description": "Every sandbox that links the target sees it at the same address, from 10.86.0.0/16, until no link names it. A PUT of a link the sandbox already holds changes nothing. The link outlives a stop of either sandbox, and goes when the target is removed. A target that does not exist, or the sandbox itself, answers 400 invalid_request.",
-        "operationId": "put-link",
-        "parameters": [
-          {
-            "description": "The sandbox id or name.",
-            "in": "path",
-            "name": "id",
-            "required": true,
-            "schema": {
-              "description": "The sandbox id or name.",
-              "type": "string"
-            }
-          },
-          {
-            "description": "The id or name of the sandbox the link reaches.",
-            "in": "path",
-            "name": "target",
-            "required": true,
-            "schema": {
-              "description": "The id or name of the sandbox the link reaches.",
-              "type": "string"
-            }
-          }
-        ],
-        "responses": {
-          "200": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/Link"
-                }
-              }
-            },
-            "description": "OK"
-          },
-          "default": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/Error"
-                }
-              }
-            },
-            "description": "Error"
-          }
-        },
-        "summary": "Link a sandbox to another",
-        "tags": [
-          "links"
-        ],
-        "x-shard-scope": "ssh"
-      }
-    },
     "/v0/sandboxes/{id}/ls": {
       "get": {
         "operationId": "list-dir",
@@ -4056,60 +3803,6 @@
         "x-shard-scope": "sandbox:read"
       }
     },
-    "/v0/sandboxes/{id}/resize": {
-      "post": {
-        "operationId": "resize-sandbox",
-        "parameters": [
-          {
-            "description": "The sandbox id or name.",
-            "in": "path",
-            "name": "id",
-            "required": true,
-            "schema": {
-              "description": "The sandbox id or name.",
-              "type": "string"
-            }
-          }
-        ],
-        "requestBody": {
-          "content": {
-            "application/json": {
-              "schema": {
-                "$ref": "#/components/schemas/ResizeRequest"
-              }
-            }
-          },
-          "required": true
-        },
-        "responses": {
-          "200": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/Sandbox"
-                }
-              }
-            },
-            "description": "OK"
-          },
-          "default": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/Error"
-                }
-              }
-            },
-            "description": "Error"
-          }
-        },
-        "summary": "Change the memory, vCPU, disk or swap bounds of a stopped sandbox",
-        "tags": [
-          "sandboxes"
-        ],
-        "x-shard-scope": "sandbox:write"
-      }
-    },
     "/v0/sandboxes/{id}/resume": {
       "post": {
         "operationId": "resume-sandbox",
@@ -4250,51 +3943,6 @@
           "sandboxes"
         ],
         "x-shard-scope": "secret:*"
-      }
-    },
-    "/v0/sandboxes/{id}/ssh": {
-      "get": {
-        "operationId": "open-ssh",
-        "parameters": [
-          {
-            "description": "The sandbox id or name.",
-            "in": "path",
-            "name": "id",
-            "required": true,
-            "schema": {
-              "description": "The sandbox id or name.",
-              "type": "string"
-            }
-          }
-        ],
-        "responses": {
-          "101": {
-            "description": "A WebSocket whose binary messages carry one ssh connection, byte for byte. The ssh user is the Unix user commands run as; the token was the check, so ssh asks for no key or password.",
-            "headers": {
-              "Shard-SSH-Host-Key": {
-                "description": "The daemon's ssh host key as an authorized_keys line, the same for every sandbox, which the client pins before it speaks ssh.",
-                "schema": {
-                  "type": "string"
-                }
-              }
-            }
-          },
-          "default": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/Error"
-                }
-              }
-            },
-            "description": "Error"
-          }
-        },
-        "summary": "Open an ssh connection into a running sandbox",
-        "tags": [
-          "exec"
-        ],
-        "x-shard-scope": "ssh"
       }
     },
     "/v0/sandboxes/{id}/start": {

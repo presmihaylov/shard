@@ -1,12 +1,10 @@
 package main
 
 import (
-	"net/netip"
 	"os"
 	"path/filepath"
 	"testing"
 
-	"github.com/presmihaylov/shard/models"
 	"github.com/presmihaylov/shard/services/supervisor"
 )
 
@@ -36,22 +34,5 @@ func TestResolverFilesReplaceADanglingSymlink(t *testing.T) {
 	}
 	if _, err := os.Stat(target); err == nil {
 		t.Fatal("the write followed the symlink")
-	}
-}
-
-func TestResolverFilesWriteTheLinkedHosts(t *testing.T) {
-	etc := t.TempDir()
-	err := writeResolverFilesIn(etc, supervisor.Address{IP: "10.200.0.2", Hostname: "sb-1", Hosts: []models.Host{
-		{Address: netip.MustParseAddr("10.200.0.3"), Names: []string{"my_db", "my-db"}},
-	}})
-	if err != nil {
-		t.Fatal(err)
-	}
-
-	hosts, _ := os.ReadFile(filepath.Join(etc, "hosts"))
-	want := "127.0.0.1\tlocalhost\n::1\tlocalhost ip6-localhost ip6-loopback\n10.200.0.2\tsb-1\n" +
-		"# BEGIN shard links: shard rewrites the lines up to the END line as the links change\n10.200.0.3\tmy_db my-db\n# END shard links\n"
-	if string(hosts) != want {
-		t.Fatalf("hosts = %q, want %q", hosts, want)
 	}
 }

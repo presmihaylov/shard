@@ -135,8 +135,6 @@ type Config struct {
 	Redact func(string) string
 	// Ports puts up the forwards of the running sandboxes; nil puts up none, which only a test does.
 	Ports Ports
-	// Links hears of every change to a sandbox's links; nil hears none, since no layer serves a link yet.
-	Links Links
 }
 
 // Service owns create, start, stop and rm, and serializes them per sandbox in memory: one process holds it.
@@ -157,16 +155,11 @@ type Service struct {
 
 	// portsMu makes the check that no other sandbox forwards a host port one step with the write that claims it.
 	portsMu sync.Mutex
-	// linksMu makes the read of every link address one step with the write that claims one, and keeps a remove from leaving a link to a sandbox that is gone.
-	linksMu sync.Mutex
 }
 
 func New(cfg Config) *Service {
 	if cfg.Ports == nil {
 		cfg.Ports = noPorts{}
-	}
-	if cfg.Links == nil {
-		cfg.Links = noLinks{}
 	}
 
 	return &Service{cfg: cfg, locks: map[string]*sandboxLock{}, pulls: map[string]context.CancelCauseFunc{}, execs: map[string]*execSession{}, running: map[string]int{}}
@@ -187,8 +180,6 @@ type CreateRequest struct {
 	Resources ResourceRequest `json:"resources" required:"false"`
 	// Ports are the host ports forwarded into the sandbox from its first start, as port add would forward them.
 	Ports []models.PortForward `json:"ports,omitempty"`
-	// Links are the sandboxes this one reaches by name from its first start, as link add would link them.
-	Links []string `json:"links,omitempty" doc:"The sandboxes, by id or name, the new sandbox links, as link add would link them."`
 }
 
 // ResourceRequest is the bounds a create asks for. A nil memory is an omitted --memory, which a snapshot fills, and 0 is no bound on a container substrate.
@@ -553,9 +544,29 @@ func (s *Service) Prepare(ctx context.Context, req CreateRequest) (models.Sandbo
 		defer seed.unlock()
 		req, snapshot = seed.req, seed.id
 	}
-	res, err := s.checkBounds(s.resources(req.Resources))
-	if err != nil {
-		return models.Sandbox{}, err
+	res := s.resources(req.Resources)
+	if res.SwapMiB > 0 {
+		if err := requireVerb(s.cfg.Provider, models.VerbSwap); err != nil {
+			return models.Sandbox{}, err
+		}
+	}
+	// A bound the substrate refuses is the request's fault, and it must not leave a failed record behind.
+	if err := s.cfg.Provider.CheckResources(res); err != nil {
+		return models.Sandbox{}, &RequestError{Err: err}
+	}
+	// A bound past the host's memory never binds: the host runs out of memory first.
+	if s.cfg.HostMemoryMiB > 0 && res.MemoryMiB > s.cfg.HostMemoryMiB {
+		return models.Sandbox{}, &RequestError{Err: fmt.Errorf("resources.memory_mib is %d MiB, more than the %d MiB of memory on this host; set it to %d MiB or less", res.MemoryMiB, s.cfg.HostMemoryMiB, s.cfg.HostMemoryMiB)}
+	}
+	// A quota past the host's CPUs never binds, and a large enough one overflows the quota to no bound at all.
+	if s.cfg.HostCPUs > 0 && res.VCPUs > s.cfg.HostCPUs {
+		return models.Sandbox{}, &RequestError{Err: fmt.Errorf("resources.vcpus is %d, more than the %d CPUs on this host; set it to %d or less", res.VCPUs, s.cfg.HostCPUs, s.cfg.HostCPUs)}
+	}
+	// Record the disk bound the sandbox will actually run under, so inspect shows the enforced value, not a bare 0.
+	res.DiskMiB = bundle.DiskBound(res)
+	// The swap file sits on the disk beside the image, so a swap the disk cannot hold fails the boot instead.
+	if res.SwapMiB >= res.DiskMiB {
+		return models.Sandbox{}, &RequestError{Err: fmt.Errorf("resources.swap_mib is %d MiB, and the swap file sits on the %d MiB disk beside the image; set resources.disk_mib above %d MiB, or resources.swap_mib below %d MiB, or 0 for no swap", res.SwapMiB, res.DiskMiB, res.SwapMiB, res.DiskMiB)}
 	}
 
 	// The canonical reference is what a prune keys a hold on, so the pending record must carry it before
@@ -593,16 +604,6 @@ func (s *Service) Prepare(ctx context.Context, req CreateRequest) (models.Sandbo
 		}
 	}
 
-	var links []models.Link
-	if len(req.Links) != 0 {
-		// Held through the create below, so no remove takes a target, and no other link claims its address, before the record names it.
-		s.linksMu.Lock()
-		defer s.linksMu.Unlock()
-		if links, err = s.newLinks("", req.Links); err != nil {
-			return models.Sandbox{}, err
-		}
-	}
-
 	var admit []func(dir string) error
 	reserved := ""
 	disks, admits := s.cfg.Provider.(diskAdmitter)
@@ -628,7 +629,6 @@ func (s *Service) Prepare(ctx context.Context, req CreateRequest) (models.Sandbo
 		Secrets:   req.Secrets,
 		Policy:    req.Policy,
 		Ports:     byHostPort(req.Ports),
-		Links:     links,
 		CreatedAt: time.Now().UTC(),
 	}, admit...)
 	if err != nil {
@@ -728,35 +728,6 @@ func (s *Service) resources(r ResourceRequest) models.Resources {
 	return res
 }
 
-// checkBounds holds the bounds to every rule a create holds them to, and fills in the disk bound the sandbox runs under.
-func (s *Service) checkBounds(res models.Resources) (models.Resources, error) {
-	if res.SwapMiB > 0 {
-		if err := requireVerb(s.cfg.Provider, models.VerbSwap); err != nil {
-			return models.Resources{}, err
-		}
-	}
-	// A bound the substrate refuses is the request's fault, and it must not leave a failed record behind.
-	if err := s.cfg.Provider.CheckResources(res); err != nil {
-		return models.Resources{}, &RequestError{Err: err}
-	}
-	// A bound past the host's memory never binds: the host runs out of memory first.
-	if s.cfg.HostMemoryMiB > 0 && res.MemoryMiB > s.cfg.HostMemoryMiB {
-		return models.Resources{}, &RequestError{Err: fmt.Errorf("resources.memory_mib is %d MiB, more than the %d MiB of memory on this host; set it to %d MiB or less", res.MemoryMiB, s.cfg.HostMemoryMiB, s.cfg.HostMemoryMiB)}
-	}
-	// A quota past the host's CPUs never binds, and a large enough one overflows the quota to no bound at all.
-	if s.cfg.HostCPUs > 0 && res.VCPUs > s.cfg.HostCPUs {
-		return models.Resources{}, &RequestError{Err: fmt.Errorf("resources.vcpus is %d, more than the %d CPUs on this host; set it to %d or less", res.VCPUs, s.cfg.HostCPUs, s.cfg.HostCPUs)}
-	}
-	// Record the disk bound the sandbox will actually run under, so inspect shows the enforced value, not a bare 0.
-	res.DiskMiB = bundle.DiskBound(res)
-	// The swap file sits on the disk beside the image, so a swap the disk cannot hold fails the boot instead.
-	if res.SwapMiB >= res.DiskMiB {
-		return models.Resources{}, &RequestError{Err: fmt.Errorf("resources.swap_mib is %d MiB, and the swap file sits on the %d MiB disk beside the image; set resources.disk_mib above %d MiB, or resources.swap_mib below %d MiB, or 0 for no swap", res.SwapMiB, res.DiskMiB, res.SwapMiB, res.DiskMiB)}
-	}
-
-	return res, nil
-}
-
 // Complete pulls the image, builds the sandbox and starts it, then moves the record from pending to
 // running. A failure that is not a shutdown leaves the record failed with the reason, so a get reads why
 // and rm still frees it. It pushes every claim before the commit point onto the teardown stack.
@@ -847,8 +818,6 @@ func (s *Service) Complete(ctx context.Context, id string, req CreateRequest) (e
 		return err
 	}
 
-	network := resolvedThrough(netSpec, req.Policy)
-	network.Hosts = linkHosts(nameOf(id, sb), sb.Links)
 	spec := runspec.Resolve(models.SandboxSpec{
 		ID:        id,
 		Name:      req.Name,
@@ -859,7 +828,7 @@ func (s *Service) Complete(ctx context.Context, id string, req CreateRequest) (e
 		Env:       env,
 		WorkDir:   req.WorkDir,
 		User:      req.User,
-		Network:   network,
+		Network:   resolvedThrough(netSpec, req.Policy),
 		Resources: s.resources(req.Resources),
 		Seed:      seed.files,
 		ProxyCA:   proxyCA,
@@ -880,11 +849,6 @@ func (s *Service) Complete(ctx context.Context, id string, req CreateRequest) (e
 	// The rules are keyed by the address, which the record holds only now, so the host learns it before the guest runs.
 	if req.fronted() {
 		if err := s.cfg.Network.Reapply(ctx, id); err != nil {
-			return err
-		}
-	}
-	if len(sb.Links) != 0 {
-		if err := s.linksChanged(ctx, id); err != nil {
 			return err
 		}
 	}
@@ -1013,13 +977,32 @@ func validate(req CreateRequest) error {
 		}
 	}
 
-	if err := validBounds(req.Resources); err != nil {
-		return err
+	// A bound below zero is not a spelling of unbounded, and the substrate would drop it without a word.
+	memory := req.Resources.bounds().MemoryMiB
+	if memory < 0 {
+		return &RequestError{Err: fmt.Errorf("the memory bound is in MiB and cannot be negative, got %d", memory)}
+	}
+	// A bound this large overflows the byte count it is turned into, and an overflow reads as unbounded.
+	if memory > MaxMemoryMiB {
+		return &RequestError{Err: fmt.Errorf("the memory bound is in MiB and no host holds that much, got %d", memory)}
+	}
+	if req.Resources.VCPUs < 0 {
+		return &RequestError{Err: fmt.Errorf("the vcpu bound cannot be negative, got %d", req.Resources.VCPUs)}
+	}
+	if req.Resources.DiskMiB < 0 {
+		return &RequestError{Err: fmt.Errorf("the disk bound is in MiB and cannot be negative, got %d", req.Resources.DiskMiB)}
+	}
+	if req.Resources.DiskMiB > MaxDiskMiB {
+		return &RequestError{Err: fmt.Errorf("the disk bound is in MiB and no host holds that much, got %d", req.Resources.DiskMiB)}
+	}
+	swap := req.Resources.bounds().SwapMiB
+	if swap < 0 {
+		return &RequestError{Err: fmt.Errorf("the swap is in MiB and cannot be negative, got %d", swap)}
+	}
+	if swap > MaxDiskMiB {
+		return &RequestError{Err: fmt.Errorf("the swap is in MiB and no host holds that much, got %d", swap)}
 	}
 	if err := validPorts(req.Ports); err != nil {
-		return err
-	}
-	if err := validLinks(req.Links); err != nil {
 		return err
 	}
 
@@ -1203,13 +1186,7 @@ func (s *Service) startWithin(ctx context.Context, id string) error {
 		return errors.Join(err, s.recordFailedStart(ctx, id))
 	}
 
-	if err := RecordRunning(ctx, s.cfg.Repo, s.cfg.Provider, id, false); err != nil {
-		return err
-	}
-	// Even with no link left: one dropped while it was down left its line in the guest's writable layer.
-	s.hostsReported(ctx, id)
-
-	return nil
+	return RecordRunning(ctx, s.cfg.Repo, s.cfg.Provider, id, false)
 }
 
 // recordFailedStart lands a shard-init that died before the start ran anything, so inspect shows its 125 and its reason (SHARD-416).
@@ -1513,14 +1490,11 @@ type holding struct {
 // holds what the steps below it name. The record comes after the mount and the namespace, because it
 // is the only handle by which either can be found again.
 func (s *Service) free(ctx context.Context, id string) error {
-	var linked []string
 	held := []holding{
 		{"forwarded host ports", func() error { return s.closePorts(id) }},
 		{"runtime state and rootfs mount", func() error { return s.cfg.Provider.Remove(ctx, id) }},
 		{"netns, veth and address lease", func() error { return s.cfg.Network.Release(ctx, id) }},
 		{"record and state directory", func() error { return s.cfg.Repo.Delete(id) }},
-		{"links that reach it", func() (err error) { linked, err = s.dropLinksTo(id); return err }},
-		{"routes from the sandboxes that linked it", func() error { return s.linksChanged(ctx, linked...) }},
 		// The ruleset is rendered from the records and the leases, so it is right only once this sandbox is in neither.
 		{"host rules", func() error { return s.cfg.Network.ReapplyAll(ctx) }},
 	}
@@ -1538,7 +1512,6 @@ func (s *Service) free(ctx context.Context, id string) error {
 
 		return fmt.Errorf("remove sandbox %s: %w: its %s are left on the host", id, err, strings.Join(left, ", its "))
 	}
-	s.hostsReported(ctx, linked...)
 
 	return nil
 }
@@ -1581,35 +1554,4 @@ func (s *Service) proxyCA() ([]byte, error) {
 	}
 
 	return s.cfg.ProxyCA()
-}
-
-// validBounds refuses a bound below zero or past what any host holds, before a provider reads it.
-func validBounds(r ResourceRequest) error {
-	// A bound below zero is not a spelling of unbounded, and the substrate would drop it without a word.
-	memory := r.bounds().MemoryMiB
-	if memory < 0 {
-		return &RequestError{Err: fmt.Errorf("the memory bound is in MiB and cannot be negative, got %d", memory)}
-	}
-	// A bound this large overflows the byte count it is turned into, and an overflow reads as unbounded.
-	if memory > MaxMemoryMiB {
-		return &RequestError{Err: fmt.Errorf("the memory bound is in MiB and no host holds that much, got %d", memory)}
-	}
-	if r.VCPUs < 0 {
-		return &RequestError{Err: fmt.Errorf("the vcpu bound cannot be negative, got %d", r.VCPUs)}
-	}
-	if r.DiskMiB < 0 {
-		return &RequestError{Err: fmt.Errorf("the disk bound is in MiB and cannot be negative, got %d", r.DiskMiB)}
-	}
-	if r.DiskMiB > MaxDiskMiB {
-		return &RequestError{Err: fmt.Errorf("the disk bound is in MiB and no host holds that much, got %d", r.DiskMiB)}
-	}
-	swap := r.bounds().SwapMiB
-	if swap < 0 {
-		return &RequestError{Err: fmt.Errorf("the swap is in MiB and cannot be negative, got %d", swap)}
-	}
-	if swap > MaxDiskMiB {
-		return &RequestError{Err: fmt.Errorf("the swap is in MiB and no host holds that much, got %d", swap)}
-	}
-
-	return nil
 }

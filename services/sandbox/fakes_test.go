@@ -23,7 +23,6 @@ import (
 	"github.com/presmihaylov/shard/services/sandbox"
 	"github.com/presmihaylov/shard/services/sandboxstate"
 	"github.com/presmihaylov/shard/services/secret"
-	"github.com/presmihaylov/shard/services/supervisor"
 )
 
 // recorder logs what the fakes were asked in order; a name in fail fails every call, a name#N the Nth only.
@@ -375,8 +374,6 @@ type fakeProvider struct {
 	noPort   bool
 	// swap claims the swap file, which the fake otherwise withholds, as a container substrate does.
 	swap bool
-	// diskGrow claims the disk grow, which the fake otherwise withholds, as a container substrate does.
-	diskGrow bool
 	// pauseErr is what Pause refuses with, the way vz refuses a pause into a silent shim.
 	pauseErr error
 	// createErr and forkErr are what Create and Fork refuse with, the way a VM substrate refuses a disk.
@@ -519,10 +516,6 @@ func (f *fakeProvider) Exec(ctx context.Context, id string, spec models.ExecSpec
 	if f.serve != nil {
 		return f.serve(spec)
 	}
-	// A files exec no test serves finds no file, which is what the hosts refresh of every start reads.
-	if slices.Equal(spec.Argv, []string{supervisor.InitPath, supervisor.FilesMode}) {
-		return models.ExitStatus{}, supervisor.WriteMessage(spec.Stdout, supervisor.FileReply{Error: "no such file", Code: supervisor.FileNotFound})
-	}
 
 	if spec.Report != nil && !f.execNoPID {
 		spec.Report(f.execPID)
@@ -593,7 +586,7 @@ func (f *fakeProvider) Name() string { return "fake" }
 func (f *fakeProvider) CheckResources(models.Resources) error { return f.refuse }
 
 func (f *fakeProvider) Capabilities() models.Capabilities {
-	return models.Capabilities{Pause: !f.noPause, Resume: !f.noResume, Fork: !f.noFork, Port: !f.noPort, Swap: f.swap, DiskGrow: f.diskGrow}
+	return models.Capabilities{Pause: !f.noPause, Resume: !f.noResume, Fork: !f.noFork, Port: !f.noPort, Swap: f.swap}
 }
 
 func (f *fakeProvider) Pause(ctx context.Context, id string, dir string) error {

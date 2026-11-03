@@ -78,9 +78,8 @@ var wants = map[string]string{
 
 // The arguments more than one verb takes.
 var (
-	imageArg      = row{"IMAGE", "image to use; downloaded if needed"}
-	sandboxArg    = row{"SANDBOX", "sandbox ID or name"}
-	linkTargetArg = row{"TARGET", "ID or name of the sandbox the link reaches"}
+	imageArg   = row{"IMAGE", "image to use; downloaded if needed"}
+	sandboxArg = row{"SANDBOX", "sandbox ID or name"}
 	// sandboxesArg is the argument of a verb that takes several sandboxes and acts on each in turn.
 	sandboxesArg = row{"SANDBOX", "sandbox ID or name; repeatable"}
 	sourceArg    = row{"SANDBOX", "source sandbox ID or name"}
@@ -99,7 +98,7 @@ var verbGroups = []struct {
 	title string
 	verbs []string
 }{
-	{"Sandboxes", []string{"create", "run", "exec", "shell", "ssh", "ssh-config", "ssh-proxy", "list", "ps", "logs", "kill", "inspect", "stop", "start", "resize", "remove", "prune", "pause", "resume", "fork", "cp", "port", "link"}},
+	{"Sandboxes", []string{"create", "run", "exec", "shell", "list", "ps", "logs", "kill", "inspect", "stop", "start", "remove", "prune", "pause", "resume", "fork", "cp", "port"}},
 	{"Images, snapshots, secrets and network policies", []string{"pull", "image", "snapshot", "secret", "policy"}},
 	{"Host and access", []string{"capabilities", "daemon", "info", "serve", "setup", "tokens", "version"}},
 }
@@ -175,7 +174,6 @@ var helps = map[string]verbHelp{
 		flags: append(slices.Clone(sandboxFlagHelps),
 			flagHelp{"--snapshot <id|name>", "create from a filesystem snapshot instead of an image", ""},
 			flagHelp{"--port [HOST:]GUEST", "forward a port on the host's 127.0.0.1 to the sandbox; repeatable", ""},
-			flagHelp{"--link <sandbox>", "link the sandbox to another, by ID or name; repeatable", ""},
 		),
 		notes: []note{
 			para(
@@ -190,7 +188,6 @@ var helps = map[string]verbHelp{
 			"shard create --name web-copy --snapshot web-files",
 			"shard create --name worker --memory 512MiB --secret API_TOKEN python:3.12",
 			"shard create --name web --port 8000 python:3.12",
-			"shard create --name agent1 --link web1 python:3.12",
 		},
 	},
 	"run": {
@@ -274,47 +271,6 @@ var helps = map[string]verbHelp{
 			"The exit code is the shell's exit code.",
 		)},
 		examples: []string{"shard shell web", "shard shell --workdir /app web", "shard shell --user root web"},
-	},
-	"ssh": {
-		usage:   []string{"ssh [OPTIONS] SANDBOX [SSH-OPTION...] [-- COMMAND [ARGS...]]"},
-		summary: "connect to a running sandbox with ssh",
-		args: []row{
-			sandboxArg,
-			{"SSH-OPTION", "option for ssh, such as -L 9222:localhost:9222"},
-			{"COMMAND", "command to run instead of a shell"},
-			argsArg,
-		},
-		flags: []flagHelp{{"--user <user>", "user to log in as", "root"}},
-		notes: []note{
-			para(
-				"Runs the ssh on your PATH with the options 'shard ssh-config' prints.",
-				"Options for ssh go after the sandbox, and a command after --.",
-				"-L reaches ports on the sandbox's 127.0.0.1 only.",
-				"Agent forwarding, X11 and -R are refused.",
-				"ssh asks for no password or key: access to the API is the check.",
-				"The exit code is ssh's exit code.",
-			),
-		},
-		examples: []string{"shard ssh web1", "shard ssh web1 -- pg_dump app", "shard ssh web1 -L 9222:localhost:9222", "shard ssh --user app web1"},
-	},
-	"ssh-config": {
-		usage:   []string{"ssh-config"},
-		summary: "print the ssh config that reaches sandboxes as SANDBOX.shard",
-		notes: []note{para(
-			"Every host that ends in .shard connects to that sandbox, as root by default.",
-			"Use it with -F in ssh, scp or rsync, or add it to ~/.ssh/config.",
-			"It reaches the daemon this command reaches, with a known_hosts file of its own.",
-		)},
-		examples: []string{"scp -F <(shard ssh-config) a.txt web1.shard:/tmp/", "shard ssh-config >> ~/.ssh/config"},
-	},
-	"ssh-proxy": {
-		usage:   []string{"ssh-proxy SANDBOX.shard"},
-		summary: "carry one ssh connection into a sandbox, as ssh's ProxyCommand",
-		args:    []row{{"SANDBOX.shard", "sandbox ID or name, with the .shard that ssh's %n keeps"}},
-		notes: []note{para(
-			"ssh runs it, from the config 'shard ssh-config' prints.",
-			"It pins the daemon's host key, then relays until either side ends.",
-		)},
 	},
 	"list": {
 		usage:   []string{"list [OPTIONS]"},
@@ -435,23 +391,6 @@ var helps = map[string]verbHelp{
 		)},
 		examples: []string{"shard prune", "shard prune --force"},
 	},
-	"resize": {
-		usage:   []string{"resize [OPTIONS] SANDBOX"},
-		summary: "change a stopped sandbox's memory, CPUs, disk or swap",
-		args:    []row{sandboxArg},
-		flags: []flagHelp{
-			{"--memory <size>", "memory limit; 0 is 512MiB on Firecracker and vz, none on gVisor, runc and Sysbox", ""},
-			{"--vcpus <n>", "CPU count; 0 uses all available host CPUs, up to 32 on Firecracker", ""},
-			{"--disk <size>", "disk limit; it only grows, and only where 'shard capabilities' says disk_grow", ""},
-			{"--swap <size>", "swap file inside the disk limit; 0 for none, Firecracker and vz only", ""},
-		},
-		notes: []note{para(
-			"The sandbox must be stopped. A bound left out keeps its value.",
-			"The disk and its filesystem grow at once; memory, CPUs and swap apply from the next 'shard start'.",
-			"Prints the sandbox ID.",
-		)},
-		examples: []string{"shard resize --memory 4GiB --vcpus 4 web", "shard resize --disk 30GiB web"},
-	},
 	"fork": {
 		usage:   []string{"fork [OPTIONS] SANDBOX"},
 		summary: "create a sandbox from a running sandbox's memory and files",
@@ -460,7 +399,6 @@ var helps = map[string]verbHelp{
 		notes: []note{para(
 			"The source briefly pauses, then continues running.",
 			"The new sandbox starts from the captured state and has independent files.",
-			"It keeps the source's links.",
 			"Prints the new sandbox ID. Availability depends on the provider.",
 		)},
 		examples: []string{"shard fork --name web-copy web"},
@@ -530,42 +468,6 @@ var helps = map[string]verbHelp{
 		args:     []row{sandboxArg, {"HOST", "host port the forward listens on"}},
 		notes:    []note{para("Closes the listener and the connections it carries.")},
 		examples: []string{"shard port remove web 9000"},
-	},
-	"link": {
-		usage:   []string{"link COMMAND [OPTIONS] [ARGS...]"},
-		summary: "link a sandbox to other sandboxes it reaches by name",
-		notes: []note{para(
-			"A link is one-way: the sandbox reaches its target, never the reverse.",
-			"Each target holds one address from 10.86.0.0/16, shared by every link to it.",
-			"Links survive a stop of either sandbox, and a fork keeps them.",
-			"Removing the target removes every link to it.",
-		)},
-	},
-	"link add": {
-		usage:   []string{"link add SANDBOX TARGET"},
-		summary: "link a sandbox to another",
-		about:   "Link a sandbox to another, or print the link it already holds.",
-		args:    []row{sandboxArg, linkTargetArg},
-		notes: []note{para(
-			"Prints the target and the address the sandbox reaches it on.",
-			"A remote token needs the ssh scope, since a link reaches what ssh does.",
-		)},
-		examples: []string{"shard link add agent1 web1"},
-	},
-	"link list": {
-		usage:    []string{"link list [OPTIONS] SANDBOX"},
-		summary:  "list the sandboxes a sandbox links",
-		args:     []row{sandboxArg},
-		flags:    []flagHelp{formatTableHelp},
-		notes:    []note{para("Table columns: TARGET and ADDRESS, in the order the links were added.")},
-		examples: []string{"shard link list agent1", "shard link list --format json agent1"},
-	},
-	"link remove": {
-		usage:    []string{"link remove SANDBOX TARGET"},
-		summary:  "remove a link",
-		args:     []row{sandboxArg, linkTargetArg},
-		notes:    []note{para("Prints the target. Its address goes free once no link holds it.")},
-		examples: []string{"shard link remove agent1 web1"},
 	},
 	"pull": {
 		usage:    []string{"pull IMAGE"},
@@ -869,11 +771,11 @@ var helps = map[string]verbHelp{
 	},
 	"capabilities": {
 		usage:   []string{"capabilities [OPTIONS]"},
-		summary: "show the lifecycle verbs, swap and disk grow the server supports",
+		summary: "show the lifecycle verbs and swap the server supports",
 		about:   "Show sandbox lifecycle capabilities supported by the connected shard server.",
 		flags:   []flagHelp{formatTableHelp},
 		notes: []note{para(
-			"Lists all ten verbs, swap and disk grow, each true or false for the server's provider.",
+			"Lists all nine verbs and swap, each true or false for the server's provider.",
 			"Token scopes and sandbox states never change the answer.",
 		)},
 		examples: []string{"shard capabilities", "shard capabilities --format json"},

@@ -96,8 +96,6 @@ export interface SandboxInfo {
   policy: string | null;
   /** The host ports the sandbox forwards, whether or not they listen now. */
   ports: PortForward[];
-  /** The sandboxes this one links, in the order they were added. */
-  links: Link[];
   startedAt: Date | null;
   createdAt: Date;
 }
@@ -107,14 +105,6 @@ export interface PortForward {
   hostPort: number;
   guestPort: number;
   public: boolean;
-}
-
-/** Link is one sandbox another reaches by name, at the address every sandbox that links it shares. */
-export interface Link {
-  /** The target as the link names it: its name, or its id when it has none. */
-  target: string;
-  targetId: string;
-  address: string;
 }
 
 /** Port is one forward as the host serves it now. */
@@ -208,7 +198,7 @@ export interface Version {
   apiVersion: string;
 }
 
-/** Capabilities say which of the ten lifecycle verbs the daemon's provider supports, and whether it gives a sandbox swap and disk grow; snapshot is the creation of a filesystem snapshot, and port the forward of a host port. */
+/** Capabilities say which of the nine lifecycle verbs the daemon's provider supports, and whether it gives a sandbox swap; snapshot is the creation of a filesystem snapshot, and port the forward of a host port. */
 export interface Capabilities {
   create: boolean;
   start: boolean;
@@ -218,11 +208,8 @@ export interface Capabilities {
   resume: boolean;
   fork: boolean;
   snapshot: boolean;
-  resize: boolean;
   port: boolean;
   swap: boolean;
-  /** Whether a resize grows a stopped sandbox's disk. */
-  diskGrow: boolean;
 }
 
 export function sandboxInfo(value: unknown): SandboxInfo {
@@ -247,7 +234,6 @@ export function sandboxInfo(value: unknown): SandboxInfo {
     secrets: fields.strings("secrets"),
     policy: fields.optionalString("policy"),
     ports: fields.list("ports").map(portForward),
-    links: fields.list("links").map(linkOf),
     startedAt: fields.optionalDate("started_at"),
     createdAt: fields.date("created_at"),
   };
@@ -348,15 +334,9 @@ export function capabilities(value: unknown): Capabilities {
     resume: fields.bool("resume"),
     fork: fields.bool("fork"),
     snapshot: fields.bool("snapshot"),
-    resize: fields.bool("resize"),
     port: fields.bool("port"),
     swap: fields.bool("swap"),
-    diskGrow: fields.bool("disk_grow"),
   };
-}
-
-export function link(value: unknown): Link {
-  return linkOf(Fields.of(value, "a link"));
 }
 
 /** records reads a JSON array the daemon may answer as null when it is empty. */
@@ -369,10 +349,6 @@ export function records<T>(value: unknown, what: string, read: (record: unknown)
   }
 
   return value.map(read);
-}
-
-function linkOf(fields: Fields): Link {
-  return { target: fields.string("target"), targetId: fields.string("target_id"), address: fields.string("address") };
 }
 
 function portForward(fields: Fields): PortForward {

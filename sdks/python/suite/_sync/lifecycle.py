@@ -5,7 +5,7 @@ import re
 
 import attrs
 
-from useshards import ConflictError, InvalidRequestError, NotFoundError, Sandbox, UnsupportedError
+from useshards import ConflictError, NotFoundError, Sandbox, UnsupportedError
 
 from .._shared import equal, matches, named, not_equal, ok, skip
 from .harness import Check, Context, rejects
@@ -56,35 +56,6 @@ def stop_start(ctx: Context) -> None:
     sandbox.start()
     equal((sandbox.inspect()).state, "running")
     equal((sandbox.exec("cat /root/kept")).stdout, "kept\n", "a start keeps the root a stop left")
-
-
-def disk_kib(sandbox: Sandbox) -> int:
-    """The size of the root filesystem in KiB, as df reports it."""
-    result = sandbox.exec("df -Pk / | tail -1")
-    equal(result.exit_code, 0, result.stderr)
-    return int(result.stdout.split()[1])
-
-
-def resize(ctx: Context) -> None:
-    verbs = ctx.shard.capabilities()
-    sandbox = ctx.create(memory_mib=256)
-    sandbox.exec("echo kept > /root/kept")
-    before = disk_kib(sandbox)
-    rejects(ConflictError, lambda: sandbox.resize(memory_mib=512))
-    sandbox.stop()
-    sandbox.resize(memory_mib=512, vcpus=1)
-    equal(sandbox.info.resources.memory_mib, 512)
-    equal(sandbox.info.resources.vcpus, 1)
-    disk = sandbox.info.resources.disk_mib
-    rejects(InvalidRequestError, lambda: sandbox.resize(disk_mib=disk - 128))
-    agrees("disk grow", verbs.disk_grow, lambda: sandbox.resize(disk_mib=disk + 1024))
-    sandbox.start()
-    equal((sandbox.inspect()).resources.memory_mib, 512, "the start runs under the new bound")
-    equal((sandbox.exec("cat /root/kept")).stdout, "kept\n", "a resize keeps the files")
-    if verbs.disk_grow:
-        # The ext4 keeps some of the new GiB for its own metadata.
-        grown = disk_kib(sandbox) - before
-        ok(grown > 900 * 1024, f"the root grew by {grown} KiB, want about 1 GiB")
 
 
 def pause_resume(ctx: Context) -> None:
@@ -166,9 +137,9 @@ def agrees(verb: str, supported: bool, run: Call) -> None:
 
 def capabilities(ctx: Context) -> None:
     verbs = attrs.asdict(ctx.shard.capabilities())
-    equal(sorted(verbs), "create disk_grow fork pause port remove resize resume snapshot start stop swap".split())
+    equal(sorted(verbs), ["create", "fork", "pause", "port", "remove", "resume", "snapshot", "start", "stop", "swap"])
     ok(all(isinstance(value, bool) for value in verbs.values()), f"every verb is a boolean: {verbs}")
-    for verb in ("create", "start", "stop", "remove", "resize", "port"):
+    for verb in ("create", "start", "stop", "remove", "port"):
         equal(verbs[verb], True, f"every provider can {verb}")
     equal(verbs["resume"], verbs["pause"], "pause and resume come as a pair")
     sandbox = ctx.create()
@@ -194,7 +165,6 @@ CHECKS = [
     Check("lifecycle.create_no_process", create_no_process),
     Check("lifecycle.inspect_get_list", inspect_get_list),
     Check("lifecycle.stop_start", stop_start),
-    Check("lifecycle.resize", resize),
     Check("lifecycle.pause_resume", pause_resume),
     Check("lifecycle.fork", fork),
     Check("lifecycle.remove", remove),

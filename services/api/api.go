@@ -37,7 +37,6 @@ type Lifecycle interface {
 	Pause(ctx context.Context, ref string) (models.Sandbox, error)
 	Resume(ctx context.Context, ref string) (models.Sandbox, error)
 	Fork(ctx context.Context, ref string, req sandbox.CopyRequest) (models.Sandbox, error)
-	Resize(ctx context.Context, ref string, req sandbox.ResizeRequest) (models.Sandbox, error)
 	CreateSnapshot(ctx context.Context, req sandbox.SnapshotRequest) (models.Snapshot, error)
 	ListSnapshots(ctx context.Context) ([]models.Snapshot, error)
 	InspectSnapshot(ctx context.Context, ref string) (models.Snapshot, error)
@@ -50,8 +49,6 @@ type Lifecycle interface {
 	KillExec(ctx context.Context, ref, execID, signal string) error
 	DeleteExec(ctx context.Context, ref, execID string) error
 	ResizeExec(ctx context.Context, ref, execID string, size sandbox.TerminalSize) error
-	// ReadyForSSH answers the id of a sandbox a command can run in, so an ssh upgrade is refused before its 101.
-	ReadyForSSH(ctx context.Context, ref string) (string, error)
 	StatFile(ctx context.Context, ref, path string) (models.FileStat, error)
 	ReadFile(ctx context.Context, ref, path string) (models.FileStat, io.ReadCloser, error)
 	WriteFile(ctx context.Context, ref string, req sandbox.FileWrite, src io.Reader) error
@@ -75,9 +72,6 @@ type Lifecycle interface {
 	RemovePort(ctx context.Context, ref string, hostPort uint16) error
 	// ListPorts answers the forwards of one sandbox, or of every sandbox when ref is empty, in host port order.
 	ListPorts(ctx context.Context, ref string) ([]models.Port, error)
-	AddLink(ctx context.Context, ref, target string) (models.Link, error)
-	RemoveLink(ctx context.Context, ref, target string) error
-	ListLinks(ctx context.Context, ref string) ([]models.Link, error)
 }
 
 // EgressLog is what shard policy logs prints: the newest decisions made for one sandbox, oldest first.
@@ -131,14 +125,13 @@ type Handler struct {
 	lifecycle Lifecycle
 	stores    Stores
 	egressLog EgressLog
-	ssh       SSHServer
 	log       *log.Logger
 	// redact puts a secret's name in place of its value in a line the log keeps; nil keeps the line, which only a test does.
 	redact func(string) string
 }
 
 // NewHandler builds the mux; out takes what a handler cannot return: a write the client hung up on, and the cause behind a public text.
-func NewHandler(version string, process Process, repo sandbox.Reader, enforcer sandbox.Enforcer, lifecycle Lifecycle, stores Stores, egressLog EgressLog, ssh SSHServer, redact func(string) string, out io.Writer) http.Handler {
+func NewHandler(version string, process Process, repo sandbox.Reader, enforcer sandbox.Enforcer, lifecycle Lifecycle, stores Stores, egressLog EgressLog, redact func(string) string, out io.Writer) http.Handler {
 	h := &Handler{
 		version:   version,
 		process:   process,
@@ -147,7 +140,6 @@ func NewHandler(version string, process Process, repo sandbox.Reader, enforcer s
 		lifecycle: lifecycle,
 		stores:    stores,
 		egressLog: egressLog,
-		ssh:       ssh,
 		log:       log.New(out, "", log.LstdFlags),
 		redact:    redact,
 	}
@@ -176,7 +168,6 @@ const (
 	SandboxWrite  Scope = models.ScopeSandboxWrite
 	SandboxDelete Scope = models.ScopeSandboxDelete
 	Exec          Scope = models.ScopeExec
-	SSH           Scope = models.ScopeSSH
 	Secret        Scope = models.ScopeSecret
 	Policy        Scope = models.ScopePolicy
 	PortRead      Scope = models.ScopePortRead
@@ -237,11 +228,9 @@ func (h *Handler) routeTable() []routeEntry {
 		public("POST", "/v0/sandboxes/{id}/pause", SandboxWrite, operation("sandboxes", "pause-sandbox", "Save a sandbox's state and suspend it", 0), typed(h.pauseSandbox)),
 		public("POST", "/v0/sandboxes/{id}/resume", SandboxWrite, operation("sandboxes", "resume-sandbox", "Resume a paused sandbox from its saved state", 0), typed(h.resumeSandbox)),
 		public("POST", "/v0/sandboxes/{id}/fork", SandboxWrite, operation("sandboxes", "fork-sandbox", "Create a sandbox from a running sandbox's memory and files", http.StatusCreated), typed(h.forkSandbox)),
-		public("POST", "/v0/sandboxes/{id}/resize", SandboxWrite, operation("sandboxes", "resize-sandbox", "Change the memory, vCPU, disk or swap bounds of a stopped sandbox", 0), typed(h.resizeSandbox)),
 		public("POST", "/v0/sandboxes/{id}/exec", Exec, operation("exec", "create-exec", "Execute a command in a running sandbox", http.StatusCreated), typed(h.createExec)),
 		public("GET", "/v0/sandboxes/{id}/exec", Exec, operation("exec", "list-execs", "List the execs of a sandbox", 0), typed(h.listExecs)),
 		public("GET", "/v0/sandboxes/{id}/exec/{exec}", Exec, operation("exec", "get-exec", "Read, wait for or attach to an exec", 0), raw[getExecInput](h.getExec, describeGetExec)),
-		public("GET", "/v0/sandboxes/{id}/ssh", SSH, operation("exec", "open-ssh", "Open an ssh connection into a running sandbox", http.StatusSwitchingProtocols), raw[sandboxPath](h.openSSH, describeSSH)),
 		public("POST", "/v0/sandboxes/{id}/exec/{exec}/kill", Exec, operation("exec", "kill-exec", "Send a signal to a running exec", 0), typed(h.killExec)),
 		public("DELETE", "/v0/sandboxes/{id}/exec/{exec}", Exec, operation("exec", "delete-exec", "Forget an exec that ended", 0), typed(h.deleteExec)),
 		public("POST", "/v0/sandboxes/{id}/exec/{exec}/resize", Exec, operation("exec", "resize-exec", "Resize the terminal of an exec", 0), typed(h.resizeExec)),
@@ -269,9 +258,6 @@ func (h *Handler) routeTable() []routeEntry {
 		public("GET", "/v0/sandboxes/{id}/ports", PortRead, operation("ports", "list-sandbox-ports", "List the host ports forwarded into a sandbox", 0), typed(h.listSandboxPorts)),
 		public("PUT", "/v0/sandboxes/{id}/ports/{host_port}", PortWrite, operation("ports", "put-port", "Forward a host port into a sandbox, or change that forward", 0), documented(describePutPort, typed(h.putPort))),
 		public("DELETE", "/v0/sandboxes/{id}/ports/{host_port}", PortWrite, operation("ports", "remove-port", "Remove the forward on a host port", 0), typed(h.removePort)),
-		public("GET", "/v0/sandboxes/{id}/links", SandboxRead, operation("links", "list-links", "List the sandboxes a sandbox links", 0), typed(h.listLinks)),
-		public("PUT", "/v0/sandboxes/{id}/links/{target}", SSH, operation("links", "put-link", "Link a sandbox to another", 0), documented(describePutLink, typed(h.putLink))),
-		public("DELETE", "/v0/sandboxes/{id}/links/{target}", SandboxWrite, operation("links", "remove-link", "Remove the link to a sandbox", 0), typed(h.removeLink)),
 		public("POST", "/v0/snapshots", SandboxWrite, operation("snapshots", "create-snapshot", "Snapshot a sandbox", http.StatusCreated), typed(h.createSnapshot)),
 		public("GET", "/v0/snapshots", SandboxRead, operation("snapshots", "list-snapshots", "List snapshots", 0), typed(h.listSnapshots)),
 		public("GET", "/v0/snapshots/{ref}", SandboxRead, operation("snapshots", "get-snapshot", "Read a snapshot", 0), typed(h.getSnapshot)),
@@ -312,7 +298,7 @@ type versionResponse struct {
 	APIVersion string `json:"api_version"`
 }
 
-// Capabilities is every lifecycle verb, swap and disk grow, and whether this server supports each, the same twelve keys for every provider.
+// Capabilities is every lifecycle verb and swap, and whether this server supports each, the same ten keys for every provider.
 type Capabilities struct {
 	Create bool `json:"create"`
 	Start  bool `json:"start"`
@@ -326,10 +312,6 @@ type Capabilities struct {
 	Port     bool `json:"port"`
 	// Swap is a swap file on the sandbox's own disk, which only a VM provider makes.
 	Swap bool `json:"swap"`
-	// Resize changes a stopped sandbox's memory, vCPU and swap bounds, which every provider does. Optional, as a daemon from before it omits it.
-	Resize bool `json:"resize" required:"false"`
-	// DiskGrow is a resize that grows the disk, which every provider does. Optional, as a daemon from before it omits it.
-	DiskGrow bool `json:"disk_grow" required:"false"`
 }
 
 // ScopesResponse lists every scope a token can carry, never the caller's own.
@@ -372,7 +354,7 @@ func (h *Handler) getScopes(context.Context, *struct{}) (*reply[ScopesResponse],
 
 // capabilitiesOf answers true for the verbs every provider runs, and the provider's own answer for the optional ones.
 func capabilitiesOf(c models.Capabilities) Capabilities {
-	return Capabilities{Create: true, Start: true, Stop: true, Remove: true, Pause: c.Pause, Resume: c.Resume, Fork: c.Fork, Snapshot: true, Port: c.Port, Swap: c.Swap, Resize: true, DiskGrow: c.DiskGrow}
+	return Capabilities{Create: true, Start: true, Stop: true, Remove: true, Pause: c.Pause, Resume: c.Resume, Fork: c.Fork, Snapshot: true, Port: c.Port, Swap: c.Swap}
 }
 
 func (h *Handler) getDaemon(w http.ResponseWriter, r *http.Request) {
@@ -579,7 +561,7 @@ func (h *Handler) create(w http.ResponseWriter, r *http.Request, wait bool, req 
 
 // describeCreate names both shapes of the 201: the record, or the pull's events and then the record, one JSON line each.
 func describeCreate(registry huma.Registry, op *huma.Operation) {
-	op.Description = "A create that names secrets also needs the secret:* scope, one that names a policy needs policy:*, one that forwards ports needs port:write, and one that links sandboxes needs ssh; without it the answer is 403 forbidden."
+	op.Description = "A create that names secrets also needs the secret:* scope, one that names a policy needs policy:*, and one that forwards ports needs port:write; without it the answer is 403 forbidden."
 	op.Responses["201"] = &huma.Response{Description: "The sandbox, or with wait and Accept: application/x-ndjson one CreateLine per pull event and then the sandbox. An error after the first line ends the stream with a CreateLine whose error is set, and no sandbox.", Content: map[string]*huma.MediaType{
 		"application/json":     {Schema: schemaOf[Sandbox](registry)},
 		"application/x-ndjson": {Schema: schemaOf[CreateLine](registry)},
@@ -602,7 +584,7 @@ func (e *scopeError) Error() string {
 
 func (e *scopeError) Public() string { return e.Error() }
 
-// checkCreateScopes refuses a create that names a secret or a policy, forwards a port, or links a sandbox, the stamped scopes do not reach. No header means the request reached the daemon socket directly, which keeps every right.
+// checkCreateScopes refuses a create that names a secret or a policy, or forwards a port, the stamped scopes do not reach. No header means the request reached the daemon socket directly, which keeps every right.
 func checkCreateScopes(ctx context.Context, req sandbox.CreateRequest) error {
 	if err := checkGrantScopes(ctx, "create that names", req.Secrets, req.Policy); err != nil {
 		return err
@@ -611,16 +593,6 @@ func checkCreateScopes(ctx context.Context, req sandbox.CreateRequest) error {
 	scopes, stamped := ctx.Value(scopesKey{}).([]string)
 	if stamped && len(req.Ports) > 0 && !scopesCover(scopes, PortWrite) {
 		return &scopeError{scope: PortWrite, named: "host port", action: "create that forwards"}
-	}
-
-	return checkLinkScope(ctx, "create that names", len(req.Links) > 0)
-}
-
-// checkLinkScope refuses links the stamped scopes do not reach: a link lets its source ssh into the target, so it needs ssh.
-func checkLinkScope(ctx context.Context, action string, links bool) error {
-	scopes, stamped := ctx.Value(scopesKey{}).([]string)
-	if stamped && links && !scopesCover(scopes, SSH) {
-		return &scopeError{scope: SSH, named: "link", action: action}
 	}
 
 	return nil
@@ -710,17 +682,9 @@ func (h *Handler) resumeSandbox(ctx context.Context, in *sandboxPath) (*reply[Sa
 	return publicReply(h.lifecycle.Resume(ctx, in.ID))
 }
 
-func (h *Handler) resizeSandbox(ctx context.Context, in *sandboxRequest[sandbox.ResizeRequest]) (*reply[Sandbox], error) {
-	return publicReply(h.lifecycle.Resize(ctx, in.ID, in.Body))
-}
-
 func (h *Handler) forkSandbox(ctx context.Context, in *sandboxBody[sandbox.CopyRequest]) (*reply[Sandbox], error) {
 	checked := sandbox.WithForkCheck(ctx, func(source models.Sandbox) error {
-		if err := checkGrantScopes(ctx, "fork that copies", source.Secrets, source.Policy); err != nil {
-			return err
-		}
-
-		return checkLinkScope(ctx, "fork that copies", len(source.Links) > 0)
+		return checkGrantScopes(ctx, "fork that copies", source.Secrets, source.Policy)
 	})
 	return publicReply(h.lifecycle.Fork(checked, in.ID, value(in.Body)))
 }
@@ -747,7 +711,6 @@ func classify(err error) (int, models.Code) {
 	var noCABundle *sandbox.NoCABundleError
 	var portNotFound *sandbox.PortNotFoundError
 	var portInUse *sandbox.PortInUseError
-	var linkNotFound *sandbox.LinkNotFoundError
 
 	switch {
 	case errors.As(err, &scope):
@@ -757,8 +720,7 @@ func classify(err error) (int, models.Code) {
 	case errors.As(err, &invalid), errors.As(err, &request), errors.As(err, &fileInvalid), errors.As(err, &noCABundle), errors.Is(err, image.ErrBadReference):
 		return http.StatusBadRequest, models.CodeInvalidRequest
 	case errors.Is(err, sandboxstate.ErrNotFound), errors.Is(err, sandboxstate.ErrSnapshotNotFound), errors.Is(err, egress.ErrNotFound),
-		errors.Is(err, secret.ErrNotFound), errors.Is(err, image.ErrNotFound), errors.As(err, &fileNotFound), errors.As(err, &imageGone), errors.As(err, &portNotFound),
-		errors.As(err, &linkNotFound):
+		errors.Is(err, secret.ErrNotFound), errors.Is(err, image.ErrNotFound), errors.As(err, &fileNotFound), errors.As(err, &imageGone), errors.As(err, &portNotFound):
 		return http.StatusNotFound, models.CodeNotFound
 	case errors.As(err, &nameTaken):
 		return http.StatusConflict, models.CodeNameTaken

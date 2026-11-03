@@ -23,7 +23,6 @@ shard create --name web --memory 512MiB python:3.12
 shard create --name web-copy --snapshot web-files
 shard create --name worker --memory 512MiB --secret API_TOKEN python:3.12
 shard create --name web --port 8000 python:3.12
-shard create --name agent1 --link web1 python:3.12
 ```
 
 **Arguments**
@@ -48,7 +47,6 @@ shard create --name agent1 --link web1 python:3.12
 | `--swap <size>` | swap file inside the disk limit; 2GiB by default on Firecracker and vz, 0 for none |
 | `--snapshot <id\|name>` | create from a filesystem snapshot instead of an image |
 | `--port [HOST:]GUEST` | forward a port on the host's 127.0.0.1 to the sandbox; repeatable |
-| `--link <sandbox>` | link the sandbox to another, by ID or name; repeatable |
 
 The sandbox starts with no processes. Use `shard run` to start a supervised process in it, or `shard exec` for a one-off command. The sandbox stays active until stopped.
 
@@ -188,73 +186,6 @@ shard shell --user root web
 | `--user <user>` | user for the shell |
 
 The shell is bash if the sandbox has it, and sh if not. It keeps the PATH the image sets. It uses the sandbox's default directory and user unless overridden. Standard input must be a terminal. To run a command without one, use `shard exec`. The exit code is the shell's exit code.
-
-## shard ssh
-
-Connect to a running sandbox with ssh.
-
-```text
-shard ssh [OPTIONS] SANDBOX [SSH-OPTION...] [-- COMMAND [ARGS...]]
-```
-
-**Examples**
-
-```sh
-shard ssh web1
-shard ssh web1 -- pg_dump app
-shard ssh web1 -L 9222:localhost:9222
-shard ssh --user app web1
-```
-
-**Arguments**
-
-| Argument | Description |
-| --- | --- |
-| `SANDBOX` | sandbox ID or name |
-| `SSH-OPTION` | option for ssh, such as -L 9222:localhost:9222 |
-| `COMMAND` | command to run instead of a shell |
-| `ARGS` | arguments for the command |
-
-**Options**
-
-| Option | Description | Default |
-| --- | --- | --- |
-| `--user <user>` | user to log in as | `root` |
-
-Runs the ssh on your PATH with the options `shard ssh-config` prints. Options for ssh go after the sandbox, and a command after --. -L reaches ports on the sandbox's 127.0.0.1 only. Agent forwarding, X11 and -R are refused. ssh asks for no password or key: access to the API is the check. The exit code is ssh's exit code.
-
-## shard ssh-config
-
-Print the ssh config that reaches sandboxes as SANDBOX.shard.
-
-```text
-shard ssh-config
-```
-
-**Examples**
-
-```sh
-scp -F <(shard ssh-config) a.txt web1.shard:/tmp/
-shard ssh-config >> ~/.ssh/config
-```
-
-Every host that ends in .shard connects to that sandbox, as root by default. Use it with -F in ssh, scp or rsync, or add it to ~/.ssh/config. It reaches the daemon this command reaches, with a known\_hosts file of its own.
-
-## shard ssh-proxy
-
-Carry one ssh connection into a sandbox, as ssh's ProxyCommand.
-
-```text
-shard ssh-proxy SANDBOX.shard
-```
-
-**Arguments**
-
-| Argument | Description |
-| --- | --- |
-| `SANDBOX.shard` | sandbox ID or name, with the .shard that ssh's %n keeps |
-
-ssh runs it, from the config `shard ssh-config` prints. It pins the daemon's host key, then relays until either side ends.
 
 ## shard list
 
@@ -451,38 +382,6 @@ shard start web
 
 Processes with the always or unless-stopped policy start again, except those killed.
 
-## shard resize
-
-Change a stopped sandbox's memory, CPUs, disk or swap.
-
-```text
-shard resize [OPTIONS] SANDBOX
-```
-
-**Examples**
-
-```sh
-shard resize --memory 4GiB --vcpus 4 web
-shard resize --disk 30GiB web
-```
-
-**Arguments**
-
-| Argument | Description |
-| --- | --- |
-| `SANDBOX` | sandbox ID or name |
-
-**Options**
-
-| Option | Description |
-| --- | --- |
-| `--memory <size>` | memory limit; 0 is 512MiB on Firecracker and vz, none on gVisor, runc and Sysbox |
-| `--vcpus <n>` | CPU count; 0 uses all available host CPUs, up to 32 on Firecracker |
-| `--disk <size>` | disk limit; it only grows, and only where `shard capabilities` says disk\_grow |
-| `--swap <size>` | swap file inside the disk limit; 0 for none, Firecracker and vz only |
-
-The sandbox must be stopped. A bound left out keeps its value. The disk and its filesystem grow at once; memory, CPUs and swap apply from the next `shard start`. Prints the sandbox ID.
-
 ## shard remove
 
 Remove sandboxes and their files.
@@ -614,7 +513,7 @@ shard fork --name web-copy web
 | --- | --- |
 | `--name <name>` | name for the new sandbox |
 
-The source briefly pauses, then continues running. The new sandbox starts from the captured state and has independent files. It keeps the source's links. Prints the new sandbox ID. Availability depends on the provider.
+The source briefly pauses, then continues running. The new sandbox starts from the captured state and has independent files. Prints the new sandbox ID. Availability depends on the provider.
 
 ## shard cp
 
@@ -751,98 +650,5 @@ shard port remove web 9000
 | `HOST` | host port the forward listens on |
 
 Closes the listener and the connections it carries.
-
-## shard link
-
-Link a sandbox to other sandboxes it reaches by name.
-
-```text
-shard link COMMAND [OPTIONS] [ARGS...]
-```
-
-**Commands**
-
-| Command | Description |
-| --- | --- |
-| [`shard link add`](#shard-link-add) | link a sandbox to another |
-| [`shard link list`](#shard-link-list) | list the sandboxes a sandbox links |
-| [`shard link remove`](#shard-link-remove) | remove a link |
-
-A link is one-way: the sandbox reaches its target, never the reverse. Each target holds one address from 10.86.0.0/16, shared by every link to it. Links survive a stop of either sandbox, and a fork keeps them. Removing the target removes every link to it.
-
-### shard link add
-
-Link a sandbox to another, or print the link it already holds.
-
-```text
-shard link add SANDBOX TARGET
-```
-
-**Example**
-
-```sh
-shard link add agent1 web1
-```
-
-**Arguments**
-
-| Argument | Description |
-| --- | --- |
-| `SANDBOX` | sandbox ID or name |
-| `TARGET` | ID or name of the sandbox the link reaches |
-
-Prints the target and the address the sandbox reaches it on. A remote token needs the ssh scope, since a link reaches what ssh does.
-
-### shard link list
-
-List the sandboxes a sandbox links.
-
-```text
-shard link list [OPTIONS] SANDBOX
-```
-
-**Examples**
-
-```sh
-shard link list agent1
-shard link list --format json agent1
-```
-
-**Arguments**
-
-| Argument | Description |
-| --- | --- |
-| `SANDBOX` | sandbox ID or name |
-
-**Options**
-
-| Option | Description | Default |
-| --- | --- | --- |
-| `--format <format>` | output format: json or table | `table` |
-
-Table columns: TARGET and ADDRESS, in the order the links were added.
-
-### shard link remove
-
-Remove a link.
-
-```text
-shard link remove SANDBOX TARGET
-```
-
-**Example**
-
-```sh
-shard link remove agent1 web1
-```
-
-**Arguments**
-
-| Argument | Description |
-| --- | --- |
-| `SANDBOX` | sandbox ID or name |
-| `TARGET` | ID or name of the sandbox the link reaches |
-
-Prints the target. Its address goes free once no link holds it.
 
 {/* make cli-docs writes everything above this line. Write by hand below it. */}

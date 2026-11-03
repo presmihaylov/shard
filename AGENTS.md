@@ -227,9 +227,9 @@ or a sandbox.
   exec, pause or fork it. `stop` is the only thing that ends one. No restart
   policy, idle timer or on-exit setting changes that.
 - **The daemon never serves its API on TCP.** The only TCP it binds is the
-  egress proxy, the resolver and the link forwarder on the sandbox gateway, and
-  the host ports an operator forwarded with `shard port`, each of which carries
-  bytes to one sandbox port and never reaches the API. A network address is `shard serve`, a separate
+  egress proxy and resolver on the sandbox gateway, and the host ports an
+  operator forwarded with `shard port`, each of which carries bytes to one
+  sandbox port and never reaches the API. A network address is `shard serve`, a separate
   and unprivileged process that speaks plain HTTP behind a proxy that terminates
   TLS, checks a bearer token and then passes the bytes to the daemon's socket. It is a byte proxy, never a second API. It maps the
   request line to one coarse capability over the daemon's own route patterns and

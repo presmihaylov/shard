@@ -33,9 +33,8 @@ type fakeLifecycle struct {
 	// hold is how long Create takes, and heldErr what its context said at the end of it.
 	hold    time.Duration
 	heldErr error
-	// copied is the body a fork sent, resized a resize's, and snapshotted the body a snapshot create sent.
+	// copied is the body a fork sent, and snapshotted the body a snapshot create sent.
 	copied      sandbox.CopyRequest
-	resized     sandbox.ResizeRequest
 	snapshotted sandbox.SnapshotRequest
 	ref         string
 	// waited is the ref a get with ?wait blocked on.
@@ -115,13 +114,6 @@ type fakeLifecycle struct {
 	hostPort uint16
 	port     sandbox.PortRequest
 	ports    []models.Port
-
-	// target is what a link put or rm named, and links what a link list answers.
-	target string
-	links  []models.Link
-
-	// sshID is the id an ssh route's reference resolves to.
-	sshID string
 }
 
 func (f *fakeLifecycle) StatFile(_ context.Context, ref, path string) (models.FileStat, error) {
@@ -334,24 +326,6 @@ func (f *fakeLifecycle) ListPorts(_ context.Context, ref string) ([]models.Port,
 	return f.ports, f.err
 }
 
-func (f *fakeLifecycle) AddLink(_ context.Context, ref, target string) (models.Link, error) {
-	f.ref, f.target = ref, target
-
-	return models.Link{Target: target, TargetID: "sandbox2", Address: models.LinkSubnet.Addr().Next()}, f.err
-}
-
-func (f *fakeLifecycle) RemoveLink(_ context.Context, ref, target string) error {
-	f.ref, f.target = ref, target
-
-	return f.err
-}
-
-func (f *fakeLifecycle) ListLinks(_ context.Context, ref string) ([]models.Link, error) {
-	f.ref = ref
-
-	return f.links, f.err
-}
-
 func (f *fakeLifecycle) Stop(_ context.Context, ref string) (models.Sandbox, error) {
 	f.ref = ref
 
@@ -380,12 +354,6 @@ func (f *fakeLifecycle) Fork(_ context.Context, ref string, req sandbox.CopyRequ
 	f.ref, f.copied = ref, req
 
 	return models.Sandbox{ID: "sandbox2", Name: req.Name, State: models.StateRunning}, f.err
-}
-
-func (f *fakeLifecycle) Resize(_ context.Context, ref string, req sandbox.ResizeRequest) (models.Sandbox, error) {
-	f.ref, f.resized = ref, req
-
-	return models.Sandbox{ID: ref, State: models.StateStopped}, f.err
 }
 
 func (f *fakeLifecycle) CreateSnapshot(_ context.Context, req sandbox.SnapshotRequest) (models.Snapshot, error) {
@@ -536,12 +504,6 @@ func (f *fakeLifecycle) ResizeExec(_ context.Context, ref, execID string, size s
 	f.ref, f.resizedExec, f.size = ref, execID, size
 
 	return f.err
-}
-
-func (f *fakeLifecycle) ReadyForSSH(_ context.Context, ref string) (string, error) {
-	f.ref = ref
-
-	return f.sshID, f.err
 }
 
 func (f *fakeLifecycle) Run(_ context.Context, ref string, req sandbox.RunRequest) (models.Process, error) {
@@ -898,7 +860,6 @@ func TestTheStatusAndTheCodeFollowTheError(t *testing.T) {
 				{http.MethodPost, "/v0/sandboxes/sandbox1/pause", ""},
 				{http.MethodPost, "/v0/sandboxes/sandbox1/resume", ""},
 				{http.MethodPost, "/v0/sandboxes/sandbox1/fork", `{"name":"web-2"}`},
-				{http.MethodPost, "/v0/sandboxes/sandbox1/resize", `{"resources":{"memory_mib":1024}}`},
 				{http.MethodPost, "/v0/snapshots", `{"sandbox":"sandbox1"}`},
 				{http.MethodGet, "/v0/snapshots/base", ""},
 				{http.MethodDelete, "/v0/snapshots/base", ""},
@@ -987,7 +948,7 @@ func TestAFailedStartIsLoggedOnlyWhenTheSubstrateBrokeIt(t *testing.T) {
 		s := seed(t)
 		s.verbs.err = c.err
 		var out bytes.Buffer
-		handler := api.NewHandler("v-test", fakeProcess{}, s.repo, nil, s.verbs, s.stores, s.egress, nil, nil, &out)
+		handler := api.NewHandler("v-test", fakeProcess{}, s.repo, nil, s.verbs, s.stores, s.egress, nil, &out)
 
 		w := httptest.NewRecorder()
 		handler.ServeHTTP(w, httptest.NewRequestWithContext(t.Context(), http.MethodPost, "/v0/sandboxes/web/start", nil))
@@ -1009,7 +970,7 @@ func TestTheLogLineOfABrokenStartCarriesNoSecretValue(t *testing.T) {
 		return strings.ReplaceAll(text, "sk_live_synthetic_0001", "<secret API_KEY>")
 	}
 	var out bytes.Buffer
-	handler := api.NewHandler("v-test", fakeProcess{}, s.repo, nil, s.verbs, s.stores, s.egress, nil, redact, &out)
+	handler := api.NewHandler("v-test", fakeProcess{}, s.repo, nil, s.verbs, s.stores, s.egress, redact, &out)
 
 	w := httptest.NewRecorder()
 	handler.ServeHTTP(w, httptest.NewRequestWithContext(t.Context(), http.MethodPost, "/v0/sandboxes/web/start", nil))
@@ -1063,34 +1024,6 @@ func TestForkIs400ForABodyItCannotDecode(t *testing.T) {
 	status, got := send(t, s.server, http.MethodPost, "/v0/sandboxes/sandbox1/fork", `{"named":"web-2"}`)
 	if status != http.StatusBadRequest || errorOf(t, got).code != "invalid_request" {
 		t.Errorf("POST fork with an unknown field answered %d %v, want 400", status, got)
-	}
-	if s.verbs.ref != "" {
-		t.Error("a body that did not decode still reached the orchestrator")
-	}
-}
-
-// A resize keeps the bounds it is not given absent, so the orchestrator keeps the sandbox's own.
-func TestResizeAnswers200WithTheRecordAndPassesOnlyTheBoundsGiven(t *testing.T) {
-	s := seed(t)
-
-	status, got := send(t, s.server, http.MethodPost, "/v0/sandboxes/sandbox1/resize", `{"resources":{"memory_mib":2048,"vcpus":0}}`)
-	if status != http.StatusOK || got["id"] != "sandbox1" {
-		t.Errorf("POST resize answered %d %v, want 200 with the record", status, got)
-	}
-	res := s.verbs.resized.Resources
-	if s.verbs.ref != "sandbox1" || res.MemoryMiB == nil || *res.MemoryMiB != 2048 || res.VCPUs == nil || *res.VCPUs != 0 || res.DiskMiB != nil || res.SwapMiB != nil {
-		t.Errorf("the orchestrator got ref=%q %+v, want sandbox1 with 2048 MiB, an explicit 0 vCPUs and nothing else", s.verbs.ref, res)
-	}
-}
-
-func TestResizeIs400ForABodyItCannotDecode(t *testing.T) {
-	s := seed(t)
-
-	for _, body := range []string{`{"resources":{"memory":2048}}`, `{"resources":{"memory_mib":-1}}`} {
-		status, got := send(t, s.server, http.MethodPost, "/v0/sandboxes/sandbox1/resize", body)
-		if status != http.StatusBadRequest || errorOf(t, got).code != "invalid_request" {
-			t.Errorf("POST resize %s answered %d %v, want 400", body, status, got)
-		}
 	}
 	if s.verbs.ref != "" {
 		t.Error("a body that did not decode still reached the orchestrator")

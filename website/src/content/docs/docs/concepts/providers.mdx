@@ -41,16 +41,15 @@ The daemon never chooses Sysbox or runc for you. It runs one of them only when `
 
 `shard daemon status` shows the provider of the daemon that is already running. The two differ when that daemon was started with `--provider`. Both commands run only on the server.
 
-## The twelve capabilities
+## The ten capabilities
 
-Every provider supports `create`, `start`, `stop`, `remove`, `snapshot`, `resize` and `port`, as well as `exec`, `logs` and `inspect`. Three commands, `pause`, `resume` and `fork`, are optional, because the provider has to save a running sandbox's memory to support them. The last two, `swap` and `disk_grow`, say whether `--swap` can give a sandbox a swap file and whether `shard resize --disk` can grow its disk.
+Every provider supports `create`, `start`, `stop`, `remove`, `snapshot` and `port`, as well as `exec`, `logs` and `inspect`. Three commands, `pause`, `resume` and `fork`, are optional, because the provider has to save a running sandbox's memory to support them. The tenth, `swap`, says whether `--swap` can give a sandbox a swap file.
 
 | Command | gVisor | Firecracker | vz | Sysbox | runc |
 | --- | --- | --- | --- | --- | --- |
-| `create`, `start`, `stop`, `remove`, `snapshot`, `resize`, `port` | yes | yes | yes | yes | yes |
+| `create`, `start`, `stop`, `remove`, `snapshot`, `port` | yes | yes | yes | yes | yes |
 | `pause`, `resume`, `fork` | yes | yes | yes | no | no |
 | `swap` | no | yes | yes | no | no |
-| `disk_grow` | yes | yes | yes | yes | yes |
 
 Ask a server what it supports before you build on `pause`, `resume` or `fork`:
 
@@ -58,7 +57,7 @@ Ask a server what it supports before you build on `pause`, `resume` or `fork`:
 	<TabItem label="CLI">
 
 ```sh
-# Prints each of the twelve capabilities, true or false.
+# Prints each of the ten capabilities, true or false.
 shard capabilities
 ```
 
@@ -93,7 +92,7 @@ with Shard() as shard:
 	</TabItem>
 </Tabs>
 
-`shard capabilities` marks each of the twelve `true` or `false`, and `--format json` prints the same twelve keys as JSON. The answer depends only on the server's provider, not on your API key's scopes or the state of your sandboxes.
+`shard capabilities` marks each of the ten `true` or `false`, and `--format json` prints the same ten keys as JSON. The answer depends only on the server's provider, not on your API key's scopes or the state of your sandboxes.
 
 ## An unsupported command fails, with no fallback
 

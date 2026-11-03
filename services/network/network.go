@@ -60,8 +60,6 @@ type Config struct {
 	Nameservers []netip.Addr
 	// Egress says what each sandbox with a policy may reach. Nil is no policy anywhere.
 	Egress EgressSource
-	// Links says which link addresses each sandbox reaches through the forwarder. Nil is no link anywhere.
-	Links LinkSource
 	// Userns answers the mapping every namespace is owned by, which a substrate that runs the guest in
 	// a user namespace of its own needs for CAP_NET_ADMIN over its netns. Nil or unset is the host's,
 	// which gVisor joins. Asked at Allocate and never at boot, so the host side needs no substrate.
@@ -187,17 +185,12 @@ func (s *Service) Ensure(ctx context.Context) error {
 		return err
 	}
 
-	links, err := readLinks(ctx, s.cfg.Links, s.cfg.Subnet)
-	if err != nil {
-		return err
-	}
-
 	leases, err := s.pool.held()
 	if err != nil {
 		return err
 	}
 
-	if err := s.manager.ApplyRuleset(ctx, s.ruleset(chains, links, leases)); err != nil {
+	if err := s.manager.ApplyRuleset(ctx, s.ruleset(chains, leases)); err != nil {
 		return err
 	}
 	if held != nil {

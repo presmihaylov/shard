@@ -151,8 +151,6 @@ type Address struct {
 	// Nameservers go into /etc/resolv.conf and Hostname into /etc/hosts; a VM has no upper layer a host could write them to.
 	Nameservers []string `json:"nameservers,omitempty"`
 	Hostname    string   `json:"hostname,omitempty"`
-	// Hosts is a line in /etc/hosts for each sandbox this one links.
-	Hosts []models.Host `json:"hosts,omitempty"`
 }
 
 // ExecHeader opens an exec connection: the command, as the host resolved it, before the frames.

@@ -35,8 +35,6 @@ from .host_address import HostAddress
 from .inspection import Inspection
 from .inspection_state import InspectionState
 from .kill_request import KillRequest
-from .link import Link
-from .links_response import LinksResponse
 from .mkdir_request import MkdirRequest
 from .oom import OOM
 from .policies_response import PoliciesResponse
@@ -54,8 +52,6 @@ from .process_kill_request import ProcessKillRequest
 from .process_status import ProcessStatus
 from .process_status_state import ProcessStatusState
 from .processes_response import ProcessesResponse
-from .resize_request import ResizeRequest
-from .resize_resources import ResizeResources
 from .resource_request import ResourceRequest
 from .resources import Resources
 from .restart_spec import RestartSpec
@@ -117,8 +113,6 @@ __all__ = (
     "Inspection",
     "InspectionState",
     "KillRequest",
-    "Link",
-    "LinksResponse",
     "MkdirRequest",
     "OOM",
     "PoliciesResponse",
@@ -136,8 +130,6 @@ __all__ = (
     "ProcessKillRequest",
     "ProcessStatus",
     "ProcessStatusState",
-    "ResizeRequest",
-    "ResizeResources",
     "ResourceRequest",
     "Resources",
     "RestartSpec",

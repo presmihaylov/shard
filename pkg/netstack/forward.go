@@ -98,12 +98,6 @@ func (s *Stack) forwardTCP(r *tcp.ForwarderRequest) {
 
 		return
 	}
-	// The far side of an intercepted flow refuses what it does not carry, so neither the redirect nor the judge rules on it.
-	if s.intercepted(flow.Guest, flow.Destination.Addr()) {
-		l.carryTCP(r, flow, func(ctx context.Context) (net.Conn, error) { return s.cfg.Intercept(ctx, flow.Guest, flow.Destination) })
-
-		return
-	}
 	// Connection tracking keeps a tuple's first NAT answer, so a SYN resent after the guest became redirected still misses the redirect.
 	if _, ok := s.cfg.Redirects[flow.Destination.Port()]; ok && s.redirected(flow.Guest) {
 		l.report(flow.drop(RuleRedirect))
@@ -118,23 +112,18 @@ func (s *Stack) forwardTCP(r *tcp.ForwarderRequest) {
 
 		return
 	}
-	l.carryTCP(r, flow, func(ctx context.Context) (net.Conn, error) { return s.dial(ctx, "tcp", flow.Destination.String()) })
-}
-
-// carryTCP admits a flow against the link's share and splices it to what dial opens.
-func (l *Link) carryTCP(r *tcp.ForwarderRequest, flow Flow, dial func(context.Context) (net.Conn, error)) {
 	if !l.admit() {
 		l.report(flow.drop(RuleLimit))
 		r.Complete(false)
 
 		return
 	}
-	go l.spliceTCP(r, flow, dial)
+	go l.spliceTCP(r, flow)
 }
 
-func (l *Link) spliceTCP(r *tcp.ForwarderRequest, flow Flow, dial func(context.Context) (net.Conn, error)) {
+func (l *Link) spliceTCP(r *tcp.ForwarderRequest, flow Flow) {
 	defer l.release()
-	host, err := dial(l.ctx)
+	host, err := l.stack.dial(l.ctx, "tcp", flow.Destination.String())
 	if err != nil {
 		// A destination the host cannot reach resets the guest, the same answer a refused connect gives on Linux.
 		r.Complete(true)
@@ -162,15 +151,10 @@ func (l *Link) spliceTCP(r *tcp.ForwarderRequest, flow Flow, dial func(context.C
 		defer wg.Done()
 		_, err := io.Copy(dst, src)
 		copyErrs[i] = quietOr(err)
-		cw, ok := dst.(interface{ CloseWrite() error })
-		if !ok {
-			// A side that cannot half-close, as the ssh server's pipe, ends the flow whole, or the other copy never wakes.
-			copyErrs[i] = errors.Join(copyErrs[i], closeQuietly(dst), closeQuietly(src))
-
-			return
-		}
 		// A half-close carries one side's end to the other, so a request whose writer is done still gets its answer.
-		copyErrs[i] = errors.Join(copyErrs[i], quietOr(cw.CloseWrite()))
+		if cw, ok := dst.(interface{ CloseWrite() error }); ok {
+			copyErrs[i] = errors.Join(copyErrs[i], quietOr(cw.CloseWrite()))
+		}
 	}
 	wg.Add(2)
 	go half(0, host, guest)

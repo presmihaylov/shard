@@ -1,11 +1,6 @@
 package sandbox
 
-import (
-	"context"
-	"net/netip"
-
-	"github.com/presmihaylov/shard/models"
-)
+import "context"
 
 // ExitedExecCap exposes the retention cap to the external test package, so a test pins to the real value.
 const ExitedExecCap = exitedExecCap
@@ -73,13 +68,3 @@ func (s *Service) RunningExecs(id string) (int, int) {
 
 // OOMBackoff exposes the wait after a kill in a row, so a test pins the doubling and the cap.
 var OOMBackoff = oomBackoff
-
-// ClaimLinkAddress claims an address for target on a host whose links hold taken, so a test reaches the ends of the range.
-func ClaimLinkAddress(taken map[netip.Addr]bool, target string) (netip.Addr, error) {
-	return addressBook{byTarget: map[string]netip.Addr{}, taken: taken}.claim(target)
-}
-
-// LinkHosts is the /etc/hosts lines a sandbox named self gains for links, so a test reaches the alias rules.
-func LinkHosts(self string, links []models.Link) []models.Host {
-	return linkHosts(self, links)
-}

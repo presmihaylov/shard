@@ -474,16 +474,6 @@ func (c *Client) ForkSandbox(ctx context.Context, ref string, req sandbox.CopyRe
 	return out, nil
 }
 
-// ResizeSandbox sets the bounds a stopped sandbox's next start runs under, and grows its disk now.
-func (c *Client) ResizeSandbox(ctx context.Context, ref string, req sandbox.ResizeRequest) (Sandbox, error) {
-	var out Sandbox
-	if err := c.call(ctx, http.MethodPost, "/v0/sandboxes/"+url.PathEscape(ref)+"/resize", req, &out, 0); err != nil {
-		return Sandbox{}, c.missingOrGone(ctx, ref, err)
-	}
-
-	return out, nil
-}
-
 // plus stretches the bound by what the daemon itself waits for; no bound stays no bound.
 func (c *Client) plus(grace time.Duration) time.Duration {
 	if c.Timeout == 0 {

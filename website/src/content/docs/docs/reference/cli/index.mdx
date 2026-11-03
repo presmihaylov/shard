@@ -39,9 +39,6 @@ Run `shard COMMAND --help` for options and examples.
 | [`shard run`](/docs/reference/cli/sandboxes/#shard-run) | start a supervised process in a running sandbox |
 | [`shard exec`](/docs/reference/cli/sandboxes/#shard-exec) | execute a command in a running sandbox |
 | [`shard shell`](/docs/reference/cli/sandboxes/#shard-shell) | open an interactive shell in a running sandbox |
-| [`shard ssh`](/docs/reference/cli/sandboxes/#shard-ssh) | connect to a running sandbox with ssh |
-| [`shard ssh-config`](/docs/reference/cli/sandboxes/#shard-ssh-config) | print the ssh config that reaches sandboxes as SANDBOX.shard |
-| [`shard ssh-proxy`](/docs/reference/cli/sandboxes/#shard-ssh-proxy) | carry one ssh connection into a sandbox, as ssh's ProxyCommand |
 | [`shard list`](/docs/reference/cli/sandboxes/#shard-list) | list active sandboxes |
 | [`shard ps`](/docs/reference/cli/sandboxes/#shard-ps) | list the processes of a sandbox |
 | [`shard logs`](/docs/reference/cli/sandboxes/#shard-logs) | show output from a process |
@@ -49,7 +46,6 @@ Run `shard COMMAND --help` for options and examples.
 | [`shard inspect`](/docs/reference/cli/sandboxes/#shard-inspect) | show detailed information about a sandbox |
 | [`shard stop`](/docs/reference/cli/sandboxes/#shard-stop) | stop sandboxes and preserve their files |
 | [`shard start`](/docs/reference/cli/sandboxes/#shard-start) | start a stopped sandbox with its saved files |
-| [`shard resize`](/docs/reference/cli/sandboxes/#shard-resize) | change a stopped sandbox's memory, CPUs, disk or swap |
 | [`shard remove`](/docs/reference/cli/sandboxes/#shard-remove) | remove sandboxes and their files |
 | [`shard prune`](/docs/reference/cli/sandboxes/#shard-prune) | remove all stopped sandboxes |
 | [`shard pause`](/docs/reference/cli/sandboxes/#shard-pause) | suspend sandboxes and save their state |
@@ -57,7 +53,6 @@ Run `shard COMMAND --help` for options and examples.
 | [`shard fork`](/docs/reference/cli/sandboxes/#shard-fork) | create a sandbox from a running sandbox's memory and files |
 | [`shard cp`](/docs/reference/cli/sandboxes/#shard-cp) | copy files or directories between your machine and a running sandbox |
 | [`shard port`](/docs/reference/cli/sandboxes/#shard-port) | forward host ports to ports inside sandboxes |
-| [`shard link`](/docs/reference/cli/sandboxes/#shard-link) | link a sandbox to other sandboxes it reaches by name |
 
 **Images, snapshots, secrets and network policies**
 
@@ -73,7 +68,7 @@ Run `shard COMMAND --help` for options and examples.
 
 | Command | Description |
 | --- | --- |
-| [`shard capabilities`](/docs/reference/cli/host/#shard-capabilities) | show the lifecycle verbs, swap and disk grow the server supports |
+| [`shard capabilities`](/docs/reference/cli/host/#shard-capabilities) | show the lifecycle verbs and swap the server supports |
 | [`shard daemon`](/docs/reference/cli/host/#shard-daemon) | start the daemon or show its status |
 | [`shard info`](/docs/reference/cli/host/#shard-info) | show available providers and the default for this host |
 | [`shard serve`](/docs/reference/cli/host/#shard-serve) | start an HTTP API server with token authentication |

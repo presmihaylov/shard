@@ -255,7 +255,7 @@ func TestGetFileThatDiesMidwayQuotesThePathInTheLog(t *testing.T) {
 	redact := func(text string) string {
 		return strings.ReplaceAll(text, "sk_live_synthetic_0002", "<secret API_KEY>")
 	}
-	s.server = httptest.NewServer(api.NewHandler("v-test", fakeProcess{}, s.repo, nil, s.verbs, s.stores, s.egress, nil, redact, s.log))
+	s.server = httptest.NewServer(api.NewHandler("v-test", fakeProcess{}, s.repo, nil, s.verbs, s.stores, s.egress, redact, s.log))
 
 	resp := fileRequest(t, s, http.MethodGet, "path=/srv/blob%0Aapi:%20forged", nil) //nolint:bodyclose // fileRequest closes the body in a cleanup
 	if _, err := io.ReadAll(resp.Body); !errors.Is(err, io.ErrUnexpectedEOF) {

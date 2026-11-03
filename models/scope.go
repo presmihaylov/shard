@@ -11,7 +11,6 @@ const (
 	ScopeSandboxWrite  = "sandbox:write"
 	ScopeSandboxDelete = "sandbox:delete"
 	ScopeExec          = "exec"
-	ScopeSSH           = "ssh"
 	ScopeSecret        = "secret:*"
 	ScopePolicy        = "policy:*"
 	ScopePortRead      = "port:read"
@@ -25,7 +24,6 @@ var Scopes = []Scope{
 	{ScopeSandboxWrite, "Create sandboxes, change their state and create snapshots"},
 	{ScopeSandboxDelete, "Remove sandboxes and snapshots"},
 	{ScopeExec, "Run commands and access sandbox files"},
-	{ScopeSSH, "Open ssh sessions into sandboxes and link them: shell, files and -L, as strong as exec"},
 	{ScopeSecret, "Manage secrets and secret grants"},
 	{ScopePolicy, "Manage policies and attach them to sandboxes"},
 	{ScopePortRead, "View the host ports forwarded into sandboxes"},

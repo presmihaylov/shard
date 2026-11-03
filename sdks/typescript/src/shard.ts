@@ -44,8 +44,6 @@ export interface CreateOptions {
   diskMiB?: number;
   /** The host ports to forward from the sandbox's first start; public is false when left out. */
   ports?: PortOptions[];
-  /** The sandboxes, by id or name, the new sandbox links. */
-  links?: string[];
   /** The swap file on the disk, which diskMiB counts; left out, 2048 MiB on firecracker and vz and none on gvisor, runc and sysbox, which refuse any but 0. */
   swapMiB?: number;
 }
@@ -115,7 +113,7 @@ export class Shard {
     return rows.map(records.port);
   }
 
-  /** capabilities returns which of the ten lifecycle verbs the daemon's provider supports, and whether it gives swap and disk grow. */
+  /** capabilities returns which of the nine lifecycle verbs the daemon's provider supports, and whether it gives swap. */
   async capabilities(): Promise<Capabilities> {
     return records.capabilities((await this.transport.api.GET("/v0/capabilities")).data);
   }
@@ -237,7 +235,7 @@ export class Snapshots {
 }
 
 function createBody(options: CreateOptions): CreateRequest {
-  const { image, snapshot, name, env, workdir, user, secrets, policy, memoryMiB, vcpus, diskMiB, ports, links, swapMiB } = options;
+  const { image, snapshot, name, env, workdir, user, secrets, policy, memoryMiB, vcpus, diskMiB, ports, swapMiB } = options;
   if ((image === undefined) === (snapshot === undefined)) {
     throw new TypeError("a sandbox is made from an image or a snapshot, exactly one of them");
   }
@@ -253,7 +251,6 @@ function createBody(options: CreateOptions): CreateRequest {
     policy: policy || undefined,
     resources: { memory_mib: memoryMiB, vcpus: vcpus ?? 0, disk_mib: diskMiB ?? 0, swap_mib: swapMiB },
     ports: ports?.length ? ports.map((each) => ({ host_port: each.hostPort, guest_port: each.guestPort, public: each.public || undefined })) : undefined,
-    links: links?.length ? [...links] : undefined,
   };
 }
 

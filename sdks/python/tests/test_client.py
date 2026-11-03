@@ -17,8 +17,6 @@ from useshards import (
     ConflictError,
     ExitStatus,
     HostAddress,
-    InvalidRequestError,
-    Link,
     NotFoundError,
     OOMInfo,
     PermissionDeniedError,
@@ -71,7 +69,6 @@ PORT_RECORD: dict[str, Any] = {
     "listening": True,
     "reachable_on": [{"interface": "lo", "address": "127.0.0.1"}],
 }
-LINK_RECORD: dict[str, Any] = {"target": "db1", "target_id": "sb2", "address": "10.86.0.1"}
 EGRESS_RECORD = {
     "time": "2026-10-04T10:00:01Z",
     "source": "proxy",
@@ -211,20 +208,11 @@ def test_capabilities(daemon: FakeDaemon, shard: Shard) -> None:
         "resume": False,
         "fork": False,
         "snapshot": True,
-        "resize": True,
         "port": True,
         "swap": False,
-        "disk_grow": True,
     }
     daemon.routes[("GET", "/v0/capabilities")] = (200, verbs)
     assert shard.capabilities() == Capabilities(**verbs)
-
-
-def test_capabilities_of_a_daemon_from_before_resize(daemon: FakeDaemon, shard: Shard) -> None:
-    verbs = ("create", "start", "stop", "remove", "pause", "resume", "fork", "snapshot", "port", "swap")
-    older = dict.fromkeys(verbs, True)
-    daemon.routes[("GET", "/v0/capabilities")] = (200, older)
-    assert shard.capabilities() == Capabilities(**older, resize=False, disk_grow=False)
 
 
 def test_create_and_run_bodies(daemon: FakeDaemon, shard: Shard) -> None:
@@ -401,64 +389,6 @@ def test_a_port_refusal_raises_the_error_of_its_code(
         sandbox.ports.remove(9000)
 
 
-def test_a_create_sends_its_links_and_reads_them_back(daemon: FakeDaemon, shard: Shard) -> None:
-    daemon.routes[("POST", "/v0/sandboxes")] = (201, {**SANDBOX, "links": [LINK_RECORD]})
-    sandbox = shard.create("alpine:3", links=["db1", "sb3"])
-    assert sent(daemon, "POST", "/v0/sandboxes")["links"] == ["db1", "sb3"]
-    assert sandbox.info.links == (Link(target="db1", target_id="sb2", address="10.86.0.1"),)
-    assert shard.get("sb").info.links == ()
-
-
-@pytest.mark.parametrize("asynchronous", [False, True])
-def test_link_add_list_and_remove(daemon: FakeDaemon, shard: Shard, asynchronous: bool) -> None:
-    daemon.routes[("PUT", "/v0/sandboxes/sb/links/db1")] = (200, LINK_RECORD)
-    daemon.routes[("GET", "/v0/sandboxes/sb/links")] = (
-        200,
-        {"links": [LINK_RECORD, {"target": "cache", "target_id": "sb3", "address": "10.86.0.2"}]},
-    )
-    daemon.routes[("DELETE", "/v0/sandboxes/sb/links/db1")] = (204, None)
-
-    async def drive() -> tuple[Link, list[Link]]:
-        async with async_shard(daemon) as client:
-            sandbox = await client.get("sb")
-            added = await sandbox.links.add("db1")
-            listed = await sandbox.links.list()
-            await sandbox.links.remove("db1")
-            return added, listed
-
-    if asynchronous:
-        added, listed = asyncio.run(drive())
-    if not asynchronous:
-        sandbox = shard.get("sb")
-        added, listed = sandbox.links.add("db1"), sandbox.links.list()
-        sandbox.links.remove("db1")
-    assert added == Link(target="db1", target_id="sb2", address="10.86.0.1")
-    assert [(each.target, each.address) for each in listed] == [("db1", "10.86.0.1"), ("cache", "10.86.0.2")]
-    assert ("DELETE", "/v0/sandboxes/sb/links/db1") in [(m, p) for m, p, _ in daemon.requests]
-
-
-@pytest.mark.parametrize(
-    ("status", "code", "kind"),
-    [
-        (400, "invalid_request", InvalidRequestError),
-        (404, "not_found", NotFoundError),
-        (403, "forbidden", PermissionDeniedError),
-        (409, "sandbox_failed", ConflictError),
-    ],
-)
-def test_a_link_refusal_raises_the_error_of_its_code(
-    daemon: FakeDaemon, shard: Shard, status: int, code: str, kind: type[Exception]
-) -> None:
-    refusal = {"error": {"code": code, "message": f"refused as {code}"}}
-    daemon.routes[("PUT", "/v0/sandboxes/sb/links/db1")] = (status, refusal)
-    daemon.routes[("DELETE", "/v0/sandboxes/sb/links/db1")] = (status, refusal)
-    sandbox = shard.get("sb")
-    with pytest.raises(kind, match=f"refused as {code}"):
-        sandbox.links.add("db1")
-    with pytest.raises(kind, match=f"refused as {code}"):
-        sandbox.links.remove("db1")
-
-
 def test_exec_refuses_stdin_of_the_other_mode(daemon: FakeDaemon, shard: Shard) -> None:
     sandbox = shard.get("sb")
     with pytest.raises(TypeError, match="stdin is a bool"):
@@ -501,15 +431,6 @@ def test_changes_keep_the_handle_current(daemon: FakeDaemon, shard: Shard) -> No
     assert sandbox.info.state == "stopped"
     sandbox.remove(force=True)
     assert daemon.targets[-1] == "/v0/sandboxes/sb?force=true"
-
-
-def test_resize_sends_only_the_bounds_it_names(daemon: FakeDaemon, shard: Shard) -> None:
-    resources = {"memory_mib": 1024, "vcpus": 2, "disk_mib": 0, "swap_mib": 0}
-    daemon.routes[("POST", "/v0/sandboxes/sb/resize")] = (200, {**SANDBOX, "state": "stopped", "resources": resources})
-    sandbox = shard.get("sb")
-    sandbox.resize(memory_mib=1024, vcpus=2)
-    assert sent(daemon, "POST", "/v0/sandboxes/sb/resize") == {"resources": {"memory_mib": 1024, "vcpus": 2}}
-    assert (sandbox.info.resources.memory_mib, sandbox.info.resources.vcpus) == (1024, 2)
 
 
 def test_logs_and_egress_log(daemon: FakeDaemon, shard: Shard) -> None:

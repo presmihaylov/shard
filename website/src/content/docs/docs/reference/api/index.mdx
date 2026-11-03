@@ -75,7 +75,6 @@ The routes that follow a stream, such as an exec attach or a `logs` follow, upgr
 | `POST` | `/v0/sandboxes/{id}/pause` | `sandbox:write` | [Save a sandbox's state and suspend it](/docs/reference/api/sandboxes/#save-a-sandboxs-state-and-suspend-it) |
 | `POST` | `/v0/sandboxes/{id}/resume` | `sandbox:write` | [Resume a paused sandbox from its saved state](/docs/reference/api/sandboxes/#resume-a-paused-sandbox-from-its-saved-state) |
 | `POST` | `/v0/sandboxes/{id}/fork` | `sandbox:write` | [Create a sandbox from a running sandbox's memory and files](/docs/reference/api/sandboxes/#create-a-sandbox-from-a-running-sandboxs-memory-and-files) |
-| `POST` | `/v0/sandboxes/{id}/resize` | `sandbox:write` | [Change the memory, vCPU, disk or swap bounds of a stopped sandbox](/docs/reference/api/sandboxes/#change-the-memory-vcpu-disk-or-swap-bounds-of-a-stopped-sandbox) |
 | `GET` | `/v0/sandboxes/{id}/egress-log` | `sandbox:read` | [Read or follow the egress decisions of a sandbox](/docs/reference/api/sandboxes/#read-or-follow-the-egress-decisions-of-a-sandbox) |
 | `POST` | `/v0/sandboxes/{id}/secrets/{name}` | `secret:*` | [Grant a secret to a sandbox](/docs/reference/api/sandboxes/#grant-a-secret-to-a-sandbox) |
 | `DELETE` | `/v0/sandboxes/{id}/secrets/{name}` | `secret:*` | [Ungrant a secret from a sandbox](/docs/reference/api/sandboxes/#ungrant-a-secret-from-a-sandbox) |
@@ -102,7 +101,6 @@ The routes that follow a stream, such as an exec attach or a `logs` follow, upgr
 | `POST` | `/v0/sandboxes/{id}/exec` | `exec` | [Execute a command in a running sandbox](/docs/reference/api/exec/#execute-a-command-in-a-running-sandbox) |
 | `GET` | `/v0/sandboxes/{id}/exec` | `exec` | [List the execs of a sandbox](/docs/reference/api/exec/#list-the-execs-of-a-sandbox) |
 | `GET` | `/v0/sandboxes/{id}/exec/{exec}` | `exec` | [Read, wait for or attach to an exec](/docs/reference/api/exec/#read-wait-for-or-attach-to-an-exec) |
-| `GET` | `/v0/sandboxes/{id}/ssh` | `ssh` | [Open an ssh connection into a running sandbox](/docs/reference/api/exec/#open-an-ssh-connection-into-a-running-sandbox) |
 | `POST` | `/v0/sandboxes/{id}/exec/{exec}/kill` | `exec` | [Send a signal to a running exec](/docs/reference/api/exec/#send-a-signal-to-a-running-exec) |
 | `DELETE` | `/v0/sandboxes/{id}/exec/{exec}` | `exec` | [Forget an exec that ended](/docs/reference/api/exec/#forget-an-exec-that-ended) |
 | `POST` | `/v0/sandboxes/{id}/exec/{exec}/resize` | `exec` | [Resize the terminal of an exec](/docs/reference/api/exec/#resize-the-terminal-of-an-exec) |
@@ -160,14 +158,6 @@ The routes that follow a stream, such as an exec attach or a `logs` follow, upgr
 | `GET` | `/v0/sandboxes/{id}/ports` | `port:read` | [List the host ports forwarded into a sandbox](/docs/reference/api/ports/#list-the-host-ports-forwarded-into-a-sandbox) |
 | `PUT` | `/v0/sandboxes/{id}/ports/{host_port}` | `port:write` | [Forward a host port into a sandbox, or change that forward](/docs/reference/api/ports/#forward-a-host-port-into-a-sandbox-or-change-that-forward) |
 | `DELETE` | `/v0/sandboxes/{id}/ports/{host_port}` | `port:write` | [Remove the forward on a host port](/docs/reference/api/ports/#remove-the-forward-on-a-host-port) |
-
-**Links**
-
-| Method | Path | Scope | Description |
-| --- | --- | --- | --- |
-| `GET` | `/v0/sandboxes/{id}/links` | `sandbox:read` | [List the sandboxes a sandbox links](/docs/reference/api/links/#list-the-sandboxes-a-sandbox-links) |
-| `PUT` | `/v0/sandboxes/{id}/links/{target}` | `ssh` | [Link a sandbox to another](/docs/reference/api/links/#link-a-sandbox-to-another) |
-| `DELETE` | `/v0/sandboxes/{id}/links/{target}` | `sandbox:write` | [Remove the link to a sandbox](/docs/reference/api/links/#remove-the-link-to-a-sandbox) |
 
 ## Objects
 

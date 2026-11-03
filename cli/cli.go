@@ -64,9 +64,6 @@ type App struct {
 
 	// confirm replaces the terminal's yes or no question. A test sets it: go test holds no terminal.
 	confirm func(ctx context.Context, question string, yes bool) (bool, error)
-
-	// replace stands in for the exec that turns shard ssh into ssh. A test sets it: the exec would end the test binary.
-	replace func(path string, argv, env []string) error
 }
 
 // stdin is what exec hands the guest and what secret set reads the value from.
@@ -244,9 +241,6 @@ func commands() []command {
 		{name: "run", run: App.runProcess},
 		{name: "exec", run: App.exec},
 		{name: "shell", run: App.shell},
-		{name: "ssh", run: App.ssh},
-		{name: "ssh-config", run: App.sshConfig},
-		{name: "ssh-proxy", run: App.sshProxy},
 		{name: "list", aliases: []string{"ls"}, run: App.list},
 		{name: "ps", run: App.ps},
 		{name: "logs", run: App.logs},
@@ -254,7 +248,6 @@ func commands() []command {
 		{name: "inspect", run: App.inspect},
 		{name: "stop", run: App.stop},
 		{name: "start", run: App.start},
-		{name: "resize", run: App.resize},
 		{name: "remove", aliases: []string{"rm"}, run: App.remove},
 		{name: "pause", run: App.pause},
 		{name: "resume", run: App.resume},
@@ -265,11 +258,6 @@ func commands() []command {
 			{name: "add", run: App.portAdd},
 			{name: "list", aliases: []string{"ls"}, run: App.portList},
 			{name: "remove", aliases: []string{"rm"}, run: App.portRemove},
-		}},
-		{name: "link", subs: []command{
-			{name: "add", run: App.linkAdd},
-			{name: "list", aliases: []string{"ls"}, run: App.linkList},
-			{name: "remove", aliases: []string{"rm"}, run: App.linkRemove},
 		}},
 		{name: "snapshot", subs: []command{
 			{name: "create", run: App.snapshotCreate},

@@ -5,7 +5,6 @@ from __future__ import annotations
 import argparse
 import functools
 import hashlib
-import http.client
 import io
 import json
 import os
@@ -61,15 +60,8 @@ HOST_PATHS = (
     "serve.tokens",
 )
 # A host field may appear only in an object every key of which one of these schemas declares.
-PUBLIC_USES = {"address": ("EgressDecision", "Port", "HostAddress", "Link"), "path": ("MkdirRequest",)}
+PUBLIC_USES = {"address": ("EgressDecision", "Port", "HostAddress"), "path": ("MkdirRequest",)}
 NDJSON = "application/x-ndjson"
-# A WebSocket handshake; the key is any 16 bytes in base64.
-WEBSOCKET = {
-    "Connection": "Upgrade",
-    "Upgrade": "websocket",
-    "Sec-WebSocket-Version": "13",
-    "Sec-WebSocket-Key": "c2hhcmQtZ2F0ZS1zd2VlcA==",
-}
 # A provider may refuse these verbs, so their suite lines may skip; every other check must pass.
 MAY_SKIP = {"lifecycle.pause_resume", "lifecycle.fork", "lifecycle.unsupported_named"}
 # The routes of those verbs, each by the capability that says whether this provider serves it.
@@ -538,26 +530,11 @@ class Gate:
         if body is not None:
             data = json.dumps(body).encode()
             headers["Content-Type"] = "application/json"
-        return self.note(method, path, self.request(method, path, key, data, headers))
-
-    def note(self, method: str, path: str, got: Answer) -> Answer:
+        got = self.request(method, path, key, data, headers)
         self.record(method, path, got)
         self.swept.append((method, path.split("?")[0], got.status))
         self.leaks.extend(self.leaks_in(f"{method} {path} ({got.status})", got))
         return got
-
-    def handshake(self, path: str) -> Answer:
-        """A WebSocket handshake, closed once answered: urllib always sends Connection: close, which no upgrade survives."""
-        url = urllib.parse.urlsplit(self.remote + path)
-        conn: http.client.HTTPConnection = http.client.HTTPConnection(url.netloc, timeout=120)
-        if url.scheme == "https":
-            conn = http.client.HTTPSConnection(url.netloc, timeout=120, context=self.tls())
-        try:
-            conn.request("GET", url.path, headers={**WEBSOCKET, "Authorization": f"Bearer {self.key}"})
-            resp = conn.getresponse()
-            return self.note("GET", path, Answer(resp.status, dict(resp.headers.items()), b""))
-        finally:
-            conn.close()
 
     def leak_responses(self) -> str:
         (self.out / "responses").mkdir(exist_ok=True)
@@ -573,7 +550,7 @@ class Gate:
         self.sweep_files(box)
         self.sweep_grants(box, sid)
         self.sweep_ports(box)
-        self.sweep_processes(sid)
+        self.sweep_processes()
         self.sweep_errors(box)
         if self.sweep("DELETE", f"{box}?force=true").status < 300:
             self.sandboxes.remove(sid)
@@ -610,7 +587,6 @@ class Gate:
         self.sweep("POST", f"{held}/kill", {"signal": "KILL"})
         self.sweep("GET", f"{held}?wait=true")
         self.sweep("DELETE", held)
-        self.handshake(f"{box}/ssh")
 
     def sweep_files(self, box: str) -> None:
         file, archive = f"{box}/files?path=/tmp/gate-sweep.txt", f"{box}/archive?path=/tmp/gate-sweep-dir"
@@ -640,7 +616,6 @@ class Gate:
         self.actor("py", "exec", sid, "wget -q -T 5 -O /dev/null http://192.0.2.1/ || true")
         self.sweep("GET", f"{box}/egress-log")
         self.sweep("POST", f"{box}/stop")
-        self.sweep("POST", f"{box}/resize", {"resources": {"memory_mib": 1024}})
         self.sweep("DELETE", f"{box}/policy")
         self.sweep("DELETE", f"{box}/secrets/{secret}")
         self.sweep("DELETE", f"/v0/secrets/{secret}")
@@ -655,14 +630,13 @@ class Gate:
             self.sweep("GET", path)
         self.sweep("DELETE", forward)
 
-    def sweep_processes(self, linked: str) -> None:
-        made = {"image": self.image, "name": f"gate-proc-{self.tag}", "links": [linked]}
+    def sweep_processes(self) -> None:
+        made = {"image": self.image, "name": f"gate-proc-{self.tag}"}
         created = self.sweep("POST", "/v0/sandboxes?wait=true", made)
         expect(created.status == 201, f"the process sandbox's create answered {created.status}")
         sid = str(created.json()["id"])
         self.sandboxes.append(sid)
         box = f"/v0/sandboxes/{sid}"
-        self.sweep_links(box, linked)
         run = self.sweep("POST", f"{box}/processes", {"name": "sleeper", "command": ["sleep", "300"]})
         expect(run.status == 201, f"the run of a process answered {run.status}")
         proc = f"{box}/processes/sleeper"
@@ -687,14 +661,6 @@ class Gate:
         if self.sweep("DELETE", f"{box}?force=true").status < 300:
             self.sandboxes.remove(sid)
 
-    def sweep_links(self, box: str, linked: str) -> None:
-        """The link the create made, read, put again, taken back and put once more, so the fork that follows clones it."""
-        link = f"{box}/links/{linked}"
-        self.sweep("GET", f"{box}/links")
-        self.sweep("PUT", link)
-        self.sweep("DELETE", link)
-        self.sweep("PUT", link)
-
     def sweep_errors(self, box: str) -> None:
         """The refusals and errors a client meets, each of which could carry the host's detail in its message."""
         self.sweep("GET", f"/v0/sandboxes/gate-no-such-{self.tag}")
@@ -706,7 +672,6 @@ class Gate:
         if unpullable.status < 300:
             self.sandboxes.append(str(unpullable.json()["id"]))
         self.sweep("POST", f"{box}/exec", {"command": []})
-        self.sweep("POST", f"{box}/resize", {"resources": {"memory_mib": 2048}})
         self.sweep("GET", f"{box}/files?path=/gate/no/such/file")
         self.sweep("GET", f"{box}/files?path=relative")
         self.sweep("DELETE", f"/v0/snapshots/gate-no-such-{self.tag}")
