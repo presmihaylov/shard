@@ -31,7 +31,7 @@ func (g *gate) open() {
 type autostart struct {
 	deps      *deps
 	lifecycle *lifecycle
-	// after are the proxy, the resolver and the host firewall, which a started guest reaches at once.
+	// after are the proxy, the resolver, the host firewall and on Linux the link listener, which a started guest reaches at once.
 	after []*gate
 	wait  time.Duration
 }
@@ -47,7 +47,7 @@ func (t autostart) Run(ctx context.Context) error {
 		if ctx.Err() != nil {
 			return nil
 		}
-		logger.Printf("task %s: the proxy, the resolver or the host firewall is not up after %s; the sandboxes start without it", t.Name(), t.wait)
+		logger.Printf("task %s: the proxy, the resolver, the host firewall or the link listener is not up after %s; the sandboxes start without it", t.Name(), t.wait)
 	}
 
 	repo, err := t.deps.repo()

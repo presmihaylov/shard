@@ -13,5 +13,12 @@ func (p *Provider) DialPort(ctx context.Context, id string, port uint16) (net.Co
 		return nil, fmt.Errorf("sandbox %s: %w", id, err)
 	}
 
-	return conn, nil
+	return forwardStream{conn}, nil
 }
+
+// forwardStream takes a half close and passes none on: the sentry ends the whole connection at its stream's EOF, before the answer is back.
+type forwardStream struct {
+	net.Conn
+}
+
+func (forwardStream) CloseWrite() error { return nil }
