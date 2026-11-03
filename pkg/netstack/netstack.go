@@ -62,6 +62,10 @@ type Config struct {
 	Judge func(Flow) Verdict
 	// Dial opens the host side of a flow the judge allowed; nil dials from the host's own stack.
 	Dial func(ctx context.Context, network, address string) (net.Conn, error)
+	// Intercepted says a guest's TCP to dst is Intercept's, ahead of the redirect and the judge; nil intercepts nothing.
+	Intercepted func(guest, dst netip.Addr) bool
+	// Intercept opens the far side of an intercepted flow; its error resets the guest before the handshake completes.
+	Intercept func(ctx context.Context, guest netip.Addr, dst netip.AddrPort) (net.Conn, error)
 }
 
 // Stack is one userspace stack over any number of links, each a guest of its own.
@@ -105,7 +109,7 @@ func New(cfg Config) (*Stack, error) {
 	}
 
 	st := &Stack{cfg: cfg, stack: s, nextID: 1, links: map[tcpip.NICID]*Link{}, tcpPorts: map[uint16]bool{}, udpPorts: map[uint16]bool{}}
-	s.IPTables().ReplaceTable(stack.NATID, natTable(cfg.Redirects, st.redirected), false)
+	s.IPTables().ReplaceTable(stack.NATID, natTable(cfg.Redirects, st.redirects), false)
 	if cfg.Judge != nil {
 		st.forward()
 	}
@@ -324,7 +328,8 @@ func (l *Link) reportOverflow(final bool) {
 
 // quiet reports the ends a closed link produces on either side, Linux answers a dead datagram peer with ECONNREFUSED, which are how a pump stops and not a fault.
 func quiet(err error) bool {
-	return errors.Is(err, io.EOF) || errors.Is(err, os.ErrClosed) || errors.Is(err, net.ErrClosed) ||
+	// A closed pipe is an intercept's far side ended, as the ssh server's is.
+	return errors.Is(err, io.EOF) || errors.Is(err, os.ErrClosed) || errors.Is(err, net.ErrClosed) || errors.Is(err, io.ErrClosedPipe) ||
 		errors.Is(err, syscall.ECONNRESET) || errors.Is(err, syscall.ECONNREFUSED) || errors.Is(err, syscall.EPIPE) || errors.Is(err, syscall.ENOTCONN) || errors.Is(err, syscall.EDESTADDRREQ) ||
 		guestEnded(err)
 }

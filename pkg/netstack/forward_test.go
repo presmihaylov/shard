@@ -5,11 +5,13 @@ import (
 	"context"
 	"crypto/tls"
 	"crypto/x509"
+	"errors"
 	"io"
 	"net"
 	"net/http"
 	"net/http/httptest"
 	"net/netip"
+	"strings"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -468,11 +470,11 @@ func counted(host *Stack, link *Link) int {
 }
 
 // redirecting builds a host stack that redirects 443 onto a listener for the guests redirected names, and dials every allowed flow to target.
-func redirecting(t *testing.T, redirected func(netip.Addr) bool, verdict func() Verdict, target string) (*Stack, chan Drop, chan net.Conn) {
+func redirecting(t *testing.T, redirected func(netip.Addr) bool, verdict func() Verdict, target string, opts ...func(*Config)) (*Stack, chan Drop, chan net.Conn) {
 	t.Helper()
 
 	drops := make(chan Drop, 16)
-	s, err := New(Config{
+	cfg := Config{
 		Address:    gateway,
 		Redirects:  map[uint16]uint16{443: 30443},
 		Redirected: redirected,
@@ -481,7 +483,11 @@ func redirecting(t *testing.T, redirected func(netip.Addr) bool, verdict func() 
 		Dial: func(ctx context.Context, network, _ string) (net.Conn, error) {
 			return (&net.Dialer{}).DialContext(ctx, network, target)
 		},
-	})
+	}
+	for _, opt := range opts {
+		opt(&cfg)
+	}
+	s, err := New(cfg)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -706,5 +712,261 @@ func TestAStaleRedirectOfAGuestNoLongerRedirectedIsDropped(t *testing.T) {
 		server.Close()
 	case <-time.After(5 * time.Second):
 		t.Fatal("the listener never took a flow the guest dialed to it")
+	}
+}
+
+// intercepted is where guestA's flows go to Intercept, inside the private floor a judge refuses.
+var intercepted = netip.MustParseAddr("10.86.0.2")
+
+// interceptingA intercepts guestA's flows to intercepted into dial, on a stack that redirects every guest's 443 and whose judge refuses all it is asked.
+func interceptingA(t *testing.T, judged *atomic.Int32, dial func(ctx context.Context, guest netip.Addr, dst netip.AddrPort) (net.Conn, error)) (*Stack, chan Drop, chan net.Conn) {
+	t.Helper()
+
+	verdict := func() Verdict {
+		judged.Add(1)
+
+		return denied
+	}
+
+	return redirecting(t, func(netip.Addr) bool { return true }, verdict, "127.0.0.1:1", func(cfg *Config) {
+		cfg.Intercepted = func(guest, dst netip.Addr) bool { return guest == guestA && dst == intercepted }
+		cfg.Intercept = dial
+	})
+}
+
+// An intercepted flow reaches Intercept with its guest, past the redirect of a fronted port and a judge that refuses everything, and spends the guest's share.
+func TestAnInterceptedFlowSkipsTheRedirectAndTheJudge(t *testing.T) {
+	target, _ := echoTCP(t)
+	seen := make(chan netip.AddrPort, 4)
+	var judged atomic.Int32
+	host, drops, accepted := interceptingA(t, &judged, func(ctx context.Context, guest netip.Addr, dst netip.AddrPort) (net.Conn, error) {
+		if guest != guestA {
+			t.Errorf("intercepted for %s, want %s", guest, guestA)
+		}
+		seen <- dst
+
+		return (&net.Dialer{}).DialContext(ctx, "tcp", target)
+	})
+	guest := attach(t, host, guestA)
+
+	ctx, cancel := context.WithTimeout(t.Context(), 5*time.Second)
+	defer cancel()
+	for _, port := range []uint16{443, 5432} {
+		echoIntercepted(ctx, t, host, guest, netip.AddrPortFrom(intercepted, port), seen)
+	}
+	if n := judged.Load(); n != 0 {
+		t.Errorf("the judge ruled on %d intercepted flows", n)
+	}
+	select {
+	case server := <-accepted:
+		server.Close()
+		t.Fatal("the listener took an intercepted flow")
+	case got := <-drops:
+		t.Fatalf("an intercepted flow was reported as a drop: %+v", got)
+	default:
+	}
+}
+
+// echoIntercepted sends a ping on a flow to dst, checks the echo and the flow's count while it is open, and that Intercept saw dst.
+func echoIntercepted(ctx context.Context, t *testing.T, host, guest *Stack, dst netip.AddrPort, seen <-chan netip.AddrPort) {
+	t.Helper()
+	conn, err := guest.dialTCP(ctx, dst)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := conn.SetDeadline(time.Now().Add(5 * time.Second)); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := conn.Write([]byte("ping")); err != nil {
+		t.Fatal(err)
+	}
+	buf := make([]byte, 4)
+	if _, err := io.ReadFull(conn, buf); err != nil || string(buf) != "ping" {
+		t.Fatalf("read %q, %v from %s", buf, err, dst)
+	}
+	if during := counted(host, host.linkOf(guestA)); during != 2 {
+		t.Errorf("an intercepted flow counts %d on the link and the stack together, want 2", during)
+	}
+	if err := conn.Close(); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case got := <-seen:
+		if got != dst {
+			t.Errorf("intercepted %s, want %s", got, dst)
+		}
+	default:
+		t.Fatalf("the flow to %s never reached Intercept", dst)
+	}
+}
+
+// Another guest's flow to the same address is no one's to intercept: its 443 lands on the listener, and the judge rules on the rest.
+func TestAFlowNotInterceptedKeepsTheRedirectAndTheJudge(t *testing.T) {
+	var judged atomic.Int32
+	host, drops, accepted := interceptingA(t, &judged, func(context.Context, netip.Addr, netip.AddrPort) (net.Conn, error) {
+		t.Error("intercepted another guest's flow")
+
+		return nil, errors.New("not intercepted")
+	})
+	other := attach(t, host, guestB)
+
+	ctx, cancel := context.WithTimeout(t.Context(), 5*time.Second)
+	defer cancel()
+	redirected, err := other.dialTCP(ctx, netip.AddrPortFrom(intercepted, 443))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer redirected.Close()
+	select {
+	case server := <-accepted:
+		server.Close()
+	case <-time.After(5 * time.Second):
+		t.Fatal("the listener never took the other guest's 443")
+	}
+
+	short, cancelShort := context.WithTimeout(t.Context(), 500*time.Millisecond)
+	defer cancelShort()
+	if conn, err := other.dialTCP(short, netip.AddrPortFrom(intercepted, 5432)); err == nil {
+		conn.Close()
+		t.Fatal("a flow the judge refused connected")
+	}
+	select {
+	case got := <-drops:
+		if got.Guest != guestB || got.Rule != denied.Rule {
+			t.Errorf("reported %+v, want guestB's drop as %q", got, denied.Rule)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("no drop reported")
+	}
+	if n := judged.Load(); n == 0 {
+		t.Error("the judge never ruled on the flow no one intercepts")
+	}
+}
+
+// Intercept refusing a flow resets the guest before its handshake completes, which is a refused connect and no drop.
+func TestARefusedInterceptResetsTheGuest(t *testing.T) {
+	var judged atomic.Int32
+	host, drops, _ := interceptingA(t, &judged, func(context.Context, netip.Addr, netip.AddrPort) (net.Conn, error) {
+		return nil, errors.New("no link")
+	})
+	guest := attach(t, host, guestA)
+
+	ctx, cancel := context.WithTimeout(t.Context(), 5*time.Second)
+	defer cancel()
+	conn, err := guest.dialTCP(ctx, netip.AddrPortFrom(intercepted, 22))
+	if err == nil {
+		conn.Close()
+		t.Fatal("a refused intercept connected")
+	}
+	if ctx.Err() != nil || !strings.Contains(err.Error(), "refused") {
+		t.Fatalf("the guest's dial = %v, want a refused connect", err)
+	}
+	select {
+	case got := <-drops:
+		t.Fatalf("a refused intercept was reported as a drop: %+v", got)
+	default:
+	}
+}
+
+// An intercept may hand back a pipe, as the ssh server's is, and the far side closing it under the flow is an end and no fault.
+func TestAPipeClosedUnderAnInterceptedFlowIsNoFault(t *testing.T) {
+	var judged atomic.Int32
+	pipes := make(chan net.Conn, 1)
+	host, _, _ := interceptingA(t, &judged, func(context.Context, netip.Addr, netip.AddrPort) (net.Conn, error) {
+		client, server := net.Pipe()
+		pipes <- client
+		go func() { _, _ = io.Copy(server, server) }()
+
+		return client, nil
+	})
+	guest := attach(t, host, guestA)
+	link := host.linkOf(guestA)
+
+	ctx, cancel := context.WithTimeout(t.Context(), 5*time.Second)
+	defer cancel()
+	conn, err := guest.dialTCP(ctx, netip.AddrPortFrom(intercepted, 22))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer conn.Close()
+	if err := conn.SetDeadline(time.Now().Add(5 * time.Second)); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := conn.Write([]byte("ping")); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := io.ReadFull(conn, make([]byte, 4)); err != nil {
+		t.Fatal(err)
+	}
+	if err := (<-pipes).Close(); err != nil {
+		t.Fatal(err)
+	}
+	if n, err := conn.Read(make([]byte, 1)); n != 0 || !errors.Is(err, io.EOF) {
+		t.Fatalf("the guest read %d, %v after the pipe closed, want its end", n, err)
+	}
+	if _, err := conn.Write([]byte("late")); err != nil {
+		t.Fatal(err)
+	}
+	flowsEndWithoutFault(t, host, link)
+}
+
+// The guest closing a flow onto a pipe, which cannot half-close, closes the pipe too and gives the flow's place back.
+func TestAGuestClosingAnInterceptedPipeEndsIt(t *testing.T) {
+	var judged atomic.Int32
+	ended := make(chan error, 1)
+	host, _, _ := interceptingA(t, &judged, func(context.Context, netip.Addr, netip.AddrPort) (net.Conn, error) {
+		client, server := net.Pipe()
+		go func() {
+			_, err := io.Copy(io.Discard, server)
+			ended <- err
+		}()
+
+		return client, nil
+	})
+	guest := attach(t, host, guestA)
+	link := host.linkOf(guestA)
+
+	ctx, cancel := context.WithTimeout(t.Context(), 5*time.Second)
+	defer cancel()
+	conn, err := guest.dialTCP(ctx, netip.AddrPortFrom(intercepted, 22))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := conn.Write([]byte("ping")); err != nil {
+		t.Fatal(err)
+	}
+	if err := conn.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	select {
+	case err := <-ended:
+		if err != nil {
+			t.Fatalf("the pipe ended with %v, want its end", err)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("the pipe never saw the guest's close")
+	}
+	flowsEndWithoutFault(t, host, link)
+}
+
+// flowsEndWithoutFault waits for the link to track no flow and checks that none left a fault behind.
+func flowsEndWithoutFault(t *testing.T, host *Stack, link *Link) {
+	t.Helper()
+	deadline := time.Now().Add(5 * time.Second)
+	for {
+		host.mu.Lock()
+		left, fault := len(link.flows), link.flowErr
+		host.mu.Unlock()
+		if left == 0 && fault != nil {
+			t.Fatalf("an ended flow was kept as the link's fault: %v", fault)
+		}
+		if left == 0 {
+			return
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("the flow still tracks %d sides", left)
+		}
+		time.Sleep(20 * time.Millisecond)
 	}
 }
