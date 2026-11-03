@@ -51,9 +51,7 @@
           "fork",
           "snapshot",
           "port",
-          "swap",
-          "resize",
-          "disk_grow"
+          "swap"
         ],
         "type": "object"
       },

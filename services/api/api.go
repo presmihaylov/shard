@@ -326,10 +326,10 @@ type Capabilities struct {
 	Port     bool `json:"port"`
 	// Swap is a swap file on the sandbox's own disk, which only a VM provider makes.
 	Swap bool `json:"swap"`
-	// Resize changes a stopped sandbox's memory, vCPU and swap bounds, which every provider does.
-	Resize bool `json:"resize"`
-	// DiskGrow is a resize that grows the disk, which only a VM provider does so far.
-	DiskGrow bool `json:"disk_grow"`
+	// Resize changes a stopped sandbox's memory, vCPU and swap bounds, which every provider does. Optional, as a daemon from before it omits it.
+	Resize bool `json:"resize" required:"false"`
+	// DiskGrow is a resize that grows the disk, which only a VM provider does so far. Optional, as a daemon from before it omits it.
+	DiskGrow bool `json:"disk_grow" required:"false"`
 }
 
 // ScopesResponse lists every scope a token can carry, never the caller's own.

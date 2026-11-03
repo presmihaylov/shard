@@ -220,6 +220,13 @@ def test_capabilities(daemon: FakeDaemon, shard: Shard) -> None:
     assert shard.capabilities() == Capabilities(**verbs)
 
 
+def test_capabilities_of_a_daemon_from_before_resize(daemon: FakeDaemon, shard: Shard) -> None:
+    verbs = ("create", "start", "stop", "remove", "pause", "resume", "fork", "snapshot", "port", "swap")
+    older = dict.fromkeys(verbs, True)
+    daemon.routes[("GET", "/v0/capabilities")] = (200, older)
+    assert shard.capabilities() == Capabilities(**older, resize=False, disk_grow=False)
+
+
 def test_create_and_run_bodies(daemon: FakeDaemon, shard: Shard) -> None:
     daemon.routes[("POST", "/v0/sandboxes")] = (201, SANDBOX)
     daemon.routes[("POST", "/v0/sandboxes/sb/processes")] = (201, PROCESS)

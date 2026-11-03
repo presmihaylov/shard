@@ -14,22 +14,20 @@ T = TypeVar("T", bound="Capabilities")
 @_attrs_define
 class Capabilities:
     create: bool
-    disk_grow: bool
     fork: bool
     pause: bool
     port: bool
     remove: bool
-    resize: bool
     resume: bool
     snapshot: bool
     start: bool
     stop: bool
     swap: bool
+    disk_grow: bool | Unset = UNSET
+    resize: bool | Unset = UNSET
 
     def to_dict(self) -> dict[str, Any]:
         create = self.create
-
-        disk_grow = self.disk_grow
 
         fork = self.fork
 
@@ -38,8 +36,6 @@ class Capabilities:
         port = self.port
 
         remove = self.remove
-
-        resize = self.resize
 
         resume = self.resume
 
@@ -51,17 +47,19 @@ class Capabilities:
 
         swap = self.swap
 
+        disk_grow = self.disk_grow
+
+        resize = self.resize
+
         field_dict: dict[str, Any] = {}
 
         field_dict.update(
             {
                 "create": create,
-                "disk_grow": disk_grow,
                 "fork": fork,
                 "pause": pause,
                 "port": port,
                 "remove": remove,
-                "resize": resize,
                 "resume": resume,
                 "snapshot": snapshot,
                 "start": start,
@@ -69,6 +67,10 @@ class Capabilities:
                 "swap": swap,
             }
         )
+        if disk_grow is not UNSET:
+            field_dict["disk_grow"] = disk_grow
+        if resize is not UNSET:
+            field_dict["resize"] = resize
 
         return field_dict
 
@@ -77,8 +79,6 @@ class Capabilities:
         d = dict(src_dict)
         create = d.pop("create")
 
-        disk_grow = d.pop("disk_grow")
-
         fork = d.pop("fork")
 
         pause = d.pop("pause")
@@ -86,8 +86,6 @@ class Capabilities:
         port = d.pop("port")
 
         remove = d.pop("remove")
-
-        resize = d.pop("resize")
 
         resume = d.pop("resume")
 
@@ -99,19 +97,23 @@ class Capabilities:
 
         swap = d.pop("swap")
 
+        disk_grow = d.pop("disk_grow", UNSET)
+
+        resize = d.pop("resize", UNSET)
+
         capabilities = cls(
             create=create,
-            disk_grow=disk_grow,
             fork=fork,
             pause=pause,
             port=port,
             remove=remove,
-            resize=resize,
             resume=resume,
             snapshot=snapshot,
             start=start,
             stop=stop,
             swap=swap,
+            disk_grow=disk_grow,
+            resize=resize,
         )
 
         return capabilities

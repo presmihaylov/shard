@@ -386,10 +386,10 @@ def capabilities(record: models.Capabilities) -> Capabilities:
         resume=record.resume,
         fork=record.fork,
         snapshot=record.snapshot,
-        resize=record.resize,
+        resize=_flag(record.resize),
         port=record.port,
         swap=record.swap,
-        disk_grow=record.disk_grow,
+        disk_grow=_flag(record.disk_grow),
     )
 
 
@@ -537,6 +537,11 @@ def _policy_rule(record: models.Rule) -> PolicyRule:
         if record.ports:
             text += ":" + ",".join(str(port) for port in record.ports)
     return PolicyRule(action=_one_of(_ACTIONS, record.action, "a rule action"), rule=text)
+
+
+def _flag(value: bool | Unset) -> bool:
+    """A capability a daemon from before it omits, which that daemon lacks."""
+    return False if isinstance(value, Unset) else value
 
 
 def _time_or_none(value: datetime.datetime | Unset) -> datetime.datetime | None:

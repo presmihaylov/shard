@@ -687,12 +687,12 @@ export interface components {
     schemas: {
         Capabilities: {
             create: boolean;
-            disk_grow: boolean;
+            disk_grow?: boolean;
             fork: boolean;
             pause: boolean;
             port: boolean;
             remove: boolean;
-            resize: boolean;
+            resize?: boolean;
             resume: boolean;
             snapshot: boolean;
             start: boolean;

@@ -68,15 +68,19 @@ func (b Bundle) Resize(res models.Resources) error {
 	spec.Linux.Resources.CPU = bounds.CPU
 	// /dev/shm is sized off the memory bound, so a smaller bound shrinks it too.
 	for i, m := range spec.Mounts {
-		if m.Destination != "/dev/shm" {
-			continue
-		}
-		for j, opt := range m.Options {
-			if strings.HasPrefix(opt, "size=") {
-				spec.Mounts[i].Options[j] = tmpfsSize(shmSize(res))
-			}
+		if m.Destination == "/dev/shm" {
+			resizeTmpfs(spec.Mounts[i].Options, shmSize(res))
 		}
 	}
 
 	return b.writeSpec(spec)
+}
+
+// resizeTmpfs rewrites the size option of a tmpfs mount in place.
+func resizeTmpfs(options []string, size int64) {
+	for i, opt := range options {
+		if strings.HasPrefix(opt, "size=") {
+			options[i] = tmpfsSize(size)
+		}
+	}
 }
