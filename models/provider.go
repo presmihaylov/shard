@@ -190,6 +190,8 @@ type NetworkSpec struct {
 	HostInterface string
 	// Nameservers is what the guest resolver reads. Neither substrate resolves a name itself.
 	Nameservers []netip.Addr
+	// Hosts is a line in the guest's /etc/hosts for each sandbox this one links.
+	Hosts []Host
 }
 
 // Resources bounds the sandbox. Firecracker needs both to boot; gVisor may ignore them.

@@ -11,6 +11,7 @@ import (
 
 	"github.com/presmihaylov/shard/models"
 	"github.com/presmihaylov/shard/pkg/store"
+	"github.com/presmihaylov/shard/services/supervisor"
 )
 
 const (
@@ -97,7 +98,8 @@ func resolvConf(nameservers []netip.Addr) string {
 // hostsFile gives the sandbox its own name, which many programs expect to resolve.
 func hostsFile(spec models.SandboxSpec) string {
 	hostname := firstNonEmpty(spec.Name, spec.ID)
-
-	return fmt.Sprintf("127.0.0.1\tlocalhost\n::1\tlocalhost ip6-localhost ip6-loopback\n%s\t%s\n",
+	hosts := fmt.Sprintf("127.0.0.1\tlocalhost\n::1\tlocalhost ip6-localhost ip6-loopback\n%s\t%s\n",
 		spec.Network.Address.Addr(), hostname)
+
+	return string(supervisor.WithHosts([]byte(hosts), spec.Network.Hosts))
 }

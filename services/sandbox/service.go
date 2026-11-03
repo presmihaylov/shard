@@ -838,6 +838,8 @@ func (s *Service) Complete(ctx context.Context, id string, req CreateRequest) (e
 		return err
 	}
 
+	network := resolvedThrough(netSpec, req.Policy)
+	network.Hosts = linkHosts(nameOf(id, sb), sb.Links)
 	spec := runspec.Resolve(models.SandboxSpec{
 		ID:        id,
 		Name:      req.Name,
@@ -848,7 +850,7 @@ func (s *Service) Complete(ctx context.Context, id string, req CreateRequest) (e
 		Env:       env,
 		WorkDir:   req.WorkDir,
 		User:      req.User,
-		Network:   resolvedThrough(netSpec, req.Policy),
+		Network:   network,
 		Resources: s.resources(req.Resources),
 		Seed:      seed.files,
 		ProxyCA:   proxyCA,
@@ -1214,7 +1216,13 @@ func (s *Service) startWithin(ctx context.Context, id string) error {
 		return errors.Join(err, s.recordFailedStart(ctx, id))
 	}
 
-	return RecordRunning(ctx, s.cfg.Repo, s.cfg.Provider, id, false)
+	if err := RecordRunning(ctx, s.cfg.Repo, s.cfg.Provider, id, false); err != nil {
+		return err
+	}
+	// Even with no link left: one dropped while it was down left its line in the guest's writable layer.
+	s.hostsReported(ctx, id)
+
+	return nil
 }
 
 // recordFailedStart lands a shard-init that died before the start ran anything, so inspect shows its 125 and its reason (SHARD-416).
@@ -1543,6 +1551,7 @@ func (s *Service) free(ctx context.Context, id string) error {
 
 		return fmt.Errorf("remove sandbox %s: %w: its %s are left on the host", id, err, strings.Join(left, ", its "))
 	}
+	s.hostsReported(ctx, linked...)
 
 	return nil
 }
