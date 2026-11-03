@@ -1,0 +1,137 @@
+---
+title: Links
+description: The SDK methods that link a sandbox to another it reaches by name, in TypeScript and Python.
+sidebar:
+  order: 8
+---
+
+import { TabItem, Tabs } from '@astrojs/starlight/components';
+
+## sandbox.links.add
+
+Link the sandbox to another, by the other's ID or name, or return the link it already holds.
+
+<Tabs syncKey="lang">
+<TabItem label="TypeScript">
+
+```ts
+sandbox.links.add(target: string): Promise<Link>
+```
+
+</TabItem>
+<TabItem label="Python">
+
+```python
+sandbox.links.add(target) -> Link
+```
+
+</TabItem>
+</Tabs>
+
+**Examples**
+
+<Tabs syncKey="lang">
+<TabItem label="TypeScript">
+
+```ts
+const link = await sandbox.links.add("web1");
+console.log(link.target, link.address);
+```
+
+</TabItem>
+<TabItem label="Python">
+
+```python
+link = sandbox.links.add("web1")
+print(link.target, link.address)
+```
+
+</TabItem>
+</Tabs>
+
+A link is one way: the sandbox reaches its target, not the other way round. Every sandbox that links the same target sees it at the same address, from 10.86.0.0/16. The link survives a stop and a start of either sandbox, a fork copies it, and removing the target drops it. Adding a link needs the `ssh` scope. To link from the first start, pass `links` to [`shard.create`](/docs/reference/sdks/sandboxes/#shardcreate).
+
+**The result**
+
+A `Link` holds `target`, the name of the linked sandbox or its ID when it has none, `targetId` (`target_id` in Python) and `address`.
+
+## sandbox.links.list
+
+List the links of a sandbox, in the order they were added.
+
+<Tabs syncKey="lang">
+<TabItem label="TypeScript">
+
+```ts
+sandbox.links.list(): Promise<Link[]>
+```
+
+</TabItem>
+<TabItem label="Python">
+
+```python
+sandbox.links.list() -> list[Link]
+```
+
+</TabItem>
+</Tabs>
+
+**Examples**
+
+<Tabs syncKey="lang">
+<TabItem label="TypeScript">
+
+```ts
+for (const link of await sandbox.links.list()) console.log(link.target, link.address);
+```
+
+</TabItem>
+<TabItem label="Python">
+
+```python
+for link in sandbox.links.list():
+    print(link.target, link.address)
+```
+
+</TabItem>
+</Tabs>
+
+## sandbox.links.remove
+
+Remove the link to a sandbox. Its address is free again once no sandbox links it.
+
+<Tabs syncKey="lang">
+<TabItem label="TypeScript">
+
+```ts
+sandbox.links.remove(target: string): Promise<void>
+```
+
+</TabItem>
+<TabItem label="Python">
+
+```python
+sandbox.links.remove(target) -> None
+```
+
+</TabItem>
+</Tabs>
+
+**Examples**
+
+<Tabs syncKey="lang">
+<TabItem label="TypeScript">
+
+```ts
+await sandbox.links.remove("web1");
+```
+
+</TabItem>
+<TabItem label="Python">
+
+```python
+sandbox.links.remove("web1")
+```
+
+</TabItem>
+</Tabs>

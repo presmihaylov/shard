@@ -11,6 +11,7 @@ from ..models.sandbox_state import SandboxState
 from ..types import UNSET, Unset
 
 if TYPE_CHECKING:
+    from ..models.link import Link
     from ..models.oom import OOM
     from ..models.port_forward import PortForward
     from ..models.process import Process
@@ -32,6 +33,7 @@ class Sandbox:
     failed_reason: str | Unset = UNSET
     forked_from: str | Unset = UNSET
     kernel: str | Unset = UNSET
+    links: list[Link] | Unset = UNSET
     name: str | Unset = UNSET
     oom: OOM | Unset = UNSET
     policy: str | Unset = UNSET
@@ -43,6 +45,7 @@ class Sandbox:
     stopped_reason: str | Unset = UNSET
 
     def to_dict(self) -> dict[str, Any]:
+        from ..models.link import Link  # noqa: PLC0415
         from ..models.oom import OOM  # noqa: PLC0415
         from ..models.port_forward import PortForward  # noqa: PLC0415
         from ..models.process import Process  # noqa: PLC0415
@@ -67,6 +70,13 @@ class Sandbox:
         forked_from = self.forked_from
 
         kernel = self.kernel
+
+        links: list[dict[str, Any]] | Unset = UNSET
+        if not isinstance(self.links, Unset):
+            links = []
+            for links_item_data in self.links:
+                links_item = links_item_data.to_dict()
+                links.append(links_item)
 
         name = self.name
 
@@ -122,6 +132,8 @@ class Sandbox:
             field_dict["forked_from"] = forked_from
         if kernel is not UNSET:
             field_dict["kernel"] = kernel
+        if links is not UNSET:
+            field_dict["links"] = links
         if name is not UNSET:
             field_dict["name"] = name
         if oom is not UNSET:
@@ -145,6 +157,7 @@ class Sandbox:
 
     @classmethod
     def from_dict(cls: type[T], src_dict: Mapping[str, Any]) -> T:
+        from ..models.link import Link  # noqa: PLC0415
         from ..models.oom import OOM  # noqa: PLC0415
         from ..models.port_forward import PortForward  # noqa: PLC0415
         from ..models.process import Process  # noqa: PLC0415
@@ -170,6 +183,15 @@ class Sandbox:
         forked_from = d.pop("forked_from", UNSET)
 
         kernel = d.pop("kernel", UNSET)
+
+        _links = d.pop("links", UNSET)
+        links: list[Link] | Unset = UNSET
+        if _links is not UNSET:
+            links = []
+            for links_item_data in _links:
+                links_item = Link.from_dict(links_item_data)
+
+                links.append(links_item)
 
         name = d.pop("name", UNSET)
 
@@ -224,6 +246,7 @@ class Sandbox:
             failed_reason=failed_reason,
             forked_from=forked_from,
             kernel=kernel,
+            links=links,
             name=name,
             oom=oom,
             policy=policy,

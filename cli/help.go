@@ -78,8 +78,9 @@ var wants = map[string]string{
 
 // The arguments more than one verb takes.
 var (
-	imageArg   = row{"IMAGE", "image to use; downloaded if needed"}
-	sandboxArg = row{"SANDBOX", "sandbox ID or name"}
+	imageArg      = row{"IMAGE", "image to use; downloaded if needed"}
+	sandboxArg    = row{"SANDBOX", "sandbox ID or name"}
+	linkTargetArg = row{"TARGET", "ID or name of the sandbox the link reaches"}
 	// sandboxesArg is the argument of a verb that takes several sandboxes and acts on each in turn.
 	sandboxesArg = row{"SANDBOX", "sandbox ID or name; repeatable"}
 	sourceArg    = row{"SANDBOX", "source sandbox ID or name"}
@@ -98,7 +99,7 @@ var verbGroups = []struct {
 	title string
 	verbs []string
 }{
-	{"Sandboxes", []string{"create", "run", "exec", "shell", "ssh", "ssh-config", "ssh-proxy", "list", "ps", "logs", "kill", "inspect", "stop", "start", "remove", "prune", "pause", "resume", "fork", "cp", "port"}},
+	{"Sandboxes", []string{"create", "run", "exec", "shell", "ssh", "ssh-config", "ssh-proxy", "list", "ps", "logs", "kill", "inspect", "stop", "start", "remove", "prune", "pause", "resume", "fork", "cp", "port", "link"}},
 	{"Images, snapshots, secrets and network policies", []string{"pull", "image", "snapshot", "secret", "policy"}},
 	{"Host and access", []string{"capabilities", "daemon", "info", "serve", "setup", "tokens", "version"}},
 }
@@ -174,6 +175,7 @@ var helps = map[string]verbHelp{
 		flags: append(slices.Clone(sandboxFlagHelps),
 			flagHelp{"--snapshot <id|name>", "create from a filesystem snapshot instead of an image", ""},
 			flagHelp{"--port [HOST:]GUEST", "forward a port on the host's 127.0.0.1 to the sandbox; repeatable", ""},
+			flagHelp{"--link <sandbox>", "link the sandbox to another, by ID or name; repeatable", ""},
 		),
 		notes: []note{
 			para(
@@ -188,6 +190,7 @@ var helps = map[string]verbHelp{
 			"shard create --name web-copy --snapshot web-files",
 			"shard create --name worker --memory 512MiB --secret API_TOKEN python:3.12",
 			"shard create --name web --port 8000 python:3.12",
+			"shard create --name agent1 --link web1 python:3.12",
 		},
 	},
 	"run": {
@@ -440,6 +443,7 @@ var helps = map[string]verbHelp{
 		notes: []note{para(
 			"The source briefly pauses, then continues running.",
 			"The new sandbox starts from the captured state and has independent files.",
+			"It keeps the source's links.",
 			"Prints the new sandbox ID. Availability depends on the provider.",
 		)},
 		examples: []string{"shard fork --name web-copy web"},
@@ -509,6 +513,42 @@ var helps = map[string]verbHelp{
 		args:     []row{sandboxArg, {"HOST", "host port the forward listens on"}},
 		notes:    []note{para("Closes the listener and the connections it carries.")},
 		examples: []string{"shard port remove web 9000"},
+	},
+	"link": {
+		usage:   []string{"link COMMAND [OPTIONS] [ARGS...]"},
+		summary: "link a sandbox to other sandboxes it reaches by name",
+		notes: []note{para(
+			"A link is one-way: the sandbox reaches its target, never the reverse.",
+			"Each target holds one address from 10.86.0.0/16, shared by every link to it.",
+			"Links survive a stop of either sandbox, and a fork keeps them.",
+			"Removing the target removes every link to it.",
+		)},
+	},
+	"link add": {
+		usage:   []string{"link add SANDBOX TARGET"},
+		summary: "link a sandbox to another",
+		about:   "Link a sandbox to another, or print the link it already holds.",
+		args:    []row{sandboxArg, linkTargetArg},
+		notes: []note{para(
+			"Prints the target and the address the sandbox reaches it on.",
+			"A remote token needs the ssh scope, since a link reaches what ssh does.",
+		)},
+		examples: []string{"shard link add agent1 web1"},
+	},
+	"link list": {
+		usage:    []string{"link list [OPTIONS] SANDBOX"},
+		summary:  "list the sandboxes a sandbox links",
+		args:     []row{sandboxArg},
+		flags:    []flagHelp{formatTableHelp},
+		notes:    []note{para("Table columns: TARGET and ADDRESS, in the order the links were added.")},
+		examples: []string{"shard link list agent1", "shard link list --format json agent1"},
+	},
+	"link remove": {
+		usage:    []string{"link remove SANDBOX TARGET"},
+		summary:  "remove a link",
+		args:     []row{sandboxArg, linkTargetArg},
+		notes:    []note{para("Prints the target. Its address goes free once no link holds it.")},
+		examples: []string{"shard link remove agent1 web1"},
 	},
 	"pull": {
 		usage:    []string{"pull IMAGE"},

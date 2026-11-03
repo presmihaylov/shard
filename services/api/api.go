@@ -74,6 +74,9 @@ type Lifecycle interface {
 	RemovePort(ctx context.Context, ref string, hostPort uint16) error
 	// ListPorts answers the forwards of one sandbox, or of every sandbox when ref is empty, in host port order.
 	ListPorts(ctx context.Context, ref string) ([]models.Port, error)
+	AddLink(ctx context.Context, ref, target string) (models.Link, error)
+	RemoveLink(ctx context.Context, ref, target string) error
+	ListLinks(ctx context.Context, ref string) ([]models.Link, error)
 }
 
 // EgressLog is what shard policy logs prints: the newest decisions made for one sandbox, oldest first.
@@ -264,6 +267,9 @@ func (h *Handler) routeTable() []routeEntry {
 		public("GET", "/v0/sandboxes/{id}/ports", PortRead, operation("ports", "list-sandbox-ports", "List the host ports forwarded into a sandbox", 0), typed(h.listSandboxPorts)),
 		public("PUT", "/v0/sandboxes/{id}/ports/{host_port}", PortWrite, operation("ports", "put-port", "Forward a host port into a sandbox, or change that forward", 0), documented(describePutPort, typed(h.putPort))),
 		public("DELETE", "/v0/sandboxes/{id}/ports/{host_port}", PortWrite, operation("ports", "remove-port", "Remove the forward on a host port", 0), typed(h.removePort)),
+		public("GET", "/v0/sandboxes/{id}/links", SandboxRead, operation("links", "list-links", "List the sandboxes a sandbox links", 0), typed(h.listLinks)),
+		public("PUT", "/v0/sandboxes/{id}/links/{target}", SSH, operation("links", "put-link", "Link a sandbox to another", 0), documented(describePutLink, typed(h.putLink))),
+		public("DELETE", "/v0/sandboxes/{id}/links/{target}", SandboxWrite, operation("links", "remove-link", "Remove the link to a sandbox", 0), typed(h.removeLink)),
 		public("POST", "/v0/snapshots", SandboxWrite, operation("snapshots", "create-snapshot", "Snapshot a sandbox", http.StatusCreated), typed(h.createSnapshot)),
 		public("GET", "/v0/snapshots", SandboxRead, operation("snapshots", "list-snapshots", "List snapshots", 0), typed(h.listSnapshots)),
 		public("GET", "/v0/snapshots/{ref}", SandboxRead, operation("snapshots", "get-snapshot", "Read a snapshot", 0), typed(h.getSnapshot)),
@@ -567,7 +573,7 @@ func (h *Handler) create(w http.ResponseWriter, r *http.Request, wait bool, req 
 
 // describeCreate names both shapes of the 201: the record, or the pull's events and then the record, one JSON line each.
 func describeCreate(registry huma.Registry, op *huma.Operation) {
-	op.Description = "A create that names secrets also needs the secret:* scope, one that names a policy needs policy:*, and one that forwards ports needs port:write; without it the answer is 403 forbidden."
+	op.Description = "A create that names secrets also needs the secret:* scope, one that names a policy needs policy:*, one that forwards ports needs port:write, and one that links sandboxes needs ssh; without it the answer is 403 forbidden."
 	op.Responses["201"] = &huma.Response{Description: "The sandbox, or with wait and Accept: application/x-ndjson one CreateLine per pull event and then the sandbox. An error after the first line ends the stream with a CreateLine whose error is set, and no sandbox.", Content: map[string]*huma.MediaType{
 		"application/json":     {Schema: schemaOf[Sandbox](registry)},
 		"application/x-ndjson": {Schema: schemaOf[CreateLine](registry)},
@@ -590,7 +596,7 @@ func (e *scopeError) Error() string {
 
 func (e *scopeError) Public() string { return e.Error() }
 
-// checkCreateScopes refuses a create that names a secret or a policy, or forwards a port, the stamped scopes do not reach. No header means the request reached the daemon socket directly, which keeps every right.
+// checkCreateScopes refuses a create that names a secret or a policy, forwards a port, or links a sandbox, the stamped scopes do not reach. No header means the request reached the daemon socket directly, which keeps every right.
 func checkCreateScopes(ctx context.Context, req sandbox.CreateRequest) error {
 	if err := checkGrantScopes(ctx, "create that names", req.Secrets, req.Policy); err != nil {
 		return err
@@ -599,6 +605,16 @@ func checkCreateScopes(ctx context.Context, req sandbox.CreateRequest) error {
 	scopes, stamped := ctx.Value(scopesKey{}).([]string)
 	if stamped && len(req.Ports) > 0 && !scopesCover(scopes, PortWrite) {
 		return &scopeError{scope: PortWrite, named: "host port", action: "create that forwards"}
+	}
+
+	return checkLinkScope(ctx, "create that names", len(req.Links) > 0)
+}
+
+// checkLinkScope refuses links the stamped scopes do not reach: a link lets its source ssh into the target, so it needs ssh.
+func checkLinkScope(ctx context.Context, action string, links bool) error {
+	scopes, stamped := ctx.Value(scopesKey{}).([]string)
+	if stamped && links && !scopesCover(scopes, SSH) {
+		return &scopeError{scope: SSH, named: "link", action: action}
 	}
 
 	return nil
@@ -690,7 +706,11 @@ func (h *Handler) resumeSandbox(ctx context.Context, in *sandboxPath) (*reply[Sa
 
 func (h *Handler) forkSandbox(ctx context.Context, in *sandboxBody[sandbox.CopyRequest]) (*reply[Sandbox], error) {
 	checked := sandbox.WithForkCheck(ctx, func(source models.Sandbox) error {
-		return checkGrantScopes(ctx, "fork that copies", source.Secrets, source.Policy)
+		if err := checkGrantScopes(ctx, "fork that copies", source.Secrets, source.Policy); err != nil {
+			return err
+		}
+
+		return checkLinkScope(ctx, "fork that copies", len(source.Links) > 0)
 	})
 	return publicReply(h.lifecycle.Fork(checked, in.ID, value(in.Body)))
 }
@@ -717,6 +737,7 @@ func classify(err error) (int, models.Code) {
 	var noCABundle *sandbox.NoCABundleError
 	var portNotFound *sandbox.PortNotFoundError
 	var portInUse *sandbox.PortInUseError
+	var linkNotFound *sandbox.LinkNotFoundError
 
 	switch {
 	case errors.As(err, &scope):
@@ -726,7 +747,8 @@ func classify(err error) (int, models.Code) {
 	case errors.As(err, &invalid), errors.As(err, &request), errors.As(err, &fileInvalid), errors.As(err, &noCABundle), errors.Is(err, image.ErrBadReference):
 		return http.StatusBadRequest, models.CodeInvalidRequest
 	case errors.Is(err, sandboxstate.ErrNotFound), errors.Is(err, sandboxstate.ErrSnapshotNotFound), errors.Is(err, egress.ErrNotFound),
-		errors.Is(err, secret.ErrNotFound), errors.Is(err, image.ErrNotFound), errors.As(err, &fileNotFound), errors.As(err, &imageGone), errors.As(err, &portNotFound):
+		errors.Is(err, secret.ErrNotFound), errors.Is(err, image.ErrNotFound), errors.As(err, &fileNotFound), errors.As(err, &imageGone), errors.As(err, &portNotFound),
+		errors.As(err, &linkNotFound):
 		return http.StatusNotFound, models.CodeNotFound
 	case errors.As(err, &nameTaken):
 		return http.StatusConflict, models.CodeNameTaken
