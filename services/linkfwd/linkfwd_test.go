@@ -462,6 +462,34 @@ func TestRoutesListsEachSourceWithItsLinks(t *testing.T) {
 	}
 }
 
+// The stack path resets the guest itself, so Intercept keeps the ordinary refusal out of the log and reports the rest.
+func TestInterceptReportsWhatIsNoOrdinaryRefusal(t *testing.T) {
+	h := newHarness(t, agent(link("db", dbLink)))
+
+	if _, err := h.f.Intercept(t.Context(), agentAddr, netip.AddrPortFrom(cacheLink, 5432)); !errors.Is(err, ErrNoLink) {
+		t.Fatalf("Intercept = %v, want a refusal for no link", err)
+	}
+	select {
+	case line := <-h.reports:
+		t.Errorf("an ordinary refusal reached the log: %s", line)
+	default:
+	}
+
+	cause := errors.New("record unreadable")
+	h.records.broken = map[string]error{"agent": cause}
+	if _, err := h.f.Intercept(t.Context(), agentAddr, netip.AddrPortFrom(dbLink, 5432)); !errors.Is(err, cause) {
+		t.Fatalf("Intercept = %v, want the record's error", err)
+	}
+	select {
+	case line := <-h.reports:
+		if !strings.Contains(line, cause.Error()) {
+			t.Errorf("reported %q, want the record's error", line)
+		}
+	default:
+		t.Error("a broken record never reached the log")
+	}
+}
+
 // The listener path: the guest's address names the source, conntrack names the link, and a refusal is a reset.
 func TestServeCarriesAGuestFlowAndResetsARefusedOne(t *testing.T) {
 	loopback := netip.MustParseAddr("127.0.0.1")
