@@ -153,8 +153,17 @@ func (s *Stack) redirected(guest netip.Addr) bool {
 	return s.cfg.Redirected == nil || s.cfg.Redirected(guest)
 }
 
+// redirects says the NAT table takes a guest's flow to dst onto the listener: a redirected guest's, unless the flow is intercepted.
+func (s *Stack) redirects(guest, dst netip.Addr) bool {
+	return s.redirected(guest) && !s.intercepted(guest, dst)
+}
+
+func (s *Stack) intercepted(guest, dst netip.Addr) bool {
+	return s.cfg.Intercepted != nil && s.cfg.Intercepted(guest, dst)
+}
+
 // natTable sends a redirected guest's TCP flow to a redirected port onto the stack's own listener, wherever the guest dialed, the way the host chains dnat 80 and 443 for a fronted sandbox.
-func natTable(redirects map[uint16]uint16, redirected guestMatcher) stack.Table {
+func natTable(redirects map[uint16]uint16, redirected flowMatcher) stack.Table {
 	var rules []stack.Rule
 	for from, to := range redirects {
 		filter := stack.EmptyFilter4()
@@ -189,14 +198,14 @@ func (m portMatcher) Match(_ stack.Hook, pkt *stack.PacketBuffer, _, _ string) (
 	return tcp.DestinationPort() == uint16(m), false
 }
 
-// guestMatcher matches a packet by its source, the guest that sent it.
-type guestMatcher func(netip.Addr) bool
+// flowMatcher matches a packet by its source, the guest that sent it, and the destination it dialed.
+type flowMatcher func(guest, dst netip.Addr) bool
 
-func (m guestMatcher) Match(_ stack.Hook, pkt *stack.PacketBuffer, _, _ string) (bool, bool) {
+func (m flowMatcher) Match(_ stack.Hook, pkt *stack.PacketBuffer, _, _ string) (bool, bool) {
 	ip := header.IPv4(pkt.NetworkHeader().Slice())
 	if len(ip) < header.IPv4MinimumSize {
 		return false, false
 	}
 
-	return m(netip.AddrFrom4(ip.SourceAddress().As4())), false
+	return m(netip.AddrFrom4(ip.SourceAddress().As4()), netip.AddrFrom4(ip.DestinationAddress().As4())), false
 }
