@@ -73,7 +73,7 @@ func TestForkOnTheLocalSocketKeepsEveryRight(t *testing.T) {
 	source := forkSource()
 	source.Secrets, source.Policy = []string{"TOKEN"}, "locked"
 	svc, layers := newService(t, &recorder{}, source)
-	handler := api.NewHandler("test", nil, layers.repo, nil, svc, nil, nil, nil, nil, io.Discard)
+	handler := api.NewHandler("test", nil, layers.repo, nil, svc, nil, nil, nil, io.Discard)
 	root := forkAPISocket(t, handler)
 	client := &http.Client{Transport: &http.Transport{DialContext: func(ctx context.Context, _, _ string) (net.Conn, error) {
 		return (&net.Dialer{}).DialContext(ctx, "unix", filepath.Join(root, "shard.sock"))
@@ -98,7 +98,7 @@ func forkWithScopes(t *testing.T, tc forkScopesCase) {
 	source.Secrets, source.Policy = tc.secrets, tc.policy
 	r := &recorder{}
 	svc, layers := newService(t, r, source)
-	handler := api.NewHandler("test", nil, layers.repo, nil, svc, nil, nil, nil, nil, io.Discard)
+	handler := api.NewHandler("test", nil, layers.repo, nil, svc, nil, nil, nil, io.Discard)
 	root := forkAPISocket(t, handler)
 	address, token := forkFront(t, root, tc.scopes)
 	req, err := http.NewRequestWithContext(t.Context(), http.MethodPost, address+"/v0/sandboxes/sandbox1/fork", strings.NewReader(`{"name":"copy"}`))

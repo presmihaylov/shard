@@ -5,7 +5,6 @@ from __future__ import annotations
 import argparse
 import functools
 import hashlib
-import http.client
 import io
 import json
 import os
@@ -63,13 +62,6 @@ HOST_PATHS = (
 # A host field may appear only in an object every key of which one of these schemas declares.
 PUBLIC_USES = {"address": ("EgressDecision", "Port", "HostAddress"), "path": ("MkdirRequest",)}
 NDJSON = "application/x-ndjson"
-# A WebSocket handshake; the key is any 16 bytes in base64.
-WEBSOCKET = {
-    "Connection": "Upgrade",
-    "Upgrade": "websocket",
-    "Sec-WebSocket-Version": "13",
-    "Sec-WebSocket-Key": "c2hhcmQtZ2F0ZS1zd2VlcA==",
-}
 # A provider may refuse these verbs, so their suite lines may skip; every other check must pass.
 MAY_SKIP = {"lifecycle.pause_resume", "lifecycle.fork", "lifecycle.unsupported_named"}
 # The routes of those verbs, each by the capability that says whether this provider serves it.
@@ -538,26 +530,11 @@ class Gate:
         if body is not None:
             data = json.dumps(body).encode()
             headers["Content-Type"] = "application/json"
-        return self.note(method, path, self.request(method, path, key, data, headers))
-
-    def note(self, method: str, path: str, got: Answer) -> Answer:
+        got = self.request(method, path, key, data, headers)
         self.record(method, path, got)
         self.swept.append((method, path.split("?")[0], got.status))
         self.leaks.extend(self.leaks_in(f"{method} {path} ({got.status})", got))
         return got
-
-    def handshake(self, path: str) -> Answer:
-        """A WebSocket handshake, closed once answered: urllib always sends Connection: close, which no upgrade survives."""
-        url = urllib.parse.urlsplit(self.remote + path)
-        conn: http.client.HTTPConnection = http.client.HTTPConnection(url.netloc, timeout=120)
-        if url.scheme == "https":
-            conn = http.client.HTTPSConnection(url.netloc, timeout=120, context=self.tls())
-        try:
-            conn.request("GET", url.path, headers={**WEBSOCKET, "Authorization": f"Bearer {self.key}"})
-            resp = conn.getresponse()
-            return self.note("GET", path, Answer(resp.status, dict(resp.headers.items()), b""))
-        finally:
-            conn.close()
 
     def leak_responses(self) -> str:
         (self.out / "responses").mkdir(exist_ok=True)
@@ -610,7 +587,6 @@ class Gate:
         self.sweep("POST", f"{held}/kill", {"signal": "KILL"})
         self.sweep("GET", f"{held}?wait=true")
         self.sweep("DELETE", held)
-        self.handshake(f"{box}/ssh")
 
     def sweep_files(self, box: str) -> None:
         file, archive = f"{box}/files?path=/tmp/gate-sweep.txt", f"{box}/archive?path=/tmp/gate-sweep-dir"

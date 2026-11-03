@@ -45,7 +45,7 @@ func execClientDrop(t *testing.T, input bool) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	handler := api.NewHandler("test", nil, layers.repo, nil, svc, nil, nil, nil, nil, io.Discard)
+	handler := api.NewHandler("test", nil, layers.repo, nil, svc, nil, nil, nil, io.Discard)
 	server := httptest.NewServer(handler)
 	defer server.Close()
 	url := "ws" + strings.TrimPrefix(server.URL, "http") + "/v0/sandboxes/sandbox1/exec/" + exec.ID
@@ -194,7 +194,7 @@ func heldExecServer(t *testing.T, terminal bool, input func(models.ExecSpec) err
 		close(stop)
 		t.Fatal(err)
 	}
-	server := httptest.NewServer(api.NewHandler("test", nil, layers.repo, nil, svc, nil, nil, nil, nil, io.Discard))
+	server := httptest.NewServer(api.NewHandler("test", nil, layers.repo, nil, svc, nil, nil, nil, io.Discard))
 	t.Cleanup(func() {
 		close(stop)
 		server.Close()

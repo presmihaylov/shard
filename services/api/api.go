@@ -49,8 +49,6 @@ type Lifecycle interface {
 	KillExec(ctx context.Context, ref, execID, signal string) error
 	DeleteExec(ctx context.Context, ref, execID string) error
 	ResizeExec(ctx context.Context, ref, execID string, size sandbox.TerminalSize) error
-	// ReadyForSSH answers the id of a sandbox a command can run in, so an ssh upgrade is refused before its 101.
-	ReadyForSSH(ctx context.Context, ref string) (string, error)
 	StatFile(ctx context.Context, ref, path string) (models.FileStat, error)
 	ReadFile(ctx context.Context, ref, path string) (models.FileStat, io.ReadCloser, error)
 	WriteFile(ctx context.Context, ref string, req sandbox.FileWrite, src io.Reader) error
@@ -127,14 +125,13 @@ type Handler struct {
 	lifecycle Lifecycle
 	stores    Stores
 	egressLog EgressLog
-	ssh       SSHServer
 	log       *log.Logger
 	// redact puts a secret's name in place of its value in a line the log keeps; nil keeps the line, which only a test does.
 	redact func(string) string
 }
 
 // NewHandler builds the mux; out takes what a handler cannot return: a write the client hung up on, and the cause behind a public text.
-func NewHandler(version string, process Process, repo sandbox.Reader, enforcer sandbox.Enforcer, lifecycle Lifecycle, stores Stores, egressLog EgressLog, ssh SSHServer, redact func(string) string, out io.Writer) http.Handler {
+func NewHandler(version string, process Process, repo sandbox.Reader, enforcer sandbox.Enforcer, lifecycle Lifecycle, stores Stores, egressLog EgressLog, redact func(string) string, out io.Writer) http.Handler {
 	h := &Handler{
 		version:   version,
 		process:   process,
@@ -143,7 +140,6 @@ func NewHandler(version string, process Process, repo sandbox.Reader, enforcer s
 		lifecycle: lifecycle,
 		stores:    stores,
 		egressLog: egressLog,
-		ssh:       ssh,
 		log:       log.New(out, "", log.LstdFlags),
 		redact:    redact,
 	}
@@ -172,7 +168,6 @@ const (
 	SandboxWrite  Scope = models.ScopeSandboxWrite
 	SandboxDelete Scope = models.ScopeSandboxDelete
 	Exec          Scope = models.ScopeExec
-	SSH           Scope = models.ScopeSSH
 	Secret        Scope = models.ScopeSecret
 	Policy        Scope = models.ScopePolicy
 	PortRead      Scope = models.ScopePortRead
@@ -236,7 +231,6 @@ func (h *Handler) routeTable() []routeEntry {
 		public("POST", "/v0/sandboxes/{id}/exec", Exec, operation("exec", "create-exec", "Execute a command in a running sandbox", http.StatusCreated), typed(h.createExec)),
 		public("GET", "/v0/sandboxes/{id}/exec", Exec, operation("exec", "list-execs", "List the execs of a sandbox", 0), typed(h.listExecs)),
 		public("GET", "/v0/sandboxes/{id}/exec/{exec}", Exec, operation("exec", "get-exec", "Read, wait for or attach to an exec", 0), raw[getExecInput](h.getExec, describeGetExec)),
-		public("GET", "/v0/sandboxes/{id}/ssh", SSH, operation("exec", "open-ssh", "Open an ssh connection into a running sandbox", http.StatusSwitchingProtocols), raw[sandboxPath](h.openSSH, describeSSH)),
 		public("POST", "/v0/sandboxes/{id}/exec/{exec}/kill", Exec, operation("exec", "kill-exec", "Send a signal to a running exec", 0), typed(h.killExec)),
 		public("DELETE", "/v0/sandboxes/{id}/exec/{exec}", Exec, operation("exec", "delete-exec", "Forget an exec that ended", 0), typed(h.deleteExec)),
 		public("POST", "/v0/sandboxes/{id}/exec/{exec}/resize", Exec, operation("exec", "resize-exec", "Resize the terminal of an exec", 0), typed(h.resizeExec)),

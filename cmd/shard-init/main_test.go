@@ -40,9 +40,6 @@ func TestMain(m *testing.M) {
 	if len(os.Args) == 2 && os.Args[1] == supervisor.FilesMode {
 		os.Exit(runFiles())
 	}
-	if len(os.Args) == 2 && os.Args[1] == supervisor.SFTPMode {
-		os.Exit(runSFTP())
-	}
 
 	// The child inherits the supervisor environment, so its role comes from argv and wins here.
 	if len(os.Args) > 1 && strings.HasPrefix(os.Args[1], childPrefix) {

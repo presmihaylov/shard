@@ -14,7 +14,6 @@ import (
 
 	"github.com/presmihaylov/shard/models"
 	"github.com/presmihaylov/shard/pkg/pty"
-	"github.com/presmihaylov/shard/services/sandbox"
 	"github.com/presmihaylov/shard/services/serve"
 )
 
@@ -166,7 +165,7 @@ func TestShellOpensAnInteractiveShellOnTheTerminal(t *testing.T) {
 		t.Fatalf("shell ran %d execs, want 1", len(specs))
 	}
 	spec := specs[0]
-	if want := []string{"sh", "-c", sandbox.ShellScript}; !slices.Equal(spec.Argv, want) {
+	if want := []string{"sh", "-c", shellScript}; !slices.Equal(spec.Argv, want) {
 		t.Errorf("argv = %q, want %q", spec.Argv, want)
 	}
 	if !spec.TTY || spec.Stdin == nil {

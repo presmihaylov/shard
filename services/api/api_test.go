@@ -64,7 +64,7 @@ func seed(t *testing.T) seeded {
 	verbs, stores, egressLog := &fakeLifecycle{ended: make(chan struct{}), repo: repo}, &fakeStores{}, &fakeEgressLog{}
 
 	logged := &lockedBuffer{}
-	handler := api.NewHandler("v-test", fakeProcess{}, repo, enforcer, verbs, stores, egressLog, nil, nil, logged)
+	handler := api.NewHandler("v-test", fakeProcess{}, repo, enforcer, verbs, stores, egressLog, nil, logged)
 	server := httptest.NewServer(handler)
 	t.Cleanup(server.Close)
 
@@ -280,7 +280,7 @@ func TestDaemonIsTheProcessRecordWithTheHandlersVersion(t *testing.T) {
 func TestDaemonIs500WhenTheProviderCannotBeBuilt(t *testing.T) {
 	s := seed(t)
 
-	server := httptest.NewServer(api.NewHandler("v-test", fakeProcess{err: errors.New("find runsc: not on this host")}, s.repo, nil, s.verbs, s.stores, &fakeEgressLog{}, nil, nil, io.Discard))
+	server := httptest.NewServer(api.NewHandler("v-test", fakeProcess{err: errors.New("find runsc: not on this host")}, s.repo, nil, s.verbs, s.stores, &fakeEgressLog{}, nil, io.Discard))
 	t.Cleanup(server.Close)
 
 	status, body := get(t, server, "/v0/daemon")
@@ -298,7 +298,7 @@ func TestTheLogLineOfARawErrorCarriesNoSecretValue(t *testing.T) {
 	}
 
 	logged := &lockedBuffer{}
-	server := httptest.NewServer(api.NewHandler("v-test", fakeProcess{}, s.repo, nil, s.verbs, s.stores, s.egress, nil, redact, logged))
+	server := httptest.NewServer(api.NewHandler("v-test", fakeProcess{}, s.repo, nil, s.verbs, s.stores, s.egress, redact, logged))
 	t.Cleanup(server.Close)
 
 	status, body := get(t, server, "/v0/sandboxes/"+s.running.ID+"?wait=true")

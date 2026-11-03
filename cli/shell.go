@@ -12,6 +12,9 @@ import (
 	"github.com/presmihaylov/shard/services/sandbox"
 )
 
+// shellScript picks the shell in the sandbox, and no login shell, whose /etc/profile resets the image's PATH.
+const shellScript = "command -v bash >/dev/null 2>&1 && exec bash -i; exec sh -i"
+
 // shellOptions is one parsed shard shell invocation.
 type shellOptions struct {
 	id      string
@@ -36,7 +39,7 @@ func (a App) shell(ctx context.Context, args []string) error {
 	}
 
 	req := sandbox.ExecRequest{
-		Command: []string{"sh", "-c", sandbox.ShellScript},
+		Command: []string{"sh", "-c", shellScript},
 		WorkDir: opts.workDir,
 		User:    opts.user,
 		TTY:     true,
