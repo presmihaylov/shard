@@ -85,7 +85,7 @@ func (p *Provider) launch(ctx context.Context, spec models.SandboxSpec, r record
 	if err := writeRecord(dir, r); err != nil {
 		return errors.Join(err, p.end(ctx, m))
 	}
-	if err := m.readdress(ctx, r); err != nil {
+	if err := m.readdress(ctx, r, spec.Network.Hosts); err != nil {
 		return errors.Join(err, p.end(ctx, m))
 	}
 	if spec.Seed != "" {
@@ -272,7 +272,8 @@ func (p *Provider) Start(ctx context.Context, id string) error {
 	if err != nil {
 		return err
 	}
-	if err := m.readdress(ctx, r); err != nil {
+	// The links may have changed while it was stopped, so the service writes their lines once it runs.
+	if err := m.readdress(ctx, r, nil); err != nil {
 		return errors.Join(err, p.end(ctx, m))
 	}
 

@@ -283,6 +283,8 @@ func (s *Service) Resume(ctx context.Context, ref string) (models.Sandbox, error
 	if err := s.openPorts(id); err != nil {
 		return models.Sandbox{}, err
 	}
+	// The links may have changed while it was paused, the last one too, and the restored guest holds the lines it had then.
+	s.hostsReported(ctx, id)
 
 	return s.record(id)
 }
@@ -439,8 +441,10 @@ func (s *Service) claimCopy(ctx context.Context, td *Teardown, req CopyRequest, 
 		}
 
 		linked, err := s.dropLinksTo(claim.id)
+		err = errors.Join(err, s.linksChanged(ctx, linked...))
+		s.hostsReported(ctx, linked...)
 
-		return errors.Join(err, s.linksChanged(ctx, linked...))
+		return err
 	})
 
 	// The id exists now, so a stop or an rm can name it: they wait here until the copy is done.
@@ -467,6 +471,7 @@ func (s *Service) claimCopy(ctx context.Context, td *Teardown, req CopyRequest, 
 		return claim, err
 	}
 	claim.net = resolvedThrough(claim.net, from.Policy)
+	claim.net.Hosts = linkHosts(nameOf(copied.ID, copied), copied.Links)
 
 	// The network lands in the record before the restore, so a copy that fails after it can be given back.
 	err = s.cfg.Repo.Update(claim.id, func(sb *models.Sandbox) error {

@@ -42,6 +42,8 @@ type linkHost struct {
 	repo  *sandboxstate.Repository
 	heard *heard
 	ids   map[string]string
+	// reports is every line the service reported.
+	reports *[]string
 	layers
 }
 
@@ -52,7 +54,7 @@ func newLinkHost(t *testing.T, names ...string) linkHost {
 	if err != nil {
 		t.Fatalf("sandboxstate.New: %v", err)
 	}
-	h := linkHost{repo: repo, heard: &heard{}, ids: map[string]string{}}
+	h := linkHost{repo: repo, heard: &heard{}, ids: map[string]string{}, reports: &[]string{}}
 	for _, name := range names {
 		sb, err := repo.Create(models.Sandbox{Name: name, State: models.StateStopped})
 		if err != nil {
@@ -62,6 +64,7 @@ func newLinkHost(t *testing.T, names ...string) linkHost {
 	}
 	h.svc, h.layers = newService(t, &recorder{}, stopped(), func(cfg *sandbox.Config) {
 		cfg.Repo, cfg.Links = repo, h.heard
+		cfg.Report = func(line string) { *h.reports = append(*h.reports, line) }
 	})
 
 	return h
@@ -493,5 +496,9 @@ func TestForkKeepsTheLinksOfTheSource(t *testing.T) {
 	}
 	if got := told.told(); !slices.Equal(got, []string{"sandbox2"}) {
 		t.Errorf("the seam heard %v, want the fork", got)
+	}
+	want := []models.Host{{Address: link.Address, Names: []string{"db1"}}}
+	if got := l.provider.spec.Network.Hosts; !slices.EqualFunc(got, want, sameHost) {
+		t.Errorf("the provider got hosts %+v for the fork, want %+v", got, want)
 	}
 }
