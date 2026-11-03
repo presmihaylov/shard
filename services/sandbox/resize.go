@@ -87,7 +87,7 @@ func (s *Service) Resize(ctx context.Context, ref string, req ResizeRequest) (mo
 	}
 	// The substrate goes first, as its bounds are the ones a start runs under; a retry finishes a resize cut between the two.
 	if err := env.Resize(res); err != nil {
-		return models.Sandbox{}, err
+		return models.Sandbox{}, diskRefused(err)
 	}
 	err = s.cfg.Repo.Update(id, func(sb *models.Sandbox) error {
 		sb.Resources = res
