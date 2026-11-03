@@ -18,6 +18,8 @@ require (
 	github.com/moby/profiles/apparmor v0.2.3
 	github.com/moby/profiles/seccomp v0.2.4
 	github.com/opencontainers/runtime-spec v1.3.0
+	github.com/pkg/sftp v1.13.12
+	golang.org/x/crypto v0.57.0
 	golang.org/x/net v0.60.0
 	golang.org/x/sys v0.48.0
 	golang.org/x/time v0.15.0
@@ -39,6 +41,7 @@ require (
 	github.com/golang/groupcache v0.0.0-20241129210726-2c02b8208cf8 // indirect
 	github.com/google/btree v1.1.2 // indirect
 	github.com/google/go-cmp v0.7.0 // indirect
+	github.com/kr/fs v0.1.0 // indirect
 	github.com/mdlayher/netlink v1.7.3-0.20250113171957-fbb4dce95f42 // indirect
 	github.com/mdlayher/socket v0.5.1 // indirect
 	github.com/moby/sys/sequential v0.6.0 // indirect

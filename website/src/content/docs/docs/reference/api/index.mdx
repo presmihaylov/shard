@@ -101,6 +101,7 @@ The routes that follow a stream, such as an exec attach or a `logs` follow, upgr
 | `POST` | `/v0/sandboxes/{id}/exec` | `exec` | [Execute a command in a running sandbox](/docs/reference/api/exec/#execute-a-command-in-a-running-sandbox) |
 | `GET` | `/v0/sandboxes/{id}/exec` | `exec` | [List the execs of a sandbox](/docs/reference/api/exec/#list-the-execs-of-a-sandbox) |
 | `GET` | `/v0/sandboxes/{id}/exec/{exec}` | `exec` | [Read, wait for or attach to an exec](/docs/reference/api/exec/#read-wait-for-or-attach-to-an-exec) |
+| `GET` | `/v0/sandboxes/{id}/ssh` | `ssh` | [Open an ssh connection into a running sandbox](/docs/reference/api/exec/#open-an-ssh-connection-into-a-running-sandbox) |
 | `POST` | `/v0/sandboxes/{id}/exec/{exec}/kill` | `exec` | [Send a signal to a running exec](/docs/reference/api/exec/#send-a-signal-to-a-running-exec) |
 | `DELETE` | `/v0/sandboxes/{id}/exec/{exec}` | `exec` | [Forget an exec that ended](/docs/reference/api/exec/#forget-an-exec-that-ended) |
 | `POST` | `/v0/sandboxes/{id}/exec/{exec}/resize` | `exec` | [Resize the terminal of an exec](/docs/reference/api/exec/#resize-the-terminal-of-an-exec) |
