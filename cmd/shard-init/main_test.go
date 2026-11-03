@@ -354,34 +354,35 @@ func TestCredentialOfRefusesWhatItCannotRead(t *testing.T) {
 }
 
 // The error pipe of a fork reads EOF on a death before the exec too, so the flag the kernel clears at the exec is the proof it ran (SHARD-505).
-func TestStatExeced(t *testing.T) {
-	line := func(name string, flags uint64) string {
-		return fmt.Sprintf("42 (%s) Z 1 42 42 0 -1 %d 0 0 0 0 0 0 0 0 20 0 1 0", name, flags)
+func TestStatExec(t *testing.T) {
+	line := func(name, state string, flags uint64) string {
+		return fmt.Sprintf("42 (%s) %s 1 42 42 0 -1 %d 0 0 0 0 0 0 0 0 20 0 1 0", name, state, flags)
 	}
 	cases := map[string]struct {
 		stat string
-		want bool
+		want execState
 	}{
-		"an exec":                       {stat: line("sleep", 0x400000), want: true},
-		"a death before the exec":       {stat: line("shard-init", 0x400000|pfForkNoExec), want: false},
-		"a name that holds a stat line": {stat: line("a) Z 1 42 42 0 -1 64 (b", 0x400000), want: true},
-		"a name that holds a ')'":       {stat: line("x) S 1", 0x400000|pfForkNoExec), want: false},
+		"an exec":                       {stat: line("sleep", "Z", 0x400000), want: execRan},
+		"a death before the exec":       {stat: line("shard-init", "Z", 0x400000|pfForkNoExec), want: execNeverRan},
+		"a live child mid-exec":         {stat: line("shard-init", "R", 0x400000|pfForkNoExec), want: execPending},
+		"a name that holds a stat line": {stat: line("a) Z 1 42 42 0 -1 64 (b", "R", 0x400000), want: execRan},
+		"a name that holds a ')'":       {stat: line("x) R 1", "Z", 0x400000|pfForkNoExec), want: execNeverRan},
 	}
 
 	for name, c := range cases {
 		t.Run(name, func(t *testing.T) {
-			got, err := statExeced(c.stat)
+			got, err := statExec(c.stat)
 			if err != nil {
-				t.Fatalf("statExeced(%q): %v", c.stat, err)
+				t.Fatalf("statExec(%q): %v", c.stat, err)
 			}
 			if got != c.want {
-				t.Errorf("statExeced(%q) = %t, want %t", c.stat, got, c.want)
+				t.Errorf("statExec(%q) = %d, want %d", c.stat, got, c.want)
 			}
 		})
 	}
 }
 
-func TestStatExecedRefusesWhatItCannotRead(t *testing.T) {
+func TestStatExecRefusesWhatItCannotRead(t *testing.T) {
 	cases := map[string]string{
 		"no name":          "42 S 1 42 42 0 -1 0",
 		"no flags":         "42 (sleep) S 1 42 42 0",
@@ -390,10 +391,59 @@ func TestStatExecedRefusesWhatItCannotRead(t *testing.T) {
 
 	for name, stat := range cases {
 		t.Run(name, func(t *testing.T) {
-			if _, err := statExeced(stat); err == nil {
-				t.Errorf("statExeced(%q) returned no error", stat)
+			if _, err := statExec(stat); err == nil {
+				t.Errorf("statExec(%q) returned no error", stat)
 			}
 		})
+	}
+}
+
+// Linux 6.12.y closes the error pipe before it clears the flag, so ForkExec can return while the child still holds it (SHARD-812).
+func TestAwaitExec(t *testing.T) {
+	const (
+		midExec = "42 (shard-init) R 1 42 42 0 -1 4194368 0"
+		ran     = "42 (sleep) S 1 42 42 0 -1 4194304 0"
+		died    = "42 (shard-init) Z 1 42 42 0 -1 4194372 0"
+	)
+	cases := map[string]struct {
+		lines []string
+		want  bool
+	}{
+		"an exec the first read sees":        {lines: []string{ran}, want: true},
+		"an exec that clears the flag later": {lines: []string{midExec, midExec, ran}, want: true},
+		"a death before the exec":            {lines: []string{midExec, died}, want: false},
+	}
+
+	for name, c := range cases {
+		t.Run(name, func(t *testing.T) {
+			reads := 0
+			got, err := awaitExec(func() (string, error) {
+				line := c.lines[min(reads, len(c.lines)-1)]
+				reads++
+
+				return line, nil
+			}, time.Second)
+			if err != nil {
+				t.Fatalf("awaitExec: %v", err)
+			}
+			if got != c.want || reads != len(c.lines) {
+				t.Errorf("awaitExec = %t after %d reads, want %t after %d", got, reads, c.want, len(c.lines))
+			}
+		})
+	}
+}
+
+func TestAwaitExecGivesUpOnAChildThatNeverSettles(t *testing.T) {
+	_, err := awaitExec(func() (string, error) { return "42 (shard-init) D 1 42 42 0 -1 4194368 0", nil }, 10*time.Millisecond)
+	if err == nil {
+		t.Fatal("awaitExec returned no error for a child stuck in its exec")
+	}
+}
+
+func TestAwaitExecReturnsAFailedRead(t *testing.T) {
+	gone := errors.New("no such process")
+	if _, err := awaitExec(func() (string, error) { return "", gone }, time.Second); !errors.Is(err, gone) {
+		t.Fatalf("awaitExec = %v, want %v", err, gone)
 	}
 }
 

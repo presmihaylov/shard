@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"os"
 	"syscall"
+	"time"
 	"unsafe"
 
 	"golang.org/x/sys/unix"
@@ -22,14 +23,18 @@ func sysProcAttr(credential *syscall.Credential, ambient []uintptr, tty bool, bo
 	return attr
 }
 
+// execBudget bounds the wait for a child that holds the flag past its exec's error pipe, which settles in microseconds.
+const execBudget = 5 * time.Second
+
 // execed says whether pid got through its exec; gVisor prints its flags as 0, so there every child has.
 func execed(pid int) (bool, error) {
-	stat, err := os.ReadFile(fmt.Sprintf("/proc/%d/stat", pid))
-	if err != nil {
-		return false, err
-	}
+	path := fmt.Sprintf("/proc/%d/stat", pid)
 
-	return statExeced(string(stat))
+	return awaitExec(func() (string, error) {
+		stat, err := os.ReadFile(path)
+
+		return string(stat), err
+	}, execBudget)
 }
 
 // setUndumpable clears the dumpable flag, so the kernel makes /proc/1/fd root-owned and unreadable to
