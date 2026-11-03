@@ -49,6 +49,7 @@ Run `shard COMMAND --help` for options and examples.
 | [`shard inspect`](/docs/reference/cli/sandboxes/#shard-inspect) | show detailed information about a sandbox |
 | [`shard stop`](/docs/reference/cli/sandboxes/#shard-stop) | stop sandboxes and preserve their files |
 | [`shard start`](/docs/reference/cli/sandboxes/#shard-start) | start a stopped sandbox with its saved files |
+| [`shard resize`](/docs/reference/cli/sandboxes/#shard-resize) | change a stopped sandbox's memory, CPUs, disk or swap |
 | [`shard remove`](/docs/reference/cli/sandboxes/#shard-remove) | remove sandboxes and their files |
 | [`shard prune`](/docs/reference/cli/sandboxes/#shard-prune) | remove all stopped sandboxes |
 | [`shard pause`](/docs/reference/cli/sandboxes/#shard-pause) | suspend sandboxes and save their state |
@@ -72,7 +73,7 @@ Run `shard COMMAND --help` for options and examples.
 
 | Command | Description |
 | --- | --- |
-| [`shard capabilities`](/docs/reference/cli/host/#shard-capabilities) | show the lifecycle verbs and swap the server supports |
+| [`shard capabilities`](/docs/reference/cli/host/#shard-capabilities) | show the lifecycle verbs, swap and disk grow the server supports |
 | [`shard daemon`](/docs/reference/cli/host/#shard-daemon) | start the daemon or show its status |
 | [`shard info`](/docs/reference/cli/host/#shard-info) | show available providers and the default for this host |
 | [`shard serve`](/docs/reference/cli/host/#shard-serve) | start an HTTP API server with token authentication |

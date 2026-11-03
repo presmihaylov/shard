@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { ConflictError, NotFoundError, UnsupportedError, type Sandbox } from "useshards";
+import { ConflictError, InvalidRequestError, NotFoundError, UnsupportedError, type Sandbox } from "useshards";
 import { rejects, skip, type Check } from "../harness.js";
 
 /** optional runs a verb a provider may refuse by name, and skips the check when it does. */
@@ -84,6 +84,23 @@ export const checks: Check[] = [
     },
   },
   {
+    name: "lifecycle.resize",
+    run: async (ctx) => {
+      const capabilities = await ctx.shard.capabilities();
+      const sandbox = await ctx.create({ memoryMiB: 256 });
+      await rejects(ConflictError, () => sandbox.resize({ memoryMiB: 512 }));
+      await sandbox.stop();
+      await sandbox.resize({ memoryMiB: 512, vcpus: 1 });
+      assert.equal(sandbox.info.resources.memoryMiB, 512);
+      assert.equal(sandbox.info.resources.vcpus, 1);
+      const disk = sandbox.info.resources.diskMiB;
+      await rejects(InvalidRequestError, () => sandbox.resize({ diskMiB: disk - 128 }));
+      await agrees("disk grow", capabilities.diskGrow, () => sandbox.resize({ diskMiB: disk + 1024 }));
+      await sandbox.start();
+      assert.equal((await sandbox.inspect()).resources.memoryMiB, 512, "the start runs under the new bound");
+    },
+  },
+  {
     name: "lifecycle.pause_resume",
     run: async (ctx) => {
       const sandbox = await ctx.create();
@@ -156,8 +173,8 @@ export const checks: Check[] = [
     name: "lifecycle.capabilities",
     run: async (ctx) => {
       const capabilities = await ctx.shard.capabilities();
-      assert.deepEqual(Object.keys(capabilities).sort(), ["create", "fork", "pause", "port", "remove", "resume", "snapshot", "start", "stop", "swap"]);
-      for (const verb of ["create", "start", "stop", "remove", "port"] as const) {
+      assert.deepEqual(Object.keys(capabilities).sort(), ["create", "diskGrow", "fork", "pause", "port", "remove", "resize", "resume", "snapshot", "start", "stop", "swap"]);
+      for (const verb of ["create", "start", "stop", "remove", "resize", "port"] as const) {
         assert.equal(capabilities[verb], true, `every provider can ${verb}`);
       }
       assert.equal(capabilities.resume, capabilities.pause, "pause and resume come as a pair");

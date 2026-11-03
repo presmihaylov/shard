@@ -105,5 +105,5 @@ func (s *Service) trustProxy(id string) error {
 }
 
 func (s *Service) holdForPolicy(ctx context.Context, ref, verb string) (string, models.Sandbox, func(), error) {
-	return s.holdCreatedOrStopped(ctx, ref, "policy "+verb+" takes a created or stopped sandbox: stop it first")
+	return s.holdIn(ctx, ref, "policy "+verb+" takes a created or stopped sandbox: stop it first", models.StateCreated, models.StateStopped)
 }

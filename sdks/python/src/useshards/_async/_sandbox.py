@@ -17,6 +17,7 @@ from .._generated.api.sandboxes import (
     get_sandbox_egress_log,
     pause_sandbox,
     remove_sandbox,
+    resize_sandbox,
     resume_sandbox,
     start_sandbox,
     stop_sandbox,
@@ -175,6 +176,24 @@ class AsyncSandbox:
     async def start(self) -> None:
         """start a stopped sandbox with its saved files"""
         await self._verb(lambda: start_sandbox.asyncio_detailed(self.id, client=self._transport.api))
+
+    async def resize(
+        self,
+        *,
+        memory_mib: int | None = None,
+        vcpus: int | None = None,
+        disk_mib: int | None = None,
+        swap_mib: int | None = None,
+    ) -> None:
+        """change the bounds of a stopped sandbox; the disk grows at once, the rest apply from the next start"""
+        resources = models.ResizeResources(
+            memory_mib=UNSET if memory_mib is None else memory_mib,
+            vcpus=UNSET if vcpus is None else vcpus,
+            disk_mib=UNSET if disk_mib is None else disk_mib,
+            swap_mib=UNSET if swap_mib is None else swap_mib,
+        )
+        body = models.ResizeRequest(resources=resources)
+        await self._verb(lambda: resize_sandbox.asyncio_detailed(self.id, client=self._transport.api, body=body))
 
     async def pause(self) -> None:
         """save a sandbox's state and suspend it"""
