@@ -83,6 +83,7 @@ func TestOpenFirewallLetsTheBridgeThrough(t *testing.T) {
 		"INPUT -d 10.87.0.1/32 -i shard0 -p udp -m udp --dport 53",
 		"INPUT -d 10.87.0.1/32 -i shard0 -p tcp -m tcp --dport 53",
 		"INPUT -d 10.87.0.1/32 -i shard0 -p tcp -m multiport --dports 30080,30443",
+		"INPUT -d 10.87.0.1/32 -i shard0 -p tcp -m tcp --dport 30022",
 		"FORWARD -i shard0",
 		"FORWARD -o shard0 -m conntrack --ctstate RELATED,ESTABLISHED",
 	}
