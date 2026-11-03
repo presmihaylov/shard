@@ -125,16 +125,20 @@ func (g *guest) runProcess(name string, spec spawnSpec, restart restartPolicy) e
 	return nil
 }
 
-// exited routes one process's exit: a stop-process ends it killed, the policy may start it again, and a sandbox stop says nothing.
+// exited routes one process's exit: a sandbox stop ends it stopped, a stop-process ends it killed, and the policy may start it again.
 func (g *guest) exited(p *proc, pid int, exit models.ExitStatus) {
 	defer p.release()
 	p.stopTimer(g)
+	p.status.Exit = &exit
+	// The host reads the table only after the stop, so this exit is how it learns what the stop's signal did (SHARD-812).
 	if g.stopping {
+		p.status.State = models.ProcessStopped
+		g.changed(p)
+
 		return
 	}
 	// Neither the next run nor an ended process keeps what this run left in its group, so a child that ignored the TERM ends here.
 	killGroup(pid)
-	p.status.Exit = &exit
 	if p.stopping {
 		p.stopping = false
 		p.status.State = models.ProcessKilled
