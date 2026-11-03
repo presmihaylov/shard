@@ -266,8 +266,9 @@ func (t apiTask) Run(ctx context.Context) error {
 	logger.Printf("api listening on %s, mode %04o, %s", filepath.Join(cfg.Root, api.SocketFile), mode, owner)
 
 	signer, err := sshd.LoadHostKey(cfg.Root)
+	// An open socket that nothing serves leaves every call to time out, where a closed one refuses it at once.
 	if err != nil {
-		return err
+		return errors.Join(err, listener.Close())
 	}
 	ssh := sshd.New(signer, t.lifecycle, func(msg string) { logger.Print(msg) })
 
