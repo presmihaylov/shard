@@ -309,6 +309,54 @@ func TestTheSFTPSubsystemRunsShardInitAsTheSSHUserOverTheChannel(t *testing.T) {
 	}
 }
 
+func TestAnSFTPThatEndsBeforeItSpeaksSaysToStopAndStartTheSandbox(t *testing.T) {
+	const oldInit = "shard-init: -ready-file is required\n"
+	silent := func(_ *fakeExec, streams sandbox.Streams) models.ExitStatus {
+		write(t, streams.Stderr, oldInit)
+
+		return models.ExitStatus{Code: 1}
+	}
+	const hint = "if sandbox web1 has run since before this shard release, its shard-init has no sftp: stop and start it"
+
+	for _, tc := range []struct {
+		request  string
+		payload  []byte
+		wantHint bool
+	}{
+		{request: "subsystem", payload: ssh.Marshal(struct{ Name string }{"sftp"}), wantHint: true},
+		{request: "exec", payload: ssh.Marshal(struct{ Command string }{"false"})},
+	} {
+		t.Run(tc.request, func(t *testing.T) {
+			s := serve(t, &fakeSandboxes{command: silent}, "app")
+			// A raw channel, since ssh.Session waits only on a shell or an exec, never on a subsystem.
+			ch, reqs, err := s.client.OpenChannel("session", nil)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if ok, err := ch.SendRequest(tc.request, true, tc.payload); !ok || err != nil {
+				t.Fatalf("%s = %v, %v", tc.request, ok, err)
+			}
+
+			stderr, err := io.ReadAll(ch.Stderr())
+			if err != nil {
+				t.Fatal(err)
+			}
+			var status []byte
+			for req := range reqs {
+				if req.Type == "exit-status" {
+					status = req.Payload
+				}
+			}
+			if !bytes.Equal(status, ssh.Marshal(struct{ Status uint32 }{1})) {
+				t.Errorf("exit-status = %v, want the command's 1", status)
+			}
+			if got := string(stderr); !strings.HasPrefix(got, oldInit) || strings.Contains(got, hint) != tc.wantHint {
+				t.Errorf("stderr = %q, want the guest's own words, and the hint %v", got, tc.wantHint)
+			}
+		})
+	}
+}
+
 // pipe is the attach's stdin and stdout as the one stream an sftp server speaks over.
 type pipe struct {
 	io.Reader
