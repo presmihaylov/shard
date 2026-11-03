@@ -277,8 +277,9 @@ func (t apiTask) Run(ctx context.Context) error {
 	logger.Printf("api listening on %s, mode %04o, %s", filepath.Join(cfg.Root, api.SocketFile), mode, owner)
 
 	ssh, err := t.ssh.server()
+	// An open socket that nothing serves leaves every call to time out, where a closed one refuses it at once.
 	if err != nil {
-		return err
+		return errors.Join(err, listener.Close())
 	}
 
 	handler := api.NewHandler(cfg.Version, t.process, repo, enforcer, t.lifecycle, stores, decisions, ssh, t.deps.redact, cfg.Out)
