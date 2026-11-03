@@ -3,10 +3,12 @@ package sandbox_test
 import (
 	"context"
 	"errors"
+	"fmt"
 	"strings"
 	"testing"
 
 	"github.com/presmihaylov/shard/models"
+	"github.com/presmihaylov/shard/services/bundle"
 	"github.com/presmihaylov/shard/services/sandbox"
 )
 
@@ -123,6 +125,21 @@ func TestResizeRefusesADiskThatShrinks(t *testing.T) {
 	}
 	if len(env.got) != 0 {
 		t.Errorf("a shrink reached the substrate: %+v", env.got)
+	}
+}
+
+// A grow the host disk has no room for is the request's fault, as it is on a create.
+func TestResizeTheHostHasNoRoomForIsABadRequest(t *testing.T) {
+	svc, l, env := resizing(t, sized(models.Resources{MemoryMiB: 512, DiskMiB: 10240}))
+	l.provider.diskGrow = true
+	env.err = fmt.Errorf("vz: grow the disk at /var/lib/shard/sandboxes/web/disk.img: %w", &bundle.NoRoomError{Bound: 11264 << 20})
+
+	_, err := svc.Resize(context.Background(), "web", bounds(512, 0, 11264))
+	if _, ok := errors.AsType[*sandbox.RequestError](err); !ok {
+		t.Fatalf("Resize returned %v, want a request error", err)
+	}
+	if public, _ := sandbox.PublicText(err); strings.Contains(public, "/var/lib/shard") || !strings.Contains(public, "does not fit on the host disk") {
+		t.Errorf("public text = %q, want the refusal without the host path", public)
 	}
 }
 
