@@ -15,8 +15,6 @@ type fakeLinks struct {
 
 func (f fakeLinks) Linked(context.Context) ([]Linked, error) { return f.linked, f.err }
 
-var sandboxSubnet = netip.MustParsePrefix(DefaultSubnet)
-
 // A link is caught before the proxy's dnat and let in before the bridge's drop, and only from its own source.
 func TestTheRulesetTurnsALinkToTheForwarder(t *testing.T) {
 	agent := netip.MustParseAddr("10.87.0.2")
@@ -65,7 +63,8 @@ func TestLinksRefusesWhatTheRulesCouldNotScope(t *testing.T) {
 		"target with no address": {Source: netip.MustParseAddr("10.87.0.2"), Targets: []netip.Addr{{}}},
 	} {
 		t.Run(name, func(t *testing.T) {
-			if _, err := readLinks(t.Context(), fakeLinks{linked: []Linked{linked}}, sandboxSubnet); err == nil {
+			s := newService(t, Config{Links: fakeLinks{linked: []Linked{linked}}})
+			if _, err := s.links(t.Context()); err == nil {
 				t.Error("links accepted a link the rules could not scope")
 			}
 		})
@@ -74,14 +73,15 @@ func TestLinksRefusesWhatTheRulesCouldNotScope(t *testing.T) {
 
 func TestLinksFailsWhenTheSourceDoes(t *testing.T) {
 	cause := errors.New("records unreadable")
+	s := newService(t, Config{Links: fakeLinks{err: cause}})
 
-	if _, err := readLinks(t.Context(), fakeLinks{err: cause}, sandboxSubnet); !errors.Is(err, cause) {
+	if _, err := s.links(t.Context()); !errors.Is(err, cause) {
 		t.Errorf("links = %v, want the source's error", err)
 	}
 }
 
 func TestNoLinkSourceIsNoLink(t *testing.T) {
-	linked, err := readLinks(t.Context(), nil, sandboxSubnet)
+	linked, err := newService(t, Config{}).links(t.Context())
 	if err != nil || linked != nil {
 		t.Errorf("links = %v, %v; want none", linked, err)
 	}

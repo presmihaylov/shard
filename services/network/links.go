@@ -26,20 +26,20 @@ type Linked struct {
 	Targets []netip.Addr
 }
 
-// readLinks reads every sandbox's links and refuses one the rules could not scope: a source off the subnet, or a target outside the link range.
-func readLinks(ctx context.Context, source LinkSource, subnet netip.Prefix) ([]Linked, error) {
-	if source == nil {
+// links reads every sandbox's links and refuses one the rules could not scope: a source off the bridge, or a target outside the link range.
+func (s *Service) links(ctx context.Context) ([]Linked, error) {
+	if s.cfg.Links == nil {
 		return nil, nil
 	}
 
-	linked, err := source.Linked(ctx)
+	linked, err := s.cfg.Links.Linked(ctx)
 	if err != nil {
 		return nil, fmt.Errorf("read the sandbox links: %w", err)
 	}
 
 	for _, l := range linked {
-		if !subnet.Contains(l.Source) {
-			return nil, fmt.Errorf("the links of %s name a source outside the sandbox subnet %s", l.Source, subnet)
+		if !s.cfg.Subnet.Contains(l.Source) {
+			return nil, fmt.Errorf("the links of %s name a source outside the sandbox subnet %s", l.Source, s.cfg.Subnet)
 		}
 		for _, target := range l.Targets {
 			if !models.LinkSubnet.Contains(target) {

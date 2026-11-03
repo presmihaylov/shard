@@ -187,7 +187,7 @@ func (s *Service) Ensure(ctx context.Context) error {
 		return err
 	}
 
-	links, err := readLinks(ctx, s.cfg.Links, s.cfg.Subnet)
+	links, err := s.links(ctx)
 	if err != nil {
 		return err
 	}
