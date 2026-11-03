@@ -37,17 +37,11 @@ func (s *Service) AddLink(ctx context.Context, ref, target string) (models.Link,
 	defer unlock()
 
 	link, added, err := s.writeLink(id, target)
-	if err != nil {
-		return models.Link{}, err
+	if err != nil || !added {
+		return link, err
 	}
-	if added {
-		if err := s.linksChanged(ctx, id); err != nil {
-			return models.Link{}, s.refusedLink(id, link, err)
-		}
-	}
-	// A link it already held is written again too, since a hosts write that failed left it on the record without its line.
-	if err := s.hostsChanged(ctx, id); err != nil {
-		return models.Link{}, fmt.Errorf("the link to %s is on the record, but %w", link.Target, err)
+	if err := s.linksChanged(ctx, id); err != nil {
+		return models.Link{}, s.refusedLink(id, link, err)
 	}
 
 	return link, nil
@@ -104,7 +98,7 @@ func (s *Service) RemoveLink(ctx context.Context, ref, target string) error {
 	if err := s.unlink(id, link.TargetID); err != nil {
 		return err
 	}
-	if err := errors.Join(s.linksChanged(ctx, id), s.hostsChanged(ctx, id)); err != nil {
+	if err := s.linksChanged(ctx, id); err != nil {
 		return fmt.Errorf("the link to %s is off the record, but %w", link.Target, err)
 	}
 

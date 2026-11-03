@@ -23,7 +23,6 @@ import (
 	"github.com/presmihaylov/shard/services/sandbox"
 	"github.com/presmihaylov/shard/services/sandboxstate"
 	"github.com/presmihaylov/shard/services/secret"
-	"github.com/presmihaylov/shard/services/supervisor"
 )
 
 // recorder logs what the fakes were asked in order; a name in fail fails every call, a name#N the Nth only.
@@ -516,10 +515,6 @@ func (f *fakeProvider) Exec(ctx context.Context, id string, spec models.ExecSpec
 
 	if f.serve != nil {
 		return f.serve(spec)
-	}
-	// A files exec no test serves finds no file, which is what the hosts refresh of every start reads.
-	if slices.Equal(spec.Argv, []string{supervisor.InitPath, supervisor.FilesMode}) {
-		return models.ExitStatus{}, supervisor.WriteMessage(spec.Stdout, supervisor.FileReply{Error: "no such file", Code: supervisor.FileNotFound})
 	}
 
 	if spec.Report != nil && !f.execNoPID {

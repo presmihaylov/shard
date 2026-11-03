@@ -12,9 +12,3 @@ type Link struct {
 	TargetID string     `json:"target_id" doc:"The id of the sandbox the link reaches."`
 	Address  netip.Addr `json:"address" doc:"The address the source reaches the target on, from 10.86.0.0/16 and shared by every link to that target."`
 }
-
-// Host is one line a sandbox's /etc/hosts gains for a link: the target's address and the names it answers to there.
-type Host struct {
-	Address netip.Addr `json:"address"`
-	Names   []string   `json:"names"`
-}

@@ -22,7 +22,6 @@ func writeResolverFilesIn(etc string, a supervisor.Address) error {
 	if a.Hostname != "" {
 		hosts += fmt.Sprintf("%s\t%s\n", a.IP, a.Hostname)
 	}
-	hosts = string(supervisor.WithHosts([]byte(hosts), a.Hosts))
 	for name, content := range map[string]string{"resolv.conf": resolv.String(), "hosts": hosts} {
 		if err := writeGuestFile(filepath.Join(etc, name), []byte(content), 0o644); err != nil { //nolint:gosec // libc reads them as every process
 			return fmt.Errorf("write %s: %w", name, err)

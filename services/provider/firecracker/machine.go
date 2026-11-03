@@ -618,7 +618,7 @@ func guestMAC(address netip.Addr) string {
 }
 
 // readdress gives the guest the address the record names, once the control stream is up; a fork's memory holds the source's, MAC included.
-func (m *machine) readdress(ctx context.Context, r record, hosts []models.Host) error {
+func (m *machine) readdress(ctx context.Context, r record) error {
 	if r.Address == "" {
 		return nil
 	}
@@ -628,7 +628,7 @@ func (m *machine) readdress(ctx context.Context, r record, hosts []models.Host) 
 	}
 	address := supervisor.Address{
 		Interface: "eth0", MAC: guestMAC(prefix.Addr()), IP: prefix.Addr().String(), Prefix: prefix.Bits(), Gateway: r.Gateway,
-		Nameservers: r.Nameservers, Hostname: r.Hostname, Hosts: hosts,
+		Nameservers: r.Nameservers, Hostname: r.Hostname,
 	}
 	if err := m.control.Load().Readdress(ctx, address); err != nil {
 		return fmt.Errorf("sandbox %s: address the guest: %w", m.id, err)
