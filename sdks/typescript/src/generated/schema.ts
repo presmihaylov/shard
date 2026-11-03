@@ -80,7 +80,7 @@ export interface paths {
         /** List active sandboxes */
         get: operations["list-sandboxes"];
         put?: never;
-        /** Create a sandbox @description A create that names secrets also needs the secret:* scope, one that names a policy needs policy:*, one that forwards ports needs port:write, and one that links sandboxes needs ssh; without it the answer is 403 forbidden. */
+        /** Create a sandbox @description A create that names secrets also needs the secret:* scope, one that names a policy needs policy:*, and one that forwards ports needs port:write; without it the answer is 403 forbidden. */
         post: operations["create-sandbox"];
         delete?: never;
         options?: never;
@@ -243,41 +243,6 @@ export interface paths {
         /** Create a sandbox from a running sandbox's memory and files */
         post: operations["fork-sandbox"];
         delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
-    "/v0/sandboxes/{id}/links": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        /** List the sandboxes a sandbox links */
-        get: operations["list-links"];
-        put?: never;
-        post?: never;
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
-    "/v0/sandboxes/{id}/links/{target}": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        get?: never;
-        /** Link a sandbox to another @description Every sandbox that links the target sees it at the same address, from 10.86.0.0/16, until no link names it. A PUT of a link the sandbox already holds changes nothing. The link outlives a stop of either sandbox, and goes when the target is removed. A target that does not exist, or the sandbox itself, answers 400 invalid_request. */
-        put: operations["put-link"];
-        post?: never;
-        /** Remove the link to a sandbox */
-        delete: operations["remove-link"];
         options?: never;
         head?: never;
         patch?: never;
@@ -692,8 +657,6 @@ export interface components {
             env?: string[];
             /** @description The image to create from. A create names exactly one of image and snapshot. */
             image?: string;
-            /** @description The sandboxes, by id or name, the new sandbox links, as link add would link them. */
-            links?: string[];
             name?: string;
             policy?: string;
             ports?: components["schemas"]["PortForward"][];
@@ -854,7 +817,6 @@ export interface components {
             id: string;
             image: string;
             kernel?: string;
-            links?: components["schemas"]["Link"][];
             name?: string;
             oom?: components["schemas"]["OOM"];
             policy?: string;
@@ -873,17 +835,6 @@ export interface components {
         KillRequest: {
             /** @description TERM or KILL, in capitals; absent or empty is TERM. */
             signal?: string;
-        };
-        Link: {
-            /** @description The address the source reaches the target on, from 10.86.0.0/16 and shared by every link to that target (ip). */
-            address: string;
-            /** @description The sandbox the link reaches, by its name, or by its id when it has none. */
-            target: string;
-            /** @description The id of the sandbox the link reaches. */
-            target_id: string;
-        };
-        LinksResponse: {
-            links: components["schemas"]["Link"][];
         };
         MkdirRequest: {
             /** @description The permission bits in octal, at most 0777; absent is 0755. */
@@ -1041,7 +992,6 @@ export interface components {
             id: string;
             image: string;
             kernel?: string;
-            links?: components["schemas"]["Link"][];
             name?: string;
             oom?: components["schemas"]["OOM"];
             policy?: string;
@@ -1977,104 +1927,6 @@ export interface operations {
                 content: {
                     "application/json": components["schemas"]["Sandbox"];
                 };
-            };
-            /** @description Error */
-            default: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["Error"];
-                };
-            };
-        };
-    };
-    "list-links": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path: {
-                /** @description The sandbox id or name. */
-                id: string;
-            };
-            cookie?: never;
-        };
-        requestBody?: never;
-        responses: {
-            /** @description OK */
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["LinksResponse"];
-                };
-            };
-            /** @description Error */
-            default: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["Error"];
-                };
-            };
-        };
-    };
-    "put-link": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path: {
-                /** @description The sandbox id or name. */
-                id: string;
-                /** @description The id or name of the sandbox the link reaches. */
-                target: string;
-            };
-            cookie?: never;
-        };
-        requestBody?: never;
-        responses: {
-            /** @description OK */
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["Link"];
-                };
-            };
-            /** @description Error */
-            default: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["Error"];
-                };
-            };
-        };
-    };
-    "remove-link": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path: {
-                /** @description The sandbox id or name. */
-                id: string;
-                /** @description The id or name of the sandbox the link reaches. */
-                target: string;
-            };
-            cookie?: never;
-        };
-        requestBody?: never;
-        responses: {
-            /** @description No Content */
-            204: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content?: never;
             };
             /** @description Error */
             default: {

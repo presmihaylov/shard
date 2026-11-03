@@ -525,33 +525,6 @@ func (l *lifecycle) ListPorts(ctx context.Context, ref string) ([]models.Port, e
 	return svc.ListPorts(ctx, ref)
 }
 
-func (l *lifecycle) AddLink(ctx context.Context, ref, target string) (models.Link, error) {
-	svc, err := l.service()
-	if err != nil {
-		return models.Link{}, err
-	}
-
-	return svc.AddLink(ctx, ref, target)
-}
-
-func (l *lifecycle) RemoveLink(ctx context.Context, ref, target string) error {
-	svc, err := l.service()
-	if err != nil {
-		return err
-	}
-
-	return svc.RemoveLink(ctx, ref, target)
-}
-
-func (l *lifecycle) ListLinks(ctx context.Context, ref string) ([]models.Link, error) {
-	svc, err := l.service()
-	if err != nil {
-		return nil, err
-	}
-
-	return svc.ListLinks(ctx, ref)
-}
-
 func (l *lifecycle) Start(ctx context.Context, ref string) (models.Sandbox, error) {
 	svc, err := l.service()
 	if err != nil {

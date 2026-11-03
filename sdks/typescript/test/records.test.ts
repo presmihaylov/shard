@@ -99,12 +99,6 @@ test("a sandbox record names its forwards, and none when it has none", () => {
   assert.deepEqual(sandboxInfo(sandboxRecord()).ports, []);
 });
 
-test("a sandbox record names its links, and none when it has none", () => {
-  const links = [{ target: "db1", target_id: "sb_2", address: "10.86.0.1" }];
-  assert.deepEqual(sandboxInfo(sandboxRecord({ links })).links, [{ target: "db1", targetId: "sb_2", address: "10.86.0.1" }]);
-  assert.deepEqual(sandboxInfo(sandboxRecord()).links, []);
-});
-
 test("a port that does not listen says why, and one with no reachable address answers none", () => {
   const read = port(portRecord({ listening: false, error: "sandbox web is not running", reachable_on: undefined }));
   assert.equal(read.listening, false);

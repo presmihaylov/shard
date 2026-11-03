@@ -70,11 +70,11 @@ Both refusals come from `shard serve` before it opens the socket, so a refused r
 
 | Scope | Lets a token | Routes |
 | --- | --- | --- |
-| `sandbox:read` | View sandboxes, logs and snapshots | List and get a sandbox, its egress log, list and get its processes, read and attach to a process's logs, list its links, list and get a snapshot |
-| `sandbox:write` | Create sandboxes, change their state and create snapshots | Create, start, stop, pause, resume and fork a sandbox, remove a link, create a snapshot |
+| `sandbox:read` | View sandboxes, logs and snapshots | List and get a sandbox, its egress log, list and get its processes, read and attach to a process's logs, list and get a snapshot |
+| `sandbox:write` | Create sandboxes, change their state and create snapshots | Create, start, stop, pause, resume and fork a sandbox, create a snapshot |
 | `sandbox:delete` | Remove sandboxes and snapshots | Remove a sandbox, remove a snapshot |
 | `exec` | Run commands and access sandbox files | Every exec route, run and kill a process, and every files, ls, mkdir and archive route |
-| `ssh` | Open ssh sessions into sandboxes and link them: shell, files and `-L`, as strong as `exec` | Open an ssh connection into a sandbox, add a link |
+| `ssh` | Open ssh sessions into sandboxes: shell, files and `-L`, as strong as `exec` | Open an ssh connection into a sandbox |
 | `secret:*` | Manage secrets and secret grants | Every secrets route, and grant and ungrant on a sandbox |
 | `policy:*` | Manage policies and attach them to sandboxes | Every policies route, and attach and detach on a sandbox |
 | `port:read` | View the host ports forwarded into sandboxes | List the forwards of every sandbox or of one |
@@ -88,8 +88,7 @@ Some requests need a second scope for what they name:
 - **A create that names a secret:** also needs `secret:*`.
 - **A create that names a policy:** also needs `policy:*`.
 - **A create that forwards a port:** also needs `port:write`.
-- **A create that links a sandbox:** also needs `ssh`.
-- **A fork of a sandbox with secret grants, a policy or links:** needs the same scopes, because the fork copies them.
+- **A fork of a sandbox with secret grants or a policy:** needs the same scopes, because the fork copies them.
 
 `shard serve` never reads a request body, so it cannot see what one names. It passes the token's scopes to the daemon in a header, and the daemon refuses the request with `403` before it builds anything:
 

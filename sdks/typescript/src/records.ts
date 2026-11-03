@@ -96,8 +96,6 @@ export interface SandboxInfo {
   policy: string | null;
   /** The host ports the sandbox forwards, whether or not they listen now. */
   ports: PortForward[];
-  /** The sandboxes this one links, in the order they were added. */
-  links: Link[];
   startedAt: Date | null;
   createdAt: Date;
 }
@@ -107,14 +105,6 @@ export interface PortForward {
   hostPort: number;
   guestPort: number;
   public: boolean;
-}
-
-/** Link is one sandbox another reaches by name, at the address every sandbox that links it shares. */
-export interface Link {
-  /** The target as the link names it: its name, or its id when it has none. */
-  target: string;
-  targetId: string;
-  address: string;
 }
 
 /** Port is one forward as the host serves it now. */
@@ -244,7 +234,6 @@ export function sandboxInfo(value: unknown): SandboxInfo {
     secrets: fields.strings("secrets"),
     policy: fields.optionalString("policy"),
     ports: fields.list("ports").map(portForward),
-    links: fields.list("links").map(linkOf),
     startedAt: fields.optionalDate("started_at"),
     createdAt: fields.date("created_at"),
   };
@@ -350,10 +339,6 @@ export function capabilities(value: unknown): Capabilities {
   };
 }
 
-export function link(value: unknown): Link {
-  return linkOf(Fields.of(value, "a link"));
-}
-
 /** records reads a JSON array the daemon may answer as null when it is empty. */
 export function records<T>(value: unknown, what: string, read: (record: unknown) => T): T[] {
   if (value === null || value === undefined) {
@@ -364,10 +349,6 @@ export function records<T>(value: unknown, what: string, read: (record: unknown)
   }
 
   return value.map(read);
-}
-
-function linkOf(fields: Fields): Link {
-  return { target: fields.string("target"), targetId: fields.string("target_id"), address: fields.string("address") };
 }
 
 function portForward(fields: Fields): PortForward {

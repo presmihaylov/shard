@@ -20,7 +20,6 @@ T = TypeVar("T", bound="CreateRequest")
 class CreateRequest:
     env: list[str] | Unset = UNSET
     image: str | Unset = UNSET
-    links: list[str] | Unset = UNSET
     name: str | Unset = UNSET
     policy: str | Unset = UNSET
     ports: list[PortForward] | Unset = UNSET
@@ -39,10 +38,6 @@ class CreateRequest:
             env = self.env
 
         image = self.image
-
-        links: list[str] | Unset = UNSET
-        if not isinstance(self.links, Unset):
-            links = self.links
 
         name = self.name
 
@@ -76,8 +71,6 @@ class CreateRequest:
             field_dict["env"] = env
         if image is not UNSET:
             field_dict["image"] = image
-        if links is not UNSET:
-            field_dict["links"] = links
         if name is not UNSET:
             field_dict["name"] = name
         if policy is not UNSET:
@@ -106,8 +99,6 @@ class CreateRequest:
         env = cast(list[str], d.pop("env", UNSET))
 
         image = d.pop("image", UNSET)
-
-        links = cast(list[str], d.pop("links", UNSET))
 
         name = d.pop("name", UNSET)
 
@@ -140,7 +131,6 @@ class CreateRequest:
         create_request = cls(
             env=env,
             image=image,
-            links=links,
             name=name,
             policy=policy,
             ports=ports,

@@ -856,7 +856,6 @@ func withEveryPolicy(sb models.Sandbox) models.Sandbox {
 	sb.Processes = []models.Process{proc("web", models.RestartOnFailure), exitedProcess()}
 	// No create asks for it, but a fork runs the source's memory image and so its kernel (SHARD-745).
 	sb.Kernel = "kernel-6.12.110-3"
-	sb.Links = []models.Link{{Target: "db1", TargetID: "sandbox2", Address: netip.MustParseAddr("10.86.0.1")}}
 
 	return sb
 }

@@ -1441,7 +1441,7 @@ func TestRemoveFreesEveryHoldingInOrder(t *testing.T) {
 		t.Fatalf("rm: %v", err)
 	}
 
-	want := []string{"provider.Remove", "net.Release", "repo.Delete", "repo.List", "net.ReapplyAll", "repo.List", "substrate.ReleaseRoot"}
+	want := []string{"provider.Remove", "net.Release", "repo.Delete", "net.ReapplyAll", "repo.List", "substrate.ReleaseRoot"}
 	if got := r.calls[len(r.calls)-len(want):]; !slices.Equal(got, want) {
 		t.Errorf("rm freed %v, want %v", got, want)
 	}

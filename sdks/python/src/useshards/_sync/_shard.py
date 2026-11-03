@@ -92,7 +92,6 @@ class Shard:
         vcpus: int | None = None,
         disk_mib: int | None = None,
         ports: Sequence[PortForward] | None = None,
-        links: Sequence[str] | None = None,
         swap_mib: int | None = None,
     ) -> Sandbox:
         """create a sandbox"""
@@ -109,7 +108,6 @@ class Shard:
             vcpus=vcpus,
             disk_mib=disk_mib,
             ports=ports,
-            links=links,
             swap_mib=swap_mib,
         )
         return Sandbox(self._transport, self._create(body))

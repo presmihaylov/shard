@@ -644,34 +644,6 @@ func TestOnlyAnExecTokenRunsOrKillsAProcess(t *testing.T) {
 	}
 }
 
-// A link lets its source ssh into the target, so only an ssh token adds one; a sandbox:read token lists them and a sandbox:write one removes them.
-func TestOnlyAnSSHTokenAddsALink(t *testing.T) {
-	up := fakeDaemon(t)
-	env := newTokenEnv(t)
-	address := front(t, up.root, env.secret)
-	reader := mintScoped(t, env, "reader", models.ScopeSandboxRead)
-	runner := mintScoped(t, env, "runner", models.ScopeExec)
-	linker := mintScoped(t, env, "linker", models.ScopeSSH)
-	writer := mintScoped(t, env, "writer", models.ScopeSandboxWrite)
-
-	for _, ask := range []struct {
-		name, token, method, path string
-		want                      int
-	}{
-		{"sandbox:read", reader, http.MethodGet, "/v0/sandboxes/agent1/links", http.StatusOK},
-		{"exec", runner, http.MethodGet, "/v0/sandboxes/agent1/links", http.StatusForbidden},
-		{"exec", runner, http.MethodPut, "/v0/sandboxes/agent1/links/web1", http.StatusForbidden},
-		{"sandbox:write", writer, http.MethodPut, "/v0/sandboxes/agent1/links/web1", http.StatusForbidden},
-		{"ssh", linker, http.MethodPut, "/v0/sandboxes/agent1/links/web1", http.StatusOK},
-		{"ssh", linker, http.MethodDelete, "/v0/sandboxes/agent1/links/web1", http.StatusForbidden},
-		{"sandbox:write", writer, http.MethodDelete, "/v0/sandboxes/agent1/links/web1", http.StatusOK},
-	} {
-		if resp := askRoute(t, address, ask.token, ask.method, ask.path); resp.StatusCode != ask.want { //nolint:bodyclose // askRoute closes the body in a cleanup
-			t.Errorf("a %s token got %d on %s %s, want %d", ask.name, resp.StatusCode, ask.method, ask.path, ask.want)
-		}
-	}
-}
-
 // An ssh connection is a shell, files and -L at once, so exec alone does not open one.
 func TestOnlyAnSSHTokenOpensAnSSHConnection(t *testing.T) {
 	up := fakeDaemon(t)

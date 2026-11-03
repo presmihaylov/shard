@@ -135,8 +135,6 @@ type Config struct {
 	Redact func(string) string
 	// Ports puts up the forwards of the running sandboxes; nil puts up none, which only a test does.
 	Ports Ports
-	// Links hears of every change to a sandbox's links; nil hears none, since no layer serves a link yet.
-	Links Links
 }
 
 // Service owns create, start, stop and rm, and serializes them per sandbox in memory: one process holds it.
@@ -157,16 +155,11 @@ type Service struct {
 
 	// portsMu makes the check that no other sandbox forwards a host port one step with the write that claims it.
 	portsMu sync.Mutex
-	// linksMu makes the read of every link address one step with the write that claims one, and keeps a remove from leaving a link to a sandbox that is gone.
-	linksMu sync.Mutex
 }
 
 func New(cfg Config) *Service {
 	if cfg.Ports == nil {
 		cfg.Ports = noPorts{}
-	}
-	if cfg.Links == nil {
-		cfg.Links = noLinks{}
 	}
 
 	return &Service{cfg: cfg, locks: map[string]*sandboxLock{}, pulls: map[string]context.CancelCauseFunc{}, execs: map[string]*execSession{}, running: map[string]int{}}
@@ -187,8 +180,6 @@ type CreateRequest struct {
 	Resources ResourceRequest `json:"resources" required:"false"`
 	// Ports are the host ports forwarded into the sandbox from its first start, as port add would forward them.
 	Ports []models.PortForward `json:"ports,omitempty"`
-	// Links are the sandboxes this one reaches by name from its first start, as link add would link them.
-	Links []string `json:"links,omitempty" doc:"The sandboxes, by id or name, the new sandbox links, as link add would link them."`
 }
 
 // ResourceRequest is the bounds a create asks for. A nil memory is an omitted --memory, which a snapshot fills, and 0 is no bound on a container substrate.
@@ -613,16 +604,6 @@ func (s *Service) Prepare(ctx context.Context, req CreateRequest) (models.Sandbo
 		}
 	}
 
-	var links []models.Link
-	if len(req.Links) != 0 {
-		// Held through the create below, so no remove takes a target, and no other link claims its address, before the record names it.
-		s.linksMu.Lock()
-		defer s.linksMu.Unlock()
-		if links, err = s.newLinks("", req.Links); err != nil {
-			return models.Sandbox{}, err
-		}
-	}
-
 	var admit []func(dir string) error
 	reserved := ""
 	disks, admits := s.cfg.Provider.(diskAdmitter)
@@ -648,7 +629,6 @@ func (s *Service) Prepare(ctx context.Context, req CreateRequest) (models.Sandbo
 		Secrets:   req.Secrets,
 		Policy:    req.Policy,
 		Ports:     byHostPort(req.Ports),
-		Links:     links,
 		CreatedAt: time.Now().UTC(),
 	}, admit...)
 	if err != nil {
@@ -872,11 +852,6 @@ func (s *Service) Complete(ctx context.Context, id string, req CreateRequest) (e
 			return err
 		}
 	}
-	if len(sb.Links) != 0 {
-		if err := s.linksChanged(ctx, id); err != nil {
-			return err
-		}
-	}
 
 	if err := s.cfg.Provider.Start(ctx, id); err != nil {
 		// An interrupt kills the start process, not what it may already have started, and the substrate
@@ -1028,9 +1003,6 @@ func validate(req CreateRequest) error {
 		return &RequestError{Err: fmt.Errorf("the swap is in MiB and no host holds that much, got %d", swap)}
 	}
 	if err := validPorts(req.Ports); err != nil {
-		return err
-	}
-	if err := validLinks(req.Links); err != nil {
 		return err
 	}
 
@@ -1518,14 +1490,11 @@ type holding struct {
 // holds what the steps below it name. The record comes after the mount and the namespace, because it
 // is the only handle by which either can be found again.
 func (s *Service) free(ctx context.Context, id string) error {
-	var linked []string
 	held := []holding{
 		{"forwarded host ports", func() error { return s.closePorts(id) }},
 		{"runtime state and rootfs mount", func() error { return s.cfg.Provider.Remove(ctx, id) }},
 		{"netns, veth and address lease", func() error { return s.cfg.Network.Release(ctx, id) }},
 		{"record and state directory", func() error { return s.cfg.Repo.Delete(id) }},
-		{"links that reach it", func() (err error) { linked, err = s.dropLinksTo(id); return err }},
-		{"routes from the sandboxes that linked it", func() error { return s.linksChanged(ctx, linked...) }},
 		// The ruleset is rendered from the records and the leases, so it is right only once this sandbox is in neither.
 		{"host rules", func() error { return s.cfg.Network.ReapplyAll(ctx) }},
 	}
