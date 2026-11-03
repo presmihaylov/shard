@@ -104,7 +104,7 @@ func New(runner *runsc.Runner, bundles *bundle.Service, dirs StateDirs) (*Provid
 	}
 
 	// Capabilities is fixed once here, so it needs no context and cannot fail.
-	caps := models.Capabilities{Pause: true, Resume: true, Fork: true, Port: true}
+	caps := models.Capabilities{Pause: true, Resume: true, Fork: true, Port: true, DiskGrow: true}
 
 	return &Provider{runsc: runner, bundles: bundles, dirs: dirs, caps: caps, cgroupRoot: cgroup.Root, procRoot: "/proc", killPinned: pidfdKill}, nil
 }

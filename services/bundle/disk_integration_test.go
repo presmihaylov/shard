@@ -9,6 +9,7 @@ import (
 	"syscall"
 	"testing"
 
+	"github.com/presmihaylov/shard/models"
 	"github.com/presmihaylov/shard/pkg/mountinfo"
 )
 
@@ -94,5 +95,36 @@ func TestUnmountOverlayKeepsTheDisk(t *testing.T) {
 	}
 	if _, err := os.Stat(b.Upper); err != nil {
 		t.Errorf("the upper layer is out of reach after the overlay unmount: %v", err)
+	}
+}
+
+// TestResizeGrowsTheDiskOnline is the OCI half of SHARD-813: the image, the ext4 on it and the bound grow, mounted, and the files stay.
+func TestResizeGrowsTheDiskOnline(t *testing.T) {
+	requireRunsc(t)
+
+	b, _ := buildBoundedBundle(t, t.TempDir(), boundMiB)
+	marker := filepath.Join(b.Disk, "marker")
+	write(t, marker, "kept")
+
+	if err := b.Resize(models.Resources{DiskMiB: 2 * boundMiB}); err != nil {
+		t.Fatalf("Resize: %v", err)
+	}
+
+	if got := sizeOf(t, b.Image); got != 2*boundMiB<<20 {
+		t.Errorf("the disk image is %d bytes, want %d", got, 2*boundMiB<<20)
+	}
+	var fs syscall.Statfs_t
+	if err := syscall.Statfs(b.Disk, &fs); err != nil {
+		t.Fatalf("statfs %s: %v", b.Disk, err)
+	}
+	// The ext4 keeps its own metadata, so it reads short of the image, but well past the old bound.
+	if got := fs.Blocks * uint64(fs.Bsize); got <= boundMiB<<20 {
+		t.Errorf("the mounted ext4 holds %d bytes after the grow, want more than the old %d", got, boundMiB<<20)
+	}
+	if got := readFile(t, marker); got != "kept" {
+		t.Errorf("the marker reads %q after the grow, want kept", got)
+	}
+	if got := diskBoundOf(t, b); got != 2*boundMiB {
+		t.Errorf("the next start reads a %d MiB disk bound, want %d", got, 2*boundMiB)
 	}
 }
