@@ -28,8 +28,7 @@ func TestTheAPIClosesItsSocketWhenTheHostKeyCannotBeRead(t *testing.T) {
 	}
 
 	d := &deps{cfg: Config{Root: root, Out: io.Discard}}
-	life := &lifecycle{deps: d}
-	err = apiTask{deps: d, lifecycle: life, ssh: &sshHost{root: root, sandboxes: life, report: func(string) {}}}.Run(context.Background())
+	err = apiTask{deps: d, lifecycle: &lifecycle{deps: d}}.Run(context.Background())
 	if err == nil || !strings.Contains(err.Error(), "parse the ssh host key") {
 		t.Fatalf("Run = %v, want the host key refusal", err)
 	}

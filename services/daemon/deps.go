@@ -30,7 +30,6 @@ import (
 	"github.com/presmihaylov/shard/services/egress"
 	"github.com/presmihaylov/shard/services/image"
 	"github.com/presmihaylov/shard/services/kernel"
-	"github.com/presmihaylov/shard/services/linkfwd"
 	"github.com/presmihaylov/shard/services/network"
 	"github.com/presmihaylov/shard/services/portforward"
 	"github.com/presmihaylov/shard/services/provider/firecracker"
@@ -67,8 +66,6 @@ type deps struct {
 	runnerSvc *runsc.Runner
 	// forwardSvc holds the host port listeners, one set for the daemon's life.
 	forwardSvc *portforward.Forwarder
-	// links carries every link flow; set once in Run before the tasks, since it reaches the sandboxes through the lifecycle.
-	links *linkfwd.Forwarder
 
 	unreadableLogSvc *sandboxstate.UnreadableLog
 	// states is the supervisor's live task registry, set once before the tasks run, so GET /v0/daemon reports it.
@@ -232,12 +229,7 @@ func (d *deps) netLocked() (hostNetwork, error) {
 
 	// The provider says whether its sandboxes own their namespaces, and it is asked at the first
 	// Allocate, not here: the proxy builds the network at boot on a host that may have no substrate.
-	repo, err := d.repoLocked()
-	if err != nil {
-		return nil, err
-	}
-
-	cfg := network.Config{Root: d.cfg.Root, Egress: source, Links: linkfwd.Routes{Records: repo}, Userns: d.userns, Report: d.logger().Printf, Firewall: hostfw.Local()}
+	cfg := network.Config{Root: d.cfg.Root, Egress: source, Userns: d.userns, Report: d.logger().Printf, Firewall: hostfw.Local()}
 	// A microVM gets a tap beside its veth, inside the namespace its vmm joins.
 	cfg.Tap = d.providerName() == firecracker.Name
 	svc, err := network.New(cfg, manager)
@@ -794,7 +786,6 @@ func (d *deps) lifecycle() (*sandbox.Service, error) {
 		Report:        func(line string) { logger.Print(line) },
 		Redact:        redactor(secrets, logger),
 		Ports:         d.forwardSvc,
-		Links:         linkChanges{net: net, flows: d.links},
 	}), nil
 }
 

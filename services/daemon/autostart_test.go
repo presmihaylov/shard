@@ -100,7 +100,7 @@ func TestAutostartGoesOnWithoutTheNetworkOnceTheWaitRunsOut(t *testing.T) {
 	if err == nil || err.Error() != want.Error() {
 		t.Fatalf("Run = %v, want the layers' own refusal %v, which only a start past the wait reaches", err, want)
 	}
-	if !strings.Contains(out.String(), "task autostart: the proxy, the resolver, the host firewall or the link listener is not up after 1ms; the sandboxes start without it") {
+	if !strings.Contains(out.String(), "task autostart: the proxy, the resolver or the host firewall is not up after 1ms; the sandboxes start without it") {
 		t.Fatalf("Run logged %q, want the wait that ran out named", out.String())
 	}
 }

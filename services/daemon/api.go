@@ -26,10 +26,10 @@ import (
 	"github.com/presmihaylov/shard/services/datadir"
 	"github.com/presmihaylov/shard/services/egress"
 	"github.com/presmihaylov/shard/services/image"
-	"github.com/presmihaylov/shard/services/linkfwd"
 	"github.com/presmihaylov/shard/services/network"
 	"github.com/presmihaylov/shard/services/provider/vzvm"
 	"github.com/presmihaylov/shard/services/sandbox"
+	"github.com/presmihaylov/shard/services/sshd"
 	"github.com/presmihaylov/shard/services/supervisor"
 )
 
@@ -110,19 +110,9 @@ func Run(ctx context.Context, cfg Config) error {
 	}
 	life := &lifecycle{deps: d, base: ctx}
 	self := process{deps: d, startedAt: time.Now().UTC().Truncate(time.Second)}
-	report := func(line string) { d.logger().Print(line) }
-	ssh := &sshHost{root: cfg.Root, sandboxes: life, report: report}
-	d.links = linkfwd.New(linkRecords{deps: d}, life, ssh, report)
 
-	proxyUp, dnsUp, firewallUp, linksUp := newGate(), newGate(), newGate(), newGate()
-	after := []*gate{proxyUp, dnsUp, firewallUp}
-	tasks := []Task{apiTask{deps: d, lifecycle: life, process: self, ssh: ssh}, proxyTask{deps: d, up: proxyUp}, dnsTask{deps: d, up: dnsUp}, egressLogTailer{deps: d}, heldLogRotation{deps: d}, liveness{deps: d, lifecycle: life, interval: livenessInterval}, hostFirewall{deps: d, interval: firewallInterval, up: firewallUp}, processTick{deps: d, lifecycle: life, interval: processInterval}, hostPorts{deps: d, lifecycle: life, interval: portsInterval}}
-	// vz has no bridge to listen on: its stack hands a link flow to the forwarder itself.
-	if cfg.Provider != vzvm.Name {
-		tasks = append(tasks, linkTask{deps: d, up: linksUp})
-		after = append(after, linksUp)
-	}
-	tasks = append(tasks, autostart{deps: d, lifecycle: life, after: after, wait: autostartWait})
+	proxyUp, dnsUp, firewallUp := newGate(), newGate(), newGate()
+	tasks := []Task{apiTask{deps: d, lifecycle: life, process: self}, proxyTask{deps: d, up: proxyUp}, dnsTask{deps: d, up: dnsUp}, egressLogTailer{deps: d}, heldLogRotation{deps: d}, liveness{deps: d, lifecycle: life, interval: livenessInterval}, hostFirewall{deps: d, interval: firewallInterval, up: firewallUp}, processTick{deps: d, lifecycle: life, interval: processInterval}, hostPorts{deps: d, lifecycle: life, interval: portsInterval}, autostart{deps: d, lifecycle: life, after: []*gate{proxyUp, dnsUp, firewallUp}, wait: autostartWait}}
 	dmn := New(cfg.Root, cfg.Out, append(tasks, extra...)...)
 	// vz has no bridge, and a daemon that is not root cannot write the host's netfilter, so neither has the table to share.
 	if cfg.Provider != vzvm.Name && os.Geteuid() == 0 {
@@ -227,7 +217,6 @@ type apiTask struct {
 	deps      *deps
 	lifecycle *lifecycle
 	process   process
-	ssh       *sshHost
 }
 
 func (apiTask) Name() string { return "api" }
@@ -276,11 +265,12 @@ func (t apiTask) Run(ctx context.Context) error {
 	logger := log.New(cfg.Out, "", log.LstdFlags)
 	logger.Printf("api listening on %s, mode %04o, %s", filepath.Join(cfg.Root, api.SocketFile), mode, owner)
 
-	ssh, err := t.ssh.server()
+	signer, err := sshd.LoadHostKey(cfg.Root)
 	// An open socket that nothing serves leaves every call to time out, where a closed one refuses it at once.
 	if err != nil {
 		return errors.Join(err, listener.Close())
 	}
+	ssh := sshd.New(signer, t.lifecycle, func(msg string) { logger.Print(msg) })
 
 	handler := api.NewHandler(cfg.Version, t.process, repo, enforcer, t.lifecycle, stores, decisions, ssh, t.deps.redact, cfg.Out)
 
