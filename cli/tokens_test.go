@@ -368,6 +368,7 @@ func TestTokensScopesPrintsTheServerTable(t *testing.T) {
 		"sandbox:write    Create sandboxes, change their state and create snapshots",
 		"sandbox:delete   Remove sandboxes and snapshots",
 		"exec             Run commands and access sandbox files",
+		"ssh              Open ssh sessions into sandboxes and link them: shell, files and -L, as strong as exec",
 		"secret:*         Manage secrets and secret grants",
 		"policy:*         Manage policies and attach them to sandboxes",
 		"port:read        View the host ports forwarded into sandboxes",

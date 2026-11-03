@@ -70,6 +70,10 @@ func main() {
 	if len(os.Args) == 2 && os.Args[1] == supervisor.FilesMode {
 		os.Exit(runFiles())
 	}
+	// An ssh session runs [/.shard/init sftp] through an exec for the sftp subsystem, as the ssh user.
+	if len(os.Args) == 2 && os.Args[1] == supervisor.SFTPMode {
+		os.Exit(runSFTP())
+	}
 	// The daemon runs [/.shard/init process] as root through an exec, to hand PID 1 one process request.
 	if len(os.Args) == 2 && os.Args[1] == supervisor.ProcessMode {
 		// Undumpable, no guest process without CAP_SYS_PTRACE traces the helper into sending a request of its own.
