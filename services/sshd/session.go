@@ -10,6 +10,7 @@ import (
 	"slices"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"golang.org/x/crypto/ssh"
@@ -48,6 +49,7 @@ type session struct {
 	tty     bool
 	term    string
 	env     []string
+	sftp    bool
 
 	mu     sync.Mutex
 	size   sandbox.TerminalSize
@@ -106,7 +108,12 @@ func (s *session) request(req *ssh.Request) (bool, func()) {
 		}
 
 		// A terminal would mangle the binary protocol, whatever the client asked for.
-		return s.start([]string{supervisor.InitPath, supervisor.SFTPMode}, false)
+		ok, run := s.start([]string{supervisor.InitPath, supervisor.SFTPMode}, false)
+		if ok {
+			s.sftp = true
+		}
+
+		return ok, run
 	}
 
 	// x11-req, auth-agent-req@openssh.com and the rest reach nothing in a sandbox.
@@ -231,13 +238,34 @@ func (s *session) exec(argv []string, tty bool) ending {
 	}()
 	s.work.Go(func() { s.feed(feed) })
 
-	streams := sandbox.Streams{Stdin: in, StopStdin: in.Close, Stdout: s.ch, Stderr: s.ch.Stderr(), Detach: s.hangUp}
+	out := &spoken{Writer: s.ch}
+	streams := sandbox.Streams{Stdin: in, StopStdin: in.Close, Stdout: out, Stderr: s.ch.Stderr(), Detach: s.hangUp}
 	attached, err := sandboxes.Attach(s.ctx, ref, created.ID, streams)
 	if err != nil {
 		return s.refused(err, tty)
 	}
 
-	return endingOf(attached.Exit)
+	end := endingOf(attached.Exit)
+	// Every shard-init from before sftp refuses the mode and exits 1 before a byte of the protocol, each in words of its own release.
+	if s.sftp && end.code != 0 && !out.any.Load() && s.ctx.Err() == nil {
+		s.tell(fmt.Sprintf("sftp did not start; if sandbox %s has run since before this shard release, its shard-init has no sftp: stop and start it, then connect again", ref), tty)
+	}
+
+	return end
+}
+
+// spoken is the command's stdout, which notes whether a byte ever went through it.
+type spoken struct {
+	io.Writer
+	any atomic.Bool
+}
+
+func (w *spoken) Write(p []byte) (int, error) {
+	if len(p) > 0 {
+		w.any.Store(true)
+	}
+
+	return w.Writer.Write(p)
 }
 
 func (s *session) environment(tty bool) []string {
@@ -282,19 +310,24 @@ func (s *session) refused(err error, tty bool) ending {
 		return ending{}
 	}
 
-	newline := "\n"
-	if tty {
-		newline = "\r\n"
-	}
-	if _, werr := io.WriteString(s.ch.Stderr(), s.conn.opts.Explain(err)+newline); werr != nil && !gone(werr) {
-		s.report("tell the client its command did not run", werr)
-	}
+	s.tell(s.conn.opts.Explain(err), tty)
 
 	if notStarted, ok := errors.AsType[*models.CommandNotStartedError](err); ok {
 		return ending{code: notStarted.Code}
 	}
 
 	return ending{code: refusedExitCode}
+}
+
+// tell writes one line to the client's stderr.
+func (s *session) tell(line string, tty bool) {
+	newline := "\n"
+	if tty {
+		newline = "\r\n"
+	}
+	if _, err := io.WriteString(s.ch.Stderr(), line+newline); err != nil && !gone(err) {
+		s.report("tell the client why its command ended", err)
+	}
 }
 
 // cleanup ends the exec if the client left it running, then forgets it, since an ssh session owns its command.
