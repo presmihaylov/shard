@@ -28,7 +28,7 @@ Ask a server which lifecycle verbs it supports before you call one. A verb the p
 		resize       true
 		port         true
 		swap         false
-		disk_grow    true
+		disk_grow    false
 		```
 	</TabItem>
 	<TabItem label="TypeScript">
@@ -75,7 +75,7 @@ One daemon runs one provider for every sandbox on its host. Every provider suppo
 - **`resize`:** `shard resize`, which changes the bounds of a stopped sandbox.
 - **`port`:** `shard port add`, which forwards a host port into a sandbox.
 - **`swap`:** whether `--swap` can give a sandbox a swap file: yes on vz and Firecracker, no on the rest.
-- **`disk_grow`:** whether `shard resize --disk` can grow a sandbox's disk. Check it before asking for a bigger disk.
+- **`disk_grow`:** whether `shard resize --disk` can grow a sandbox's disk: yes on vz and Firecracker, no on the rest.
 - **Not listed:** every provider also supports `exec`, `logs` and `inspect`, which the answer leaves out.
 
 For what each provider is and how they differ, see [Providers and capabilities](/docs/concepts/providers/).
@@ -101,7 +101,7 @@ curl --unix-socket /var/lib/shard/shard.sock http://localhost/v0/capabilities
   "resize": true,
   "port": true,
   "swap": false,
-  "disk_grow": true
+  "disk_grow": false
 }
 ```
 

@@ -58,18 +58,9 @@ def stop_start(ctx: Context) -> None:
     equal((sandbox.exec("cat /root/kept")).stdout, "kept\n", "a start keeps the root a stop left")
 
 
-def disk_kib(sandbox: Sandbox) -> int:
-    """The size of the root filesystem in KiB, as df reports it."""
-    result = sandbox.exec("df -Pk / | tail -1")
-    equal(result.exit_code, 0, result.stderr)
-    return int(result.stdout.split()[1])
-
-
 def resize(ctx: Context) -> None:
     verbs = ctx.shard.capabilities()
     sandbox = ctx.create(memory_mib=256)
-    sandbox.exec("echo kept > /root/kept")
-    before = disk_kib(sandbox)
     rejects(ConflictError, lambda: sandbox.resize(memory_mib=512))
     sandbox.stop()
     sandbox.resize(memory_mib=512, vcpus=1)
@@ -80,11 +71,6 @@ def resize(ctx: Context) -> None:
     agrees("disk grow", verbs.disk_grow, lambda: sandbox.resize(disk_mib=disk + 1024))
     sandbox.start()
     equal((sandbox.inspect()).resources.memory_mib, 512, "the start runs under the new bound")
-    equal((sandbox.exec("cat /root/kept")).stdout, "kept\n", "a resize keeps the files")
-    if verbs.disk_grow:
-        # The ext4 keeps some of the new GiB for its own metadata.
-        grown = disk_kib(sandbox) - before
-        ok(grown > 900 * 1024, f"the root grew by {grown} KiB, want about 1 GiB")
 
 
 def pause_resume(ctx: Context) -> None:

@@ -5,7 +5,6 @@ import (
 	"fmt"
 	"io/fs"
 	"os"
-	"strconv"
 	"strings"
 
 	"github.com/presmihaylov/shard/models"
@@ -47,7 +46,7 @@ func growRefusal(err error, mib int64) error {
 	return fmt.Errorf("grow the disk to the %d MiB bound: %w", mib, err)
 }
 
-// Resize grows the disk, then rewrites the bounds in config.json, which the next start creates the container from.
+// Resize rewrites the memory and vCPU bounds in config.json, which the next start creates the container from; the disk keeps its size.
 func (b Bundle) Resize(res models.Resources) error {
 	spec, err := b.readSpec()
 	if err != nil {
@@ -57,23 +56,12 @@ func (b Bundle) Resize(res models.Resources) error {
 	if err != nil {
 		return fmt.Errorf("read the disk bound back from %s: %w", b.configPath(), err)
 	}
+	if have := DiskBound(models.Resources{DiskMiB: disk}); have != DiskBound(res) {
+		return fmt.Errorf("the disk of %s is %d MiB and does not grow to %d MiB here", b.Dir, have, DiskBound(res))
+	}
 	if spec.Linux == nil || spec.Linux.Resources == nil {
 		return fmt.Errorf("%s names no resources to resize", b.configPath())
 	}
-	have, want := DiskBound(models.Resources{DiskMiB: disk}), DiskBound(res)
-	if want < have {
-		return fmt.Errorf("the disk of %s is %d MiB and does not shrink to %d MiB", b.Dir, have, want)
-	}
-	if want > have {
-		if err := b.growDisk(res); err != nil {
-			return err
-		}
-	}
-	// The bound is written after the grow, so a refused grow leaves the disk bound the sandbox had.
-	if spec.Annotations == nil {
-		spec.Annotations = map[string]string{}
-	}
-	spec.Annotations[diskAnnotation] = strconv.FormatInt(want, 10)
 
 	bounds := resources(res)
 	spec.Linux.Resources.Memory = bounds.Memory

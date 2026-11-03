@@ -72,12 +72,3 @@ func (b Bundle) withDisk(fn func() error) error {
 
 	return errors.Join(fn(), b.UnmountDisk())
 }
-
-// growDisk grows the disk and its ext4 to the bound of r, mounting it when it is down; like a create it takes no free-space admission, as only the VM substrates admit a disk.
-func (b Bundle) growDisk(r models.Resources) error {
-	if _, err := os.Stat(b.Image); err != nil {
-		return fmt.Errorf("the sandbox has no disk to grow: %w", err)
-	}
-
-	return b.withDisk(func() error { return diskimage.Grow(b.Image, b.Disk, DiskBytes(r)) })
-}

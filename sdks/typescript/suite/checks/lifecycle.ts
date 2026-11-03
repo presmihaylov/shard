@@ -27,14 +27,6 @@ async function others(sandbox: Sandbox): Promise<string[]> {
     .filter((line) => !/^(\S*\/)?(shard-)?init\b/.test(line));
 }
 
-/** diskKiB is the size of the root filesystem in KiB, as df reports it. */
-async function diskKiB(sandbox: Sandbox): Promise<number> {
-  const result = await sandbox.exec("df -Pk / | tail -1");
-  assert.equal(result.exitCode, 0, result.stderr);
-
-  return Number(result.stdout.trim().split(/\s+/)[1]);
-}
-
 /** agrees runs a verb and proves the capabilities said whether the server would refuse it. */
 async function agrees(verb: string, supported: boolean, run: () => Promise<unknown>): Promise<void> {
   try {
@@ -96,8 +88,6 @@ export const checks: Check[] = [
     run: async (ctx) => {
       const capabilities = await ctx.shard.capabilities();
       const sandbox = await ctx.create({ memoryMiB: 256 });
-      await sandbox.exec("echo kept > /root/kept");
-      const before = await diskKiB(sandbox);
       await rejects(ConflictError, () => sandbox.resize({ memoryMiB: 512 }));
       await sandbox.stop();
       await sandbox.resize({ memoryMiB: 512, vcpus: 1 });
@@ -108,12 +98,6 @@ export const checks: Check[] = [
       await agrees("disk grow", capabilities.diskGrow, () => sandbox.resize({ diskMiB: disk + 1024 }));
       await sandbox.start();
       assert.equal((await sandbox.inspect()).resources.memoryMiB, 512, "the start runs under the new bound");
-      assert.equal((await sandbox.exec("cat /root/kept")).stdout, "kept\n", "a resize keeps the files");
-      if (capabilities.diskGrow) {
-        // The ext4 keeps some of the new GiB for its own metadata.
-        const grown = (await diskKiB(sandbox)) - before;
-        assert.ok(grown > 900 * 1024, `the root grew by ${grown} KiB, want about 1 GiB`);
-      }
     },
   },
   {

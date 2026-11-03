@@ -328,7 +328,7 @@ type Capabilities struct {
 	Swap bool `json:"swap"`
 	// Resize changes a stopped sandbox's memory, vCPU and swap bounds, which every provider does. Optional, as a daemon from before it omits it.
 	Resize bool `json:"resize" required:"false"`
-	// DiskGrow is a resize that grows the disk, which every provider does. Optional, as a daemon from before it omits it.
+	// DiskGrow is a resize that grows the disk, which only a VM provider does so far. Optional, as a daemon from before it omits it.
 	DiskGrow bool `json:"disk_grow" required:"false"`
 }
 
