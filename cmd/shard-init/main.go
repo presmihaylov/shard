@@ -718,26 +718,65 @@ func startProcess(ep spawnSpec, files []*os.File, tty bool) (int, error) {
 	return pid, nil
 }
 
-// pfForkNoExec is the kernel's PF_FORKNOEXEC: set at the fork, cleared once an exec passes its point of no return.
+// pfForkNoExec is the kernel's PF_FORKNOEXEC: set at the fork, cleared once an exec swaps in the new image.
 const pfForkNoExec = 0x40
 
-// statExeced reads the flags of a /proc/<pid>/stat line, counted from the last ')' since the name may hold spaces and parentheses.
-func statExeced(stat string) (bool, error) {
+// execState is where a child stands against its exec, read off its /proc stat line.
+type execState int
+
+const (
+	// execPending is a live child that still holds the flag: it is finishing its exec or its exit.
+	execPending execState = iota
+	execRan
+	execNeverRan
+)
+
+// awaitExec rereads a child's stat line until it settles, since Linux 6.12.y closes the error pipe before it clears the flag (SHARD-812).
+func awaitExec(stat func() (string, error), budget time.Duration) (bool, error) {
+	deadline := time.Now().Add(budget)
+	for {
+		line, err := stat()
+		if err != nil {
+			return false, err
+		}
+		state, err := statExec(line)
+		if err != nil {
+			return false, err
+		}
+		if state != execPending {
+			return state == execRan, nil
+		}
+		if time.Now().After(deadline) {
+			return false, fmt.Errorf("still in its exec after %s", budget)
+		}
+		time.Sleep(time.Millisecond)
+	}
+}
+
+// statExec reads the state and flags of a /proc/<pid>/stat line, counted from the last ')' since the name may hold spaces and parentheses.
+func statExec(stat string) (execState, error) {
 	end := strings.LastIndexByte(stat, ')')
 	if end < 0 {
-		return false, fmt.Errorf("stat line %q names no process", stat)
+		return execPending, fmt.Errorf("stat line %q names no process", stat)
 	}
 	// state, ppid, pgrp, session, tty_nr and tpgid come before the flags.
 	fields := strings.Fields(stat[end+1:])
 	if len(fields) < 7 {
-		return false, fmt.Errorf("stat line %q has no flags field", stat)
+		return execPending, fmt.Errorf("stat line %q has no flags field", stat)
 	}
 	flags, err := strconv.ParseUint(fields[6], 10, 64)
 	if err != nil {
-		return false, fmt.Errorf("stat line %q: read the flags: %w", stat, err)
+		return execPending, fmt.Errorf("stat line %q: read the flags: %w", stat, err)
+	}
+	if flags&pfForkNoExec == 0 {
+		return execRan, nil
+	}
+	// The busy reaper has not collected a dead child yet, so it still reads as a zombie.
+	if fields[0] == "Z" || fields[0] == "X" {
+		return execNeverRan, nil
 	}
 
-	return flags&pfForkNoExec == 0, nil
+	return execPending, nil
 }
 
 // workDirError is a work directory a process cannot start in, which an exec never creates.

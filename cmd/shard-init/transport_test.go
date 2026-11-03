@@ -976,6 +976,115 @@ func TestTransportStopWithNothingRunningEndsAtOnce(t *testing.T) {
 	awaitCleanExit(ctx, t, proc, "the stop")
 }
 
+// A stop's last reap ends supervision while that process's end still waits for the ack of its output, so the power off waits for the end, and past endGrace sends it unacked (SHARD-812).
+func TestTransportAStopSendsTheExitBeforeTheGuestEnds(t *testing.T) {
+	proc, dial := startTransport(t)
+	ctx := testContext(t)
+	c := connectReady(ctx, t, dial)
+	if err := c.Run(ctx, named("web", "term:7")); err != nil {
+		t.Fatalf("run: %v", err)
+	}
+	awaitProcess(t, c, "web", models.ProcessRunning)
+	// The host reads the last output and never acks it.
+	pump, held := openLogs(ctx, t, dial, "web")
+	sendOffset(t, pump, held[0])
+	readOutput(t, pump, len("ready\n"))
+
+	asked := time.Now()
+	if err := c.Stop(ctx); err != nil {
+		t.Fatalf("stop: %v", err)
+	}
+	events := eventsUntilGone(t, c)
+	waited := time.Since(asked)
+	var end *models.ProcessReport
+	for _, m := range events {
+		if m.Kind == supervisor.KindProcess && m.Process != nil && m.Process.Name == "web" && m.Process.State.Ended() {
+			end = m.Process
+		}
+	}
+	if end == nil || end.State != models.ProcessStopped || end.Exit == nil || end.Exit.Code != 7 {
+		t.Fatalf("before it ended the guest reported web's end as %+v, want stopped with code 7", end)
+	}
+	if waited < endGrace {
+		t.Fatalf("the guest ended %s after the stop, want it to wait %s for the host to ack the last output", waited, endGrace)
+	}
+	awaitCleanExit(ctx, t, proc, "the stop")
+}
+
+// eventsUntilGone reads c's events until the guest hangs up; a guest that never does fails the test rather than hang it.
+func eventsUntilGone(t *testing.T, c *supervisor.Control) []supervisor.Message {
+	t.Helper()
+
+	type read struct {
+		events []supervisor.Message
+		err    error
+	}
+	got := make(chan read, 1)
+	go func() {
+		var events []supervisor.Message
+		for {
+			m, err := c.Next()
+			if err != nil {
+				got <- read{events: events, err: err}
+
+				return
+			}
+			events = append(events, m)
+		}
+	}()
+	select {
+	case r := <-got:
+		if !errors.Is(r.err, io.EOF) {
+			t.Fatalf("the control connection ended with %v, want the guest's hang-up", r.err)
+		}
+
+		return r.events
+	case <-time.After(20 * time.Second):
+		t.Fatal("the guest never hung up its control connection")
+
+		return nil
+	}
+}
+
+// An end whose write no host reads must not hold the power off, so past the ack's grace and one more the drain gives it up by name (SHARD-812).
+func TestTransportDrainGivesUpOnAnEndNoHostReads(t *testing.T) {
+	tr := &transport{shown: map[string]models.ProcessReport{}, sinks: map[string]*logSink{}, ends: map[string]uint64{}}
+	t.Cleanup(func() { tr.keep(nil) })
+	tr.keep([]string{"web"})
+	out, err := tr.output("web")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := out.WriteString("last words\n"); err != nil {
+		t.Fatal(err)
+	}
+	sink := tr.sinks["web"]
+	waitFor(t, 5*time.Second, "the sink to hold the output", func() bool {
+		sink.mu.Lock()
+		defer sink.mu.Unlock()
+
+		return len(sink.held) == len("last words\n")
+	})
+	// net.Pipe holds a write until the host reads it, and this host never does.
+	host, guestEnd := net.Pipe()
+	closeLater(t, host)
+	closeLater(t, guestEnd)
+	tr.control = guestEnd
+	if err := tr.changed(models.ProcessReport{Name: "web", Seq: 1, ProcessStatus: models.ProcessStatus{State: models.ProcessStopped}}, nil); err != nil {
+		t.Fatal(err)
+	}
+
+	grace := 50 * time.Millisecond
+	asked := time.Now()
+	err = tr.drain(grace)
+	if err == nil || !strings.Contains(err.Error(), "still unsent") {
+		t.Fatalf("the drain of an end no host reads gave %v, want it given up", err)
+	}
+	if took := time.Since(asked); took < 2*grace || took > 5*time.Second {
+		t.Fatalf("the drain took %s, want two graces of %s and not much more", took, grace)
+	}
+}
+
 // treeArgv is sh -c 'sleep 600 & wait', which leaves its sleep behind on a TERM, and writes the sleep's pid to pidFile.
 func treeArgv(pidFile, then string) []string {
 	return []string{"/bin/sh", "-c", `sleep 600 & echo $! >>"$1"; ` + then, "sh", pidFile}

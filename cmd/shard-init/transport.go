@@ -40,6 +40,8 @@ type transport struct {
 	// sinks hold each process's output for its logs connection, under sinksMu.
 	sinks   map[string]*logSink
 	sinksMu sync.Mutex
+	// ending counts the ends still waiting for their output's ack, which the power off waits for.
+	ending sync.WaitGroup
 	// ends are where the sink of a name let go of stopped, so a later process of that name goes on from there and a host's cursor never skips its output.
 	ends map[string]uint64
 	// rekey reseeds the guest crng; nil in a test on a Linux host, whose crng is the host's own.
@@ -114,6 +116,10 @@ func serveTransport(name string, boot guestBoot) error {
 	if err := t.g.supervise(); err != nil {
 		return t.fail(fmt.Errorf("%w: %w", errSupervisor, err))
 	}
+	// Log and continue, ruled by the lead on SHARD-812: a host that reads no control must not hold the stop, whose cut comes anyway.
+	if err := t.drain(endGrace); err != nil {
+		fmt.Fprintln(os.Stderr, "shard-init:", err)
+	}
 
 	if err := t.seal(freezeRoot); err != nil {
 		return t.fail(fmt.Errorf("%w: %w", errSupervisor, err))
@@ -131,6 +137,34 @@ var failureGrace = 10 * time.Second
 
 // A freeze that outlasts this has a disk it cannot settle, and the stop goes on without it rather than hang.
 var sealGrace = 5 * time.Second
+
+// A host lands a process's last output well within this, and output it has not acked by then dies with the VM anyway.
+const endGrace = 2 * time.Second
+
+// drain holds the power off until each end goes to the host (SHARD-812); past grace an end goes without its output's ack, and one still unsent a grace later is the error.
+func (t *transport) drain(grace time.Duration) error {
+	sent := make(chan struct{})
+	go func() {
+		t.ending.Wait()
+		close(sent)
+	}()
+	select {
+	case <-sent:
+		return nil
+	case <-time.After(grace):
+	}
+	t.sinksMu.Lock()
+	for _, sink := range t.sinks {
+		sink.abandon()
+	}
+	t.sinksMu.Unlock()
+	select {
+	case <-sent:
+		return nil
+	case <-time.After(grace):
+		return fmt.Errorf("the end of a process is still unsent %s after the guest stopped waiting for its output's ack", grace)
+	}
+}
 
 // seal skips a forced stop, which never freezes, so its dirty disk is one a grow refuses by name (shard ruling 790da96b).
 func (t *transport) seal(freeze func(*os.File) error) error {
@@ -345,13 +379,13 @@ func (t *transport) changed(p models.ProcessReport, _ []models.ProcessReport) er
 	if err != nil {
 		return errors.Join(err, t.show(p))
 	}
-	go func() {
+	t.ending.Go(func() {
 		sink.landed(mark)
 		// A host that missed the end reads it in the replay, so a failed write is reported and never fatal (AGENTS.md).
 		if err := t.show(p); err != nil {
 			fmt.Fprintf(os.Stderr, "shard-init: report the end of %q: %v\n", p.Name, err)
 		}
-	}()
+	})
 
 	return nil
 }
@@ -647,7 +681,7 @@ type logSink struct {
 	held []byte
 	from uint64
 	conn net.Conn
-	// stopped is a host whose log refused the output, so until the next host nothing waits for an ack.
+	// stopped is a host whose log refused the output, or a guest powering off, so until the next host nothing waits for an ack.
 	stopped bool
 	// closed is a sink whose process the guest let go of, which holds and serves nothing more.
 	closed bool
@@ -940,6 +974,15 @@ func (s *logSink) stop(conn net.Conn) {
 	if s.conn != conn {
 		return
 	}
+	s.stopped = true
+	s.cond.Broadcast()
+}
+
+// abandon lets an end go without the ack, once the power off cannot wait for the output to land.
+func (s *logSink) abandon() {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
 	s.stopped = true
 	s.cond.Broadcast()
 }
