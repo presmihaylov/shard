@@ -72,7 +72,7 @@ func TestTheProviderNamesItsSubstrate(t *testing.T) {
 }
 
 func TestOnlyThePortIsClaimed(t *testing.T) {
-	if got := newProvider(t).Capabilities(); got != (models.Capabilities{Port: true}) {
+	if got := newProvider(t).Capabilities(); got != (models.Capabilities{Port: true, DiskGrow: true}) {
 		t.Errorf("got capabilities %+v, want only port", got)
 	}
 }

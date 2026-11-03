@@ -100,17 +100,36 @@ func TestResizeRewritesTheBoundsTheNextStartReads(t *testing.T) {
 	}
 }
 
-func TestResizeLeavesTheDiskToGrowDisk(t *testing.T) {
+// The bundle here was never provisioned, so the grow has no disk to reach and must leave the bound as it was.
+func TestResizeAFailedGrowKeepsTheBound(t *testing.T) {
 	b, _ := build(t, models.SandboxSpec{Resources: models.Resources{DiskMiB: 64}}, models.ImageConfig{})
 
 	if err := b.Resize(models.Resources{DiskMiB: 128}); err == nil {
 		t.Fatal("Resize took a disk bound the disk does not have")
 	}
+	if got := diskBoundOf(t, b); got != 64 {
+		t.Errorf("the refused resize left a %d MiB disk bound, want 64", got)
+	}
+}
+
+func TestResizeRefusesADiskThatShrinks(t *testing.T) {
+	b, _ := build(t, models.SandboxSpec{Resources: models.Resources{DiskMiB: 128}}, models.ImageConfig{})
+
+	err := b.Resize(models.Resources{DiskMiB: 64})
+	if err == nil || !strings.Contains(err.Error(), "does not shrink") {
+		t.Fatalf("Resize returned %v, want a refusal that says the disk does not shrink", err)
+	}
+	if got := diskBoundOf(t, b); got != 128 {
+		t.Errorf("the refused shrink left a %d MiB disk bound, want 128", got)
+	}
+}
+
+func diskBoundOf(t *testing.T, b bundle.Bundle) int64 {
+	t.Helper()
 	rt, err := b.Runtime()
 	if err != nil {
 		t.Fatalf("Runtime: %v", err)
 	}
-	if rt.Resources.DiskMiB != 64 {
-		t.Errorf("the refused resize left a %d MiB disk bound, want 64", rt.Resources.DiskMiB)
-	}
+
+	return rt.Resources.DiskMiB
 }

@@ -13,6 +13,8 @@ import (
 	"strings"
 	"syscall"
 
+	"golang.org/x/sys/unix"
+
 	"github.com/presmihaylov/shard/pkg/mountinfo"
 )
 
@@ -62,6 +64,70 @@ func Mount(image, dir string) error {
 	}
 
 	return nil
+}
+
+// Grow makes the image mounted at dir size bytes and grows its ext4 online; each step is idempotent, so a cut grow finishes on the next call.
+func Grow(image, dir string, size int64) error {
+	device, err := loopAt(image, dir)
+	if err != nil {
+		return err
+	}
+
+	info, err := os.Stat(image)
+	if err != nil {
+		return fmt.Errorf("stat %s: %w", image, err)
+	}
+	if info.Size() > size {
+		return fmt.Errorf("%s is %d bytes and does not shrink to %d", image, info.Size(), size)
+	}
+	// Truncate up keeps the file sparse, so the grow costs the host nothing until the guest writes.
+	if err := os.Truncate(image, size); err != nil {
+		return fmt.Errorf("grow %s to %d bytes: %w", image, size, err)
+	}
+
+	if err := setCapacity(device); err != nil {
+		return err
+	}
+
+	// With no size, resize2fs grows a mounted ext4 to fill its device.
+	if out, err := exec.Command("resize2fs", device).CombinedOutput(); err != nil {
+		return fmt.Errorf("resize2fs %s: %w: %s", device, err, out)
+	}
+
+	return nil
+}
+
+// setCapacity makes the loop device read its file's new size, as losetup -c does.
+func setCapacity(device string) error {
+	f, err := os.Open(device)
+	if err != nil {
+		return fmt.Errorf("open %s: %w", device, err)
+	}
+	defer f.Close()
+
+	if err := unix.IoctlSetInt(int(f.Fd()), unix.LOOP_SET_CAPACITY, 0); err != nil {
+		return fmt.Errorf("refresh the size of %s: %w", device, err)
+	}
+
+	return nil
+}
+
+// loopAt names the loop device that holds image at dir, and refuses a dir that holds nothing.
+func loopAt(image, dir string) (string, error) {
+	mounted, err := Mounted(image, dir)
+	if err != nil {
+		return "", err
+	}
+	if !mounted {
+		return "", fmt.Errorf("%s is not mounted at %s", image, dir)
+	}
+
+	m, _, err := mountinfo.At(dir)
+	if err != nil {
+		return "", err
+	}
+
+	return m.Source, nil
 }
 
 // Unmount detaches dir. MNT_DETACH, because a file the guest left open must not make a stop fail.
