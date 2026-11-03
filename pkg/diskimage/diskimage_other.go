@@ -12,6 +12,8 @@ func Create(path string, size int64) error { return ErrNotLinux }
 
 func Mount(image, dir string) error { return ErrNotLinux }
 
+func Grow(image, dir string, size int64) error { return ErrNotLinux }
+
 func Unmount(image, dir string) error { return ErrNotLinux }
 
 func Mounted(image, dir string) (bool, error) { return false, ErrNotLinux }

@@ -57,9 +57,18 @@ async def stop_start(ctx: AsyncContext) -> None:
     equal((await sandbox.exec("cat /root/kept")).stdout, "kept\n", "a start keeps the root a stop left")
 
 
+async def disk_kib(sandbox: AsyncSandbox) -> int:
+    """The size of the root filesystem in KiB, as df reports it."""
+    result = await sandbox.exec("df -Pk / | tail -1")
+    equal(result.exit_code, 0, result.stderr)
+    return int(result.stdout.split()[1])
+
+
 async def resize(ctx: AsyncContext) -> None:
     verbs = await ctx.shard.capabilities()
     sandbox = await ctx.create(memory_mib=256)
+    await sandbox.exec("echo kept > /root/kept")
+    before = await disk_kib(sandbox)
     await rejects(ConflictError, lambda: sandbox.resize(memory_mib=512))
     await sandbox.stop()
     await sandbox.resize(memory_mib=512, vcpus=1)
@@ -70,6 +79,11 @@ async def resize(ctx: AsyncContext) -> None:
     await agrees("disk grow", verbs.disk_grow, lambda: sandbox.resize(disk_mib=disk + 1024))
     await sandbox.start()
     equal((await sandbox.inspect()).resources.memory_mib, 512, "the start runs under the new bound")
+    equal((await sandbox.exec("cat /root/kept")).stdout, "kept\n", "a resize keeps the files")
+    if verbs.disk_grow:
+        # The ext4 keeps some of the new GiB for its own metadata.
+        grown = await disk_kib(sandbox) - before
+        ok(grown > 900 * 1024, f"the root grew by {grown} KiB, want about 1 GiB")
 
 
 async def pause_resume(ctx: AsyncContext) -> None:
