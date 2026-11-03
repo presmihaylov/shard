@@ -68,6 +68,13 @@ test("a create forwards its ports, private unless it says public", async () => {
   assert.equal(JSON.parse(sent("POST", "/v0/sandboxes", 1).body).ports, undefined);
 });
 
+test("a create sends its links, and none when it names none", async () => {
+  await shard.create({ image: "alpine", links: ["db1", "sb_3"] });
+  assert.deepEqual(JSON.parse(sent("POST", "/v0/sandboxes").body).links, ["db1", "sb_3"]);
+  await shard.create({ image: "alpine", links: [] });
+  assert.equal(JSON.parse(sent("POST", "/v0/sandboxes", 1).body).links, undefined);
+});
+
 test("ports reads every page of every sandbox's forwards", async () => {
   routes.set("GET /v0/ports", (request) => {
     if (request.url.searchParams.get("cursor") === "9000") {

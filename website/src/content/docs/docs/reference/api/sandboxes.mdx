@@ -58,7 +58,7 @@ Each route answers an error with the [Error](/docs/reference/api/#error) body, u
 
 `POST /v0/sandboxes` · scope `sandbox:write`
 
-A create that names secrets also needs the secret:\* scope, one that names a policy needs policy:\*, and one that forwards ports needs port:write; without it the answer is 403 forbidden.
+A create that names secrets also needs the secret:\* scope, one that names a policy needs policy:\*, one that forwards ports needs port:write, and one that links sandboxes needs ssh; without it the answer is 403 forbidden.
 
 **Parameters**
 
@@ -297,6 +297,7 @@ A create that names secrets also needs the secret:\* scope, one that names a pol
 | --- | --- | --- | --- |
 | `env` | array of string | no |  |
 | `image` | string | no | The image to create from. A create names exactly one of image and snapshot. |
+| `links` | array of string | no | The sandboxes, by id or name, the new sandbox links, as link add would link them. |
 | `name` | string | no |  |
 | `policy` | string | no |  |
 | `ports` | array of [PortForward](#portforward) | no |  |
@@ -376,6 +377,7 @@ A create that names secrets also needs the secret:\* scope, one that names a pol
 | `id` | string | yes |  |
 | `image` | string | yes |  |
 | `kernel` | string | no |  |
+| `links` | array of [Link](#link) | no |  |
 | `name` | string | no |  |
 | `oom` | [OOM](#oom) | no |  |
 | `policy` | string | no |  |
@@ -388,6 +390,14 @@ A create that names secrets also needs the secret:\* scope, one that names a pol
 | `started_at` | string (date-time) | no |  |
 | `state` | string | yes | One of `pending`, `created`, `running`, `paused`, `unresponsive`, `stopped`, `failed`. |
 | `stopped_reason` | string | no |  |
+
+### Link
+
+| Field | Type | Required | Description |
+| --- | --- | --- | --- |
+| `address` | string (ip) | yes | The address the source reaches the target on, from 10.86.0.0/16 and shared by every link to that target. |
+| `target` | string | yes | The sandbox the link reaches, by its name, or by its id when it has none. |
+| `target_id` | string | yes | The id of the sandbox the link reaches. |
 
 ### OOM
 
@@ -470,6 +480,7 @@ A create that names secrets also needs the secret:\* scope, one that names a pol
 | `id` | string | yes |  |
 | `image` | string | yes |  |
 | `kernel` | string | no |  |
+| `links` | array of [Link](#link) | no |  |
 | `name` | string | no |  |
 | `oom` | [OOM](#oom) | no |  |
 | `policy` | string | no |  |

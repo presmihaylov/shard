@@ -7,6 +7,7 @@ import (
 	"io"
 	"net"
 	"net/http"
+	"net/netip"
 	"os"
 	"path/filepath"
 	"slices"
@@ -27,6 +28,7 @@ type forkScopesCase struct {
 	scopes  []string
 	need    string
 	forge   bool
+	links   []models.Link
 }
 
 func TestForkRequiresScopesForCopiedGrants(t *testing.T) {
@@ -39,6 +41,8 @@ func TestForkRequiresScopesForCopiedGrants(t *testing.T) {
 		{name: "both allowed", secrets: []string{"TOKEN"}, policy: "locked", scopes: []string{models.ScopeSandboxWrite, models.ScopeSecret, models.ScopePolicy}},
 		{name: "wildcard allowed", secrets: []string{"TOKEN"}, policy: "locked", scopes: []string{models.ScopeAll}},
 		{name: "forged header refused", secrets: []string{"TOKEN"}, scopes: []string{models.ScopeSandboxWrite}, need: models.ScopeSecret, forge: true},
+		{name: "link refused", links: []models.Link{dbLink}, scopes: []string{models.ScopeSandboxWrite, models.ScopeExec}, need: models.ScopeSSH},
+		{name: "link allowed", links: []models.Link{dbLink}, scopes: []string{models.ScopeSandboxWrite, models.ScopeSSH}},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) { forkWithScopes(t, tc) })
@@ -95,7 +99,7 @@ func TestForkOnTheLocalSocketKeepsEveryRight(t *testing.T) {
 func forkWithScopes(t *testing.T, tc forkScopesCase) {
 	t.Helper()
 	source := forkSource()
-	source.Secrets, source.Policy = tc.secrets, tc.policy
+	source.Secrets, source.Policy, source.Links = tc.secrets, tc.policy, tc.links
 	r := &recorder{}
 	svc, layers := newService(t, r, source)
 	handler := api.NewHandler("test", nil, layers.repo, nil, svc, nil, nil, nil, nil, io.Discard)
@@ -118,10 +122,13 @@ func forkWithScopes(t *testing.T, tc forkScopesCase) {
 	if status != http.StatusCreated {
 		t.Fatalf("fork answered %d %v", status, body)
 	}
-	if !slices.Equal(layers.repo.created.Secrets, tc.secrets) || layers.repo.created.Policy != tc.policy {
+	if !slices.Equal(layers.repo.created.Secrets, tc.secrets) || layers.repo.created.Policy != tc.policy || !slices.Equal(layers.repo.created.Links, tc.links) {
 		t.Fatalf("fork did not retain the allowed grants: %+v", layers.repo.created)
 	}
 }
+
+// dbLink is a link a fork source holds, which only a token that may ssh copies.
+var dbLink = models.Link{Target: "db1", TargetID: "sandbox7", Address: netip.MustParseAddr("10.86.0.1")}
 
 func forkRefused(t *testing.T, status int, body map[string]any, need string, r *recorder) {
 	t.Helper()

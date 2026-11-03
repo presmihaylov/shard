@@ -115,6 +115,10 @@ type fakeLifecycle struct {
 	port     sandbox.PortRequest
 	ports    []models.Port
 
+	// target is what a link put or rm named, and links what a link list answers.
+	target string
+	links  []models.Link
+
 	// sshID is the id an ssh route's reference resolves to.
 	sshID string
 }
@@ -327,6 +331,24 @@ func (f *fakeLifecycle) ListPorts(_ context.Context, ref string) ([]models.Port,
 	f.ref = ref
 
 	return f.ports, f.err
+}
+
+func (f *fakeLifecycle) AddLink(_ context.Context, ref, target string) (models.Link, error) {
+	f.ref, f.target = ref, target
+
+	return models.Link{Target: target, TargetID: "sandbox2", Address: models.LinkSubnet.Addr().Next()}, f.err
+}
+
+func (f *fakeLifecycle) RemoveLink(_ context.Context, ref, target string) error {
+	f.ref, f.target = ref, target
+
+	return f.err
+}
+
+func (f *fakeLifecycle) ListLinks(_ context.Context, ref string) ([]models.Link, error) {
+	f.ref = ref
+
+	return f.links, f.err
 }
 
 func (f *fakeLifecycle) Stop(_ context.Context, ref string) (models.Sandbox, error) {

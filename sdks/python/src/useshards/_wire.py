@@ -76,6 +76,7 @@ def create_body(
     vcpus: int | None,
     disk_mib: int | None,
     ports: Sequence[PortForward] | None,
+    links: Sequence[str] | None,
     swap_mib: int | None,
 ) -> models.CreateRequest:
     """The body of a create. A None memory takes the snapshot's or provider's bound, any other None the default."""
@@ -97,6 +98,7 @@ def create_body(
         secrets=list(secrets) if secrets else UNSET,
         policy=policy or UNSET,
         ports=[_port_forward(each) for each in ports] if ports else UNSET,
+        links=list(links) if links else UNSET,
     )
 
 
