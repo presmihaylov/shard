@@ -3,12 +3,14 @@ export { Sandbox, type FollowOptions } from "./sandbox.js";
 export { Process, Processes, type RunOptions } from "./process.js";
 export { Files, type FileEntry, type FileInfo, type FileType, type WriteOptions } from "./files.js";
 export { Ports } from "./ports.js";
+export { Links } from "./links.js";
 export type {
   Capabilities,
   DNSMode,
   EgressDecision,
   ExitStatus,
   HostAddress,
+  Link,
   OOMInfo,
   Policy,
   PolicyRule,

@@ -70,6 +70,9 @@ type Sandbox struct {
 	// Ports are the host ports the daemon forwards into this sandbox while it runs; a fork starts with none.
 	Ports []PortForward `json:"ports,omitempty"`
 
+	// Links are the sandboxes this one reaches by name; they outlive a stop and leave with their target.
+	Links []Link `json:"links,omitempty"`
+
 	// StartedAt is when the daemon last started the sandbox, which a resume keeps: ls reads its uptime from it.
 	StartedAt time.Time `json:"started_at,omitzero"`
 	// RunStartedAt is when this run began, a resume included, so liveness tells one run from the next; never served.
