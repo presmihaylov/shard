@@ -31,7 +31,7 @@ the ones a substrate lacks.
 | `fork` of a running sandbox | yes | **no** | **no** | Apple silicon on macOS 14+, **no** on 13 or on Intel | yes |
 | `--swap` above 0 | **no** | **no** | **no** | yes | yes |
 | `resize` of memory, vCPUs and swap | yes | yes | yes | yes | yes |
-| `resize --disk` that grows the disk | **no** | **no** | **no** | yes | yes |
+| `resize --disk` that grows the disk | yes | yes | yes | yes | yes |
 
 ### What a host picks without --provider
 
@@ -552,6 +552,13 @@ block group is too small for its own metadata. On `vz` a bound under the image's
 after the pull, because only then is that size known (SHARD-280). A gVisor, Sysbox or runc host
 needs `mkfs.ext4`, which `e2fsprogs` ships. On Sysbox the directories that `sysbox-runc` backs from
 the host, `/var/lib/docker` among them, sit outside the image and so outside the bound.
+
+`shard resize --disk` grows the disk of a stopped sandbox in place. On gVisor, Sysbox and runc it
+truncates `disk.img` up, tells the loop device the new size (`LOOP_SET_CAPACITY`, what `losetup -c`
+does) and runs `resize2fs` on the mounted ext4. A disk that is down is mounted for the grow and
+detached after it. Each step is safe to repeat, so a grow cut halfway completes on the next resize.
+On `vz` and Firecracker it grows a clone of the image and renames it over the original. A smaller
+bound is refused on every provider, as a disk only grows.
 
 ## What a microVM boots from
 
