@@ -357,6 +357,8 @@ OOM_ID=""
 say "one OOM, one stop, and the run the daemon started again skipped the fill"
 
 port_steps --memory "${MEMORY}MiB"
+ssh_steps --memory "${MEMORY}MiB"
+link_steps --memory "${MEMORY}MiB"
 
 step "reach the network from the microVM"
 expect_network "after the create"
