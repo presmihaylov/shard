@@ -640,7 +640,6 @@ class Gate:
         self.actor("py", "exec", sid, "wget -q -T 5 -O /dev/null http://192.0.2.1/ || true")
         self.sweep("GET", f"{box}/egress-log")
         self.sweep("POST", f"{box}/stop")
-        self.sweep("POST", f"{box}/resize", {"resources": {"memory_mib": 1024}})
         self.sweep("DELETE", f"{box}/policy")
         self.sweep("DELETE", f"{box}/secrets/{secret}")
         self.sweep("DELETE", f"/v0/secrets/{secret}")
@@ -706,7 +705,6 @@ class Gate:
         if unpullable.status < 300:
             self.sandboxes.append(str(unpullable.json()["id"]))
         self.sweep("POST", f"{box}/exec", {"command": []})
-        self.sweep("POST", f"{box}/resize", {"resources": {"memory_mib": 2048}})
         self.sweep("GET", f"{box}/files?path=/gate/no/such/file")
         self.sweep("GET", f"{box}/files?path=relative")
         self.sweep("DELETE", f"/v0/snapshots/gate-no-such-{self.tag}")

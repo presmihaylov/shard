@@ -37,7 +37,6 @@ type Lifecycle interface {
 	Pause(ctx context.Context, ref string) (models.Sandbox, error)
 	Resume(ctx context.Context, ref string) (models.Sandbox, error)
 	Fork(ctx context.Context, ref string, req sandbox.CopyRequest) (models.Sandbox, error)
-	Resize(ctx context.Context, ref string, req sandbox.ResizeRequest) (models.Sandbox, error)
 	CreateSnapshot(ctx context.Context, req sandbox.SnapshotRequest) (models.Snapshot, error)
 	ListSnapshots(ctx context.Context) ([]models.Snapshot, error)
 	InspectSnapshot(ctx context.Context, ref string) (models.Snapshot, error)
@@ -237,7 +236,6 @@ func (h *Handler) routeTable() []routeEntry {
 		public("POST", "/v0/sandboxes/{id}/pause", SandboxWrite, operation("sandboxes", "pause-sandbox", "Save a sandbox's state and suspend it", 0), typed(h.pauseSandbox)),
 		public("POST", "/v0/sandboxes/{id}/resume", SandboxWrite, operation("sandboxes", "resume-sandbox", "Resume a paused sandbox from its saved state", 0), typed(h.resumeSandbox)),
 		public("POST", "/v0/sandboxes/{id}/fork", SandboxWrite, operation("sandboxes", "fork-sandbox", "Create a sandbox from a running sandbox's memory and files", http.StatusCreated), typed(h.forkSandbox)),
-		public("POST", "/v0/sandboxes/{id}/resize", SandboxWrite, operation("sandboxes", "resize-sandbox", "Change the memory, vCPU, disk or swap bounds of a stopped sandbox", 0), typed(h.resizeSandbox)),
 		public("POST", "/v0/sandboxes/{id}/exec", Exec, operation("exec", "create-exec", "Execute a command in a running sandbox", http.StatusCreated), typed(h.createExec)),
 		public("GET", "/v0/sandboxes/{id}/exec", Exec, operation("exec", "list-execs", "List the execs of a sandbox", 0), typed(h.listExecs)),
 		public("GET", "/v0/sandboxes/{id}/exec/{exec}", Exec, operation("exec", "get-exec", "Read, wait for or attach to an exec", 0), raw[getExecInput](h.getExec, describeGetExec)),
@@ -312,7 +310,7 @@ type versionResponse struct {
 	APIVersion string `json:"api_version"`
 }
 
-// Capabilities is every lifecycle verb, swap and disk grow, and whether this server supports each, the same twelve keys for every provider.
+// Capabilities is every lifecycle verb and swap, and whether this server supports each, the same ten keys for every provider.
 type Capabilities struct {
 	Create bool `json:"create"`
 	Start  bool `json:"start"`
@@ -326,10 +324,6 @@ type Capabilities struct {
 	Port     bool `json:"port"`
 	// Swap is a swap file on the sandbox's own disk, which only a VM provider makes.
 	Swap bool `json:"swap"`
-	// Resize changes a stopped sandbox's memory, vCPU and swap bounds, which every provider does. Optional, as a daemon from before it omits it.
-	Resize bool `json:"resize" required:"false"`
-	// DiskGrow is a resize that grows the disk, which only a VM provider does so far. Optional, as a daemon from before it omits it.
-	DiskGrow bool `json:"disk_grow" required:"false"`
 }
 
 // ScopesResponse lists every scope a token can carry, never the caller's own.
@@ -372,7 +366,7 @@ func (h *Handler) getScopes(context.Context, *struct{}) (*reply[ScopesResponse],
 
 // capabilitiesOf answers true for the verbs every provider runs, and the provider's own answer for the optional ones.
 func capabilitiesOf(c models.Capabilities) Capabilities {
-	return Capabilities{Create: true, Start: true, Stop: true, Remove: true, Pause: c.Pause, Resume: c.Resume, Fork: c.Fork, Snapshot: true, Port: c.Port, Swap: c.Swap, Resize: true, DiskGrow: c.DiskGrow}
+	return Capabilities{Create: true, Start: true, Stop: true, Remove: true, Pause: c.Pause, Resume: c.Resume, Fork: c.Fork, Snapshot: true, Port: c.Port, Swap: c.Swap}
 }
 
 func (h *Handler) getDaemon(w http.ResponseWriter, r *http.Request) {
@@ -708,10 +702,6 @@ func (h *Handler) pauseSandbox(ctx context.Context, in *sandboxPath) (*reply[San
 
 func (h *Handler) resumeSandbox(ctx context.Context, in *sandboxPath) (*reply[Sandbox], error) {
 	return publicReply(h.lifecycle.Resume(ctx, in.ID))
-}
-
-func (h *Handler) resizeSandbox(ctx context.Context, in *sandboxRequest[sandbox.ResizeRequest]) (*reply[Sandbox], error) {
-	return publicReply(h.lifecycle.Resize(ctx, in.ID, in.Body))
 }
 
 func (h *Handler) forkSandbox(ctx context.Context, in *sandboxBody[sandbox.CopyRequest]) (*reply[Sandbox], error) {

@@ -15,7 +15,7 @@ What a server can do depends on its provider. Ask it which lifecycle verbs it su
 	<TabItem label="CLI">
 
 ```sh
-# Prints each of the twelve capabilities, true or false.
+# Prints each of the ten capabilities, true or false.
 shard capabilities
 ```
 
@@ -95,8 +95,6 @@ A sandbox can have four bounds: memory, CPU, processes and disk. On `vz` and `fi
 **Disk.** `--disk` bounds everything a sandbox can write. The default is 10240 MiB, and no value turns the bound off.
 
 A write that would go past the bound fails with `ENOSPC`, and the sandbox keeps running. On Firecracker and vz, a few sizes are refused, and the error names the nearest sizes that work.
-
-**Resize.** `shard resize` changes the memory, vCPU, disk and swap bounds of a stopped sandbox, under the same rules as `create`. It refuses a running sandbox and a smaller disk. A disk grows only on `vz` and `firecracker`.
 
 For the defaults of each bound on each provider, see [Resource bounds by provider](/docs/concepts/providers/#resource-bounds-by-provider).
 

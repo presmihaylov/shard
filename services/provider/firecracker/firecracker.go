@@ -270,7 +270,7 @@ func (p *Provider) DefaultMemoryMiB() int64 { return DefaultMemoryMiB }
 
 // Capabilities are pause, resume and fork, which every host with /dev/kvm has: a snapshot is two files the vmm writes. A port rides vsock. Swap is the guest kernel's own.
 func (p *Provider) Capabilities() models.Capabilities {
-	return models.Capabilities{Pause: true, Resume: true, Fork: true, Port: true, Swap: true, DiskGrow: true}
+	return models.Capabilities{Pause: true, Resume: true, Fork: true, Port: true, Swap: true}
 }
 
 // CheckResources is checkResources before any record exists, so a refused --memory leaves no failed sandbox in ls.

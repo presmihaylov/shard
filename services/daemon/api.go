@@ -616,15 +616,6 @@ func (l *lifecycle) Fork(ctx context.Context, ref string, req sandbox.CopyReques
 	return svc.Fork(ctx, ref, req)
 }
 
-func (l *lifecycle) Resize(ctx context.Context, ref string, req sandbox.ResizeRequest) (models.Sandbox, error) {
-	svc, err := l.service()
-	if err != nil {
-		return models.Sandbox{}, err
-	}
-
-	return svc.Resize(ctx, ref, req)
-}
-
 func (l *lifecycle) CreateSnapshot(ctx context.Context, req sandbox.SnapshotRequest) (models.Snapshot, error) {
 	svc, err := l.service()
 	if err != nil {

@@ -6,7 +6,7 @@ import (
 	"text/tabwriter"
 )
 
-// capabilities prints every lifecycle verb, swap and disk grow, and whether the server it asks supports each, the daemon here or the one --remote names.
+// capabilities prints every lifecycle verb and swap, and whether the server it asks supports each, the daemon here or the one --remote names.
 func (a App) capabilities(ctx context.Context, args []string) error {
 	rest, format, err := parseFormatArgs("capabilities", args, formatTable)
 	if err != nil {
@@ -36,7 +36,7 @@ func (a App) capabilities(ctx context.Context, args []string) error {
 	}{
 		{"create", caps.Create}, {"start", caps.Start}, {"stop", caps.Stop}, {"remove", caps.Remove},
 		{"pause", caps.Pause}, {"resume", caps.Resume}, {"fork", caps.Fork}, {"snapshot", caps.Snapshot},
-		{"resize", caps.Resize}, {"port", caps.Port}, {"swap", caps.Swap}, {"disk_grow", caps.DiskGrow},
+		{"port", caps.Port}, {"swap", caps.Swap},
 	} {
 		fmt.Fprintf(w, "%s\t%t\n", verb.name, verb.supported)
 	}

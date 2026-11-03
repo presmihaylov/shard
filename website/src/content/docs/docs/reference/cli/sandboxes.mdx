@@ -451,38 +451,6 @@ shard start web
 
 Processes with the always or unless-stopped policy start again, except those killed.
 
-## shard resize
-
-Change a stopped sandbox's memory, CPUs, disk or swap.
-
-```text
-shard resize [OPTIONS] SANDBOX
-```
-
-**Examples**
-
-```sh
-shard resize --memory 4GiB --vcpus 4 web
-shard resize --disk 30GiB web
-```
-
-**Arguments**
-
-| Argument | Description |
-| --- | --- |
-| `SANDBOX` | sandbox ID or name |
-
-**Options**
-
-| Option | Description |
-| --- | --- |
-| `--memory <size>` | memory limit; 0 is 512MiB on Firecracker and vz, none on gVisor, runc and Sysbox |
-| `--vcpus <n>` | CPU count; 0 uses all available host CPUs, up to 32 on Firecracker |
-| `--disk <size>` | disk limit; it only grows, and only where `shard capabilities` says disk\_grow |
-| `--swap <size>` | swap file inside the disk limit; 0 for none, Firecracker and vz only |
-
-The sandbox must be stopped. A bound left out keeps its value. The disk and its filesystem grow at once; memory, CPUs and swap apply from the next `shard start`. Prints the sandbox ID.
-
 ## shard remove
 
 Remove sandboxes and their files.

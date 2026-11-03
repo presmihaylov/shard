@@ -23,8 +23,6 @@ class Capabilities:
     start: bool
     stop: bool
     swap: bool
-    disk_grow: bool | Unset = UNSET
-    resize: bool | Unset = UNSET
 
     def to_dict(self) -> dict[str, Any]:
         create = self.create
@@ -47,10 +45,6 @@ class Capabilities:
 
         swap = self.swap
 
-        disk_grow = self.disk_grow
-
-        resize = self.resize
-
         field_dict: dict[str, Any] = {}
 
         field_dict.update(
@@ -67,10 +61,6 @@ class Capabilities:
                 "swap": swap,
             }
         )
-        if disk_grow is not UNSET:
-            field_dict["disk_grow"] = disk_grow
-        if resize is not UNSET:
-            field_dict["resize"] = resize
 
         return field_dict
 
@@ -97,10 +87,6 @@ class Capabilities:
 
         swap = d.pop("swap")
 
-        disk_grow = d.pop("disk_grow", UNSET)
-
-        resize = d.pop("resize", UNSET)
-
         capabilities = cls(
             create=create,
             fork=fork,
@@ -112,8 +98,6 @@ class Capabilities:
             start=start,
             stop=stop,
             swap=swap,
-            disk_grow=disk_grow,
-            resize=resize,
         )
 
         return capabilities

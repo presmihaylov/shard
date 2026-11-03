@@ -208,7 +208,7 @@ export interface Version {
   apiVersion: string;
 }
 
-/** Capabilities say which of the ten lifecycle verbs the daemon's provider supports, and whether it gives a sandbox swap and disk grow; snapshot is the creation of a filesystem snapshot, and port the forward of a host port. */
+/** Capabilities say which of the nine lifecycle verbs the daemon's provider supports, and whether it gives a sandbox swap; snapshot is the creation of a filesystem snapshot, and port the forward of a host port. */
 export interface Capabilities {
   create: boolean;
   start: boolean;
@@ -218,11 +218,8 @@ export interface Capabilities {
   resume: boolean;
   fork: boolean;
   snapshot: boolean;
-  resize: boolean;
   port: boolean;
   swap: boolean;
-  /** Whether a resize grows a stopped sandbox's disk. */
-  diskGrow: boolean;
 }
 
 export function sandboxInfo(value: unknown): SandboxInfo {
@@ -348,10 +345,8 @@ export function capabilities(value: unknown): Capabilities {
     resume: fields.bool("resume"),
     fork: fields.bool("fork"),
     snapshot: fields.bool("snapshot"),
-    resize: fields.bool("resize"),
     port: fields.bool("port"),
     swap: fields.bool("swap"),
-    diskGrow: fields.bool("disk_grow"),
   };
 }
 

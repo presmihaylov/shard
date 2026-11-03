@@ -20,7 +20,7 @@ any other `--provider`, because the other substrate has never heard of those san
 | Status | every verb | every required verb, no optional verb | every required verb, no optional verb | every verb on Apple silicon with macOS 14+; no pause or resume on 13 or on Intel | every verb |
 
 The capability table uses the CLI names. The first row holds the required verbs. The other rows
-are the optional verbs, the swap file and the resize: `Capabilities` reports each one, and the daemon refuses
+are the optional verbs and the swap file: `Capabilities` reports each one, and the daemon refuses
 the ones a substrate lacks.
 
 | Verb | gVisor | Sysbox | runc | vz | Firecracker |
@@ -30,8 +30,6 @@ the ones a substrate lacks.
 | `resume` | yes | **no** | **no** | Apple silicon on macOS 14+, **no** on 13 or on Intel | yes |
 | `fork` of a running sandbox | yes | **no** | **no** | Apple silicon on macOS 14+, **no** on 13 or on Intel | yes |
 | `--swap` above 0 | **no** | **no** | **no** | yes | yes |
-| `resize` of memory, vCPUs and swap | yes | yes | yes | yes | yes |
-| `resize --disk` that grows the disk | **no** | **no** | **no** | yes | yes |
 
 ### What a host picks without --provider
 

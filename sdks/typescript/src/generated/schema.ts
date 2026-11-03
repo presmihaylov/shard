@@ -473,23 +473,6 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
-    "/v0/sandboxes/{id}/resize": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        get?: never;
-        put?: never;
-        /** Change the memory, vCPU, disk or swap bounds of a stopped sandbox */
-        post: operations["resize-sandbox"];
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
     "/v0/sandboxes/{id}/resume": {
         parameters: {
             query?: never;
@@ -687,12 +670,10 @@ export interface components {
     schemas: {
         Capabilities: {
             create: boolean;
-            disk_grow?: boolean;
             fork: boolean;
             pause: boolean;
             port: boolean;
             remove: boolean;
-            resize?: boolean;
             resume: boolean;
             snapshot: boolean;
             start: boolean;
@@ -1000,19 +981,6 @@ export interface components {
         };
         ProcessesResponse: {
             processes: components["schemas"]["Process"][];
-        };
-        ResizeRequest: {
-            resources: components["schemas"]["ResizeResources"];
-        };
-        ResizeResources: {
-            /** @description The disk bound in MiB, which only grows, and only on a provider whose capabilities say disk_grow. 0 is 10240 (int64). */
-            disk_mib?: number;
-            /** @description The memory bound in MiB. 0 is 512 on the firecracker and vz providers, and no bound on gvisor, runc and sysbox (int64). */
-            memory_mib?: number;
-            /** @description The swap file in MiB, which counts against disk_mib. 0 is none; gvisor, runc and sysbox refuse any other (int64). */
-            swap_mib?: number;
-            /** @description The vCPU bound. 0 is every CPU of the host (int64). */
-            vcpus?: number;
         };
         ResourceRequest: {
             /** Format: int64 */
@@ -2607,42 +2575,6 @@ export interface operations {
                 };
                 content: {
                     "text/plain": string;
-                };
-            };
-            /** @description Error */
-            default: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["Error"];
-                };
-            };
-        };
-    };
-    "resize-sandbox": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path: {
-                /** @description The sandbox id or name. */
-                id: string;
-            };
-            cookie?: never;
-        };
-        requestBody: {
-            content: {
-                "application/json": components["schemas"]["ResizeRequest"];
-            };
-        };
-        responses: {
-            /** @description OK */
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["Sandbox"];
                 };
             };
             /** @description Error */

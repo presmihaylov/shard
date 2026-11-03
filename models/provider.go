@@ -76,8 +76,6 @@ type Capabilities struct {
 	Port   bool `json:"port"`
 	// Swap is a swap file on the guest disk, which only a guest kernel of its own can switch on.
 	Swap bool `json:"swap"`
-	// DiskGrow is a resize that grows a stopped sandbox's disk and the filesystem on it.
-	DiskGrow bool `json:"disk_grow"`
 }
 
 // Status is what the substrate says now, never what the record says.
@@ -235,7 +233,7 @@ const (
 	CommandNotExecutableExitCode = 126
 )
 
-// Environment is the guest environment of a created or stopped sandbox, which a grant, an ungrant, an attach and a resize rewrite for the next start.
+// Environment is the guest environment of a created or stopped sandbox, which a grant, an ungrant and an attach rewrite for the next start.
 type Environment interface {
 	// CanSetEnv answers what SetEnv would refuse and writes nothing, so a grant can check before it plants.
 	CanSetEnv(name string) error
@@ -245,6 +243,4 @@ type Environment interface {
 	RemoveEnv(name string) error
 	// TrustProxy merges the proxy CA into the image roots, so the sandbox trusts the proxy from its next start.
 	TrustProxy(proxyCA []byte) error
-	// Resize sets the bounds the next start runs under, and grows the disk to its new bound; it never shrinks one.
-	Resize(res Resources) error
 }

@@ -150,7 +150,7 @@ class Shard:
         return [_types.port(record) for record in records]
 
     def capabilities(self) -> Capabilities:
-        """Return which of the ten lifecycle verbs the provider supports, and whether it gives swap and disk grow."""
+        """Return which of the nine lifecycle verbs the daemon's provider supports, and whether it gives swap."""
         return _types.capabilities(
             self._transport.answer(
                 models.Capabilities, lambda: get_capabilities.sync_detailed(client=self._transport.api)

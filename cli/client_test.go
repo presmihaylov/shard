@@ -68,7 +68,7 @@ func TestDaemonStatusPrintsOneFieldPerLine(t *testing.T) {
 	}
 }
 
-// The table lists all ten verbs in the order of the spec, then swap and disk grow, the optional ones as the provider claims them.
+// The table lists all nine verbs in the order of the spec, then swap, the optional ones as the provider claims them.
 func TestCapabilitiesPrintsEveryVerbAndWhetherTheProviderRunsIt(t *testing.T) {
 	var out bytes.Buffer
 
@@ -89,10 +89,8 @@ func TestCapabilitiesPrintsEveryVerbAndWhetherTheProviderRunsIt(t *testing.T) {
 		"resume       true",
 		"fork         false",
 		"snapshot     true",
-		"resize       true",
 		"port         true",
 		"swap         false",
-		"disk_grow    false",
 	}, "\n")
 	if got := strings.TrimSpace(out.String()); got != want {
 		t.Errorf("capabilities printed\n%s\nwant\n%s", got, want)

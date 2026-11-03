@@ -75,7 +75,6 @@ The routes that follow a stream, such as an exec attach or a `logs` follow, upgr
 | `POST` | `/v0/sandboxes/{id}/pause` | `sandbox:write` | [Save a sandbox's state and suspend it](/docs/reference/api/sandboxes/#save-a-sandboxs-state-and-suspend-it) |
 | `POST` | `/v0/sandboxes/{id}/resume` | `sandbox:write` | [Resume a paused sandbox from its saved state](/docs/reference/api/sandboxes/#resume-a-paused-sandbox-from-its-saved-state) |
 | `POST` | `/v0/sandboxes/{id}/fork` | `sandbox:write` | [Create a sandbox from a running sandbox's memory and files](/docs/reference/api/sandboxes/#create-a-sandbox-from-a-running-sandboxs-memory-and-files) |
-| `POST` | `/v0/sandboxes/{id}/resize` | `sandbox:write` | [Change the memory, vCPU, disk or swap bounds of a stopped sandbox](/docs/reference/api/sandboxes/#change-the-memory-vcpu-disk-or-swap-bounds-of-a-stopped-sandbox) |
 | `GET` | `/v0/sandboxes/{id}/egress-log` | `sandbox:read` | [Read or follow the egress decisions of a sandbox](/docs/reference/api/sandboxes/#read-or-follow-the-egress-decisions-of-a-sandbox) |
 | `POST` | `/v0/sandboxes/{id}/secrets/{name}` | `secret:*` | [Grant a secret to a sandbox](/docs/reference/api/sandboxes/#grant-a-secret-to-a-sandbox) |
 | `DELETE` | `/v0/sandboxes/{id}/secrets/{name}` | `secret:*` | [Ungrant a secret from a sandbox](/docs/reference/api/sandboxes/#ungrant-a-secret-from-a-sandbox) |

@@ -7,9 +7,6 @@
           "create": {
             "type": "boolean"
           },
-          "disk_grow": {
-            "type": "boolean"
-          },
           "fork": {
             "type": "boolean"
           },
@@ -20,9 +17,6 @@
             "type": "boolean"
           },
           "remove": {
-            "type": "boolean"
-          },
-          "resize": {
             "type": "boolean"
           },
           "resume": {
@@ -1175,51 +1169,6 @@
         "required": [
           "processes"
         ],
-        "type": "object"
-      },
-      "ResizeRequest": {
-        "additionalProperties": false,
-        "properties": {
-          "resources": {
-            "$ref": "#/components/schemas/ResizeResources"
-          }
-        },
-        "required": [
-          "resources"
-        ],
-        "type": "object"
-      },
-      "ResizeResources": {
-        "additionalProperties": false,
-        "properties": {
-          "disk_mib": {
-            "description": "The disk bound in MiB, which only grows, and only on a provider whose capabilities say disk_grow. 0 is 10240.",
-            "format": "int64",
-            "maximum": 16777088,
-            "minimum": 0,
-            "type": "integer"
-          },
-          "memory_mib": {
-            "description": "The memory bound in MiB. 0 is 512 on the firecracker and vz providers, and no bound on gvisor, runc and sysbox.",
-            "format": "int64",
-            "maximum": 16777216,
-            "minimum": 0,
-            "type": "integer"
-          },
-          "swap_mib": {
-            "description": "The swap file in MiB, which counts against disk_mib. 0 is none; gvisor, runc and sysbox refuse any other.",
-            "format": "int64",
-            "maximum": 16777088,
-            "minimum": 0,
-            "type": "integer"
-          },
-          "vcpus": {
-            "description": "The vCPU bound. 0 is every CPU of the host.",
-            "format": "int64",
-            "minimum": 0,
-            "type": "integer"
-          }
-        },
         "type": "object"
       },
       "ResourceRequest": {
@@ -4054,60 +4003,6 @@
           "processes"
         ],
         "x-shard-scope": "sandbox:read"
-      }
-    },
-    "/v0/sandboxes/{id}/resize": {
-      "post": {
-        "operationId": "resize-sandbox",
-        "parameters": [
-          {
-            "description": "The sandbox id or name.",
-            "in": "path",
-            "name": "id",
-            "required": true,
-            "schema": {
-              "description": "The sandbox id or name.",
-              "type": "string"
-            }
-          }
-        ],
-        "requestBody": {
-          "content": {
-            "application/json": {
-              "schema": {
-                "$ref": "#/components/schemas/ResizeRequest"
-              }
-            }
-          },
-          "required": true
-        },
-        "responses": {
-          "200": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/Sandbox"
-                }
-              }
-            },
-            "description": "OK"
-          },
-          "default": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/Error"
-                }
-              }
-            },
-            "description": "Error"
-          }
-        },
-        "summary": "Change the memory, vCPU, disk or swap bounds of a stopped sandbox",
-        "tags": [
-          "sandboxes"
-        ],
-        "x-shard-scope": "sandbox:write"
       }
     },
     "/v0/sandboxes/{id}/resume": {

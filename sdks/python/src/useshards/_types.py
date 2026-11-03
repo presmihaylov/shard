@@ -138,7 +138,7 @@ class Version:
 
 @attrs.frozen
 class Capabilities:
-    """Provider support for lifecycle verbs, filesystem snapshots, host port forwards, sandbox swap, and disk grow."""
+    """Provider support for lifecycle verbs, filesystem snapshots, host port forwards, and sandbox swap."""
 
     create: bool
     start: bool
@@ -148,10 +148,8 @@ class Capabilities:
     resume: bool
     fork: bool
     snapshot: bool
-    resize: bool
     port: bool
     swap: bool
-    disk_grow: bool
 
 
 @attrs.frozen
@@ -386,10 +384,8 @@ def capabilities(record: models.Capabilities) -> Capabilities:
         resume=record.resume,
         fork=record.fork,
         snapshot=record.snapshot,
-        resize=_flag(record.resize),
         port=record.port,
         swap=record.swap,
-        disk_grow=_flag(record.disk_grow),
     )
 
 
@@ -537,11 +533,6 @@ def _policy_rule(record: models.Rule) -> PolicyRule:
         if record.ports:
             text += ":" + ",".join(str(port) for port in record.ports)
     return PolicyRule(action=_one_of(_ACTIONS, record.action, "a rule action"), rule=text)
-
-
-def _flag(value: bool | Unset) -> bool:
-    """A capability a daemon from before it omits, which that daemon lacks."""
-    return False if isinstance(value, Unset) else value
 
 
 def _time_or_none(value: datetime.datetime | Unset) -> datetime.datetime | None:

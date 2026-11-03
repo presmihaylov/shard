@@ -303,7 +303,7 @@ The daemon starts the sandbox again on its own with its files, within 5 seconds.
 
 `shard list` counts the kills and shows a start still due, for example `stopped (ran out of memory 3 times, starts again in 20s)`. `shard stop <name>` calls that start off.
 
-To get more memory, stop the sandbox, raise its bound with `shard resize --memory 2GiB <name>`, and start it again.
+The bound is fixed when the sandbox is created, so to get more memory, create a new sandbox with a larger `--memory`.
 
 </details>
 

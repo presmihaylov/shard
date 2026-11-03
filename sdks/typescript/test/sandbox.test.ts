@@ -61,14 +61,6 @@ test("each lifecycle verb keeps the handle's info current", async () => {
   assert.equal(sandbox.info.state, "paused");
 });
 
-test("a resize sends only the bounds it names and keeps the handle's info current", async () => {
-  const resources = { memory_mib: 1024, vcpus: 2, disk_mib: 1024, swap_mib: 0 };
-  routes.set("POST /v0/sandboxes/sb_1/resize", () => ({ status: 200, json: sandboxRecord({ state: "stopped", resources }) }));
-  await sandbox.resize({ memoryMiB: 1024, vcpus: 2 });
-  assert.deepEqual(JSON.parse(sent("POST", "/v0/sandboxes/sb_1/resize").body), { resources: { memory_mib: 1024, vcpus: 2 } });
-  assert.deepEqual(sandbox.info.resources, { memoryMiB: 1024, vcpus: 2, diskMiB: 1024, swapMiB: 0 });
-});
-
 test("info carries the memory kills and the start again the daemon owes", async () => {
   const oom = { kills: 2, killed_at: "2026-10-07T12:00:00Z", restart_at: "2026-10-07T12:00:10Z" };
   routes.set("GET /v0/sandboxes/sb_1", () => ({ status: 200, json: sandboxRecord({ state: "stopped", stopped_reason: "ran out of memory and the host ended it", oom }) }));
