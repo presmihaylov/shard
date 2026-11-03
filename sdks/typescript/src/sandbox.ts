@@ -12,6 +12,16 @@ import * as wire from "./wire.js";
 /** refresh hands a sandbox the record another verb answered, as a policy attach; the package does not export it. */
 export const refresh = Symbol("refresh");
 
+/** ResizeOptions are the bounds a resize sets; a bound left out keeps the sandbox's own. */
+export interface ResizeOptions {
+  memoryMiB?: number;
+  /** 0 is every CPU of the host. */
+  vcpus?: number;
+  /** The disk only grows, and only where capabilities() says diskGrow. */
+  diskMiB?: number;
+  swapMiB?: number;
+}
+
 export interface FollowOptions {
   /** An abort ends the follow with the signal's reason; what it follows runs on. */
   signal?: AbortSignal;
@@ -69,6 +79,12 @@ export class Sandbox {
   /** start a stopped sandbox with its saved files */
   async start(): Promise<void> {
     await this.verb(this.transport.api.POST("/v0/sandboxes/{id}/start", { params: this.params, fetch: this.transport.waiting }));
+  }
+
+  /** change the memory, vCPU, disk or swap bounds of a stopped sandbox; the disk grows at once, the rest apply from the next start */
+  async resize(options: ResizeOptions): Promise<void> {
+    const body = { resources: { memory_mib: options.memoryMiB, vcpus: options.vcpus, disk_mib: options.diskMiB, swap_mib: options.swapMiB } };
+    await this.verb(this.transport.api.POST("/v0/sandboxes/{id}/resize", { params: this.params, body, fetch: this.transport.waiting }));
   }
 
   /** save a sandbox's state and suspend it */

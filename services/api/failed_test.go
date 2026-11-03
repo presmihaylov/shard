@@ -23,6 +23,7 @@ var bodies = map[string]string{
 	"POST /v0/sandboxes/{id}/mkdir":            `{"path":"/x"}`,
 	"PUT /v0/sandboxes/{id}/policy":            `{"policy":"p"}`,
 	"PUT /v0/sandboxes/{id}/ports/{host_port}": `{"guest_port":80}`,
+	"POST /v0/sandboxes/{id}/resize":           `{"resources":{"memory_mib":1024}}`,
 }
 
 // The walk reads api.Routes, so a route added to the daemon is covered here without an edit to this test.

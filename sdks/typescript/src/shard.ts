@@ -115,7 +115,7 @@ export class Shard {
     return rows.map(records.port);
   }
 
-  /** capabilities returns which of the nine lifecycle verbs the daemon's provider supports, and whether it gives swap. */
+  /** capabilities returns which of the ten lifecycle verbs the daemon's provider supports, and whether it gives swap and disk grow. */
   async capabilities(): Promise<Capabilities> {
     return records.capabilities((await this.transport.api.GET("/v0/capabilities")).data);
   }

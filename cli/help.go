@@ -99,7 +99,7 @@ var verbGroups = []struct {
 	title string
 	verbs []string
 }{
-	{"Sandboxes", []string{"create", "run", "exec", "shell", "ssh", "ssh-config", "ssh-proxy", "list", "ps", "logs", "kill", "inspect", "stop", "start", "remove", "prune", "pause", "resume", "fork", "cp", "port", "link"}},
+	{"Sandboxes", []string{"create", "run", "exec", "shell", "ssh", "ssh-config", "ssh-proxy", "list", "ps", "logs", "kill", "inspect", "stop", "start", "resize", "remove", "prune", "pause", "resume", "fork", "cp", "port", "link"}},
 	{"Images, snapshots, secrets and network policies", []string{"pull", "image", "snapshot", "secret", "policy"}},
 	{"Host and access", []string{"capabilities", "daemon", "info", "serve", "setup", "tokens", "version"}},
 }
@@ -434,6 +434,23 @@ var helps = map[string]verbHelp{
 			"Without a terminal, it refuses unless --force is given.",
 		)},
 		examples: []string{"shard prune", "shard prune --force"},
+	},
+	"resize": {
+		usage:   []string{"resize [OPTIONS] SANDBOX"},
+		summary: "change a stopped sandbox's memory, CPUs, disk or swap",
+		args:    []row{sandboxArg},
+		flags: []flagHelp{
+			{"--memory <size>", "memory limit; 0 is 512MiB on Firecracker and vz, none on gVisor, runc and Sysbox", ""},
+			{"--vcpus <n>", "CPU count; 0 uses all available host CPUs, up to 32 on Firecracker", ""},
+			{"--disk <size>", "disk limit; it only grows, and only where 'shard capabilities' says disk_grow", ""},
+			{"--swap <size>", "swap file inside the disk limit; 0 for none, Firecracker and vz only", ""},
+		},
+		notes: []note{para(
+			"The sandbox must be stopped. A bound left out keeps its value.",
+			"The disk and its filesystem grow at once; memory, CPUs and swap apply from the next 'shard start'.",
+			"Prints the sandbox ID.",
+		)},
+		examples: []string{"shard resize --memory 4GiB --vcpus 4 web", "shard resize --disk 30GiB web"},
 	},
 	"fork": {
 		usage:   []string{"fork [OPTIONS] SANDBOX"},
@@ -852,11 +869,11 @@ var helps = map[string]verbHelp{
 	},
 	"capabilities": {
 		usage:   []string{"capabilities [OPTIONS]"},
-		summary: "show the lifecycle verbs and swap the server supports",
+		summary: "show the lifecycle verbs, swap and disk grow the server supports",
 		about:   "Show sandbox lifecycle capabilities supported by the connected shard server.",
 		flags:   []flagHelp{formatTableHelp},
 		notes: []note{para(
-			"Lists all nine verbs and swap, each true or false for the server's provider.",
+			"Lists all ten verbs, swap and disk grow, each true or false for the server's provider.",
 			"Token scopes and sandbox states never change the answer.",
 		)},
 		examples: []string{"shard capabilities", "shard capabilities --format json"},

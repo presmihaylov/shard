@@ -1324,6 +1324,56 @@ func TestTheEnvironmentIsTheRecordTheNextStartSends(t *testing.T) {
 	}
 }
 
+// A resize grows the disk in place and rewrites the bounds the next start boots under; a disk never shrinks.
+func TestTheEnvironmentResizesTheDiskAndTheRecord(t *testing.T) {
+	h := newHarness(t)
+	spec := h.newSpec(t)
+	if err := h.provider.Create(t.Context(), spec); err != nil {
+		t.Fatal(err)
+	}
+	env, err := h.provider.Environment(spec.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	want := models.Resources{MemoryMiB: 512, VCPUs: 2, DiskMiB: 32}
+	if err := env.Resize(want); err != nil {
+		t.Fatalf("Resize: %v", err)
+	}
+	info, err := os.Stat(filepath.Join(spec.StateDir, vzvm.DiskFile))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if info.Size() != 32<<20 {
+		t.Errorf("the disk is %d bytes, want 32 MiB", info.Size())
+	}
+	read := func() models.Resources {
+		t.Helper()
+		blob, err := os.ReadFile(filepath.Join(spec.StateDir, "vm.json"))
+		if err != nil {
+			t.Fatal(err)
+		}
+		var r struct {
+			Resources models.Resources `json:"resources"`
+		}
+		if err := json.Unmarshal(blob, &r); err != nil {
+			t.Fatal(err)
+		}
+
+		return r.Resources
+	}
+	if got := read(); got != want {
+		t.Errorf("the record holds %+v, want %+v", got, want)
+	}
+
+	if err := env.Resize(models.Resources{MemoryMiB: 256, DiskMiB: 16}); err == nil || !strings.Contains(err.Error(), "does not shrink") {
+		t.Errorf("Resize to a smaller disk = %v, want a refusal", err)
+	}
+	if got := read(); got != want {
+		t.Errorf("a refused shrink left the record at %+v, want %+v", got, want)
+	}
+}
+
 // A reset of the transport, as a sleep of the host can cause, ends every stream; the provider dials again and the sandbox goes on.
 func TestADroppedStreamIsDialedAgainWhileTheVMRuns(t *testing.T) {
 	h := newHarness(t)

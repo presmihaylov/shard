@@ -254,6 +254,7 @@ func commands() []command {
 		{name: "inspect", run: App.inspect},
 		{name: "stop", run: App.stop},
 		{name: "start", run: App.start},
+		{name: "resize", run: App.resize},
 		{name: "remove", aliases: []string{"rm"}, run: App.remove},
 		{name: "pause", run: App.pause},
 		{name: "resume", run: App.resume},
