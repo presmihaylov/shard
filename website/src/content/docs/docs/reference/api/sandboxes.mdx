@@ -181,6 +181,26 @@ A create that names secrets also needs the secret:\* scope, one that names a pol
 | --- | --- |
 | 201 | [Sandbox](#sandbox) as `application/json` |
 
+## Change the memory, vCPU, disk or swap bounds of a stopped sandbox
+
+`POST /v0/sandboxes/{id}/resize` · scope `sandbox:write`
+
+**Parameters**
+
+| Name | In | Type | Required | Description |
+| --- | --- | --- | --- | --- |
+| `id` | path | string | yes | The sandbox id or name. |
+
+**Request body**
+
+[ResizeRequest](#resizerequest) as `application/json`, required.
+
+**Responses**
+
+| Status | Body |
+| --- | --- |
+| 200 | [Sandbox](#sandbox) as `application/json` |
+
 ## Read or follow the egress decisions of a sandbox
 
 `GET /v0/sandboxes/{id}/egress-log` · scope `sandbox:read`
@@ -442,6 +462,21 @@ A create that names secrets also needs the secret:\* scope, one that names a pol
 | `restarts` | integer (int64) | yes |  |
 | `started_at` | string (date-time) | no |  |
 | `state` | string | yes | One of `running`, `restarting`, `exited`, `killed`, `gave-up`, `stopped`. |
+
+### ResizeRequest
+
+| Field | Type | Required |
+| --- | --- | --- |
+| `resources` | [ResizeResources](#resizeresources) | yes |
+
+### ResizeResources
+
+| Field | Type | Required | Description |
+| --- | --- | --- | --- |
+| `disk_mib` | integer (int64) | no | The disk bound in MiB, which only grows, and only on a provider whose capabilities say disk\_grow. 0 is 10240. From 0 to 16777088. |
+| `memory_mib` | integer (int64) | no | The memory bound in MiB. 0 is 512 on the firecracker and vz providers, and no bound on gvisor, runc and sysbox. From 0 to 16777216. |
+| `swap_mib` | integer (int64) | no | The swap file in MiB, which counts against disk\_mib. 0 is none; gvisor, runc and sysbox refuse any other. From 0 to 16777088. |
+| `vcpus` | integer (int64) | no | The vCPU bound. 0 is every CPU of the host. At least 0. |
 
 ### ResourceRequest
 

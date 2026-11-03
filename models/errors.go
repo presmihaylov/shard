@@ -49,11 +49,12 @@ func (e *CommandNotStartedError) Public() string { return e.Error() }
 
 // The optional verbs, spelled once here so a refusal and the conformance suite cannot drift apart.
 const (
-	VerbPause  = "pause"
-	VerbResume = "resume"
-	VerbFork   = "fork"
-	VerbPort   = "port"
-	VerbSwap   = "swap"
+	VerbPause    = "pause"
+	VerbResume   = "resume"
+	VerbFork     = "fork"
+	VerbPort     = "port"
+	VerbSwap     = "swap"
+	VerbDiskGrow = "disk grow"
 )
 
 // UnsupportedError names the provider and the verb, because shard refuses rather than downgrades.

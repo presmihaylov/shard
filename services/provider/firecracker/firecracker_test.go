@@ -1169,10 +1169,60 @@ func readVM(t *testing.T, dir string) vm {
 	return r
 }
 
+// A resize grows the overlay in place and rewrites the bounds the next boot runs under; the overlay never shrinks.
+func TestTheEnvironmentResizesTheOverlayAndTheRecord(t *testing.T) {
+	h := newHarness(t)
+	spec := h.newSpec(t)
+	if err := h.provider.Create(t.Context(), spec); err != nil {
+		t.Fatal(err)
+	}
+	env, err := h.provider.Environment(spec.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	want := models.Resources{MemoryMiB: 512, VCPUs: 2, DiskMiB: 32}
+	if err := env.Resize(want); err != nil {
+		t.Fatalf("Resize: %v", err)
+	}
+	info, err := os.Stat(filepath.Join(spec.StateDir, bundle.OverlayDiskFile))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if info.Size() != 32<<20 {
+		t.Errorf("the overlay is %d bytes, want 32 MiB", info.Size())
+	}
+	read := func() models.Resources {
+		t.Helper()
+		blob, err := os.ReadFile(filepath.Join(spec.StateDir, "vm.json"))
+		if err != nil {
+			t.Fatal(err)
+		}
+		var r struct {
+			Resources models.Resources `json:"resources"`
+		}
+		if err := json.Unmarshal(blob, &r); err != nil {
+			t.Fatal(err)
+		}
+
+		return r.Resources
+	}
+	if got := read(); got != want {
+		t.Errorf("the record holds %+v, want %+v", got, want)
+	}
+
+	if err := env.Resize(models.Resources{MemoryMiB: 256, DiskMiB: 16}); err == nil || !strings.Contains(err.Error(), "does not shrink") {
+		t.Errorf("Resize to a smaller overlay = %v, want a refusal", err)
+	}
+	if got := read(); got != want {
+		t.Errorf("a refused shrink left the record at %+v, want %+v", got, want)
+	}
+}
+
 // A host with /dev/kvm pauses, resumes and forks a running sandbox (SHARD-462), and forwards a port into it.
 func TestCapabilitiesArePauseResumeForkAndPort(t *testing.T) {
 	h := newHarness(t)
-	want := models.Capabilities{Pause: true, Resume: true, Fork: true, Port: true, Swap: true}
+	want := models.Capabilities{Pause: true, Resume: true, Fork: true, Port: true, Swap: true, DiskGrow: true}
 	if caps := h.provider.Capabilities(); caps != want {
 		t.Fatalf("Capabilities = %+v, want %+v", caps, want)
 	}

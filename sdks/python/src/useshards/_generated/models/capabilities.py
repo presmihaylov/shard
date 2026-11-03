@@ -14,10 +14,12 @@ T = TypeVar("T", bound="Capabilities")
 @_attrs_define
 class Capabilities:
     create: bool
+    disk_grow: bool
     fork: bool
     pause: bool
     port: bool
     remove: bool
+    resize: bool
     resume: bool
     snapshot: bool
     start: bool
@@ -27,6 +29,8 @@ class Capabilities:
     def to_dict(self) -> dict[str, Any]:
         create = self.create
 
+        disk_grow = self.disk_grow
+
         fork = self.fork
 
         pause = self.pause
@@ -34,6 +38,8 @@ class Capabilities:
         port = self.port
 
         remove = self.remove
+
+        resize = self.resize
 
         resume = self.resume
 
@@ -50,10 +56,12 @@ class Capabilities:
         field_dict.update(
             {
                 "create": create,
+                "disk_grow": disk_grow,
                 "fork": fork,
                 "pause": pause,
                 "port": port,
                 "remove": remove,
+                "resize": resize,
                 "resume": resume,
                 "snapshot": snapshot,
                 "start": start,
@@ -69,6 +77,8 @@ class Capabilities:
         d = dict(src_dict)
         create = d.pop("create")
 
+        disk_grow = d.pop("disk_grow")
+
         fork = d.pop("fork")
 
         pause = d.pop("pause")
@@ -76,6 +86,8 @@ class Capabilities:
         port = d.pop("port")
 
         remove = d.pop("remove")
+
+        resize = d.pop("resize")
 
         resume = d.pop("resume")
 
@@ -89,10 +101,12 @@ class Capabilities:
 
         capabilities = cls(
             create=create,
+            disk_grow=disk_grow,
             fork=fork,
             pause=pause,
             port=port,
             remove=remove,
+            resize=resize,
             resume=resume,
             snapshot=snapshot,
             start=start,

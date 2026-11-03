@@ -146,11 +146,11 @@ func (s *Service) held(ctx context.Context, ref, name, verb string) (string, mod
 		return "", models.Sandbox{}, nil, &RequestError{Err: err}
 	}
 
-	return s.holdCreatedOrStopped(ctx, ref, "secret "+verb+" takes a created or stopped sandbox: stop it first")
+	return s.holdIn(ctx, ref, "secret "+verb+" takes a created or stopped sandbox: stop it first", models.StateCreated, models.StateStopped)
 }
 
-// holdCreatedOrStopped locks the sandbox and refuses every state a verb that rewrites the guest environment cannot take.
-func (s *Service) holdCreatedOrStopped(ctx context.Context, ref, fix string) (string, models.Sandbox, func(), error) {
+// holdIn locks the sandbox and refuses every state but states, which a verb that rewrites the guest environment takes.
+func (s *Service) holdIn(ctx context.Context, ref, fix string, states ...models.State) (string, models.Sandbox, func(), error) {
 	id, err := s.cfg.Repo.Resolve(ref)
 	if err != nil {
 		return "", models.Sandbox{}, nil, err
@@ -174,7 +174,7 @@ func (s *Service) holdCreatedOrStopped(ctx context.Context, ref, fix string) (st
 		return "", models.Sandbox{}, nil, err
 	}
 
-	if sb.State != models.StateCreated && sb.State != models.StateStopped {
+	if !slices.Contains(states, sb.State) {
 		unlock()
 
 		return "", models.Sandbox{}, nil, &StateError{Sandbox: nameOf(id, sb), State: sb.State, Fix: fix, Code: models.CodeSandboxLive}

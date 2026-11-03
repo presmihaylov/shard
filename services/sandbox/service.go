@@ -553,29 +553,9 @@ func (s *Service) Prepare(ctx context.Context, req CreateRequest) (models.Sandbo
 		defer seed.unlock()
 		req, snapshot = seed.req, seed.id
 	}
-	res := s.resources(req.Resources)
-	if res.SwapMiB > 0 {
-		if err := requireVerb(s.cfg.Provider, models.VerbSwap); err != nil {
-			return models.Sandbox{}, err
-		}
-	}
-	// A bound the substrate refuses is the request's fault, and it must not leave a failed record behind.
-	if err := s.cfg.Provider.CheckResources(res); err != nil {
-		return models.Sandbox{}, &RequestError{Err: err}
-	}
-	// A bound past the host's memory never binds: the host runs out of memory first.
-	if s.cfg.HostMemoryMiB > 0 && res.MemoryMiB > s.cfg.HostMemoryMiB {
-		return models.Sandbox{}, &RequestError{Err: fmt.Errorf("resources.memory_mib is %d MiB, more than the %d MiB of memory on this host; set it to %d MiB or less", res.MemoryMiB, s.cfg.HostMemoryMiB, s.cfg.HostMemoryMiB)}
-	}
-	// A quota past the host's CPUs never binds, and a large enough one overflows the quota to no bound at all.
-	if s.cfg.HostCPUs > 0 && res.VCPUs > s.cfg.HostCPUs {
-		return models.Sandbox{}, &RequestError{Err: fmt.Errorf("resources.vcpus is %d, more than the %d CPUs on this host; set it to %d or less", res.VCPUs, s.cfg.HostCPUs, s.cfg.HostCPUs)}
-	}
-	// Record the disk bound the sandbox will actually run under, so inspect shows the enforced value, not a bare 0.
-	res.DiskMiB = bundle.DiskBound(res)
-	// The swap file sits on the disk beside the image, so a swap the disk cannot hold fails the boot instead.
-	if res.SwapMiB >= res.DiskMiB {
-		return models.Sandbox{}, &RequestError{Err: fmt.Errorf("resources.swap_mib is %d MiB, and the swap file sits on the %d MiB disk beside the image; set resources.disk_mib above %d MiB, or resources.swap_mib below %d MiB, or 0 for no swap", res.SwapMiB, res.DiskMiB, res.SwapMiB, res.DiskMiB)}
+	res, err := s.checkBounds(s.resources(req.Resources))
+	if err != nil {
+		return models.Sandbox{}, err
 	}
 
 	// The canonical reference is what a prune keys a hold on, so the pending record must carry it before
@@ -746,6 +726,35 @@ func (s *Service) resources(r ResourceRequest) models.Resources {
 	}
 
 	return res
+}
+
+// checkBounds holds the bounds to every rule a create holds them to, and fills in the disk bound the sandbox runs under.
+func (s *Service) checkBounds(res models.Resources) (models.Resources, error) {
+	if res.SwapMiB > 0 {
+		if err := requireVerb(s.cfg.Provider, models.VerbSwap); err != nil {
+			return models.Resources{}, err
+		}
+	}
+	// A bound the substrate refuses is the request's fault, and it must not leave a failed record behind.
+	if err := s.cfg.Provider.CheckResources(res); err != nil {
+		return models.Resources{}, &RequestError{Err: err}
+	}
+	// A bound past the host's memory never binds: the host runs out of memory first.
+	if s.cfg.HostMemoryMiB > 0 && res.MemoryMiB > s.cfg.HostMemoryMiB {
+		return models.Resources{}, &RequestError{Err: fmt.Errorf("resources.memory_mib is %d MiB, more than the %d MiB of memory on this host; set it to %d MiB or less", res.MemoryMiB, s.cfg.HostMemoryMiB, s.cfg.HostMemoryMiB)}
+	}
+	// A quota past the host's CPUs never binds, and a large enough one overflows the quota to no bound at all.
+	if s.cfg.HostCPUs > 0 && res.VCPUs > s.cfg.HostCPUs {
+		return models.Resources{}, &RequestError{Err: fmt.Errorf("resources.vcpus is %d, more than the %d CPUs on this host; set it to %d or less", res.VCPUs, s.cfg.HostCPUs, s.cfg.HostCPUs)}
+	}
+	// Record the disk bound the sandbox will actually run under, so inspect shows the enforced value, not a bare 0.
+	res.DiskMiB = bundle.DiskBound(res)
+	// The swap file sits on the disk beside the image, so a swap the disk cannot hold fails the boot instead.
+	if res.SwapMiB >= res.DiskMiB {
+		return models.Resources{}, &RequestError{Err: fmt.Errorf("resources.swap_mib is %d MiB, and the swap file sits on the %d MiB disk beside the image; set resources.disk_mib above %d MiB, or resources.swap_mib below %d MiB, or 0 for no swap", res.SwapMiB, res.DiskMiB, res.SwapMiB, res.DiskMiB)}
+	}
+
+	return res, nil
 }
 
 // Complete pulls the image, builds the sandbox and starts it, then moves the record from pending to
@@ -1004,30 +1013,8 @@ func validate(req CreateRequest) error {
 		}
 	}
 
-	// A bound below zero is not a spelling of unbounded, and the substrate would drop it without a word.
-	memory := req.Resources.bounds().MemoryMiB
-	if memory < 0 {
-		return &RequestError{Err: fmt.Errorf("the memory bound is in MiB and cannot be negative, got %d", memory)}
-	}
-	// A bound this large overflows the byte count it is turned into, and an overflow reads as unbounded.
-	if memory > MaxMemoryMiB {
-		return &RequestError{Err: fmt.Errorf("the memory bound is in MiB and no host holds that much, got %d", memory)}
-	}
-	if req.Resources.VCPUs < 0 {
-		return &RequestError{Err: fmt.Errorf("the vcpu bound cannot be negative, got %d", req.Resources.VCPUs)}
-	}
-	if req.Resources.DiskMiB < 0 {
-		return &RequestError{Err: fmt.Errorf("the disk bound is in MiB and cannot be negative, got %d", req.Resources.DiskMiB)}
-	}
-	if req.Resources.DiskMiB > MaxDiskMiB {
-		return &RequestError{Err: fmt.Errorf("the disk bound is in MiB and no host holds that much, got %d", req.Resources.DiskMiB)}
-	}
-	swap := req.Resources.bounds().SwapMiB
-	if swap < 0 {
-		return &RequestError{Err: fmt.Errorf("the swap is in MiB and cannot be negative, got %d", swap)}
-	}
-	if swap > MaxDiskMiB {
-		return &RequestError{Err: fmt.Errorf("the swap is in MiB and no host holds that much, got %d", swap)}
+	if err := validBounds(req.Resources); err != nil {
+		return err
 	}
 	if err := validPorts(req.Ports); err != nil {
 		return err
@@ -1594,4 +1581,35 @@ func (s *Service) proxyCA() ([]byte, error) {
 	}
 
 	return s.cfg.ProxyCA()
+}
+
+// validBounds refuses a bound below zero or past what any host holds, before a provider reads it.
+func validBounds(r ResourceRequest) error {
+	// A bound below zero is not a spelling of unbounded, and the substrate would drop it without a word.
+	memory := r.bounds().MemoryMiB
+	if memory < 0 {
+		return &RequestError{Err: fmt.Errorf("the memory bound is in MiB and cannot be negative, got %d", memory)}
+	}
+	// A bound this large overflows the byte count it is turned into, and an overflow reads as unbounded.
+	if memory > MaxMemoryMiB {
+		return &RequestError{Err: fmt.Errorf("the memory bound is in MiB and no host holds that much, got %d", memory)}
+	}
+	if r.VCPUs < 0 {
+		return &RequestError{Err: fmt.Errorf("the vcpu bound cannot be negative, got %d", r.VCPUs)}
+	}
+	if r.DiskMiB < 0 {
+		return &RequestError{Err: fmt.Errorf("the disk bound is in MiB and cannot be negative, got %d", r.DiskMiB)}
+	}
+	if r.DiskMiB > MaxDiskMiB {
+		return &RequestError{Err: fmt.Errorf("the disk bound is in MiB and no host holds that much, got %d", r.DiskMiB)}
+	}
+	swap := r.bounds().SwapMiB
+	if swap < 0 {
+		return &RequestError{Err: fmt.Errorf("the swap is in MiB and cannot be negative, got %d", swap)}
+	}
+	if swap > MaxDiskMiB {
+		return &RequestError{Err: fmt.Errorf("the swap is in MiB and no host holds that much, got %d", swap)}
+	}
+
+	return nil
 }

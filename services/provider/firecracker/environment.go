@@ -3,8 +3,10 @@ package firecracker
 import (
 	"errors"
 	"fmt"
+	"path/filepath"
 
 	"github.com/presmihaylov/shard/models"
+	"github.com/presmihaylov/shard/services/bundle"
 	"github.com/presmihaylov/shard/services/runspec"
 )
 
@@ -56,6 +58,29 @@ func (e *environment) TrustProxy(proxyCA []byte) error {
 	}
 
 	return e.update(func(r *record) error { return r.trust(proxyCA) })
+}
+
+// Resize grows the disk before it rewrites the record, so a refused grow leaves the sandbox with the bounds it had.
+func (e *environment) Resize(res models.Resources) error {
+	r, err := e.read()
+	if err != nil {
+		return err
+	}
+	have, want := bundle.DiskBound(r.Resources), bundle.DiskBound(res)
+	if want < have {
+		return fmt.Errorf("sandbox %s: its %d MiB disk does not shrink to %d MiB", e.id, have, want)
+	}
+	if want > have {
+		if err := bundle.GrowDisk(filepath.Join(e.dir, bundle.OverlayDiskFile), res, bundle.Reflink); err != nil {
+			return fmt.Errorf("sandbox %s: %w", e.id, err)
+		}
+	}
+
+	return e.update(func(r *record) error {
+		r.Resources = res
+
+		return nil
+	})
 }
 
 func (e *environment) read() (record, error) {

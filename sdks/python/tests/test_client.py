@@ -211,8 +211,10 @@ def test_capabilities(daemon: FakeDaemon, shard: Shard) -> None:
         "resume": False,
         "fork": False,
         "snapshot": True,
+        "resize": True,
         "port": True,
         "swap": False,
+        "disk_grow": True,
     }
     daemon.routes[("GET", "/v0/capabilities")] = (200, verbs)
     assert shard.capabilities() == Capabilities(**verbs)
@@ -492,6 +494,15 @@ def test_changes_keep_the_handle_current(daemon: FakeDaemon, shard: Shard) -> No
     assert sandbox.info.state == "stopped"
     sandbox.remove(force=True)
     assert daemon.targets[-1] == "/v0/sandboxes/sb?force=true"
+
+
+def test_resize_sends_only_the_bounds_it_names(daemon: FakeDaemon, shard: Shard) -> None:
+    resources = {"memory_mib": 1024, "vcpus": 2, "disk_mib": 0, "swap_mib": 0}
+    daemon.routes[("POST", "/v0/sandboxes/sb/resize")] = (200, {**SANDBOX, "state": "stopped", "resources": resources})
+    sandbox = shard.get("sb")
+    sandbox.resize(memory_mib=1024, vcpus=2)
+    assert sent(daemon, "POST", "/v0/sandboxes/sb/resize") == {"resources": {"memory_mib": 1024, "vcpus": 2}}
+    assert (sandbox.info.resources.memory_mib, sandbox.info.resources.vcpus) == (1024, 2)
 
 
 def test_logs_and_egress_log(daemon: FakeDaemon, shard: Shard) -> None:

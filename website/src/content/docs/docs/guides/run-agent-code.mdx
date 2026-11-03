@@ -233,7 +233,7 @@ sandbox = shard.create("python:3.12-slim", memory_mib=1024, vcpus=2, disk_mib=40
 </Tabs>
 
 <Aside type="caution">
-When the host ends a sandbox for its memory, the whole sandbox ends, not only the command. The daemon then starts it again with the files it kept. On `vz` and `firecracker` it swaps first, and ends only once the swap is full too. To get more memory, create a new sandbox with a larger bound. See [Known limits](/docs/security/limits/#resource-bounds).
+When the host ends a sandbox for its memory, the whole sandbox ends, not only the command. The daemon then starts it again with the files it kept. On `vz` and `firecracker` it swaps first, and ends only once the swap is full too. To get more memory, stop the sandbox and raise its bound with `shard resize --memory`. See [Known limits](/docs/security/limits/#resource-bounds).
 </Aside>
 
 - **Disk:** 10 GiB if you set no bound. A write past it fails with `ENOSPC`, and the sandbox keeps running.

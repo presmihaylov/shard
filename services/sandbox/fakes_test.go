@@ -375,6 +375,8 @@ type fakeProvider struct {
 	noPort   bool
 	// swap claims the swap file, which the fake otherwise withholds, as a container substrate does.
 	swap bool
+	// diskGrow claims the disk grow, which the fake otherwise withholds, as a container substrate does.
+	diskGrow bool
 	// pauseErr is what Pause refuses with, the way vz refuses a pause into a silent shim.
 	pauseErr error
 	// createErr and forkErr are what Create and Fork refuse with, the way a VM substrate refuses a disk.
@@ -591,7 +593,7 @@ func (f *fakeProvider) Name() string { return "fake" }
 func (f *fakeProvider) CheckResources(models.Resources) error { return f.refuse }
 
 func (f *fakeProvider) Capabilities() models.Capabilities {
-	return models.Capabilities{Pause: !f.noPause, Resume: !f.noResume, Fork: !f.noFork, Port: !f.noPort, Swap: f.swap}
+	return models.Capabilities{Pause: !f.noPause, Resume: !f.noResume, Fork: !f.noFork, Port: !f.noPort, Swap: f.swap, DiskGrow: f.diskGrow}
 }
 
 func (f *fakeProvider) Pause(ctx context.Context, id string, dir string) error {

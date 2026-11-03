@@ -138,7 +138,7 @@ class Version:
 
 @attrs.frozen
 class Capabilities:
-    """Provider support for lifecycle verbs, filesystem snapshots, host port forwards, and sandbox swap."""
+    """Provider support for lifecycle verbs, filesystem snapshots, host port forwards, sandbox swap, and disk grow."""
 
     create: bool
     start: bool
@@ -148,8 +148,10 @@ class Capabilities:
     resume: bool
     fork: bool
     snapshot: bool
+    resize: bool
     port: bool
     swap: bool
+    disk_grow: bool
 
 
 @attrs.frozen
@@ -384,8 +386,10 @@ def capabilities(record: models.Capabilities) -> Capabilities:
         resume=record.resume,
         fork=record.fork,
         snapshot=record.snapshot,
+        resize=record.resize,
         port=record.port,
         swap=record.swap,
+        disk_grow=record.disk_grow,
     )
 
 
