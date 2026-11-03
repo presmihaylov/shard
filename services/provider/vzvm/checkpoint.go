@@ -425,7 +425,7 @@ func (p *Provider) forkCheckpoint(ctx context.Context, dir string, spec models.S
 	if err != nil {
 		return errors.Join(err, os.Remove(filepath.Join(spec.StateDir, recordFile)))
 	}
-	if err := m.readdress(ctx, r); err != nil {
+	if err := m.readdress(ctx, r, spec.Network.Hosts); err != nil {
 		return errors.Join(err, p.end(ctx, m), os.Remove(filepath.Join(spec.StateDir, recordFile)))
 	}
 
