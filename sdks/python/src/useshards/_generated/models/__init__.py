@@ -54,6 +54,8 @@ from .process_kill_request import ProcessKillRequest
 from .process_status import ProcessStatus
 from .process_status_state import ProcessStatusState
 from .processes_response import ProcessesResponse
+from .resize_request import ResizeRequest
+from .resize_resources import ResizeResources
 from .resource_request import ResourceRequest
 from .resources import Resources
 from .restart_spec import RestartSpec
@@ -134,6 +136,8 @@ __all__ = (
     "ProcessKillRequest",
     "ProcessStatus",
     "ProcessStatusState",
+    "ResizeRequest",
+    "ResizeResources",
     "ResourceRequest",
     "Resources",
     "RestartSpec",

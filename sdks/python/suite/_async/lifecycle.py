@@ -4,7 +4,7 @@ import re
 
 import attrs
 
-from useshards import AsyncSandbox, ConflictError, NotFoundError, UnsupportedError
+from useshards import AsyncSandbox, ConflictError, InvalidRequestError, NotFoundError, UnsupportedError
 
 from .._shared import equal, matches, named, not_equal, ok, skip
 from .harness import AsyncContext, Check, rejects
@@ -55,6 +55,21 @@ async def stop_start(ctx: AsyncContext) -> None:
     await sandbox.start()
     equal((await sandbox.inspect()).state, "running")
     equal((await sandbox.exec("cat /root/kept")).stdout, "kept\n", "a start keeps the root a stop left")
+
+
+async def resize(ctx: AsyncContext) -> None:
+    verbs = await ctx.shard.capabilities()
+    sandbox = await ctx.create(memory_mib=256)
+    await rejects(ConflictError, lambda: sandbox.resize(memory_mib=512))
+    await sandbox.stop()
+    await sandbox.resize(memory_mib=512, vcpus=1)
+    equal(sandbox.info.resources.memory_mib, 512)
+    equal(sandbox.info.resources.vcpus, 1)
+    disk = sandbox.info.resources.disk_mib
+    await rejects(InvalidRequestError, lambda: sandbox.resize(disk_mib=disk - 128))
+    await agrees("disk grow", verbs.disk_grow, lambda: sandbox.resize(disk_mib=disk + 1024))
+    await sandbox.start()
+    equal((await sandbox.inspect()).resources.memory_mib, 512, "the start runs under the new bound")
 
 
 async def pause_resume(ctx: AsyncContext) -> None:
@@ -136,9 +151,9 @@ async def agrees(verb: str, supported: bool, run: Call) -> None:
 
 async def capabilities(ctx: AsyncContext) -> None:
     verbs = attrs.asdict(await ctx.shard.capabilities())
-    equal(sorted(verbs), ["create", "fork", "pause", "port", "remove", "resume", "snapshot", "start", "stop", "swap"])
+    equal(sorted(verbs), "create disk_grow fork pause port remove resize resume snapshot start stop swap".split())
     ok(all(isinstance(value, bool) for value in verbs.values()), f"every verb is a boolean: {verbs}")
-    for verb in ("create", "start", "stop", "remove", "port"):
+    for verb in ("create", "start", "stop", "remove", "resize", "port"):
         equal(verbs[verb], True, f"every provider can {verb}")
     equal(verbs["resume"], verbs["pause"], "pause and resume come as a pair")
     sandbox = await ctx.create()
@@ -164,6 +179,7 @@ CHECKS = [
     Check("lifecycle.create_no_process", create_no_process),
     Check("lifecycle.inspect_get_list", inspect_get_list),
     Check("lifecycle.stop_start", stop_start),
+    Check("lifecycle.resize", resize),
     Check("lifecycle.pause_resume", pause_resume),
     Check("lifecycle.fork", fork),
     Check("lifecycle.remove", remove),

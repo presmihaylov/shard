@@ -22,6 +22,8 @@ func requireVerb(provider models.Provider, verb string) error {
 		claimed = caps.Port
 	case models.VerbSwap:
 		claimed = caps.Swap
+	case models.VerbDiskGrow:
+		claimed = caps.DiskGrow
 	default:
 		return fmt.Errorf("requireVerb: %q is not an optional verb", verb)
 	}
