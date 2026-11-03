@@ -34,7 +34,7 @@ func TestTheRulesetGivesEveryPolicyItsOwnChain(t *testing.T) {
 		},
 	}, {
 		Address: netip.MustParseAddr("10.87.0.3"),
-	}}, []netip.Addr{netip.MustParseAddr("10.87.0.2"), netip.MustParseAddr("10.87.0.3")})
+	}}, nil, []netip.Addr{netip.MustParseAddr("10.87.0.2"), netip.MustParseAddr("10.87.0.3")})
 
 	for _, want := range []string{
 		"type filter hook forward priority filter; policy accept;",
@@ -72,7 +72,7 @@ func TestTheRulesetGivesEveryPolicyItsOwnChain(t *testing.T) {
 // SHARD-628: a shared limit let one sandbox probing the floor spend every other sandbox's drop records.
 func TestEverySandboxLogsTheFloorUnderItsOwnLimit(t *testing.T) {
 	leases := []netip.Addr{netip.MustParseAddr("10.87.0.2"), netip.MustParseAddr("10.87.0.3")}
-	got := newService(t, Config{}).ruleset(nil, leases)
+	got := newService(t, Config{}).ruleset(nil, nil, leases)
 
 	for _, rule := range []string{RuleLocal, RulePrivate} {
 		checkFloorLog(t, got, rule, leases)
