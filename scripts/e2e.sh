@@ -45,6 +45,8 @@ FRONT_TLS_PORT=${FRONT_TLS_PORT:-12378}
 # The host port the port steps forward, and the guest port of the listener behind it (SHARD-789).
 FORWARD_PORT=${FORWARD_PORT:-12379}
 GUEST_PORT=8000
+# The host port an ssh -L binds in the ssh steps (SHARD-811).
+TUNNEL_PORT=${TUNNEL_PORT:-12380}
 
 # The root the run must never delete, and the name every sandbox veth on the host starts with.
 PRODUCTION_ROOT="/var/lib/shard"
@@ -88,6 +90,9 @@ SERVE_LOG=""
 # The second front sits over a root no daemon owns, which is how a refusal is proved to dial nothing.
 LONE_ROOT=""
 LONE_LOG=""
+# The ssh steps keep their client config, host key pin and signing key here, and their ssh clients by pid.
+SSH_DIR=""
+SSH_PIDS=""
 REPORTED=0
 # The two ports the daemon's proxy listens on, as pkg/proxy declares them.
 PROXY_PLAIN_PORT=30080
@@ -719,11 +724,12 @@ teardown() {
 		free_sandbox "${id}"
 	done
 
+	stop_ssh
 	stop_serve
 	stop_daemon || echo "teardown: the socket ${SHARD_ROOT}/shard.sock outlived the daemon" >&2
 	stop_echo
 	wipe_root
-	rm -rf "${ECHO_DIR:-/nonexistent}" "${SERVE_DIR:-/nonexistent}" "${LONE_ROOT:-/nonexistent}"
+	rm -rf "${ECHO_DIR:-/nonexistent}" "${SERVE_DIR:-/nonexistent}" "${LONE_ROOT:-/nonexistent}" "${SSH_DIR:-/nonexistent}"
 	rm -f "${DAEMON_LOG:-/nonexistent}" "${SERVE_LOG:-/nonexistent}" "${LONE_LOG:-/nonexistent}"
 }
 
@@ -953,6 +959,215 @@ port_steps() {
 	drop_sandbox "${id}"
 	port_reply 127.0.0.1 "${FORWARD_PORT}" removed >/dev/null 2>&1 && fail "host port ${FORWARD_PORT} answered after its sandbox was removed"
 	say "the remove shut host port ${FORWARD_PORT}"
+}
+
+# ssh_env runs a client with the ssh steps' own config home, so the host key pin never lands in root's home.
+ssh_env() { XDG_CONFIG_HOME="${SSH_DIR}" "$@"; }
+
+# shard_ssh is shard ssh over the socket; -F /dev/null keeps the host's own ssh config out of the run.
+shard_ssh() {
+	local id="$1"
+	shift
+	ssh_env shard ssh "${id}" -F /dev/null -o BatchMode=yes "$@"
+}
+
+# stop_ssh ends every ssh client the ssh steps left running, by pid.
+stop_ssh() {
+	local pid
+	# shellcheck disable=SC2086 # the pid list is meant to split
+	for pid in ${SSH_PIDS}; do
+		kill "${pid}" >/dev/null 2>&1 || true
+		wait "${pid}" >/dev/null 2>&1 || true
+	done
+	SSH_PIDS=""
+}
+
+# tunnel_answer sends one line through the ssh -L port and prints the answer, retrying while ssh sets the listener up.
+tunnel_answer() {
+	local reply=""
+	for _ in $(seq 1 50); do
+		reply=$(port_reply 127.0.0.1 "${TUNNEL_PORT}" "$1") && [ -n "${reply}" ] && break
+		sleep 0.2
+	done
+	printf '%s\n' "${reply}"
+}
+
+# ssh_steps drive shard ssh against a sandbox with no sshd: a command, scp, a -L to its loopback, the refusals, and the ssh scope (SHARD-811).
+# shellcheck disable=SC2120 # only e2e-fc.sh passes create flags
+ssh_steps() {
+	local id cfg code out pid ssh_token exec_token
+
+	step "shard ssh runs a command in a sandbox that has no sshd"
+	SSH_DIR=$(mktemp -d /tmp/shard-e2e-ssh.XXXXXX)
+	id=$(shard create "$@" --name e2e-ssh "${IMAGE}")
+	track_sandbox "${id}"
+	expect "$(shard_ssh e2e-ssh -- hostname)" "e2e-ssh" "shard ssh ran hostname in the sandbox"
+	code=0
+	# ssh joins its arguments into the one string the guest's sh -c runs, as OpenSSH does, so the script goes as one word.
+	shard_ssh e2e-ssh -- 'exit 7' || code=$?
+	expect "${code}" "7" "shard ssh exits with the command's own code"
+	expect "$(ssh_env shard ssh --user nobody e2e-ssh -F /dev/null -o BatchMode=yes -- id -un)" "nobody" "--user picks the guest user"
+	expect "$(printf 'piped\n' | shard_ssh e2e-ssh -- cat)" "piped" "stdin reaches the command, and its end ends the command"
+	[ -n "$(find "${SSH_DIR}/shard/ssh" -name 'known_hosts-local-*' -size +0)" ] || fail "shard ssh pinned no host key under ${SSH_DIR}"
+	say "the daemon's host key is pinned in the run's own config home"
+
+	step "scp copies a file in and out through the sftp subsystem"
+	cfg="${SSH_DIR}/ssh_config"
+	ssh_env shard ssh-config >"${cfg}" || fail "ssh-config printed nothing"
+	grep -q '^Host \*\.shard$' "${cfg}" || fail "ssh-config printed no Host *.shard block: $(cat "${cfg}")"
+	printf 'over-sftp\n' >"${SSH_DIR}/up"
+	ssh_env scp -q -F "${cfg}" -o BatchMode=yes "${SSH_DIR}/up" e2e-ssh.shard:/root/up || fail "scp did not copy a file into the sandbox"
+	expect_exec_in "${id}" "over-sftp" "the file scp sent is in the sandbox" /bin/cat /root/up
+	ssh_env scp -q -F "${cfg}" -o BatchMode=yes e2e-ssh.shard:/root/up "${SSH_DIR}/down" || fail "scp did not copy the file back out"
+	expect "$(cat "${SSH_DIR}/down")" "over-sftp" "scp read the file back out"
+
+	step "ssh -L reaches a listener on the sandbox's own 127.0.0.1"
+	shard run e2e-ssh --name listener -- /bin/sh -c "exec nc -lk -p ${GUEST_PORT} -s 127.0.0.1 -e /bin/sh -c 'read line; echo guest:\$line'" >/dev/null
+	# A background ssh goes bare, not through the ssh_env function, so $! is its own pid and stop_ssh ends it rather than a subshell.
+	XDG_CONFIG_HOME="${SSH_DIR}" ssh -F "${cfg}" -o BatchMode=yes -o ExitOnForwardFailure=yes -N -L "127.0.0.1:${TUNNEL_PORT}:localhost:${GUEST_PORT}" e2e-ssh.shard &
+	pid=$!
+	SSH_PIDS="${SSH_PIDS} ${pid}"
+	expect "$(tunnel_answer tunnel)" "guest:tunnel" "the -L carried a line to the guest's loopback and the answer back"
+	stop_ssh
+
+	step "ssh refuses a -L past the sandbox and a -R"
+	XDG_CONFIG_HOME="${SSH_DIR}" ssh -F "${cfg}" -o BatchMode=yes -N -L "127.0.0.1:${TUNNEL_PORT}:1.1.1.1:80" e2e-ssh.shard 2>"${SSH_DIR}/beyond.err" &
+	pid=$!
+	SSH_PIDS="${SSH_PIDS} ${pid}"
+	for _ in $(seq 1 50); do
+		[ -n "$(ss -Hltn "sport = :${TUNNEL_PORT}")" ] && break
+		sleep 0.2
+	done
+	port_reply 127.0.0.1 "${TUNNEL_PORT}" beyond >/dev/null 2>&1 && fail "a -L to 1.1.1.1:80 answered"
+	stop_ssh
+	grep -q "administratively prohibited: shard forwards only to the sandbox's own loopback, not to 1.1.1.1" "${SSH_DIR}/beyond.err" ||
+		fail "ssh did not report the refusal of a -L to 1.1.1.1: $(cat "${SSH_DIR}/beyond.err")"
+	say "a -L to 1.1.1.1:80 is refused by name"
+	code=0
+	out=$(ssh_env timeout 20 ssh -F "${cfg}" -o BatchMode=yes -o ExitOnForwardFailure=yes -N -R "127.0.0.1:${TUNNEL_PORT}:127.0.0.1:1" e2e-ssh.shard 2>&1) || code=$?
+	expect "${code}" "255" "ssh -R ends with ssh's own failure code"
+	grep -q "remote port forwarding failed" <<<"${out}" || fail "ssh -R did not report the refusal: ${out}"
+	say "a -R is refused"
+
+	step "the front lets an ssh token in and refuses an exec-only one"
+	openssl rand -hex 32 >"${SSH_DIR}/signing-key"
+	chmod 0600 "${SSH_DIR}/signing-key"
+	SERVE_PIDS="${SERVE_PIDS} $(start_serve "${SHARD_ROOT}" "${SERVE_PORT}" "${SSH_DIR}/serve.log" --signing-key-file "${SSH_DIR}/signing-key")" ||
+		fail "the front did not come up: $(cat "${SSH_DIR}/serve.log")"
+	ssh_token=$("${PREFIX}/shard" tokens mint --name shard-e2e-ssh --scopes ssh --signing-key-file "${SSH_DIR}/signing-key" | jq -r .token) ||
+		fail "tokens mint did not print an ssh token"
+	out=$(SHARD_API_KEY="${ssh_token}" ssh_env "${PREFIX}/shard" --remote "http://127.0.0.1:${SERVE_PORT}" ssh e2e-ssh -F /dev/null -o BatchMode=yes -- hostname 2>/dev/null) ||
+		fail "shard ssh over the front with an ssh token failed"
+	expect "${out}" "e2e-ssh" "an ssh token reaches the sandbox through the front"
+	exec_token=$("${PREFIX}/shard" tokens mint --name shard-e2e-exec --scopes sandbox:read,exec --signing-key-file "${SSH_DIR}/signing-key" | jq -r .token) ||
+		fail "tokens mint did not print an exec token"
+	code=0
+	out=$(SHARD_API_KEY="${exec_token}" ssh_env "${PREFIX}/shard" --remote "http://127.0.0.1:${SERVE_PORT}" ssh e2e-ssh -F /dev/null -o BatchMode=yes -- hostname 2>&1) || code=$?
+	[ "${code}" != "0" ] || fail "an exec-only token ran ssh through the front"
+	grep -q "the token lacks ssh" <<<"${out}" || fail "the exec-only refusal did not name the ssh scope: ${out}"
+	say "an exec-only token is refused ssh, by the scope's name"
+	stop_serve
+	grep -qF -e "${ssh_token}" -e "${exec_token}" "${SSH_DIR}/serve.log" "${DAEMON_LOG}" && fail "a log holds a token value"
+	say "neither log holds the ssh or the exec token"
+
+	step "remove the ssh sandbox"
+	drop_sandbox "${id}"
+	rm -rf "${SSH_DIR}"
+	SSH_DIR=""
+	say "the sandbox and the run's ssh home are gone"
+}
+
+# hosts_address prints the address /etc/hosts in a sandbox gives a name, and nothing when it has no line for it.
+hosts_address() { shard exec "$1" /bin/sh -c "awk -v n='$2' '{ for (i = 2; i <= NF; i++) if (\$i == n) { print \$1; exit } }' /etc/hosts"; }
+
+# link_reply sends one line from a sandbox to a name and port and prints the answer, retrying while a guest listener comes up.
+link_reply() {
+	local reply=""
+	for _ in $(seq 1 50); do
+		reply=$(shard exec "$1" /bin/sh -c "echo '$4' | nc -w 3 '$2' '$3'" 2>/dev/null) && [ -n "${reply}" ] && break
+		sleep 0.2
+	done
+	printf '%s\n' "${reply}"
+}
+
+# no_reply is what one line to a link name or address on GUEST_PORT brought back, once; a refusal is a reset after the connect, so the answer tells and the status does not.
+no_reply() { shard exec "$1" /bin/sh -c "echo '$3' | nc -w 3 '$2' '${GUEST_PORT}'" 2>/dev/null || true; }
+
+# web_listener starts the answer on the target's own 127.0.0.1, which only a link or a forward can reach.
+web_listener() {
+	shard run "$1" --name listener -- /bin/sh -c "exec nc -lk -p ${GUEST_PORT} -s 127.0.0.1 -e /bin/sh -c 'read line; echo $1:\$line'" >/dev/null
+}
+
+# link_steps link one sandbox to others and drive each link: /etc/hosts, a port, ssh, one way, add and remove, fork, the target stopped and removed (SHARD-811).
+# shellcheck disable=SC2120 # only e2e-fc.sh passes create flags
+link_steps() {
+	local web db agent addr db_addr fork
+
+	step "a sandbox created with --link reaches a port on its target by name"
+	web=$(shard create "$@" --name e2e-web "${IMAGE}")
+	track_sandbox "${web}"
+	web_listener e2e-web
+	agent=$(shard create "$@" --name e2e-agent --link e2e-web "${IMAGE}")
+	track_sandbox "${agent}"
+	addr=$(shard link list --format json e2e-agent | jq -r '.[] | select(.target == "e2e-web") | .address')
+	[[ "${addr}" == 10.86.* ]] || fail "the link to e2e-web got address '${addr}', want one in 10.86.0.0/16"
+	has_line "^e2e-web +${addr}$" <<<"$(shard link list e2e-agent)" || fail "link list does not show the link: $(shard link list e2e-agent)"
+	say "the link to e2e-web is on ${addr}, and link list shows it"
+	expect "$(hosts_address "${agent}" e2e-web)" "${addr}" "/etc/hosts in the source names e2e-web at the link address"
+	expect "$(link_reply "${agent}" e2e-web "${GUEST_PORT}" hello)" "e2e-web:hello" "a listener on the target's 127.0.0.1 answers through the link"
+
+	step "ssh through the link reaches the target with no sshd in it"
+	shard exec "${agent}" /bin/sh -c 'apk add --no-cache openssh-client >/dev/null' || fail "the source could not install an ssh client"
+	expect_exec_in "${agent}" "e2e-web" "ssh over the link ran hostname in the target" \
+		ssh -o BatchMode=yes -o StrictHostKeyChecking=accept-new root@e2e-web hostname
+	expect_exec_in "${agent}" "nobody" "the ssh user picks the target's user" \
+		ssh -o BatchMode=yes -o StrictHostKeyChecking=accept-new nobody@e2e-web id -un
+
+	step "a link is one way"
+	expect "$(hosts_address "${web}" e2e-agent)" "" "the target's /etc/hosts has no line for the source"
+	expect "$(shard link list --format json e2e-web)" "[]" "the target links nothing"
+
+	step "link add on a running source updates /etc/hosts, and a _ name gets a - alias"
+	db=$(shard create "$@" --name e2e_db "${IMAGE}")
+	track_sandbox "${db}"
+	web_listener e2e_db
+	db_addr=$(shard link add e2e-agent e2e_db | awk '$1 == "e2e_db" { print $2 }')
+	[[ "${db_addr}" == 10.86.* ]] && [ "${db_addr}" != "${addr}" ] || fail "the link to e2e_db got '${db_addr}', want its own 10.86.0.0/16 address beside ${addr}"
+	expect "$(hosts_address "${agent}" e2e_db)" "${db_addr}" "/etc/hosts names e2e_db with no restart"
+	expect "$(hosts_address "${agent}" e2e-db)" "${db_addr}" "/etc/hosts gives e2e_db the DNS-safe alias e2e-db"
+	expect "$(link_reply "${agent}" e2e-db "${GUEST_PORT}" alias)" "e2e_db:alias" "the alias reaches the second target"
+
+	step "a link address answers its own source only"
+	expect "$(link_reply "${agent}" "${addr}" "${GUEST_PORT}" by-ip)" "e2e-web:by-ip" "the source reaches e2e-web by the link address itself"
+	expect "$(no_reply "${db}" "${addr}" stray)" "" "e2e_db, which links nothing, gets no answer from the same live address"
+
+	step "link remove takes the line and the address away"
+	shard link remove e2e-agent e2e_db >/dev/null
+	expect "$(hosts_address "${agent}" e2e_db)" "" "link remove took the line out of /etc/hosts"
+	expect "$(no_reply "${agent}" "${db_addr}" gone)" "" "the removed link's address answers no more"
+	drop_sandbox "${db}"
+
+	if [ "$(status_field fork)" = "true" ]; then
+		step "a fork of the source keeps its links"
+		fork=$(shard fork --name e2e-agent-fork e2e-agent)
+		track_sandbox "${fork}"
+		has_line "^e2e-web +${addr}$" <<<"$(shard link list e2e-agent-fork)" || fail "the fork lost the link: $(shard link list e2e-agent-fork)"
+		expect "$(link_reply "${fork}" e2e-web "${GUEST_PORT}" forked)" "e2e-web:forked" "the fork reaches the target through its link"
+		drop_sandbox "${fork}"
+	fi
+
+	step "a stopped target keeps the link, and refuses the connection"
+	shard stop e2e-web >/dev/null
+	has_line "^e2e-web +${addr}$" <<<"$(shard link list e2e-agent)" || fail "the stop dropped the link: $(shard link list e2e-agent)"
+	expect "$(no_reply "${agent}" e2e-web stopped)" "" "the link stays, and the stopped target answers nothing"
+	shard start e2e-web >/dev/null
+	expect "$(link_reply "${agent}" e2e-web "${GUEST_PORT}" back)" "e2e-web:back" "the started target answers on the same link"
+
+	step "removing the target drops the link"
+	drop_sandbox "${web}"
+	expect "$(shard link list --format json e2e-agent)" "[]" "the source holds no link to a removed target"
+	expect "$(hosts_address "${agent}" e2e-web)" "" "/etc/hosts in the source lost the line"
+	drop_sandbox "${agent}"
 }
 
 # E2E_LIB_ONLY lets the self-test source the helpers above without driving a sandbox.
@@ -2282,6 +2497,8 @@ oom_restart_steps
 disk_bound_steps
 stop_grace_steps
 port_steps
+ssh_steps
+link_steps
 
 # checkpoint_refusals prove a provider without checkpoints refuses each verb by name and leaves the sandbox running.
 checkpoint_refusals() {
