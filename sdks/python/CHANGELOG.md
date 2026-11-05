@@ -1,5 +1,12 @@
 # useshards-python
 
+## 0.1.7
+
+### Patch Changes
+
+- 20ea4b7: A sandbox links other sandboxes: `sandbox.links.add(target)`, `list()` and `remove(target)`, and `create({ links })` (`links=` in Python). Each `Link` names its target and the address the sandbox reaches it at. Adding a link, or creating a sandbox with links, needs the `ssh` scope.
+- 21639fe: A sandbox gains `resize()`, which changes the memory, vCPU, disk or swap bounds of a stopped sandbox, as memoryMiB, vcpus, diskMiB and swapMiB in TypeScript and memory_mib, vcpus, disk_mib and swap_mib in Python. A bound left out keeps the sandbox's own. The disk only grows. `capabilities()` gains `resize`, true on every provider, and `diskGrow` (`disk_grow` in Python), true where a resize can grow the disk.
+
 ## 0.1.6
 
 ### Patch Changes
